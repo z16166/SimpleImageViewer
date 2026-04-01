@@ -18,6 +18,9 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup
 - **Full-screen mode** — toggle with `F11`; app always starts windowed (OS title bar visible)
+- **Font Selection & Resizing** — choose any system font family and adjust the interface scale (12–32) for better accessibility
+- **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
+- **Context Menu** — right-click to copy the image's absolute path or the actual file to the system clipboard
 
 ---
 
@@ -32,9 +35,11 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `+` / `-` | Zoom in / out |
 | `*` (or `Numpad *`) | Reset zoom & pan |
 | Mouse wheel | Zoom |
+| `Space` | Pause / Resume slideshow |
 | `Z` | Toggle Fit ↔ Original size |
 | `F11` | Toggle full-screen |
 | `F1` / `Esc` | Open / close Settings panel |
+| `Right-click` | Open context menu (Copy Path / Copy File) |
 | `Alt+F4` | Quit (Windows) |
 
 ---
@@ -48,6 +53,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | **Display** | Full-screen toggle and scale-mode selector |
 | **Auto-Switch** | Enable slideshow, set interval, toggle loop |
 | **Background Music** | Enable music, pick file or folder, adjust volume |
+| **Font & Appearance** | Choose system font family and interface size (applied on release) |
+| **Preloading** | Toggle background pre-loading of neighbor images |
 
 ---
 
@@ -108,6 +115,9 @@ scale_mode: fit_to_window
 play_music: true
 music_path: "D:\\Music"
 volume: 0.8
+font_family: "Microsoft YaHei"
+font_size: 16.0
+preload: true
 ```
 
 Delete the file to reset all settings to defaults.
