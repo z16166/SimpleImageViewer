@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use crossbeam_channel::Sender;
-use rodio::Source; // needed for .amplify()
+// rodio::Source was unused
 
 #[allow(dead_code)]
 pub enum AudioCommand {
