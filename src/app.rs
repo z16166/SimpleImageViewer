@@ -443,6 +443,8 @@ impl ImageViewerApp {
                     .shadow(egui::epaint::Shadow::NONE),
             )
             .min_width(300.0)
+            .default_width(320.0)
+            .max_width(400.0)
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
