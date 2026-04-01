@@ -65,11 +65,19 @@ pub struct Settings {
     pub music_path: Option<PathBuf>,
     #[serde(default = "default_volume")]
     pub volume: f32,
+
+    // Font & Appearance
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
 }
 
 fn default_interval() -> f32 { 3.0 }
 fn default_true()     -> bool { true }
 fn default_volume()   -> f32  { 1.0 }
+fn default_font_family() -> String { "System Default".to_string() }
+fn default_font_size()   -> f32  { 16.0 }
 
 impl Default for ScaleMode {
     fn default() -> Self { Self::FitToWindow }
@@ -88,6 +96,8 @@ impl Default for Settings {
             play_music: false,
             music_path: None,
             volume: default_volume(),
+            font_family: default_font_family(),
+            font_size: default_font_size(),
         }
     }
 }
@@ -117,6 +127,7 @@ impl Settings {
                     return Self {
                         auto_switch_interval: s.auto_switch_interval.clamp(0.5, 300.0),
                         volume: s.volume.clamp(0.0, 1.0),
+                        font_size: s.font_size.clamp(12.0, 72.0),
                         ..s
                     };
                 }

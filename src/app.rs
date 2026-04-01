@@ -57,6 +57,9 @@ pub struct ImageViewerApp {
 
     // Pending viewport commands (set during input processing for deferred apply)
     pending_fullscreen: Option<bool>,
+
+    // Cached system font families
+    font_families: Vec<String>,
 }
 
 impl ImageViewerApp {
@@ -65,7 +68,7 @@ impl ImageViewerApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
-        setup_visuals(&cc.egui_ctx);
+        setup_visuals(&cc.egui_ctx, &settings);
 
         let mut app = Self {
             settings,
@@ -83,6 +86,7 @@ impl ImageViewerApp {
             status_message: "Open a directory to start viewing images".to_string(),
             error_message: None,
             pending_fullscreen: None,
+            font_families: get_system_font_families(),
         };
 
         // Restore last session state
@@ -657,6 +661,39 @@ impl ImageViewerApp {
                 ui.separator();
                 ui.add_space(6.0);
 
+                // ── Font & Appearance ──────────────────────────────────────
+                ui.label(RichText::new("Font & Appearance").color(ACCENT2).strong());
+                ui.add_space(2.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Interface Size:");
+                    let resp = ui.add(egui::Slider::new(&mut self.settings.font_size, 12.0..=32.0).step_by(1.0));
+                    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                        setup_visuals(ctx, &self.settings);
+                        self.settings.save();
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Interface Font:");
+                    let old_family = self.settings.font_family.clone();
+                    egui::ComboBox::from_id_salt("font_family")
+                        .selected_text(&self.settings.font_family)
+                        .show_ui(ui, |ui| {
+                            for family in &self.font_families {
+                                ui.selectable_value(&mut self.settings.font_family, family.clone(), family);
+                            }
+                        });
+                    if old_family != self.settings.font_family {
+                        setup_visuals(ctx, &self.settings);
+                        self.settings.save();
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
                 // ── Status & actions ───────────────────────────────────────
                 if !self.image_files.is_empty() {
                     let fname = self.image_files[self.current_index]
@@ -900,7 +937,7 @@ impl eframe::App for ImageViewerApp {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn setup_visuals(ctx: &Context) {
+fn setup_visuals(ctx: &Context, settings: &Settings) {
     let mut visuals = egui::Visuals::dark();
     visuals.window_fill = PANEL_BG;
     visuals.panel_fill = BG_DARK;
@@ -910,21 +947,67 @@ fn setup_visuals(ctx: &Context) {
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(55, 50, 80);
     visuals.widgets.active.bg_fill = ACCENT;
     visuals.selection.bg_fill = ACCENT;
-    visuals.window_corner_radius = egui::CornerRadius::same(8);
     ctx.set_visuals(visuals);
+    ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
 
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 5.0);
+
+    // Apply global font size
+    let size = settings.font_size;
+    for id in style.text_styles.values_mut() {
+        id.size = size;
+    }
+    // Headings should be slightly larger
+    if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
+        id.size = size * 1.25;
+    }
+    if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
+        id.size = size * 0.8;
+    }
+
     ctx.set_global_style(style);
 
-    setup_fonts(ctx);
+    setup_fonts(ctx, settings);
 }
 
 /// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
 /// characters in file paths are rendered correctly.
-fn setup_fonts(ctx: &Context) {
-    // Candidate font paths per platform (tried in order; first success wins)
+/// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
+/// characters in file paths are rendered correctly. If a specific font family is 
+/// chosen in settings, try to load that one first.
+fn setup_fonts(ctx: &Context, settings: &Settings) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut font_loaded = false;
+
+    // 1. Try to load the user-selected font if not "System Default"
+    if settings.font_family != "System Default" {
+        use font_kit::source::SystemSource;
+        use font_kit::family_name::FamilyName;
+        use font_kit::properties::Properties;
+        
+        let source = SystemSource::new();
+        if let Ok(handle) = source.select_best_match(
+            &[FamilyName::Title(settings.font_family.clone())],
+            &Properties::new(),
+        ) {
+            if let Ok(data) = handle.load() {
+                let bytes = data.copy_font_data().map(|d| d.to_vec());
+                if let Some(bytes) = bytes {
+                    fonts.font_data.insert(
+                        "UserFont".to_owned(),
+                        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                    );
+                    fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "UserFont".to_owned());
+                    fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "UserFont".to_owned());
+                    font_loaded = true;
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to existing CJK logic if no font loaded or as secondary fallback
     #[cfg(target_os = "windows")]
     let win_fonts: String = {
         let root = std::env::var("WINDIR")
@@ -934,9 +1017,9 @@ fn setup_fonts(ctx: &Context) {
     };
     #[cfg(target_os = "windows")]
     let candidates: Vec<String> = vec![
-        format!(r"{}\msyh.ttc",   win_fonts),  // Microsoft YaHei
+        format!(r"{}\msyh.ttc",   win_fonts),
         format!(r"{}\msyhbd.ttc", win_fonts),
-        format!(r"{}\simsun.ttc", win_fonts),  // SimSun fallback
+        format!(r"{}\simsun.ttc", win_fonts),
     ];
     #[cfg(target_os = "macos")]
     let candidates: Vec<String> = vec![
@@ -950,26 +1033,29 @@ fn setup_fonts(ctx: &Context) {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
     ];
 
-    let font_data = candidates.iter().find_map(|path| std::fs::read(path).ok());
-    if let Some(data) = font_data {
-        let mut fonts = egui::FontDefinitions::default();
+    if let Some(data) = candidates.iter().find_map(|path| std::fs::read(path).ok()) {
         fonts.font_data.insert(
             "CJK".to_owned(),
             std::sync::Arc::new(egui::FontData::from_owned(data)),
         );
-        // Add as last-resort fallback for all families (after built-in fonts)
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .push("CJK".to_owned());
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .push("CJK".to_owned());
+        fonts.families.entry(egui::FontFamily::Proportional).or_default().push("CJK".to_owned());
+        fonts.families.entry(egui::FontFamily::Monospace).or_default().push("CJK".to_owned());
+        font_loaded = true;
+    }
+
+    if font_loaded {
         ctx.set_fonts(fonts);
     }
+}
+
+fn get_system_font_families() -> Vec<String> {
+    use font_kit::source::SystemSource;
+    let source = SystemSource::new();
+    let mut families = source.all_families().unwrap_or_default();
+    families.sort();
+    // Insert "System Default" at the beginning
+    families.insert(0, "System Default".to_string());
+    families
 }
 
 fn styled_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
