@@ -1,0 +1,49 @@
+[package]
+name = "simple-image-viewer"
+version = "0.1.0"
+edition = "2024"
+description = "A high-performance, cross-platform image viewer"
+build = "build.rs"
+default-run = "siv"
+
+[[bin]]
+name = "siv"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+egui = "0.34"
+image = { version = "0.25", default-features = false, features = [
+    "png", "jpeg", "gif", "bmp", "tiff", "tga", "webp", "ico", "pnm", "hdr",
+] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "symphonia-flac", "symphonia-mp3"] }
+rfd = "0.17"
+walkdir = "2"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "shellapi"] }
+
+# Build-time dependencies: only needed on Windows for PE resource embedding
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+# image is needed by build.rs on all platforms for PNG→ICO conversion
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1

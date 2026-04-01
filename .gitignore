@@ -1,0 +1,15 @@
+# Rust build artifacts
+/target/
+
+# Settings file (user-specific, not for version control)
+siv_settings.yaml
+
+# IDE / editor
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
