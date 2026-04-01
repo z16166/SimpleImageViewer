@@ -29,7 +29,7 @@ jobs:
             target: aarch64-apple-darwin
             binary_name: siv
             archive_ext: .zip
-          - os: macos-13 # older macos for intellectual compat, though aarch64 is better. 
+          - os: macos-latest # compile intel binary from the arm runner
             target: x86_64-apple-darwin
             binary_name: siv
             archive_ext: .zip
