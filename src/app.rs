@@ -285,9 +285,13 @@ impl ImageViewerApp {
         let mut toggle_fullscreen = false;
         let mut toggle_scale_mode = false;
         let mut scroll_delta = 0.0_f32;
+        let mut toggle_auto_switch = false;
         let mut do_quit = false;
-
+ 
         ctx.input(|i| {
+            if i.key_pressed(Key::Space) {
+                toggle_auto_switch = true;
+            }
             if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown) {
                 nav_next = true;
             }
@@ -367,6 +371,13 @@ impl ImageViewerApp {
             self.settings.scale_mode = self.settings.scale_mode.toggled();
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
+            self.settings.save();
+        }
+        if toggle_auto_switch {
+            self.settings.auto_switch = !self.settings.auto_switch;
+            if self.settings.auto_switch {
+                self.last_switch_time = Instant::now();
+            }
             self.settings.save();
         }
         if do_quit {
@@ -821,6 +832,22 @@ impl ImageViewerApp {
                         self.pan_offset += drag_resp.drag_delta();
                     }
 
+                    // Context menu for copying
+                    drag_resp.context_menu(|ui| {
+                        let path = &self.image_files[self.current_index];
+                        let path_str = path.to_string_lossy().to_string();
+
+                        if ui.button("📋 Copy Full Path").clicked() {
+                            ui.ctx().copy_text(path_str.clone());
+                            ui.close();
+                        }
+
+                        if ui.button("📁 Copy File").clicked() {
+                            copy_file_to_clipboard(&path_str);
+                            ui.close();
+                        }
+                    });
+
                     // Compute display rect based on scale mode
                     let dest = match self.settings.scale_mode {
                         ScaleMode::FitToWindow => {
@@ -1062,6 +1089,13 @@ fn get_system_font_families() -> Vec<String> {
     // Insert "System Default" at the beginning
     families.insert(0, "System Default".to_string());
     families
+}
+
+fn copy_file_to_clipboard(path: &str) {
+    use clipboard_rs::{Clipboard, ClipboardContext};
+    if let Ok(ctx) = ClipboardContext::new() {
+        let _ = ctx.set_files(vec![path.to_string()]);
+    }
 }
 
 fn styled_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
