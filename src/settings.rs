@@ -45,6 +45,8 @@ pub struct Settings {
     pub fullscreen: bool,
     #[serde(default)]
     pub last_image_dir: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    pub preload: bool,
 
     // Auto-switch
     #[serde(default)]
@@ -98,6 +100,7 @@ impl Default for Settings {
             volume: default_volume(),
             font_family: default_font_family(),
             font_size: default_font_size(),
+            preload: true,
         }
     }
 }

@@ -191,21 +191,23 @@ impl ImageViewerApp {
         }
         let cur = self.current_index;
         let mut indices = vec![cur];
-
-        if forward {
-            for i in 1..=PRELOAD_AHEAD {
-                indices.push((cur + i) % n);
-            }
-            if PRELOAD_BEHIND > 0 && cur > 0 {
-                indices.push(cur - 1);
-            }
-        } else {
-            for i in 1..=PRELOAD_AHEAD {
-                if cur >= i {
-                    indices.push(cur - i);
+ 
+        if self.settings.preload {
+            if forward {
+                for i in 1..=PRELOAD_AHEAD {
+                    indices.push((cur + i) % n);
                 }
+                if PRELOAD_BEHIND > 0 && cur > 0 {
+                    indices.push(cur - 1);
+                }
+            } else {
+                for i in 1..=PRELOAD_AHEAD {
+                    if cur >= i {
+                        indices.push(cur - i);
+                    }
+                }
+                indices.push((cur + 1) % n);
             }
-            indices.push((cur + 1) % n);
         }
 
         for idx in indices {
@@ -495,6 +497,10 @@ impl ImageViewerApp {
                     if let Some(dir) = self.settings.last_image_dir.clone() {
                         self.load_directory(dir);
                     }
+                    self.settings.save();
+                }
+
+                if ui.checkbox(&mut self.settings.preload, "Enable image preloading").changed() {
                     self.settings.save();
                 }
 
