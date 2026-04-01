@@ -826,8 +826,8 @@ impl ImageViewerApp {
                 if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
                     let img_size = texture.size_vec2();
 
-                    // Allocate the whole viewport for drag interaction
-                    let drag_resp = ui.allocate_rect(screen_rect, Sense::drag());
+                    // Allocate the whole viewport for drag interaction and clicks (for context menu)
+                    let drag_resp = ui.allocate_rect(screen_rect, Sense::click_and_drag());
                     if drag_resp.dragged() {
                         self.pan_offset += drag_resp.drag_delta();
                     }
