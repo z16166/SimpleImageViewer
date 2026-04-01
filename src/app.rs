@@ -1006,8 +1006,6 @@ fn setup_visuals(ctx: &Context, settings: &Settings) {
 }
 
 /// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
-/// characters in file paths are rendered correctly.
-/// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
 /// characters in file paths are rendered correctly. If a specific font family is 
 /// chosen in settings, try to load that one first.
 fn setup_fonts(ctx: &Context, settings: &Settings) {
