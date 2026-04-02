@@ -88,6 +88,7 @@ pub struct ImageViewerApp {
     show_wallpaper_dialog: bool,
     selected_wallpaper_mode: String,
     current_image_res: Option<(u32, u32)>,
+    current_system_wallpaper: Option<String>,
 }
 
 impl ImageViewerApp {
@@ -131,6 +132,7 @@ impl ImageViewerApp {
             show_wallpaper_dialog: false,
             selected_wallpaper_mode: "Crop".to_string(),
             current_image_res: None,
+            current_system_wallpaper: None,
         };
 
         // Restore last session state
@@ -1057,6 +1059,12 @@ impl ImageViewerApp {
                         ui.separator();
                         if ui.button("🖼 Set as desktop wallpaper…").clicked() {
                             self.show_wallpaper_dialog = true;
+                            // Fetch current system wallpaper path
+                            if let Ok(path) = wallpaper::get() {
+                                self.current_system_wallpaper = Some(path);
+                            } else {
+                                self.current_system_wallpaper = Some("Unknown (or solid color)".to_string());
+                            }
                             ui.close();
                         }
                     });
@@ -1177,8 +1185,16 @@ impl ImageViewerApp {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
                 ui.add_space(8.0);
 
+                if let Some(ref current) = self.current_system_wallpaper {
+                    ui.label(RichText::new("Current System Wallpaper:").color(TEXT_MUTED).small());
+                    ui.add(egui::Label::new(current).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                }
+
                 let path = self.image_files[self.current_index].to_string_lossy().into_owned();
-                ui.label(RichText::new("Image Path:").color(TEXT_MUTED).small());
+                ui.label(RichText::new("New Image Path:").color(TEXT_MUTED).small());
                 ui.add(egui::Label::new(&path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
                 
                 if let Some((w, h)) = self.current_image_res {
