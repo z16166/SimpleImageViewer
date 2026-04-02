@@ -14,7 +14,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
-- **Background music** — MP3 and FLAC playback via [rodio](https://github.com/RustAudio/rodio); pick a single file or an entire folder
+- **Background music** — MP3 and FLAC playback via [rodio](https://github.com/RustAudio/rodio); pick a single file or a folder (scanned recursively)
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly

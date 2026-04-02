@@ -313,6 +313,7 @@ impl ImageViewerApp {
         let mut toggle_scale_mode = false;
         let mut scroll_delta = 0.0_f32;
         let mut toggle_auto_switch = false;
+        #[allow(unused_mut)]
         let mut do_quit = false;
  
         ctx.input(|i| {
@@ -677,7 +678,7 @@ impl ImageViewerApp {
                         });
                     });
                     // File count badge
-                    if let Some(ref p) = self.settings.music_path {
+                    if self.settings.music_path.is_some() {
                         let n = self.cached_music_count.unwrap_or(0);
                         if n == 0 {
                             ui.label(

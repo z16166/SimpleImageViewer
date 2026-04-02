@@ -97,15 +97,14 @@ pub fn collect_music_files(path: &PathBuf) -> Vec<PathBuf> {
             files.push(path.clone());
         }
     } else if path.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            let mut collected: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && is_music(p))
-                .collect();
-            collected.sort();
-            files = collected;
-        }
+        let mut collected: Vec<PathBuf> = walkdir::WalkDir::new(path)
+            .into_iter()
+            .flatten()
+            .map(|e| e.path().to_path_buf())
+            .filter(|p| p.is_file() && is_music(p))
+            .collect();
+        collected.sort();
+        files = collected;
     }
     files
 }
