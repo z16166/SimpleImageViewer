@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crossbeam_channel::Receiver;
 use egui::{
@@ -79,6 +81,8 @@ pub struct ImageViewerApp {
     // Async music scanning
     music_scan_rx: Option<Receiver<Vec<PathBuf>>>,
     scanning_music: bool,
+    music_scan_cancel: Option<Arc<AtomicBool>>,
+    music_scan_path: Option<PathBuf>,
 }
 
 impl ImageViewerApp {
@@ -117,14 +121,13 @@ impl ImageViewerApp {
             goto_needs_focus: false,
             music_scan_rx: None,
             scanning_music: false,
+            music_scan_cancel: None,
+            music_scan_path: None,
         };
 
         // Restore last session state
         if let Some(dir) = app.settings.last_image_dir.clone() {
             app.load_directory(dir);
-        }
-        if let Some(p) = &app.settings.music_path {
-            app.cached_music_count = Some(collect_music_files(p).len());
         }
         if app.settings.play_music {
             app.restart_audio_if_enabled();
@@ -316,12 +319,19 @@ impl ImageViewerApp {
         if let Some(ref rx) = self.music_scan_rx {
             if let Ok(files) = rx.try_recv() {
                 self.scanning_music = false;
-                self.cached_music_count = Some(files.len());
+                self.music_scan_rx = None;
+                self.music_scan_cancel = None; // Thread finished or aborted
+                
+                // If it was aborted (returned empty), don't update count unless it's genuinely empty
                 if !files.is_empty() {
+                    self.cached_music_count = Some(files.len());
                     self.audio.start(files);
                     self.audio.set_volume(self.settings.volume);
+                } else if self.music_scan_path.is_some() {
+                    // Check if truly empty or just aborted
+                    // Actually, if it's aborted, files will be empty. 
+                    // We don't want to set cached_music_count to Some(0) if it was an abort.
                 }
-                self.music_scan_rx = None;
             }
         }
     }
@@ -496,21 +506,49 @@ impl ImageViewerApp {
     }
 
     fn restart_audio_if_enabled(&mut self) {
-        self.audio.stop();
-        self.scanning_music = false;
-        self.music_scan_rx = None;
-
-        if self.settings.play_music {
-            if let Some(path) = self.settings.music_path.clone() {
-                self.scanning_music = true;
-                let (tx, rx) = crossbeam_channel::unbounded();
-                self.music_scan_rx = Some(rx);
-                // Background scan – do NOT block the UI
-                std::thread::spawn(move || {
-                    let files = collect_music_files(&path);
-                    let _ = tx.send(files);
-                });
+        // If not playing music, cancel any running scan and stop audio
+        if !self.settings.play_music {
+            if let Some(cancel) = self.music_scan_cancel.take() {
+                cancel.store(false, Ordering::Relaxed);
             }
+            self.audio.stop();
+            self.scanning_music = false;
+            self.music_scan_rx = None;
+            self.music_scan_path = None;
+            return;
+        }
+
+        // We ARE playing music.
+        if let Some(path) = self.settings.music_path.clone() {
+            // If already scanning or loaded THIS path, don't restart scan
+            if self.music_scan_path.as_ref() == Some(&path) && (self.scanning_music || self.cached_music_count.is_some()) {
+                return;
+            }
+
+            // Path changed or first scan: Cancel old scan if any
+            if let Some(cancel) = self.music_scan_cancel.take() {
+                cancel.store(false, Ordering::Relaxed);
+            }
+            self.audio.stop();
+
+            self.scanning_music = true;
+            self.music_scan_path = Some(path.clone());
+            let cancel_signal = Arc::new(AtomicBool::new(true));
+            self.music_scan_cancel = Some(Arc::clone(&cancel_signal));
+
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.music_scan_rx = Some(rx);
+
+            // Background scan – do NOT block the UI
+            std::thread::spawn(move || {
+                let files = collect_music_files(&path, Some(cancel_signal));
+                let _ = tx.send(files);
+            });
+        } else {
+            // No path selected
+            self.audio.stop();
+            self.cached_music_count = None;
+            self.music_scan_path = None;
         }
     }
 

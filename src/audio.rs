@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::Sender;
 use std::time::Duration;
 
@@ -89,11 +90,11 @@ impl Drop for AudioPlayer {
 }
 
 // ---------------------------------------------------------------------------
-// Collect music files
+// Collect music files (with cancellation support)
 // ---------------------------------------------------------------------------
 
-pub fn collect_music_files(path: &PathBuf) -> Vec<PathBuf> {
-    fn is_music(p: &PathBuf) -> bool {
+pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> Vec<PathBuf> {
+    fn is_music(p: &Path) -> bool {
         p.extension()
             .and_then(|e| e.to_str())
             .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a"))
@@ -106,14 +107,21 @@ pub fn collect_music_files(path: &PathBuf) -> Vec<PathBuf> {
             files.push(path.clone());
         }
     } else if path.is_dir() {
-        let mut collected: Vec<PathBuf> = walkdir::WalkDir::new(path)
-            .into_iter()
-            .flatten()
-            .map(|e| e.path().to_path_buf())
-            .filter(|p| p.is_file() && is_music(p))
-            .collect();
-        collected.sort();
-        files = collected;
+        // Walk directory and check cancel signal periodically
+        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+            // Check cancellation
+            if let Some(ref c) = cancel {
+                if !c.load(Ordering::Relaxed) {
+                    return Vec::new(); // Abort
+                }
+            }
+
+            let p = entry.path();
+            if p.is_file() && is_music(p) {
+                files.push(p.to_path_buf());
+            }
+        }
+        files.sort();
     }
     files
 }
@@ -154,8 +162,7 @@ fn run_audio_loop(
     let mut current_volume: f32 = 1.0;
 
     loop {
-        // Wait for a command, or timeout to check if we need to feed the next track.
-        // On command: process immediately. On timeout: check player state.
+        // Drain commands
         let cmd = cmd_rx.recv_timeout(Duration::from_millis(200));
 
         match cmd {
@@ -189,13 +196,10 @@ fn run_audio_loop(
                 current_volume = v;
                 player.set_volume(v);
             }
-            Err(_) => {
-                // Timeout happened (no command). 
-                // Just fall through to the track-feeding logic below.
-            }
+            Err(_) => {}
         }
 
-        // Feed next track if queue is empty
+        // Feed next track
         if !stopped && !paused && player.empty() && !playlist.is_empty() {
             let path = playlist[current_track % playlist.len()].clone();
             current_track += 1;
