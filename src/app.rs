@@ -786,6 +786,20 @@ impl ImageViewerApp {
                             }
                         });
                     }
+                    // Now playing status
+                    if let Some(track) = self.audio.get_current_track() {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("🎵 Now playing:").color(TEXT_MUTED).small());
+                            ui.label(
+                                RichText::new(track)
+                                    .color(ACCENT2)
+                                    .small()
+                                    .italics(),
+                            );
+                        });
+                    }
+
                     // Volume slider
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {

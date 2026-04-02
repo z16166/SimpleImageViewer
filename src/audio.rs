@@ -20,6 +20,7 @@ pub type AudioError = Arc<Mutex<Option<String>>>;
 pub struct AudioPlayer {
     cmd_tx: Option<Sender<AudioCommand>>,
     pub last_error: AudioError,
+    pub current_track: Arc<Mutex<Option<String>>>,
 }
 
 impl AudioPlayer {
@@ -27,6 +28,7 @@ impl AudioPlayer {
         Self {
             cmd_tx: None,
             last_error: Arc::new(Mutex::new(None)),
+            current_track: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -67,15 +69,20 @@ impl AudioPlayer {
         self.last_error.lock().ok()?.take()
     }
 
+    pub fn get_current_track(&self) -> Option<String> {
+        self.current_track.lock().ok()?.clone()
+    }
+
     fn ensure_thread_started(&mut self) {
         if self.cmd_tx.is_none() {
             let (tx, rx) = crossbeam_channel::unbounded::<AudioCommand>();
             self.cmd_tx = Some(tx);
             let err_slot = Arc::clone(&self.last_error);
+            let track_slot = Arc::clone(&self.current_track);
             
             std::thread::Builder::new()
                 .name("audio-player".to_string())
-                .spawn(move || run_audio_loop(rx, err_slot))
+                .spawn(move || run_audio_loop(rx, err_slot, track_slot))
                 .expect("failed to spawn audio thread");
         }
     }
@@ -136,9 +143,16 @@ fn set_error(slot: &AudioError, msg: impl Into<String>) {
     }
 }
 
+fn set_current_track(slot: &Arc<Mutex<Option<String>>>, name: Option<String>) {
+    if let Ok(mut g) = slot.lock() {
+        *g = name;
+    }
+}
+
 fn run_audio_loop(
     cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
     err_slot: AudioError,
+    track_slot: Arc<Mutex<Option<String>>>,
 ) {
     // Open hardware ONLY ONCE per thread life. 
     // On Windows, frequent open/close can hang or crash.
@@ -156,24 +170,26 @@ fn run_audio_loop(
     player.play();
 
     let mut playlist: Vec<PathBuf> = Vec::new();
-    let mut current_track: usize = 0;
+    let mut current_track_idx: usize = 0;
     let mut stopped = true;
     let mut paused = false;
     let mut current_volume: f32 = 1.0;
 
     loop {
-        // Drain commands
+        // Wait for a command, or timeout to check if we need to feed the next track.
         let cmd = cmd_rx.recv_timeout(Duration::from_millis(200));
 
         match cmd {
             Ok(AudioCommand::Shutdown) => {
                 player.stop();
+                set_current_track(&track_slot, None);
                 return;
             }
             Ok(AudioCommand::Stop) => {
                 stopped = true;
                 playlist.clear();
                 player.clear();
+                set_current_track(&track_slot, None);
             }
             Ok(AudioCommand::Play) => {
                 paused = false;
@@ -186,11 +202,12 @@ fn run_audio_loop(
             }
             Ok(AudioCommand::SetPlaylist(new_list)) => {
                 playlist = new_list;
-                current_track = 0;
+                current_track_idx = 0;
                 stopped = false;
                 paused = false;
                 player.clear();
                 player.play();
+                set_current_track(&track_slot, None);
             }
             Ok(AudioCommand::SetVolume(v)) => {
                 current_volume = v;
@@ -201,12 +218,17 @@ fn run_audio_loop(
 
         // Feed next track
         if !stopped && !paused && player.empty() && !playlist.is_empty() {
-            let path = playlist[current_track % playlist.len()].clone();
-            current_track += 1;
+            let path = playlist[current_track_idx % playlist.len()].clone();
+            let filename = path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Unknown".to_string());
+            
+            current_track_idx += 1;
 
             if let Ok(file) = std::fs::File::open(&path) {
                 let reader = std::io::BufReader::new(file);
                 if let Ok(source) = rodio::Decoder::new(reader) {
+                    set_current_track(&track_slot, Some(filename));
                     player.append(source);
                     player.set_volume(current_volume);
                     player.play();
