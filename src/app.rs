@@ -23,6 +23,7 @@ const ACCENT: Color32 = Color32::from_rgb(108, 92, 231);
 const ACCENT2: Color32 = Color32::from_rgb(0, 199, 190);
 const TEXT_MUTED: Color32 = Color32::from_rgb(130, 130, 155);
 
+
 pub struct ImageViewerApp {
     settings: Settings,
 
@@ -64,6 +65,7 @@ pub struct ImageViewerApp {
 
     // Cached state
     cached_music_count: Option<usize>,
+    cached_pixels_per_point: f32,
 
     // EXIF dialog state
     show_exif_window: bool,
@@ -98,6 +100,7 @@ impl ImageViewerApp {
             font_families: get_system_font_families(),
             temp_font_size: None,
             cached_music_count: None,
+            cached_pixels_per_point: 1.0,
             show_exif_window: false,
             cached_exif_text: None,
         };
@@ -922,28 +925,8 @@ impl ImageViewerApp {
                         }
                     });
 
-                    // Compute display rect based on scale mode
-                    let dest = match self.settings.scale_mode {
-                        ScaleMode::FitToWindow => {
-                            // Scale image to fit inside the viewport, preserve aspect ratio
-                            let fit_scale = (screen_rect.width() / img_size.x)
-                                .min(screen_rect.height() / img_size.y);
-                            let scale = fit_scale * self.zoom_factor;
-                            let disp = img_size * scale;
-                            let off = (screen_rect.size() - disp) * 0.5;
-                            Rect::from_min_size(
-                                screen_rect.min + off + self.pan_offset,
-                                disp,
-                            )
-                        }
-                        ScaleMode::OriginalSize => {
-                            // Display at natural pixel size * zoom_factor; user pans to see rest
-                            let disp = img_size * self.zoom_factor;
-                            let center = screen_rect.center() + self.pan_offset;
-                            Rect::from_center_size(center, disp)
-                        }
-                    };
-
+                    // Compute display rect and draw image
+                    let dest = self.compute_display_rect(img_size, screen_rect);
                     ui.painter().image(
                         texture.id(),
                         dest,
@@ -1005,6 +988,31 @@ impl ImageViewerApp {
                 }
             });
     }
+
+    /// Compute the display rect for an image texture within the screen.
+    fn compute_display_rect(&self, img_size: Vec2, screen_rect: Rect) -> Rect {
+        match self.settings.scale_mode {
+            ScaleMode::FitToWindow => {
+                let fit_scale = (screen_rect.width() / img_size.x)
+                    .min(screen_rect.height() / img_size.y);
+                let scale = fit_scale * self.zoom_factor;
+                let disp = img_size * scale;
+                let off = (screen_rect.size() - disp) * 0.5;
+                Rect::from_min_size(
+                    screen_rect.min + off + self.pan_offset,
+                    disp,
+                )
+            }
+            ScaleMode::OriginalSize => {
+                // Divide by pixels_per_point so 1 image pixel = 1 physical screen pixel
+                // on HiDPI/Retina displays (e.g. 4K at 200% scaling).
+                let ppp = self.cached_pixels_per_point;
+                let disp = img_size * (self.zoom_factor / ppp);
+                let center = screen_rect.center() + self.pan_offset;
+                Rect::from_center_size(center, disp)
+            }
+        }
+    }
 }
 
 impl eframe::App for ImageViewerApp {
@@ -1019,6 +1027,7 @@ impl eframe::App for ImageViewerApp {
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         setup_visuals(ctx, &self.settings);
+        self.cached_pixels_per_point = ctx.pixels_per_point();
         self.process_scan_results();
         self.process_loaded_images(ctx);
         self.check_auto_switch();
