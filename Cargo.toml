@@ -33,6 +33,7 @@ serde_yaml = "0.9"
 font-kit = "0.14"
 kamadak-exif = "0.6.1"
 clipboard-rs = "0.3"
+wallpaper = "3.2.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

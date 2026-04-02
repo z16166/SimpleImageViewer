@@ -83,6 +83,11 @@ pub struct ImageViewerApp {
     scanning_music: bool,
     music_scan_cancel: Option<Arc<AtomicBool>>,
     music_scan_path: Option<PathBuf>,
+
+    // Wallpaper dialog state
+    show_wallpaper_dialog: bool,
+    selected_wallpaper_mode: String,
+    current_image_res: Option<(u32, u32)>,
 }
 
 impl ImageViewerApp {
@@ -123,6 +128,9 @@ impl ImageViewerApp {
             scanning_music: false,
             music_scan_cancel: None,
             music_scan_path: None,
+            show_wallpaper_dialog: false,
+            selected_wallpaper_mode: "Crop".to_string(),
+            current_image_res: None,
         };
 
         // Restore last session state
@@ -177,14 +185,26 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
-        let new_index = new_index.min(self.image_files.len() - 1);
-        let prev = self.current_index;
-        self.current_index = new_index;
-        self.pan_offset = Vec2::ZERO;
+        self.current_index = new_index % self.image_files.len();
         self.zoom_factor = 1.0;
+        self.pan_offset = Vec2::ZERO;
+
+        // Update resolution if already in cache
+        if let Some(texture) = self.texture_cache.get(self.current_index) {
+            let size = texture.size();
+            self.current_image_res = Some((size[0] as u32, size[1] as u32));
+        } else {
+            self.current_image_res = None;
+        }
+
         self.last_switch_time = Instant::now();
         self.error_message = None;
-        self.schedule_preloads(new_index >= prev);
+        self.cached_exif_text = None;
+        self.loader.request_load(
+            self.current_index,
+            self.image_files[self.current_index].clone(),
+        );
+        self.schedule_preloads(true);
     }
 
     fn navigate_next(&mut self) {
@@ -300,6 +320,9 @@ impl ImageViewerApp {
                         ctx.load_texture(name, color_image, TextureOptions::LINEAR);
                     self.texture_cache
                         .insert(load_result.index, handle, self.current_index);
+                    if load_result.index == self.current_index {
+                        self.current_image_res = Some((decoded.width, decoded.height));
+                    }
                 }
                 Err(e) => {
                     log::warn!(
@@ -1030,10 +1053,17 @@ impl ImageViewerApp {
                             self.show_exif_window = true;
                             ui.close();
                         }
+                        
+                        ui.separator();
+                        if ui.button("🖼 Set as desktop wallpaper…").clicked() {
+                            self.show_wallpaper_dialog = true;
+                            ui.close();
+                        }
                     });
 
                     // Compute display rect and draw image
                     let dest = self.compute_display_rect(img_size, screen_rect);
+                    
                     ui.painter().image(
                         texture.id(),
                         dest,
@@ -1118,6 +1148,98 @@ impl ImageViewerApp {
                 let center = screen_rect.center() + self.pan_offset;
                 Rect::from_center_size(center, disp)
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Wallpaper Dialog
+    // ------------------------------------------------------------------
+
+    fn draw_wallpaper_dialog(&mut self, ctx: &Context) {
+        if !self.show_wallpaper_dialog {
+            return;
+        }
+
+        let mut do_close = false;
+        let mut do_set = false;
+
+        egui::Window::new("Set as desktop wallpaper")
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .resizable(false)
+            .collapsible(false)
+            .frame(
+                Frame::window(&ctx.global_style())
+                    .fill(PANEL_BG)
+                    .shadow(egui::epaint::Shadow::NONE),
+            )
+            .fixed_size([400.0, 280.0])
+            .show(ctx, |ui| {
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.add_space(8.0);
+
+                let path = self.image_files[self.current_index].to_string_lossy().into_owned();
+                ui.label(RichText::new("Image Path:").color(TEXT_MUTED).small());
+                ui.add(egui::Label::new(&path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+                
+                if let Some((w, h)) = self.current_image_res {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Original Resolution:").color(TEXT_MUTED).small());
+                    ui.label(format!("{} × {} pixels", w, h));
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new("Wallpaper Mode:").color(ACCENT2).strong());
+
+                ui.vertical(|ui| {
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Crop".to_string(), "Crop (Fill)");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Fit".to_string(), "Fit");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Stretch".to_string(), "Stretch");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Tile".to_string(), "Tile");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Center".to_string(), "Center");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Span".to_string(), "Span (Multi-monitor)");
+                });
+
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new(" Set Wallpaper ").color(Color32::WHITE)).clicked() {
+                        do_set = true;
+                    }
+                    if ui.button(" Cancel ").clicked() {
+                        do_close = true;
+                    }
+                });
+            });
+
+        if do_set {
+            let path = self.image_files[self.current_index].clone();
+            let mode_str = self.selected_wallpaper_mode.clone();
+            
+            // Map string to wallpaper::Mode
+            let mode = match mode_str.as_str() {
+                "Center" => wallpaper::Mode::Center,
+                "Crop" => wallpaper::Mode::Crop,
+                "Fit" => wallpaper::Mode::Fit,
+                "Span" => wallpaper::Mode::Span,
+                "Stretch" => wallpaper::Mode::Stretch,
+                "Tile" => wallpaper::Mode::Tile,
+                _ => wallpaper::Mode::Crop,
+            };
+
+            // execute wallpaper setting (can take a second on Windows)
+            std::thread::spawn(move || {
+                let _ = wallpaper::set_mode(mode);
+                if let Err(e) = wallpaper::set_from_path(path.to_str().unwrap_or_default()) {
+                    log::error!("Failed to set wallpaper: {e}");
+                }
+            });
+            
+            do_close = true;
+        }
+
+        if do_close {
+            self.show_wallpaper_dialog = false;
         }
     }
 
@@ -1250,6 +1372,10 @@ impl eframe::App for ImageViewerApp {
         // Settings panel overlay
         if self.show_settings {
             self.draw_settings_panel(&ctx);
+        }
+
+        if self.show_wallpaper_dialog {
+            self.draw_wallpaper_dialog(&ctx);
         }
 
         // Goto dialog
