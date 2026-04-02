@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 build = "build.rs"
@@ -21,7 +21,7 @@ egui = "0.34"
 image = { version = "0.25", default-features = false, features = [
     "png", "jpeg", "gif", "bmp", "tiff", "tga", "webp", "ico", "pnm", "hdr",
 ] }
-rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "symphonia-flac", "symphonia-mp3"] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 rfd = "0.17"
 walkdir = "2"
 crossbeam-channel = "0.5"

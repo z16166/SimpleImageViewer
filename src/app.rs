@@ -441,7 +441,7 @@ impl ImageViewerApp {
 
     fn open_music_file_dialog(&mut self) {
         let dialog = rfd::FileDialog::new()
-            .add_filter("Music files", &["mp3", "flac"]);
+            .add_filter("Music files", &["mp3", "flac", "ogg", "wav", "aac", "m4a"]);
         if let Some(path) = dialog.pick_file() {
             self.settings.music_path = Some(path.clone());
             self.cached_music_count = Some(collect_music_files(&path).len());
@@ -646,7 +646,7 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
-                ui.checkbox(&mut self.settings.play_music, "Play background music (MP3/FLAC)");
+                ui.checkbox(&mut self.settings.play_music, "Play background music (MP3/FLAC/OGG/WAV/AAC/M4A)");
                 if old_play_music != self.settings.play_music {
                     music_enabled_changed = true;
                 }
@@ -685,7 +685,7 @@ impl ImageViewerApp {
                         let n = self.cached_music_count.unwrap_or(0);
                         if n == 0 {
                             ui.label(
-                                RichText::new("⚠ No MP3/FLAC/OGG/WAV files found")
+                                RichText::new("⚠ No supported audio files found (MP3/FLAC/OGG/WAV/AAC/M4A)")
                                     .color(Color32::from_rgb(255, 180, 60))
                                     .small(),
                             );
@@ -702,13 +702,17 @@ impl ImageViewerApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("🔊 Volume").color(TEXT_MUTED));
                         let old_vol = self.settings.volume;
-                        ui.add(
+                        let resp = ui.add(
                             egui::Slider::new(&mut self.settings.volume, 0.0..=1.0)
                                 .show_value(true)
                                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                         );
+                        // Update audio volume in real-time (cheap, no I/O)
                         if (old_vol - self.settings.volume).abs() > 0.001 {
                             self.audio.set_volume(self.settings.volume);
+                        }
+                        // Only persist to disk when user releases the slider
+                        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
                             self.settings.save();
                         }
                     });
@@ -879,7 +883,7 @@ impl ImageViewerApp {
             }
 
             // Error message
-            if let Some(ref err) = self.error_message.clone() {
+            if let Some(ref err) = self.error_message {
                 ui.painter().text(
                     screen_rect.center(),
                     Align2::CENTER_CENTER,
@@ -1026,8 +1030,15 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        setup_visuals(ctx, &self.settings);
-        self.cached_pixels_per_point = ctx.pixels_per_point();
+        // Only update pixels_per_point when it actually changes
+        // (e.g. window dragged to a monitor with different DPI).
+        // setup_visuals() is called once at startup and on settings changes,
+        // NOT every frame — it rebuilds Style/Visuals objects needlessly.
+        let ppp = ctx.pixels_per_point();
+        if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
+            self.cached_pixels_per_point = ppp;
+            setup_visuals(ctx, &self.settings);
+        }
         self.process_scan_results();
         self.process_loaded_images(ctx);
         self.check_auto_switch();

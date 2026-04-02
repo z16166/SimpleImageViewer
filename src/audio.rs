@@ -87,7 +87,7 @@ pub fn collect_music_files(path: &PathBuf) -> Vec<PathBuf> {
     fn is_music(p: &PathBuf) -> bool {
         p.extension()
             .and_then(|e| e.to_str())
-            .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav"))
+            .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a"))
             .unwrap_or(false)
     }
 
