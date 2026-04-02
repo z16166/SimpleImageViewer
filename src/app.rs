@@ -60,6 +60,10 @@ pub struct ImageViewerApp {
 
     // Cached system font families
     font_families: Vec<String>,
+    temp_font_size: Option<f32>,
+
+    // Cached state
+    cached_music_count: Option<usize>,
 
     // EXIF dialog state
     show_exif_window: bool,
@@ -73,6 +77,7 @@ impl ImageViewerApp {
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
         setup_visuals(&cc.egui_ctx, &settings);
+        setup_fonts(&cc.egui_ctx, &settings);
 
         let mut app = Self {
             settings,
@@ -91,6 +96,8 @@ impl ImageViewerApp {
             error_message: None,
             pending_fullscreen: None,
             font_families: get_system_font_families(),
+            temp_font_size: None,
+            cached_music_count: None,
             show_exif_window: false,
             cached_exif_text: None,
         };
@@ -99,7 +106,12 @@ impl ImageViewerApp {
         if let Some(dir) = app.settings.last_image_dir.clone() {
             app.load_directory(dir);
         }
-        app.restart_audio_if_enabled();
+        if let Some(p) = &app.settings.music_path {
+            app.cached_music_count = Some(collect_music_files(p).len());
+        }
+        if app.settings.play_music {
+            app.restart_audio_if_enabled();
+        }
 
         app
     }
@@ -427,14 +439,16 @@ impl ImageViewerApp {
         let dialog = rfd::FileDialog::new()
             .add_filter("Music files", &["mp3", "flac"]);
         if let Some(path) = dialog.pick_file() {
-            self.settings.music_path = Some(path);
+            self.settings.music_path = Some(path.clone());
+            self.cached_music_count = Some(collect_music_files(&path).len());
             self.restart_audio_if_enabled();
         }
     }
 
     fn open_music_dir_dialog(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-            self.settings.music_path = Some(dir);
+            self.settings.music_path = Some(dir.clone());
+            self.cached_music_count = Some(collect_music_files(&dir).len());
             self.restart_audio_if_enabled();
         }
     }
@@ -664,7 +678,7 @@ impl ImageViewerApp {
                     });
                     // File count badge
                     if let Some(ref p) = self.settings.music_path {
-                        let n = crate::audio::collect_music_files(p).len();
+                        let n = self.cached_music_count.unwrap_or(0);
                         if n == 0 {
                             ui.label(
                                 RichText::new("⚠ No MP3/FLAC/OGG/WAV files found")
@@ -714,8 +728,14 @@ impl ImageViewerApp {
 
                 ui.horizontal(|ui| {
                     ui.label("Interface Size:");
-                    let resp = ui.add(egui::Slider::new(&mut self.settings.font_size, 12.0..=32.0).step_by(1.0));
-                    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                    let mut current_size = self.temp_font_size.unwrap_or(self.settings.font_size);
+                    let resp = ui.add(egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0));
+                    
+                    if resp.dragged() {
+                        self.temp_font_size = Some(current_size);
+                    } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                        self.settings.font_size = current_size;
+                        self.temp_font_size = None;
                         setup_visuals(ctx, &self.settings);
                         self.settings.save();
                     }
@@ -732,6 +752,7 @@ impl ImageViewerApp {
                             }
                         });
                     if old_family != self.settings.font_family {
+                        setup_fonts(ctx, &self.settings);
                         setup_visuals(ctx, &self.settings);
                         self.settings.save();
                     }
@@ -1149,8 +1170,6 @@ fn setup_visuals(ctx: &Context, settings: &Settings) {
     }
 
     ctx.set_global_style(style);
-
-    setup_fonts(ctx, settings);
 }
 
 /// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
