@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use crossbeam_channel::Sender;
-// rodio::Source was unused
+use std::time::Duration;
 
 #[allow(dead_code)]
 pub enum AudioCommand {
@@ -9,7 +9,8 @@ pub enum AudioCommand {
     SetVolume(f32),
     Play,
     Pause,
-    Stop,
+    Stop,   // Clears playlist and stops playback, but keeps thread alive
+    Shutdown, // Terminates the thread
 }
 
 /// Shared error slot: audio thread writes here, UI thread reads and clears it.
@@ -28,20 +29,17 @@ impl AudioPlayer {
         }
     }
 
+    /// Ensure the audio thread is running and playing the selected files.
     pub fn start(&mut self, files: Vec<PathBuf>) {
-        self.stop();
-        let (tx, rx) = crossbeam_channel::unbounded::<AudioCommand>();
-        self.cmd_tx = Some(tx.clone());
-        let err_slot = Arc::clone(&self.last_error);
-        let _ = tx.send(AudioCommand::SetPlaylist(files));
-        std::thread::Builder::new()
-            .name("audio-player".to_string())
-            .spawn(move || run_audio_loop(rx, err_slot))
-            .expect("failed to spawn audio thread");
+        self.ensure_thread_started();
+        if let Some(tx) = &self.cmd_tx {
+            let _ = tx.send(AudioCommand::SetPlaylist(files));
+        }
     }
 
+    /// Stop playback and clear the queue. Lightweight; does not close hardware.
     pub fn stop(&mut self) {
-        if let Some(tx) = self.cmd_tx.take() {
+        if let Some(tx) = &self.cmd_tx {
             let _ = tx.send(AudioCommand::Stop);
         }
     }
@@ -52,37 +50,48 @@ impl AudioPlayer {
         }
     }
 
-    #[allow(dead_code)]
     pub fn play(&self) {
         if let Some(tx) = &self.cmd_tx {
             let _ = tx.send(AudioCommand::Play);
         }
     }
 
-    #[allow(dead_code)]
     pub fn pause(&self) {
         if let Some(tx) = &self.cmd_tx {
             let _ = tx.send(AudioCommand::Pause);
         }
     }
 
-    /// Take the last error message (clears it after reading).
     pub fn take_error(&self) -> Option<String> {
         self.last_error.lock().ok()?.take()
+    }
+
+    fn ensure_thread_started(&mut self) {
+        if self.cmd_tx.is_none() {
+            let (tx, rx) = crossbeam_channel::unbounded::<AudioCommand>();
+            self.cmd_tx = Some(tx);
+            let err_slot = Arc::clone(&self.last_error);
+            
+            std::thread::Builder::new()
+                .name("audio-player".to_string())
+                .spawn(move || run_audio_loop(rx, err_slot))
+                .expect("failed to spawn audio thread");
+        }
     }
 }
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
-        self.stop();
+        if let Some(tx) = self.cmd_tx.take() {
+            let _ = tx.send(AudioCommand::Shutdown);
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Collect music files from a path (file or directory)
+// Collect music files
 // ---------------------------------------------------------------------------
 
-/// Collect music files from a file or directory path.
 pub fn collect_music_files(path: &PathBuf) -> Vec<PathBuf> {
     fn is_music(p: &PathBuf) -> bool {
         p.extension()
@@ -123,9 +132,9 @@ fn run_audio_loop(
     cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
     err_slot: AudioError,
 ) {
-    // Open the default audio output device.
-    // MixerDeviceSink must remain alive for audio to play (it owns the OS stream).
-    let mut device_sink = match rodio::DeviceSinkBuilder::open_default_sink() {
+    // Open hardware ONLY ONCE per thread life. 
+    // On Windows, frequent open/close can hang or crash.
+    let device_sink = match rodio::DeviceSinkBuilder::open_default_sink() {
         Ok(h) => h,
         Err(e) => {
             let msg = format!("Audio device error: {e}");
@@ -134,87 +143,68 @@ fn run_audio_loop(
             return;
         }
     };
-    // Suppress the "Dropping DeviceSink…" stderr message
-    device_sink.log_on_drop(false);
 
-    // Player is the queue connected to the mixer — append sources to it.
-    // Explicitly call play() to start the device stream (mirrors the test binary).
     let player = rodio::Player::connect_new(device_sink.mixer());
-    player.play(); // ensure playing state from the start
+    player.play();
 
     let mut playlist: Vec<PathBuf> = Vec::new();
     let mut current_track: usize = 0;
+    let mut stopped = true;
     let mut paused = false;
     let mut current_volume: f32 = 1.0;
 
-    eprintln!("[audio] thread started, waiting for playlist");
-
     loop {
-        // Drain all pending commands
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(AudioCommand::Stop) => {
-                    eprintln!("[audio] stop received, exiting");
-                    return;
+        // Drain commands
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                AudioCommand::Shutdown => {
+                    player.stop();
+                    return; 
                 }
-                Ok(AudioCommand::Play) => {
+                AudioCommand::Stop => {
+                    stopped = true;
+                    playlist.clear();
+                    player.clear();
+                }
+                AudioCommand::Play => {
                     paused = false;
+                    stopped = false;
                     player.play();
                 }
-                Ok(AudioCommand::Pause) => {
+                AudioCommand::Pause => {
                     paused = true;
                     player.pause();
                 }
-                Ok(AudioCommand::SetPlaylist(new_list)) => {
-                    eprintln!("[audio] playlist set: {} files", new_list.len());
-                    for f in &new_list {
-                        eprintln!("[audio]   {:?}", f.file_name().unwrap_or_default());
-                    }
+                AudioCommand::SetPlaylist(new_list) => {
                     playlist = new_list;
                     current_track = 0;
+                    stopped = false;
+                    paused = false;
                     player.clear();
                     player.play();
-                    paused = false;
                 }
-                Ok(AudioCommand::SetVolume(v)) => {
-                    current_volume = v.clamp(0.0, 1.0);
-                    player.set_volume(current_volume);
+                AudioCommand::SetVolume(v) => {
+                    current_volume = v;
+                    player.set_volume(v);
                 }
-                Err(_) => break, // no more commands
             }
         }
 
-        // Feed next track when the queue is empty
-        if !paused && player.empty() && !playlist.is_empty() {
+        // Feed next track
+        if !stopped && !paused && player.empty() && !playlist.is_empty() {
             let path = playlist[current_track % playlist.len()].clone();
             current_track += 1;
 
-            eprintln!("[audio] opening {:?}", path.file_name().unwrap_or_default());
-            match std::fs::File::open(&path) {
-                Ok(file) => {
-                    let reader = std::io::BufReader::new(file);
-                    match rodio::Decoder::new(reader) {
-                        Ok(source) => {
-                            eprintln!("[audio] appending track, vol={:.0}%", current_volume * 100.0);
-                            player.append(source);
-                            player.set_volume(current_volume);
-                            player.play();
-                        }
-                        Err(e) => {
-                            let msg = format!("Decode error ({}): {e}", path.display());
-                            eprintln!("[audio] {msg}");
-                            set_error(&err_slot, msg);
-                        }
-                    }
-                }
-                Err(e) => {
-                    let msg = format!("Cannot open ({}): {e}", path.display());
-                    eprintln!("[audio] {msg}");
-                    set_error(&err_slot, msg);
+            if let Ok(file) = std::fs::File::open(&path) {
+                let reader = std::io::BufReader::new(file);
+                if let Ok(source) = rodio::Decoder::new(reader) {
+                    player.append(source);
+                    player.set_volume(current_volume);
+                    player.play();
                 }
             }
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
