@@ -1187,9 +1187,16 @@ impl ImageViewerApp {
 
                 if let Some(ref current) = self.current_system_wallpaper {
                     ui.label(RichText::new("Current System Wallpaper:").color(TEXT_MUTED).small());
-                    egui::ScrollArea::horizontal().id_salt("curr_wp_scroll").show(ui, |ui| {
-                        ui.add(egui::Label::new(current).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
-                    });
+                    egui::ScrollArea::horizontal()
+                        .id_salt("curr_wp_scroll")
+                        .min_scrolled_height(24.0)
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(2.0);
+                                ui.add(egui::Label::new(current).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+                                ui.add_space(4.0);
+                            });
+                        });
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -1197,9 +1204,16 @@ impl ImageViewerApp {
 
                 let path = self.image_files[self.current_index].to_string_lossy().into_owned();
                 ui.label(RichText::new("New Image Path:").color(TEXT_MUTED).small());
-                egui::ScrollArea::horizontal().id_salt("new_wp_scroll").show(ui, |ui| {
-                    ui.add(egui::Label::new(&path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
-                });
+                egui::ScrollArea::horizontal()
+                    .id_salt("new_wp_scroll")
+                    .min_scrolled_height(24.0)
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(2.0);
+                            ui.add(egui::Label::new(&path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+                            ui.add_space(4.0);
+                        });
+                    });
                 
                 if let Some((w, h)) = self.current_image_res {
                     ui.add_space(4.0);
