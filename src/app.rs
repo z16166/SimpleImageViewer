@@ -1180,7 +1180,7 @@ impl ImageViewerApp {
                     .fill(PANEL_BG)
                     .shadow(egui::epaint::Shadow::NONE),
             )
-            .fixed_size([400.0, 280.0])
+            .fixed_size([520.0, 320.0])
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
                 ui.add_space(8.0);
