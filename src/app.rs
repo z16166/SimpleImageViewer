@@ -14,7 +14,7 @@ use crate::settings::{ScaleMode, Settings};
 
 const PRELOAD_AHEAD: usize = 2;
 const PRELOAD_BEHIND: usize = 1;
-const CACHE_SIZE: usize = 8;
+const CACHE_SIZE: usize = 5; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 buffer
 
 // Accent colors for the UI
 const BG_DARK: Color32 = Color32::from_rgb(18, 18, 24);

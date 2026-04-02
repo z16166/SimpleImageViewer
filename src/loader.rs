@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
+/// Maximum concurrent image decode tasks.
+/// = 1 (current) + PRELOAD_AHEAD (2) + PRELOAD_BEHIND (1)
+const LOADER_THREADS: usize = 4;
+
 pub struct DecodedImage {
     #[allow(dead_code)]
     pub index: usize,
@@ -19,12 +23,18 @@ pub struct ImageLoader {
     tx: Sender<LoadResult>,
     pub rx: Receiver<LoadResult>,
     loading: HashSet<usize>,
+    pool: rayon::ThreadPool,
 }
 
 impl ImageLoader {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        Self { tx, rx, loading: HashSet::new() }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(LOADER_THREADS)
+            .thread_name(|i| format!("img-loader-{i}"))
+            .build()
+            .expect("failed to create image loader thread pool");
+        Self { tx, rx, loading: HashSet::new(), pool }
     }
 
     pub fn is_loading(&self, index: usize) -> bool {
@@ -37,7 +47,8 @@ impl ImageLoader {
         }
         self.loading.insert(index);
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        // Use the bounded thread pool instead of spawning a new OS thread each time.
+        self.pool.spawn(move || {
             let result = load_image_file(index, &path);
             let _ = tx.send(result);
         });
@@ -54,6 +65,9 @@ impl ImageLoader {
     }
 
     pub fn cancel_all(&mut self) {
+        // Clear the in-flight set so completed results are discarded in poll().
+        // We cannot cancel work already submitted to rayon, but those results
+        // will harmlessly be ignored once the cache is cleared.
         self.loading.clear();
         while self.rx.try_recv().is_ok() {}
     }
@@ -105,6 +119,7 @@ impl TextureCache {
         if self.textures.len() <= self.max_size {
             return;
         }
+        // Evict the texture farthest from the current index
         let to_remove = self.textures
             .keys()
             .copied()

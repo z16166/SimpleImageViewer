@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 build = "build.rs"
@@ -25,6 +25,7 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "m
 rfd = "0.17"
 walkdir = "2"
 crossbeam-channel = "0.5"
+rayon = "1"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
