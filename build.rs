@@ -92,6 +92,7 @@ fn embed_resources(ico_path: &std::path::Path) {
     res.set("ProductName",     "Simple Image Viewer");
     res.set("FileDescription", "Simple Image Viewer");
     res.set("LegalCopyright",  "\u{a9} 2026");
+    res.set("Comments",        "https://github.com/z16166/SimpleImageViewer/");
 
     if let Err(e) = res.compile() {
         eprintln!("build.rs: winresource error: {e}");

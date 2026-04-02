@@ -10,7 +10,10 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
-- **Auto-switch slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
+- **EXIF Metadata Display** — right-click an image to view detailed EXIF information in a resizable window
+- **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
+- **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
+- **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
 - **Background music** — MP3 and FLAC playback via [rodio](https://github.com/RustAudio/rodio); pick a single file or an entire folder
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
@@ -18,9 +21,9 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup
 - **Full-screen mode** — toggle with `F11`; app always starts windowed (OS title bar visible)
-- **Font Selection & Resizing** — choose any system font family and adjust the interface scale (12–32) for better accessibility
+- **Modern UI** — sleek two-column settings panel, click the background to quickly dismiss, and fully adjustable font sizes (12-32px)
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
-- **Context Menu** — right-click to copy the image's absolute path or the actual file to the system clipboard
+- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, or view EXIF metadata
 
 ---
 
@@ -38,8 +41,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `Space` | Pause / Resume slideshow |
 | `Z` | Toggle Fit ↔ Original size |
 | `F11` | Toggle full-screen |
-| `F1` / `Esc` | Open / close Settings panel |
-| `Right-click` | Open context menu (Copy Path / Copy File) |
+| `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
+| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF) |
 | `Alt+F4` | Quit (Windows) |
 
 ---
@@ -48,13 +51,12 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 
 | Setting | Description |
 |---|---|
-| **Directory** | Browse button to pick image folder; last path shown and restored on restart |
-| **Recursive scan** | Include images in all sub-directories |
-| **Display** | Full-screen toggle and scale-mode selector |
-| **Auto-Switch** | Enable slideshow, set interval, toggle loop |
-| **Background Music** | Enable music, pick file or folder, adjust volume |
-| **Font & Appearance** | Choose system font family and interface size (applied on release) |
-| **Preloading** | Toggle background pre-loading of neighbor images |
+| **Directory** | Browse button to pick image folder, recursive scan toggle, preload toggle, and resume viewing toggle |
+| **Display** | Full-screen toggle, scale-mode selector, and OSD info visibility toggle |
+| **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop playback |
+| **Background Music** | Enable music, pick file or folder, and adjust volume |
+| **Font & Appearance** | Choose system font family and interface size (applied instantly) |
+
 
 ---
 

@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 build = "build.rs"
@@ -30,6 +30,7 @@ env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 font-kit = "0.14"
+kamadak-exif = "0.6.1"
 clipboard-rs = "0.3"
 
 [target.'cfg(windows)'.dependencies]

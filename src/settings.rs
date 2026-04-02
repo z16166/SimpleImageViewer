@@ -48,6 +48,12 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub preload: bool,
 
+    // Session resumption
+    #[serde(default)]
+    pub resume_last_image: bool,
+    #[serde(default)]
+    pub last_viewed_image: Option<PathBuf>,
+
     // Auto-switch
     #[serde(default)]
     pub auto_switch: bool,
@@ -73,6 +79,10 @@ pub struct Settings {
     pub font_family: String,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+
+    // Overlay (OSD)
+    #[serde(default = "default_true")]
+    pub show_osd: bool,
 }
 
 fn default_interval() -> f32 { 3.0 }
@@ -101,6 +111,9 @@ impl Default for Settings {
             font_family: default_font_family(),
             font_size: default_font_size(),
             preload: true,
+            resume_last_image: false,
+            last_viewed_image: None,
+            show_osd: true,
         }
     }
 }

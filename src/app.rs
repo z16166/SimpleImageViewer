@@ -60,6 +60,10 @@ pub struct ImageViewerApp {
 
     // Cached system font families
     font_families: Vec<String>,
+
+    // EXIF dialog state
+    show_exif_window: bool,
+    cached_exif_text: Option<String>,
 }
 
 impl ImageViewerApp {
@@ -87,6 +91,8 @@ impl ImageViewerApp {
             error_message: None,
             pending_fullscreen: None,
             font_families: get_system_font_families(),
+            show_exif_window: false,
+            cached_exif_text: None,
         };
 
         // Restore last session state
@@ -230,6 +236,15 @@ impl ImageViewerApp {
             let count = files.len();
             self.image_files = files;
             self.current_index = 0;
+
+            if self.settings.resume_last_image {
+                if let Some(last_path) = &self.settings.last_viewed_image {
+                    if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
+                        self.current_index = (pos + 1) % count;
+                    }
+                }
+            }
+
             if count > 0 {
                 self.status_message = format!("Found {count} images — use arrow keys to navigate");
                 self.show_settings = false;
@@ -459,9 +474,9 @@ impl ImageViewerApp {
                     .fill(PANEL_BG)
                     .shadow(egui::epaint::Shadow::NONE),
             )
-            .min_width(300.0)
-            .default_width(320.0)
-            .max_width(400.0)
+            .min_width(550.0)
+            .default_width(640.0)
+            .max_width(800.0)
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
@@ -474,6 +489,9 @@ impl ImageViewerApp {
                 ui.separator();
                 ui.add_space(6.0);
 
+                ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                
                 // ── Directory ──────────────────────────────────────────────
                 ui.label(RichText::new("Directory").color(ACCENT2).strong());
                 ui.add_space(2.0);
@@ -490,15 +508,18 @@ impl ImageViewerApp {
                 let dir_empty = self.settings.last_image_dir.is_none();
                 let dir_label = if dir_empty { "No directory selected".to_string() } else { dir_short };
                 ui.horizontal(|ui| {
-                    let btn_w = 62.0;
-                    let box_w = (ui.available_width() - btn_w - ui.spacing().item_spacing.x).max(60.0);
-                    let resp = path_display_box(ui, &dir_label, dir_empty, box_w);
-                    if let Some(full) = &dir_full {
-                        resp.on_hover_text(full.as_str());
-                    }
-                    if styled_button(ui, "📁 Pick").clicked() {
-                        open_dir = true;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if styled_button(ui, "📁 Pick").clicked() {
+                            open_dir = true;
+                        }
+                        let box_w = (ui.available_width() - 16.0).max(20.0);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let resp = path_display_box(ui, &dir_label, dir_empty, box_w);
+                            if let Some(full) = &dir_full {
+                                resp.on_hover_text(full.as_str());
+                            }
+                        });
+                    });
                 });
 
                 ui.add_space(4.0);
@@ -515,6 +536,10 @@ impl ImageViewerApp {
                     self.settings.save();
                 }
 
+                if ui.checkbox(&mut self.settings.resume_last_image, "Resume from last viewed image").changed() {
+                    self.settings.save();
+                }
+
                 if self.scanning {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -523,8 +548,6 @@ impl ImageViewerApp {
                 }
 
                 ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
 
                 // ── Display ────────────────────────────────────────────────
                 ui.label(RichText::new("Display").color(ACCENT2).strong());
@@ -568,15 +591,21 @@ impl ImageViewerApp {
                         .small(),
                 );
 
-                ui.add_space(8.0);
-                ui.separator();
                 ui.add_space(6.0);
+                if ui.checkbox(&mut self.settings.show_osd, "Show OSD info (texts overlaid on image)").changed() {
+                    self.settings.save();
+                }
 
-                // ── Auto-Switch ────────────────────────────────────────────
-                ui.label(RichText::new("Auto-Switch").color(ACCENT2).strong());
+                ui.add_space(8.0);
+                }); // End Left Column
+                
+                cols[1].vertical(|ui| {
+                // ── Slideshow ────────────────────────────────────────────
+                ui.label(RichText::new("Slideshow").color(ACCENT2).strong());
                 ui.add_space(2.0);
+
                 let old_auto_switch = self.settings.auto_switch;
-                ui.checkbox(&mut self.settings.auto_switch, "Enable auto-switch");
+                ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next image");
                 if self.settings.auto_switch {
                     ui.horizontal(|ui| {
                         ui.label("Interval (sec):");
@@ -593,8 +622,6 @@ impl ImageViewerApp {
                 }
 
                 ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
 
                 // ── Music ──────────────────────────────────────────────────
                 ui.label(RichText::new("Background Music").color(ACCENT2).strong());
@@ -619,18 +646,21 @@ impl ImageViewerApp {
                     let music_empty = self.settings.music_path.is_none();
                     let music_label = if music_empty { "No file or folder selected".to_string() } else { music_short };
                     ui.horizontal(|ui| {
-                        let btns_w = 130.0;
-                        let box_w = (ui.available_width() - btns_w).max(60.0);
-                        let resp = path_display_box(ui, &music_label, music_empty, box_w);
-                        if let Some(full) = &music_full {
-                            resp.on_hover_text(full.as_str());
-                        }
-                        if styled_button(ui, "🎵 File").clicked() {
-                            open_music_file = true;
-                        }
-                        if styled_button(ui, "📂 Dir").clicked() {
-                            open_music_dir = true;
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if styled_button(ui, "📂 Dir").clicked() {
+                                open_music_dir = true;
+                            }
+                            if styled_button(ui, "🎵 File").clicked() {
+                                open_music_file = true;
+                            }
+                            let box_w = (ui.available_width() - 16.0).max(20.0);
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let resp = path_display_box(ui, &music_label, music_empty, box_w);
+                                if let Some(full) = &music_full {
+                                    resp.on_hover_text(full.as_str());
+                                }
+                            });
+                        });
                     });
                     // File count badge
                     if let Some(ref p) = self.settings.music_path {
@@ -708,6 +738,9 @@ impl ImageViewerApp {
                 });
 
                 ui.add_space(8.0);
+                }); // End of Right Column
+                }); // End of ui.columns
+
                 ui.separator();
                 ui.add_space(6.0);
 
@@ -806,34 +839,41 @@ impl ImageViewerApp {
         // Fill the area with dark background; CentralPanel inside ui() uses show_inside
         egui::Frame::NONE.fill(BG_DARK).show(ui, |ui| {
             let screen_rect = ui.max_rect();
-                if self.image_files.is_empty() {
-                    draw_empty_hint(ui, screen_rect);
-                    return;
+            
+            // Allocate the whole viewport for drag interaction and clicks early
+            // This captures background clicks properly regardless of image state.
+            let canvas_resp = ui.allocate_rect(screen_rect, Sense::click_and_drag());
+            
+            if self.show_settings && canvas_resp.clicked() {
+                self.show_settings = false;
+            }
+
+            if self.image_files.is_empty() {
+                draw_empty_hint(ui, screen_rect);
+                return;
+            }
+
+            // Error message
+            if let Some(ref err) = self.error_message.clone() {
+                ui.painter().text(
+                    screen_rect.center(),
+                    Align2::CENTER_CENTER,
+                    format!("⚠ {err}"),
+                    FontId::proportional(16.0),
+                    Color32::from_rgb(255, 100, 100),
+                );
+                return;
+            }
+
+            if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
+                let img_size = texture.size_vec2();
+
+                if canvas_resp.dragged() {
+                    self.pan_offset += canvas_resp.drag_delta();
                 }
 
-                // Error message
-                if let Some(ref err) = self.error_message.clone() {
-                    ui.painter().text(
-                        screen_rect.center(),
-                        Align2::CENTER_CENTER,
-                        format!("⚠ {err}"),
-                        FontId::proportional(16.0),
-                        Color32::from_rgb(255, 100, 100),
-                    );
-                    return;
-                }
-
-                if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
-                    let img_size = texture.size_vec2();
-
-                    // Allocate the whole viewport for drag interaction and clicks (for context menu)
-                    let drag_resp = ui.allocate_rect(screen_rect, Sense::click_and_drag());
-                    if drag_resp.dragged() {
-                        self.pan_offset += drag_resp.drag_delta();
-                    }
-
-                    // Context menu for copying
-                    drag_resp.context_menu(|ui| {
+                // Context menu for copying
+                canvas_resp.context_menu(|ui| {
                         let path = &self.image_files[self.current_index];
                         let path_str = path.to_string_lossy().to_string();
 
@@ -844,6 +884,18 @@ impl ImageViewerApp {
 
                         if ui.button("📁 Copy File").clicked() {
                             copy_file_to_clipboard(&path_str);
+                            ui.close();
+                        }
+
+                        ui.separator();
+
+                        if ui.button("ℹ View EXIF Info").clicked() {
+                            if let Some(text) = extract_exif(path) {
+                                self.cached_exif_text = Some(text);
+                            } else {
+                                self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
+                            }
+                            self.show_exif_window = true;
                             ui.close();
                         }
                     });
@@ -877,62 +929,74 @@ impl ImageViewerApp {
                         Color32::WHITE,
                     );
 
-                    // HUD overlay — image counter + filename + zoom + dimensions + scale mode
-                    let fname = self.image_files[self.current_index]
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
-                    let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
-                    let img_w = img_size.x.round() as u32;
-                    let img_h = img_size.y.round() as u32;
-                    let mode_label = self.settings.scale_mode.label();
-                    let hud = format!(
-                        "{} / {}    {}    {}%    {}×{}    [{}]",
-                        self.current_index + 1,
-                        self.image_files.len(),
-                        fname,
-                        zoom_pct,
-                        img_w,
-                        img_h,
-                        mode_label,
-                    );
-                    let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
-                    ui.painter().text(
-                        hud_pos,
-                        Align2::LEFT_BOTTOM,
-                        &hud,
-                        FontId::proportional(13.0),
-                        Color32::from_rgba_unmultiplied(220, 220, 240, 210),
-                    );
-
-                    // Hint when settings hidden
-                    if !self.show_settings {
-                        ui.painter().text(
-                            screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
-                            Align2::RIGHT_BOTTOM,
-                            "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  F11 — fullscreen",
-                            FontId::proportional(11.0),
-                            Color32::from_rgba_unmultiplied(160, 160, 180, 140),
+                    if self.settings.show_osd {
+                        // HUD overlay — image counter + filename + zoom + dimensions + scale mode
+                        let fname = self.image_files[self.current_index]
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                        let img_w = img_size.x.round() as u32;
+                        let img_h = img_size.y.round() as u32;
+                        let mode_label = self.settings.scale_mode.label();
+                        let hud = format!(
+                            "{} / {}    {}    {}%    {}×{}    [{}]",
+                            self.current_index + 1,
+                            self.image_files.len(),
+                            fname,
+                            zoom_pct,
+                            img_w,
+                            img_h,
+                            mode_label,
                         );
+                        let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
+                        ui.painter().text(
+                            hud_pos,
+                            Align2::LEFT_BOTTOM,
+                            &hud,
+                            FontId::proportional(13.0),
+                            Color32::from_rgba_unmultiplied(220, 220, 240, 210),
+                        );
+
+                        // Hint when settings hidden
+                        if !self.show_settings {
+                            ui.painter().text(
+                                screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
+                                Align2::RIGHT_BOTTOM,
+                                "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  F11 — fullscreen",
+                                FontId::proportional(11.0),
+                                Color32::from_rgba_unmultiplied(160, 160, 180, 140),
+                            );
+                        }
                     }
                 } else {
-                    // Loading spinner
-                    ui.painter().text(
-                        screen_rect.center() - Vec2::new(0.0, 20.0),
-                        Align2::CENTER_BOTTOM,
-                        "Loading…",
-                        FontId::proportional(16.0),
-                        TEXT_MUTED,
-                    );
+                    if self.settings.show_osd {
+                        // Loading spinner
+                        ui.painter().text(
+                            screen_rect.center() - Vec2::new(0.0, 20.0),
+                            Align2::CENTER_BOTTOM,
+                            "Loading…",
+                            FontId::proportional(16.0),
+                            TEXT_MUTED,
+                        );
+                    }
                 }
             });
     }
 }
 
 impl eframe::App for ImageViewerApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.settings.resume_last_image && !self.image_files.is_empty() {
+            self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
+            self.settings.save();
+        }
+    }
+
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        setup_visuals(ctx, &self.settings);
         self.process_scan_results();
         self.process_loaded_images(ctx);
         self.check_auto_switch();
@@ -963,6 +1027,66 @@ impl eframe::App for ImageViewerApp {
         if self.show_settings {
             self.draw_settings_panel(&ctx);
         }
+
+        // EXIF window
+        if self.show_exif_window {
+            let mut close_exif = false;
+            let mut close_and_copy = false;
+            egui::Window::new("ℹ EXIF Information")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(400.0)
+                .default_height(350.0)
+                .show(&ctx, |ui| {
+                    if let Some(text) = &self.cached_exif_text {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                            ui.label(text);
+                        });
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if styled_button(ui, "📋 Copy EXIF").clicked() {
+                                close_and_copy = true;
+                            }
+                            if styled_button(ui, "Close").clicked() {
+                                close_exif = true;
+                            }
+                        });
+                    }
+                });
+            if close_and_copy {
+                if let Some(text) = &self.cached_exif_text {
+                    ctx.copy_text(text.clone());
+                }
+                self.show_exif_window = false;
+            }
+            if close_exif {
+                self.show_exif_window = false;
+            }
+        }
+    }
+}
+
+fn extract_exif(path: &std::path::Path) -> Option<String> {
+    use std::fs::File;
+    use std::io::BufReader;
+    
+    let file = File::open(path).ok()?;
+    let mut reader = BufReader::new(&file);
+    let exifreader = exif::Reader::new();
+    let exif = exifreader.read_from_container(&mut reader).ok()?;
+
+    let mut result = String::new();
+    for f in exif.fields() {
+        let tag = format!("{}", f.tag);
+        let val = format!("{}", f.display_value().with_unit(&exif));
+        result.push_str(&format!("{}: {}\n", tag, val));
+    }
+    
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
     }
 }
 
@@ -975,11 +1099,35 @@ fn setup_visuals(ctx: &Context, settings: &Settings) {
     visuals.window_fill = PANEL_BG;
     visuals.panel_fill = BG_DARK;
     visuals.extreme_bg_color = Color32::from_rgb(12, 12, 18);
-    visuals.widgets.noninteractive.bg_fill = PANEL_BG;
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(40, 40, 55);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(55, 50, 80);
+
+    // Non-interactive
+    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(20, 20, 30);
+    visuals.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(20, 20, 30);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80));
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(150, 150, 150));
+
+    // Inactive (default state of buttons, sliders, comboboxes)
+    visuals.widgets.inactive.bg_fill = Color32::from_rgb(20, 20, 30);
+    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(20, 20, 30);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80));
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(240, 240, 240));
+
+    // Hovered
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(25, 25, 35);
+    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(25, 25, 35);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(80, 80, 100));
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+
+    // Active
     visuals.widgets.active.bg_fill = ACCENT;
+    visuals.widgets.active.weak_bg_fill = ACCENT;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+
+    // Selection
     visuals.selection.bg_fill = ACCENT;
+    visuals.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+
     ctx.set_visuals(visuals);
     ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
 
