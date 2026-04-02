@@ -70,6 +70,11 @@ pub struct ImageViewerApp {
     // EXIF dialog state
     show_exif_window: bool,
     cached_exif_text: Option<String>,
+
+    // Goto dialog state
+    show_goto: bool,
+    goto_input: String,
+    goto_needs_focus: bool,
 }
 
 impl ImageViewerApp {
@@ -103,6 +108,9 @@ impl ImageViewerApp {
             cached_pixels_per_point: 1.0,
             show_exif_window: false,
             cached_exif_text: None,
+            show_goto: false,
+            goto_input: String::new(),
+            goto_needs_focus: false,
         };
 
         // Restore last session state
@@ -316,6 +324,7 @@ impl ImageViewerApp {
         let mut toggle_scale_mode = false;
         let mut scroll_delta = 0.0_f32;
         let mut toggle_auto_switch = false;
+        let mut toggle_goto = false;
         #[allow(unused_mut)]
         let mut do_quit = false;
  
@@ -362,6 +371,10 @@ impl ImageViewerApp {
             // Z — toggle scale mode (Fit ↔ Original)
             if i.key_pressed(Key::Z) {
                 toggle_scale_mode = true;
+            }
+            // G / Ctrl+G — goto image by index
+            if i.key_pressed(Key::G) {
+                toggle_goto = true;
             }
             // Quit shortcut: Cmd+Q on macOS, Ctrl+Q on Linux.
             // On Windows, Alt+F4 is standard and is handled by the OS — no code needed.
@@ -410,6 +423,13 @@ impl ImageViewerApp {
                 self.last_switch_time = Instant::now();
             }
             self.settings.save();
+        }
+        if toggle_goto && !self.image_files.is_empty() {
+            self.show_goto = !self.show_goto;
+            if self.show_goto {
+                self.goto_input.clear();
+                self.goto_needs_focus = true;
+            }
         }
         if do_quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -972,7 +992,7 @@ impl ImageViewerApp {
                             ui.painter().text(
                                 screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
                                 Align2::RIGHT_BOTTOM,
-                                "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  F11 — fullscreen",
+                                "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen",
                                 FontId::proportional(11.0),
                                 Color32::from_rgba_unmultiplied(160, 160, 180, 140),
                             );
@@ -1015,6 +1035,84 @@ impl ImageViewerApp {
                 let center = screen_rect.center() + self.pan_offset;
                 Rect::from_center_size(center, disp)
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // UI: Goto dialog
+    // ------------------------------------------------------------------
+
+    fn draw_goto_dialog(&mut self, ctx: &Context) {
+        let total = self.image_files.len();
+        if total == 0 {
+            return;
+        }
+
+        let mut do_close = false;
+        let mut do_jump = false;
+
+        egui::Window::new("Go to image…")
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .resizable(false)
+            .collapsible(false)
+            .frame(
+                Frame::window(&ctx.global_style())
+                    .fill(PANEL_BG)
+                    .shadow(egui::epaint::Shadow::NONE),
+            )
+            .fixed_size([320.0, 120.0])
+            .show(ctx, |ui| {
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("Enter image number (1 – {})", total))
+                        .color(TEXT_MUTED)
+                        .small(),
+                );
+                ui.add_space(6.0);
+
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.goto_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(format!("{}", self.current_index + 1)),
+                );
+
+                // Auto-focus the text field when the dialog first opens
+                if self.goto_needs_focus {
+                    resp.request_focus();
+                    self.goto_needs_focus = false;
+                }
+
+                // Enter key confirms; Escape closes
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    do_jump = true;
+                }
+                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                    do_close = true;
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if styled_button(ui, "Go").clicked() {
+                        do_jump = true;
+                    }
+                    if styled_button(ui, "Cancel").clicked() {
+                        do_close = true;
+                    }
+                });
+            });
+
+        if do_jump {
+            let raw: usize = self.goto_input.trim().parse().unwrap_or(0);
+            // Input is 1-based; clamp to valid range
+            if raw >= 1 {
+                let idx = (raw - 1).min(total - 1);
+                self.show_goto = false;
+                self.navigate_to(idx);
+            }
+        }
+        if do_close {
+            self.show_goto = false;
         }
     }
 }
@@ -1068,6 +1166,11 @@ impl eframe::App for ImageViewerApp {
         // Settings panel overlay
         if self.show_settings {
             self.draw_settings_panel(&ctx);
+        }
+
+        // Goto dialog
+        if self.show_goto {
+            self.draw_goto_dialog(&ctx);
         }
 
         // EXIF window
