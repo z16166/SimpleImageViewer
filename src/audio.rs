@@ -154,43 +154,48 @@ fn run_audio_loop(
     let mut current_volume: f32 = 1.0;
 
     loop {
-        // Drain commands
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                AudioCommand::Shutdown => {
-                    player.stop();
-                    return; 
-                }
-                AudioCommand::Stop => {
-                    stopped = true;
-                    playlist.clear();
-                    player.clear();
-                }
-                AudioCommand::Play => {
-                    paused = false;
-                    stopped = false;
-                    player.play();
-                }
-                AudioCommand::Pause => {
-                    paused = true;
-                    player.pause();
-                }
-                AudioCommand::SetPlaylist(new_list) => {
-                    playlist = new_list;
-                    current_track = 0;
-                    stopped = false;
-                    paused = false;
-                    player.clear();
-                    player.play();
-                }
-                AudioCommand::SetVolume(v) => {
-                    current_volume = v;
-                    player.set_volume(v);
-                }
+        // Wait for a command, or timeout to check if we need to feed the next track.
+        // On command: process immediately. On timeout: check player state.
+        let cmd = cmd_rx.recv_timeout(Duration::from_millis(200));
+
+        match cmd {
+            Ok(AudioCommand::Shutdown) => {
+                player.stop();
+                return;
+            }
+            Ok(AudioCommand::Stop) => {
+                stopped = true;
+                playlist.clear();
+                player.clear();
+            }
+            Ok(AudioCommand::Play) => {
+                paused = false;
+                stopped = false;
+                player.play();
+            }
+            Ok(AudioCommand::Pause) => {
+                paused = true;
+                player.pause();
+            }
+            Ok(AudioCommand::SetPlaylist(new_list)) => {
+                playlist = new_list;
+                current_track = 0;
+                stopped = false;
+                paused = false;
+                player.clear();
+                player.play();
+            }
+            Ok(AudioCommand::SetVolume(v)) => {
+                current_volume = v;
+                player.set_volume(v);
+            }
+            Err(_) => {
+                // Timeout happened (no command). 
+                // Just fall through to the track-feeding logic below.
             }
         }
 
-        // Feed next track
+        // Feed next track if queue is empty
         if !stopped && !paused && player.empty() && !playlist.is_empty() {
             let path = playlist[current_track % playlist.len()].clone();
             current_track += 1;
@@ -204,7 +209,5 @@ fn run_audio_loop(
                 }
             }
         }
-
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
