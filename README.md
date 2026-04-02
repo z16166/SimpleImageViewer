@@ -15,8 +15,10 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
 - **Background music** — MP3, FLAC, OGG, WAV, AAC, M4A playback via [rodio](https://github.com/RustAudio/rodio); pick a single file or a folder (scanned recursively)
+- **Now Playing display** — the filename of the current track is displayed in the settings panel
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
+- **Set as Desktop Wallpaper** — right-click any image to set it as your wallpaper; supports Fill, Fit, Stretch, Tile, Center, and Span modes
 - **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup
@@ -24,7 +26,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Modern UI** — sleek two-column settings panel, click the background to quickly dismiss, and fully adjustable font sizes (12-32px)
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
-- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, or view EXIF metadata
+- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, or set as desktop wallpaper
 
 ---
 
@@ -44,7 +46,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `G` | Open *Go to image…* dialog (jump to index) |
 | `F11` | Toggle full-screen |
 | `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
-| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF) |
+| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / Set Wallpaper) |
 | `Alt+F4` | Quit (Windows) |
 
 ---
