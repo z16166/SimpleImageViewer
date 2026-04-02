@@ -75,6 +75,10 @@ pub struct ImageViewerApp {
     show_goto: bool,
     goto_input: String,
     goto_needs_focus: bool,
+
+    // Async music scanning
+    music_scan_rx: Option<Receiver<Vec<PathBuf>>>,
+    scanning_music: bool,
 }
 
 impl ImageViewerApp {
@@ -111,6 +115,8 @@ impl ImageViewerApp {
             show_goto: false,
             goto_input: String::new(),
             goto_needs_focus: false,
+            music_scan_rx: None,
+            scanning_music: false,
         };
 
         // Restore last session state
@@ -306,6 +312,20 @@ impl ImageViewerApp {
         }
     }
 
+    fn process_music_scan_results(&mut self) {
+        if let Some(ref rx) = self.music_scan_rx {
+            if let Ok(files) = rx.try_recv() {
+                self.scanning_music = false;
+                self.cached_music_count = Some(files.len());
+                if !files.is_empty() {
+                    self.audio.start(files);
+                    self.audio.set_volume(self.settings.volume);
+                }
+                self.music_scan_rx = None;
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Keyboard input
     // ------------------------------------------------------------------
@@ -464,7 +484,6 @@ impl ImageViewerApp {
             .add_filter("Music files", &["mp3", "flac", "ogg", "wav", "aac", "m4a"]);
         if let Some(path) = dialog.pick_file() {
             self.settings.music_path = Some(path.clone());
-            self.cached_music_count = Some(collect_music_files(&path).len());
             self.restart_audio_if_enabled();
         }
     }
@@ -472,20 +491,25 @@ impl ImageViewerApp {
     fn open_music_dir_dialog(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             self.settings.music_path = Some(dir.clone());
-            self.cached_music_count = Some(collect_music_files(&dir).len());
             self.restart_audio_if_enabled();
         }
     }
 
     fn restart_audio_if_enabled(&mut self) {
         self.audio.stop();
+        self.scanning_music = false;
+        self.music_scan_rx = None;
+
         if self.settings.play_music {
-            if let Some(ref path) = self.settings.music_path.clone() {
-                let files = collect_music_files(path);
-                if !files.is_empty() {
-                    self.audio.start(files);
-                    self.audio.set_volume(self.settings.volume);
-                }
+            if let Some(path) = self.settings.music_path.clone() {
+                self.scanning_music = true;
+                let (tx, rx) = crossbeam_channel::unbounded();
+                self.music_scan_rx = Some(rx);
+                // Background scan – do NOT block the UI
+                std::thread::spawn(move || {
+                    let files = collect_music_files(&path);
+                    let _ = tx.send(files);
+                });
             }
         }
     }
@@ -702,20 +726,27 @@ impl ImageViewerApp {
                     });
                     // File count badge
                     if self.settings.music_path.is_some() {
-                        let n = self.cached_music_count.unwrap_or(0);
-                        if n == 0 {
-                            ui.label(
-                                RichText::new("⚠ No supported audio files found (MP3/FLAC/OGG/WAV/AAC/M4A)")
-                                    .color(Color32::from_rgb(255, 180, 60))
-                                    .small(),
-                            );
-                        } else {
-                            ui.label(
-                                RichText::new(format!("♪ {n} file(s) ready"))
-                                    .color(ACCENT2)
-                                    .small(),
-                            );
-                        }
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            if self.scanning_music {
+                                ui.spinner();
+                                ui.label(RichText::new("Scanning music…").color(TEXT_MUTED).small());
+                            } else if let Some(count) = self.cached_music_count {
+                                if count == 0 {
+                                    ui.label(
+                                        RichText::new("⚠ No supported audio files found")
+                                            .color(Color32::from_rgb(255, 180, 60))
+                                            .small(),
+                                    );
+                                } else {
+                                    ui.label(
+                                        RichText::new(format!("♪ {count} file(s) ready"))
+                                            .color(ACCENT2)
+                                            .small(),
+                                    );
+                                }
+                            }
+                        });
                     }
                     // Volume slider
                     ui.add_space(4.0);
@@ -1138,6 +1169,7 @@ impl eframe::App for ImageViewerApp {
             setup_visuals(ctx, &self.settings);
         }
         self.process_scan_results();
+        self.process_music_scan_results();
         self.process_loaded_images(ctx);
         self.check_auto_switch();
         self.handle_keyboard(ctx);
