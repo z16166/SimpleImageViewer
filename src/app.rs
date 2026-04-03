@@ -1164,37 +1164,39 @@ impl ImageViewerApp {
                 if is_animating && matches!(self.settings.transition_style, TransitionStyle::PageFlip | TransitionStyle::Ripple) {
                     match self.settings.transition_style {
                         TransitionStyle::PageFlip => {
-                            let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
-                            let duration = self.settings.transition_ms as f32 / 1000.0;
-                            let t = (elapsed / duration).clamp(0.0, 1.0);
-                            let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
-
-                            let clip_x = if self.is_next {
-                                screen_rect.max.x - (screen_rect.width() * ease_in_out)
-                            } else {
-                                screen_rect.min.x + (screen_rect.width() * ease_in_out)
-                            };
-
-                            // 1. Draw NEW image (revealed part, clipped)
-                            let mut new_clip = screen_rect;
-                            if self.is_next {
-                                new_clip.min.x = clip_x;
-                            } else {
-                                new_clip.max.x = clip_x;
-                            }
-                            ui.painter().with_clip_rect(new_clip).image(
-                                texture.id(),
-                                final_dest,
-                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-
-                            // 2. Draw OLD image (unrevealed part, clipped)
                             if let Some(prev) = &self.prev_texture {
                                 let p_size = prev.size_vec2();
                                 let p_dest = self.compute_display_rect(p_size, screen_rect);
+                                // The boundary of the animation is the union of the old and new image areas
+                                let union_rect = p_dest.union(final_dest);
 
-                                let mut old_clip = screen_rect;
+                                let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                                let duration = self.settings.transition_ms as f32 / 1000.0;
+                                let t = (elapsed / duration).clamp(0.0, 1.0);
+                                let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
+
+                                let clip_x = if self.is_next {
+                                    union_rect.max.x - (union_rect.width() * ease_in_out)
+                                } else {
+                                    union_rect.min.x + (union_rect.width() * ease_in_out)
+                                };
+
+                                // 1. Draw NEW image (revealed part, clipped)
+                                let mut new_clip = union_rect;
+                                if self.is_next {
+                                    new_clip.min.x = clip_x;
+                                } else {
+                                    new_clip.max.x = clip_x;
+                                }
+                                ui.painter().with_clip_rect(new_clip).image(
+                                    texture.id(),
+                                    final_dest,
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+
+                                // 2. Draw OLD image (unrevealed part, clipped)
+                                let mut old_clip = union_rect;
                                 if self.is_next {
                                     old_clip.max.x = clip_x;
                                 } else {
@@ -1208,18 +1210,18 @@ impl ImageViewerApp {
                                     Color32::WHITE,
                                 );
 
-                                // Page fold shadow
+                                // Page fold shadow (relative to union area height)
                                 let shadow_width = 40.0;
                                 let shadow_alpha = (1.0 - ease_in_out) * 0.4;
                                 let shadow_rect = if self.is_next {
                                     Rect::from_min_max(
-                                        Pos2::new(clip_x - shadow_width, screen_rect.min.y),
-                                        Pos2::new(clip_x, screen_rect.max.y)
+                                        Pos2::new(clip_x - shadow_width, union_rect.min.y),
+                                        Pos2::new(clip_x, union_rect.max.y)
                                     )
                                 } else {
                                     Rect::from_min_max(
-                                        Pos2::new(clip_x, screen_rect.min.y),
-                                        Pos2::new(clip_x + shadow_width, screen_rect.max.y)
+                                        Pos2::new(clip_x, union_rect.min.y),
+                                        Pos2::new(clip_x + shadow_width, union_rect.max.y)
                                     )
                                 };
 
@@ -1346,36 +1348,38 @@ impl ImageViewerApp {
                     ui.ctx().request_repaint();
 
                 } else if is_animating && self.settings.transition_style == TransitionStyle::Curtain {
-                    let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
-                    let duration = self.settings.transition_ms as f32 / 1000.0;
-                    let t = (elapsed / duration).clamp(0.0, 1.0);
-                    let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
-
-                    let center_x = screen_rect.center().x;
-                    let half_w = screen_rect.width() / 2.0;
-                    let shift = ease * half_w;
-
-                    // 1. Draw NEW image (revealed in the gap, clipped)
-                    let new_clip = Rect::from_min_max(
-                        Pos2::new(center_x - shift, screen_rect.min.y),
-                        Pos2::new(center_x + shift, screen_rect.max.y),
-                    );
-                    ui.painter().with_clip_rect(new_clip).image(
-                        texture.id(),
-                        final_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-
-                    // 2. Draw OLD image as two sliding curtain halves
                     if let Some(prev) = &self.prev_texture {
                         let p_size = prev.size_vec2();
                         let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        // Smart boundary: union of old and new image rects
+                        let union_rect = p_dest.union(final_dest);
 
+                        let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                        let duration = self.settings.transition_ms as f32 / 1000.0;
+                        let t = (elapsed / duration).clamp(0.0, 1.0);
+                        let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
+
+                        let center_x = union_rect.center().x;
+                        let half_w = union_rect.width() / 2.0;
+                        let shift = ease * half_w;
+
+                        // 1. Draw NEW image (revealed in the gap, clipped)
+                        let new_clip = Rect::from_min_max(
+                            Pos2::new(center_x - shift, union_rect.min.y),
+                            Pos2::new(center_x + shift, union_rect.max.y),
+                        );
+                        ui.painter().with_clip_rect(new_clip).image(
+                            texture.id(),
+                            final_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+
+                        // 2. Draw OLD image as two sliding curtain halves
                         // Left curtain: slides left
                         let left_clip = Rect::from_min_max(
-                            screen_rect.left_top(),
-                            Pos2::new(center_x - shift, screen_rect.max.y),
+                            union_rect.left_top(),
+                            Pos2::new(center_x - shift, union_rect.max.y),
                         );
                         let left_dest = p_dest.translate(Vec2::new(-shift, 0.0));
                         ui.painter().with_clip_rect(left_clip).image(
@@ -1387,8 +1391,8 @@ impl ImageViewerApp {
 
                         // Right curtain: slides right
                         let right_clip = Rect::from_min_max(
-                            Pos2::new(center_x + shift, screen_rect.min.y),
-                            screen_rect.right_bottom(),
+                            Pos2::new(center_x + shift, union_rect.min.y),
+                            union_rect.right_bottom(),
                         );
                         let right_dest = p_dest.translate(Vec2::new(shift, 0.0));
                         ui.painter().with_clip_rect(right_clip).image(
@@ -1406,8 +1410,8 @@ impl ImageViewerApp {
 
                         // Left curtain inner shadow (right edge)
                         let ls_rect = Rect::from_min_max(
-                            Pos2::new(center_x - shift - shadow_w, screen_rect.min.y),
-                            Pos2::new(center_x - shift, screen_rect.max.y),
+                            Pos2::new(center_x - shift - shadow_w, union_rect.min.y),
+                            Pos2::new(center_x - shift, union_rect.max.y),
                         );
                         let mut lm = egui::Mesh::default();
                         lm.colored_vertex(ls_rect.left_top(), transparent);
@@ -1420,8 +1424,8 @@ impl ImageViewerApp {
 
                         // Right curtain inner shadow (left edge)
                         let rs_rect = Rect::from_min_max(
-                            Pos2::new(center_x + shift, screen_rect.min.y),
-                            Pos2::new(center_x + shift + shadow_w, screen_rect.max.y),
+                            Pos2::new(center_x + shift, union_rect.min.y),
+                            Pos2::new(center_x + shift + shadow_w, union_rect.max.y),
                         );
                         let mut rm = egui::Mesh::default();
                         rm.colored_vertex(rs_rect.left_top(), shadow_color);
