@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use egui::{
     Align2, Color32, ColorImage, Context, FontId, Frame, Key, Pos2, Rect, RichText,
     Sense, TextureOptions, Vec2,
@@ -39,6 +39,7 @@ struct HudState {
 
 pub struct ImageViewerApp {
     settings: Settings,
+    save_tx: Sender<Settings>,
 
     // File list
     image_files: Vec<PathBuf>,
@@ -124,8 +125,19 @@ impl ImageViewerApp {
         setup_visuals(&cc.egui_ctx, &settings);
         setup_fonts(&cc.egui_ctx, &settings);
 
+        let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
+        std::thread::Builder::new()
+            .name("settings-saver".to_string())
+            .spawn(move || {
+                while let Ok(settings) = save_rx.recv() {
+                    settings.save();
+                }
+            })
+            .expect("failed to spawn settings saver thread");
+
         let mut app = Self {
             settings,
+            save_tx,
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
@@ -175,6 +187,14 @@ impl ImageViewerApp {
         }
 
         app
+    }
+
+    // ------------------------------------------------------------------
+    // Persistent Storage
+    // ------------------------------------------------------------------
+
+    fn queue_save(&self) {
+        let _ = self.save_tx.send(self.settings.clone());
     }
 
     // ------------------------------------------------------------------
@@ -515,20 +535,20 @@ impl ImageViewerApp {
         if toggle_fullscreen {
             self.settings.fullscreen = !self.settings.fullscreen;
             self.pending_fullscreen = Some(self.settings.fullscreen);
-            self.settings.save();
+            self.queue_save();
         }
         if toggle_scale_mode {
             self.settings.scale_mode = self.settings.scale_mode.toggled();
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
-            self.settings.save();
+            self.queue_save();
         }
         if toggle_auto_switch {
             self.settings.auto_switch = !self.settings.auto_switch;
             if self.settings.auto_switch {
                 self.last_switch_time = Instant::now();
             }
-            self.settings.save();
+            self.queue_save();
         }
         if toggle_goto && !self.image_files.is_empty() {
             self.show_goto = !self.show_goto;
@@ -713,15 +733,15 @@ impl ImageViewerApp {
                     if let Some(dir) = self.settings.last_image_dir.clone() {
                         self.load_directory(dir);
                     }
-                    self.settings.save();
+                    self.queue_save();
                 }
 
                 if ui.checkbox(&mut self.settings.preload, "Enable image preloading").changed() {
-                    self.settings.save();
+                    self.queue_save();
                 }
 
                 if ui.checkbox(&mut self.settings.resume_last_image, "Resume from last viewed image").changed() {
-                    self.settings.save();
+                    self.queue_save();
                 }
 
                 if self.scanning {
@@ -766,7 +786,7 @@ impl ImageViewerApp {
                 if old_scale != self.settings.scale_mode {
                     self.zoom_factor = 1.0;
                     self.pan_offset = Vec2::ZERO;
-                    self.settings.save();
+                    self.queue_save();
                 }
                 ui.add_space(4.0);
                 ui.label(
@@ -799,7 +819,7 @@ impl ImageViewerApp {
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Curtain, TransitionStyle::Curtain.label());
                         });
                     if old_style != self.settings.transition_style {
-                        self.settings.save();
+                        self.queue_save();
                     }
                 });
 
@@ -809,7 +829,7 @@ impl ImageViewerApp {
                         let old_ms = self.settings.transition_ms;
                         ui.add(egui::Slider::new(&mut self.settings.transition_ms, 50..=2000).suffix("ms"));
                         if old_ms != self.settings.transition_ms {
-                            self.settings.save();
+                            self.queue_save();
                         }
                     });
                 }
@@ -835,7 +855,7 @@ impl ImageViewerApp {
                     ui.checkbox(&mut self.settings.loop_playback, "Loop (wrap around to first image)");
                 }
                 if old_auto_switch != self.settings.auto_switch {
-                    self.settings.save();
+                    self.queue_save();
                 }
 
                 ui.add_space(8.0);
@@ -933,7 +953,7 @@ impl ImageViewerApp {
                         }
                         // Only persist to disk when user releases the slider
                         if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                            self.settings.save();
+                            self.queue_save();
                         }
                     });
                     // Audio error feedback
@@ -965,7 +985,7 @@ impl ImageViewerApp {
                         self.settings.font_size = current_size;
                         self.temp_font_size = None;
                         setup_visuals(ctx, &self.settings);
-                        self.settings.save();
+                        self.queue_save();
                     }
                 });
 
@@ -982,7 +1002,7 @@ impl ImageViewerApp {
                     if old_family != self.settings.font_family {
                         setup_fonts(ctx, &self.settings);
                         setup_visuals(ctx, &self.settings);
-                        self.settings.save();
+                        self.queue_save();
                     }
                 });
 
@@ -1054,26 +1074,26 @@ impl ImageViewerApp {
         // Deferred actions (avoid borrow issues with closures)
         if open_dir {
             self.open_directory_dialog();
-            self.settings.save(); // saves last_image_dir
+            self.queue_save(); // saves last_image_dir
         }
         if open_music_file {
             self.open_music_file_dialog();
-            self.settings.save(); // saves music_path
+            self.queue_save(); // saves music_path
         }
         if open_music_dir {
             self.open_music_dir_dialog();
-            self.settings.save(); // saves music_path
+            self.queue_save(); // saves music_path
         }
         if start_viewing {
             self.show_settings = false;
         }
         if fullscreen_changed {
             self.pending_fullscreen = Some(self.settings.fullscreen);
-            self.settings.save();
+            self.queue_save();
         }
         if music_enabled_changed {
             self.restart_audio_if_enabled();
-            self.settings.save();
+            self.queue_save();
         }
         if do_quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1831,7 +1851,7 @@ impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
-            self.settings.save();
+            self.queue_save();
         }
     }
 
