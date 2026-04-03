@@ -43,6 +43,7 @@ pub enum TransitionStyle {
     ZoomFade,
     Slide,
     Push,
+    PageFlip,
 }
 
 impl TransitionStyle {
@@ -53,6 +54,7 @@ impl TransitionStyle {
             Self::ZoomFade => "Zoom & Fade",
             Self::Slide => "Slide Over",
             Self::Push => "Push",
+            Self::PageFlip => "Page Flip",
         }
     }
 }

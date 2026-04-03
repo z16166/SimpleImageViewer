@@ -19,7 +19,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
-- **Atmospheric Image Transitions**: Smooth transitions between images including **Cross-Fade**, **Zoom-Fade**, **Slide**, and **Push** effects. Fully customizable duration.
+- **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, and **Page Flip**.
+- **Customizable Duration**: Fluid animations with adjustable duration (50ms - 2000ms).
 - **Audio Integration**: Play background music during your viewing session.
 - **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
