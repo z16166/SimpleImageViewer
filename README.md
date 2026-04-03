@@ -18,7 +18,9 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Now Playing display** — the filename of the current track is displayed in the settings panel
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
-- **Set as Desktop Wallpaper** — right-click any image to set it as your wallpaper; supports Fill, Fit, Stretch, Tile, Center, and Span modes
+- **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
+- **Atmospheric Image Transitions**: Smooth transitions between images including **Cross-Fade**, **Zoom-Fade**, **Slide**, and **Push** effects. Fully customizable duration.
+- **Audio Integration**: Play background music during your viewing session.
 - **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup

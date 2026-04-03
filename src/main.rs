@@ -53,6 +53,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Simple Image Viewer",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings)))),
+        Box::new(|cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings)) as Box<dyn eframe::App>)),
     )
 }

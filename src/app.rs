@@ -12,7 +12,7 @@ use egui::{
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::loader::{ImageLoader, TextureCache};
 use crate::scanner;
-use crate::settings::{ScaleMode, Settings};
+use crate::settings::{ScaleMode, Settings, TransitionStyle};
 
 const PRELOAD_AHEAD: usize = 2;
 const PRELOAD_BEHIND: usize = 1;
@@ -89,6 +89,11 @@ pub struct ImageViewerApp {
     selected_wallpaper_mode: String,
     current_image_res: Option<(u32, u32)>,
     current_system_wallpaper: Option<String>,
+
+    // Transition state
+    prev_texture: Option<egui::TextureHandle>,
+    transition_start: Option<Instant>,
+    is_next: bool,
 }
 
 impl ImageViewerApp {
@@ -133,6 +138,9 @@ impl ImageViewerApp {
             selected_wallpaper_mode: "Crop".to_string(),
             current_image_res: None,
             current_system_wallpaper: None,
+            prev_texture: None,
+            transition_start: None,
+            is_next: true,
         };
 
         // Restore last session state
@@ -187,7 +195,23 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
-        self.current_index = new_index % self.image_files.len();
+        
+        let target_index = new_index % self.image_files.len();
+        if target_index == self.current_index {
+            return;
+        }
+
+        // Setup transition if enabled
+        if self.settings.transition_style != TransitionStyle::None {
+            if let Some(tex) = self.texture_cache.get(self.current_index) {
+                self.prev_texture = Some(tex.clone());
+                self.transition_start = Some(Instant::now());
+                // Handle wrap-around logic for direction
+                self.is_next = target_index > self.current_index || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+            }
+        }
+
+        self.current_index = target_index;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
 
@@ -717,11 +741,41 @@ impl ImageViewerApp {
                 );
 
                 ui.add_space(6.0);
-                if ui.checkbox(&mut self.settings.show_osd, "Show OSD info (texts overlaid on image)").changed() {
-                    self.settings.save();
-                }
-
+                ui.checkbox(&mut self.settings.show_osd, "Show OSD (filename, etc.)");
+                
+                // ── Transitions ──────────────────────────────────────────
                 ui.add_space(8.0);
+                ui.label(RichText::new("Image Transitions").color(ACCENT2).strong());
+                ui.add_space(2.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Style:");
+                    let old_style = self.settings.transition_style;
+                    egui::ComboBox::from_id_salt("transition_style")
+                        .selected_text(self.settings.transition_style.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::None, TransitionStyle::None.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Fade, TransitionStyle::Fade.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::ZoomFade, TransitionStyle::ZoomFade.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Slide, TransitionStyle::Slide.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Push, TransitionStyle::Push.label());
+                        });
+                    if old_style != self.settings.transition_style {
+                        self.settings.save();
+                    }
+                });
+
+                if self.settings.transition_style != TransitionStyle::None {
+                    ui.horizontal(|ui| {
+                        ui.label("Duration:");
+                        let old_ms = self.settings.transition_ms;
+                        ui.add(egui::Slider::new(&mut self.settings.transition_ms, 50..=2000).suffix("ms"));
+                        if old_ms != self.settings.transition_ms {
+                            self.settings.save();
+                        }
+                    });
+                }
+                
                 }); // End Left Column
                 
                 cols[1].vertical(|ui| {
@@ -993,12 +1047,11 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
-        // Fill the area with dark background; CentralPanel inside ui() uses show_inside
+        // Fill the area with dark background
         egui::Frame::NONE.fill(BG_DARK).show(ui, |ui| {
             let screen_rect = ui.max_rect();
             
             // Allocate the whole viewport for drag interaction and clicks early
-            // This captures background clicks properly regardless of image state.
             let canvas_resp = ui.allocate_rect(screen_rect, Sense::click_and_drag());
             
             if self.show_settings && canvas_resp.clicked() {
@@ -1029,109 +1082,179 @@ impl ImageViewerApp {
                     self.pan_offset += canvas_resp.drag_delta();
                 }
 
-                // Context menu for copying
+                // Transition handling
+                let mut alpha = 1.0;
+                let mut scale = 1.0;
+                let mut offset = Vec2::ZERO;
+                let mut prev_alpha = 0.0;
+                let mut prev_scale = 1.0;
+                let mut prev_offset = Vec2::ZERO;
+                let mut is_animating = false;
+
+                if let Some(start) = self.transition_start {
+                    let elapsed = start.elapsed().as_secs_f32();
+                    let duration = self.settings.transition_ms as f32 / 1000.0;
+                    if elapsed < duration {
+                        is_animating = true;
+                        let t = (elapsed / duration).clamp(0.0, 1.0);
+                        // Easing: Cubic Out
+                        let ease_out = 1.0 - (1.0 - t).powi(3);
+
+                        match self.settings.transition_style {
+                            TransitionStyle::Fade => {
+                                alpha = ease_out;
+                                prev_alpha = 1.0 - t;
+                            }
+                            TransitionStyle::ZoomFade => {
+                                alpha = ease_out;
+                                scale = 0.95 + 0.05 * ease_out;
+                                prev_alpha = 1.0 - t;
+                                prev_scale = 1.0 + 0.05 * t;
+                            }
+                            TransitionStyle::Slide => {
+                                let dir = if self.is_next { 1.0 } else { -1.0 };
+                                offset = Vec2::new(screen_rect.width() * dir * (1.0 - ease_out), 0.0);
+                                prev_alpha = 1.0 - t;
+                            }
+                            TransitionStyle::Push => {
+                                let dir = if self.is_next { 1.0 } else { -1.0 };
+                                offset = Vec2::new(screen_rect.width() * dir * (1.0 - ease_out), 0.0);
+                                prev_offset = Vec2::new(-screen_rect.width() * dir * ease_out, 0.0);
+                                prev_alpha = 1.0;
+                            }
+                            _ => { is_animating = false; }
+                        }
+                    } else {
+                        self.transition_start = None;
+                        self.prev_texture = None;
+                    }
+                }
+
+                // Draw previous image if in transition
+                if is_animating {
+                    if let Some(prev) = &self.prev_texture {
+                        let p_size = prev.size_vec2();
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        let p_final_dest = Rect::from_center_size(
+                            p_dest.center() + prev_offset,
+                            p_dest.size() * prev_scale
+                        );
+                        ui.painter().image(
+                            prev.id(),
+                            p_final_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE.linear_multiply(prev_alpha),
+                        );
+                    }
+                    ui.ctx().request_repaint();
+                }
+
+                // Compute current display rect and draw image
+                let dest = self.compute_display_rect(img_size, screen_rect);
+                let final_dest = Rect::from_center_size(
+                    dest.center() + offset,
+                    dest.size() * scale
+                );
+
+                // Right-click context menu
                 canvas_resp.context_menu(|ui| {
-                        let path = &self.image_files[self.current_index];
-                        let path_str = path.to_string_lossy().to_string();
+                    let path = &self.image_files[self.current_index];
+                    let path_str = path.to_string_lossy().to_string();
 
-                        if ui.button("📋 Copy Full Path").clicked() {
-                            ui.ctx().copy_text(path_str.clone());
-                            ui.close();
+                    if ui.button("📋 Copy Full Path").clicked() {
+                        ui.ctx().copy_text(path_str.clone());
+                        ui.close();
+                    }
+
+                    if ui.button("📁 Copy File").clicked() {
+                        copy_file_to_clipboard(&path_str);
+                        ui.close();
+                    }
+
+                    ui.separator();
+
+                    if ui.button("ℹ View EXIF Info").clicked() {
+                        if let Some(text) = extract_exif(path) {
+                            self.cached_exif_text = Some(text);
+                        } else {
+                            self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
                         }
-
-                        if ui.button("📁 Copy File").clicked() {
-                            copy_file_to_clipboard(&path_str);
-                            ui.close();
-                        }
-
-                        ui.separator();
-
-                        if ui.button("ℹ View EXIF Info").clicked() {
-                            if let Some(text) = extract_exif(path) {
-                                self.cached_exif_text = Some(text);
-                            } else {
-                                self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
-                            }
-                            self.show_exif_window = true;
-                            ui.close();
-                        }
-                        
-                        ui.separator();
-                        if ui.button("🖼 Set as desktop wallpaper…").clicked() {
-                            self.show_wallpaper_dialog = true;
-                            // Fetch current system wallpaper path
-                            if let Ok(path) = wallpaper::get() {
-                                self.current_system_wallpaper = Some(path);
-                            } else {
-                                self.current_system_wallpaper = Some("Unknown (or solid color)".to_string());
-                            }
-                            ui.close();
-                        }
-                    });
-
-                    // Compute display rect and draw image
-                    let dest = self.compute_display_rect(img_size, screen_rect);
+                        self.show_exif_window = true;
+                        ui.close();
+                    }
                     
-                    ui.painter().image(
-                        texture.id(),
-                        dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
+                    ui.separator();
+                    if ui.button("🖼 Set as desktop wallpaper…").clicked() {
+                        self.show_wallpaper_dialog = true;
+                        if let Ok(p) = wallpaper::get() {
+                            self.current_system_wallpaper = Some(p);
+                        } else {
+                            self.current_system_wallpaper = Some("Unknown".to_string());
+                        }
+                        ui.close();
+                    }
+                });
+
+                ui.painter().image(
+                    texture.id(),
+                    final_dest,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE.linear_multiply(alpha),
+                );
+
+                if self.settings.show_osd {
+                    // HUD overlay
+                    let fname = self.image_files[self.current_index]
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                    let img_w = img_size.x.round() as u32;
+                    let img_h = img_size.y.round() as u32;
+                    let mode_label = self.settings.scale_mode.label();
+                    let hud = format!(
+                        "{} / {}    {}    {}%    {}×{}    [{}]",
+                        self.current_index + 1,
+                        self.image_files.len(),
+                        fname,
+                        zoom_pct,
+                        img_w,
+                        img_h,
+                        mode_label,
+                    );
+                    let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
+                    ui.painter().text(
+                        hud_pos,
+                        Align2::LEFT_BOTTOM,
+                        &hud,
+                        FontId::proportional(13.0),
+                        Color32::from_rgba_unmultiplied(220, 220, 240, 210),
                     );
 
-                    if self.settings.show_osd {
-                        // HUD overlay — image counter + filename + zoom + dimensions + scale mode
-                        let fname = self.image_files[self.current_index]
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-                        let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
-                        let img_w = img_size.x.round() as u32;
-                        let img_h = img_size.y.round() as u32;
-                        let mode_label = self.settings.scale_mode.label();
-                        let hud = format!(
-                            "{} / {}    {}    {}%    {}×{}    [{}]",
-                            self.current_index + 1,
-                            self.image_files.len(),
-                            fname,
-                            zoom_pct,
-                            img_w,
-                            img_h,
-                            mode_label,
-                        );
-                        let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
+                    // Hint when settings hidden
+                    if !self.show_settings {
                         ui.painter().text(
-                            hud_pos,
-                            Align2::LEFT_BOTTOM,
-                            &hud,
-                            FontId::proportional(13.0),
-                            Color32::from_rgba_unmultiplied(220, 220, 240, 210),
-                        );
-
-                        // Hint when settings hidden
-                        if !self.show_settings {
-                            ui.painter().text(
-                                screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
-                                Align2::RIGHT_BOTTOM,
-                                "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen",
-                                FontId::proportional(11.0),
-                                Color32::from_rgba_unmultiplied(160, 160, 180, 140),
-                            );
-                        }
-                    }
-                } else {
-                    if self.settings.show_osd {
-                        // Loading spinner
-                        ui.painter().text(
-                            screen_rect.center() - Vec2::new(0.0, 20.0),
-                            Align2::CENTER_BOTTOM,
-                            "Loading…",
-                            FontId::proportional(16.0),
-                            TEXT_MUTED,
+                            screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
+                            Align2::RIGHT_BOTTOM,
+                            "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen",
+                            FontId::proportional(11.0),
+                            Color32::from_rgba_unmultiplied(160, 160, 180, 140),
                         );
                     }
                 }
-            });
+            } else {
+                if self.settings.show_osd {
+                    // Loading spinner
+                    ui.painter().text(
+                        screen_rect.center() - Vec2::new(0.0, 20.0),
+                        Align2::CENTER_BOTTOM,
+                        "Loading…",
+                        FontId::proportional(16.0),
+                        TEXT_MUTED,
+                    );
+                }
+            }
+        });
     }
 
     /// Compute the display rect for an image texture within the screen.

@@ -32,6 +32,32 @@ impl ScaleMode {
 }
 
 // ---------------------------------------------------------------------------
+// TransitionStyle
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitionStyle {
+    None,
+    Fade,
+    ZoomFade,
+    Slide,
+    Push,
+}
+
+impl TransitionStyle {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None (Instant)",
+            Self::Fade => "Cross-Fade",
+            Self::ZoomFade => "Zoom & Fade",
+            Self::Slide => "Slide Over",
+            Self::Push => "Push",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -66,6 +92,12 @@ pub struct Settings {
     #[serde(default)]
     pub scale_mode: ScaleMode,
 
+    // Transitions
+    #[serde(default = "default_transition_style")]
+    pub transition_style: TransitionStyle,
+    #[serde(default = "default_transition_ms")]
+    pub transition_ms: u32,
+
     // Music
     #[serde(default)]
     pub play_music: bool,
@@ -85,11 +117,13 @@ pub struct Settings {
     pub show_osd: bool,
 }
 
-fn default_interval() -> f32 { 3.0 }
+fn default_interval() -> f32 { 5.0 }
 fn default_true()     -> bool { true }
 fn default_volume()   -> f32  { 1.0 }
 fn default_font_family() -> String { "System Default".to_string() }
 fn default_font_size()   -> f32  { 16.0 }
+fn default_transition_style() -> TransitionStyle { TransitionStyle::Fade }
+fn default_transition_ms() -> u32 { 800 }
 
 impl Default for ScaleMode {
     fn default() -> Self { Self::FitToWindow }
@@ -105,6 +139,8 @@ impl Default for Settings {
             auto_switch_interval: default_interval(),
             loop_playback: true,
             scale_mode: ScaleMode::FitToWindow,
+            transition_style: default_transition_style(),
+            transition_ms: default_transition_ms(),
             play_music: false,
             music_path: None,
             volume: default_volume(),
@@ -122,8 +158,6 @@ impl Default for Settings {
 // Persistence
 // ---------------------------------------------------------------------------
 
-/// Returns the path where settings are saved.
-/// Stored next to the executable so settings follow the binary.
 pub fn settings_path() -> PathBuf {
     std::env::current_exe()
         .ok()
@@ -133,17 +167,16 @@ pub fn settings_path() -> PathBuf {
 }
 
 impl Settings {
-    /// Load settings from disk, falling back to defaults on any error.
     pub fn load() -> Self {
         let path = settings_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
             match serde_yaml::from_str::<Self>(&text) {
                 Ok(s) => {
-                    // Clamp values to sane ranges after loading
                     return Self {
                         auto_switch_interval: s.auto_switch_interval.clamp(0.5, 300.0),
                         volume: s.volume.clamp(0.0, 1.0),
                         font_size: s.font_size.clamp(12.0, 72.0),
+                        transition_ms: s.transition_ms.clamp(50, 5000),
                         ..s
                     };
                 }
@@ -153,14 +186,11 @@ impl Settings {
         Self::default()
     }
 
-    /// Save settings to disk. Errors are printed but not propagated.
     pub fn save(&self) {
         let path = settings_path();
         match serde_yaml::to_string(self) {
             Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    eprintln!("[settings] write error: {e}");
-                }
+                let _ = std::fs::write(&path, text);
             }
             Err(e) => eprintln!("[settings] serialize error: {e}"),
         }
