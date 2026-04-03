@@ -1,6 +1,8 @@
 # Simple Image Viewer (siv)
 
 基于 Rust 和 [egui](https://github.com/emilk/egui) 构建的高性能跨平台图片查看器。专为快速浏览大型图片库而设计，配备简洁的深色界面、后台音乐播放功能，以及持久化设置。
+ 
+![界面截图](assets/screenshot.jpg)
 
 ---
 
