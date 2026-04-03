@@ -33,6 +33,7 @@ struct HudState {
     zoom_pct: u32,
     res: (u32, u32),
     mode: String,
+    current_track: Option<String>,
 }
 
 
@@ -1520,6 +1521,7 @@ impl ImageViewerApp {
                         zoom_pct,
                         res: (img_w, img_h),
                         mode: mode_label.to_string(),
+                        current_track: self.audio.get_current_track(),
                     };
 
                     if self.last_hud_state.as_ref() != Some(&current_state) {
@@ -1528,7 +1530,7 @@ impl ImageViewerApp {
                             .unwrap_or_default()
                             .to_string_lossy();
                         
-                        self.cached_hud = Some(format!(
+                        let mut hud = format!(
                             "{} / {}    {}    {}%    {}×{}    [{}]",
                             current_state.index + 1,
                             current_state.total,
@@ -1537,7 +1539,14 @@ impl ImageViewerApp {
                             current_state.res.0,
                             current_state.res.1,
                             current_state.mode,
-                        ));
+                        );
+
+                        // Add Music info if playing
+                        if let Some(ref track) = current_state.current_track {
+                            hud.push_str(&format!("    ♪ {}", track));
+                        }
+                        
+                        self.cached_hud = Some(hud);
                         self.last_hud_state = Some(current_state);
                     }
 
@@ -1831,8 +1840,9 @@ impl eframe::App for ImageViewerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
         }
 
-        // Keep repainting while loading or auto-switching
-        if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() {
+        // Keep repainting while loading, auto-switching, or playing music
+        let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
+        if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() || is_music_playing {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(Duration::from_millis(100));
