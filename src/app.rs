@@ -427,10 +427,14 @@ impl ImageViewerApp {
         let mut scroll_delta = 0.0_f32;
         let mut toggle_auto_switch = false;
         let mut toggle_goto = false;
+        let mut do_refresh = false;
         #[allow(unused_mut)]
         let mut do_quit = false;
  
         ctx.input(|i| {
+            if i.key_pressed(Key::F5) {
+                do_refresh = true;
+            }
             if i.key_pressed(Key::Space) {
                 toggle_auto_switch = true;
             }
@@ -685,6 +689,13 @@ impl ImageViewerApp {
                         if styled_button(ui, "📁 Pick").clicked() {
                             open_dir = true;
                         }
+                        ui.add_space(4.0);
+                        if styled_button(ui, "🔄 Refresh").clicked() {
+                            if let Some(dir) = self.settings.last_image_dir.clone() {
+                                self.load_directory(dir);
+                            }
+                        }
+                        
                         let box_w = (ui.available_width() - 16.0).max(20.0);
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             let resp = path_display_box(ui, &dir_label, dir_empty, box_w);
