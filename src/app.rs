@@ -1182,13 +1182,14 @@ impl ImageViewerApp {
                                 let t = (elapsed / duration).clamp(0.0, 1.0);
                                 let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
 
+                                // Use p_dest (image rect) for boundary calculation
                                 let clip_x = if self.is_next {
-                                    screen_rect.max.x - (screen_rect.width() * ease_in_out)
+                                    p_dest.max.x - (p_dest.width() * ease_in_out)
                                 } else {
-                                    screen_rect.min.x + (screen_rect.width() * ease_in_out)
+                                    p_dest.min.x + (p_dest.width() * ease_in_out)
                                 };
 
-                                let mut clip_rect = screen_rect;
+                                let mut clip_rect = p_dest; // Clip to image bounds
                                 if self.is_next {
                                     clip_rect.max.x = clip_x;
                                 } else {
@@ -1202,18 +1203,18 @@ impl ImageViewerApp {
                                     Color32::WHITE,
                                 );
 
-                                // Page fold shadow
+                                // Page fold shadow (relative to image height)
                                 let shadow_width = 40.0;
                                 let shadow_alpha = (1.0 - ease_in_out) * 0.4;
                                 let shadow_rect = if self.is_next {
                                     Rect::from_min_max(
-                                        Pos2::new(clip_x - shadow_width, screen_rect.min.y),
-                                        Pos2::new(clip_x, screen_rect.max.y)
+                                        Pos2::new(clip_x - shadow_width, p_dest.min.y),
+                                        Pos2::new(clip_x, p_dest.max.y)
                                     )
                                 } else {
                                     Rect::from_min_max(
-                                        Pos2::new(clip_x, screen_rect.min.y),
-                                        Pos2::new(clip_x + shadow_width, screen_rect.max.y)
+                                        Pos2::new(clip_x, p_dest.min.y),
+                                        Pos2::new(clip_x + shadow_width, p_dest.max.y)
                                     )
                                 };
 
@@ -1359,14 +1360,15 @@ impl ImageViewerApp {
                         let t = (elapsed / duration).clamp(0.0, 1.0);
                         let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
 
-                        let center_x = screen_rect.center().x;
-                        let half_w = screen_rect.width() / 2.0;
+                        // Use p_dest (image rect) for center and width
+                        let center_x = p_dest.center().x;
+                        let half_w = p_dest.width() / 2.0;
                         let shift = ease * half_w;
 
-                        // Left curtain: image slides left, clipped at the moving split edge
+                        // Left curtain: slides left from p_dest center
                         let left_clip = Rect::from_min_max(
-                            screen_rect.left_top(),
-                            Pos2::new(center_x - shift, screen_rect.max.y),
+                            p_dest.left_top(),
+                            Pos2::new(center_x - shift, p_dest.max.y),
                         );
                         let left_dest = p_dest.translate(Vec2::new(-shift, 0.0));
                         ui.painter().with_clip_rect(left_clip).image(
@@ -1376,10 +1378,10 @@ impl ImageViewerApp {
                             Color32::WHITE,
                         );
 
-                        // Right curtain: image slides right, clipped at the moving split edge
+                        // Right curtain: slides right from p_dest center
                         let right_clip = Rect::from_min_max(
-                            Pos2::new(center_x + shift, screen_rect.min.y),
-                            screen_rect.right_bottom(),
+                            Pos2::new(center_x + shift, p_dest.min.y),
+                            p_dest.right_bottom(),
                         );
                         let right_dest = p_dest.translate(Vec2::new(shift, 0.0));
                         ui.painter().with_clip_rect(right_clip).image(
@@ -1389,7 +1391,7 @@ impl ImageViewerApp {
                             Color32::WHITE,
                         );
 
-                        // Shadow at the split edges for depth
+                        // Shadow at the split edges (relative to image height)
                         let shadow_w = 30.0;
                         let shadow_alpha = (1.0 - ease) * 0.45;
                         let shadow_color = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
@@ -1397,8 +1399,8 @@ impl ImageViewerApp {
 
                         // Left curtain inner shadow (right edge)
                         let ls_rect = Rect::from_min_max(
-                            Pos2::new(center_x - shift - shadow_w, screen_rect.min.y),
-                            Pos2::new(center_x - shift, screen_rect.max.y),
+                            Pos2::new(center_x - shift - shadow_w, p_dest.min.y),
+                            Pos2::new(center_x - shift, p_dest.max.y),
                         );
                         let mut lm = egui::Mesh::default();
                         lm.colored_vertex(ls_rect.left_top(), transparent);
@@ -1411,8 +1413,8 @@ impl ImageViewerApp {
 
                         // Right curtain inner shadow (left edge)
                         let rs_rect = Rect::from_min_max(
-                            Pos2::new(center_x + shift, screen_rect.min.y),
-                            Pos2::new(center_x + shift + shadow_w, screen_rect.max.y),
+                            Pos2::new(center_x + shift, p_dest.min.y),
+                            Pos2::new(center_x + shift + shadow_w, p_dest.max.y),
                         );
                         let mut rm = egui::Mesh::default();
                         rm.colored_vertex(rs_rect.left_top(), shadow_color);
