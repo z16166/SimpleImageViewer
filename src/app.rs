@@ -20,10 +20,20 @@ const CACHE_SIZE: usize = 5; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 b
 
 // Accent colors for the UI
 const BG_DARK: Color32 = Color32::from_rgb(18, 18, 24);
-const PANEL_BG: Color32 = Color32::from_rgb(28, 28, 38);
+const PANEL_BG: Color32 = Color32::from_rgb(32, 33, 36);
 const ACCENT: Color32 = Color32::from_rgb(108, 92, 231);
 const ACCENT2: Color32 = Color32::from_rgb(0, 199, 190);
-const TEXT_MUTED: Color32 = Color32::from_rgb(130, 130, 155);
+const TEXT_MUTED: Color32 = Color32::from_rgb(154, 160, 166);
+
+/// Parameters that affect the OSD status text.
+#[derive(PartialEq)]
+struct HudState {
+    index: usize,
+    total: usize,
+    zoom_pct: u32,
+    res: (u32, u32),
+    mode: String,
+}
 
 
 pub struct ImageViewerApp {
@@ -94,6 +104,10 @@ pub struct ImageViewerApp {
     prev_texture: Option<egui::TextureHandle>,
     transition_start: Option<Instant>,
     is_next: bool,
+
+    // Caching for OSD performance
+    cached_hud: Option<String>,
+    last_hud_state: Option<HudState>,
 }
 
 impl ImageViewerApp {
@@ -141,6 +155,8 @@ impl ImageViewerApp {
             prev_texture: None,
             transition_start: None,
             is_next: true,
+            cached_hud: None,
+            last_hud_state: None,
         };
 
         // Restore last session state
@@ -1480,32 +1496,48 @@ impl ImageViewerApp {
 
                 if self.settings.show_osd {
                     // HUD overlay
-                    let fname = self.image_files[self.current_index]
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
                     let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
                     let img_w = img_size.x.round() as u32;
                     let img_h = img_size.y.round() as u32;
                     let mode_label = self.settings.scale_mode.label();
-                    let hud = format!(
-                        "{} / {}    {}    {}%    {}×{}    [{}]",
-                        self.current_index + 1,
-                        self.image_files.len(),
-                        fname,
+
+                    let current_state = HudState {
+                        index: self.current_index,
+                        total: self.image_files.len(),
                         zoom_pct,
-                        img_w,
-                        img_h,
-                        mode_label,
-                    );
-                    let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
-                    ui.painter().text(
-                        hud_pos,
-                        Align2::LEFT_BOTTOM,
-                        &hud,
-                        FontId::proportional(13.0),
-                        Color32::from_rgba_unmultiplied(220, 220, 240, 210),
-                    );
+                        res: (img_w, img_h),
+                        mode: mode_label.to_string(),
+                    };
+
+                    if self.last_hud_state.as_ref() != Some(&current_state) {
+                        let fname = self.image_files[self.current_index]
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        
+                        self.cached_hud = Some(format!(
+                            "{} / {}    {}    {}%    {}×{}    [{}]",
+                            current_state.index + 1,
+                            current_state.total,
+                            fname,
+                            current_state.zoom_pct,
+                            current_state.res.0,
+                            current_state.res.1,
+                            current_state.mode,
+                        ));
+                        self.last_hud_state = Some(current_state);
+                    }
+
+                    if let Some(hud) = &self.cached_hud {
+                        let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
+                        ui.painter().text(
+                            hud_pos,
+                            Align2::LEFT_BOTTOM,
+                            hud,
+                            FontId::proportional(13.0),
+                            Color32::from_rgba_unmultiplied(220, 220, 240, 210),
+                        );
+                    }
 
                     // Hint when settings hidden
                     if !self.show_settings {
