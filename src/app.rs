@@ -761,6 +761,7 @@ impl ImageViewerApp {
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Push, TransitionStyle::Push.label());
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::PageFlip, TransitionStyle::PageFlip.label());
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Ripple, TransitionStyle::Ripple.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Curtain, TransitionStyle::Curtain.label());
                         });
                     if old_style != self.settings.transition_style {
                         self.settings.save();
@@ -1124,7 +1125,7 @@ impl ImageViewerApp {
                                 prev_offset = Vec2::new(-screen_rect.width() * dir * ease_out, 0.0);
                                 prev_alpha = 1.0;
                             }
-                            TransitionStyle::PageFlip | TransitionStyle::Ripple => {
+                            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain => {
                                 // Custom rendering; keep is_animating true.
                             }
                             _ => { is_animating = false; }
@@ -1319,6 +1320,92 @@ impl ImageViewerApp {
                         }
 
                         _ => unreachable!(),
+                    }
+                    ui.ctx().request_repaint();
+
+                } else if is_animating && self.settings.transition_style == TransitionStyle::Curtain {
+                    // CURTAIN: Old image splits from center, each half slides outward
+                    // 1. Draw NEW image (revealed underneath)
+                    ui.painter().image(
+                        texture.id(),
+                        final_dest,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+
+                    // 2. Draw OLD image as two sliding curtain halves
+                    if let Some(prev) = &self.prev_texture {
+                        let p_size = prev.size_vec2();
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+
+                        let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                        let duration = self.settings.transition_ms as f32 / 1000.0;
+                        let t = (elapsed / duration).clamp(0.0, 1.0);
+                        let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
+
+                        let center_x = screen_rect.center().x;
+                        let half_w = screen_rect.width() / 2.0;
+                        let shift = ease * half_w;
+
+                        // Left curtain: image slides left, clipped at the moving split edge
+                        let left_clip = Rect::from_min_max(
+                            screen_rect.left_top(),
+                            Pos2::new(center_x - shift, screen_rect.max.y),
+                        );
+                        let left_dest = p_dest.translate(Vec2::new(-shift, 0.0));
+                        ui.painter().with_clip_rect(left_clip).image(
+                            prev.id(),
+                            left_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+
+                        // Right curtain: image slides right, clipped at the moving split edge
+                        let right_clip = Rect::from_min_max(
+                            Pos2::new(center_x + shift, screen_rect.min.y),
+                            screen_rect.right_bottom(),
+                        );
+                        let right_dest = p_dest.translate(Vec2::new(shift, 0.0));
+                        ui.painter().with_clip_rect(right_clip).image(
+                            prev.id(),
+                            right_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+
+                        // Shadow at the split edges for depth
+                        let shadow_w = 30.0;
+                        let shadow_alpha = (1.0 - ease) * 0.45;
+                        let shadow_color = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
+                        let transparent = Color32::TRANSPARENT;
+
+                        // Left curtain inner shadow (right edge)
+                        let ls_rect = Rect::from_min_max(
+                            Pos2::new(center_x - shift - shadow_w, screen_rect.min.y),
+                            Pos2::new(center_x - shift, screen_rect.max.y),
+                        );
+                        let mut lm = egui::Mesh::default();
+                        lm.colored_vertex(ls_rect.left_top(), transparent);
+                        lm.colored_vertex(ls_rect.right_top(), shadow_color);
+                        lm.colored_vertex(ls_rect.right_bottom(), shadow_color);
+                        lm.colored_vertex(ls_rect.left_bottom(), transparent);
+                        lm.add_triangle(0, 1, 2);
+                        lm.add_triangle(0, 2, 3);
+                        ui.painter().add(egui::Shape::mesh(lm));
+
+                        // Right curtain inner shadow (left edge)
+                        let rs_rect = Rect::from_min_max(
+                            Pos2::new(center_x + shift, screen_rect.min.y),
+                            Pos2::new(center_x + shift + shadow_w, screen_rect.max.y),
+                        );
+                        let mut rm = egui::Mesh::default();
+                        rm.colored_vertex(rs_rect.left_top(), shadow_color);
+                        rm.colored_vertex(rs_rect.right_top(), transparent);
+                        rm.colored_vertex(rs_rect.right_bottom(), transparent);
+                        rm.colored_vertex(rs_rect.left_bottom(), shadow_color);
+                        rm.add_triangle(0, 1, 2);
+                        rm.add_triangle(0, 2, 3);
+                        ui.painter().add(egui::Shape::mesh(rm));
                     }
                     ui.ctx().request_repaint();
 

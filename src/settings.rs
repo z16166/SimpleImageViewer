@@ -45,6 +45,7 @@ pub enum TransitionStyle {
     Push,
     PageFlip,
     Ripple,
+    Curtain,
 }
 
 impl TransitionStyle {
@@ -57,6 +58,7 @@ impl TransitionStyle {
             Self::Push => "Push",
             Self::PageFlip => "Page Flip",
             Self::Ripple => "Ripple (Water)",
+            Self::Curtain => "Curtain",
         }
     }
 }
