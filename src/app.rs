@@ -632,9 +632,10 @@ impl ImageViewerApp {
         let mut do_quit = false;
 
         egui::Window::new("⚙  Settings")
-            .anchor(Align2::LEFT_TOP, [12.0, 12.0])
-            .resizable(false)
-            .collapsible(false)
+            .default_pos(Pos2::new(12.0, 12.0))
+            .resizable(true)
+            .collapsible(true)
+            .vscroll(true)
             .frame(
                 Frame::window(&ctx.global_style())
                     .fill(PANEL_BG)
