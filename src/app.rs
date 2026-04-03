@@ -1873,9 +1873,20 @@ impl eframe::App for ImageViewerApp {
 
         // EXIF window
         if self.show_exif_window {
+            // Automatic reload if window is open but cache was cleared during navigation
+            if self.cached_exif_text.is_none() && !self.image_files.is_empty() {
+                let path = &self.image_files[self.current_index];
+                if let Some(text) = extract_exif(path) {
+                    self.cached_exif_text = Some(text);
+                } else {
+                    self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
+                }
+            }
+
             let mut close_exif = false;
             let mut close_and_copy = false;
             egui::Window::new("ℹ EXIF Information")
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .collapsible(false)
                 .resizable(true)
                 .default_width(400.0)
@@ -1895,6 +1906,9 @@ impl eframe::App for ImageViewerApp {
                                 close_exif = true;
                             }
                         });
+                    } else {
+                        ui.spinner();
+                        ui.label("Loading metadata…");
                     }
                 });
             if close_and_copy {
