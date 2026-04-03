@@ -109,6 +109,10 @@ pub struct ImageViewerApp {
     // Caching for OSD performance
     cached_hud: Option<String>,
     last_hud_state: Option<HudState>,
+
+    // Window lifecycle
+    last_minimized: bool,
+    last_frame_time: Instant,
 }
 
 impl ImageViewerApp {
@@ -158,6 +162,8 @@ impl ImageViewerApp {
             is_next: true,
             cached_hud: None,
             last_hud_state: None,
+            last_minimized: false,
+            last_frame_time: Instant::now(),
         };
 
         // Restore last session state
@@ -1821,6 +1827,33 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame_time);
+        self.last_frame_time = now;
+
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+
+        if minimized {
+            // Pause the auto-switch timer while minimized by offsetting its start
+            if self.settings.auto_switch {
+                self.last_switch_time += dt;
+            }
+            
+            // Limit background processing while hidden
+            self.process_music_scan_results(); // Allow music to start if scanning finishes
+            
+            self.last_minimized = true;
+            ctx.request_repaint_after(Duration::from_millis(500));
+            return;
+        }
+
+        // Just restored from minimized state: force a clean UI refresh
+        if self.last_minimized {
+            self.last_minimized = false;
+            self.last_hud_state = None; // Invalidate HUD cache to force total redraw
+            ctx.request_repaint();
+        }
+
         // Only update pixels_per_point when it actually changes
         // (e.g. window dragged to a monitor with different DPI).
         // setup_visuals() is called once at startup and on settings changes,
