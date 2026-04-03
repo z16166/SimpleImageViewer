@@ -760,6 +760,7 @@ impl ImageViewerApp {
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Slide, TransitionStyle::Slide.label());
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Push, TransitionStyle::Push.label());
                             ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::PageFlip, TransitionStyle::PageFlip.label());
+                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Ripple, TransitionStyle::Ripple.label());
                         });
                     if old_style != self.settings.transition_style {
                         self.settings.save();
@@ -1123,9 +1124,8 @@ impl ImageViewerApp {
                                 prev_offset = Vec2::new(-screen_rect.width() * dir * ease_out, 0.0);
                                 prev_alpha = 1.0;
                             }
-                            TransitionStyle::PageFlip => {
-                                // For PageFlip, most state is handled in the draw call
-                                // but we keep is_animating true.
+                            TransitionStyle::PageFlip | TransitionStyle::Ripple => {
+                                // Custom rendering; keep is_animating true.
                             }
                             _ => { is_animating = false; }
                         }
@@ -1142,78 +1142,183 @@ impl ImageViewerApp {
                     dest.size() * scale
                 );
 
-                // DRAW SEQUENCE: 
-                // We handle PageFlip differently because the outgoing page must be ON TOP.
-                if self.settings.transition_style == TransitionStyle::PageFlip && is_animating {
-                    // 1. Draw NEW image (background)
-                    ui.painter().image(
-                        texture.id(),
-                        final_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    
-                    // 2. Draw OLD image (top, clipped, with shadow)
-                    if let Some(prev) = &self.prev_texture {
-                        let p_size = prev.size_vec2();
-                        let p_dest = self.compute_display_rect(p_size, screen_rect);
-                        
-                        let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
-                        let duration = self.settings.transition_ms as f32 / 1000.0;
-                        let t = (elapsed / duration).clamp(0.0, 1.0);
-                        let ease_in_out = 3.0 * t * t - 2.0 * t * t * t; 
-                        
-                        let dir = if self.is_next { 1.0 } else { -1.0 };
-                        let clip_x = if self.is_next {
-                            screen_rect.max.x - (screen_rect.width() * ease_in_out)
-                        } else {
-                            screen_rect.min.x + (screen_rect.width() * ease_in_out)
-                        };
-                        
-                        let mut clip_rect = screen_rect;
-                        if self.is_next {
-                            clip_rect.max.x = clip_x;
-                        } else {
-                            clip_rect.min.x = clip_x;
+                // DRAW SEQUENCE:
+                // PageFlip and Ripple need custom rendering order.
+                if is_animating && matches!(self.settings.transition_style, TransitionStyle::PageFlip | TransitionStyle::Ripple) {
+                    match self.settings.transition_style {
+                        TransitionStyle::PageFlip => {
+                            // 1. Draw NEW image (background)
+                            ui.painter().image(
+                                texture.id(),
+                                final_dest,
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+
+                            // 2. Draw OLD image (top, clipped, with shadow)
+                            if let Some(prev) = &self.prev_texture {
+                                let p_size = prev.size_vec2();
+                                let p_dest = self.compute_display_rect(p_size, screen_rect);
+
+                                let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                                let duration = self.settings.transition_ms as f32 / 1000.0;
+                                let t = (elapsed / duration).clamp(0.0, 1.0);
+                                let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
+
+                                let clip_x = if self.is_next {
+                                    screen_rect.max.x - (screen_rect.width() * ease_in_out)
+                                } else {
+                                    screen_rect.min.x + (screen_rect.width() * ease_in_out)
+                                };
+
+                                let mut clip_rect = screen_rect;
+                                if self.is_next {
+                                    clip_rect.max.x = clip_x;
+                                } else {
+                                    clip_rect.min.x = clip_x;
+                                }
+
+                                ui.painter().with_clip_rect(clip_rect).image(
+                                    prev.id(),
+                                    p_dest,
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+
+                                // Page fold shadow
+                                let shadow_width = 40.0;
+                                let shadow_alpha = (1.0 - ease_in_out) * 0.4;
+                                let shadow_rect = if self.is_next {
+                                    Rect::from_min_max(
+                                        Pos2::new(clip_x - shadow_width, screen_rect.min.y),
+                                        Pos2::new(clip_x, screen_rect.max.y)
+                                    )
+                                } else {
+                                    Rect::from_min_max(
+                                        Pos2::new(clip_x, screen_rect.min.y),
+                                        Pos2::new(clip_x + shadow_width, screen_rect.max.y)
+                                    )
+                                };
+
+                                let color_shadow = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
+                                let color_transparent = Color32::TRANSPARENT;
+                                let mut mesh = egui::Mesh::default();
+                                let (c_left, c_right) = if self.is_next {
+                                    (color_transparent, color_shadow)
+                                } else {
+                                    (color_shadow, color_transparent)
+                                };
+                                mesh.colored_vertex(shadow_rect.left_top(), c_left);
+                                mesh.colored_vertex(shadow_rect.right_top(), c_right);
+                                mesh.colored_vertex(shadow_rect.right_bottom(), c_right);
+                                mesh.colored_vertex(shadow_rect.left_bottom(), c_left);
+                                mesh.add_triangle(0, 1, 2);
+                                mesh.add_triangle(0, 2, 3);
+                                ui.painter().add(egui::Shape::mesh(mesh));
+                            }
                         }
-                        
-                        ui.painter().with_clip_rect(clip_rect).image(
-                            prev.id(),
-                            p_dest,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                        
-                        // Page fold shadow
-                        let shadow_width = 40.0;
-                        let shadow_alpha = (1.0 - ease_in_out) * 0.4;
-                        let shadow_rect = if self.is_next {
-                            Rect::from_min_max(
-                                Pos2::new(clip_x - shadow_width, screen_rect.min.y),
-                                Pos2::new(clip_x, screen_rect.max.y)
-                            )
-                        } else {
-                            Rect::from_min_max(
-                                Pos2::new(clip_x, screen_rect.min.y),
-                                Pos2::new(clip_x + shadow_width, screen_rect.max.y)
-                            )
-                        };
-                        
-                        let color_shadow = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
-                        let color_transparent = Color32::TRANSPARENT;
-                        let mut mesh = egui::Mesh::default();
-                        let (c_left, c_right) = if self.is_next {
-                            (color_transparent, color_shadow)
-                        } else {
-                            (color_shadow, color_transparent)
-                        };
-                        mesh.colored_vertex(shadow_rect.left_top(), c_left);
-                        mesh.colored_vertex(shadow_rect.right_top(), c_right);
-                        mesh.colored_vertex(shadow_rect.right_bottom(), c_right);
-                        mesh.colored_vertex(shadow_rect.left_bottom(), c_left);
-                        mesh.add_triangle(0, 1, 2);
-                        mesh.add_triangle(0, 2, 3);
-                        ui.painter().add(egui::Shape::mesh(mesh));
+
+                        TransitionStyle::Ripple => {
+                            // 1. Draw OLD image as full background
+                            if let Some(prev) = &self.prev_texture {
+                                let p_size = prev.size_vec2();
+                                let p_dest = self.compute_display_rect(p_size, screen_rect);
+                                ui.painter().image(
+                                    prev.id(),
+                                    p_dest,
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            }
+
+                            // 2. Compute ripple state
+                            let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                            let duration = self.settings.transition_ms as f32 / 1000.0;
+                            let t = (elapsed / duration).clamp(0.0, 1.0);
+                            let ease = 3.0 * t * t - 2.0 * t * t * t; // smoothstep
+
+                            let center = dest.center();
+                            // Max radius: distance from image center to farthest screen corner
+                            let corners = [
+                                screen_rect.left_top(), screen_rect.right_top(),
+                                screen_rect.left_bottom(), screen_rect.right_bottom(),
+                            ];
+                            let max_radius = corners.iter()
+                                .map(|c| center.distance(*c))
+                                .fold(0.0f32, f32::max);
+                            let current_radius = max_radius * ease;
+
+                            // 3. Create circular textured mesh for new image (triangle fan)
+                            let segments = 128u32;
+                            let mut mesh = egui::Mesh::default();
+                            mesh.texture_id = texture.id();
+
+                            // Center vertex
+                            let center_uv = Pos2::new(
+                                (center.x - dest.min.x) / dest.width(),
+                                (center.y - dest.min.y) / dest.height(),
+                            );
+                            mesh.vertices.push(egui::epaint::Vertex {
+                                pos: center,
+                                uv: center_uv,
+                                color: Color32::WHITE,
+                            });
+
+                            // Edge vertices around the circle
+                            for i in 0..=segments {
+                                let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+                                let pos = Pos2::new(
+                                    center.x + current_radius * angle.cos(),
+                                    center.y + current_radius * angle.sin(),
+                                );
+                                let uv = Pos2::new(
+                                    (pos.x - dest.min.x) / dest.width(),
+                                    (pos.y - dest.min.y) / dest.height(),
+                                );
+                                mesh.vertices.push(egui::epaint::Vertex {
+                                    pos,
+                                    uv,
+                                    color: Color32::WHITE,
+                                });
+                            }
+
+                            // Triangle fan indices
+                            for i in 0..segments {
+                                mesh.indices.push(0);       // center
+                                mesh.indices.push(i + 1);
+                                mesh.indices.push(i + 2);
+                            }
+
+                            ui.painter().with_clip_rect(dest).add(egui::Shape::mesh(mesh));
+
+                            // 4. Draw water ripple rings at the expanding edge
+                            for ring in 0..4u32 {
+                                let ring_radius = current_radius - ring as f32 * 14.0;
+                                if ring_radius <= 2.0 { continue; }
+                                let ring_alpha = (0.35 - ring as f32 * 0.09).max(0.0);
+                                let ring_color = Color32::from_rgba_unmultiplied(
+                                    180, 215, 255,
+                                    (ring_alpha * 255.0) as u8,
+                                );
+                                let ring_width = 2.5 - ring as f32 * 0.5;
+
+                                let points: Vec<Pos2> = (0..=segments)
+                                    .map(|i| {
+                                        let angle = (i as f32 / segments as f32) * std::f32::consts::TAU;
+                                        Pos2::new(
+                                            center.x + ring_radius * angle.cos(),
+                                            center.y + ring_radius * angle.sin(),
+                                        )
+                                    })
+                                    .collect();
+                                ui.painter().add(egui::Shape::line(
+                                    points,
+                                    egui::Stroke::new(ring_width, ring_color),
+                                ));
+                            }
+                        }
+
+                        _ => unreachable!(),
                     }
                     ui.ctx().request_repaint();
 
