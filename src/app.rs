@@ -40,6 +40,9 @@ struct HudState {
 pub struct ImageViewerApp {
     settings: Settings,
     save_tx: Sender<Settings>,
+    initial_image: Option<PathBuf>,
+    orig_auto_switch: Option<bool>,
+    orig_play_music: Option<bool>,
 
     // File list
     image_files: Vec<PathBuf>,
@@ -117,7 +120,13 @@ pub struct ImageViewerApp {
 }
 
 impl ImageViewerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        settings: Settings,
+        initial_image: Option<PathBuf>,
+        orig_auto_switch: Option<bool>,
+        orig_play_music: Option<bool>,
+    ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
@@ -138,6 +147,9 @@ impl ImageViewerApp {
         let mut app = Self {
             settings,
             save_tx,
+            initial_image,
+            orig_auto_switch,
+            orig_play_music,
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
@@ -194,7 +206,15 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn queue_save(&self) {
-        let _ = self.save_tx.send(self.settings.clone());
+        let mut to_save = self.settings.clone();
+        // Restore orig values before sending to background thread so temp overrides are not saved
+        if let Some(orig) = self.orig_auto_switch {
+            to_save.auto_switch = orig;
+        }
+        if let Some(orig) = self.orig_play_music {
+            to_save.play_music = orig;
+        }
+        let _ = self.save_tx.send(to_save);
     }
 
     // ------------------------------------------------------------------
@@ -358,7 +378,13 @@ impl ImageViewerApp {
             self.image_files = files;
             self.current_index = 0;
 
-            if self.settings.resume_last_image {
+            if let Some(ref path) = self.initial_image {
+                let target_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if let Some(pos) = self.image_files.iter().position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == target_path) {
+                    self.current_index = pos;
+                }
+                self.initial_image = None;
+            } else if self.settings.resume_last_image {
                 if let Some(last_path) = &self.settings.last_viewed_image {
                     if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
                         self.current_index = (pos + 1) % count;
@@ -545,9 +571,8 @@ impl ImageViewerApp {
         }
         if toggle_auto_switch {
             self.settings.auto_switch = !self.settings.auto_switch;
-            if self.settings.auto_switch {
-                self.last_switch_time = Instant::now();
-            }
+            self.orig_auto_switch = None; // clear override so user's explicit action is saved
+            self.last_switch_time = Instant::now();
             self.queue_save();
         }
         if toggle_goto && !self.image_files.is_empty() {
@@ -842,7 +867,9 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_auto_switch = self.settings.auto_switch;
-                ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next image");
+                if ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next picture").changed() {
+                    self.orig_auto_switch = None; // explicit toggle overwrites orig
+                }
                 if self.settings.auto_switch {
                     ui.horizontal(|ui| {
                         ui.label("Interval (sec):");
@@ -865,7 +892,10 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
-                ui.checkbox(&mut self.settings.play_music, "Play background music (MP3/FLAC/OGG/WAV/AAC/M4A)");
+                if ui.checkbox(&mut self.settings.play_music, "Play background music").changed() {
+                    self.orig_play_music = None; // explicit toggle overwrites orig
+                }
+                ui.add_space(2.0);
                 if old_play_music != self.settings.play_music {
                     music_enabled_changed = true;
                 }

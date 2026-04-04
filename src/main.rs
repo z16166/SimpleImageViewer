@@ -33,7 +33,29 @@ fn load_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     env_logger::init();
 
-    let settings = settings::Settings::load();
+    let mut settings = settings::Settings::load();
+    let mut initial_image = None;
+    let mut orig_auto_switch = None;
+    let mut orig_play_music = None;
+
+    if let Some(arg) = std::env::args_os().nth(1) {
+        let pic_path = std::path::PathBuf::from(arg);
+        if pic_path.is_file() {
+            if let Some(parent) = pic_path.parent() {
+                settings.last_image_dir = Some(parent.to_path_buf());
+            }
+            if settings.auto_switch {
+                orig_auto_switch = Some(true);
+                settings.auto_switch = false;
+            }
+            if settings.play_music {
+                orig_play_music = Some(true);
+                settings.play_music = false;
+            }
+            initial_image = Some(pic_path);
+        }
+    }
+
     let fullscreen = settings.fullscreen;
 
     let viewport = egui::ViewportBuilder::default()
@@ -53,6 +75,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Simple Image Viewer",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings)) as Box<dyn eframe::App>)),
+        Box::new(|cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, orig_auto_switch, orig_play_music)) as Box<dyn eframe::App>)),
     )
 }
