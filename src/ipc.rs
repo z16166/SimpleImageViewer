@@ -163,9 +163,6 @@ fn set_stream_timeouts(stream: &Stream, timeout: Option<Duration>) -> std::io::R
 fn cleanup_stale_socket() {
     #[cfg(unix)]
     {
-        // The interprocess crate with GenericNamespaced on Linux uses abstract
-        // namespace sockets which don't create files. On macOS, it may fall back
-        // to a filesystem path. Try standard locations.
         let candidates = [
             format!("/tmp/siv_ipc_sock_v1"),
             format!("/tmp/siv_ipc_sock_v1.sock"),
@@ -181,4 +178,70 @@ fn cleanup_stale_socket() {
     {
         // Named Pipes on Windows are kernel objects — nothing to clean up on disk.
     }
+}
+
+/// Aggressively bring our window to the foreground on Windows.
+/// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
+/// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
+#[cfg(windows)]
+pub fn force_foreground() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    type HWND = isize;
+    type BOOL = i32;
+    type DWORD = u32;
+    const SW_RESTORE: i32 = 9;
+    const SW_SHOW: i32 = 5;
+
+    unsafe extern "system" {
+        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> HWND;
+        fn GetForegroundWindow() -> HWND;
+        fn SetForegroundWindow(hWnd: HWND) -> BOOL;
+        fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+        fn IsIconic(hWnd: HWND) -> BOOL;
+        fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
+        fn GetCurrentThreadId() -> DWORD;
+        fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) -> BOOL;
+        fn BringWindowToTop(hWnd: HWND) -> BOOL;
+    }
+
+    unsafe {
+        let title: Vec<u16> = OsStr::new("Simple Image Viewer")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd == 0 {
+            log::warn!("force_foreground: could not find window by title");
+            return;
+        }
+
+        // If minimized, restore it first
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        } else {
+            ShowWindow(hwnd, SW_SHOW);
+        }
+
+        // Attach to the foreground thread to gain permission
+        let fg_hwnd = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+        let our_thread = GetCurrentThreadId();
+
+        if fg_thread != our_thread && fg_thread != 0 {
+            AttachThreadInput(our_thread, fg_thread, 1);
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+            AttachThreadInput(our_thread, fg_thread, 0);
+        } else {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn force_foreground() {
+    // On non-Windows, egui's ViewportCommand::Focus is sufficient.
 }
