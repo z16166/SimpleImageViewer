@@ -1,0 +1,171 @@
+use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::time::Duration;
+
+pub enum IpcMessage {
+    OpenImage(PathBuf),
+    Focus,
+}
+
+/// Attempts to setup IPC.
+/// Returns `true` if this instance should immediately exit (because it successfully forwarded args to the primary instance).
+/// Returns `false` if this instance should continue as the primary server.
+pub fn setup_or_forward_args(
+    tx: crossbeam_channel::Sender<IpcMessage>,
+    initial_image: Option<&PathBuf>,
+) -> bool {
+    let sock_name = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
+
+    let payload = if let Some(path) = initial_image {
+        if let Some(p) = path.to_str() {
+            format!("OPEN:{}", p)
+        } else {
+            "FOCUS".to_string()
+        }
+    } else {
+        "FOCUS".to_string()
+    };
+
+    // Try to connect as a client first.
+    // Use a short timeout to avoid blocking forever if the server is dead/stuck.
+    if let Ok(mut conn) = Stream::connect(sock_name.clone()) {
+        // Set a write timeout so we don't hang if the pipe buffer is full
+        if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_millis(500))) {
+            log::warn!("Failed to set stream timeout: {}", e);
+        }
+        log::info!("Another instance is running. Forwarding arguments and exiting.");
+        let _ = conn.write_all(payload.as_bytes());
+        // Dropping `conn` here closes the connection and signals EOF to the server
+        drop(conn);
+        return true; // We are the client, exit the process
+    }
+
+    // Connect failed, meaning we are the primary instance.
+    log::info!("No existing instance detected. Becoming the primary IPC server.");
+
+    match ListenerOptions::new().name(sock_name).create_sync() {
+        Ok(listener) => {
+            std::thread::Builder::new()
+                .name("siv-ipc-server".to_string())
+                .spawn(move || {
+                    ipc_server_loop(listener, tx);
+                })
+                .expect("Failed to spawn IPC listener thread");
+        }
+        Err(e) => {
+            // On macOS/Linux with filesystem sockets, a stale socket file from a
+            // previous crash can cause bind to fail. Attempt cleanup and retry.
+            log::warn!("Failed to bind IPC socket ({}), attempting stale cleanup...", e);
+            cleanup_stale_socket();
+            let sock_name_retry = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
+            match ListenerOptions::new().name(sock_name_retry).create_sync() {
+                Ok(listener) => {
+                    log::info!("Successfully bound IPC socket after stale cleanup.");
+                    std::thread::Builder::new()
+                        .name("siv-ipc-server".to_string())
+                        .spawn(move || {
+                            ipc_server_loop(listener, tx);
+                        })
+                        .expect("Failed to spawn IPC listener thread");
+                }
+                Err(e2) => {
+                    log::warn!("Failed to bind IPC socket after retry, single-instance mode disabled: {}", e2);
+                }
+            }
+        }
+    }
+
+    false // Do not exit
+}
+
+/// The IPC server loop running on its own thread.
+/// Accepts connections, reads messages with a timeout, and forwards them to the UI.
+fn ipc_server_loop(
+    listener: interprocess::local_socket::Listener,
+    tx: crossbeam_channel::Sender<IpcMessage>,
+) {
+    for conn in listener.incoming().filter_map(Result::ok) {
+        // Set a read timeout to prevent a single bad connection from blocking the listener forever
+        if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_secs(2))) {
+            log::warn!("Failed to set read timeout on IPC connection: {}", e);
+        }
+
+        let mut s = String::new();
+        // read_to_string will now time out after 2 seconds if the client hangs
+        let mut conn = conn;
+        if conn.read_to_string(&mut s).is_ok() {
+            if s.starts_with("OPEN:") {
+                let path_str = s.trim_start_matches("OPEN:");
+                let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
+            } else if s == "FOCUS" {
+                let _ = tx.send(IpcMessage::Focus);
+            }
+        }
+        // Connection dropped here; continue accepting next connection
+    }
+}
+
+/// Set read/write timeouts on a local socket stream.
+/// This is platform-specific because `interprocess::local_socket::Stream`
+/// wraps different OS primitives on each platform.
+fn set_stream_timeouts(stream: &Stream, timeout: Option<Duration>) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        // On Windows, interprocess local_socket uses Named Pipes, which are NOT
+        // regular sockets. Timeout support is limited; best-effort only.
+        let _ = (stream, timeout);
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        // Safety: we borrow the fd temporarily and do NOT take ownership
+        let fd = stream.as_raw_fd();
+        // Use setsockopt via libc to set SO_RCVTIMEO / SO_SNDTIMEO
+        if let Some(d) = timeout {
+            let tv = libc::timeval {
+                tv_sec: d.as_secs() as libc::time_t,
+                tv_usec: d.subsec_micros() as libc::suseconds_t,
+            };
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVTIMEO,
+                    &tv as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+                )
+            };
+            if ret != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Attempt to remove a stale Unix domain socket file left by a crashed process.
+/// This is a no-op on Windows (Named Pipes are kernel objects, auto-cleaned).
+fn cleanup_stale_socket() {
+    #[cfg(unix)]
+    {
+        // The interprocess crate with GenericNamespaced on Linux uses abstract
+        // namespace sockets which don't create files. On macOS, it may fall back
+        // to a filesystem path. Try standard locations.
+        let candidates = [
+            format!("/tmp/siv_ipc_sock_v1"),
+            format!("/tmp/siv_ipc_sock_v1.sock"),
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                log::info!("Removing stale socket file: {}", path);
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Named Pipes on Windows are kernel objects — nothing to clean up on disk.
+    }
+}

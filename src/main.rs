@@ -2,6 +2,7 @@
 
 mod app;
 mod audio;
+mod ipc;
 mod loader;
 mod scanner;
 mod settings;
@@ -51,6 +52,11 @@ fn main() -> eframe::Result {
         }
     }
 
+    let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
+    if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref()) {
+        std::process::exit(0);
+    }
+
     let fullscreen = settings.fullscreen;
 
     let viewport = egui::ViewportBuilder::default()
@@ -70,6 +76,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Simple Image Viewer",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, orig_auto_switch)) as Box<dyn eframe::App>)),
+        Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, orig_auto_switch, ipc_rx)) as Box<dyn eframe::App>)),
     )
 }

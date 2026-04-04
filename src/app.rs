@@ -10,6 +10,7 @@ use egui::{
 };
 
 use crate::audio::{AudioPlayer, collect_music_files};
+use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
@@ -116,6 +117,9 @@ pub struct ImageViewerApp {
     // Window lifecycle
     last_minimized: bool,
     last_frame_time: Instant,
+
+    // IPC receiver
+    ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
 }
 
 impl ImageViewerApp {
@@ -124,6 +128,7 @@ impl ImageViewerApp {
         settings: Settings,
         initial_image: Option<PathBuf>,
         orig_auto_switch: Option<bool>,
+        ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
     ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
@@ -185,6 +190,8 @@ impl ImageViewerApp {
             last_hud_state: None,
             last_minimized: false,
             last_frame_time: Instant::now(),
+
+            ipc_rx,
         };
 
         // Restore last session state
@@ -373,8 +380,16 @@ impl ImageViewerApp {
             self.current_index = 0;
 
             if let Some(ref path) = self.initial_image {
-                let target_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-                if let Some(pos) = self.image_files.iter().position(|p| p.canonicalize().unwrap_or_else(|_| p.clone()) == target_path) {
+                // Fast path: try direct path comparison first (no syscalls)
+                let found = self.image_files.iter().position(|p| p == path);
+                let found = found.or_else(|| {
+                    // Slow path: canonicalize and compare (syscalls, but only as fallback)
+                    let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+                    self.image_files.iter().position(|p| {
+                        p.canonicalize().unwrap_or_else(|_| p.clone()) == target
+                    })
+                });
+                if let Some(pos) = found {
                     self.current_index = pos;
                 }
                 self.initial_image = None;
@@ -1880,6 +1895,47 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Process IPC messages
+        while let Ok(msg) = self.ipc_rx.try_recv() {
+            match msg {
+                IpcMessage::OpenImage(path) => {
+                    log::info!("IPC: open image {:?}", path);
+                    if let Some(parent) = path.parent() {
+                        let same_dir = self.settings.last_image_dir
+                            .as_ref()
+                            .map(|d| d == &parent.to_path_buf())
+                            .unwrap_or(false);
+
+                        if same_dir && !self.image_files.is_empty() {
+                            // Same directory: just find and jump to the target image
+                            if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                                self.navigate_to(pos);
+                            } else {
+                                // File not in our list (maybe newly added) — full rescan
+                                self.initial_image = Some(path.clone());
+                                self.load_directory(parent.to_path_buf());
+                            }
+                        } else {
+                            // Different directory — full scan
+                            self.settings.last_image_dir = Some(parent.to_path_buf());
+                            self.queue_save();
+                            self.initial_image = Some(path.clone());
+                            if self.settings.auto_switch {
+                                self.orig_auto_switch = Some(true);
+                                self.settings.auto_switch = false;
+                            }
+                            self.load_directory(parent.to_path_buf());
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+                IpcMessage::Focus => {
+                    log::info!("IPC received empty ping, requesting window focus");
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
+        }
+
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
