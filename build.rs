@@ -6,11 +6,11 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!(
         "cargo:rerun-if-changed={}",
-        manifest_dir.join("assets/icon.jpg").display()
+        manifest_dir.join("assets/icon.png").display()
     );
 
-    // Generate the ICO from the source image (JPEG)
-    let src = manifest_dir.join("assets/icon.jpg");
+    // Generate the ICO from the source image (PNG)
+    let src = manifest_dir.join("assets/icon.png");
     let dst = manifest_dir.join("assets/icon.ico");
 
     if src.exists() {

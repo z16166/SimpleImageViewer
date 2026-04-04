@@ -10,7 +10,7 @@ mod settings;
 /// Returns an `egui::IconData` at 256×256 RGBA for the taskbar/titlebar icon.
 fn load_icon() -> egui::IconData {
     // Embed the source image at compile time — works from any working directory.
-    let bytes = include_bytes!("../assets/icon.jpg");
+    let bytes = include_bytes!("../assets/icon.png");
     match image::load_from_memory(bytes) {
         Ok(img) => {
             use image::imageops::FilterType;
