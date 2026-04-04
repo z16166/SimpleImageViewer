@@ -706,8 +706,9 @@ impl ImageViewerApp {
                     .shadow(egui::epaint::Shadow::NONE),
             )
             .min_width(550.0)
-            .default_width(640.0)
-            .max_width(800.0)
+            .default_width(680.0)
+            .default_height(740.0)
+            .max_width(850.0)
             .show(ctx, |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
