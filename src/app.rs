@@ -764,6 +764,23 @@ impl ImageViewerApp {
                 ui.add_space(4.0);
                 let old_recursive = self.settings.recursive;
                 ui.checkbox(&mut self.settings.recursive, "Recursive scan");
+                if !old_recursive && self.settings.recursive {
+                    // User just turned ON recursive scan — warn them first
+                    let confirmed = rfd::MessageDialog::new()
+                        .set_title("Enable Recursive Scan?")
+                        .set_description(
+                            "Recursive scan will search all subdirectories.\n\
+                             This can take a very long time on large directory trees\n\
+                             (e.g. a disk root). Are you sure?"
+                        )
+                        .set_buttons(rfd::MessageButtons::OkCancel)
+                        .set_level(rfd::MessageLevel::Warning)
+                        .show() == rfd::MessageDialogResult::Ok;
+                    if !confirmed {
+                        // User cancelled — revert the checkbox
+                        self.settings.recursive = false;
+                    }
+                }
                 if old_recursive != self.settings.recursive {
                     if let Some(dir) = self.settings.last_image_dir.clone() {
                         self.load_directory(dir);
