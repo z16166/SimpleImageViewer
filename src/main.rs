@@ -48,6 +48,10 @@ fn main() -> eframe::Result {
                 orig_auto_switch = Some(true);
                 settings.auto_switch = false;
             }
+            // Opened via file association / Explorer double-click: disable recursive scan so
+            // we don't accidentally scan a huge directory tree (e.g. a disk root).
+            // This is persisted to disk so the next no-arg launch also starts non-recursively.
+            settings.recursive = false;
             initial_image = Some(pic_path);
         }
     }
