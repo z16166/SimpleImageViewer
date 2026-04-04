@@ -523,7 +523,7 @@ impl ImageViewerApp {
                     }
                 }
             }
-            // Mouse wheel zoom
+            // Mouse wheel zoom — collected here, guarded before application below
             scroll_delta = i.smooth_scroll_delta.y;
             // F11 — toggle fullscreen
             if i.key_pressed(Key::F11) {
@@ -562,9 +562,10 @@ impl ImageViewerApp {
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
         }
-        if scroll_delta > 0.0 {
+        let ui_consuming_scroll = self.show_settings || ctx.wants_pointer_input();
+        if !ui_consuming_scroll && scroll_delta > 0.0 {
             self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
-        } else if scroll_delta < 0.0 {
+        } else if !ui_consuming_scroll && scroll_delta < 0.0 {
             self.zoom_factor = (self.zoom_factor / 1.25).max(0.05);
         }
         if toggle_fullscreen {
