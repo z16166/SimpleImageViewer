@@ -1,0 +1,27 @@
+warning: simple-image-viewer@0.8.8: icon.ico generated from icon.png
+   Compiling simple-image-viewer v0.8.8 (F:\Rust\SimpleImageViewer)
+warning: use of deprecated type alias `image::io::Reader`: this type has been moved and renamed to image::ImageReader
+ --> src\bin\make_trans.rs:5:26
+  |
+5 |     let img = image::io::Reader::open(src).unwrap().with_guessed_for...
+  |                          ^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: `simple-image-viewer` (bin "make_trans") generated 1 warning
+warning: methods `play` and `pause` are never used
+  --> src\audio.rs:56:12
+   |
+26 | impl AudioPlayer {
+   | ---------------- methods in this implementation
+...
+56 |     pub fn play(&self) {
+   |            ^^^^
+...
+62 |     pub fn pause(&self) {
+   |            ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `simple-image-viewer` (bin "siv") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 39.65s

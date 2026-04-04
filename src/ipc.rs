@@ -34,6 +34,19 @@ pub fn setup_or_forward_args(
         if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_millis(500))) {
             log::warn!("Failed to set stream timeout: {}", e);
         }
+
+        // On Windows, this client process was just launched by Explorer and owns the
+        // foreground right. Transfer it to ANY process (i.e. the server) so the server
+        // can call SetForegroundWindow successfully.
+        #[cfg(windows)]
+        {
+            const ASFW_ANY: u32 = u32::MAX; // -1 as DWORD
+            unsafe extern "system" {
+                fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
+            }
+            unsafe { AllowSetForegroundWindow(ASFW_ANY); }
+        }
+
         log::info!("Another instance is running. Forwarding arguments and exiting.");
         let _ = conn.write_all(payload.as_bytes());
         // Dropping `conn` here closes the connection and signals EOF to the server
