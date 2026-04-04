@@ -128,7 +128,7 @@ fn default_true()     -> bool { true }
 fn default_volume()   -> f32  { 1.0 }
 fn default_font_family() -> String { "System Default".to_string() }
 fn default_font_size()   -> f32  { 16.0 }
-fn default_transition_style() -> TransitionStyle { TransitionStyle::Fade }
+fn default_transition_style() -> TransitionStyle { TransitionStyle::None }
 fn default_transition_ms() -> u32 { 800 }
 
 impl Default for ScaleMode {
