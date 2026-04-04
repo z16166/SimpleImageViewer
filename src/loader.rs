@@ -94,7 +94,8 @@ fn load_image_file(index: usize, path: &PathBuf) -> LoadResult {
             .unwrap_or_default();
 
         match ext.as_str() {
-            "gif" => load_gif(index, path),
+            "gif" => load_gif(path),
+            "png" | "apng" => load_png(path),
             _ => load_static(path),
         }
     })();
@@ -109,7 +110,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     Ok(ImageData::Static(DecodedImage { width, height, pixels }))
 }
 
-fn load_gif(_index: usize, path: &PathBuf) -> Result<ImageData, String> {
+fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
     use image::codecs::gif::GifDecoder;
     use image::AnimationDecoder;
     use std::io::BufReader;
@@ -136,6 +137,48 @@ fn load_gif(_index: usize, path: &PathBuf) -> Result<ImageData, String> {
         let (numer, denom) = frame.delay().numer_denom_ms();
         let delay_ms = if denom == 0 { 100 } else { numer / denom };
         // GIF spec: delay of 0 (or ≤10ms) is typically rendered as 100ms by browsers
+        let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
+        let buffer = frame.into_buffer();
+        let (width, height) = buffer.dimensions();
+        let pixels = buffer.into_raw();
+        AnimationFrame {
+            width,
+            height,
+            pixels,
+            delay: Duration::from_millis(delay_ms as u64),
+        }
+    }).collect();
+
+    Ok(ImageData::Animated(frames))
+}
+
+fn load_png(path: &PathBuf) -> Result<ImageData, String> {
+    use image::codecs::png::PngDecoder;
+    use image::AnimationDecoder;
+    use std::io::BufReader;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
+
+    if !decoder.is_apng().map_err(|e| e.to_string())? {
+        // Regular (static) PNG — use the standard path
+        return load_static(path);
+    }
+
+    let raw_frames = decoder.apng()
+        .map_err(|e| e.to_string())?
+        .into_frames()
+        .collect_frames()
+        .map_err(|e| e.to_string())?;
+
+    if raw_frames.len() <= 1 {
+        return load_static(path);
+    }
+
+    let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let delay_ms = if denom == 0 { 100 } else { numer / denom };
         let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
         let buffer = frame.into_buffer();
         let (width, height) = buffer.dimensions();
