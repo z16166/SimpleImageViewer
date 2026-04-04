@@ -4,7 +4,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub enum IpcMessage {
+    /// Open an image, using the current recursive scan setting.
     OpenImage(PathBuf),
+    /// Open an image with recursive scan forcibly disabled for this operation.
+    /// Used when a file is opened via CLI (e.g. double-click from Explorer) to
+    /// prevent accidentally scanning huge directory trees.
+    OpenImageNoRecursive(PathBuf),
     Focus,
 }
 
@@ -14,12 +19,18 @@ pub enum IpcMessage {
 pub fn setup_or_forward_args(
     tx: crossbeam_channel::Sender<IpcMessage>,
     initial_image: Option<&PathBuf>,
+    no_recursive: bool,
 ) -> bool {
     let sock_name = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
 
     let payload = if let Some(path) = initial_image {
         if let Some(p) = path.to_str() {
-            format!("OPEN:{}", p)
+            // Use OPEN_NR (No Recursive) prefix when launched from Explorer
+            if no_recursive {
+                format!("OPEN_NR:{}", p)
+            } else {
+                format!("OPEN:{}", p)
+            }
         } else {
             "FOCUS".to_string()
         }
@@ -105,10 +116,13 @@ fn ipc_server_loop(
         }
 
         let mut s = String::new();
-        // read_to_string will now time out after 2 seconds if the client hangs
+        // read_to_string will return at EOF when client drops the connection
         let mut conn = conn;
         if conn.read_to_string(&mut s).is_ok() {
-            if s.starts_with("OPEN:") {
+            if s.starts_with("OPEN_NR:") {
+                let path_str = s.trim_start_matches("OPEN_NR:");
+                let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
+            } else if s.starts_with("OPEN:") {
                 let path_str = s.trim_start_matches("OPEN:");
                 let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
             } else if s == "FOCUS" {

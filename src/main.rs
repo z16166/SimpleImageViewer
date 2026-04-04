@@ -53,7 +53,10 @@ fn main() -> eframe::Result {
     }
 
     let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
-    if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref()) {
+    // no_recursive=true when launched via CLI (double-click from Explorer):
+    // prevents accidentally recursive-scanning huge directory trees.
+    let no_recursive = initial_image.is_some();
+    if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
         std::process::exit(0);
     }
 

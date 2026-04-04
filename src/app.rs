@@ -43,6 +43,9 @@ pub struct ImageViewerApp {
     save_tx: Sender<Settings>,
     initial_image: Option<PathBuf>,
     orig_auto_switch: Option<bool>,
+    /// Temporarily saves `settings.recursive` when a single file is opened via CLI/IPC.
+    /// Restored to its original value after the directory scan completes.
+    orig_recursive: Option<bool>,
 
     // File list
     image_files: Vec<PathBuf>,
@@ -152,6 +155,7 @@ impl ImageViewerApp {
             save_tx,
             initial_image,
             orig_auto_switch,
+            orig_recursive: None,
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
@@ -194,7 +198,13 @@ impl ImageViewerApp {
             ipc_rx,
         };
 
-        // Restore last session state
+        // Restore last session state.
+        // If launched with a specific image file (e.g. double-click from Explorer),
+        // temporarily disable recursive scan to avoid scanning huge directory trees.
+        if app.initial_image.is_some() && app.settings.recursive {
+            app.orig_recursive = Some(true);
+            app.settings.recursive = false;
+        }
         if let Some(dir) = app.settings.last_image_dir.clone() {
             app.load_directory(dir);
         }
@@ -375,6 +385,10 @@ impl ImageViewerApp {
         if let Some(files) = result {
             self.scan_rx = None;
             self.scanning = false;
+            // Restore recursive setting if it was temporarily overridden for a single-file open
+            if let Some(orig) = self.orig_recursive.take() {
+                self.settings.recursive = orig;
+            }
             let count = files.len();
             self.image_files = files;
             self.current_index = 0;
@@ -1924,6 +1938,46 @@ impl eframe::App for ImageViewerApp {
                             if self.settings.auto_switch {
                                 self.orig_auto_switch = Some(true);
                                 self.settings.auto_switch = false;
+                            }
+                            self.load_directory(parent.to_path_buf());
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        crate::ipc::force_foreground();
+                    }
+                }
+                IpcMessage::OpenImageNoRecursive(path) => {
+                    log::info!("IPC: open image (no-recursive) {:?}", path);
+                    if let Some(parent) = path.parent() {
+                        let same_dir = self.settings.last_image_dir
+                            .as_ref()
+                            .map(|d| d == &parent.to_path_buf())
+                            .unwrap_or(false);
+
+                        if same_dir && !self.image_files.is_empty() {
+                            // Same directory: just jump, no rescan needed
+                            if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                                self.navigate_to(pos);
+                            } else {
+                                // Newly added file — rescan (still non-recursive)
+                                self.initial_image = Some(path.clone());
+                                if self.settings.recursive {
+                                    self.orig_recursive = Some(true);
+                                    self.settings.recursive = false;
+                                }
+                                self.load_directory(parent.to_path_buf());
+                            }
+                        } else {
+                            // Different directory — scan without recursive
+                            self.settings.last_image_dir = Some(parent.to_path_buf());
+                            self.queue_save();
+                            self.initial_image = Some(path.clone());
+                            if self.settings.auto_switch {
+                                self.orig_auto_switch = Some(true);
+                                self.settings.auto_switch = false;
+                            }
+                            if self.settings.recursive {
+                                self.orig_recursive = Some(true);
+                                self.settings.recursive = false;
                             }
                             self.load_directory(parent.to_path_buf());
                         }
