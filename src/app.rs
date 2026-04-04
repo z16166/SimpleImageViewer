@@ -42,7 +42,6 @@ pub struct ImageViewerApp {
     save_tx: Sender<Settings>,
     initial_image: Option<PathBuf>,
     orig_auto_switch: Option<bool>,
-    orig_play_music: Option<bool>,
 
     // File list
     image_files: Vec<PathBuf>,
@@ -125,7 +124,6 @@ impl ImageViewerApp {
         settings: Settings,
         initial_image: Option<PathBuf>,
         orig_auto_switch: Option<bool>,
-        orig_play_music: Option<bool>,
     ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
@@ -149,7 +147,6 @@ impl ImageViewerApp {
             save_tx,
             initial_image,
             orig_auto_switch,
-            orig_play_music,
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
@@ -210,9 +207,6 @@ impl ImageViewerApp {
         // Restore orig values before sending to background thread so temp overrides are not saved
         if let Some(orig) = self.orig_auto_switch {
             to_save.auto_switch = orig;
-        }
-        if let Some(orig) = self.orig_play_music {
-            to_save.play_music = orig;
         }
         let _ = self.save_tx.send(to_save);
     }
@@ -892,9 +886,7 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
-                if ui.checkbox(&mut self.settings.play_music, "Play background music").changed() {
-                    self.orig_play_music = None; // explicit toggle overwrites orig
-                }
+                ui.checkbox(&mut self.settings.play_music, "Play background music");
                 ui.add_space(2.0);
                 if old_play_music != self.settings.play_music {
                     music_enabled_changed = true;
