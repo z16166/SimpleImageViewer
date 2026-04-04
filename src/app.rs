@@ -523,10 +523,8 @@ impl ImageViewerApp {
                     }
                 }
             }
-            // Mouse wheel zoom — only if NOT over an egui window/panel
-            if !ctx.wants_pointer_input() {
-                scroll_delta = i.smooth_scroll_delta.y;
-            }
+            // Mouse wheel zoom
+            scroll_delta = i.smooth_scroll_delta.y;
             // F11 — toggle fullscreen
             if i.key_pressed(Key::F11) {
                 toggle_fullscreen = true;
@@ -701,7 +699,7 @@ impl ImageViewerApp {
             .default_pos(Pos2::new(12.0, 12.0))
             .resizable(true)
             .collapsible(true)
-            .vscroll(false)
+            .vscroll(true)
             .frame(
                 Frame::window(&ctx.global_style())
                     .fill(PANEL_BG)
@@ -711,29 +709,6 @@ impl ImageViewerApp {
             .default_width(640.0)
             .max_width(800.0)
             .show(ctx, |ui| {
-                // Layout: scrollable content on top, Exit button pinned at bottom
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                // ── Exit button — ALWAYS VISIBLE, pinned to bottom ──────────
-                ui.add_space(4.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("✕  Exit Application").color(Color32::WHITE),
-                        )
-                        .fill(Color32::from_rgb(180, 40, 40))
-                        .corner_radius(egui::CornerRadius::same(4)),
-                    )
-                    .clicked()
-                {
-                    do_quit = true;
-                }
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                // ── Scrollable main content ─────────────────────────────────
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
                 ui.heading(
@@ -1114,10 +1089,23 @@ impl ImageViewerApp {
                 const QUIT_HINT: &str =
                     "Press  Esc / F1  to toggle this panel  \u{2502}  Alt+F4 to quit";
                 ui.label(RichText::new(QUIT_HINT).color(TEXT_MUTED).small());
+
                 ui.add_space(4.0);
-                }); // end Layout::top_down
-                }); // end ScrollArea
-                }); // end Layout::bottom_up
+                ui.separator();
+                ui.add_space(4.0);
+                // Exit button — always visible at bottom of settings panel
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("✕  Exit Application").color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(180, 40, 40))
+                        .corner_radius(egui::CornerRadius::same(4)),
+                    )
+                    .clicked()
+                {
+                    do_quit = true;
+                }
             });
 
         // Deferred actions (avoid borrow issues with closures)
