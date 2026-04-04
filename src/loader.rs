@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 /// Maximum concurrent image decode tasks.
@@ -7,16 +8,28 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 const LOADER_THREADS: usize = 4;
 
 pub struct DecodedImage {
-    #[allow(dead_code)]
-    pub index: usize,
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>, // RGBA8
 }
 
+/// A single frame of an animated image.
+pub struct AnimationFrame {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>, // RGBA8
+    pub delay: Duration,
+}
+
+/// Decoded image data — either a static image or an animated sequence.
+pub enum ImageData {
+    Static(DecodedImage),
+    Animated(Vec<AnimationFrame>),
+}
+
 pub struct LoadResult {
     pub index: usize,
-    pub result: Result<DecodedImage, String>,
+    pub result: Result<ImageData, String>,
 }
 
 pub struct ImageLoader {
@@ -74,14 +87,68 @@ impl ImageLoader {
 }
 
 fn load_image_file(index: usize, path: &PathBuf) -> LoadResult {
-    let result = (|| -> Result<DecodedImage, String> {
-        let img = image::open(path).map_err(|e| e.to_string())?;
-        let rgba = img.to_rgba8();
-        let (width, height) = rgba.dimensions();
-        let pixels = rgba.into_raw();
-        Ok(DecodedImage { index, width, height, pixels })
+    let result = (|| -> Result<ImageData, String> {
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
+        match ext.as_str() {
+            "gif" => load_gif(index, path),
+            _ => load_static(path),
+        }
     })();
     LoadResult { index, result }
+}
+
+fn load_static(path: &PathBuf) -> Result<ImageData, String> {
+    let img = image::open(path).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+}
+
+fn load_gif(_index: usize, path: &PathBuf) -> Result<ImageData, String> {
+    use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
+    use std::io::BufReader;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
+    let raw_frames = decoder.into_frames()
+        .collect_frames()
+        .map_err(|e| e.to_string())?;
+
+    // Single-frame (or empty) GIF → treat as static
+    if raw_frames.len() <= 1 {
+        if let Some(frame) = raw_frames.into_iter().next() {
+            let buffer = frame.into_buffer();
+            let (width, height) = buffer.dimensions();
+            let pixels = buffer.into_raw();
+            return Ok(ImageData::Static(DecodedImage { width, height, pixels }));
+        }
+        return Err("GIF has no frames".to_string());
+    }
+
+    let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let delay_ms = if denom == 0 { 100 } else { numer / denom };
+        // GIF spec: delay of 0 (or ≤10ms) is typically rendered as 100ms by browsers
+        let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
+        let buffer = frame.into_buffer();
+        let (width, height) = buffer.dimensions();
+        let pixels = buffer.into_raw();
+        AnimationFrame {
+            width,
+            height,
+            pixels,
+            delay: Duration::from_millis(delay_ms as u64),
+        }
+    }).collect();
+
+    Ok(ImageData::Animated(frames))
 }
 
 // ---------------------------------------------------------------------------
