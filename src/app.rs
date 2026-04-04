@@ -1927,10 +1927,18 @@ impl eframe::App for ImageViewerApp {
                         if same_dir && !self.image_files.is_empty() {
                             // Same directory: just find and jump to the target image
                             if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                                if self.settings.auto_switch {
+                                    self.orig_auto_switch = Some(true);
+                                    self.settings.auto_switch = false;
+                                }
                                 self.navigate_to(pos);
                             } else {
                                 // File not in our list (maybe newly added) — full rescan
                                 self.initial_image = Some(path.clone());
+                                if self.settings.auto_switch {
+                                    self.orig_auto_switch = Some(true);
+                                    self.settings.auto_switch = false;
+                                }
                                 self.load_directory(parent.to_path_buf());
                             }
                         } else {
@@ -1959,11 +1967,19 @@ impl eframe::App for ImageViewerApp {
                         if same_dir && !self.image_files.is_empty() {
                             // Same directory: just jump, no rescan needed
                             if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                                if self.settings.auto_switch {
+                                    self.orig_auto_switch = Some(true);
+                                    self.settings.auto_switch = false;
+                                }
                                 self.navigate_to(pos);
                             } else {
                                 // Newly added file — rescan without recursive
                                 self.initial_image = Some(path.clone());
                                 self.settings.recursive = false;
+                                if self.settings.auto_switch {
+                                    self.orig_auto_switch = Some(true);
+                                    self.settings.auto_switch = false;
+                                }
                                 self.load_directory(parent.to_path_buf());
                             }
                         } else {
