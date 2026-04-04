@@ -42,7 +42,6 @@ pub struct ImageViewerApp {
     settings: Settings,
     save_tx: Sender<Settings>,
     initial_image: Option<PathBuf>,
-    orig_auto_switch: Option<bool>,
 
     // File list
     image_files: Vec<PathBuf>,
@@ -127,7 +126,6 @@ impl ImageViewerApp {
         cc: &eframe::CreationContext<'_>,
         settings: Settings,
         initial_image: Option<PathBuf>,
-        orig_auto_switch: Option<bool>,
         ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
     ) -> Self {
         if settings.fullscreen {
@@ -151,7 +149,6 @@ impl ImageViewerApp {
             settings,
             save_tx,
             initial_image,
-            orig_auto_switch,
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
@@ -210,12 +207,7 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn queue_save(&self) {
-        let mut to_save = self.settings.clone();
-        // Restore orig values before sending to background thread so temp overrides are not saved
-        if let Some(orig) = self.orig_auto_switch {
-            to_save.auto_switch = orig;
-        }
-        let _ = self.save_tx.send(to_save);
+        let _ = self.save_tx.send(self.settings.clone());
     }
 
     // ------------------------------------------------------------------
@@ -581,7 +573,6 @@ impl ImageViewerApp {
         }
         if toggle_auto_switch {
             self.settings.auto_switch = !self.settings.auto_switch;
-            self.orig_auto_switch = None; // clear override so user's explicit action is saved
             self.last_switch_time = Instant::now();
             self.queue_save();
         }
@@ -895,7 +886,6 @@ impl ImageViewerApp {
 
                 let old_auto_switch = self.settings.auto_switch;
                 if ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next picture").changed() {
-                    self.orig_auto_switch = None; // explicit toggle overwrites orig
                 }
                 if self.settings.auto_switch {
                     ui.horizontal(|ui| {
@@ -1928,7 +1918,6 @@ impl eframe::App for ImageViewerApp {
                             // Same directory: just find and jump to the target image
                             if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
                                 if self.settings.auto_switch {
-                                    self.orig_auto_switch = Some(true);
                                     self.settings.auto_switch = false;
                                 }
                                 self.navigate_to(pos);
@@ -1936,7 +1925,6 @@ impl eframe::App for ImageViewerApp {
                                 // File not in our list (maybe newly added) — full rescan
                                 self.initial_image = Some(path.clone());
                                 if self.settings.auto_switch {
-                                    self.orig_auto_switch = Some(true);
                                     self.settings.auto_switch = false;
                                 }
                                 self.load_directory(parent.to_path_buf());
@@ -1947,7 +1935,6 @@ impl eframe::App for ImageViewerApp {
                             self.queue_save();
                             self.initial_image = Some(path.clone());
                             if self.settings.auto_switch {
-                                self.orig_auto_switch = Some(true);
                                 self.settings.auto_switch = false;
                             }
                             self.load_directory(parent.to_path_buf());
@@ -1968,7 +1955,6 @@ impl eframe::App for ImageViewerApp {
                             // Same directory: just jump, no rescan needed
                             if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
                                 if self.settings.auto_switch {
-                                    self.orig_auto_switch = Some(true);
                                     self.settings.auto_switch = false;
                                 }
                                 self.navigate_to(pos);
@@ -1977,7 +1963,6 @@ impl eframe::App for ImageViewerApp {
                                 self.initial_image = Some(path.clone());
                                 self.settings.recursive = false;
                                 if self.settings.auto_switch {
-                                    self.orig_auto_switch = Some(true);
                                     self.settings.auto_switch = false;
                                 }
                                 self.load_directory(parent.to_path_buf());
@@ -1989,7 +1974,6 @@ impl eframe::App for ImageViewerApp {
                             self.queue_save();
                             self.initial_image = Some(path.clone());
                             if self.settings.auto_switch {
-                                self.orig_auto_switch = Some(true);
                                 self.settings.auto_switch = false;
                             }
                             self.load_directory(parent.to_path_buf());

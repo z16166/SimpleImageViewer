@@ -36,7 +36,6 @@ fn main() -> eframe::Result {
 
     let mut settings = settings::Settings::load();
     let mut initial_image = None;
-    let mut orig_auto_switch = None;
 
     if let Some(arg) = std::env::args_os().nth(1) {
         let pic_path = std::path::PathBuf::from(arg);
@@ -44,13 +43,11 @@ fn main() -> eframe::Result {
             if let Some(parent) = pic_path.parent() {
                 settings.last_image_dir = Some(parent.to_path_buf());
             }
-            if settings.auto_switch {
-                orig_auto_switch = Some(true);
-                settings.auto_switch = false;
-            }
-            // Opened via file association / Explorer double-click: disable recursive scan so
-            // we don't accidentally scan a huge directory tree (e.g. a disk root).
-            // This is persisted to disk so the next no-arg launch also starts non-recursively.
+            // Opened via file association / Explorer double-click:
+            // - Disable auto-advance so the user sees the specific image they clicked.
+            // - Disable recursive scan to avoid scanning huge directory trees.
+            // Both are persisted to disk so the next no-arg launch inherits these settings.
+            settings.auto_switch = false;
             settings.recursive = false;
             initial_image = Some(pic_path);
         }
@@ -83,6 +80,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Simple Image Viewer",
         native_options,
-        Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, orig_auto_switch, ipc_rx)) as Box<dyn eframe::App>)),
+        Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, ipc_rx)) as Box<dyn eframe::App>)),
     )
 }
