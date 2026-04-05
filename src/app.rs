@@ -2172,16 +2172,21 @@ impl eframe::App for ImageViewerApp {
             let mut close_exif = false;
             let mut close_and_copy = false;
             egui::Window::new("ℹ EXIF Information")
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .collapsible(false)
                 .resizable(true)
                 .default_width(400.0)
                 .default_height(350.0)
                 .show(&ctx, |ui| {
                     if let Some(text) = &self.cached_exif_text {
-                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                            ui.label(text);
-                        });
+                        // Reserve space for the bottom buttons
+                        let button_height = 36.0;
+                        let available = ui.available_height() - button_height;
+                        egui::ScrollArea::vertical()
+                            .max_height(available.max(60.0))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.label(text);
+                            });
                         ui.add_space(8.0);
                         ui.separator();
                         ui.horizontal(|ui| {
