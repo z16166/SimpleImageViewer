@@ -130,8 +130,8 @@ fn embed_resources(ico_path: &std::path::Path) {
 
     res.set("ProductName",      "Simple Image Viewer");
     res.set("FileDescription",  "Simple Image Viewer");
-    res.set("InternalName",     "siv.exe");
-    res.set("OriginalFilename", "siv.exe");
+    res.set("InternalName",     "SimpleImageViewer.exe");
+    res.set("OriginalFilename", "SimpleImageViewer.exe");
     
     // Set String Versions (visible in Windows properties)
     res.set("FileVersion",     &display_version);

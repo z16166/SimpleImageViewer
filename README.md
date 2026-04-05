@@ -1,4 +1,4 @@
-# Simple Image Viewer (siv)
+# Simple Image Viewer (SimpleImageViewer)
 
 A high-performance, cross-platform image viewer built with Rust and [egui](https://github.com/emilk/egui). Designed for fast browsing of large photo libraries with a clean, dark UI, background music playback, and persistent settings.
  
@@ -9,7 +9,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR
+- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR, HEIC, JXL
+- **Windows Integration** — Automatically registers to the Windows 'Open With' menu with a friendly name ("Simple Image Viewer") on first run (no admin required)
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
@@ -102,7 +103,7 @@ cargo run
 
 # Optimised release build
 cargo build --release
-# Output: target/release/siv  (or siv.exe on Windows)
+# Output: target/release/SimpleImageViewer (or SimpleImageViewer.exe on Windows)
 ```
 
 ### Optional: Regenerate the app icon

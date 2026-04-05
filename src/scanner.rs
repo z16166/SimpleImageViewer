@@ -4,6 +4,7 @@ use crossbeam_channel::Sender;
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
     "webp", "ico", "tga", "hdr", "ppm", "pbm", "pgm", "pnm",
+    "avif", "qoi", "exr",
 ];
 
 pub fn is_supported_image(path: &Path) -> bool {

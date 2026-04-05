@@ -7,6 +7,58 @@ mod loader;
 mod scanner;
 mod settings;
 
+#[cfg(target_os = "windows")]
+mod windows_utils {
+    use std::env;
+    use std::thread;
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    pub fn ensure_windows_registration() {
+        thread::spawn(|| {
+            let exe_path = match env::current_exe() {
+                Ok(p) => p.to_string_lossy().to_string(),
+                Err(_) => return,
+            };
+
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let path = r"Software\Classes\Applications\SimpleImageViewer.exe";
+            
+            // 1. Create/Open the base application key
+            let (key, _) = match hkcu.create_subkey(path) {
+                Ok(res) => res,
+                Err(_) => return,
+            };
+
+            // 2. Set FriendlyAppName (fallback display name in Open With)
+            let _: () = key.set_value("FriendlyAppName", &"Simple Image Viewer").unwrap_or(());
+
+            // 3. Set Open Command
+            if let Ok((cmd_key, _)) = key.create_subkey(r"shell\open\command") {
+                let current_cmd: String = cmd_key.get_value("").unwrap_or_default();
+                let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
+                
+                // Only write if path changed or is missing
+                if current_cmd != desired_cmd {
+                    let _: () = cmd_key.set_value("", &desired_cmd).unwrap_or(());
+                }
+            }
+
+            // 4. Register Supported Types (to show up in 'Recommended' list)
+            if let Ok((types_key, _)) = key.create_subkey("SupportedTypes") {
+                let extensions = [
+                    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".apng", 
+                    ".bmp", ".tiff", ".tga", ".ico", ".pnm", ".hdr",
+                    ".avif", ".qoi", ".exr"
+                ];
+                for ext in extensions {
+                    let _: () = types_key.set_value(ext, &"").unwrap_or(());
+                }
+            }
+        });
+    }
+}
+
 /// Load the application icon from the embedded JPEG bytes.
 /// Returns an `egui::IconData` at 256×256 RGBA for the taskbar/titlebar icon.
 fn load_icon() -> egui::IconData {
@@ -33,6 +85,10 @@ fn load_icon() -> egui::IconData {
 
 fn main() -> eframe::Result {
     env_logger::init();
+
+    // Perform Windows-specific registration in a background thread
+    #[cfg(target_os = "windows")]
+    windows_utils::ensure_windows_registration();
 
     let mut settings = settings::Settings::load();
     let mut initial_image = None;

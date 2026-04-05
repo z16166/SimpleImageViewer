@@ -1,4 +1,4 @@
-# Simple Image Viewer (siv)
+# Simple Image Viewer (SimpleImageViewer)
 
 基于 Rust 和 [egui](https://github.com/emilk/egui) 构建的高性能跨平台图片查看器。专为快速浏览大型图片库而设计，配备简洁的深色界面、后台音乐播放功能，以及持久化设置。
  
@@ -15,7 +15,8 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 ## 特性列表
 
 - **快速图片加载** — 后台线程预加载前后图片，翻页无延迟
-- **广泛格式支持** — JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、HDR
+- **广泛格式支持** — JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、HDR、AVIF、QOI、EXR
+- **Windows 系统集成** — 启动时自动注册到“打开方式”列表，显示友好的应用名称（无需管理员权限）
 - **动画图片播放** — 自动播放 GIF 动图、APNG 和 WebP 动画，帧间延迟精确还原
 - **流畅导航** — 方向键翻页、鼠标滚轮缩放、1:1 模式下拖拽平移
 - **两种缩放模式** — *适应窗口*（默认）和*原始尺寸（1:1）*；按 `Z` 切换
@@ -115,7 +116,7 @@ cargo run
 
 # 发布版本（优化构建）
 cargo build --release
-# 输出：target/release/siv（Windows 下为 siv.exe）
+# 输出：target/release/SimpleImageViewer（Windows 下为 SimpleImageViewer.exe）
 ```
 
 ### 可选：重新生成应用图标
