@@ -637,7 +637,7 @@ impl ImageViewerApp {
             self.pan_offset = Vec2::ZERO;
             self.queue_save();
         }
-        if toggle_auto_switch {
+        if toggle_auto_switch && !self.show_settings {
             self.settings.auto_switch = !self.settings.auto_switch;
             self.last_switch_time = Instant::now();
             self.queue_save();
