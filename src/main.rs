@@ -14,6 +14,9 @@ mod windows_utils {
     use winreg::enums::*;
     use winreg::RegKey;
 
+    /// Perform a deep registration of the application in the Windows Registry (HKCU).
+    /// This ensures the app appears in "Recommended Apps", the "Open With" list,
+    /// and the "Default Programs" system settings.
     pub fn ensure_windows_registration() {
         thread::spawn(|| {
             let exe_path = match env::current_exe() {
@@ -22,47 +25,73 @@ mod windows_utils {
             };
 
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-            let path = r"Software\Classes\Applications\SimpleImageViewer.exe";
+            let app_id = "SimpleImageViewer.Viewer";
+            let friendly_name = "Simple Image Viewer";
             
-            // 1. Create/Open the base application key
-            let (key, _) = match hkcu.create_subkey(path) {
-                Ok(res) => res,
-                Err(_) => return,
-            };
-
-            // 2. Set FriendlyAppName (fallback display name in Open With)
-            let _: () = key.set_value("FriendlyAppName", &"Simple Image Viewer").unwrap_or(());
-
-            // 3. Set Open Command
-            if let Ok((cmd_key, _)) = key.create_subkey(r"shell\open\command") {
-                let current_cmd: String = cmd_key.get_value("").unwrap_or_default();
-                let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
+            // 1. Register the ProgID (The formal application handler)
+            let prog_id_path = format!(r"Software\Classes\{}", app_id);
+            if let Ok((prog_key, _)) = hkcu.create_subkey(&prog_id_path) {
+                let _: () = prog_key.set_value("", &friendly_name).unwrap_or(());
                 
-                // Only write if path changed or is missing
-                if current_cmd != desired_cmd {
+                // Icon (use the EXE's embedded icon)
+                if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
+                    let icon_path = format!("\"{}\",0", exe_path);
+                    let _: () = icon_key.set_value("", &icon_path).unwrap_or(());
+                }
+
+                // Shell Open Command
+                if let Ok((cmd_key, _)) = prog_key.create_subkey(r"shell\open\command") {
+                    let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
                     let _: () = cmd_key.set_value("", &desired_cmd).unwrap_or(());
                 }
             }
 
-            // 4. Register Supported Types (to show up in 'Recommended' list)
-            if let Ok((types_key, _)) = key.create_subkey("SupportedTypes") {
-                let extensions = [
-                    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".apng", 
-                    ".bmp", ".tiff", ".tga", ".ico", ".pnm", ".hdr",
-                    ".avif", ".qoi", ".exr"
-                ];
-                for ext in extensions {
-                    let _: () = types_key.set_value(ext, &"").unwrap_or(());
+            // 2. Register Application Capabilities (For "Recommended Apps" and Default Programs)
+            let cap_path = r"Software\SimpleImageViewer\Capabilities";
+            if let Ok((cap_key, _)) = hkcu.create_subkey(cap_path) {
+                let _: () = cap_key.set_value("ApplicationName", &friendly_name).unwrap_or(());
+                let _: () = cap_key.set_value("ApplicationDescription", &"A high-performance image viewer.").unwrap_or(());
+                
+                if let Ok((assoc_key, _)) = cap_key.create_subkey("FileAssociations") {
+                    for ext in crate::scanner::SUPPORTED_EXTENSIONS {
+                        let dot_ext = format!(".{}", ext);
+                        let _: () = assoc_key.set_value(&dot_ext, &app_id).unwrap_or(());
+                    }
+                }
+            }
+
+            // Register the capabilities path in RegisteredApplications
+            if let Ok((reg_apps, _)) = hkcu.create_subkey(r"Software\RegisteredApplications") {
+                let _: () = reg_apps.set_value(friendly_name, &cap_path).unwrap_or(());
+            }
+
+            // 3. Inject ProgID into each supported extension's OpenWithProgids
+            // This is what puts us in the "Recommended" section of the Open With menu.
+            for ext in crate::scanner::SUPPORTED_EXTENSIONS {
+                let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
+                if let Ok((list_key, _)) = hkcu.create_subkey(&progid_list_path) {
+                    // Setting a value with an empty string name and empty string value 
+                    // is how you add a ProgID to the list in Windows.
+                    let _: () = list_key.set_value(app_id, &"").unwrap_or(());
+                }
+            }
+
+            // 4. Legacy "Applications" key (fallback/redundancy)
+            let legacy_path = r"Software\Classes\Applications\SimpleImageViewer.exe";
+            if let Ok((leg_key, _)) = hkcu.create_subkey(legacy_path) {
+                let _: () = leg_key.set_value("FriendlyAppName", &friendly_name).unwrap_or(());
+                if let Ok((cmd_key, _)) = leg_key.create_subkey(r"shell\open\command") {
+                    let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
+                    let _: () = cmd_key.set_value("", &desired_cmd).unwrap_or(());
                 }
             }
         });
     }
 }
 
-/// Load the application icon from the embedded JPEG bytes.
+/// Load the application icon from the embedded PNG bytes.
 /// Returns an `egui::IconData` at 256×256 RGBA for the taskbar/titlebar icon.
 fn load_icon() -> egui::IconData {
-    // Embed the source image at compile time — works from any working directory.
     let bytes = include_bytes!("../assets/icon.png");
     match image::load_from_memory(bytes) {
         Ok(img) => {
@@ -86,7 +115,7 @@ fn load_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     env_logger::init();
 
-    // Perform Windows-specific registration in a background thread
+    // Perform deep Windows registration in a background thread
     #[cfg(target_os = "windows")]
     windows_utils::ensure_windows_registration();
 
@@ -99,10 +128,6 @@ fn main() -> eframe::Result {
             if let Some(parent) = pic_path.parent() {
                 settings.last_image_dir = Some(parent.to_path_buf());
             }
-            // Opened via file association / Explorer double-click:
-            // - Disable auto-advance so the user sees the specific image they clicked.
-            // - Disable recursive scan to avoid scanning huge directory trees.
-            // Both are persisted to disk so the next no-arg launch inherits these settings.
             settings.auto_switch = false;
             settings.recursive = false;
             initial_image = Some(pic_path);
@@ -110,8 +135,6 @@ fn main() -> eframe::Result {
     }
 
     let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
-    // no_recursive=true when launched via CLI (double-click from Explorer):
-    // prevents accidentally recursive-scanning huge directory trees.
     let no_recursive = initial_image.is_some();
     if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
         std::process::exit(0);

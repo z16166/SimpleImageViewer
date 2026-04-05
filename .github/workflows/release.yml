@@ -22,19 +22,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: siv
+            binary_name: SimpleImageViewer
             archive_ext: .tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: siv.exe
+            binary_name: SimpleImageViewer.exe
             archive_ext: .zip
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_name: siv
+            binary_name: SimpleImageViewer
             archive_ext: .zip
           - os: macos-latest # compile intel binary from the arm runner
             target: x86_64-apple-darwin
-            binary_name: siv
+            binary_name: SimpleImageViewer
             archive_ext: .zip
 
     steps:
@@ -64,7 +64,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $archiveName = "siv-${{ matrix.target }}${{ matrix.archive_ext }}"
+          $archiveName = "SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           $binarySrc = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
           Compress-Archive -Path $binarySrc, README.md, README_CN.md, LICENSE -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -72,7 +72,7 @@ jobs:
       - name: Package Artifacts (macOS)
         if: runner.os == 'macOS'
         run: |
-          ARCHIVE_NAME="siv-${{ matrix.target }}${{ matrix.archive_ext }}"
+          ARCHIVE_NAME="SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} .
           zip $ARCHIVE_NAME ${{ matrix.binary_name }} README.md README_CN.md LICENSE
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
@@ -80,10 +80,16 @@ jobs:
       - name: Package Artifacts (Linux)
         if: runner.os == 'Linux'
         run: |
-          ARCHIVE_NAME="siv-${{ matrix.target }}${{ matrix.archive_ext }}"
+          ARCHIVE_NAME="SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} .
           tar -czvf $ARCHIVE_NAME ${{ matrix.binary_name }} README.md README_CN.md LICENSE
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+
+      - name: Upload binary to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-binary
+          path: ${{ env.ARCHIVE_NAME }}
 
       - name: Upload Release Artifacts
         uses: softprops/action-gh-release@v2
