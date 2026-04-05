@@ -10,6 +10,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
 - **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR
+- **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF Metadata Display** — right-click an image to view detailed EXIF information in a resizable window
