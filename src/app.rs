@@ -79,6 +79,7 @@ pub struct ImageViewerApp {
 
     // Auto-switch timer
     last_switch_time: Instant,
+    slideshow_paused: bool,
 
     // Audio
     audio: AudioPlayer,
@@ -181,6 +182,7 @@ impl ImageViewerApp {
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,
             last_switch_time: Instant::now(),
+            slideshow_paused: false,
             audio: AudioPlayer::new(),
             show_settings: true,
             status_message: "Open a directory to start viewing images".to_string(),
@@ -745,10 +747,11 @@ impl ImageViewerApp {
             self.pan_offset = Vec2::ZERO;
             self.queue_save();
         }
-        if toggle_auto_switch && !self.show_settings {
-            self.settings.auto_switch = !self.settings.auto_switch;
-            self.last_switch_time = Instant::now();
-            self.queue_save();
+        if toggle_auto_switch && !self.show_settings && self.settings.auto_switch {
+            self.slideshow_paused = !self.slideshow_paused;
+            if !self.slideshow_paused {
+                self.last_switch_time = Instant::now();
+            }
         }
         if toggle_goto && !self.image_files.is_empty() {
             self.show_goto = !self.show_goto;
@@ -767,7 +770,7 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn check_auto_switch(&mut self) {
-        if !self.settings.auto_switch || self.image_files.is_empty() {
+        if !self.settings.auto_switch || self.slideshow_paused || self.image_files.is_empty() {
             return;
         }
         let interval = Duration::from_secs_f32(self.settings.auto_switch_interval);
@@ -1058,6 +1061,7 @@ impl ImageViewerApp {
 
                 let old_auto_switch = self.settings.auto_switch;
                 if ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next picture").changed() {
+                    self.slideshow_paused = false;  // Reset pause when toggling via UI
                 }
                 if self.settings.auto_switch {
                     ui.horizontal(|ui| {
