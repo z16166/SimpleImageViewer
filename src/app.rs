@@ -2125,8 +2125,11 @@ impl eframe::App for ImageViewerApp {
 
         // Keep repainting while loading, auto-switching, or playing music
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
-        if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() || is_music_playing {
+        if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() {
             ctx.request_repaint();
+        } else if is_music_playing {
+            // Music only needs low-frequency polling for track-name updates (~2 fps)
+            ctx.request_repaint_after(Duration::from_millis(500));
         } else {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
