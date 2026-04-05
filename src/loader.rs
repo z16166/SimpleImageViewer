@@ -96,6 +96,7 @@ fn load_image_file(index: usize, path: &PathBuf) -> LoadResult {
         match ext.as_str() {
             "gif" => load_gif(path),
             "png" | "apng" => load_png(path),
+            "webp" => load_webp(path),
             _ => load_static(path),
         }
     })();
@@ -172,6 +173,45 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
+    if raw_frames.len() <= 1 {
+        return load_static(path);
+    }
+
+    let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let delay_ms = if denom == 0 { 100 } else { numer / denom };
+        let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
+        let buffer = frame.into_buffer();
+        let (width, height) = buffer.dimensions();
+        let pixels = buffer.into_raw();
+        AnimationFrame {
+            width,
+            height,
+            pixels,
+            delay: Duration::from_millis(delay_ms as u64),
+        }
+    }).collect();
+
+    Ok(ImageData::Animated(frames))
+}
+
+// ---------------------------------------------------------------------------
+// Animated WebP
+// ---------------------------------------------------------------------------
+
+fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
+    use image::codecs::webp::WebPDecoder;
+    use image::AnimationDecoder;
+    use std::io::BufReader;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
+    let raw_frames = decoder.into_frames()
+        .collect_frames()
+        .map_err(|e| e.to_string())?;
+
+    // Single-frame WebP → treat as static
     if raw_frames.len() <= 1 {
         return load_static(path);
     }
