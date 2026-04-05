@@ -11,7 +11,7 @@ use egui::{
 
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::ipc::IpcMessage;
-use crate::loader::{ImageLoader, TextureCache};
+use crate::loader::{ImageData, ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
 
@@ -25,6 +25,20 @@ const PANEL_BG: Color32 = Color32::from_rgb(32, 33, 36);
 const ACCENT: Color32 = Color32::from_rgb(108, 92, 231);
 const ACCENT2: Color32 = Color32::from_rgb(0, 199, 190);
 const TEXT_MUTED: Color32 = Color32::from_rgb(154, 160, 166);
+
+/// Animation playback state for the currently displayed animated image.
+struct AnimationPlayback {
+    /// Index in the image_files list that this animation belongs to.
+    image_index: usize,
+    /// Pre-uploaded GPU textures for each frame.
+    textures: Vec<egui::TextureHandle>,
+    /// Per-frame display duration.
+    delays: Vec<Duration>,
+    /// Currently displayed frame index.
+    current_frame: usize,
+    /// When the current frame started displaying.
+    frame_start: Instant,
+}
 
 /// Parameters that affect the OSD status text.
 #[derive(PartialEq)]
@@ -54,6 +68,8 @@ pub struct ImageViewerApp {
     // Image loading
     loader: ImageLoader,
     texture_cache: TextureCache,
+    /// Animated image playback state (None for static images).
+    animation: Option<AnimationPlayback>,
 
     // Pan/drag state (used in non-fullscreen 1:1 mode)
     pan_offset: Vec2,
@@ -155,6 +171,7 @@ impl ImageViewerApp {
             scanning: false,
             loader: ImageLoader::new(),
             texture_cache: TextureCache::new(CACHE_SIZE),
+            animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,
             last_switch_time: Instant::now(),
@@ -229,6 +246,7 @@ impl ImageViewerApp {
         self.image_files.clear();
         self.current_index = 0;
         self.texture_cache.clear();
+        self.animation = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
@@ -270,6 +288,8 @@ impl ImageViewerApp {
         self.current_index = target_index;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
+        // Reset animation playback — will be re-created if the new image is animated
+        self.animation = None;
 
         // Update resolution if already in cache
         if let Some(texture) = self.texture_cache.get(self.current_index) {
@@ -405,27 +425,73 @@ impl ImageViewerApp {
 
     fn process_loaded_images(&mut self, ctx: &Context) {
         while let Some(load_result) = self.loader.poll() {
+            let idx = load_result.index;
             match load_result.result {
-                Ok(decoded) => {
+                Ok(ImageData::Static(decoded)) => {
                     let color_image = ColorImage::from_rgba_unmultiplied(
                         [decoded.width as usize, decoded.height as usize],
                         &decoded.pixels,
                     );
-                    let name = format!("img_{}", load_result.index);
+                    let name = format!("img_{}", idx);
                     let handle =
                         ctx.load_texture(name, color_image, TextureOptions::LINEAR);
                     self.texture_cache
-                        .insert(load_result.index, handle, self.current_index);
-                    if load_result.index == self.current_index {
+                        .insert(idx, handle, self.current_index);
+                    if idx == self.current_index {
                         self.current_image_res = Some((decoded.width, decoded.height));
+                        // Clear any stale animation for this index
+                        if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
+                            self.animation = None;
+                        }
+                    }
+                }
+                Ok(ImageData::Animated(frames)) => {
+                    // Upload first frame to the texture cache (used for transitions & preload preview)
+                    if let Some(first) = frames.first() {
+                        let color_image = ColorImage::from_rgba_unmultiplied(
+                            [first.width as usize, first.height as usize],
+                            &first.pixels,
+                        );
+                        let name = format!("img_{}", idx);
+                        let handle =
+                            ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                        self.texture_cache
+                            .insert(idx, handle, self.current_index);
+                        if idx == self.current_index {
+                            self.current_image_res = Some((first.width, first.height));
+                        }
+                    }
+
+                    // If this is the current image, create the full animation playback state
+                    if idx == self.current_index {
+                        let mut textures = Vec::with_capacity(frames.len());
+                        let mut delays = Vec::with_capacity(frames.len());
+                        for (i, frame) in frames.iter().enumerate() {
+                            let color_image = ColorImage::from_rgba_unmultiplied(
+                                [frame.width as usize, frame.height as usize],
+                                &frame.pixels,
+                            );
+                            let name = format!("anim_{}_{}", idx, i);
+                            let handle =
+                                ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                            textures.push(handle);
+                            delays.push(frame.delay);
+                        }
+                        self.animation = Some(AnimationPlayback {
+                            image_index: idx,
+                            textures,
+                            delays,
+                            current_frame: 0,
+                            frame_start: Instant::now(),
+                        });
                     }
                 }
                 Err(e) => {
                     log::warn!(
                         "Failed to load image at index {}: {e}",
-                        load_result.index
+                        idx
                     );
-                    if load_result.index == self.current_index {
+                    if idx == self.current_index {
                         self.error_message =
                             Some(format!("Failed to load image: {e}"));
                     }
@@ -1179,6 +1245,26 @@ impl ImageViewerApp {
             }
 
             if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
+                // For animated images, advance the frame and use the animation frame texture
+                let texture = if let Some(ref mut anim) = self.animation {
+                    if anim.image_index == self.current_index && !anim.textures.is_empty() {
+                        // Advance frame if delay has elapsed
+                        let elapsed = anim.frame_start.elapsed();
+                        if elapsed >= anim.delays[anim.current_frame] {
+                            anim.current_frame = (anim.current_frame + 1) % anim.textures.len();
+                            anim.frame_start = Instant::now();
+                        }
+                        // Schedule repaint for next frame transition
+                        let remaining = anim.delays[anim.current_frame]
+                            .saturating_sub(anim.frame_start.elapsed());
+                        ui.ctx().request_repaint_after(remaining);
+                        anim.textures[anim.current_frame].clone()
+                    } else {
+                        texture
+                    }
+                } else {
+                    texture
+                };
                 let img_size = texture.size_vec2();
 
                 if canvas_resp.dragged() {
