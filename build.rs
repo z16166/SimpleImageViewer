@@ -89,15 +89,54 @@ fn embed_resources(ico_path: &std::path::Path) {
         res.set_icon(&ico_path.display().to_string());
     }
 
-    // Sync version from Cargo.toml
-    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+    // 1. Get version from Cargo.toml
+    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+    
+    // 2. Attempt to get Git Commit ID (short hash)
+    let git_hash = std::process::Command::new("git")
+        .args(&["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
 
-    res.set("ProductName",     "Simple Image Viewer");
-    res.set("FileDescription", "Simple Image Viewer");
-    res.set("InternalName",    "siv.exe");
+    // 3. Prepare String Version (e.g. 0.9.1-abc1234)
+    let display_version = if let Some(hash) = git_hash {
+        format!("{}-{}", pkg_version, hash)
+    } else {
+        pkg_version.clone()
+    };
+
+    // 4. Prepare Numeric Version (u64 - A.B.C.D where each is 16-bits)
+    let parts: Vec<u64> = pkg_version
+        .split('.')
+        .map(|s| s.parse::<u64>().unwrap_or(0))
+        .collect();
+    let major = *parts.get(0).unwrap_or(&0);
+    let minor = *parts.get(1).unwrap_or(&0);
+    let patch = *parts.get(2).unwrap_or(&0);
+    let build = *parts.get(3).unwrap_or(&0);
+    
+    // Construct u64: AAAA BBBB CCCC DDDD in hex
+    let version_u64: u64 = (major << 48) | (minor << 32) | (patch << 16) | build;
+
+    res.set_version_info(winresource::VersionInfo::FILEVERSION,    version_u64);
+    res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, version_u64);
+
+    res.set("ProductName",      "Simple Image Viewer");
+    res.set("FileDescription",  "Simple Image Viewer");
+    res.set("InternalName",     "siv.exe");
     res.set("OriginalFilename", "siv.exe");
-    res.set("FileVersion",     &version);
-    res.set("ProductVersion",  &version);
+    
+    // Set String Versions (visible in Windows properties)
+    res.set("FileVersion",     &display_version);
+    res.set("ProductVersion",  &display_version);
+    
     res.set("LegalCopyright",  "\u{a9} 2026");
     res.set("Comments",        "https://github.com/z16166/SimpleImageViewer/");
 
