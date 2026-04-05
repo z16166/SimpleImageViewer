@@ -120,6 +120,12 @@ pub struct ImageViewerApp {
     current_image_res: Option<(u32, u32)>,
     current_system_wallpaper: Option<String>,
 
+    // File association dialog state (Windows only)
+    #[cfg(target_os = "windows")]
+    show_file_assoc_dialog: bool,
+    #[cfg(target_os = "windows")]
+    file_assoc_selections: Vec<bool>,
+
     // Transition state
     prev_texture: Option<egui::TextureHandle>,
     transition_start: Option<Instant>,
@@ -197,6 +203,10 @@ impl ImageViewerApp {
             selected_wallpaper_mode: "Crop".to_string(),
             current_image_res: None,
             current_system_wallpaper: None,
+            #[cfg(target_os = "windows")]
+            show_file_assoc_dialog: false,
+            #[cfg(target_os = "windows")]
+            file_assoc_selections: vec![true; scanner::SUPPORTED_EXTENSIONS.len()],
             prev_texture: None,
             transition_start: None,
             is_next: true,
@@ -608,7 +618,16 @@ impl ImageViewerApp {
         if nav_first { self.navigate_first(); }
         if nav_last { self.navigate_last(); }
         if toggle_settings {
-            self.show_settings = !self.show_settings;
+            #[cfg(target_os = "windows")]
+            if self.show_file_assoc_dialog {
+                self.show_file_assoc_dialog = false;
+            } else {
+                self.show_settings = !self.show_settings;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                self.show_settings = !self.show_settings;
+            }
         }
         if zoom_in {
             self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
@@ -748,7 +767,6 @@ impl ImageViewerApp {
         let mut open_dir = false;
         let mut open_music_file = false;
         let mut open_music_dir = false;
-        let mut start_viewing = false;
         let mut fullscreen_changed = false;
         let mut music_enabled_changed = false;
         let mut do_quit = false;
@@ -757,7 +775,6 @@ impl ImageViewerApp {
             .default_pos(Pos2::new(12.0, 12.0))
             .resizable(true)
             .collapsible(true)
-            .vscroll(true)
             .frame(
                 Frame::window(&ctx.global_style())
                     .fill(PANEL_BG)
@@ -1124,79 +1141,85 @@ impl ImageViewerApp {
                 ui.separator();
                 ui.add_space(6.0);
 
-                // ── Status & actions ───────────────────────────────────────
-                if !self.image_files.is_empty() {
-                    let fname = self.image_files[self.current_index]
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
+                // ── System Integration (Windows only) ─────────────────────
+                #[cfg(target_os = "windows")]
+                {
+                    ui.label(RichText::new("System Integration (Windows)").color(ACCENT2).strong());
+                    ui.add_space(2.0);
                     ui.label(
-                        RichText::new(format!(
-                            "{}/{} — {}",
-                            self.current_index + 1,
-                            self.image_files.len(),
-                            fname
-                        ))
-                        .color(TEXT_MUTED)
-                        .small(),
-                    );
-                    ui.add_space(4.0);
-                    if styled_button(ui, "▶  Start Viewing").clicked() {
-                        start_viewing = true;
-                    }
-                } else {
-                    ui.label(
-                        RichText::new(&self.status_message)
+                        RichText::new("Register this app in Windows \"Open With\" menu for image files.")
                             .color(TEXT_MUTED)
                             .small(),
                     );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if styled_button(ui, "📎 Associate Formats").clicked() {
+                            // Reset all selections to true (default: all selected)
+                            self.file_assoc_selections = vec![true; scanner::SUPPORTED_EXTENSIONS.len()];
+                            self.show_file_assoc_dialog = true;
+                        }
+                        ui.add_space(8.0);
+                        if styled_button(ui, "🗑 Remove Association").clicked() {
+                            let confirmed = rfd::MessageDialog::new()
+                                .set_title("Remove File Associations?")
+                                .set_description(
+                                    "This will remove all file associations created by this application \
+                                     from the Windows registry.\n\n\
+                                     The application will return to \"portable/green\" mode.\n\
+                                     Other applications' associations will not be affected.\n\n\
+                                     Continue?"
+                                )
+                                .set_buttons(rfd::MessageButtons::OkCancel)
+                                .set_level(rfd::MessageLevel::Warning)
+                                .show() == rfd::MessageDialogResult::Ok;
+                            if confirmed {
+                                crate::windows_utils::unregister_file_associations();
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
                 }
 
-                ui.add_space(6.0);
+                // ── Exit area ────────────────────────────────────────────────
                 #[cfg(target_os = "macos")]
-                const QUIT_HINT: &str =
-                    "Press  Esc / F1  to toggle this panel  \u{2502}  Cmd+Q to quit";
+                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Cmd+Q to quit";
                 #[cfg(target_os = "linux")]
-                const QUIT_HINT: &str =
-                    "Press  Esc / F1  to toggle this panel  \u{2502}  Ctrl+Q to quit";
+                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Ctrl+Q to quit";
                 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                const QUIT_HINT: &str =
-                    "Press  Esc / F1  to toggle this panel  \u{2502}  Alt+F4 to quit";
-                ui.label(RichText::new(QUIT_HINT).color(TEXT_MUTED).small());
+                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Alt+F4 to quit";
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                // Exit button — always visible at bottom of settings panel
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("✕  Exit Application").color(Color32::WHITE),
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("✕  Exit Application").color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(180, 40, 40))
+                            .corner_radius(egui::CornerRadius::same(4)),
                         )
-                        .fill(Color32::from_rgb(180, 40, 40))
-                        .corner_radius(egui::CornerRadius::same(4)),
-                    )
-                    .clicked()
-                {
-                    do_quit = true;
-                }
+                        .clicked()
+                    {
+                        do_quit = true;
+                    }
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(QUIT_HINT).color(TEXT_MUTED).small());
+                });
             });
 
         // Deferred actions (avoid borrow issues with closures)
         if open_dir {
             self.open_directory_dialog();
-            self.queue_save(); // saves last_image_dir
+            self.queue_save();
         }
         if open_music_file {
             self.open_music_file_dialog();
-            self.queue_save(); // saves music_path
+            self.queue_save();
         }
         if open_music_dir {
             self.open_music_dir_dialog();
             self.queue_save(); // saves music_path
-        }
-        if start_viewing {
-            self.show_settings = false;
         }
         if fullscreen_changed {
             self.pending_fullscreen = Some(self.settings.fullscreen);
@@ -1976,6 +1999,154 @@ impl ImageViewerApp {
             self.show_goto = false;
         }
     }
+
+    // ------------------------------------------------------------------
+    // UI: File association dialog (Windows only)
+    // ------------------------------------------------------------------
+
+    #[cfg(target_os = "windows")]
+    fn draw_file_assoc_dialog(&mut self, ctx: &Context) {
+        if !self.show_file_assoc_dialog {
+            return;
+        }
+
+        // Dark background overlay (purely visual, settings panel is hidden)
+        let screen_rect = ctx.screen_rect();
+        let bg_layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("file_assoc_bg"));
+        ctx.layer_painter(bg_layer).add(
+            egui::Shape::rect_filled(
+                screen_rect,
+                egui::CornerRadius::ZERO,
+                Color32::from_black_alpha(180),
+            ),
+        );
+
+        let mut do_apply = false;
+        let mut do_cancel = false;
+
+        egui::Window::new("📎  Select Image Formats to Associate")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(420.0)
+            .frame(
+                Frame::window(&ctx.global_style())
+                    .fill(PANEL_BG)
+                    .shadow(egui::epaint::Shadow::NONE),
+            )
+            .show(ctx, |ui| {
+                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+
+                ui.label(
+                    RichText::new("Select which image formats this application\nshould be associated with in Windows:")
+                        .color(TEXT_MUTED),
+                );
+                ui.add_space(8.0);
+
+                // Select All / Deselect All
+                ui.horizontal(|ui| {
+                    if ui.button("✔ Select All").clicked() {
+                        for sel in self.file_assoc_selections.iter_mut() {
+                            *sel = true;
+                        }
+                    }
+                    if ui.button("✘ Deselect All").clicked() {
+                        for sel in self.file_assoc_selections.iter_mut() {
+                            *sel = false;
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+
+                // Scrollable area with checkboxes in a 3-column grid
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    let exts = scanner::SUPPORTED_EXTENSIONS;
+                    let cols = 3;
+                    let rows = (exts.len() + cols - 1) / cols;
+
+                    egui::Grid::new("file_assoc_grid")
+                        .num_columns(cols)
+                        .spacing([24.0, 4.0])
+                        .show(ui, |ui| {
+                            for row in 0..rows {
+                                for col in 0..cols {
+                                    let idx = row * cols + col;
+                                    if idx < exts.len() {
+                                        let label = format!(".{}", exts[idx]);
+                                        ui.checkbox(&mut self.file_assoc_selections[idx], label);
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Count selected
+                let selected_count = self.file_assoc_selections.iter().filter(|&&s| s).count();
+
+                ui.horizontal(|ui| {
+                    let apply_enabled = selected_count > 0;
+                    if ui
+                        .add_enabled(
+                            apply_enabled,
+                            egui::Button::new(
+                                RichText::new(format!("✔  Apply ({} formats)", selected_count))
+                                    .color(Color32::WHITE)
+                            )
+                            .fill(ACCENT)
+                            .corner_radius(egui::CornerRadius::same(4)),
+                        )
+                        .clicked()
+                    {
+                        do_apply = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .add(
+                            egui::Button::new("✕  Cancel")
+                                .corner_radius(egui::CornerRadius::same(4)),
+                        )
+                        .clicked()
+                    {
+                        do_cancel = true;
+                    }
+                });
+            });
+
+        if do_apply {
+            // Collect selected extensions
+            let selected: Vec<&str> = scanner::SUPPORTED_EXTENSIONS
+                .iter()
+                .zip(self.file_assoc_selections.iter())
+                .filter(|(_, sel)| **sel)
+                .map(|(&ext, _)| ext)
+                .collect();
+            crate::windows_utils::register_file_associations(&selected);
+            self.show_file_assoc_dialog = false;
+
+            rfd::MessageDialog::new()
+                .set_title("File Association Registered")
+                .set_description(
+                    "File associations have been registered successfully!\n\n\
+                     To set Simple Image Viewer as the default image viewer:\n\
+                     1. Double-click any image file in Explorer\n\
+                     2. Select \"Simple Image Viewer\" from the list\n\
+                     3. Check \"Always use this app\"\n\n\
+                     Usually you only need to do this once, and Windows will \
+                     automatically apply it to all associated image types."
+                )
+                .set_buttons(rfd::MessageButtons::Ok)
+                .set_level(rfd::MessageLevel::Info)
+                .show();
+        }
+        if do_cancel {
+            self.show_file_assoc_dialog = false;
+        }
+    }
 }
 
 impl eframe::App for ImageViewerApp {
@@ -2143,14 +2314,23 @@ impl eframe::App for ImageViewerApp {
         // Draw image canvas (fills the central area)
         self.draw_image_canvas_ui(ui);
 
-        // Settings panel overlay
-        if self.show_settings {
+        // Settings panel overlay (hidden when file assoc dialog is modal)
+        #[cfg(target_os = "windows")]
+        let skip_settings = self.show_file_assoc_dialog;
+        #[cfg(not(target_os = "windows"))]
+        let skip_settings = false;
+
+        if self.show_settings && !skip_settings {
             self.draw_settings_panel(&ctx);
         }
 
         if self.show_wallpaper_dialog {
             self.draw_wallpaper_dialog(&ctx);
         }
+
+        // File association dialog (Windows only, modal)
+        #[cfg(target_os = "windows")]
+        self.draw_file_assoc_dialog(&ctx);
 
         // Goto dialog
         if self.show_goto {

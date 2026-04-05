@@ -9,8 +9,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR, HEIC, JXL
-- **Windows Integration** — Automatically registers to the Windows 'Open With' menu with a friendly name ("Simple Image Viewer") on first run (no admin required)
+- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR
+- **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
@@ -67,6 +67,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop playback |
 | **Background Music** | Enable music, pick file or folder, and adjust volume |
 | **Font & Appearance** | Choose system font family and interface size (applied instantly) |
+| **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
 
 
 ---

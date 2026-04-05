@@ -8,89 +8,103 @@ mod scanner;
 mod settings;
 
 #[cfg(target_os = "windows")]
-mod windows_utils {
-    use std::env;
-    use std::thread;
+pub mod windows_utils {
     use winreg::enums::*;
     use winreg::RegKey;
 
-    /// Perform a deep registration of the application in the Windows Registry (HKCU).
-    /// This ensures the app appears in "Recommended Apps", the "Open With" list,
-    /// and the "Default Programs" system settings.
-    pub fn ensure_windows_registration() {
-        thread::spawn(|| {
-            let exe_path = match env::current_exe() {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => return,
-            };
+    const APP_ID: &str = "SimpleImageViewer.Viewer";
+    const FRIENDLY_NAME: &str = "Simple Image Viewer";
+    const CAP_PATH: &str = r"Software\SimpleImageViewer\Capabilities";
+    const LEGACY_PATH: &str = r"Software\Classes\Applications\SimpleImageViewer.exe";
 
-            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-            let app_id = "SimpleImageViewer.Viewer";
-            let friendly_name = "Simple Image Viewer";
-            
-            // 1. Register the ProgID (The formal application handler)
-            let prog_id_path = format!(r"Software\Classes\{}", app_id);
-            if let Ok((prog_key, _)) = hkcu.create_subkey(&prog_id_path) {
-                let _: () = prog_key.set_value("", &friendly_name).unwrap_or(());
-                
-                // Icon (use the EXE's embedded icon)
-                if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
-                    let icon_path = format!("\"{}\",0", exe_path);
-                    let _: () = icon_key.set_value("", &icon_path).unwrap_or(());
-                }
+    /// Register the application as a handler for the given image extensions.
+    /// This writes ProgID, Application Capabilities, RegisteredApplications,
+    /// OpenWithProgids entries, and the legacy Applications key.
+    pub fn register_file_associations(extensions: &[&str]) {
+        let exe_path = match std::env::current_exe() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return,
+        };
 
-                // Shell Open Command
-                if let Ok((cmd_key, _)) = prog_key.create_subkey(r"shell\open\command") {
-                    let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
-                    let _: () = cmd_key.set_value("", &desired_cmd).unwrap_or(());
-                }
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+        // 1. ProgID
+        let prog_id_path = format!(r"Software\Classes\{}", APP_ID);
+        if let Ok((prog_key, _)) = hkcu.create_subkey(&prog_id_path) {
+            let _: () = prog_key.set_value("", &FRIENDLY_NAME).unwrap_or(());
+            if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
+                let _: () = icon_key.set_value("", &format!("\"{}\",0", exe_path)).unwrap_or(());
             }
+            if let Ok((cmd_key, _)) = prog_key.create_subkey(r"shell\open\command") {
+                let _: () = cmd_key.set_value("", &format!("\"{}\" \"%1\"", exe_path)).unwrap_or(());
+            }
+        }
 
-            // 2. Register Application Capabilities (For "Recommended Apps" and Default Programs)
-            let cap_path = r"Software\SimpleImageViewer\Capabilities";
-            if let Ok((cap_key, _)) = hkcu.create_subkey(cap_path) {
-                let _: () = cap_key.set_value("ApplicationName", &friendly_name).unwrap_or(());
-                let _: () = cap_key.set_value("ApplicationDescription", &"A high-performance image viewer.").unwrap_or(());
-                
-                if let Ok((assoc_key, _)) = cap_key.create_subkey("FileAssociations") {
-                    for ext in crate::scanner::SUPPORTED_EXTENSIONS {
-                        let dot_ext = format!(".{}", ext);
-                        let _: () = assoc_key.set_value(&dot_ext, &app_id).unwrap_or(());
-                    }
+        // 2. Application Capabilities
+        if let Ok((cap_key, _)) = hkcu.create_subkey(CAP_PATH) {
+            let _: () = cap_key.set_value("ApplicationName", &FRIENDLY_NAME).unwrap_or(());
+            let _: () = cap_key.set_value("ApplicationDescription", &"A high-performance image viewer.").unwrap_or(());
+            if let Ok((assoc_key, _)) = cap_key.create_subkey("FileAssociations") {
+                for ext in extensions {
+                    let dot_ext = if ext.starts_with('.') { ext.to_string() } else { format!(".{}", ext) };
+                    let _: () = assoc_key.set_value(&dot_ext, &APP_ID).unwrap_or(());
                 }
             }
+        }
 
-            // Register the capabilities path in RegisteredApplications
-            if let Ok((reg_apps, _)) = hkcu.create_subkey(r"Software\RegisteredApplications") {
-                let _: () = reg_apps.set_value(friendly_name, &cap_path).unwrap_or(());
-            }
+        // 3. RegisteredApplications
+        if let Ok((reg_apps, _)) = hkcu.create_subkey(r"Software\RegisteredApplications") {
+            let _: () = reg_apps.set_value(FRIENDLY_NAME, &CAP_PATH).unwrap_or(());
+        }
 
-            // 3. Inject ProgID into each supported extension's OpenWithProgids
-            // This is what puts us in the "Recommended" section of the Open With menu.
-            for ext in crate::scanner::SUPPORTED_EXTENSIONS {
-                let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
-                if let Ok((list_key, _)) = hkcu.create_subkey(&progid_list_path) {
-                    // Setting a value with an empty string name and empty string value 
-                    // is how you add a ProgID to the list in Windows.
-                    let _: () = list_key.set_value(app_id, &"").unwrap_or(());
-                }
+        // 4. OpenWithProgids for each extension
+        for ext in extensions {
+            let ext_clean = ext.trim_start_matches('.');
+            let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext_clean);
+            if let Ok((list_key, _)) = hkcu.create_subkey(&progid_list_path) {
+                let _: () = list_key.set_value(APP_ID, &"").unwrap_or(());
             }
+        }
 
-            // 4. Legacy "Applications" key (fallback/redundancy)
-            let legacy_path = r"Software\Classes\Applications\SimpleImageViewer.exe";
-            if let Ok((leg_key, _)) = hkcu.create_subkey(legacy_path) {
-                let _: () = leg_key.set_value("FriendlyAppName", &friendly_name).unwrap_or(());
-                if let Ok((cmd_key, _)) = leg_key.create_subkey(r"shell\open\command") {
-                    let desired_cmd = format!("\"{}\" \"%1\"", exe_path);
-                    let _: () = cmd_key.set_value("", &desired_cmd).unwrap_or(());
-                }
+        // 5. Legacy Applications key
+        if let Ok((leg_key, _)) = hkcu.create_subkey(LEGACY_PATH) {
+            let _: () = leg_key.set_value("FriendlyAppName", &FRIENDLY_NAME).unwrap_or(());
+            if let Ok((cmd_key, _)) = leg_key.create_subkey(r"shell\open\command") {
+                let _: () = cmd_key.set_value("", &format!("\"{}\" \"%1\"", exe_path)).unwrap_or(());
             }
-        });
+        }
+    }
+
+    /// Remove all registry entries created by `register_file_associations`.
+    /// Only removes our own entries — does not touch other applications.
+    pub fn unregister_file_associations() {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+
+        // 1. Remove ProgID
+        let _ = hkcu.delete_subkey_all(format!(r"Software\Classes\{}", APP_ID));
+
+        // 2. Remove Application Capabilities (entire SimpleImageViewer tree)
+        let _ = hkcu.delete_subkey_all(r"Software\SimpleImageViewer");
+
+        // 3. Remove from RegisteredApplications
+        if let Ok(reg_apps) = hkcu.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_WRITE) {
+            let _ = reg_apps.delete_value(FRIENDLY_NAME);
+        }
+
+        // 4. Remove our ProgID from each extension's OpenWithProgids
+        for ext in crate::scanner::SUPPORTED_EXTENSIONS {
+            let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
+            if let Ok(list_key) = hkcu.open_subkey_with_flags(&progid_list_path, KEY_WRITE) {
+                let _ = list_key.delete_value(APP_ID);
+            }
+        }
+
+        // 5. Remove legacy Applications key
+        let _ = hkcu.delete_subkey_all(LEGACY_PATH);
     }
 }
 
 /// Load the application icon from the embedded PNG bytes.
-/// Returns an `egui::IconData` at 256×256 RGBA for the taskbar/titlebar icon.
 fn load_icon() -> egui::IconData {
     let bytes = include_bytes!("../assets/icon.png");
     match image::load_from_memory(bytes) {
@@ -114,10 +128,6 @@ fn load_icon() -> egui::IconData {
 
 fn main() -> eframe::Result {
     env_logger::init();
-
-    // Perform deep Windows registration in a background thread
-    #[cfg(target_os = "windows")]
-    windows_utils::ensure_windows_registration();
 
     let mut settings = settings::Settings::load();
     let mut initial_image = None;
