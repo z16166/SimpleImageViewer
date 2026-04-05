@@ -33,6 +33,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Modern UI** — sleek two-column settings panel, click the background to quickly dismiss, and fully adjustable font sizes (12-32px)
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
+- **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
 - **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, or set as desktop wallpaper
 
 ---
@@ -54,6 +55,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `F11` | Toggle full-screen |
 | `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / Set Wallpaper) |
+| `Delete` | Move current image to Recycle Bin / Trash |
+| `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Alt+F4` | Quit (Windows) |
 
 ---

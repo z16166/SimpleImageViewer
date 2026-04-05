@@ -319,6 +319,70 @@ impl ImageViewerApp {
         self.schedule_preloads(true);
     }
 
+    fn delete_current_image(&mut self, permanent: bool) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        let path_to_delete = self.image_files[self.current_index].clone();
+        
+        // Final sanity check: make sure file still exists
+        if !path_to_delete.exists() {
+            // Just remove from list if it's already gone
+            self.image_files.remove(self.current_index);
+        } else {
+            let result = if permanent {
+                std::fs::remove_file(&path_to_delete).map_err(|e| e.to_string())
+            } else {
+                trash::delete(&path_to_delete).map_err(|e| e.to_string())
+            };
+
+            if let Err(e) = result {
+                self.error_message = Some(format!("Failed to delete file: {}", e));
+                return;
+            }
+            
+            // Successfully deleted
+            self.image_files.remove(self.current_index);
+        }
+
+        // Texture cache is keyed by path/hash in our implementation usually, 
+        // but if it's indexed, we need to clear or shift. 
+        // Our texture_cache is likely a wrapper around a Map or similar.
+        // Let's clear the entire cache to be safe or re-request.
+        self.texture_cache.clear();
+
+        if self.image_files.is_empty() {
+            self.current_index = 0;
+            self.status_message = "No images left in directory.".to_string();
+            self.current_image_res = None;
+            self.animation = None;
+            self.cached_exif_text = None;
+        } else {
+            // Adjust current_index if we were at the last element
+            if self.current_index >= self.image_files.len() {
+                self.current_index = self.image_files.len() - 1;
+            }
+            
+            // Reset state for new image
+            self.animation = None;
+            self.zoom_factor = 1.0;
+            self.pan_offset = Vec2::ZERO;
+            self.cached_exif_text = None;
+            self.error_message = None;
+
+            // Load the image now at the current index
+            self.loader.request_load(
+                self.current_index,
+                self.image_files[self.current_index].clone(),
+            );
+            self.schedule_preloads(true);
+        }
+        
+        // Force HUD update
+        self.last_hud_state = None;
+    }
+
     fn navigate_next(&mut self) {
         if self.image_files.is_empty() {
             return;
@@ -553,7 +617,18 @@ impl ImageViewerApp {
         let mut do_refresh = false;
         #[allow(unused_mut)]
         let mut do_quit = false;
- 
+        let mut do_delete = false;
+        let mut do_permanent_delete = false;
+
+        // Collect all modal flags to prevent deletion when a dialog is active
+        let any_modal_open = self.show_settings 
+            || self.show_wallpaper_dialog 
+            || self.show_goto 
+            || self.show_exif_window;
+
+        #[cfg(target_os = "windows")]
+        let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
+
         ctx.input(|i| {
             if i.key_pressed(Key::F5) {
                 do_refresh = true;
@@ -605,6 +680,16 @@ impl ImageViewerApp {
             if i.key_pressed(Key::G) {
                 toggle_goto = true;
             }
+            // Delete / Shift+Delete (Main window only)
+            if !any_modal_open {
+                if i.key_pressed(Key::Delete) {
+                    if i.modifiers.shift {
+                        do_permanent_delete = true;
+                    } else {
+                        do_delete = true;
+                    }
+                }
+            }
             // Quit shortcut: Cmd+Q on macOS, Ctrl+Q on Linux.
             // On Windows, Alt+F4 is standard and is handled by the OS — no code needed.
             #[cfg(not(target_os = "windows"))]
@@ -613,6 +698,10 @@ impl ImageViewerApp {
             }
         });
 
+        if do_delete { self.delete_current_image(false); }
+        if do_permanent_delete { self.delete_current_image(true); }
+
+        if do_refresh { self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default()); }
         if nav_next { self.navigate_next(); }
         if nav_prev { self.navigate_prev(); }
         if nav_first { self.navigate_first(); }
