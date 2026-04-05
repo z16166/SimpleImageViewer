@@ -89,8 +89,15 @@ fn embed_resources(ico_path: &std::path::Path) {
         res.set_icon(&ico_path.display().to_string());
     }
 
+    // Sync version from Cargo.toml
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
+
     res.set("ProductName",     "Simple Image Viewer");
     res.set("FileDescription", "Simple Image Viewer");
+    res.set("InternalName",    "siv.exe");
+    res.set("OriginalFilename", "siv.exe");
+    res.set("FileVersion",     &version);
+    res.set("ProductVersion",  &version);
     res.set("LegalCopyright",  "\u{a9} 2026");
     res.set("Comments",        "https://github.com/z16166/SimpleImageViewer/");
 
