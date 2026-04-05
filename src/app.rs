@@ -2174,20 +2174,22 @@ impl eframe::App for ImageViewerApp {
             egui::Window::new("ℹ EXIF Information")
                 .collapsible(false)
                 .resizable(true)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.screen_rect().center())
                 .default_width(400.0)
                 .default_height(350.0)
+                .min_height(80.0) // Allow scaling down to a reasonable minimum
                 .show(&ctx, |ui| {
                     if let Some(text) = &self.cached_exif_text {
-                        // Reserve space for the bottom buttons
-                        let button_height = 36.0;
-                        let available = ui.available_height() - button_height;
+                        // Use a flexible ScrollArea that takes up remaining space
                         egui::ScrollArea::vertical()
-                            .max_height(available.max(60.0))
+                            .auto_shrink([false; 2]) // Don't snap to content size
                             .show(ui, |ui| {
                                 ui.set_min_width(ui.available_width());
                                 ui.label(text);
                             });
-                        ui.add_space(8.0);
+
+                        ui.add_space(4.0);
                         ui.separator();
                         ui.horizontal(|ui| {
                             if styled_button(ui, "📋 Copy EXIF").clicked() {
