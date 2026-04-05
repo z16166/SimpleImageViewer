@@ -2174,34 +2174,34 @@ impl eframe::App for ImageViewerApp {
             egui::Window::new("ℹ EXIF Information")
                 .collapsible(false)
                 .resizable(true)
-                .pivot(egui::Align2::CENTER_CENTER)
-                .default_pos(ctx.screen_rect().center())
-                .default_width(420.0)
-                .default_height(480.0)
-                .min_height(100.0)
+                .default_pos(ctx.screen_rect().center() - egui::vec2(210.0, 240.0))
+                .default_size([420.0, 480.0])
                 .show(&ctx, |ui| {
                     if let Some(text) = &self.cached_exif_text {
-                        // We must subtract the space needed for the buttons at the bottom
-                        let footer_height = 40.0;
-                        let scroll_height = ui.available_height() - footer_height;
-
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, true]) // Prevent window from growing vertically automatically
-                            .max_height(scroll_height)
-                            .show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.label(text);
+                        // 1. Bottom Panel for buttons (fixed height, native separator)
+                        egui::TopBottomPanel::bottom("exif_footer")
+                            .resizable(false)
+                            .show_inside(ui, |ui| {
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    if styled_button(ui, "📋 Copy EXIF").clicked() {
+                                        close_and_copy = true;
+                                    }
+                                    if styled_button(ui, "Close").clicked() {
+                                        close_exif = true;
+                                    }
+                                });
+                                ui.add_space(10.0);
                             });
 
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            if styled_button(ui, "📋 Copy EXIF").clicked() {
-                                close_and_copy = true;
-                            }
-                            if styled_button(ui, "Close").clicked() {
-                                close_exif = true;
-                            }
+                        // 2. Central Area for the scrollable text
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(text);
+                                });
                         });
                     } else {
                         ui.spinner();
