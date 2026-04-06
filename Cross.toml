@@ -1,0 +1,7 @@
+[target.aarch64-unknown-linux-gnu]
+# Use pre-build to install dependencies for ARM64 inside the cross container
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install --assume-yes libasound2-dev:arm64 libxkbcommon-dev:arm64 libxcb-render0-dev:arm64 libxcb-shape0-dev:arm64 libxcb-xfixes0-dev:arm64 libfontconfig1-dev:arm64 pkg-config:arm64"
+]

@@ -24,25 +24,34 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: SimpleImageViewer
             archive_ext: .tar.gz
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: SimpleImageViewer
+            archive_ext: .tar.gz
+            use_cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary_name: SimpleImageViewer.exe
             archive_ext: .zip
+            use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
             binary_name: SimpleImageViewer
             archive_ext: .zip
+            use_cross: false
           - os: macos-latest # compile intel binary from the arm runner
             target: x86_64-apple-darwin
             binary_name: SimpleImageViewer
             archive_ext: .zip
+            use_cross: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.use_cross
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev
@@ -51,14 +60,24 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+        if: "!matrix.use_cross"
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Build Relese
+      - name: Build Release (Cross)
+        uses: cross-rs/cross-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release
+        if: matrix.use_cross
+
+      - name: Build Release (Native)
         run: cargo build --release --target ${{ matrix.target }}
+        if: "!matrix.use_cross"
 
       - name: Package Artifacts (Windows)
         if: runner.os == 'Windows'
