@@ -68,12 +68,10 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build Release (Cross)
-        uses: cross-rs/cross-action@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          args: --release
         if: matrix.use_cross
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+          cross build --release --target ${{ matrix.target }}
 
       - name: Build Release (Native)
         run: cargo build --release --target ${{ matrix.target }}
