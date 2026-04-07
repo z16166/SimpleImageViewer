@@ -131,6 +131,38 @@ cargo run --bin make_ico   # 将 assets/icon.jpg 转换为 assets/icon.ico
 
 ---
 
+### Windows 7 x64 支持 (实验性)
+
+如果需要编译一个能在 Windows 7 上正常运行的可执行文件，请参考以下步骤：
+
+1.  下载 [VC-LTL-Binary.7z](https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z)，解压到 `f:\win7\VC-LTL5`。
+2.  下载 [YY-Thunks-Lib.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip) 和 [YY-Thunks-Objs.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip)，均解压到 `f:\win7\YY-Thunks`。
+3.  安装 thunk-cli：
+    ```powershell
+    cargo install thunk-cli
+    ```
+4.  执行编译命令：
+    ```powershell
+    set VC_LTL=f:\win7\VC-LTL5
+    set YY_THUNKS=f:\win7\YY-Thunks
+    thunk --os win7 --arch x64 -- --release
+    ```
+    *注意：这样得到的 EXE 是一个控制台程序。请使用 [CFF Explorer](http://www.ntcore.com/exsuite.php) 将其子系统属性从 "Windows Console" 修改为 "Windows GUI"。*
+
+5.  新建一个 `combase.c` 文件，内容如下：
+    ```c
+    #pragma comment(linker, "/export:CoTaskMemFree=ole32.CoTaskMemFree")
+    ```
+6.  打开 **Visual Studio x64 Native Tools Command Prompt**，执行以下命令编译得到 `combase.dll`：
+    ```cmd
+    cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
+    ```
+7.  将 `combase.dll` 和 `SimpleImageViewer.exe` 放在同一个目录下即可支持 Win7 x64。
+
+*注意：如果被某些杀毒软件报毒，请忽略或添加信任。*
+
+---
+
 ## 设置文件说明
 
 首次运行后，`siv_settings.yaml` 会自动生成在可执行文件旁边：

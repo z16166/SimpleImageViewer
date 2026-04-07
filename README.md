@@ -118,6 +118,38 @@ cargo run --bin make_ico   # converts assets/icon.jpg → assets/icon.ico
 
 ---
 
+### Windows 7 x64 Support (Experimental)
+
+To build a version of the executable that runs on Windows 7, follow these steps:
+
+1.  Download [VC-LTL-Binary.7z](https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z) and extract it to `f:\win7\VC-LTL5`.
+2.  Download [YY-Thunks-Lib.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip) and [YY-Thunks-Objs.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip), and extract both to `f:\win7\YY-Thunks`.
+3.  Install the thunk CLI:
+    ```powershell
+    cargo install thunk-cli
+    ```
+4.  Run the build command:
+    ```powershell
+    set VC_LTL=f:\win7\VC-LTL5
+    set YY_THUNKS=f:\win7\YY-Thunks
+    thunk --os win7 --arch x64 -- --release
+    ```
+    *Note: The generated EXE will be a console application. Use [CFF Explorer](http://www.ntcore.com/exsuite.php) to change the subsystem from "Windows Console" to "Windows GUI".*
+
+5.  Create a file named `combase.c` with the following content:
+    ```c
+    #pragma comment(linker, "/export:CoTaskMemFree=ole32.CoTaskMemFree")
+    ```
+6.  Open the **Visual Studio x64 Native Tools Command Prompt** and compile `combase.dll`:
+    ```cmd
+    cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
+    ```
+7.  Place `combase.dll` in the same directory as `SimpleImageViewer.exe`.
+
+*Note: If flagged by antivirus software, please add an exception or ignore the warning.*
+
+---
+
 ## Settings File
 
 `siv_settings.yaml` is written next to the executable after the first run:
