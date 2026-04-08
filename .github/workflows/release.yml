@@ -13,8 +13,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-and-release:
-    name: Build & Release (${{ matrix.os }})
+  build:
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,7 +45,7 @@ jobs:
             binary_name: SimpleImageViewer
             archive_ext: .zip
             use_cross: false
-          - os: macos-latest # compile intel binary from the arm runner
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: SimpleImageViewer
             archive_ext: .zip
@@ -107,15 +107,30 @@ jobs:
           tar -czvf $ARCHIVE_NAME ${{ matrix.binary_name }} README.md README_CN.md LICENSE
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
 
-      - name: Upload binary to workflow run
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}-binary
+          name: binary-${{ matrix.target }}
           path: ${{ env.ARCHIVE_NAME }}
+
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: binary-*
+          merge-multiple: true
 
       - name: Upload Release Artifacts
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
-          files: ${{ env.ARCHIVE_NAME }}
+          files: release-artifacts/*
           generate_release_notes: true
