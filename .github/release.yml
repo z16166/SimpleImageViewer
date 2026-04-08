@@ -1,0 +1,45 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - octocat
+  categories:
+    - title: "🚀 Features"
+      labels:
+        - feature
+        - enhancement
+      commit_prefixes:
+        - "feat:"
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+      commit_prefixes:
+        - "fix:"
+    - title: "⚡ Performance"
+      labels:
+        - performance
+      commit_prefixes:
+        - "perf:"
+    - title: "🛠 Refactors"
+      labels:
+        - refactor
+      commit_prefixes:
+        - "refactor:"
+    - title: "📝 Documentation"
+      labels:
+        - documentation
+      commit_prefixes:
+        - "docs:"
+    - title: "📦 Dependencies"
+      labels:
+        - dependencies
+      commit_prefixes:
+        - "deps:"
+    - title: "🧹 Chore & CI"
+      labels:
+        - chore
+      commit_prefixes:
+        - "chore:"
+        - "ci:"

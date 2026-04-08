@@ -118,3 +118,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: ${{ env.ARCHIVE_NAME }}
+          generate_release_notes: true
