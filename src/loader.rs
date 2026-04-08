@@ -111,11 +111,19 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
-    let img = image::open(path).map_err(|e| e.to_string())?;
+    use image::ImageReader;
+
+    let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
+    let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
+    // Remove the default memory limit (512MB) to allow gigapixel images
+    decoder.no_limits();
+    let img = decoder.decode().map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
     let pixel_count = width as u64 * height as u64;
+    log::info!("Decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
     if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
         Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels }))
     } else {
