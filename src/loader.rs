@@ -21,9 +21,11 @@ pub struct AnimationFrame {
     pub delay: Duration,
 }
 
-/// Decoded image data — either a static image or an animated sequence.
+/// Decoded image data — either a static image, a large image (for tiled rendering), or an animated sequence.
 pub enum ImageData {
     Static(DecodedImage),
+    /// Large image that exceeds the tiled threshold — kept in CPU RAM for on-demand tile extraction.
+    LargeStatic(DecodedImage),
     Animated(Vec<AnimationFrame>),
 }
 
@@ -102,6 +104,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             "gif" => load_gif(path),
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
+            "psd" | "psb" => load_psd(path),
             _ => load_static(path),
         }
     })();
@@ -109,11 +112,24 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
-    let img = image::open(path).map_err(|e| e.to_string())?;
+    use image::ImageReader;
+
+    let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
+    let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
+    // Remove the default memory limit (512MB) to allow gigapixel images
+    decoder.no_limits();
+    let img = decoder.decode().map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
-    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+    let pixel_count = width as u64 * height as u64;
+    log::info!("Decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
+        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels }))
+    } else {
+        Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+    }
 }
 
 fn process_animation_frames(raw_frames: Vec<image::Frame>, path: &PathBuf) -> Result<ImageData, String> {
@@ -194,6 +210,69 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
         .map_err(|e| e.to_string())?;
 
     process_animation_frames(raw_frames, path)
+}
+
+// ---------------------------------------------------------------------------
+// PSD / PSB (Photoshop Document / Large Document)
+// ---------------------------------------------------------------------------
+
+fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
+    // Step 1: Estimate memory requirement from header
+    let (width, height, _channels, estimated_bytes) =
+        crate::psb_reader::estimate_memory(path)?;
+    let estimated_mb = estimated_bytes / (1024 * 1024);
+
+    // Step 2: Check available RAM
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let available_mb = sys.available_memory() / (1024 * 1024);
+
+    // Reserve at least 1GB for the OS + app overhead
+    let safe_available = available_mb.saturating_sub(1024);
+    if estimated_mb > safe_available {
+        return Err(format!(
+            "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
+             Please close other applications or convert to a smaller format."
+        ));
+    }
+
+    log::info!(
+        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB — proceeding",
+        width, height
+    );
+
+    // Step 3: Detect version and choose decoder
+    let mut sig_buf = [0u8; 6];
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        f.read_exact(&mut sig_buf).map_err(|e| e.to_string())?;
+    }
+    let version = u16::from_be_bytes([sig_buf[4], sig_buf[5]]);
+
+    let (w, h, pixels) = if version == 2 {
+        // PSB v2: use our custom streaming reader
+        log::info!("Using custom PSB reader for v2 format");
+        let composite = crate::psb_reader::read_composite(path)?;
+        (composite.width, composite.height, composite.pixels)
+    } else {
+        // PSD v1: use the psd crate (reads entire file into memory)
+        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
+        let psd_file = psd::Psd::from_bytes(&bytes)
+            .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+        (psd_file.width(), psd_file.height(), psd_file.rgba())
+    };
+
+    let pixel_count = w as u64 * h as u64;
+    log::info!("PSD/PSB decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", w, h,
+        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
+
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
+        Ok(ImageData::LargeStatic(DecodedImage { width: w, height: h, pixels }))
+    } else {
+        Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
+    }
 }
 
 // ---------------------------------------------------------------------------

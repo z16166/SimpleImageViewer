@@ -14,6 +14,7 @@ use crate::ipc::IpcMessage;
 use crate::loader::{ImageData, ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
+use crate::tile_cache::TileManager;
 
 const PRELOAD_AHEAD: usize = 1;
 const PRELOAD_BEHIND: usize = 1;
@@ -146,6 +147,9 @@ pub struct ImageViewerApp {
     
     // Predictive animation cache (decoded and uploaded to GPU)
     animation_cache: std::collections::HashMap<usize, AnimationPlayback>,
+
+    // Tiled rendering for large images
+    tile_manager: Option<TileManager>,
 }
 
 impl ImageViewerApp {
@@ -223,6 +227,7 @@ impl ImageViewerApp {
             last_frame_time: Instant::now(),
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
+            tile_manager: None,
         };
 
         // Restore last session state
@@ -267,6 +272,7 @@ impl ImageViewerApp {
         self.animation = None;
         self.prev_texture = None;
         self.transition_start = None;
+        self.tile_manager = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
@@ -310,6 +316,8 @@ impl ImageViewerApp {
         self.pan_offset = Vec2::ZERO;
         // Reset animation playback — will be re-created if the new image is animated
         self.animation = None;
+        // Clear tiled rendering state when switching images
+        self.tile_manager = None;
 
         // Update resolution if already in cache
         if let Some(texture) = self.texture_cache.get(self.current_index) {
@@ -376,6 +384,7 @@ impl ImageViewerApp {
         // Let's clear the entire cache to be safe or re-request.
         self.texture_cache.clear();
         self.animation_cache.clear();
+        self.tile_manager = None;
 
         if self.image_files.is_empty() {
             self.current_index = 0;
@@ -551,6 +560,35 @@ impl ImageViewerApp {
                             self.animation = None;
                         }
                     }
+                }
+                Ok(ImageData::LargeStatic(decoded)) => {
+                    // Large image: create TileManager + preview, skip full GPU upload
+                    if idx == self.current_index {
+                        self.current_image_res = Some((decoded.width, decoded.height));
+                        let screen_size = ctx.screen_rect().size();
+                        let max_w = screen_size.x.max(1920.0) as u32;
+                        let max_h = screen_size.y.max(1080.0) as u32;
+                        let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels);
+                        let (pw, ph, preview_pixels) = tm.generate_preview(max_w, max_h);
+                        let preview_img = ColorImage::from_rgba_unmultiplied(
+                            [pw as usize, ph as usize],
+                            &preview_pixels,
+                        );
+                        let preview_handle = ctx.load_texture(
+                            format!("preview_{}", idx),
+                            preview_img,
+                            TextureOptions::LINEAR,
+                        );
+                        tm.preview_texture = Some(preview_handle);
+                        self.tile_manager = Some(tm);
+                        self.animation = None;
+                        log::info!(
+                            "Large image detected: {}x{} ({:.1} MP) — tiled mode active",
+                            decoded.width, decoded.height,
+                            (decoded.width as f64 * decoded.height as f64) / 1_000_000.0
+                        );
+                    }
+                    // For non-current large images, we just drop the data (no preloading for large images)
                 }
                 Ok(ImageData::Animated(frames)) => {
                     // 1. Upload first frame to the main texture cache (for transitions/preview)
@@ -1409,6 +1447,92 @@ impl ImageViewerApp {
                     FontId::proportional(16.0),
                     Color32::from_rgb(255, 100, 100),
                 );
+                return;
+            }
+
+            // ── Tiled rendering path (large images) ──────────────────────
+            if self.tile_manager.is_some() {
+                if canvas_resp.dragged() {
+                    self.pan_offset += canvas_resp.drag_delta();
+                }
+
+                // Extract immutable data first (avoids borrow conflict with compute_display_rect)
+                let tm_ref = self.tile_manager.as_ref().unwrap();
+                let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
+                let full_w = tm_ref.full_width;
+                let full_h = tm_ref.full_height;
+                let dest = self.compute_display_rect(img_size, screen_rect);
+
+                // 1. Draw preview texture as blurry background
+                if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
+                    ui.painter().image(
+                        preview.id(),
+                        dest,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+
+                // 2. Only render high-res tiles when zoomed in enough that they matter.
+                //    At low zoom (fit-to-window), the preview texture is already sufficient.
+                //    Threshold: 1 image pixel must map to at least 0.15 screen pixels.
+                //    For a 30000px image on 1920px screen (fit=0.065), tiles appear at ~2.3x zoom.
+                let effective_scale = dest.width() / img_size.x;
+                if effective_scale >= 0.15 {
+                    // Compute visible tiles (immutable borrow)
+                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(dest, screen_rect);
+
+                    // Upload and draw tiles (mutable borrow, scoped)
+                    let ctx_ref = ui.ctx().clone();
+                    {
+                        let tm = self.tile_manager.as_mut().unwrap();
+                        for (coord, tile_screen_rect, uv) in visible {
+                            let handle = tm.get_or_create_tile(coord, &ctx_ref);
+                            ui.painter().image(
+                                handle.id(),
+                                tile_screen_rect,
+                                uv,
+                                Color32::WHITE,
+                            );
+                        }
+                    }
+                }
+
+                // HUD for tiled mode
+                if self.settings.show_osd {
+                    let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                    let hud_text = format!(
+                        "[{}/{}]  {}x{}  {}%  TILED",
+                        self.current_index + 1,
+                        self.image_files.len(),
+                        full_w,
+                        full_h,
+                        zoom_pct,
+                    );
+                    let galley = ui.painter().layout_no_wrap(
+                        hud_text,
+                        FontId::monospace(14.0),
+                        Color32::WHITE,
+                    );
+                    let text_pos = Pos2::new(screen_rect.min.x + 12.0, screen_rect.max.y - 32.0);
+                    let bg = Rect::from_min_size(
+                        text_pos - Vec2::new(4.0, 2.0),
+                        galley.size() + Vec2::new(8.0, 4.0),
+                    );
+                    ui.painter().rect_filled(bg, 4.0, Color32::from_black_alpha(160));
+                    ui.painter().galley(text_pos, galley, Color32::WHITE);
+                }
+
+                // Context menu
+                canvas_resp.context_menu(|ui| {
+                    let path = &self.image_files[self.current_index];
+                    let path_str = path.to_string_lossy().to_string();
+                    if ui.button("📋 Copy Full Path").clicked() {
+                        ui.ctx().copy_text(path_str);
+                        ui.close();
+                    }
+                });
+
                 return;
             }
 

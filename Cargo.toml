@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "0.9.5"
+version = "0.9.8"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 build = "build.rs"
@@ -36,6 +36,8 @@ clipboard-rs = "0.3"
 wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
+psd = "0.3"
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

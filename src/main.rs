@@ -4,8 +4,10 @@ mod app;
 mod audio;
 mod ipc;
 mod loader;
+mod psb_reader;
 mod scanner;
 mod settings;
+mod tile_cache;
 
 #[cfg(target_os = "windows")]
 pub mod windows_utils {
