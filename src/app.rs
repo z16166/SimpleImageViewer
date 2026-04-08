@@ -1475,9 +1475,10 @@ impl ImageViewerApp {
 
                 // 2. Only render high-res tiles when zoomed in enough that they matter.
                 //    At low zoom (fit-to-window), the preview texture is already sufficient.
-                //    Threshold: 1 image pixel must map to at least 0.5 screen pixels.
+                //    Threshold: 1 image pixel must map to at least 0.15 screen pixels.
+                //    For a 30000px image on 1920px screen (fit=0.065), tiles appear at ~2.3x zoom.
                 let effective_scale = dest.width() / img_size.x;
-                if effective_scale >= 0.5 {
+                if effective_scale >= 0.15 {
                     // Compute visible tiles (immutable borrow)
                     let visible = self.tile_manager.as_ref().unwrap().visible_tiles(dest, screen_rect);
 
