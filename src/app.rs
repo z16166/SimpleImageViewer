@@ -97,6 +97,7 @@ pub struct ImageViewerApp {
     temp_font_size: Option<f32>,
 
     // Cached state
+    generation: u64,
     cached_music_count: Option<usize>,
     cached_pixels_per_point: f32,
 
@@ -190,6 +191,7 @@ impl ImageViewerApp {
             pending_fullscreen: None,
             font_families: get_system_font_families(),
             temp_font_size: None,
+            generation: 0,
             cached_music_count: None,
             cached_pixels_per_point: 1.0,
             show_exif_window: false,
@@ -314,8 +316,10 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.cached_exif_text = None;
+        self.generation = self.generation.wrapping_add(1);
         self.loader.request_load(
             self.current_index,
+            self.generation,
             self.image_files[self.current_index].clone(),
         );
         self.schedule_preloads(true);
@@ -374,8 +378,10 @@ impl ImageViewerApp {
             self.error_message = None;
 
             // Load the image now at the current index
+            self.generation = self.generation.wrapping_add(1);
             self.loader.request_load(
                 self.current_index,
+                self.generation,
                 self.image_files[self.current_index].clone(),
             );
             self.schedule_preloads(true);
@@ -449,7 +455,7 @@ impl ImageViewerApp {
         for idx in indices {
             if !self.texture_cache.contains(idx) && !self.loader.is_loading(idx) {
                 let path = self.image_files[idx].clone();
-                self.loader.request_load(idx, path);
+                self.loader.request_load(idx, self.generation, path);
             }
         }
     }
@@ -501,6 +507,9 @@ impl ImageViewerApp {
 
     fn process_loaded_images(&mut self, ctx: &Context) {
         while let Some(load_result) = self.loader.poll() {
+            if load_result.generation != self.generation {
+                continue;
+            }
             let idx = load_result.index;
             match load_result.result {
                 Ok(ImageData::Static(decoded)) => {

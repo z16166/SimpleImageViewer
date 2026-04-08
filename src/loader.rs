@@ -29,13 +29,15 @@ pub enum ImageData {
 
 pub struct LoadResult {
     pub index: usize,
+    pub generation: u64,
     pub result: Result<ImageData, String>,
 }
 
 pub struct ImageLoader {
     tx: Sender<LoadResult>,
     pub rx: Receiver<LoadResult>,
-    loading: HashSet<usize>,
+    /// Maps image index -> latest requested generation ID.
+    loading: HashMap<usize, u64>,
     pool: rayon::ThreadPool,
 }
 
@@ -47,22 +49,22 @@ impl ImageLoader {
             .thread_name(|i| format!("img-loader-{i}"))
             .build()
             .expect("failed to create image loader thread pool");
-        Self { tx, rx, loading: HashSet::new(), pool }
+        Self { tx, rx, loading: HashMap::new(), pool }
     }
 
     pub fn is_loading(&self, index: usize) -> bool {
-        self.loading.contains(&index)
+        self.loading.contains_key(&index)
     }
 
-    pub fn request_load(&mut self, index: usize, path: PathBuf) {
-        if self.loading.contains(&index) {
+    pub fn request_load(&mut self, index: usize, generation: u64, path: PathBuf) {
+        if self.loading.get(&index) == Some(&generation) {
             return;
         }
-        self.loading.insert(index);
+        self.loading.insert(index, generation);
         let tx = self.tx.clone();
         // Use the bounded thread pool instead of spawning a new OS thread each time.
         self.pool.spawn(move || {
-            let result = load_image_file(index, &path);
+            let result = load_image_file(generation, index, &path);
             let _ = tx.send(result);
         });
     }
@@ -70,7 +72,10 @@ impl ImageLoader {
     pub fn poll(&mut self) -> Option<LoadResult> {
         match self.rx.try_recv() {
             Ok(result) => {
-                self.loading.remove(&result.index);
+                // Only remove from loading set if the generation matches what we expect
+                if self.loading.get(&result.index) == Some(&result.generation) {
+                    self.loading.remove(&result.index);
+                }
                 Some(result)
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
@@ -86,7 +91,7 @@ impl ImageLoader {
     }
 }
 
-fn load_image_file(index: usize, path: &PathBuf) -> LoadResult {
+fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult {
     let result = (|| -> Result<ImageData, String> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -100,7 +105,7 @@ fn load_image_file(index: usize, path: &PathBuf) -> LoadResult {
             _ => load_static(path),
         }
     })();
-    LoadResult { index, result }
+    LoadResult { index, generation, result }
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
