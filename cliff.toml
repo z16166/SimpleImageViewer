@@ -48,7 +48,7 @@ protect_breaking_commits = false
 # filter out the commits that are not matched by commit_parsers
 filter_commits = false
 # regex for matching git tags
-tag_pattern = "v[0-9]*"
+tag_pattern = "v[0-9]+.*"
 # sort the commits inside sections by oldest/newest order
 sort_commits = "oldest"
 # limit the number of commits included in the changelog.
