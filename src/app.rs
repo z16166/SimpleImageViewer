@@ -1473,21 +1473,27 @@ impl ImageViewerApp {
                     );
                 }
 
-                // 2. Compute visible tiles (immutable borrow)
-                let visible = self.tile_manager.as_ref().unwrap().visible_tiles(dest, screen_rect);
+                // 2. Only render high-res tiles when zoomed in enough that they matter.
+                //    At low zoom (fit-to-window), the preview texture is already sufficient.
+                //    Threshold: 1 image pixel must map to at least 0.5 screen pixels.
+                let effective_scale = dest.width() / img_size.x;
+                if effective_scale >= 0.5 {
+                    // Compute visible tiles (immutable borrow)
+                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(dest, screen_rect);
 
-                // 3. Upload and draw tiles (mutable borrow, scoped)
-                let ctx_ref = ui.ctx().clone();
-                {
-                    let tm = self.tile_manager.as_mut().unwrap();
-                    for (coord, tile_screen_rect, uv) in visible {
-                        let handle = tm.get_or_create_tile(coord, &ctx_ref);
-                        ui.painter().image(
-                            handle.id(),
-                            tile_screen_rect,
-                            uv,
-                            Color32::WHITE,
-                        );
+                    // Upload and draw tiles (mutable borrow, scoped)
+                    let ctx_ref = ui.ctx().clone();
+                    {
+                        let tm = self.tile_manager.as_mut().unwrap();
+                        for (coord, tile_screen_rect, uv) in visible {
+                            let handle = tm.get_or_create_tile(coord, &ctx_ref);
+                            ui.painter().image(
+                                handle.id(),
+                                tile_screen_rect,
+                                uv,
+                                Color32::WHITE,
+                            );
+                        }
                     }
                 }
 
