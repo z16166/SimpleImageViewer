@@ -217,11 +217,25 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
 // ---------------------------------------------------------------------------
 
 fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD/PSB file: {e}"))?;
-    let psd_file = psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD/PSB: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
+
+    // PSB detection: PSD/PSB files start with "8BPS" magic, then version u16.
+    // PSD = version 1, PSB = version 2.
+    if bytes.len() >= 6 && &bytes[0..4] == b"8BPS" {
+        let version = u16::from_be_bytes([bytes[4], bytes[5]]);
+        if version == 2 {
+            return Err(
+                "PSB (Large Document) format is not yet supported. \
+                 Please convert to TIFF first using Photoshop or ImageMagick: \
+                 magick convert input.psb output.tif".to_string()
+            );
+        }
+    }
+
+    let psd_file = psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {e}"))?;
     let width = psd_file.width();
     let height = psd_file.height();
-    let rgba = psd_file.rgba();  // Flattened composite of all visible layers
+    let rgba = psd_file.rgba();
 
     let pixel_count = width as u64 * height as u64;
     log::info!("PSD decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
