@@ -116,33 +116,15 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     Ok(ImageData::Static(DecodedImage { width, height, pixels }))
 }
 
-fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
-    use image::codecs::gif::GifDecoder;
-    use image::AnimationDecoder;
-    use std::io::BufReader;
-
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
-    let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
-    let raw_frames = decoder.into_frames()
-        .collect_frames()
-        .map_err(|e| e.to_string())?;
-
-    // Single-frame (or empty) GIF → treat as static
+fn process_animation_frames(raw_frames: Vec<image::Frame>, path: &PathBuf) -> Result<ImageData, String> {
     if raw_frames.len() <= 1 {
-        if let Some(frame) = raw_frames.into_iter().next() {
-            let buffer = frame.into_buffer();
-            let (width, height) = buffer.dimensions();
-            let pixels = buffer.into_raw();
-            return Ok(ImageData::Static(DecodedImage { width, height, pixels }));
-        }
-        return Err("GIF has no frames".to_string());
+        return load_static(path);
     }
 
     let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
         let (numer, denom) = frame.delay().numer_denom_ms();
         let delay_ms = if denom == 0 { 100 } else { numer / denom };
-        // GIF spec: delay of 0 (or ≤10ms) is typically rendered as 100ms by browsers
+        // Standard browser behavior: delays <= 10ms are treated as 100ms
         let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
         let buffer = frame.into_buffer();
         let (width, height) = buffer.dimensions();
@@ -158,6 +140,21 @@ fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
     Ok(ImageData::Animated(frames))
 }
 
+fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
+    use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
+    use std::io::BufReader;
+
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
+    let raw_frames = decoder.into_frames()
+        .collect_frames()
+        .map_err(|e| e.to_string())?;
+
+    process_animation_frames(raw_frames, path)
+}
+
 fn load_png(path: &PathBuf) -> Result<ImageData, String> {
     use image::codecs::png::PngDecoder;
     use image::AnimationDecoder;
@@ -168,7 +165,6 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
     let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
 
     if !decoder.is_apng().map_err(|e| e.to_string())? {
-        // Regular (static) PNG — use the standard path
         return load_static(path);
     }
 
@@ -178,26 +174,7 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    if raw_frames.len() <= 1 {
-        return load_static(path);
-    }
-
-    let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
-        let (numer, denom) = frame.delay().numer_denom_ms();
-        let delay_ms = if denom == 0 { 100 } else { numer / denom };
-        let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
-        let buffer = frame.into_buffer();
-        let (width, height) = buffer.dimensions();
-        let pixels = buffer.into_raw();
-        AnimationFrame {
-            width,
-            height,
-            pixels,
-            delay: Duration::from_millis(delay_ms as u64),
-        }
-    }).collect();
-
-    Ok(ImageData::Animated(frames))
+    process_animation_frames(raw_frames, path)
 }
 
 // ---------------------------------------------------------------------------
@@ -216,27 +193,7 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    // Single-frame WebP → treat as static
-    if raw_frames.len() <= 1 {
-        return load_static(path);
-    }
-
-    let frames: Vec<AnimationFrame> = raw_frames.into_iter().map(|frame| {
-        let (numer, denom) = frame.delay().numer_denom_ms();
-        let delay_ms = if denom == 0 { 100 } else { numer / denom };
-        let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
-        let buffer = frame.into_buffer();
-        let (width, height) = buffer.dimensions();
-        let pixels = buffer.into_raw();
-        AnimationFrame {
-            width,
-            height,
-            pixels,
-            delay: Duration::from_millis(delay_ms as u64),
-        }
-    }).collect();
-
-    Ok(ImageData::Animated(frames))
+    process_animation_frames(raw_frames, path)
 }
 
 // ---------------------------------------------------------------------------
