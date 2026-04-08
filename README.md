@@ -9,7 +9,9 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR
+- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR, PSD, PSB
+- **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with LRU cache management to keep VRAM usage constant
+- **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) decoded via a custom streaming parser with automatic RAM safety check before loading
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
