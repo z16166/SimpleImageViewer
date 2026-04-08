@@ -21,9 +21,11 @@ pub struct AnimationFrame {
     pub delay: Duration,
 }
 
-/// Decoded image data — either a static image or an animated sequence.
+/// Decoded image data — either a static image, a large image (for tiled rendering), or an animated sequence.
 pub enum ImageData {
     Static(DecodedImage),
+    /// Large image that exceeds the tiled threshold — kept in CPU RAM for on-demand tile extraction.
+    LargeStatic(DecodedImage),
     Animated(Vec<AnimationFrame>),
 }
 
@@ -113,7 +115,12 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
-    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+    let pixel_count = width as u64 * height as u64;
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
+        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels }))
+    } else {
+        Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+    }
 }
 
 fn process_animation_frames(raw_frames: Vec<image::Frame>, path: &PathBuf) -> Result<ImageData, String> {

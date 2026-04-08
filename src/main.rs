@@ -6,6 +6,7 @@ mod ipc;
 mod loader;
 mod scanner;
 mod settings;
+mod tile_cache;
 
 #[cfg(target_os = "windows")]
 pub mod windows_utils {
