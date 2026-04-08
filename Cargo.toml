@@ -37,6 +37,7 @@ wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
 psd = "0.3"
+sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

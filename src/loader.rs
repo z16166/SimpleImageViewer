@@ -217,34 +217,61 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
 // ---------------------------------------------------------------------------
 
 fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
+    // Step 1: Estimate memory requirement from header
+    let (width, height, _channels, estimated_bytes) =
+        crate::psb_reader::estimate_memory(path)?;
+    let estimated_mb = estimated_bytes / (1024 * 1024);
 
-    // PSB detection: PSD/PSB files start with "8BPS" magic, then version u16.
-    // PSD = version 1, PSB = version 2.
-    if bytes.len() >= 6 && &bytes[0..4] == b"8BPS" {
-        let version = u16::from_be_bytes([bytes[4], bytes[5]]);
-        if version == 2 {
-            return Err(
-                "PSB (Large Document) format is not yet supported. \
-                 Please convert to TIFF first using Photoshop or ImageMagick: \
-                 magick convert input.psb output.tif".to_string()
-            );
-        }
+    // Step 2: Check available RAM
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let available_mb = sys.available_memory() / (1024 * 1024);
+
+    // Reserve at least 1GB for the OS + app overhead
+    let safe_available = available_mb.saturating_sub(1024);
+    if estimated_mb > safe_available {
+        return Err(format!(
+            "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
+             Please close other applications or convert to a smaller format."
+        ));
     }
 
-    let psd_file = psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {e}"))?;
-    let width = psd_file.width();
-    let height = psd_file.height();
-    let rgba = psd_file.rgba();
+    log::info!(
+        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB — proceeding",
+        width, height
+    );
 
-    let pixel_count = width as u64 * height as u64;
-    log::info!("PSD decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+    // Step 3: Detect version and choose decoder
+    let mut sig_buf = [0u8; 6];
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        f.read_exact(&mut sig_buf).map_err(|e| e.to_string())?;
+    }
+    let version = u16::from_be_bytes([sig_buf[4], sig_buf[5]]);
+
+    let (w, h, pixels) = if version == 2 {
+        // PSB v2: use our custom streaming reader
+        log::info!("Using custom PSB reader for v2 format");
+        let composite = crate::psb_reader::read_composite(path)?;
+        (composite.width, composite.height, composite.pixels)
+    } else {
+        // PSD v1: use the psd crate (reads entire file into memory)
+        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
+        let psd_file = psd::Psd::from_bytes(&bytes)
+            .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+        (psd_file.width(), psd_file.height(), psd_file.rgba())
+    };
+
+    let pixel_count = w as u64 * h as u64;
+    log::info!("PSD/PSB decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", w, h,
         pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
 
     if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
-        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels: rgba }))
+        Ok(ImageData::LargeStatic(DecodedImage { width: w, height: h, pixels }))
     } else {
-        Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
+        Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
     }
 }
 
