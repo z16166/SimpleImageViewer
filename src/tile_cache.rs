@@ -9,7 +9,8 @@ pub const TILE_SIZE: u32 = 512;
 pub const TILED_THRESHOLD: u64 = 64_000_000;
 
 /// Maximum number of tile textures kept in GPU memory.
-const MAX_TILES: usize = 64;
+/// 256 tiles * 512x512 * 4 bytes = 256MB VRAM.
+const MAX_TILES: usize = 256;
 
 /// Coordinate of a tile within the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -108,26 +109,33 @@ impl TileManager {
     }
 
     /// Get or create a tile texture for the given coordinate.
-    /// Returns the TextureHandle for immediate drawing.
+    /// Returns (handle, newly_created).
+    /// If allow_create is false and the tile is missing, returns (None, false).
     pub fn get_or_create_tile(
         &mut self,
         coord: TileCoord,
         ctx: &egui::Context,
-    ) -> &TextureHandle {
+        allow_create: bool,
+    ) -> (Option<&TextureHandle>, bool) {
         // Touch LRU
         if let Some(pos) = self.lru_order.iter().position(|c| *c == coord) {
             self.lru_order.remove(pos);
         }
         self.lru_order.push(coord);
 
-        // Evict if over limit
-        while self.lru_order.len() > MAX_TILES {
-            let evicted = self.lru_order.remove(0);
-            self.tiles.remove(&evicted);
+        // check if exists
+        if self.tiles.contains_key(&coord) {
+            return (self.tiles.get(&coord), false);
         }
 
-        // Create if missing
-        if !self.tiles.contains_key(&coord) {
+        // Create if missing and allowed
+        if allow_create {
+            // Evict if over limit
+            while self.lru_order.len() > MAX_TILES {
+                let evicted = self.lru_order.remove(0);
+                self.tiles.remove(&evicted);
+            }
+
             let (tw, th, pixels) = self.extract_tile(coord);
             let color_image = egui::ColorImage::from_rgba_unmultiplied(
                 [tw as usize, th as usize],
@@ -136,9 +144,10 @@ impl TileManager {
             let name = format!("tile_{}_{}", coord.col, coord.row);
             let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
             self.tiles.insert(coord, handle);
+            (self.tiles.get(&coord), true)
+        } else {
+            (None, false)
         }
-
-        self.tiles.get(&coord).unwrap()
     }
 
     /// Clear all cached tiles (e.g. when switching images).

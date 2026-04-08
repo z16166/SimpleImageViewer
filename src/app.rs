@@ -1484,17 +1484,33 @@ impl ImageViewerApp {
 
                     // Upload and draw tiles (mutable borrow, scoped)
                     let ctx_ref = ui.ctx().clone();
+                    const TILE_UPLOAD_QUOTA: usize = 4; // Max new tiles per frame
+                    let mut newly_uploaded = 0;
+
                     {
                         let tm = self.tile_manager.as_mut().unwrap();
                         for (coord, tile_screen_rect, uv) in visible {
-                            let handle = tm.get_or_create_tile(coord, &ctx_ref);
-                            ui.painter().image(
-                                handle.id(),
-                                tile_screen_rect,
-                                uv,
-                                Color32::WHITE,
-                            );
+                            let allow_create = newly_uploaded < TILE_UPLOAD_QUOTA;
+                            let (handle_opt, created) = tm.get_or_create_tile(coord, &ctx_ref, allow_create);
+                            
+                            if let Some(handle) = handle_opt {
+                                if created {
+                                    newly_uploaded += 1;
+                                }
+                                ui.painter().image(
+                                    handle.id(),
+                                    tile_screen_rect,
+                                    uv,
+                                    Color32::WHITE,
+                                );
+                            }
+                            // If None, we don't draw anything (the blurry preview is already underneath)
                         }
+                    }
+                    
+                    // If we didn't finish all tiles, request a repaint to catch them next frame
+                    if newly_uploaded >= TILE_UPLOAD_QUOTA {
+                        ui.ctx().request_repaint();
                     }
                 }
 
