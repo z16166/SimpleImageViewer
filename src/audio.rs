@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::Sender;
+use crate::scanner::is_offline;
 use std::time::Duration;
 
 #[allow(dead_code)]
@@ -115,7 +116,11 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
         }
     } else if path.is_dir() {
         // Walk directory and check cancel signal periodically
-        for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
             // Check cancellation
             if let Some(ref c) = cancel {
                 if !c.load(Ordering::Relaxed) {
@@ -124,7 +129,7 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
             }
 
             let p = entry.path();
-            if p.is_file() && is_music(p) {
+            if p.is_file() && is_music(p) && !is_offline(p) {
                 files.push(p.to_path_buf());
             }
         }
