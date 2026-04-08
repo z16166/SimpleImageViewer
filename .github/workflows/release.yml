@@ -132,7 +132,12 @@ jobs:
           args: --latest
         env:
           OUTPUT: CHANGELOG.md
-          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Debug Changelog
+        run: |
+          echo "=== CHANGELOG CONTENT START ==="
+          cat CHANGELOG.md
+          echo "=== CHANGELOG CONTENT END ==="
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -144,5 +149,5 @@ jobs:
       - name: Upload Release Artifacts
         uses: softprops/action-gh-release@v2
         with:
-          body: ${{ steps.git-cliff.outputs.content }}
+          body_path: CHANGELOG.md
           files: release-artifacts/*
