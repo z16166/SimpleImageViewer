@@ -104,6 +104,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             "gif" => load_gif(path),
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
+            "psd" | "psb" => load_psd(path),
             _ => load_static(path),
         }
     })();
@@ -209,6 +210,28 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
         .map_err(|e| e.to_string())?;
 
     process_animation_frames(raw_frames, path)
+}
+
+// ---------------------------------------------------------------------------
+// PSD / PSB (Photoshop Document / Large Document)
+// ---------------------------------------------------------------------------
+
+fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD/PSB file: {e}"))?;
+    let psd_file = psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD/PSB: {e}"))?;
+    let width = psd_file.width();
+    let height = psd_file.height();
+    let rgba = psd_file.rgba();  // Flattened composite of all visible layers
+
+    let pixel_count = width as u64 * height as u64;
+    log::info!("PSD decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
+
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
+        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels: rgba }))
+    } else {
+        Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
+    }
 }
 
 // ---------------------------------------------------------------------------
