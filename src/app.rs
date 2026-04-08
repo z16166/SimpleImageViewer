@@ -15,9 +15,9 @@ use crate::loader::{ImageData, ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
 
-const PRELOAD_AHEAD: usize = 2;
+const PRELOAD_AHEAD: usize = 1;
 const PRELOAD_BEHIND: usize = 1;
-const CACHE_SIZE: usize = 5; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 buffer
+const CACHE_SIZE: usize = 4; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 buffer
 
 // Accent colors for the UI
 const BG_DARK: Color32 = Color32::from_rgb(18, 18, 24);
@@ -143,6 +143,9 @@ pub struct ImageViewerApp {
 
     // IPC receiver
     ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
+    
+    // Predictive animation cache (decoded and uploaded to GPU)
+    animation_cache: std::collections::HashMap<usize, AnimationPlayback>,
 }
 
 impl ImageViewerApp {
@@ -218,8 +221,8 @@ impl ImageViewerApp {
             last_hud_state: None,
             last_minimized: false,
             last_frame_time: Instant::now(),
-
             ipc_rx,
+            animation_cache: std::collections::HashMap::new(),
         };
 
         // Restore last session state
@@ -260,7 +263,10 @@ impl ImageViewerApp {
         self.image_files.clear();
         self.current_index = 0;
         self.texture_cache.clear();
+        self.animation_cache.clear();
         self.animation = None;
+        self.prev_texture = None;
+        self.transition_start = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
@@ -316,6 +322,18 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.cached_exif_text = None;
+
+        // Try to pull from predictive cache if available
+        if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
+            self.animation = Some(AnimationPlayback {
+                image_index: cached_anim.image_index,
+                textures: cached_anim.textures.clone(),
+                delays: cached_anim.delays.clone(),
+                current_frame: 0,
+                frame_start: Instant::now(),
+            });
+        }
+
         self.generation = self.generation.wrapping_add(1);
         self.loader.request_load(
             self.current_index,
@@ -357,12 +375,15 @@ impl ImageViewerApp {
         // Our texture_cache is likely a wrapper around a Map or similar.
         // Let's clear the entire cache to be safe or re-request.
         self.texture_cache.clear();
+        self.animation_cache.clear();
 
         if self.image_files.is_empty() {
             self.current_index = 0;
             self.status_message = "No images left in directory.".to_string();
             self.current_image_res = None;
             self.animation = None;
+            self.prev_texture = None;
+            self.transition_start = None;
             self.cached_exif_text = None;
         } else {
             // Adjust current_index if we were at the last element
@@ -372,6 +393,8 @@ impl ImageViewerApp {
             
             // Reset state for new image
             self.animation = None;
+            self.prev_texture = None;
+            self.transition_start = None;
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
             self.cached_exif_text = None;
@@ -518,37 +541,46 @@ impl ImageViewerApp {
                         &decoded.pixels,
                     );
                     let name = format!("img_{}", idx);
-                    let handle =
-                        ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    self.texture_cache
-                        .insert(idx, handle, self.current_index);
+                    let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, self.current_index) {
+                        self.animation_cache.remove(&evicted_idx);
+                    }
                     if idx == self.current_index {
                         self.current_image_res = Some((decoded.width, decoded.height));
-                        // Clear any stale animation for this index
                         if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
                             self.animation = None;
                         }
                     }
                 }
                 Ok(ImageData::Animated(frames)) => {
-                    // Upload first frame to the texture cache (used for transitions & preload preview)
+                    // 1. Upload first frame to the main texture cache (for transitions/preview)
                     if let Some(first) = frames.first() {
                         let color_image = ColorImage::from_rgba_unmultiplied(
                             [first.width as usize, first.height as usize],
                             &first.pixels,
                         );
                         let name = format!("img_{}", idx);
-                        let handle =
-                            ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                        self.texture_cache
-                            .insert(idx, handle, self.current_index);
+                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                        if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, self.current_index) {
+                            self.animation_cache.remove(&evicted_idx);
+                        }
                         if idx == self.current_index {
                             self.current_image_res = Some((first.width, first.height));
                         }
                     }
 
-                    // If this is the current image, create the full animation playback state
-                    if idx == self.current_index {
+                    // 2. Predictive full-clip pre-upload
+                    // We upload the full sequence if it's the current image OR within preload range
+                    let cur = self.current_index;
+                    let n = self.image_files.len();
+                    let is_in_range = if n > 0 {
+                        idx == cur 
+                        || idx == (cur + 1) % n 
+                        || (cur > 0 && idx == cur - 1) 
+                        || (cur == 0 && idx == n - 1)
+                    } else { false };
+
+                    if is_in_range {
                         let mut textures = Vec::with_capacity(frames.len());
                         let mut delays = Vec::with_capacity(frames.len());
                         for (i, frame) in frames.iter().enumerate() {
@@ -557,18 +589,29 @@ impl ImageViewerApp {
                                 &frame.pixels,
                             );
                             let name = format!("anim_{}_{}", idx, i);
-                            let handle =
-                                ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                            let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
                             textures.push(handle);
                             delays.push(frame.delay);
                         }
-                        self.animation = Some(AnimationPlayback {
+                        
+                        let playback = AnimationPlayback {
                             image_index: idx,
                             textures,
                             delays,
                             current_frame: 0,
                             frame_start: Instant::now(),
-                        });
+                        };
+
+                        if idx == self.current_index {
+                            self.animation = Some(AnimationPlayback {
+                                image_index: playback.image_index,
+                                textures: playback.textures.clone(),
+                                delays: playback.delays.clone(),
+                                current_frame: 0,
+                                frame_start: Instant::now(),
+                            });
+                        }
+                        self.animation_cache.insert(idx, playback);
                     }
                 }
                 Err(e) => {

@@ -210,9 +210,9 @@ impl TextureCache {
         Self { textures: HashMap::new(), max_size }
     }
 
-    pub fn insert(&mut self, index: usize, handle: egui::TextureHandle, current_index: usize) {
+    pub fn insert(&mut self, index: usize, handle: egui::TextureHandle, current_index: usize) -> Option<usize> {
         self.textures.insert(index, handle);
-        self.evict(current_index);
+        self.evict(current_index)
     }
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
@@ -227,17 +227,21 @@ impl TextureCache {
         self.textures.clear();
     }
 
-    fn evict(&mut self, current_index: usize) {
+    fn evict(&mut self, current_index: usize) -> Option<usize> {
         if self.textures.len() <= self.max_size {
-            return;
+            return None;
         }
         // Evict the texture farthest from the current index
         let to_remove = self.textures
             .keys()
             .copied()
             .max_by_key(|&idx| (idx as isize - current_index as isize).unsigned_abs());
+        
         if let Some(idx) = to_remove {
             self.textures.remove(&idx);
+            Some(idx)
+        } else {
+            None
         }
     }
 }
