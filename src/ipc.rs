@@ -137,11 +137,9 @@ fn ipc_server_loop(
 /// In practice, client connections always close (triggering EOF for read_to_string)
 /// when the client drops the stream or crashes, so socket-level timeouts are not
 /// strictly necessary for a local desktop IPC channel.
-fn set_stream_timeouts(_stream: &Stream, _timeout: Option<Duration>) -> std::io::Result<()> {
-    // interprocess::local_socket::Stream does not directly expose raw fd/handle
-    // for portable timeout configuration. Since all our IPC clients close the
-    // connection immediately after writing (via drop), read_to_string will
-    // reliably return at EOF without needing an explicit timeout.
+fn set_stream_timeouts(stream: &Stream, timeout: Option<Duration>) -> std::io::Result<()> {
+    stream.set_recv_timeout(timeout)?;
+    stream.set_send_timeout(timeout)?;
     Ok(())
 }
 
