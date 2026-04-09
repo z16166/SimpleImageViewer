@@ -719,10 +719,11 @@ impl ImageViewerApp {
         let mut do_permanent_delete = false;
 
         // Collect all modal flags to prevent deletion when a dialog is active
-        let any_modal_open = self.show_settings 
-            || self.show_wallpaper_dialog 
+        // Collect all modal flags to prevent interaction when a dialog is active
+        let any_modal_open = self.show_wallpaper_dialog 
             || self.show_goto 
-            || self.show_exif_window;
+            || self.show_exif_window
+            || self.show_xmp_window;
 
         #[cfg(target_os = "windows")]
         let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
@@ -799,34 +800,60 @@ impl ImageViewerApp {
         if do_delete { self.delete_current_image(false); }
         if do_permanent_delete { self.delete_current_image(true); }
 
-        if do_refresh { self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default()); }
-        if nav_next { self.navigate_next(); }
-        if nav_prev { self.navigate_prev(); }
-        if nav_first { self.navigate_first(); }
-        if nav_last { self.navigate_last(); }
+        if !any_modal_open {
+            if do_refresh { self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default()); }
+            if nav_next { self.navigate_next(); }
+            if nav_prev { self.navigate_prev(); }
+            if nav_first { self.navigate_first(); }
+            if nav_last { self.navigate_last(); }
+
+            if zoom_in {
+                self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
+            }
+            if zoom_out {
+                self.zoom_factor = (self.zoom_factor / 1.25).max(0.05);
+            }
+            if zoom_reset {
+                self.zoom_factor = 1.0;
+                self.pan_offset = Vec2::ZERO;
+            }
+            if toggle_auto_switch {
+                self.settings.auto_switch = !self.settings.auto_switch;
+                self.queue_save();
+            }
+        }
         if toggle_settings {
             #[cfg(target_os = "windows")]
             if self.show_file_assoc_dialog {
                 self.show_file_assoc_dialog = false;
+            } else if self.show_exif_window {
+                self.show_exif_window = false;
+            } else if self.show_xmp_window {
+                self.show_xmp_window = false;
+            } else if self.show_wallpaper_dialog {
+                self.show_wallpaper_dialog = false;
+            } else if self.show_goto {
+                self.show_goto = false;
             } else {
                 self.show_settings = !self.show_settings;
             }
             #[cfg(not(target_os = "windows"))]
             {
-                self.show_settings = !self.show_settings;
+                if self.show_exif_window {
+                    self.show_exif_window = false;
+                } else if self.show_xmp_window {
+                    self.show_xmp_window = false;
+                } else if self.show_wallpaper_dialog {
+                    self.show_wallpaper_dialog = false;
+                } else if self.show_goto {
+                    self.show_goto = false;
+                } else {
+                    self.show_settings = !self.show_settings;
+                }
             }
         }
-        if zoom_in {
-            self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
-        }
-        if zoom_out {
-            self.zoom_factor = (self.zoom_factor / 1.25).max(0.05);
-        }
-        if zoom_reset {
-            self.zoom_factor = 1.0;
-            self.pan_offset = Vec2::ZERO;
-        }
-        let ui_consuming_scroll = self.show_settings || ctx.wants_pointer_input();
+
+        let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.wants_pointer_input();
         if !ui_consuming_scroll && scroll_delta > 0.0 {
             self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
         } else if !ui_consuming_scroll && scroll_delta < 0.0 {
@@ -1428,12 +1455,27 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
+        // Collect modal flags to block mouse interaction
+        let any_modal_open = self.show_wallpaper_dialog 
+            || self.show_goto 
+            || self.show_exif_window
+            || self.show_xmp_window;
+        #[cfg(target_os = "windows")]
+        let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
+
         // Fill the area with dark background
         egui::Frame::NONE.fill(BG_DARK).show(ui, |ui| {
             let screen_rect = ui.max_rect();
             
             // Allocate the whole viewport for drag interaction and clicks early
-            let canvas_resp = ui.allocate_rect(screen_rect, Sense::click_and_drag());
+            // If a modal is open, we sense nothing to block background clicks/drags
+            let sense = if any_modal_open { Sense::hover() } else { Sense::click_and_drag() };
+            let canvas_resp = ui.allocate_rect(screen_rect, sense);
+
+            // Draw a dimmer rect if a modal is open
+            if any_modal_open {
+                ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
+            }
             
             if self.show_settings && canvas_resp.clicked() {
                 self.show_settings = false;
@@ -2810,19 +2852,17 @@ fn extract_xmp(path: &std::path::Path) -> Option<String> {
         "AuthorsPosition", "CaptionWriter", "Category", "City", "Country", "Credit", "Headline", "Instructions", "Source", "State", "TransmissionReference",
     ];
 
-    for (ns_name, ns_uri) in namespaces {
-        let mut ns_added = false;
+    for (_ns_name, ns_uri) in namespaces {
         for field in common_fields {
             if let Some(val) = meta.get_property(ns_uri, field) {
-                if !ns_added {
-                    result.push_str(&format!("--- {} ---\n", ns_name));
-                    ns_added = true;
-                }
-                result.push_str(&format!("{}: {:?}\n", field, val));
+                let display_val = match val {
+                    xmpkit::XmpValue::String(s) => s.clone(),
+                    xmpkit::XmpValue::Integer(i) => i.to_string(),
+                    xmpkit::XmpValue::Boolean(b) => b.to_string(),
+                    _ => format!("{:?}", val),
+                };
+                result.push_str(&format!("{}: {}\n", field, display_val));
             }
-        }
-        if ns_added {
-            result.push_str("\n");
         }
     }
 

@@ -9,14 +9,16 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, QOI, EXR, PSD, PSB
+- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB
 - **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with LRU cache management to keep VRAM usage constant
 - **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) decoded via a custom streaming parser with automatic RAM safety check before loading
+- **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos via a pure-Rust parser (cross-platform, zero C++ dependencies)
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
-- **EXIF Metadata Display** — right-click an image to view detailed EXIF information in a resizable window
+- **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
+- **Modal Dialogs** — metadata and settings dialogs now behave as true modals; background interactions are blocked with a visual dimmer for a focused experience
 - **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
@@ -56,7 +58,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `G` | Open *Go to image…* dialog (jump to index) |
 | `F11` | Toggle full-screen |
 | `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
-| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / Set Wallpaper) |
+| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper) |
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Alt+F4` | Quit (Windows) |
