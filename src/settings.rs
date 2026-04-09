@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use crate::theme::AppTheme;
 
 // ---------------------------------------------------------------------------
 // ScaleMode
@@ -129,6 +130,10 @@ pub struct Settings {
     // Language (locale code: "en", "zh-CN", "zh-HK")
     #[serde(default)]
     pub language: String,
+
+    // Theme
+    #[serde(default)]
+    pub theme: AppTheme,
 }
 
 fn default_interval() -> f32 { 5.0 }
@@ -166,7 +171,8 @@ impl Default for Settings {
             show_osd: true,
             music_paused: false,
             last_music_track: None,
-            language: String::new(), // empty = auto-detect on first launch
+            language: String::new(),
+            theme: AppTheme::Dark,
         }
     }
 }
