@@ -1390,12 +1390,14 @@ impl ImageViewerApp {
                     egui::ComboBox::from_id_salt("language")
                         .selected_text(match self.settings.language.as_str() {
                             "zh-CN" => t!("lang.zh_cn"),
+                            "zh-TW" => t!("lang.zh_tw"),
                             "zh-HK" => t!("lang.zh_hk"),
                             _ => t!("lang.en"),
                         }.to_string())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.settings.language, "en".to_string(), t!("lang.en").to_string());
                             ui.selectable_value(&mut self.settings.language, "zh-CN".to_string(), t!("lang.zh_cn").to_string());
+                            ui.selectable_value(&mut self.settings.language, "zh-TW".to_string(), t!("lang.zh_tw").to_string());
                             ui.selectable_value(&mut self.settings.language, "zh-HK".to_string(), t!("lang.zh_hk").to_string());
                         });
                     if old_lang != self.settings.language {

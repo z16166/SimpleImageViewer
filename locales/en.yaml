@@ -147,4 +147,5 @@ win.confirm_recursive_msg: "Recursive scan will search all subdirectories.\nThis
 # Language names (for the selector)
 lang.en: "English (US)"
 lang.zh_cn: "简体中文"
+lang.zh_tw: "繁體中文（台灣）"
 lang.zh_hk: "繁體中文（香港）"

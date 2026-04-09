@@ -195,6 +195,9 @@ pub fn detect_system_language() -> String {
                 if v.starts_with("zh_hk") || v.starts_with("zh-hk") || v.starts_with("zh_mo") {
                     return "zh-HK".to_string();
                 }
+                if v.starts_with("zh_tw") || v.starts_with("zh-tw") {
+                    return "zh-TW".to_string();
+                }
             }
         }
         "en".to_string()
@@ -218,6 +221,8 @@ fn get_windows_locale() -> String {
         "zh-CN".to_string()
     } else if locale.starts_with("zh-HK") || locale.starts_with("zh-MO") {
         "zh-HK".to_string()
+    } else if locale.starts_with("zh-TW") {
+        "zh-TW".to_string()
     } else {
         "en".to_string()
     }
