@@ -4,6 +4,7 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=locales");
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.png").display()
