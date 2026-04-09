@@ -2758,23 +2758,28 @@ impl eframe::App for ImageViewerApp {
                             ui.add_space(10.0);
                         });
 
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_space(10.0);
-                        if let Some(data) = &self.cached_exif_data {
-                            egui::Grid::new("exif_grid")
-                                .num_columns(2)
-                                .spacing([20.0, 8.0])
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    for (k, v) in data {
+                    if let Some(data) = &self.cached_exif_data {
+                        use egui_extras::{Column, TableBuilder};
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(160.0).at_least(100.0))
+                            .column(Column::remainder())
+                            .body(|body| {
+                                body.rows(24.0, data.len(), |mut row| {
+                                    let index = row.index();
+                                    let (k, v) = &data[index];
+                                    row.col(|ui| {
                                         ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                    });
+                                    row.col(|ui| {
                                         ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
-                                        ui.end_row();
-                                    }
+                                    });
                                 });
-                        }
-                        ui.add_space(10.0);
-                    });
+                            });
+                    }
+                    ui.add_space(10.0);
                 });
 
             if close_and_copy {
@@ -2836,23 +2841,28 @@ impl eframe::App for ImageViewerApp {
                             ui.add_space(10.0);
                         });
 
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_space(10.0);
-                        if let Some(data) = &self.cached_xmp_data {
-                            egui::Grid::new("xmp_grid")
-                                .num_columns(2)
-                                .spacing([20.0, 8.0])
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    for (k, v) in data {
+                    if let Some(data) = &self.cached_xmp_data {
+                        use egui_extras::{Column, TableBuilder};
+                        TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::initial(180.0).at_least(120.0))
+                            .column(Column::remainder())
+                            .body(|body| {
+                                body.rows(24.0, data.len(), |mut row| {
+                                    let index = row.index();
+                                    let (k, v) = &data[index];
+                                    row.col(|ui| {
                                         ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                    });
+                                    row.col(|ui| {
                                         ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
-                                        ui.end_row();
-                                    }
+                                    });
                                 });
-                        }
-                        ui.add_space(10.0);
-                    });
+                            });
+                    }
+                    ui.add_space(10.0);
                 });
 
             if close_and_copy {

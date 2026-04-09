@@ -18,6 +18,7 @@ eframe = { version = "0.34", default-features = false, features = [
     "x11",
 ] }
 egui = "0.34"
+egui_extras = "0.34"
 image = { version = "0.25", default-features = false, features = [
     "png", "jpeg", "gif", "bmp", "tiff", "tga", "webp", "ico", "pnm", "hdr", "avif", "qoi", "exr",
 ] }
