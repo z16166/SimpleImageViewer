@@ -2759,25 +2759,28 @@ impl eframe::App for ImageViewerApp {
                         });
 
                     if let Some(data) = &self.cached_exif_data {
-                        use egui_extras::{Column, TableBuilder};
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::initial(160.0).at_least(100.0))
-                            .column(Column::remainder())
-                            .body(|body| {
-                                body.rows(24.0, data.len(), |mut row| {
-                                    let index = row.index();
-                                    let (k, v) = &data[index];
-                                    row.col(|ui| {
-                                        ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
-                                    });
-                                    row.col(|ui| {
-                                        ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            use egui_extras::{Column, TableBuilder};
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .resizable(true)
+                                .vscroll(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(160.0).at_least(100.0))
+                                .column(Column::remainder())
+                                .body(|body| {
+                                    body.rows(24.0, data.len(), |mut row| {
+                                        let index = row.index();
+                                        let (k, v) = &data[index];
+                                        row.col(|ui| {
+                                            ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                        });
+                                        row.col(|ui| {
+                                            ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                        });
                                     });
                                 });
-                            });
+                        });
                     }
                     ui.add_space(10.0);
                 });
@@ -2842,25 +2845,28 @@ impl eframe::App for ImageViewerApp {
                         });
 
                     if let Some(data) = &self.cached_xmp_data {
-                        use egui_extras::{Column, TableBuilder};
-                        TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(Column::initial(180.0).at_least(120.0))
-                            .column(Column::remainder())
-                            .body(|body| {
-                                body.rows(24.0, data.len(), |mut row| {
-                                    let index = row.index();
-                                    let (k, v) = &data[index];
-                                    row.col(|ui| {
-                                        ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
-                                    });
-                                    row.col(|ui| {
-                                        ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            use egui_extras::{Column, TableBuilder};
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .resizable(true)
+                                .vscroll(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(180.0).at_least(120.0))
+                                .column(Column::remainder())
+                                .body(|body| {
+                                    body.rows(24.0, data.len(), |mut row| {
+                                        let index = row.index();
+                                        let (k, v) = &data[index];
+                                        row.col(|ui| {
+                                            ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                        });
+                                        row.col(|ui| {
+                                            ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                        });
                                     });
                                 });
-                            });
+                        });
                     }
                     ui.add_space(10.0);
                 });
