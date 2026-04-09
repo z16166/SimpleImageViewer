@@ -336,7 +336,8 @@ impl ImageViewerApp {
 
         self.last_switch_time = Instant::now();
         self.error_message = None;
-        self.cached_exif_text = None;
+        self.cached_exif_data = None;
+        self.cached_xmp_data = None;
 
         // Try to pull from predictive cache if available
         if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
@@ -400,7 +401,8 @@ impl ImageViewerApp {
             self.animation = None;
             self.prev_texture = None;
             self.transition_start = None;
-            self.cached_exif_text = None;
+            self.cached_exif_data = None;
+            self.cached_xmp_data = None;
         } else {
             // Adjust current_index if we were at the last element
             if self.current_index >= self.image_files.len() {
@@ -413,7 +415,8 @@ impl ImageViewerApp {
             self.transition_start = None;
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
-            self.cached_exif_text = None;
+            self.cached_exif_data = None;
+            self.cached_xmp_data = None;
             self.error_message = None;
 
             // Load the image now at the current index
