@@ -15,6 +15,7 @@ use crate::loader::{ImageData, ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
 use crate::tile_cache::TileManager;
+use rust_i18n::t;
 
 const PRELOAD_AHEAD: usize = 1;
 const PRELOAD_BEHIND: usize = 1;
@@ -284,10 +285,8 @@ impl ImageViewerApp {
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
         self.scanning = true;
-        self.status_message = format!(
-            "Scanning {}…",
-            dir.file_name().unwrap_or_default().to_string_lossy()
-        );
+        let dir_name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+        self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
@@ -378,7 +377,7 @@ impl ImageViewerApp {
             };
 
             if let Err(e) = result {
-                self.error_message = Some(format!("Failed to delete file: {}", e));
+                self.error_message = Some(t!("status.delete_failed", err = e.to_string()).to_string());
                 return;
             }
             
@@ -396,7 +395,7 @@ impl ImageViewerApp {
 
         if self.image_files.is_empty() {
             self.current_index = 0;
-            self.status_message = "No images left in directory.".to_string();
+            self.status_message = t!("status.no_images_left").to_string();
             self.current_image_res = None;
             self.animation = None;
             self.prev_texture = None;
@@ -538,11 +537,11 @@ impl ImageViewerApp {
             }
 
             if count > 0 {
-                self.status_message = format!("Found {count} images — use arrow keys to navigate");
+                self.status_message = t!("status.found", count = count.to_string()).to_string();
                 self.show_settings = false;
                 self.schedule_preloads(true);
             } else {
-                self.status_message = "No supported images found in this directory.".to_string();
+                self.status_message = t!("status.not_found").to_string();
             }
         }
     }
@@ -669,7 +668,7 @@ impl ImageViewerApp {
                     );
                     if idx == self.current_index {
                         self.error_message =
-                            Some(format!("Failed to load image: {e}"));
+                            Some(t!("status.load_failed", err = e.to_string()).to_string());
                     }
                 }
             }
@@ -1002,7 +1001,7 @@ impl ImageViewerApp {
         let mut music_enabled_changed = false;
         let mut do_quit = false;
 
-        egui::Window::new("⚙  Settings")
+        egui::Window::new(t!("app.window_title"))
             .default_pos(Pos2::new(12.0, 12.0))
             .resizable(true)
             .collapsible(true)
@@ -1018,7 +1017,7 @@ impl ImageViewerApp {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
                 ui.heading(
-                    RichText::new("🖼  Simple Image Viewer")
+                    RichText::new(t!("app.title"))
                         .color(ACCENT2)
                         .size(18.0),
                 );
@@ -1030,7 +1029,7 @@ impl ImageViewerApp {
                 cols[0].vertical(|ui| {
                 
                 // ── Directory ──────────────────────────────────────────────
-                ui.label(RichText::new("Directory").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.directory")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 // Path display: short name in box, full path as tooltip
@@ -1043,14 +1042,14 @@ impl ImageViewerApp {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| dir_full.clone().unwrap_or_default());
                 let dir_empty = self.settings.last_image_dir.is_none();
-                let dir_label = if dir_empty { "No directory selected".to_string() } else { dir_short };
+                let dir_label = if dir_empty { t!("label.no_dir").to_string() } else { dir_short };
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if styled_button(ui, "📁 Pick").clicked() {
+                        if styled_button(ui, &t!("btn.pick")).clicked() {
                             open_dir = true;
                         }
                         ui.add_space(4.0);
-                        if styled_button(ui, "🔄 Refresh").clicked() {
+                        if styled_button(ui, &t!("btn.refresh")).clicked() {
                             if let Some(dir) = self.settings.last_image_dir.clone() {
                                 self.load_directory(dir);
                             }
@@ -1068,16 +1067,12 @@ impl ImageViewerApp {
 
                 ui.add_space(4.0);
                 let old_recursive = self.settings.recursive;
-                ui.checkbox(&mut self.settings.recursive, "Recursive scan");
+                ui.checkbox(&mut self.settings.recursive, t!("label.recursive_scan").to_string());
                 if !old_recursive && self.settings.recursive {
                     // User just turned ON recursive scan — warn them first
                     let confirmed = rfd::MessageDialog::new()
-                        .set_title("Enable Recursive Scan?")
-                        .set_description(
-                            "Recursive scan will search all subdirectories.\n\
-                             This can take a very long time on large directory trees\n\
-                             (e.g. a disk root). Are you sure?"
-                        )
+                        .set_title(t!("win.confirm_recursive_title").as_str())
+                        .set_description(t!("win.confirm_recursive_msg").as_str())
                         .set_buttons(rfd::MessageButtons::OkCancel)
                         .set_level(rfd::MessageLevel::Warning)
                         .show() == rfd::MessageDialogResult::Ok;
@@ -1093,11 +1088,11 @@ impl ImageViewerApp {
                     self.queue_save();
                 }
 
-                if ui.checkbox(&mut self.settings.preload, "Enable image preloading").changed() {
+                if ui.checkbox(&mut self.settings.preload, t!("label.enable_preload").to_string()).changed() {
                     self.queue_save();
                 }
 
-                if ui.checkbox(&mut self.settings.resume_last_image, "Resume from last viewed image").changed() {
+                if ui.checkbox(&mut self.settings.resume_last_image, t!("label.resume_last").to_string()).changed() {
                     self.queue_save();
                 }
 
@@ -1111,11 +1106,11 @@ impl ImageViewerApp {
                 ui.add_space(8.0);
 
                 // ── Display ────────────────────────────────────────────────
-                ui.label(RichText::new("Display").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.display")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 let old_fullscreen = self.settings.fullscreen;
-                ui.checkbox(&mut self.settings.fullscreen, "Fullscreen (covers taskbar)");
+                ui.checkbox(&mut self.settings.fullscreen, t!("label.fullscreen").to_string());
                 if old_fullscreen != self.settings.fullscreen {
                     fullscreen_changed = true;
                 }
@@ -1123,18 +1118,18 @@ impl ImageViewerApp {
                 ui.add_space(6.0);
 
                 // Scale mode selector
-                ui.label(RichText::new("Scale Mode").color(TEXT_MUTED).small());
+                ui.label(RichText::new(t!("label.scale_mode")).color(TEXT_MUTED).small());
                 ui.add_space(2.0);
                 let old_scale = self.settings.scale_mode;
                 ui.horizontal(|ui| {
                     let fit_active = self.settings.scale_mode == ScaleMode::FitToWindow;
-                    if ui.add(egui::Button::selectable(fit_active, "⛶  Fit to Window")).clicked()
+                    if ui.add(egui::Button::selectable(fit_active, t!("scale.fit_btn").to_string())).clicked()
                         && !fit_active
                     {
                         self.settings.scale_mode = ScaleMode::FitToWindow;
                     }
                     let orig_active = self.settings.scale_mode == ScaleMode::OriginalSize;
-                    if ui.add(egui::Button::selectable(orig_active, "⊞  Original Size")).clicked()
+                    if ui.add(egui::Button::selectable(orig_active, t!("scale.original_btn").to_string())).clicked()
                         && !orig_active
                     {
                         self.settings.scale_mode = ScaleMode::OriginalSize;
@@ -1147,21 +1142,21 @@ impl ImageViewerApp {
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Press Z to toggle scale mode")
+                    RichText::new(t!("label.z_toggle_hint"))
                         .color(TEXT_MUTED)
                         .small(),
                 );
 
                 ui.add_space(6.0);
-                ui.checkbox(&mut self.settings.show_osd, "Show OSD (filename, etc.)");
+                ui.checkbox(&mut self.settings.show_osd, t!("label.show_osd").to_string());
                 
                 // ── Transitions ──────────────────────────────────────────
                 ui.add_space(8.0);
-                ui.label(RichText::new("Image Transitions").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.transitions")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("Style:");
+                    ui.label(t!("label.style"));
                     let old_style = self.settings.transition_style;
                     egui::ComboBox::from_id_salt("transition_style")
                         .selected_text(self.settings.transition_style.label())
@@ -1182,7 +1177,7 @@ impl ImageViewerApp {
 
                 if self.settings.transition_style != TransitionStyle::None {
                     ui.horizontal(|ui| {
-                        ui.label("Duration:");
+                        ui.label(t!("label.duration"));
                         let old_ms = self.settings.transition_ms;
                         ui.add(egui::Slider::new(&mut self.settings.transition_ms, 50..=2000).suffix("ms"));
                         if old_ms != self.settings.transition_ms {
@@ -1195,23 +1190,23 @@ impl ImageViewerApp {
                 
                 cols[1].vertical(|ui| {
                 // ── Slideshow ────────────────────────────────────────────
-                ui.label(RichText::new("Slideshow").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.slideshow")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 let old_auto_switch = self.settings.auto_switch;
-                if ui.checkbox(&mut self.settings.auto_switch, "Auto-advance to next picture").changed() {
+                if ui.checkbox(&mut self.settings.auto_switch, t!("label.auto_advance").to_string()).changed() {
                     self.slideshow_paused = false;  // Reset pause when toggling via UI
                 }
                 if self.settings.auto_switch {
                     ui.horizontal(|ui| {
-                        ui.label("Interval (sec):");
+                        ui.label(t!("label.interval_sec"));
                         ui.add(
                             egui::DragValue::new(&mut self.settings.auto_switch_interval)
                                 .range(0.5..=3600.0)
                                 .speed(0.5),
                         );
                     });
-                    ui.checkbox(&mut self.settings.loop_playback, "Loop (wrap around to first image)");
+                    ui.checkbox(&mut self.settings.loop_playback, t!("label.loop_wrap").to_string());
                 }
                 if old_auto_switch != self.settings.auto_switch {
                     self.queue_save();
@@ -1220,11 +1215,11 @@ impl ImageViewerApp {
                 ui.add_space(8.0);
 
                 // ── Music ──────────────────────────────────────────────────
-                ui.label(RichText::new("Background Music").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.music")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
-                ui.checkbox(&mut self.settings.play_music, "Play background music");
+                ui.checkbox(&mut self.settings.play_music, t!("label.play_music").to_string());
                 ui.add_space(2.0);
                 if old_play_music != self.settings.play_music {
                     music_enabled_changed = true;
@@ -1241,13 +1236,13 @@ impl ImageViewerApp {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| music_full.clone().unwrap_or_default());
                     let music_empty = self.settings.music_path.is_none();
-                    let music_label = if music_empty { "No supported file/folder".to_string() } else { music_short };
+                    let music_label = if music_empty { t!("label.no_music").to_string() } else { music_short };
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if styled_button(ui, "📂 Dir").clicked() {
+                            if styled_button(ui, &t!("btn.pick_dir")).clicked() {
                                 open_music_dir = true;
                             }
-                            if styled_button(ui, "🎵 File").clicked() {
+                            if styled_button(ui, &t!("btn.pick_file")).clicked() {
                                 open_music_file = true;
                             }
                             let box_w = (ui.available_width() - 16.0).max(20.0);
@@ -1265,10 +1260,10 @@ impl ImageViewerApp {
                         ui.horizontal(|ui| {
                             if self.scanning_music {
                                 ui.spinner();
-                                ui.label(RichText::new("Scanning music…").color(TEXT_MUTED).small());
+                                ui.label(RichText::new(t!("music.scanning")).color(TEXT_MUTED).small());
                             } else if let Some(count) = self.cached_music_count {
                                 if count > 0 {
-                                    ui.label(RichText::new(format!("♪ {count} file(s) ready")).color(ACCENT2).small());
+                                    ui.label(RichText::new(t!("music.files_ready", count = count.to_string())).color(ACCENT2).small());
                                     
                                     // Align 5-buttons to the right to match the "Dir" row above
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1276,29 +1271,29 @@ impl ImageViewerApp {
                                         let has_tracks = self.audio.has_tracks();
                                         
                                         // Buttons in RTL order: ⏭, ⏩, ▶/⏸, ⏪, ⏮
-                                        if styled_button(ui, "⏭").on_hover_text("Next File").clicked() {
+                                        if styled_button(ui, "⏭").on_hover_text(t!("music.next_file")).clicked() {
                                             self.audio.next_file();
                                         }
                                         let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩"));
-                                        if resp.on_hover_text("Next Track (CUE)").clicked() {
+                                        if resp.on_hover_text(t!("music.next_track")).clicked() {
                                             self.audio.next_track();
                                         }
                                         let play_icon = if self.settings.music_paused { "▶" } else { "⏸" };
-                                        if styled_button(ui, play_icon).on_hover_text("Play/Pause").clicked() {
+                                        if styled_button(ui, play_icon).on_hover_text(t!("music.play_pause")).clicked() {
                                             self.settings.music_paused = !self.settings.music_paused;
                                             if self.settings.music_paused { self.audio.pause(); } else { self.audio.play(); }
                                             self.queue_save();
                                         }
                                         let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪"));
-                                        if resp.on_hover_text("Prev Track (CUE)").clicked() {
+                                        if resp.on_hover_text(t!("music.prev_track")).clicked() {
                                             self.audio.prev_track();
                                         }
-                                        if styled_button(ui, "⏮").on_hover_text("Previous File").clicked() {
+                                        if styled_button(ui, "⏮").on_hover_text(t!("music.prev_file")).clicked() {
                                             self.audio.prev_file();
                                         }
                                     });
                                 } else {
-                                    ui.label(RichText::new("⚠ No audio found").color(Color32::from_rgb(255, 180, 60)).small());
+                                    ui.label(RichText::new(t!("music.no_audio")).color(Color32::from_rgb(255, 180, 60)).small());
                                 }
                             }
                         });
@@ -1310,7 +1305,7 @@ impl ImageViewerApp {
                     if let Some(f) = filename {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            let status = if self.settings.music_paused { "⏸ Paused:" } else { "🎵 Playing:" };
+                            let status = if self.settings.music_paused { t!("music.paused").to_string() } else { t!("music.playing").to_string() };
                             ui.label(RichText::new(status).color(TEXT_MUTED).small());
                             let short_f = middle_truncate(&f, 40);
                             ui.label(RichText::new(format!("[{short_f}]")).color(TEXT_MUTED).small()).on_hover_text(&f);
@@ -1323,7 +1318,7 @@ impl ImageViewerApp {
                     // Volume slider
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("🔊 Volume").color(TEXT_MUTED));
+                        ui.label(RichText::new(t!("label.volume")).color(TEXT_MUTED));
                         let old_vol = self.settings.volume;
                         let resp = ui.add(
                             egui::Slider::new(&mut self.settings.volume, 0.0..=1.0)
@@ -1341,7 +1336,7 @@ impl ImageViewerApp {
                     // Audio error feedback
                     if let Some(err) = self.audio.take_error() {
                         ui.label(
-                            RichText::new(format!("⚠ Audio: {err}"))
+                            RichText::new(t!("music.audio_error", err = err))
                                 .color(Color32::from_rgb(255, 100, 100))
                                 .small(),
                         );
@@ -1353,11 +1348,11 @@ impl ImageViewerApp {
                 ui.add_space(6.0);
 
                 // ── Font & Appearance ──────────────────────────────────────
-                ui.label(RichText::new("Font & Appearance").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.font")).color(ACCENT2).strong());
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
-                    ui.label("Interface Size:");
+                    ui.label(t!("label.interface_size"));
                     let mut current_size = self.temp_font_size.unwrap_or(self.settings.font_size);
                     let resp = ui.add(egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0));
                     
@@ -1372,7 +1367,7 @@ impl ImageViewerApp {
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("Interface Font:");
+                    ui.label(t!("label.interface_font"));
                     let old_family = self.settings.font_family.clone();
                     egui::ComboBox::from_id_salt("font_family")
                         .selected_text(&self.settings.font_family)
@@ -1388,6 +1383,27 @@ impl ImageViewerApp {
                     }
                 });
 
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(t!("section.language"));
+                    let old_lang = self.settings.language.clone();
+                    egui::ComboBox::from_id_salt("language")
+                        .selected_text(match self.settings.language.as_str() {
+                            "zh-CN" => t!("lang.zh_cn"),
+                            "zh-HK" => t!("lang.zh_hk"),
+                            _ => t!("lang.en"),
+                        }.to_string())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.settings.language, "en".to_string(), t!("lang.en").to_string());
+                            ui.selectable_value(&mut self.settings.language, "zh-CN".to_string(), t!("lang.zh_cn").to_string());
+                            ui.selectable_value(&mut self.settings.language, "zh-HK".to_string(), t!("lang.zh_hk").to_string());
+                        });
+                    if old_lang != self.settings.language {
+                        rust_i18n::set_locale(&self.settings.language);
+                        self.queue_save();
+                    }
+                });
+
                 ui.add_space(8.0);
                 }); // End of Right Column
                 }); // End of ui.columns
@@ -1398,31 +1414,25 @@ impl ImageViewerApp {
                 // ── System Integration (Windows only) ─────────────────────
                 #[cfg(target_os = "windows")]
                 {
-                    ui.label(RichText::new("System Integration (Windows)").color(ACCENT2).strong());
+                    ui.label(RichText::new(t!("section.system_windows")).color(ACCENT2).strong());
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new("Register this app in Windows \"Open With\" menu for image files.")
+                        RichText::new(t!("win.register_hint"))
                             .color(TEXT_MUTED)
                             .small(),
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if styled_button(ui, "📎 Associate Formats").clicked() {
+                        if styled_button(ui, &t!("win.assoc_formats")).clicked() {
                             // Reset all selections to true (default: all selected)
                             self.file_assoc_selections = vec![true; scanner::SUPPORTED_EXTENSIONS.len()];
                             self.show_file_assoc_dialog = true;
                         }
                         ui.add_space(8.0);
-                        if styled_button(ui, "🗑 Remove Association").clicked() {
+                        if styled_button(ui, &t!("win.remove_assoc")).clicked() {
                             let confirmed = rfd::MessageDialog::new()
-                                .set_title("Remove File Associations?")
-                                .set_description(
-                                    "This will remove all file associations created by this application \
-                                     from the Windows registry.\n\n\
-                                     The application will return to \"portable/green\" mode.\n\
-                                     Other applications' associations will not be affected.\n\n\
-                                     Continue?"
-                                )
+                                .set_title(t!("win.confirm_remove_title").as_str())
+                                .set_description(t!("win.confirm_remove_msg").as_str())
                                 .set_buttons(rfd::MessageButtons::OkCancel)
                                 .set_level(rfd::MessageLevel::Warning)
                                 .show() == rfd::MessageDialogResult::Ok;
@@ -1437,18 +1447,12 @@ impl ImageViewerApp {
                 }
 
                 // ── Exit area ────────────────────────────────────────────────
-                #[cfg(target_os = "macos")]
-                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Cmd+Q to quit";
-                #[cfg(target_os = "linux")]
-                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Ctrl+Q to quit";
-                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                const QUIT_HINT: &str = "Esc / F1 to toggle this panel  │  Alt+F4 to quit";
 
                 ui.horizontal(|ui| {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("✕  Exit Application").color(Color32::WHITE),
+                                RichText::new(t!("btn.exit")).color(Color32::WHITE),
                             )
                             .fill(Color32::from_rgb(180, 40, 40))
                             .corner_radius(egui::CornerRadius::same(4)),
@@ -1458,7 +1462,12 @@ impl ImageViewerApp {
                         do_quit = true;
                     }
                     ui.add_space(12.0);
-                    ui.label(RichText::new(QUIT_HINT).color(TEXT_MUTED).small());
+                    #[cfg(target_os = "macos")]
+                    ui.label(RichText::new(t!("hint.quit_macos")).color(TEXT_MUTED).small());
+                    #[cfg(target_os = "linux")]
+                    ui.label(RichText::new(t!("hint.quit_linux")).color(TEXT_MUTED).small());
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    ui.label(RichText::new(t!("hint.quit_windows")).color(TEXT_MUTED).small());
                 });
             });
 
@@ -2041,31 +2050,31 @@ impl ImageViewerApp {
                     let path = &self.image_files[self.current_index];
                     let path_str = path.to_string_lossy().to_string();
 
-                    if ui.button("📋 Copy Full Path").clicked() {
+                    if ui.button(t!("ctx.copy_path").to_string()).clicked() {
                         ui.ctx().copy_text(path_str.clone());
                         ui.close();
                     }
 
-                    if ui.button("📁 Copy File").clicked() {
+                    if ui.button(t!("ctx.copy_file").to_string()).clicked() {
                         copy_file_to_clipboard(&path_str);
                         ui.close();
                     }
 
                     ui.separator();
 
-                    if ui.button("ℹ View EXIF Info").clicked() {
+                    if ui.button(t!("ctx.view_exif").to_string()).clicked() {
                         self.cached_exif_data = extract_exif(path);
                         self.show_exif_window = true;
                         ui.close();
                     }
 
-                    if ui.button("ℹ View XMP Info").clicked() {
+                    if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
                         self.show_xmp_window = true;
                         ui.close();
                     }
                     
                     ui.separator();
-                    if ui.button("🖼 Set as desktop wallpaper…").clicked() {
+                    if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
                         self.show_wallpaper_dialog = true;
                         if let Ok(p) = wallpaper::get() {
                             self.current_system_wallpaper = Some(p);
@@ -2134,7 +2143,7 @@ impl ImageViewerApp {
                         ui.painter().text(
                             screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
                             Align2::RIGHT_BOTTOM,
-                            "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen",
+                            t!("hint.keyboard").to_string(),
                             FontId::proportional(11.0),
                             Color32::from_rgba_unmultiplied(160, 160, 180, 140),
                         );
@@ -2146,7 +2155,7 @@ impl ImageViewerApp {
                     ui.painter().text(
                         screen_rect.center() - Vec2::new(0.0, 20.0),
                         Align2::CENTER_BOTTOM,
-                        "Loading…",
+                        t!("status.loading").to_string(),
                         FontId::proportional(16.0),
                         TEXT_MUTED,
                     );
@@ -2192,7 +2201,7 @@ impl ImageViewerApp {
         let mut do_close = false;
         let mut do_set = false;
 
-        egui::Window::new("Set as desktop wallpaper")
+        egui::Window::new(t!("wallpaper.title").to_string())
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(false)
             .collapsible(false)
@@ -2207,7 +2216,7 @@ impl ImageViewerApp {
                 ui.add_space(8.0);
 
                 if let Some(ref current) = self.current_system_wallpaper {
-                    ui.label(RichText::new("Current System Wallpaper:").color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("wallpaper.current")).color(TEXT_MUTED).small());
                     egui::ScrollArea::horizontal()
                         .id_salt("curr_wp_scroll")
                         .min_scrolled_height(24.0)
@@ -2224,7 +2233,7 @@ impl ImageViewerApp {
                 }
 
                 let path = self.image_files[self.current_index].to_string_lossy().into_owned();
-                ui.label(RichText::new("New Image Path:").color(TEXT_MUTED).small());
+                ui.label(RichText::new(t!("wallpaper.new_path")).color(TEXT_MUTED).small());
                 egui::ScrollArea::horizontal()
                     .id_salt("new_wp_scroll")
                     .min_scrolled_height(24.0)
@@ -2238,30 +2247,30 @@ impl ImageViewerApp {
                 
                 if let Some((w, h)) = self.current_image_res {
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Original Resolution:").color(TEXT_MUTED).small());
-                    ui.label(format!("{} × {} pixels", w, h));
+                    ui.label(RichText::new(t!("wallpaper.resolution")).color(TEXT_MUTED).small());
+                    ui.label(format!("{} × {}", w, h));
                 }
 
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(RichText::new("Wallpaper Mode:").color(ACCENT2).strong());
+                ui.label(RichText::new(t!("wallpaper.mode")).color(ACCENT2).strong());
 
                 ui.vertical(|ui| {
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Crop".to_string(), "Crop (Fill)");
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Fit".to_string(), "Fit");
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Stretch".to_string(), "Stretch");
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Tile".to_string(), "Tile");
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Center".to_string(), "Center");
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Span".to_string(), "Span (Multi-monitor)");
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Crop".to_string(), t!("wallpaper.crop").to_string());
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Fit".to_string(), t!("wallpaper.fit").to_string());
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Stretch".to_string(), t!("wallpaper.stretch").to_string());
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Tile".to_string(), t!("wallpaper.tile").to_string());
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Center".to_string(), t!("wallpaper.center").to_string());
+                    ui.radio_value(&mut self.selected_wallpaper_mode, "Span".to_string(), t!("wallpaper.span").to_string());
                 });
 
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    if ui.button(RichText::new(" Set Wallpaper ").color(Color32::WHITE)).clicked() {
+                    if ui.button(RichText::new(t!("btn.set_wallpaper").to_string()).color(Color32::WHITE)).clicked() {
                         do_set = true;
                     }
-                    if ui.button(" Cancel ").clicked() {
+                    if ui.button(&t!("btn.cancel")).clicked() {
                         do_close = true;
                     }
                 });
@@ -2311,7 +2320,7 @@ impl ImageViewerApp {
         let mut do_close = false;
         let mut do_jump = false;
 
-        egui::Window::new("Go to image…")
+        egui::Window::new(t!("goto.title").to_string())
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(false)
             .collapsible(false)
@@ -2325,7 +2334,7 @@ impl ImageViewerApp {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(format!("Enter image number (1 – {})", total))
+                    RichText::new(t!("goto.hint", total = total.to_string()))
                         .color(TEXT_MUTED)
                         .small(),
                 );
@@ -2353,10 +2362,10 @@ impl ImageViewerApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if styled_button(ui, "Go").clicked() {
+                    if styled_button(ui, &t!("btn.go")).clicked() {
                         do_jump = true;
                     }
-                    if styled_button(ui, "Cancel").clicked() {
+                    if styled_button(ui, &t!("btn.cancel")).clicked() {
                         do_close = true;
                     }
                 });
@@ -2400,7 +2409,7 @@ impl ImageViewerApp {
         let mut do_apply = false;
         let mut do_cancel = false;
 
-        egui::Window::new("📎  Select Image Formats to Associate")
+        egui::Window::new(t!("win.assoc_dialog_title").to_string())
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -2414,19 +2423,19 @@ impl ImageViewerApp {
                 ui.visuals_mut().override_text_color = Some(Color32::WHITE);
 
                 ui.label(
-                    RichText::new("Select which image formats this application\nshould be associated with in Windows:")
+                    RichText::new(t!("win.assoc_dialog_msg").to_string())
                         .color(TEXT_MUTED),
                 );
                 ui.add_space(8.0);
 
                 // Select All / Deselect All
                 ui.horizontal(|ui| {
-                    if ui.button("✔ Select All").clicked() {
+                    if ui.button(t!("btn.select_all").to_string()).clicked() {
                         for sel in self.file_assoc_selections.iter_mut() {
                             *sel = true;
                         }
                     }
-                    if ui.button("✘ Deselect All").clicked() {
+                    if ui.button(t!("btn.deselect_all").to_string()).clicked() {
                         for sel in self.file_assoc_selections.iter_mut() {
                             *sel = false;
                         }
@@ -2470,7 +2479,7 @@ impl ImageViewerApp {
                         .add_enabled(
                             apply_enabled,
                             egui::Button::new(
-                                RichText::new(format!("✔  Apply ({} formats)", selected_count))
+                                RichText::new(t!("win.apply_formats", count = selected_count.to_string()))
                                     .color(Color32::WHITE)
                             )
                             .fill(ACCENT)
@@ -2483,7 +2492,7 @@ impl ImageViewerApp {
                     ui.add_space(8.0);
                     if ui
                         .add(
-                            egui::Button::new("✕  Cancel")
+                            egui::Button::new(t!("win.btn_cancel").to_string())
                                 .corner_radius(egui::CornerRadius::same(4)),
                         )
                         .clicked()
@@ -2505,16 +2514,8 @@ impl ImageViewerApp {
             self.show_file_assoc_dialog = false;
 
             rfd::MessageDialog::new()
-                .set_title("File Association Registered")
-                .set_description(
-                    "File associations have been registered successfully!\n\n\
-                     To set Simple Image Viewer as the default image viewer:\n\
-                     1. Double-click any image file in Explorer\n\
-                     2. Select \"Simple Image Viewer\" from the list\n\
-                     3. Check \"Always use this app\"\n\n\
-                     Usually you only need to do this once, and Windows will \
-                     automatically apply it to all associated image types."
-                )
+                .set_title(t!("win.assoc_done_title").as_str())
+                .set_description(t!("win.assoc_done_msg").as_str())
                 .set_buttons(rfd::MessageButtons::Ok)
                 .set_level(rfd::MessageLevel::Info)
                 .show();
@@ -2732,7 +2733,7 @@ impl eframe::App for ImageViewerApp {
 
             let mut close_exif = false;
             let mut close_and_copy = false;
-            egui::Window::new("ℹ EXIF Information")
+            egui::Window::new(t!("exif.title").to_string())
                 .collapsible(false)
                 .resizable(true)
                 .default_pos(ctx.screen_rect().center() - egui::vec2(300.0, 200.0))
@@ -2741,7 +2742,7 @@ impl eframe::App for ImageViewerApp {
                     ui.set_max_width(ui.available_width());
                     if self.cached_exif_data.is_none() {
                         ui.add_space(10.0);
-                        ui.label(RichText::new("⚠ No EXIF data found in this image.").color(Color32::from_rgb(255, 180, 60)).strong());
+                        ui.label(RichText::new(t!("exif.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
                     }
 
                     egui::TopBottomPanel::bottom("exif_footer")
@@ -2749,10 +2750,10 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, "📋 Copy EXIF").clicked() {
+                                if styled_button(ui, &t!("exif.copy")).clicked() {
                                     close_and_copy = true;
                                 }
-                                if styled_button(ui, "Close").clicked() {
+                                if styled_button(ui, &t!("btn.close")).clicked() {
                                     close_exif = true;
                                 }
                             });
@@ -2815,7 +2816,7 @@ impl eframe::App for ImageViewerApp {
 
             let mut close_xmp = false;
             let mut close_and_copy = false;
-            egui::Window::new("XMP Information")
+            egui::Window::new(t!("xmp.title").to_string())
                 .collapsible(false)
                 .resizable(true)
                 .default_pos(ctx.screen_rect().center() - egui::vec2(320.0, 240.0))
@@ -2824,7 +2825,7 @@ impl eframe::App for ImageViewerApp {
                     ui.set_max_width(ui.available_width());
                     if self.cached_xmp_data.is_none() {
                         ui.add_space(10.0);
-                        ui.label(RichText::new("⚠ No XMP data found in this image.").color(Color32::from_rgb(255, 180, 60)).strong());
+                        ui.label(RichText::new(t!("xmp.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
                     }
 
                     egui::TopBottomPanel::bottom("xmp_footer")
@@ -2832,16 +2833,16 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, "📋 Copy Text").clicked() {
+                                if styled_button(ui, &t!("xmp.copy_text")).clicked() {
                                     close_and_copy = true;
                                 }
-                                if styled_button(ui, "📄 Copy XML").clicked() {
+                                if styled_button(ui, &t!("xmp.copy_xml")).clicked() {
                                     if let Some(xml) = &self.cached_xmp_xml {
                                         ctx.copy_text(xml.clone());
                                         self.show_xmp_window = false;
                                     }
                                 }
-                                if styled_button(ui, "Close").clicked() {
+                                if styled_button(ui, &t!("btn.close")).clicked() {
                                     close_xmp = true;
                                 }
                             });
@@ -3230,7 +3231,7 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect) {
     ui.painter().text(
         rect.center() + Vec2::new(0.0, 30.0),
         Align2::CENTER_CENTER,
-        "No images loaded\nPress F1 to open settings and pick a folder",
+        t!("hint.no_images").to_string(),
         FontId::proportional(16.0),
         Color32::from_gray(100),
     );

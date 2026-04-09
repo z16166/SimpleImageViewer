@@ -1,0 +1,150 @@
+# ============================================================
+# zh-CN.yaml — Simplified Chinese (Mainland China)
+# ============================================================
+
+# App
+app.title: "简易图片查看器"
+app.window_title: "⚙  设置"
+
+# Sections
+section.directory: "目录"
+section.display: "显示"
+section.slideshow: "幻灯片"
+section.music: "背景音乐"
+section.transitions: "切换动画"
+section.font: "字体与外观"
+section.system_windows: "系统集成（Windows）"
+section.language: "语言"
+
+# Buttons
+btn.pick: "📁 选择"
+btn.refresh: "🔄 刷新"
+btn.close: "关闭"
+btn.cancel: "取消"
+btn.go: "跳转"
+btn.exit: "✕  退出程序"
+btn.pick_dir: "📂 文件夹"
+btn.pick_file: "🎵 文件"
+btn.set_wallpaper: " 设为壁纸 "
+btn.select_all: "✔ 全选"
+btn.deselect_all: "✘ 取消全选"
+
+# Labels / Checkboxes
+label.recursive_scan: "递归扫描子目录"
+label.enable_preload: "启用图片预加载"
+label.resume_last: "从上次查看的图片继续"
+label.fullscreen: "全屏（覆盖任务栏）"
+label.show_osd: "显示 OSD（文件名等）"
+label.auto_advance: "自动切换到下一张图片"
+label.interval_sec: "间隔（秒）："
+label.loop_wrap: "循环（从第一张重新开始）"
+label.play_music: "播放背景音乐"
+label.scale_mode: "缩放模式"
+label.no_dir: "未选择目录"
+label.no_music: "未选择支持的文件或文件夹"
+label.style: "样式："
+label.duration: "时长："
+label.interface_size: "界面字体大小："
+label.interface_font: "界面字体："
+label.volume: "🔊 音量"
+label.z_toggle_hint: "按 Z 键切换缩放模式"
+
+# Scale mode
+scale.fit: "适应窗口"
+scale.original: "原始尺寸"
+scale.fit_btn: "⛶  适应窗口"
+scale.original_btn: "⊞  原始尺寸"
+
+# Transition styles
+transition.none: "无（即时切换）"
+transition.fade: "交叉淡入淡出"
+transition.zoom_fade: "缩放淡入淡出"
+transition.slide: "滑入"
+transition.push: "推入"
+transition.page_flip: "翻页"
+transition.ripple: "水波纹"
+transition.curtain: "幕帘"
+
+# Music
+music.scanning: "正在扫描音乐…"
+music.files_ready: "♪ %{count} 个文件就绪"
+music.no_audio: "⚠ 未找到音频文件"
+music.paused: "⏸ 已暂停："
+music.playing: "🎵 正在播放："
+music.next_file: "下一文件"
+music.next_track: "下一曲目（CUE）"
+music.play_pause: "播放/暂停"
+music.prev_track: "上一曲目（CUE）"
+music.prev_file: "上一文件"
+music.audio_error: "⚠ 音频错误：%{err}"
+
+# Status messages
+status.scanning: "正在扫描 %{dir}…"
+status.found: "找到 %{count} 张图片 — 使用方向键浏览"
+status.not_found: "该目录中未找到支持的图片。"
+status.no_images_left: "目录中已没有图片。"
+status.delete_failed: "删除文件失败：%{err}"
+status.load_failed: "加载图片失败：%{err}"
+status.loading: "加载中…"
+
+# Hints (on canvas)
+hint.no_images: "未加载图片\n按 F1 打开设置并选择文件夹"
+hint.keyboard: "F1 — 设置  │  +/- 或滚轮 — 缩放  │  * 重置  │  Z — 适应/原始  │  G — 跳转  │  F11 — 全屏"
+hint.quit_macos: "Esc / F1 切换设置面板  │  Cmd+Q 退出"
+hint.quit_linux: "Esc / F1 切换设置面板  │  Ctrl+Q 退出"
+hint.quit_windows: "Esc / F1 切换设置面板  │  Alt+F4 退出"
+
+# Context menu
+ctx.copy_path: "📋 复制完整路径"
+ctx.copy_file: "📁 复制文件"
+ctx.view_exif: "ℹ 查看 EXIF 信息"
+ctx.view_xmp: "ℹ 查看 XMP 信息"
+ctx.set_wallpaper: "🖼 设为桌面壁纸…"
+
+# Wallpaper dialog
+wallpaper.title: "设为桌面壁纸"
+wallpaper.current: "当前系统壁纸："
+wallpaper.new_path: "新图片路径："
+wallpaper.resolution: "原始分辨率："
+wallpaper.mode: "壁纸模式："
+wallpaper.crop: "裁剪填充"
+wallpaper.fit: "适应"
+wallpaper.stretch: "拉伸"
+wallpaper.tile: "平铺"
+wallpaper.center: "居中"
+wallpaper.span: "跨屏（多显示器）"
+
+# Goto dialog
+goto.title: "跳转到指定图片…"
+goto.hint: "输入图片编号（1 – %{total}）"
+
+# EXIF window
+exif.title: "ℹ EXIF 信息"
+exif.no_data: "⚠ 该图片中未找到 EXIF 数据。"
+exif.copy: "📋 复制 EXIF"
+
+# XMP window
+xmp.title: "XMP 信息"
+xmp.no_data: "⚠ 该图片中未找到 XMP 数据。"
+xmp.copy_text: "📋 复制文本"
+xmp.copy_xml: "📄 复制 XML"
+
+# Windows system integration
+win.register_hint: "为图片文件在 Windows「打开方式」菜单中注册此应用。"
+win.assoc_formats: "📎 关联格式"
+win.remove_assoc: "🗑 移除关联"
+win.confirm_remove_title: "移除文件关联？"
+win.confirm_remove_msg: "这将从 Windows 注册表中移除本应用创建的所有文件关联。\n\n应用将恢复为「便携/绿色」模式。\n其他应用的关联不会受到影响。\n\n是否继续？"
+win.assoc_dialog_title: "📎  选择要关联的图片格式"
+win.assoc_dialog_msg: "请选择此应用要在 Windows 中关联的图片格式："
+win.apply_formats: "✔  应用（%{count} 种格式）"
+win.btn_cancel: "✕  取消"
+win.assoc_done_title: "文件关联已注册"
+win.assoc_done_msg: "文件关联注册成功！\n\n若要将简易图片查看器设为默认图片查看器：\n1. 在资源管理器中双击任意图片文件\n2. 从列表中选择「Simple Image Viewer」\n3. 勾选「始终使用此应用」\n\n通常只需操作一次，Windows 将自动应用到所有已关联的图片类型。"
+win.confirm_recursive_title: "启用递归扫描？"
+win.confirm_recursive_msg: "递归扫描将搜索所有子目录。\n在大型目录树（如磁盘根目录）下可能耗时很长。\n确定要启用吗？"
+
+# Language names (for the selector)
+lang.en: "English (US)"
+lang.zh_cn: "简体中文"
+lang.zh_hk: "繁體中文（香港）"

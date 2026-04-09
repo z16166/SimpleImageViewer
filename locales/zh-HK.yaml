@@ -1,0 +1,150 @@
+# ============================================================
+# zh-HK.yaml — Traditional Chinese (Hong Kong)
+# ============================================================
+
+# App
+app.title: "簡易圖片查看器"
+app.window_title: "⚙  設定"
+
+# Sections
+section.directory: "目錄"
+section.display: "顯示"
+section.slideshow: "幻燈片"
+section.music: "背景音樂"
+section.transitions: "切換動畫"
+section.font: "字型與外觀"
+section.system_windows: "系統整合（Windows）"
+section.language: "語言"
+
+# Buttons
+btn.pick: "📁 選擇"
+btn.refresh: "🔄 重新整理"
+btn.close: "關閉"
+btn.cancel: "取消"
+btn.go: "跳轉"
+btn.exit: "✕  結束程式"
+btn.pick_dir: "📂 資料夾"
+btn.pick_file: "🎵 檔案"
+btn.set_wallpaper: " 設為桌布 "
+btn.select_all: "✔ 全選"
+btn.deselect_all: "✘ 取消全選"
+
+# Labels / Checkboxes
+label.recursive_scan: "遞迴掃描子目錄"
+label.enable_preload: "啟用圖片預載入"
+label.resume_last: "從上次查看的圖片繼續"
+label.fullscreen: "全螢幕（覆蓋工作列）"
+label.show_osd: "顯示 OSD（檔名等）"
+label.auto_advance: "自動切換至下一張圖片"
+label.interval_sec: "間隔（秒）："
+label.loop_wrap: "循環（從第一張重新開始）"
+label.play_music: "播放背景音樂"
+label.scale_mode: "縮放模式"
+label.no_dir: "未選擇目錄"
+label.no_music: "未選擇支援的檔案或資料夾"
+label.style: "樣式："
+label.duration: "時長："
+label.interface_size: "介面字型大小："
+label.interface_font: "介面字型："
+label.volume: "🔊 音量"
+label.z_toggle_hint: "按 Z 鍵切換縮放模式"
+
+# Scale mode
+scale.fit: "適應視窗"
+scale.original: "原始尺寸"
+scale.fit_btn: "⛶  適應視窗"
+scale.original_btn: "⊞  原始尺寸"
+
+# Transition styles
+transition.none: "無（即時切換）"
+transition.fade: "交叉淡入淡出"
+transition.zoom_fade: "縮放淡入淡出"
+transition.slide: "滑入"
+transition.push: "推入"
+transition.page_flip: "翻頁"
+transition.ripple: "水波紋"
+transition.curtain: "幕簾"
+
+# Music
+music.scanning: "正在掃描音樂…"
+music.files_ready: "♪ %{count} 個檔案就緒"
+music.no_audio: "⚠ 未找到音訊檔案"
+music.paused: "⏸ 已暫停："
+music.playing: "🎵 正在播放："
+music.next_file: "下一檔案"
+music.next_track: "下一曲目（CUE）"
+music.play_pause: "播放/暫停"
+music.prev_track: "上一曲目（CUE）"
+music.prev_file: "上一檔案"
+music.audio_error: "⚠ 音訊錯誤：%{err}"
+
+# Status messages
+status.scanning: "正在掃描 %{dir}…"
+status.found: "找到 %{count} 張圖片 — 使用方向鍵瀏覽"
+status.not_found: "此目錄中未找到支援的圖片。"
+status.no_images_left: "目錄中已沒有圖片。"
+status.delete_failed: "刪除檔案失敗：%{err}"
+status.load_failed: "載入圖片失敗：%{err}"
+status.loading: "載入中…"
+
+# Hints (on canvas)
+hint.no_images: "未載入圖片\n按 F1 開啟設定並選擇資料夾"
+hint.keyboard: "F1 — 設定  │  +/- 或滾輪 — 縮放  │  * 重設  │  Z — 適應/原始  │  G — 跳轉  │  F11 — 全螢幕"
+hint.quit_macos: "Esc / F1 切換設定面板  │  Cmd+Q 結束"
+hint.quit_linux: "Esc / F1 切換設定面板  │  Ctrl+Q 結束"
+hint.quit_windows: "Esc / F1 切換設定面板  │  Alt+F4 結束"
+
+# Context menu
+ctx.copy_path: "📋 複製完整路徑"
+ctx.copy_file: "📁 複製檔案"
+ctx.view_exif: "ℹ 查看 EXIF 資訊"
+ctx.view_xmp: "ℹ 查看 XMP 資訊"
+ctx.set_wallpaper: "🖼 設為桌面桌布…"
+
+# Wallpaper dialog
+wallpaper.title: "設為桌面桌布"
+wallpaper.current: "目前系統桌布："
+wallpaper.new_path: "新圖片路徑："
+wallpaper.resolution: "原始解析度："
+wallpaper.mode: "桌布模式："
+wallpaper.crop: "裁剪填充"
+wallpaper.fit: "適應"
+wallpaper.stretch: "拉伸"
+wallpaper.tile: "並排"
+wallpaper.center: "置中"
+wallpaper.span: "跨螢幕（多顯示器）"
+
+# Goto dialog
+goto.title: "跳轉至指定圖片…"
+goto.hint: "輸入圖片編號（1 – %{total}）"
+
+# EXIF window
+exif.title: "ℹ EXIF 資訊"
+exif.no_data: "⚠ 此圖片中未找到 EXIF 資料。"
+exif.copy: "📋 複製 EXIF"
+
+# XMP window
+xmp.title: "XMP 資訊"
+xmp.no_data: "⚠ 此圖片中未找到 XMP 資料。"
+xmp.copy_text: "📋 複製文字"
+xmp.copy_xml: "📄 複製 XML"
+
+# Windows system integration
+win.register_hint: "為圖片檔案在 Windows「開啟方式」選單中註冊此應用程式。"
+win.assoc_formats: "📎 關聯格式"
+win.remove_assoc: "🗑 移除關聯"
+win.confirm_remove_title: "移除檔案關聯？"
+win.confirm_remove_msg: "這將從 Windows 登錄檔中移除本應用程式所建立的所有檔案關聯。\n\n應用程式將恢復為「可攜式/綠色」模式。\n其他應用程式的關聯不受影響。\n\n是否繼續？"
+win.assoc_dialog_title: "📎  選擇要關聯的圖片格式"
+win.assoc_dialog_msg: "請選擇此應用程式要在 Windows 中關聯的圖片格式："
+win.apply_formats: "✔  套用（%{count} 種格式）"
+win.btn_cancel: "✕  取消"
+win.assoc_done_title: "檔案關聯已註冊"
+win.assoc_done_msg: "檔案關聯註冊成功！\n\n若要將簡易圖片查看器設為預設圖片查看器：\n1. 在檔案總管中雙擊任意圖片檔案\n2. 從清單中選擇「Simple Image Viewer」\n3. 勾選「一律使用此應用程式」\n\n通常只需操作一次，Windows 會自動套用至所有已關聯的圖片類型。"
+win.confirm_recursive_title: "啟用遞迴掃描？"
+win.confirm_recursive_msg: "遞迴掃描將搜尋所有子目錄。\n在大型目錄樹（如磁碟根目錄）下可能耗時甚長。\n確定要啟用嗎？"
+
+# Language names (for the selector)
+lang.en: "English (US)"
+lang.zh_cn: "简体中文"
+lang.zh_hk: "繁體中文（香港）"

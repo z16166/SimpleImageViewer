@@ -16,10 +16,10 @@ pub enum ScaleMode {
 }
 
 impl ScaleMode {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::FitToWindow => "Fit to Window",
-            Self::OriginalSize => "Original Size",
+            Self::FitToWindow => rust_i18n::t!("scale.fit").to_string(),
+            Self::OriginalSize => rust_i18n::t!("scale.original").to_string(),
         }
     }
 
@@ -49,16 +49,16 @@ pub enum TransitionStyle {
 }
 
 impl TransitionStyle {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::None => "None (Instant)",
-            Self::Fade => "Cross-Fade",
-            Self::ZoomFade => "Zoom & Fade",
-            Self::Slide => "Slide Over",
-            Self::Push => "Push",
-            Self::PageFlip => "Page Flip",
-            Self::Ripple => "Ripple (Water)",
-            Self::Curtain => "Curtain",
+            Self::None     => rust_i18n::t!("transition.none").to_string(),
+            Self::Fade     => rust_i18n::t!("transition.fade").to_string(),
+            Self::ZoomFade => rust_i18n::t!("transition.zoom_fade").to_string(),
+            Self::Slide    => rust_i18n::t!("transition.slide").to_string(),
+            Self::Push     => rust_i18n::t!("transition.push").to_string(),
+            Self::PageFlip => rust_i18n::t!("transition.page_flip").to_string(),
+            Self::Ripple   => rust_i18n::t!("transition.ripple").to_string(),
+            Self::Curtain  => rust_i18n::t!("transition.curtain").to_string(),
         }
     }
 }
@@ -125,6 +125,10 @@ pub struct Settings {
     // Overlay (OSD)
     #[serde(default = "default_true")]
     pub show_osd: bool,
+
+    // Language (locale code: "en", "zh-CN", "zh-HK")
+    #[serde(default)]
+    pub language: String,
 }
 
 fn default_interval() -> f32 { 5.0 }
@@ -162,7 +166,60 @@ impl Default for Settings {
             show_osd: true,
             music_paused: false,
             last_music_track: None,
+            language: String::new(), // empty = auto-detect on first launch
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Language detection
+// ---------------------------------------------------------------------------
+
+/// Detect the system UI language and map it to one of our supported locales.
+/// Falls back to "en" if no match is found.
+pub fn detect_system_language() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        return get_windows_locale();
+    }
+
+    // On non-Windows platforms, try the LANG / LANGUAGE env var
+    #[cfg(not(target_os = "windows"))]
+    {
+        for var in &["LANGUAGE", "LANG", "LC_ALL", "LC_MESSAGES"] {
+            if let Ok(val) = std::env::var(var) {
+                let v = val.to_lowercase();
+                if v.starts_with("zh_cn") || v.starts_with("zh-cn") || v.starts_with("zh_hans") {
+                    return "zh-CN".to_string();
+                }
+                if v.starts_with("zh_hk") || v.starts_with("zh-hk") || v.starts_with("zh_mo") {
+                    return "zh-HK".to_string();
+                }
+            }
+        }
+        "en".to_string()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn get_windows_locale() -> String {
+    let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+    let ret = unsafe {
+        extern "system" {
+            fn GetUserDefaultLocaleName(lp_locale_name: *mut u16, cch_locale_name: i32) -> i32;
+        }
+        GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32)
+    };
+    if ret <= 1 {
+        return "en".to_string();
+    }
+    let locale = String::from_utf16_lossy(&buf[..(ret - 1) as usize]);
+    if locale.starts_with("zh-CN") || locale.starts_with("zh-Hans") {
+        "zh-CN".to_string()
+    } else if locale.starts_with("zh-HK") || locale.starts_with("zh-MO") {
+        "zh-HK".to_string()
+    } else {
+        "en".to_string()
     }
 }
 

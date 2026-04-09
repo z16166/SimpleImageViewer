@@ -1,0 +1,150 @@
+# ============================================================
+# en.yaml — English (US)
+# ============================================================
+
+# App
+app.title: "Simple Image Viewer"
+app.window_title: "⚙  Settings"
+
+# Sections
+section.directory: "Directory"
+section.display: "Display"
+section.slideshow: "Slideshow"
+section.music: "Background Music"
+section.transitions: "Image Transitions"
+section.font: "Font & Appearance"
+section.system_windows: "System Integration (Windows)"
+section.language: "Language"
+
+# Buttons
+btn.pick: "📁 Pick"
+btn.refresh: "🔄 Refresh"
+btn.close: "Close"
+btn.cancel: "Cancel"
+btn.go: "Go"
+btn.exit: "✕  Exit Application"
+btn.pick_dir: "📂 Dir"
+btn.pick_file: "🎵 File"
+btn.set_wallpaper: " Set Wallpaper "
+btn.select_all: "✔ Select All"
+btn.deselect_all: "✘ Deselect All"
+
+# Labels / Checkboxes
+label.recursive_scan: "Recursive scan"
+label.enable_preload: "Enable image preloading"
+label.resume_last: "Resume from last viewed image"
+label.fullscreen: "Fullscreen (covers taskbar)"
+label.show_osd: "Show OSD (filename, etc.)"
+label.auto_advance: "Auto-advance to next picture"
+label.interval_sec: "Interval (sec):"
+label.loop_wrap: "Loop (wrap around to first image)"
+label.play_music: "Play background music"
+label.scale_mode: "Scale Mode"
+label.no_dir: "No directory selected"
+label.no_music: "No supported file/folder"
+label.style: "Style:"
+label.duration: "Duration:"
+label.interface_size: "Interface Size:"
+label.interface_font: "Interface Font:"
+label.volume: "🔊 Volume"
+label.z_toggle_hint: "Press Z to toggle scale mode"
+
+# Scale mode
+scale.fit: "Fit to Window"
+scale.original: "Original Size"
+scale.fit_btn: "⛶  Fit to Window"
+scale.original_btn: "⊞  Original Size"
+
+# Transition styles
+transition.none: "None (Instant)"
+transition.fade: "Cross-Fade"
+transition.zoom_fade: "Zoom & Fade"
+transition.slide: "Slide Over"
+transition.push: "Push"
+transition.page_flip: "Page Flip"
+transition.ripple: "Ripple (Water)"
+transition.curtain: "Curtain"
+
+# Music
+music.scanning: "Scanning music…"
+music.files_ready: "♪ %{count} file(s) ready"
+music.no_audio: "⚠ No audio found"
+music.paused: "⏸ Paused:"
+music.playing: "🎵 Playing:"
+music.next_file: "Next File"
+music.next_track: "Next Track (CUE)"
+music.play_pause: "Play/Pause"
+music.prev_track: "Prev Track (CUE)"
+music.prev_file: "Previous File"
+music.audio_error: "⚠ Audio: %{err}"
+
+# Status messages
+status.scanning: "Scanning %{dir}…"
+status.found: "Found %{count} images — use arrow keys to navigate"
+status.not_found: "No supported images found in this directory."
+status.no_images_left: "No images left in directory."
+status.delete_failed: "Failed to delete file: %{err}"
+status.load_failed: "Failed to load image: %{err}"
+status.loading: "Loading…"
+
+# Hints (on canvas)
+hint.no_images: "No images loaded\nPress F1 to open settings and pick a folder"
+hint.keyboard: "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen"
+hint.quit_macos: "Esc / F1 to toggle this panel  │  Cmd+Q to quit"
+hint.quit_linux: "Esc / F1 to toggle this panel  │  Ctrl+Q to quit"
+hint.quit_windows: "Esc / F1 to toggle this panel  │  Alt+F4 to quit"
+
+# Context menu
+ctx.copy_path: "📋 Copy Full Path"
+ctx.copy_file: "📁 Copy File"
+ctx.view_exif: "ℹ View EXIF Info"
+ctx.view_xmp: "ℹ View XMP Info"
+ctx.set_wallpaper: "🖼 Set as desktop wallpaper…"
+
+# Wallpaper dialog
+wallpaper.title: "Set as desktop wallpaper"
+wallpaper.current: "Current System Wallpaper:"
+wallpaper.new_path: "New Image Path:"
+wallpaper.resolution: "Original Resolution:"
+wallpaper.mode: "Wallpaper Mode:"
+wallpaper.crop: "Crop (Fill)"
+wallpaper.fit: "Fit"
+wallpaper.stretch: "Stretch"
+wallpaper.tile: "Tile"
+wallpaper.center: "Center"
+wallpaper.span: "Span (Multi-monitor)"
+
+# Goto dialog
+goto.title: "Go to image…"
+goto.hint: "Enter image number (1 – %{total})"
+
+# EXIF window
+exif.title: "ℹ EXIF Information"
+exif.no_data: "⚠ No EXIF data found in this image."
+exif.copy: "📋 Copy EXIF"
+
+# XMP window
+xmp.title: "XMP Information"
+xmp.no_data: "⚠ No XMP data found in this image."
+xmp.copy_text: "📋 Copy Text"
+xmp.copy_xml: "📄 Copy XML"
+
+# Windows system integration
+win.register_hint: "Register this app in Windows \"Open With\" menu for image files."
+win.assoc_formats: "📎 Associate Formats"
+win.remove_assoc: "🗑 Remove Association"
+win.confirm_remove_title: "Remove File Associations?"
+win.confirm_remove_msg: "This will remove all file associations created by this application from the Windows registry.\n\nThe application will return to \"portable/green\" mode.\nOther applications' associations will not be affected.\n\nContinue?"
+win.assoc_dialog_title: "📎  Select Image Formats to Associate"
+win.assoc_dialog_msg: "Select which image formats this application\nshould be associated with in Windows:"
+win.apply_formats: "✔  Apply (%{count} formats)"
+win.btn_cancel: "✕  Cancel"
+win.assoc_done_title: "File Association Registered"
+win.assoc_done_msg: "File associations have been registered successfully!\n\nTo set Simple Image Viewer as the default image viewer:\n1. Double-click any image file in Explorer\n2. Select \"Simple Image Viewer\" from the list\n3. Check \"Always use this app\"\n\nUsually you only need to do this once, and Windows will automatically apply it to all associated image types."
+win.confirm_recursive_title: "Enable Recursive Scan?"
+win.confirm_recursive_msg: "Recursive scan will search all subdirectories.\nThis can take a very long time on large directory trees\n(e.g. a disk root). Are you sure?"
+
+# Language names (for the selector)
+lang.en: "English (US)"
+lang.zh_cn: "简体中文"
+lang.zh_hk: "繁體中文（香港）"

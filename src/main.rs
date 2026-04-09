@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+rust_i18n::i18n!("locales");
+
 mod app;
 mod audio;
 mod ipc;
@@ -132,6 +134,13 @@ fn main() -> eframe::Result {
     env_logger::init();
 
     let mut settings = settings::Settings::load();
+
+    // Initialize locale — detect from OS if not yet configured
+    if settings.language.is_empty() {
+        settings.language = settings::detect_system_language();
+    }
+    rust_i18n::set_locale(&settings.language);
+
     let mut initial_image = None;
 
     if let Some(arg) = std::env::args_os().nth(1) {
