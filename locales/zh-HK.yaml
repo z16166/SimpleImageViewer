@@ -51,9 +51,9 @@ label.z_toggle_hint: "按 Z 鍵切換縮放模式"
 
 # Scale mode
 scale.fit: "適應視窗"
-scale.original: "原始尺寸"
+scale.original: "實際大小"
 scale.fit_btn: "⛶  適應視窗"
-scale.original_btn: "⊞  原始尺寸"
+scale.original_btn: "⊞  實際大小"
 
 # Transition styles
 transition.none: "無（即時切換）"
