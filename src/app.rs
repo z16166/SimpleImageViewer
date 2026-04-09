@@ -104,11 +104,10 @@ pub struct ImageViewerApp {
 
     // EXIF dialog state
     show_exif_window: bool,
-    cached_exif_text: Option<String>,
-
+    cached_exif_data: Option<Vec<(String, String)>>,
     // XMP dialog state
     show_xmp_window: bool,
-    cached_xmp_text: Option<String>,
+    cached_xmp_data: Option<Vec<(String, String)>>,
     cached_xmp_xml: Option<String>,
 
     // Goto dialog state
@@ -207,9 +206,9 @@ impl ImageViewerApp {
             cached_music_count: None,
             cached_pixels_per_point: 1.0,
             show_exif_window: false,
-            cached_exif_text: None,
+            cached_exif_data: None,
             show_xmp_window: false,
-            cached_xmp_text: None,
+            cached_xmp_data: None,
             cached_xmp_xml: None,
             show_goto: false,
             goto_input: String::new(),
@@ -2052,11 +2051,7 @@ impl ImageViewerApp {
                     ui.separator();
 
                     if ui.button("ℹ View EXIF Info").clicked() {
-                        if let Some(text) = extract_exif(path) {
-                            self.cached_exif_text = Some(text);
-                        } else {
-                            self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
-                        }
+                        self.cached_exif_data = extract_exif(path);
                         self.show_exif_window = true;
                         ui.close();
                     }
@@ -2727,14 +2722,9 @@ impl eframe::App for ImageViewerApp {
 
         // EXIF window
         if self.show_exif_window {
-            // Automatic reload if window is open but cache was cleared during navigation
-            if self.cached_exif_text.is_none() && !self.image_files.is_empty() {
+            if self.cached_exif_data.is_none() && !self.image_files.is_empty() {
                 let path = &self.image_files[self.current_index];
-                if let Some(text) = extract_exif(path) {
-                    self.cached_exif_text = Some(text);
-                } else {
-                    self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
-                }
+                self.cached_exif_data = extract_exif(path);
             }
 
             let mut close_exif = false;
@@ -2742,43 +2732,55 @@ impl eframe::App for ImageViewerApp {
             egui::Window::new("ℹ EXIF Information")
                 .collapsible(false)
                 .resizable(true)
-                .default_pos(ctx.screen_rect().center() - egui::vec2(210.0, 240.0))
-                .default_size([420.0, 480.0])
+                .default_pos(ctx.screen_rect().center() - egui::vec2(300.0, 200.0))
+                .default_size([600.0, 400.0])
                 .show(&ctx, |ui| {
-                    if let Some(text) = &self.cached_exif_text {
-                        // 1. Bottom Panel for buttons (fixed height, native separator)
-                        egui::TopBottomPanel::bottom("exif_footer")
-                            .resizable(false)
-                            .show_inside(ui, |ui| {
-                                ui.add_space(10.0);
-                                ui.horizontal(|ui| {
-                                    if styled_button(ui, "📋 Copy EXIF").clicked() {
-                                        close_and_copy = true;
-                                    }
-                                    if styled_button(ui, "Close").clicked() {
-                                        close_exif = true;
-                                    }
-                                });
-                                ui.add_space(10.0);
-                            });
-
-                        // 2. Central Area for the scrollable text
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    ui.label(text);
-                                });
-                        });
-                    } else {
-                        ui.spinner();
-                        ui.label("Loading metadata…");
+                    if self.cached_exif_data.is_none() {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("⚠ No EXIF data found in this image.").color(Color32::from_rgb(255, 180, 60)).strong());
                     }
+
+                    egui::TopBottomPanel::bottom("exif_footer")
+                        .resizable(false)
+                        .show_inside(ui, |ui| {
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                if styled_button(ui, "📋 Copy EXIF").clicked() {
+                                    close_and_copy = true;
+                                }
+                                if styled_button(ui, "Close").clicked() {
+                                    close_exif = true;
+                                }
+                            });
+                            ui.add_space(10.0);
+                        });
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(10.0);
+                        if let Some(data) = &self.cached_exif_data {
+                            egui::Grid::new("exif_grid")
+                                .num_columns(2)
+                                .spacing([20.0, 8.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for (k, v) in data {
+                                        ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                        ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                        ui.add_space(10.0);
+                    });
                 });
+
             if close_and_copy {
-                if let Some(text) = &self.cached_exif_text {
-                    ctx.copy_text(text.clone());
+                if let Some(data) = &self.cached_exif_data {
+                    let text = data.iter()
+                        .map(|(k, v)| format!("{}: {}", k, v))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    ctx.copy_text(text);
                 }
                 self.show_exif_window = false;
             }
@@ -2789,13 +2791,11 @@ impl eframe::App for ImageViewerApp {
 
         // XMP window
         if self.show_xmp_window {
-            if self.cached_xmp_text.is_none() && !self.image_files.is_empty() {
+            if self.cached_xmp_data.is_none() && !self.image_files.is_empty() {
                 let path = &self.image_files[self.current_index];
-                if let Some((text, raw)) = extract_xmp(path) {
-                    self.cached_xmp_text = Some(text);
+                if let Some((data, raw)) = extract_xmp(path) {
+                    self.cached_xmp_data = Some(data);
                     self.cached_xmp_xml = Some(raw);
-                } else {
-                    self.cached_xmp_text = Some("No XMP data found in this image.".to_string());
                 }
             }
 
@@ -2807,39 +2807,58 @@ impl eframe::App for ImageViewerApp {
                 .default_pos(ctx.screen_rect().center() - egui::vec2(320.0, 240.0))
                 .default_size([640.0, 500.0])
                 .show(&ctx, |ui| {
-                    if let Some(text) = &self.cached_xmp_text {
-                        egui::TopBottomPanel::bottom("xmp_footer")
-                            .resizable(false)
-                            .show_inside(ui, |ui| {
-                                ui.add_space(10.0);
-                                ui.horizontal(|ui| {
-                                    if styled_button(ui, "📋 Copy Text").clicked() {
-                                        close_and_copy = true;
-                                    }
-                                    if styled_button(ui, "📄 Copy XML").clicked() {
-                                        if let Some(xml) = &self.cached_xmp_xml {
-                                            ctx.copy_text(xml.clone());
-                                            self.show_xmp_window = false;
-                                        }
-                                    }
-                                    if styled_button(ui, "Close").clicked() {
-                                        close_xmp = true;
-                                    }
-                                });
-                                ui.add_space(10.0);
-                            });
+                    if self.cached_xmp_data.is_none() {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new("⚠ No XMP data found in this image.").color(Color32::from_rgb(255, 180, 60)).strong());
+                    }
 
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::TopBottomPanel::bottom("xmp_footer")
+                        .resizable(false)
+                        .show_inside(ui, |ui| {
                             ui.add_space(10.0);
-                            ui.label(RichText::new(text).monospace());
+                            ui.horizontal(|ui| {
+                                if styled_button(ui, "📋 Copy Text").clicked() {
+                                    close_and_copy = true;
+                                }
+                                if styled_button(ui, "📄 Copy XML").clicked() {
+                                    if let Some(xml) = &self.cached_xmp_xml {
+                                        ctx.copy_text(xml.clone());
+                                        self.show_xmp_window = false;
+                                    }
+                                }
+                                if styled_button(ui, "Close").clicked() {
+                                    close_xmp = true;
+                                }
+                            });
                             ui.add_space(10.0);
                         });
-                    }
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(10.0);
+                        if let Some(data) = &self.cached_xmp_data {
+                            egui::Grid::new("xmp_grid")
+                                .num_columns(2)
+                                .spacing([20.0, 8.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for (k, v) in data {
+                                        ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
+                                        ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                        ui.end_row();
+                                    }
+                                });
+                        }
+                        ui.add_space(10.0);
+                    });
                 });
 
             if close_and_copy {
-                if let Some(text) = &self.cached_xmp_text {
-                    ctx.copy_text(text.clone());
+                if let Some(data) = &self.cached_xmp_data {
+                    let text = data.iter()
+                        .map(|(k, v)| format!("{}: {}", k, v))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    ctx.copy_text(text);
                 }
                 self.show_xmp_window = false;
             }
@@ -2850,7 +2869,7 @@ impl eframe::App for ImageViewerApp {
     }
 }
 
-fn extract_exif(path: &std::path::Path) -> Option<String> {
+fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String)>> {
     use std::fs::File;
     use std::io::BufReader;
     
@@ -2859,11 +2878,11 @@ fn extract_exif(path: &std::path::Path) -> Option<String> {
     let exifreader = exif::Reader::new();
     let exif = exifreader.read_from_container(&mut reader).ok()?;
 
-    let mut result = String::new();
+    let mut result = Vec::new();
     for f in exif.fields() {
         let tag = format!("{}", f.tag);
         let val = format!("{}", f.display_value().with_unit(&exif));
-        result.push_str(&format!("{}: {}\n", tag, val));
+        result.push((tag, val));
     }
     
     if result.is_empty() {
@@ -2873,7 +2892,7 @@ fn extract_exif(path: &std::path::Path) -> Option<String> {
     }
 }
 
-fn extract_xmp(path: &std::path::Path) -> Option<(String, String)> {
+fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)> {
     use xmpkit::XmpFile;
     use quick_xml::reader::Reader;
     use quick_xml::events::Event;
@@ -2957,20 +2976,20 @@ fn extract_xmp(path: &std::path::Path) -> Option<(String, String)> {
         buf.clear();
     }
     
-    let mut final_text = String::new();
+    let mut final_data = Vec::new();
     for (k, v) in result_map {
         // Final cleanup of common prefixes to look like exiftool
         let mut clean_k = k.replace("rdf:", "");
         if clean_k.starts_with("x:xmptk") {
             clean_k = "XMP Toolkit".to_string();
         }
-        final_text.push_str(&format!("{}: {}\n", clean_k, v));
+        final_data.push((clean_k, v));
     }
 
-    if final_text.is_empty() {
+    if final_data.is_empty() {
         None
     } else {
-        Some((final_text, xml_str))
+        Some((final_data, xml_str))
     }
 }
 
