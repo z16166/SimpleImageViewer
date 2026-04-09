@@ -1045,11 +1045,11 @@ impl ImageViewerApp {
                 let dir_label = if dir_empty { t!("label.no_dir").to_string() } else { dir_short };
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if styled_button(ui, &t!("btn.pick")).clicked() {
+                        if styled_button(ui, t!("btn.pick")).clicked() {
                             open_dir = true;
                         }
                         ui.add_space(4.0);
-                        if styled_button(ui, &t!("btn.refresh")).clicked() {
+                        if styled_button(ui, t!("btn.refresh")).clicked() {
                             if let Some(dir) = self.settings.last_image_dir.clone() {
                                 self.load_directory(dir);
                             }
@@ -1148,7 +1148,7 @@ impl ImageViewerApp {
                 );
 
                 ui.add_space(6.0);
-                ui.checkbox(&mut self.settings.show_osd, t!("label.show_osd").to_string());
+                ui.checkbox(&mut self.settings.show_osd, t!("label.show_osd"));
                 
                 // ── Transitions ──────────────────────────────────────────
                 ui.add_space(8.0);
@@ -1194,7 +1194,7 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_auto_switch = self.settings.auto_switch;
-                if ui.checkbox(&mut self.settings.auto_switch, t!("label.auto_advance").to_string()).changed() {
+                if ui.checkbox(&mut self.settings.auto_switch, t!("label.auto_advance")).changed() {
                     self.slideshow_paused = false;  // Reset pause when toggling via UI
                 }
                 if self.settings.auto_switch {
@@ -1206,7 +1206,7 @@ impl ImageViewerApp {
                                 .speed(0.5),
                         );
                     });
-                    ui.checkbox(&mut self.settings.loop_playback, t!("label.loop_wrap").to_string());
+                    ui.checkbox(&mut self.settings.loop_playback, t!("label.loop_wrap"));
                 }
                 if old_auto_switch != self.settings.auto_switch {
                     self.queue_save();
@@ -1219,7 +1219,7 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
-                ui.checkbox(&mut self.settings.play_music, t!("label.play_music").to_string());
+                ui.checkbox(&mut self.settings.play_music, t!("label.play_music"));
                 ui.add_space(2.0);
                 if old_play_music != self.settings.play_music {
                     music_enabled_changed = true;
@@ -1239,10 +1239,10 @@ impl ImageViewerApp {
                     let music_label = if music_empty { t!("label.no_music").to_string() } else { music_short };
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if styled_button(ui, &t!("btn.pick_dir")).clicked() {
+                            if styled_button(ui, t!("btn.pick_dir")).clicked() {
                                 open_music_dir = true;
                             }
-                            if styled_button(ui, &t!("btn.pick_file")).clicked() {
+                            if styled_button(ui, t!("btn.pick_file")).clicked() {
                                 open_music_file = true;
                             }
                             let box_w = (ui.available_width() - 16.0).max(20.0);
@@ -1425,13 +1425,13 @@ impl ImageViewerApp {
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if styled_button(ui, &t!("win.assoc_formats")).clicked() {
+                        if styled_button(ui, t!("win.assoc_formats")).clicked() {
                             // Reset all selections to true (default: all selected)
                             self.file_assoc_selections = vec![true; scanner::SUPPORTED_EXTENSIONS.len()];
                             self.show_file_assoc_dialog = true;
                         }
                         ui.add_space(8.0);
-                        if styled_button(ui, &t!("win.remove_assoc")).clicked() {
+                        if styled_button(ui, t!("win.remove_assoc")).clicked() {
                             let confirmed = rfd::MessageDialog::new()
                                 .set_title(t!("win.confirm_remove_title").to_string())
                                 .set_description(t!("win.confirm_remove_msg").to_string())
@@ -2272,7 +2272,7 @@ impl ImageViewerApp {
                     if ui.button(RichText::new(t!("btn.set_wallpaper").to_string()).color(Color32::WHITE)).clicked() {
                         do_set = true;
                     }
-                    if ui.button(t!("btn.cancel").to_string()).clicked() {
+                    if ui.button(t!("btn.cancel")).clicked() {
                         do_close = true;
                     }
                 });
@@ -2364,7 +2364,7 @@ impl ImageViewerApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if styled_button(ui, &t!("btn.go")).clicked() {
+                    if styled_button(ui, t!("btn.go")).clicked() {
                         do_jump = true;
                     }
                     if styled_button(ui, &t!("btn.cancel").to_string()).clicked() {
@@ -3185,14 +3185,15 @@ fn middle_truncate(s: &str, max_chars: usize) -> String {
     format!("{}...{}", start, end)
 }
 
-fn styled_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+fn styled_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Response {
     ui.add(styled_button_widget(label))
 }
 
-fn styled_button_widget(label: &str) -> impl egui::Widget + '_ {
+fn styled_button_widget(label: impl Into<egui::WidgetText>) -> impl egui::Widget {
+    let label = label.into();
     move |ui: &mut egui::Ui| {
         ui.add(
-            egui::Button::new(RichText::new(label).color(Color32::WHITE))
+            egui::Button::new(label.color(Color32::WHITE))
                 .fill(ACCENT)
                 .corner_radius(egui::CornerRadius::same(4)),
         )
@@ -3201,7 +3202,8 @@ fn styled_button_widget(label: &str) -> impl egui::Widget + '_ {
 
 /// Renders a read-only path display box (Frame + Label).
 /// Returns the frame's Response so callers can attach `.on_hover_text()`.
-fn path_display_box(ui: &mut egui::Ui, text: &str, is_placeholder: bool, width: f32) -> egui::Response {
+fn path_display_box(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, is_placeholder: bool, width: f32) -> egui::Response {
+    let text = text.into();
     let text_color = if is_placeholder {
         TEXT_MUTED
     } else {
@@ -3215,7 +3217,7 @@ fn path_display_box(ui: &mut egui::Ui, text: &str, is_placeholder: bool, width: 
         .show(ui, |ui| {
             ui.set_width(width);
             ui.add(
-                egui::Label::new(RichText::new(text).color(text_color).small())
+                egui::Label::new(text.color(text_color).small())
                     .truncate(),
             );
         });
