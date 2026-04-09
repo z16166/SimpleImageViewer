@@ -111,6 +111,10 @@ pub struct Settings {
     pub music_path: Option<PathBuf>,
     #[serde(default = "default_volume")]
     pub volume: f32,
+    #[serde(default)]
+    pub music_paused: bool,
+    #[serde(default)]
+    pub last_music_track: Option<PathBuf>,
 
     // Font & Appearance
     #[serde(default = "default_font_family")]
@@ -156,6 +160,8 @@ impl Default for Settings {
             resume_last_image: false,
             last_viewed_image: None,
             show_osd: true,
+            music_paused: false,
+            last_music_track: None,
         }
     }
 }

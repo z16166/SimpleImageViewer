@@ -684,8 +684,20 @@ impl ImageViewerApp {
                 // If it was aborted (returned empty), don't update count unless it's genuinely empty
                 if !files.is_empty() {
                     self.cached_music_count = Some(files.len());
-                    self.audio.start(files);
+                    
+                    // Try to resume from last played track
+                    let mut start_idx = None;
+                    if let Some(last_path) = &self.settings.last_music_track {
+                        if let Some(idx) = files.iter().position(|p| p == last_path) {
+                            start_idx = Some(idx);
+                        }
+                    }
+                    
+                    self.audio.start_at(files, start_idx);
                     self.audio.set_volume(self.settings.volume);
+                    if self.settings.music_paused {
+                        self.audio.pause();
+                    }
                 } else if self.music_scan_path.is_some() {
                     // Check if truly empty or just aborted
                     // Actually, if it's aborted, files will be empty. 
@@ -1253,34 +1265,57 @@ impl ImageViewerApp {
                                 ui.spinner();
                                 ui.label(RichText::new("Scanning music…").color(TEXT_MUTED).small());
                             } else if let Some(count) = self.cached_music_count {
-                                if count == 0 {
-                                    ui.label(
-                                        RichText::new("⚠ No supported audio files found")
-                                            .color(Color32::from_rgb(255, 180, 60))
-                                            .small(),
-                                    );
+                                if count > 0 {
+                                    ui.label(RichText::new(format!("♪ {count} file(s) ready")).color(ACCENT2).small());
+                                    
+                                    // Align 5-buttons to the right to match the "Dir" row above
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let has_tracks = self.audio.has_tracks();
+                                        
+                                        // Buttons in RTL order: ⏭, ⏩, ▶/⏸, ⏪, ⏮
+                                        if styled_button(ui, "⏭").on_hover_text("Next File").clicked() {
+                                            self.audio.next_file();
+                                        }
+                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩"));
+                                        if resp.on_hover_text("Next Track (CUE)").clicked() {
+                                            self.audio.next_track();
+                                        }
+                                        let play_icon = if self.settings.music_paused { "▶" } else { "⏸" };
+                                        if styled_button(ui, play_icon).on_hover_text("Play/Pause").clicked() {
+                                            self.settings.music_paused = !self.settings.music_paused;
+                                            if self.settings.music_paused { self.audio.pause(); } else { self.audio.play(); }
+                                            self.queue_save();
+                                        }
+                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪"));
+                                        if resp.on_hover_text("Prev Track (CUE)").clicked() {
+                                            self.audio.prev_track();
+                                        }
+                                        if styled_button(ui, "⏮").on_hover_text("Previous File").clicked() {
+                                            self.audio.prev_file();
+                                        }
+                                    });
                                 } else {
-                                    ui.label(
-                                        RichText::new(format!("♪ {count} file(s) ready"))
-                                            .color(ACCENT2)
-                                            .small(),
-                                    );
+                                    ui.label(RichText::new("⚠ No audio found").color(Color32::from_rgb(255, 180, 60)).small());
                                 }
                             }
                         });
                     }
-                    // Now playing status
-                    if let Some(track) = self.audio.get_current_track() {
+                    // Now playing status: show filename and metadata in two lines to handle long names
+                    let filename = self.audio.get_current_track();
+                    let metadata = self.audio.get_metadata();
+
+                    if let Some(f) = filename {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("🎵 Now playing:").color(TEXT_MUTED).small());
-                            ui.label(
-                                RichText::new(track)
-                                    .color(ACCENT2)
-                                    .small()
-                                    .italics(),
-                            );
+                            let status = if self.settings.music_paused { "⏸ Paused:" } else { "🎵 Playing:" };
+                            ui.label(RichText::new(status).color(TEXT_MUTED).small());
+                            let short_f = middle_truncate(&f, 40);
+                            ui.label(RichText::new(format!("[{short_f}]")).color(TEXT_MUTED).small()).on_hover_text(&f);
                         });
+                        if let Some(m) = metadata {
+                            ui.label(RichText::new(format!("✨ {m}")).color(ACCENT2).small().italics());
+                        }
                     }
 
                     // Volume slider
@@ -1297,7 +1332,6 @@ impl ImageViewerApp {
                         if (old_vol - self.settings.volume).abs() > 0.001 {
                             self.audio.set_volume(self.settings.volume);
                         }
-                        // Only persist to disk when user releases the slider
                         if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
                             self.queue_save();
                         }
@@ -2633,6 +2667,16 @@ impl eframe::App for ImageViewerApp {
         self.check_auto_switch();
         self.handle_keyboard(ctx);
 
+        // Sync currently playing track path for persistence
+        if self.settings.play_music {
+            if let Some(current_path) = self.audio.get_current_track_path() {
+                if self.settings.last_music_track.as_ref() != Some(&current_path) {
+                    self.settings.last_music_track = Some(current_path);
+                    self.queue_save();
+                }
+            }
+        }
+
         // Apply deferred viewport commands
         if let Some(fs) = self.pending_fullscreen.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
@@ -3082,12 +3126,30 @@ fn copy_file_to_clipboard(path: &str) {
     }
 }
 
+fn middle_truncate(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        return s.to_string();
+    }
+    let half = (max_chars.saturating_sub(3)) / 2;
+    let chars: Vec<char> = s.chars().collect();
+    let start: String = chars.iter().take(half).collect();
+    let end: String = chars.iter().skip(char_count - half).collect();
+    format!("{}...{}", start, end)
+}
+
 fn styled_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).color(Color32::WHITE))
-            .fill(ACCENT)
-            .corner_radius(egui::CornerRadius::same(4)),
-    )
+    ui.add(styled_button_widget(label))
+}
+
+fn styled_button_widget(label: &str) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| {
+        ui.add(
+            egui::Button::new(RichText::new(label).color(Color32::WHITE))
+                .fill(ACCENT)
+                .corner_radius(egui::CornerRadius::same(4)),
+        )
+    }
 }
 
 /// Renders a read-only path display box (Frame + Label).

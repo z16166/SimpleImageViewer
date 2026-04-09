@@ -22,8 +22,11 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
-- **Background music** — MP3, FLAC, OGG, WAV, AAC, M4A playback via [rodio](https://github.com/RustAudio/rodio); pick a single file or a folder (scanned recursively)
-- **Now Playing display** — the filename of the current track is displayed in the settings panel
+- **Background music** — high-fidelity playback for MP3, FLAC, OGG, WAV, AAC, M4A via [rodio](https://github.com/RustAudio/rodio); pick a single file or a folder (scanned recursively)
+- **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for giant album images
+- **Smart Metadata Extraction** — automatically extracts Title, Artist, and Track info from files via [lofty](https://github.com/lofty-rb/lofty). Supports built-in tags and external CUE descriptions
+- **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) for quick navigation between physical music files and logical CUE tracks
+- **Dynamic Metadata Display** — two-line status display with **Middle Truncation** algorithm for long filenames (e.g., `Start...End.wav`), ensuring information remains legible in the settings panel
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
@@ -72,7 +75,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | **Directory** | Browse button to pick image folder, recursive scan toggle, preload toggle, and resume viewing toggle |
 | **Display** | Full-screen toggle, scale-mode selector, and OSD info visibility toggle |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop playback |
-| **Background Music** | Enable music, pick file or folder, and adjust volume |
+| **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
 | **Font & Appearance** | Choose system font family and interface size (applied instantly) |
 | **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
 
@@ -168,6 +171,8 @@ scale_mode: fit_to_window
 play_music: true
 music_path: "D:\\Music"
 volume: 0.8
+music_paused: false
+last_music_track: "D:\\Music\\Album\\CD1.flac"
 font_family: "Microsoft YaHei"
 font_size: 16.0
 preload: true

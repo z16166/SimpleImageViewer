@@ -28,8 +28,11 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 - **无干扰模式 (OSD)** — 可以在设置中隐藏全部悬浮文字（如图片名、缩放比例等），体验纯净看图
 - **记忆播放历史** — 选项支持记忆上次关闭时查看的图片，下次启动后自动从该图开始浏览
 - **自动播放幻灯片** — 间隔时间可设置（0.5 秒 – 1 小时），支持循环/到末尾停止
-- **背景音乐播放** — 通过 [rodio](https://github.com/RustAudio/rodio) 支持 MP3、FLAC、OGG、WAV、AAC、M4A；可选择单个文件或整个文件夹（递归搜索）
-- **曲目状态显示** — 在设置面板实时显示当前正在播放的背景音乐文件名
+- **背景音乐播放** — 通过 [rodio](https://github.com/RustAudio/rodio) 实现高保真音频回放，支持 MP3、FLAC、OGG、WAV、AAC、M4A；可选择单个文件或整个文件夹（递归搜索）
+- **CUE 索引与精确导航** — 完整支持 `.cue` 文件（如 WAV+CUE, FLAC+CUE 等）。即使针对超长专辑分卷镜像，也能基于 `INDEX 01` 时间戳实现精确的曲目跳转
+- **智能元数据解析** — 内置 [lofty](https://github.com/lofty-rb/lofty) 元数据提取引擎。自动识别歌曲名、艺术家和音轨号；支持文件内嵌标签及外部 CUE 描述，并具备 UTF-8/GBK 编码自动回退兼容
+- **五键交互控制栏** — 紧凑的 UI 交互栏（⏮ ⏪ ▶/⏸ ⏩ ⏭），支持在物理文件与逻辑 CUE 曲目之间快速切换
+- **动态状态显示** — 双行垂直布局显示“正在播放”状态，引入**居中截断（Middle Truncation）**算法，确保长文件名（如 `前缀...后缀.flac`）在设置面板中清晰可读
 - **实时音量调节** — 设置面板内提供滑动条，音量在会话间持久保存
 - **递归目录扫描** — 可选扫描所有子文件夹中的图片
 - **设置桌面壁纸**：右键点击任何图片即可将其设置为壁纸，支持多种布局模式（填充、适应、拉伸、平铺、居中、跨显示器）。
@@ -85,7 +88,7 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 | **Directory（目录与加载）** | 选取图片文件夹，控制递归扫描、缓存预加载以及是否恢复上次记忆的查看进度 |
 | **Display（显示选项）** | 全屏切换、比例缩放模式选择，以及是否隐藏图片表层的浮动 OSD 文本 |
 | **Slideshow（幻灯片播放）** | 启用自动轮播、设置间隔时间、切换循环模式 |
-| **Background Music（背景音乐）** | 启用音乐、选择文件或目录、调节音量 |
+| **Background Music（背景音乐）** | 启用音乐、选择文件或目录、播放控制（⏮ ⏪ ▶/⏸ ⏩ ⏭）、调节音量 |
 | **Font & Appearance（外观）** | 选择系统字体族和界面缩放大小（拖动滑块即时生效） |
 | **System Integration（系统集成）** | *（仅限 Windows）* 注册/取消注册文件类型关联，管理 Windows「打开方式」菜单中的显示 |
 
@@ -181,6 +184,8 @@ scale_mode: fit_to_window
 play_music: true
 music_path: "D:\\Music"
 volume: 0.8
+music_paused: false
+last_music_track: "D:\\Music\\Album\\CD1.flac"
 font_family: "Microsoft YaHei"
 font_size: 16.0
 preload: true
