@@ -1071,8 +1071,8 @@ impl ImageViewerApp {
                 if !old_recursive && self.settings.recursive {
                     // User just turned ON recursive scan — warn them first
                     let confirmed = rfd::MessageDialog::new()
-                        .set_title(t!("win.confirm_recursive_title").as_str())
-                        .set_description(t!("win.confirm_recursive_msg").as_str())
+                        .set_title(t!("win.confirm_recursive_title").to_string())
+                        .set_description(t!("win.confirm_recursive_msg").to_string())
                         .set_buttons(rfd::MessageButtons::OkCancel)
                         .set_level(rfd::MessageLevel::Warning)
                         .show() == rfd::MessageDialogResult::Ok;
@@ -1431,8 +1431,8 @@ impl ImageViewerApp {
                         ui.add_space(8.0);
                         if styled_button(ui, &t!("win.remove_assoc")).clicked() {
                             let confirmed = rfd::MessageDialog::new()
-                                .set_title(t!("win.confirm_remove_title").as_str())
-                                .set_description(t!("win.confirm_remove_msg").as_str())
+                                .set_title(t!("win.confirm_remove_title").to_string())
+                                .set_description(t!("win.confirm_remove_msg").to_string())
                                 .set_buttons(rfd::MessageButtons::OkCancel)
                                 .set_level(rfd::MessageLevel::Warning)
                                 .show() == rfd::MessageDialogResult::Ok;
@@ -2270,7 +2270,7 @@ impl ImageViewerApp {
                     if ui.button(RichText::new(t!("btn.set_wallpaper").to_string()).color(Color32::WHITE)).clicked() {
                         do_set = true;
                     }
-                    if ui.button(&t!("btn.cancel")).clicked() {
+                    if ui.button(t!("btn.cancel").to_string()).clicked() {
                         do_close = true;
                     }
                 });
@@ -2365,7 +2365,7 @@ impl ImageViewerApp {
                     if styled_button(ui, &t!("btn.go")).clicked() {
                         do_jump = true;
                     }
-                    if styled_button(ui, &t!("btn.cancel")).clicked() {
+                    if styled_button(ui, &t!("btn.cancel").to_string()).clicked() {
                         do_close = true;
                     }
                 });
@@ -2514,8 +2514,8 @@ impl ImageViewerApp {
             self.show_file_assoc_dialog = false;
 
             rfd::MessageDialog::new()
-                .set_title(t!("win.assoc_done_title").as_str())
-                .set_description(t!("win.assoc_done_msg").as_str())
+                .set_title(t!("win.assoc_done_title").to_string())
+                .set_description(t!("win.assoc_done_msg").to_string())
                 .set_buttons(rfd::MessageButtons::Ok)
                 .set_level(rfd::MessageLevel::Info)
                 .show();
@@ -2750,10 +2750,10 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, &t!("exif.copy")).clicked() {
+                                if styled_button(ui, &t!("exif.copy").to_string()).clicked() {
                                     close_and_copy = true;
                                 }
-                                if styled_button(ui, &t!("btn.close")).clicked() {
+                                if styled_button(ui, &t!("btn.close").to_string()).clicked() {
                                     close_exif = true;
                                 }
                             });
@@ -2833,16 +2833,16 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, &t!("xmp.copy_text")).clicked() {
+                                if styled_button(ui, &t!("xmp.copy_text").to_string()).clicked() {
                                     close_and_copy = true;
                                 }
-                                if styled_button(ui, &t!("xmp.copy_xml")).clicked() {
+                                if styled_button(ui, &t!("xmp.copy_xml").to_string()).clicked() {
                                     if let Some(xml) = &self.cached_xmp_xml {
                                         ctx.copy_text(xml.clone());
                                         self.show_xmp_window = false;
                                     }
                                 }
-                                if styled_button(ui, &t!("btn.close")).clicked() {
+                                if styled_button(ui, &t!("btn.close").to_string()).clicked() {
                                     close_xmp = true;
                                 }
                             });

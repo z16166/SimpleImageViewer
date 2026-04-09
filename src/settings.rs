@@ -205,7 +205,7 @@ pub fn detect_system_language() -> String {
 fn get_windows_locale() -> String {
     let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
     let ret = unsafe {
-        extern "system" {
+        unsafe extern "system" {
             fn GetUserDefaultLocaleName(lp_locale_name: *mut u16, cch_locale_name: i32) -> i32;
         }
         GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32)
