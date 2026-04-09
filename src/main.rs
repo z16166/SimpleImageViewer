@@ -164,7 +164,7 @@ fn main() -> eframe::Result {
     let fullscreen = settings.fullscreen;
 
     let viewport = egui::ViewportBuilder::default()
-        .with_title("Simple Image Viewer")
+        .with_title(rust_i18n::t!("app.title").to_string())
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([400.0, 300.0])
         .with_decorations(true)
@@ -178,7 +178,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "Simple Image Viewer",
+        "Simple Image Viewer", // Eframe specific, can stay in English as a unique identifier for egui
         native_options,
         Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, ipc_rx)) as Box<dyn eframe::App>)),
     )
