@@ -109,6 +109,7 @@ pub struct ImageViewerApp {
     // XMP dialog state
     show_xmp_window: bool,
     cached_xmp_text: Option<String>,
+    cached_xmp_xml: Option<String>,
 
     // Goto dialog state
     show_goto: bool,
@@ -209,6 +210,7 @@ impl ImageViewerApp {
             cached_exif_text: None,
             show_xmp_window: false,
             cached_xmp_text: None,
+            cached_xmp_xml: None,
             show_goto: false,
             goto_input: String::new(),
             goto_needs_focus: false,
@@ -1225,7 +1227,7 @@ impl ImageViewerApp {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| music_full.clone().unwrap_or_default());
                     let music_empty = self.settings.music_path.is_none();
-                    let music_label = if music_empty { "No file or folder selected".to_string() } else { music_short };
+                    let music_label = if music_empty { "No supported file/folder".to_string() } else { music_short };
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if styled_button(ui, "📂 Dir").clicked() {
@@ -2745,8 +2747,9 @@ impl eframe::App for ImageViewerApp {
         if self.show_xmp_window {
             if self.cached_xmp_text.is_none() && !self.image_files.is_empty() {
                 let path = &self.image_files[self.current_index];
-                if let Some(text) = extract_xmp(path) {
+                if let Some((text, raw)) = extract_xmp(path) {
                     self.cached_xmp_text = Some(text);
+                    self.cached_xmp_xml = Some(raw);
                 } else {
                     self.cached_xmp_text = Some("No XMP data found in this image.".to_string());
                 }
@@ -2754,11 +2757,11 @@ impl eframe::App for ImageViewerApp {
 
             let mut close_xmp = false;
             let mut close_and_copy = false;
-            egui::Window::new("ℹ XMP Information")
+            egui::Window::new("XMP Information")
                 .collapsible(false)
                 .resizable(true)
-                .default_pos(ctx.screen_rect().center() - egui::vec2(260.0, 240.0))
-                .default_size([520.0, 500.0])
+                .default_pos(ctx.screen_rect().center() - egui::vec2(320.0, 240.0))
+                .default_size([640.0, 500.0])
                 .show(&ctx, |ui| {
                     if let Some(text) = &self.cached_xmp_text {
                         egui::TopBottomPanel::bottom("xmp_footer")
@@ -2766,8 +2769,14 @@ impl eframe::App for ImageViewerApp {
                             .show_inside(ui, |ui| {
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
-                                    if styled_button(ui, "📋 Copy XMP").clicked() {
+                                    if styled_button(ui, "📋 Copy Text").clicked() {
                                         close_and_copy = true;
+                                    }
+                                    if styled_button(ui, "📄 Copy XML").clicked() {
+                                        if let Some(xml) = &self.cached_xmp_xml {
+                                            ctx.copy_text(xml.clone());
+                                            self.show_xmp_window = false;
+                                        }
                                     }
                                     if styled_button(ui, "Close").clicked() {
                                         close_xmp = true;
@@ -2820,8 +2829,11 @@ fn extract_exif(path: &std::path::Path) -> Option<String> {
     }
 }
 
-fn extract_xmp(path: &std::path::Path) -> Option<String> {
+fn extract_xmp(path: &std::path::Path) -> Option<(String, String)> {
     use xmpkit::XmpFile;
+    use quick_xml::reader::Reader;
+    use quick_xml::events::Event;
+    use std::collections::BTreeMap;
     
     let mut file = XmpFile::new();
     if file.open(path.to_string_lossy().as_ref()).is_err() {
@@ -2829,47 +2841,92 @@ fn extract_xmp(path: &std::path::Path) -> Option<String> {
     }
     
     let meta = file.get_xmp()?;
+    let xml_str = match meta.serialize() {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
     
-    let mut result = String::new();
+    let mut reader = Reader::from_str(&xml_str);
+    reader.config_mut().trim_text(true);
     
-    // Common Namespaces
-    let namespaces = [
-        ("Dublin Core", "http://purl.org/dc/elements/1.1/"),
-        ("XMP Basic", "http://ns.adobe.com/xap/1.0/"),
-        ("Rights Management", "http://ns.adobe.com/xap/1.0/rights/"),
-        ("Media Management", "http://ns.adobe.com/xap/1.0/mm/"),
-        ("Photoshop", "http://ns.adobe.com/photoshop/1.0/"),
-        ("EXIF XMP", "http://ns.adobe.com/exif/1.0/"),
-        ("TIFF XMP", "http://ns.adobe.com/tiff/1.0/"),
-    ];
-
-    // Common fields within those namespaces
-    let common_fields = [
-        "title", "creator", "description", "rights", "subject", "publisher",
-        "CreateDate", "ModifyDate", "CreatorTool", "MetadataDate",
-        "WebStatement", "UsageTerms",
-        "DocumentID", "InstanceID",
-        "AuthorsPosition", "CaptionWriter", "Category", "City", "Country", "Credit", "Headline", "Instructions", "Source", "State", "TransmissionReference",
-    ];
-
-    for (_ns_name, ns_uri) in namespaces {
-        for field in common_fields {
-            if let Some(val) = meta.get_property(ns_uri, field) {
-                let display_val = match val {
-                    xmpkit::XmpValue::String(s) => s.clone(),
-                    xmpkit::XmpValue::Integer(i) => i.to_string(),
-                    xmpkit::XmpValue::Boolean(b) => b.to_string(),
-                    _ => format!("{:?}", val),
-                };
-                result.push_str(&format!("{}: {}\n", field, display_val));
+    let mut result_map = BTreeMap::new();
+    let mut buf = Vec::new();
+    let mut stack = Vec::new();
+    
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                
+                // Skip structural RDF tags to keep paths clean
+                let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
+                if !is_structural {
+                    stack.push(name.clone());
+                }
+                
+                // Process attributes (e.g., x:xmptk or compact RDF properties)
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    if key.starts_with("xmlns:") || key == "rdf:about" {
+                        continue;
+                    }
+                    let val = attr.unescape_value().unwrap_or_default().to_string();
+                    if !val.is_empty() {
+                        let path = if stack.is_empty() { key } else { format!("{}.{}", stack.join("."), key) };
+                        result_map.insert(path, val);
+                    }
+                }
             }
+            Ok(Event::Empty(e)) => {
+                // Self-closing tag: process attributes but don't stay on stack
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
+                
+                for attr in e.attributes().flatten() {
+                    let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                    if key.starts_with("xmlns:") || key == "rdf:about" {
+                        continue;
+                    }
+                    let val = attr.unescape_value().unwrap_or_default().to_string();
+                    if !val.is_empty() {
+                        let path = if is_structural { key } else { format!("{}.{}", name, key) };
+                        result_map.insert(path, val);
+                    }
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let val = reader.decoder().decode(e.as_ref()).unwrap_or_default().to_string();
+                if !val.is_empty() && !stack.is_empty() {
+                    let path = stack.join(".");
+                    result_map.insert(path, val);
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if !name.starts_with("rdf:") && name != "x:xmpmeta" {
+                    stack.pop();
+                }
+            }
+            Ok(Event::Eof) => break,
+            _ => (),
         }
+        buf.clear();
+    }
+    
+    let mut final_text = String::new();
+    for (k, v) in result_map {
+        // Final cleanup of common prefixes to look like exiftool
+        let mut clean_k = k.replace("rdf:", "");
+        if clean_k.starts_with("x:xmptk") {
+            clean_k = "XMP Toolkit".to_string();
+        }
+        final_text.push_str(&format!("{}: {}\n", clean_k, v));
     }
 
-    if result.is_empty() {
+    if final_text.is_empty() {
         None
     } else {
-        Some(result)
+        Some((final_text, xml_str))
     }
 }
 
