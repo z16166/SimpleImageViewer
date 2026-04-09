@@ -105,6 +105,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
             "psd" | "psb" => load_psd(path),
+            "heif" | "heic" => load_heic(path),
             _ => load_static(path),
         }
     })();
@@ -272,6 +273,33 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         Ok(ImageData::LargeStatic(DecodedImage { width: w, height: h, pixels }))
     } else {
         Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HEIF / HEIC (High Efficiency Image Format)
+// ---------------------------------------------------------------------------
+
+fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read HEIC file: {e}"))?;
+    
+    // Decode directly to RGBA8
+    let output = heic::DecoderConfig::new()
+        .decode(&bytes, heic::PixelLayout::Rgba8)
+        .map_err(|e| format!("Failed to decode HEIC: {e:?}"))?;
+
+    let width = output.width;
+    let height = output.height;
+    let rgba = output.data;
+
+    let pixel_count = width as u64 * height as u64;
+    log::info!("HEIC decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
+
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
+        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels: rgba }))
+    } else {
+        Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
     }
 }
 

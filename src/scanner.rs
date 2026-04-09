@@ -6,6 +6,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "webp", "ico", "tga", "hdr", "ppm", "pbm", "pgm", "pnm",
     "avif", "qoi", "exr",
     "psd", "psb",
+    "heif", "heic",
 ];
 
 pub fn is_supported_image(path: &Path) -> bool {
