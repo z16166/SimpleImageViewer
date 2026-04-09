@@ -42,7 +42,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
 - **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
 - **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, or set as desktop wallpaper
-- **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese) with fallback support, and can be manually overridden in the settings panel.
+- **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese - Taiwan & Hong Kong) with fallback support, and can be manually overridden in the settings panel.
 
 ---
 
