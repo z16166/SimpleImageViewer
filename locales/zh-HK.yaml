@@ -18,7 +18,7 @@ section.language: "語言"
 
 # Buttons
 btn.pick: "📁 選擇"
-btn.refresh: "🔄 重新整理"
+btn.refresh: "🔄 重新掃描"
 btn.close: "關閉"
 btn.cancel: "取消"
 btn.go: "跳轉"
