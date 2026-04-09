@@ -39,6 +39,7 @@ trash = "5"
 psd = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 heic = "0.1"
+xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

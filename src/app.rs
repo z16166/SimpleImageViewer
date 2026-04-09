@@ -106,6 +106,10 @@ pub struct ImageViewerApp {
     show_exif_window: bool,
     cached_exif_text: Option<String>,
 
+    // XMP dialog state
+    show_xmp_window: bool,
+    cached_xmp_text: Option<String>,
+
     // Goto dialog state
     show_goto: bool,
     goto_input: String,
@@ -203,6 +207,8 @@ impl ImageViewerApp {
             cached_pixels_per_point: 1.0,
             show_exif_window: false,
             cached_exif_text: None,
+            show_xmp_window: false,
+            cached_xmp_text: None,
             show_goto: false,
             goto_input: String::new(),
             goto_needs_focus: false,
@@ -1547,6 +1553,10 @@ impl ImageViewerApp {
                         ui.ctx().copy_text(path_str);
                         ui.close();
                     }
+                    if ui.button("ℹ View XMP Info").clicked() {
+                        self.show_xmp_window = true;
+                        ui.close();
+                    }
                 });
 
                 return;
@@ -1970,6 +1980,11 @@ impl ImageViewerApp {
                             self.cached_exif_text = Some("No EXIF data found in this image.".to_string());
                         }
                         self.show_exif_window = true;
+                        ui.close();
+                    }
+
+                    if ui.button("ℹ View XMP Info").clicked() {
+                        self.show_xmp_window = true;
                         ui.close();
                     }
                     
@@ -2683,6 +2698,60 @@ impl eframe::App for ImageViewerApp {
                 self.show_exif_window = false;
             }
         }
+
+        // XMP window
+        if self.show_xmp_window {
+            if self.cached_xmp_text.is_none() && !self.image_files.is_empty() {
+                let path = &self.image_files[self.current_index];
+                if let Some(text) = extract_xmp(path) {
+                    self.cached_xmp_text = Some(text);
+                } else {
+                    self.cached_xmp_text = Some("No XMP data found in this image.".to_string());
+                }
+            }
+
+            let mut close_xmp = false;
+            let mut close_and_copy = false;
+            egui::Window::new("ℹ XMP Information")
+                .collapsible(false)
+                .resizable(true)
+                .default_pos(ctx.screen_rect().center() - egui::vec2(260.0, 240.0))
+                .default_size([520.0, 500.0])
+                .show(&ctx, |ui| {
+                    if let Some(text) = &self.cached_xmp_text {
+                        egui::TopBottomPanel::bottom("xmp_footer")
+                            .resizable(false)
+                            .show_inside(ui, |ui| {
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    if styled_button(ui, "📋 Copy XMP").clicked() {
+                                        close_and_copy = true;
+                                    }
+                                    if styled_button(ui, "Close").clicked() {
+                                        close_xmp = true;
+                                    }
+                                });
+                                ui.add_space(10.0);
+                            });
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.add_space(10.0);
+                            ui.label(RichText::new(text).monospace());
+                            ui.add_space(10.0);
+                        });
+                    }
+                });
+
+            if close_and_copy {
+                if let Some(text) = &self.cached_xmp_text {
+                    ctx.copy_text(text.clone());
+                }
+                self.show_xmp_window = false;
+            }
+            if close_xmp {
+                self.show_xmp_window = false;
+            }
+        }
     }
 }
 
@@ -2702,6 +2771,61 @@ fn extract_exif(path: &std::path::Path) -> Option<String> {
         result.push_str(&format!("{}: {}\n", tag, val));
     }
     
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+fn extract_xmp(path: &std::path::Path) -> Option<String> {
+    use xmpkit::XmpFile;
+    
+    let mut file = XmpFile::new();
+    if file.open(path.to_string_lossy().as_ref()).is_err() {
+        return None;
+    }
+    
+    let meta = file.get_xmp()?;
+    
+    let mut result = String::new();
+    
+    // Common Namespaces
+    let namespaces = [
+        ("Dublin Core", "http://purl.org/dc/elements/1.1/"),
+        ("XMP Basic", "http://ns.adobe.com/xap/1.0/"),
+        ("Rights Management", "http://ns.adobe.com/xap/1.0/rights/"),
+        ("Media Management", "http://ns.adobe.com/xap/1.0/mm/"),
+        ("Photoshop", "http://ns.adobe.com/photoshop/1.0/"),
+        ("EXIF XMP", "http://ns.adobe.com/exif/1.0/"),
+        ("TIFF XMP", "http://ns.adobe.com/tiff/1.0/"),
+    ];
+
+    // Common fields within those namespaces
+    let common_fields = [
+        "title", "creator", "description", "rights", "subject", "publisher",
+        "CreateDate", "ModifyDate", "CreatorTool", "MetadataDate",
+        "WebStatement", "UsageTerms",
+        "DocumentID", "InstanceID",
+        "AuthorsPosition", "CaptionWriter", "Category", "City", "Country", "Credit", "Headline", "Instructions", "Source", "State", "TransmissionReference",
+    ];
+
+    for (ns_name, ns_uri) in namespaces {
+        let mut ns_added = false;
+        for field in common_fields {
+            if let Some(val) = meta.get_property(ns_uri, field) {
+                if !ns_added {
+                    result.push_str(&format!("--- {} ---\n", ns_name));
+                    ns_added = true;
+                }
+                result.push_str(&format!("{}: {:?}\n", field, val));
+            }
+        }
+        if ns_added {
+            result.push_str("\n");
+        }
+    }
+
     if result.is_empty() {
         None
     } else {
