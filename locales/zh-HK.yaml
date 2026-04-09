@@ -15,6 +15,7 @@ section.transitions: "切換動畫"
 section.font: "字體與外觀"
 section.system_windows: "系統整合（Windows）"
 section.language: "語言"
+section.theme: "介面主題"
 
 # Buttons
 btn.pick: "📁 選擇"
@@ -145,7 +146,12 @@ win.confirm_recursive_title: "啟用遞迴掃描？"
 win.confirm_recursive_msg: "遞迴掃描將搜尋所有子目錄。\n在大型目錄樹（如磁碟根目錄）下可能耗時甚長。\n確定要啟用嗎？"
 
 # Language names (for the selector)
-lang.en: "English (US)"
-lang.zh_cn: "简体中文"
-lang.zh_tw: "繁體中文（台灣）"
-lang.zh_hk: "繁體中文（香港）"
+lang.en: "English (en-US)"
+lang.zh_cn: "简体中文 (zh-CN)"
+lang.zh_tw: "繁體中文 (zh-TW)"
+lang.zh_hk: "繁體中文 (zh-HK)"
+
+# Theme
+theme.dark: "深色"
+theme.light: "淺色"
+theme.system: "跟隨系統"

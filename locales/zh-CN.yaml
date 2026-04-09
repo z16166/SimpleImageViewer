@@ -15,6 +15,7 @@ section.transitions: "切换动画"
 section.font: "字体与外观"
 section.system_windows: "系统集成（Windows）"
 section.language: "语言"
+section.theme: "界面主题"
 
 # Buttons
 btn.pick: "📁 选择"
@@ -145,7 +146,12 @@ win.confirm_recursive_title: "启用递归扫描？"
 win.confirm_recursive_msg: "递归扫描将搜索所有子目录。\n在大型目录树（如磁盘根目录）下可能耗时很长。\n确定要启用吗？"
 
 # Language names (for the selector)
-lang.en: "English (US)"
-lang.zh_cn: "简体中文"
-lang.zh_tw: "繁體中文（台灣）"
-lang.zh_hk: "繁體中文（香港）"
+lang.en: "English (en-US)"
+lang.zh_cn: "简体中文 (zh-CN)"
+lang.zh_tw: "繁體中文 (zh-TW)"
+lang.zh_hk: "繁體中文 (zh-HK)"
+
+# Theme
+theme.dark: "深色"
+theme.light: "浅色"
+theme.system: "跟随系统"

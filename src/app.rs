@@ -15,18 +15,14 @@ use crate::loader::{ImageData, ImageLoader, TextureCache};
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
 use crate::tile_cache::TileManager;
+use crate::theme::{AppTheme, SystemThemeCache, ThemePalette};
 use rust_i18n::t;
 
 const PRELOAD_AHEAD: usize = 1;
 const PRELOAD_BEHIND: usize = 1;
 const CACHE_SIZE: usize = 4; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 buffer
 
-// Accent colors for the UI
-const BG_DARK: Color32 = Color32::from_rgb(18, 18, 24);
-const PANEL_BG: Color32 = Color32::from_rgb(32, 33, 36);
-const ACCENT: Color32 = Color32::from_rgb(108, 92, 231);
-const ACCENT2: Color32 = Color32::from_rgb(0, 199, 190);
-const TEXT_MUTED: Color32 = Color32::from_rgb(154, 160, 166);
+// self.cached_palette.accent colors for the UI (migrated to theme system)
 
 /// Animation playback state for the currently displayed animated image.
 struct AnimationPlayback {
@@ -155,6 +151,10 @@ pub struct ImageViewerApp {
 
     // Tiled rendering for large images
     tile_manager: Option<TileManager>,
+    
+    // Theme state
+    theme_cache: SystemThemeCache,
+    cached_palette: ThemePalette,
 }
 
 impl ImageViewerApp {
@@ -168,7 +168,11 @@ impl ImageViewerApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
-        setup_visuals(&cc.egui_ctx, &settings);
+
+        let mut theme_cache = SystemThemeCache::default();
+        let cached_palette = settings.theme.resolve(&mut theme_cache);
+
+        setup_visuals(&cc.egui_ctx, &settings, &cached_palette);
         setup_fonts(&cc.egui_ctx, &settings);
 
         let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
@@ -236,6 +240,8 @@ impl ImageViewerApp {
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
             tile_manager: None,
+            theme_cache,
+            cached_palette,
         };
 
         // Restore last session state
@@ -1002,23 +1008,24 @@ impl ImageViewerApp {
         let mut do_quit = false;
 
         egui::Window::new(t!("app.window_title"))
+            .id(egui::Id::new("settings_window"))
             .default_pos(Pos2::new(12.0, 12.0))
             .resizable(true)
             .collapsible(true)
             .frame(
                 Frame::window(&ctx.global_style())
-                    .fill(PANEL_BG)
+                    .fill(self.cached_palette.panel_bg)
                     .shadow(egui::epaint::Shadow::NONE),
             )
             .min_width(550.0)
             .default_width(640.0)
             .max_width(800.0)
             .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
 
                 ui.heading(
                     RichText::new(t!("app.title"))
-                        .color(ACCENT2)
+                        .color(self.cached_palette.accent2)
                         .size(18.0),
                 );
                 ui.add_space(4.0);
@@ -1029,7 +1036,7 @@ impl ImageViewerApp {
                 cols[0].vertical(|ui| {
                 
                 // ── Directory ──────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.directory")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.directory")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 // Path display: short name in box, full path as tooltip
@@ -1045,11 +1052,11 @@ impl ImageViewerApp {
                 let dir_label = if dir_empty { t!("label.no_dir").to_string() } else { dir_short };
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if styled_button(ui, t!("btn.pick")).clicked() {
+                        if styled_button(ui, t!("btn.pick"), &self.cached_palette).clicked() {
                             open_dir = true;
                         }
                         ui.add_space(4.0);
-                        if styled_button(ui, t!("btn.refresh")).clicked() {
+                        if styled_button(ui, t!("btn.refresh"), &self.cached_palette).clicked() {
                             if let Some(dir) = self.settings.last_image_dir.clone() {
                                 self.load_directory(dir);
                             }
@@ -1057,7 +1064,7 @@ impl ImageViewerApp {
                         
                         let box_w = (ui.available_width() - 16.0).max(20.0);
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let resp = path_display_box(ui, &dir_label, dir_empty, box_w);
+                            let resp = path_display_box(ui, &dir_label, dir_empty, box_w, &self.cached_palette);
                             if let Some(full) = &dir_full {
                                 resp.on_hover_text(full.as_str());
                             }
@@ -1099,14 +1106,14 @@ impl ImageViewerApp {
                 if self.scanning {
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label(RichText::new(&self.status_message).color(TEXT_MUTED));
+                        ui.label(RichText::new(&self.status_message).color(self.cached_palette.text_muted));
                     });
                 }
 
                 ui.add_space(8.0);
 
                 // ── Display ────────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.display")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.display")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 let old_fullscreen = self.settings.fullscreen;
@@ -1118,7 +1125,7 @@ impl ImageViewerApp {
                 ui.add_space(6.0);
 
                 // Scale mode selector
-                ui.label(RichText::new(t!("label.scale_mode")).color(TEXT_MUTED).small());
+                ui.label(RichText::new(t!("label.scale_mode")).color(self.cached_palette.text_muted).small());
                 ui.add_space(2.0);
                 let old_scale = self.settings.scale_mode;
                 ui.horizontal(|ui| {
@@ -1143,7 +1150,7 @@ impl ImageViewerApp {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(t!("label.z_toggle_hint"))
-                        .color(TEXT_MUTED)
+                        .color(self.cached_palette.text_muted)
                         .small(),
                 );
 
@@ -1152,7 +1159,7 @@ impl ImageViewerApp {
                 
                 // ── Transitions ──────────────────────────────────────────
                 ui.add_space(8.0);
-                ui.label(RichText::new(t!("section.transitions")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.transitions")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
@@ -1190,7 +1197,7 @@ impl ImageViewerApp {
                 
                 cols[1].vertical(|ui| {
                 // ── Slideshow ────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.slideshow")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.slideshow")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 let old_auto_switch = self.settings.auto_switch;
@@ -1215,7 +1222,7 @@ impl ImageViewerApp {
                 ui.add_space(8.0);
 
                 // ── Music ──────────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.music")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.music")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
@@ -1239,15 +1246,15 @@ impl ImageViewerApp {
                     let music_label = if music_empty { t!("label.no_music").to_string() } else { music_short };
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if styled_button(ui, t!("btn.pick_dir")).clicked() {
+                            if styled_button(ui, t!("btn.pick_dir"), &self.cached_palette).clicked() {
                                 open_music_dir = true;
                             }
-                            if styled_button(ui, t!("btn.pick_file")).clicked() {
+                            if styled_button(ui, t!("btn.pick_file"), &self.cached_palette).clicked() {
                                 open_music_file = true;
                             }
                             let box_w = (ui.available_width() - 16.0).max(20.0);
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let resp = path_display_box(ui, &music_label, music_empty, box_w);
+                                let resp = path_display_box(ui, &music_label, music_empty, box_w, &self.cached_palette);
                                 if let Some(full) = &music_full {
                                     resp.on_hover_text(full.as_str());
                                 }
@@ -1260,10 +1267,10 @@ impl ImageViewerApp {
                         ui.horizontal(|ui| {
                             if self.scanning_music {
                                 ui.spinner();
-                                ui.label(RichText::new(t!("music.scanning")).color(TEXT_MUTED).small());
+                                ui.label(RichText::new(t!("music.scanning")).color(self.cached_palette.text_muted).small());
                             } else if let Some(count) = self.cached_music_count {
                                 if count > 0 {
-                                    ui.label(RichText::new(t!("music.files_ready", count = count.to_string())).color(ACCENT2).small());
+                                    ui.label(RichText::new(t!("music.files_ready", count = count.to_string())).color(self.cached_palette.accent2).small());
                                     
                                     // Align 5-buttons to the right to match the "Dir" row above
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1271,24 +1278,24 @@ impl ImageViewerApp {
                                         let has_tracks = self.audio.has_tracks();
                                         
                                         // Buttons in RTL order: ⏭, ⏩, ▶/⏸, ⏪, ⏮
-                                        if styled_button(ui, "⏭").on_hover_text(t!("music.next_file")).clicked() {
+                                        if styled_button(ui, "⏭", &self.cached_palette).on_hover_text(t!("music.next_file")).clicked() {
                                             self.audio.next_file();
                                         }
-                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩"));
+                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩", &self.cached_palette));
                                         if resp.on_hover_text(t!("music.next_track")).clicked() {
                                             self.audio.next_track();
                                         }
                                         let play_icon = if self.settings.music_paused { "▶" } else { "⏸" };
-                                        if styled_button(ui, play_icon).on_hover_text(t!("music.play_pause")).clicked() {
+                                        if styled_button(ui, play_icon, &self.cached_palette).on_hover_text(t!("music.play_pause")).clicked() {
                                             self.settings.music_paused = !self.settings.music_paused;
                                             if self.settings.music_paused { self.audio.pause(); } else { self.audio.play(); }
                                             self.queue_save();
                                         }
-                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪"));
+                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪", &self.cached_palette));
                                         if resp.on_hover_text(t!("music.prev_track")).clicked() {
                                             self.audio.prev_track();
                                         }
-                                        if styled_button(ui, "⏮").on_hover_text(t!("music.prev_file")).clicked() {
+                                        if styled_button(ui, "⏮", &self.cached_palette).on_hover_text(t!("music.prev_file")).clicked() {
                                             self.audio.prev_file();
                                         }
                                     });
@@ -1306,19 +1313,19 @@ impl ImageViewerApp {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             let status = if self.settings.music_paused { t!("music.paused").to_string() } else { t!("music.playing").to_string() };
-                            ui.label(RichText::new(status).color(TEXT_MUTED).small());
+                            ui.label(RichText::new(status).color(self.cached_palette.text_muted).small());
                             let short_f = middle_truncate(&f, 40);
-                            ui.label(RichText::new(format!("[{short_f}]")).color(TEXT_MUTED).small()).on_hover_text(&f);
+                            ui.label(RichText::new(format!("[{short_f}]")).color(self.cached_palette.text_muted).small()).on_hover_text(&f);
                         });
                         if let Some(m) = metadata {
-                            ui.label(RichText::new(format!("✨ {m}")).color(ACCENT2).small().italics());
+                            ui.label(RichText::new(format!("✨ {m}")).color(self.cached_palette.accent2).small().italics());
                         }
                     }
 
                     // Volume slider
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(t!("label.volume")).color(TEXT_MUTED));
+                        ui.label(RichText::new(t!("label.volume")).color(self.cached_palette.text_muted));
                         let old_vol = self.settings.volume;
                         let resp = ui.add(
                             egui::Slider::new(&mut self.settings.volume, 0.0..=1.0)
@@ -1348,7 +1355,7 @@ impl ImageViewerApp {
                 ui.add_space(6.0);
 
                 // ── Font & Appearance ──────────────────────────────────────
-                ui.label(RichText::new(t!("section.font")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("section.font")).color(self.cached_palette.accent2).strong());
                 ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
@@ -1361,7 +1368,7 @@ impl ImageViewerApp {
                     } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
                         self.settings.font_size = current_size;
                         self.temp_font_size = None;
-                        setup_visuals(ctx, &self.settings);
+                        setup_visuals(ctx, &self.settings, &self.cached_palette);
                         self.queue_save();
                     }
                 });
@@ -1378,7 +1385,7 @@ impl ImageViewerApp {
                         });
                     if old_family != self.settings.font_family {
                         setup_fonts(ctx, &self.settings);
-                        setup_visuals(ctx, &self.settings);
+                        setup_visuals(ctx, &self.settings, &self.cached_palette);
                         self.queue_save();
                     }
                 });
@@ -1402,6 +1409,30 @@ impl ImageViewerApp {
                         });
                     if old_lang != self.settings.language {
                         rust_i18n::set_locale(&self.settings.language);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(t!("app.title").to_string()));
+                        self.queue_save();
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(t!("section.theme"));
+                    let old_theme = self.settings.theme;
+                    egui::ComboBox::from_id_salt("theme_selector")
+                        .selected_text(match self.settings.theme {
+                            AppTheme::Dark => t!("theme.dark"),
+                            AppTheme::Light => t!("theme.light"),
+                            AppTheme::System => t!("theme.system"),
+                        }.to_string())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.settings.theme, AppTheme::Dark, t!("theme.dark").to_string());
+                            ui.selectable_value(&mut self.settings.theme, AppTheme::Light, t!("theme.light").to_string());
+                            ui.selectable_value(&mut self.settings.theme, AppTheme::System, t!("theme.system").to_string());
+                        });
+                    
+                    if old_theme != self.settings.theme {
+                        self.cached_palette = self.settings.theme.resolve(&mut self.theme_cache);
+                        setup_visuals(ctx, &self.settings, &self.cached_palette);
                         self.queue_save();
                     }
                 });
@@ -1416,22 +1447,22 @@ impl ImageViewerApp {
                 // ── System Integration (Windows only) ─────────────────────
                 #[cfg(target_os = "windows")]
                 {
-                    ui.label(RichText::new(t!("section.system_windows")).color(ACCENT2).strong());
+                    ui.label(RichText::new(t!("section.system_windows")).color(self.cached_palette.accent2).strong());
                     ui.add_space(2.0);
                     ui.label(
                         RichText::new(t!("win.register_hint"))
-                            .color(TEXT_MUTED)
+                            .color(self.cached_palette.text_muted)
                             .small(),
                     );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if styled_button(ui, t!("win.assoc_formats")).clicked() {
+                        if styled_button(ui, t!("win.assoc_formats"), &self.cached_palette).clicked() {
                             // Reset all selections to true (default: all selected)
                             self.file_assoc_selections = vec![true; scanner::SUPPORTED_EXTENSIONS.len()];
                             self.show_file_assoc_dialog = true;
                         }
                         ui.add_space(8.0);
-                        if styled_button(ui, t!("win.remove_assoc")).clicked() {
+                        if styled_button(ui, t!("win.remove_assoc"), &self.cached_palette).clicked() {
                             let confirmed = rfd::MessageDialog::new()
                                 .set_title(t!("win.confirm_remove_title").to_string())
                                 .set_description(t!("win.confirm_remove_msg").to_string())
@@ -1465,11 +1496,11 @@ impl ImageViewerApp {
                     }
                     ui.add_space(12.0);
                     #[cfg(target_os = "macos")]
-                    ui.label(RichText::new(t!("hint.quit_macos")).color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("hint.quit_macos")).color(self.cached_palette.text_muted).small());
                     #[cfg(target_os = "linux")]
-                    ui.label(RichText::new(t!("hint.quit_linux")).color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("hint.quit_linux")).color(self.cached_palette.text_muted).small());
                     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                    ui.label(RichText::new(t!("hint.quit_windows")).color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("hint.quit_windows")).color(self.cached_palette.text_muted).small());
                 });
             });
 
@@ -1513,7 +1544,7 @@ impl ImageViewerApp {
         let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
 
         // Fill the area with dark background
-        egui::Frame::NONE.fill(BG_DARK).show(ui, |ui| {
+        egui::Frame::NONE.fill(self.cached_palette.canvas_bg).show(ui, |ui| {
             let screen_rect = ui.max_rect();
             
             // Allocate the whole viewport for drag interaction and clicks early
@@ -1531,7 +1562,7 @@ impl ImageViewerApp {
             }
 
             if self.image_files.is_empty() {
-                draw_empty_hint(ui, screen_rect);
+                draw_empty_hint(ui, screen_rect, &self.cached_palette);
                 return;
             }
 
@@ -2136,7 +2167,7 @@ impl ImageViewerApp {
                             Align2::LEFT_BOTTOM,
                             hud,
                             FontId::proportional(13.0),
-                            Color32::from_rgba_unmultiplied(220, 220, 240, 210),
+                            self.cached_palette.osd_text,
                         );
                     }
 
@@ -2147,7 +2178,7 @@ impl ImageViewerApp {
                             Align2::RIGHT_BOTTOM,
                             t!("hint.keyboard").to_string(),
                             FontId::proportional(11.0),
-                            Color32::from_rgba_unmultiplied(160, 160, 180, 140),
+                            self.cached_palette.osd_hint,
                         );
                     }
                 }
@@ -2159,7 +2190,7 @@ impl ImageViewerApp {
                         Align2::CENTER_BOTTOM,
                         t!("status.loading").to_string(),
                         FontId::proportional(16.0),
-                        TEXT_MUTED,
+                        self.cached_palette.text_muted,
                     );
                 }
             }
@@ -2203,22 +2234,23 @@ impl ImageViewerApp {
         let mut do_close = false;
         let mut do_set = false;
 
-        egui::Window::new(t!("wallpaper.title").to_string())
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .resizable(false)
+        egui::Window::new(t!("wallpaper.title"))
+            .id(egui::Id::new("wallpaper_window"))
+            .default_pos(ctx.screen_rect().center() - egui::vec2(260.0, 160.0))
+            .resizable(true)
             .collapsible(false)
             .frame(
                 Frame::window(&ctx.global_style())
-                    .fill(PANEL_BG)
+                    .fill(self.cached_palette.panel_bg)
                     .shadow(egui::epaint::Shadow::NONE),
             )
-            .fixed_size([520.0, 320.0])
+            .default_size([520.0, 320.0])
             .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
                 ui.add_space(8.0);
 
                 if let Some(ref current) = self.current_system_wallpaper {
-                    ui.label(RichText::new(t!("wallpaper.current")).color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("wallpaper.current")).color(self.cached_palette.text_muted).small());
                     egui::ScrollArea::horizontal()
                         .id_salt("curr_wp_scroll")
                         .min_scrolled_height(24.0)
@@ -2235,7 +2267,7 @@ impl ImageViewerApp {
                 }
 
                 let path = self.image_files[self.current_index].to_string_lossy().into_owned();
-                ui.label(RichText::new(t!("wallpaper.new_path")).color(TEXT_MUTED).small());
+                ui.label(RichText::new(t!("wallpaper.new_path")).color(self.cached_palette.text_muted).small());
                 egui::ScrollArea::horizontal()
                     .id_salt("new_wp_scroll")
                     .min_scrolled_height(24.0)
@@ -2249,14 +2281,14 @@ impl ImageViewerApp {
                 
                 if let Some((w, h)) = self.current_image_res {
                     ui.add_space(4.0);
-                    ui.label(RichText::new(t!("wallpaper.resolution")).color(TEXT_MUTED).small());
+                    ui.label(RichText::new(t!("wallpaper.resolution")).color(self.cached_palette.text_muted).small());
                     ui.label(format!("{} × {}", w, h));
                 }
 
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-                ui.label(RichText::new(t!("wallpaper.mode")).color(ACCENT2).strong());
+                ui.label(RichText::new(t!("wallpaper.mode")).color(self.cached_palette.accent2).strong());
 
                 ui.vertical(|ui| {
                     ui.radio_value(&mut self.selected_wallpaper_mode, "Crop".to_string(), t!("wallpaper.crop").to_string());
@@ -2269,10 +2301,10 @@ impl ImageViewerApp {
 
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    if ui.button(RichText::new(t!("btn.set_wallpaper").to_string()).color(Color32::WHITE)).clicked() {
+                    if styled_button(ui, &t!("btn.set_wallpaper").to_string(), &self.cached_palette).clicked() {
                         do_set = true;
                     }
-                    if ui.button(t!("btn.cancel")).clicked() {
+                    if styled_button(ui, &t!("btn.cancel").to_string(), &self.cached_palette).clicked() {
                         do_close = true;
                     }
                 });
@@ -2322,13 +2354,14 @@ impl ImageViewerApp {
         let mut do_close = false;
         let mut do_jump = false;
 
-        egui::Window::new(t!("goto.title").to_string())
+        egui::Window::new(t!("goto.title"))
+            .id(egui::Id::new("goto_window"))
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .resizable(false)
             .collapsible(false)
             .frame(
                 Frame::window(&ctx.global_style())
-                    .fill(PANEL_BG)
+                    .fill(self.cached_palette.panel_bg)
                     .shadow(egui::epaint::Shadow::NONE),
             )
             .fixed_size([320.0, 120.0])
@@ -2337,7 +2370,7 @@ impl ImageViewerApp {
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(t!("goto.hint", total = total.to_string()))
-                        .color(TEXT_MUTED)
+                        .color(self.cached_palette.text_muted)
                         .small(),
                 );
                 ui.add_space(6.0);
@@ -2364,10 +2397,10 @@ impl ImageViewerApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if styled_button(ui, t!("btn.go")).clicked() {
+                    if styled_button(ui, t!("btn.go"), &self.cached_palette).clicked() {
                         do_jump = true;
                     }
-                    if styled_button(ui, &t!("btn.cancel").to_string()).clicked() {
+                    if styled_button(ui, &t!("btn.cancel").to_string(), &self.cached_palette).clicked() {
                         do_close = true;
                     }
                 });
@@ -2411,33 +2444,34 @@ impl ImageViewerApp {
         let mut do_apply = false;
         let mut do_cancel = false;
 
-        egui::Window::new(t!("win.assoc_dialog_title").to_string())
+        egui::Window::new(t!("win.assoc_dialog_title"))
+            .id(egui::Id::new("assoc_dialog"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .default_width(420.0)
             .frame(
                 Frame::window(&ctx.global_style())
-                    .fill(PANEL_BG)
+                    .fill(self.cached_palette.panel_bg)
                     .shadow(egui::epaint::Shadow::NONE),
             )
             .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
+                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
 
                 ui.label(
                     RichText::new(t!("win.assoc_dialog_msg").to_string())
-                        .color(TEXT_MUTED),
+                        .color(self.cached_palette.text_muted),
                 );
                 ui.add_space(8.0);
 
                 // Select All / Deselect All
                 ui.horizontal(|ui| {
-                    if ui.button(t!("btn.select_all").to_string()).clicked() {
+                    if styled_button(ui, t!("btn.select_all"), &self.cached_palette).clicked() {
                         for sel in self.file_assoc_selections.iter_mut() {
                             *sel = true;
                         }
                     }
-                    if ui.button(t!("btn.deselect_all").to_string()).clicked() {
+                    if styled_button(ui, t!("btn.deselect_all"), &self.cached_palette).clicked() {
                         for sel in self.file_assoc_selections.iter_mut() {
                             *sel = false;
                         }
@@ -2484,7 +2518,7 @@ impl ImageViewerApp {
                                 RichText::new(t!("win.apply_formats", count = selected_count.to_string()))
                                     .color(Color32::WHITE)
                             )
-                            .fill(ACCENT)
+                            .fill(self.cached_palette.accent)
                             .corner_radius(egui::CornerRadius::same(4)),
                         )
                         .clicked()
@@ -2492,13 +2526,7 @@ impl ImageViewerApp {
                         do_apply = true;
                     }
                     ui.add_space(8.0);
-                    if ui
-                        .add(
-                            egui::Button::new(t!("win.btn_cancel").to_string())
-                                .corner_radius(egui::CornerRadius::same(4)),
-                        )
-                        .clicked()
-                    {
+                    if styled_button(ui, t!("win.btn_cancel"), &self.cached_palette).clicked() {
                         do_cancel = true;
                     }
                 });
@@ -2653,6 +2681,13 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
+        // Automatic theme refresh (for System theme trailing detection)
+        let old_is_dark = self.cached_palette.is_dark;
+        self.cached_palette = self.settings.theme.resolve(&mut self.theme_cache);
+        if old_is_dark != self.cached_palette.is_dark {
+            setup_visuals(ctx, &self.settings, &self.cached_palette);
+        }
+
         // Only update pixels_per_point when it actually changes
         // (e.g. window dragged to a monitor with different DPI).
         // setup_visuals() is called once at startup and on settings changes,
@@ -2660,7 +2695,7 @@ impl eframe::App for ImageViewerApp {
         let ppp = ctx.pixels_per_point();
         if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
             self.cached_pixels_per_point = ppp;
-            setup_visuals(ctx, &self.settings);
+            setup_visuals(ctx, &self.settings, &self.cached_palette);
         }
         self.process_scan_results();
         self.process_music_scan_results();
@@ -2735,7 +2770,8 @@ impl eframe::App for ImageViewerApp {
 
             let mut close_exif = false;
             let mut close_and_copy = false;
-            egui::Window::new(t!("exif.title").to_string())
+            egui::Window::new(t!("exif.title"))
+                .id(egui::Id::new("exif_window"))
                 .collapsible(false)
                 .resizable(true)
                 .default_pos(ctx.screen_rect().center() - egui::vec2(300.0, 200.0))
@@ -2752,10 +2788,10 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, &t!("exif.copy").to_string()).clicked() {
+                                if styled_button(ui, &t!("exif.copy").to_string(), &self.cached_palette).clicked() {
                                     close_and_copy = true;
                                 }
-                                if styled_button(ui, &t!("btn.close").to_string()).clicked() {
+                                if styled_button(ui, &t!("btn.close").to_string(), &self.cached_palette).clicked() {
                                     close_exif = true;
                                 }
                             });
@@ -2766,26 +2802,26 @@ impl eframe::App for ImageViewerApp {
                         egui::CentralPanel::default().show_inside(ui, |ui| {
                             use egui_extras::{Column, TableBuilder};
                             egui::ScrollArea::horizontal().show(ui, |ui| {
-                                TableBuilder::new(ui)
-                                    .striped(true)
-                                    .resizable(true)
-                                    .vscroll(true)
-                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                    .column(Column::initial(160.0).at_least(100.0))
-                                    .column(Column::remainder().at_least(100.0))
-                                    .body(|body| {
-                                        body.rows(24.0, data.len(), |mut row| {
-                                            let index = row.index();
-                                            let (k, v) = &data[index];
-                                            row.col(|ui| {
-                                                ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
-                                            });
-                                            row.col(|ui| {
-                                                ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                    TableBuilder::new(ui)
+                                        .striped(true)
+                                        .resizable(true)
+                                        .vscroll(true)
+                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                        .column(Column::initial(160.0).at_least(100.0))
+                                        .column(Column::remainder().at_least(100.0))
+                                        .body(|body| {
+                                            body.rows(24.0, data.len(), |mut row| {
+                                                let index = row.index();
+                                                let (k, v) = &data[index];
+                                                row.col(|ui| {
+                                                    ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
+                                                });
+                                                row.col(|ui| {
+                                                    ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
+                                                });
                                             });
                                         });
-                                    });
-                            });
+                                });
                         });
                     }
                     ui.add_space(10.0);
@@ -2819,6 +2855,7 @@ impl eframe::App for ImageViewerApp {
             let mut close_xmp = false;
             let mut close_and_copy = false;
             egui::Window::new(t!("xmp.title").to_string())
+                // .id(egui::Id::new("xmp_window"))
                 .collapsible(false)
                 .resizable(true)
                 .default_pos(ctx.screen_rect().center() - egui::vec2(320.0, 240.0))
@@ -2835,16 +2872,16 @@ impl eframe::App for ImageViewerApp {
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if styled_button(ui, &t!("xmp.copy_text").to_string()).clicked() {
-                                    close_and_copy = true;
-                                }
-                                if styled_button(ui, &t!("xmp.copy_xml").to_string()).clicked() {
-                                    if let Some(xml) = &self.cached_xmp_xml {
-                                        ctx.copy_text(xml.clone());
+                                if let Some(xml_str) = &self.cached_xmp_xml {
+                                    if styled_button(ui, &format!("{} TEXT", t!("exif.copy")), &self.cached_palette).clicked() {
+                                        close_and_copy = true;
+                                    }
+                                    if styled_button(ui, &format!("{} XML", t!("exif.copy")), &self.cached_palette).clicked() {
+                                        ctx.copy_text(xml_str.clone());
                                         self.show_xmp_window = false;
                                     }
                                 }
-                                if styled_button(ui, &t!("btn.close").to_string()).clicked() {
+                                if styled_button(ui, &t!("btn.close").to_string(), &self.cached_palette).clicked() {
                                     close_xmp = true;
                                 }
                             });
@@ -2855,26 +2892,26 @@ impl eframe::App for ImageViewerApp {
                         egui::CentralPanel::default().show_inside(ui, |ui| {
                             use egui_extras::{Column, TableBuilder};
                             egui::ScrollArea::horizontal().show(ui, |ui| {
-                                TableBuilder::new(ui)
-                                    .striped(true)
-                                    .resizable(true)
-                                    .vscroll(true)
-                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                    .column(Column::initial(180.0).at_least(120.0))
-                                    .column(Column::remainder().at_least(100.0))
-                                    .body(|body| {
-                                        body.rows(24.0, data.len(), |mut row| {
-                                            let index = row.index();
-                                            let (k, v) = &data[index];
-                                            row.col(|ui| {
-                                                ui.label(RichText::new(k).color(TEXT_MUTED).monospace());
-                                            });
-                                            row.col(|ui| {
-                                                ui.selectable_label(false, RichText::new(v).color(Color32::WHITE).monospace());
+                                    TableBuilder::new(ui)
+                                        .striped(true)
+                                        .resizable(true)
+                                        .vscroll(true)
+                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                        .column(Column::initial(180.0).at_least(120.0))
+                                        .column(Column::remainder().at_least(100.0))
+                                        .body(|body| {
+                                            body.rows(24.0, data.len(), |mut row| {
+                                                let index = row.index();
+                                                let (k, v) = &data[index];
+                                                row.col(|ui| {
+                                                    ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
+                                                });
+                                                row.col(|ui| {
+                                                    ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
+                                                });
                                             });
                                         });
-                                    });
-                            });
+                                });
                         });
                     }
                     ui.add_space(10.0);
@@ -3025,39 +3062,40 @@ fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn setup_visuals(ctx: &Context, settings: &Settings) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.window_fill = PANEL_BG;
-    visuals.panel_fill = BG_DARK;
-    visuals.extreme_bg_color = Color32::from_rgb(12, 12, 18);
+fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
+    let mut visuals = if palette.is_dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    visuals.window_fill = palette.panel_bg;
+    visuals.panel_fill = palette.canvas_bg;
+    visuals.extreme_bg_color = palette.extreme_bg;
+    visuals.faint_bg_color = palette.widget_bg;
 
-    // Non-interactive
-    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(20, 20, 30);
-    visuals.widgets.noninteractive.weak_bg_fill = Color32::from_rgb(20, 20, 30);
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80));
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(150, 150, 150));
+    // Non-interactive (scrollbar tracks, separator lines, etc.)
+    visuals.widgets.noninteractive.bg_fill = palette.widget_bg;
+    visuals.widgets.noninteractive.weak_bg_fill = palette.widget_bg;
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, palette.text_muted);
 
-    // Inactive (default state of buttons, sliders, comboboxes)
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(20, 20, 30);
-    visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(20, 20, 30);
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80));
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(240, 240, 240));
+    // Inactive: bg_fill → checkbox/scrollbar idle; weak_bg_fill → button backgrounds
+    visuals.widgets.inactive.bg_fill = palette.widget_bg;
+    visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);
 
-    // Hovered
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(25, 25, 35);
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(25, 25, 35);
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(80, 80, 100));
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    // Hovered: bg_fill → scrollbar hover; weak_bg_fill → button hover
+    visuals.widgets.hovered.bg_fill = palette.scrollbar_handle;
+    visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.widget_border_hover);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
 
-    // Active
-    visuals.widgets.active.bg_fill = ACCENT;
-    visuals.widgets.active.weak_bg_fill = ACCENT;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    // Active: bg_fill → scrollbar drag; weak_bg_fill → button press
+    visuals.widgets.active.bg_fill = palette.accent;
+    visuals.widgets.active.weak_bg_fill = palette.widget_active;
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
 
     // Selection
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    visuals.selection.bg_fill = palette.accent;
+    visuals.selection.stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { Color32::BLACK });
 
     ctx.set_visuals(visuals);
     ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
@@ -3065,6 +3103,8 @@ fn setup_visuals(ctx: &Context, settings: &Settings) {
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    // Use bg_fill (not fg_stroke) for scrollbar handle color
+    style.spacing.scroll.foreground_color = false;
 
     // Apply global font size
     let size = settings.font_size;
@@ -3081,6 +3121,7 @@ fn setup_visuals(ctx: &Context, settings: &Settings) {
 
     ctx.set_global_style(style);
 }
+
 
 /// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
 /// characters in file paths are rendered correctly. If a specific font family is 
@@ -3185,16 +3226,16 @@ fn middle_truncate(s: &str, max_chars: usize) -> String {
     format!("{}...{}", start, end)
 }
 
-fn styled_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>) -> egui::Response {
-    ui.add(styled_button_widget(label))
+fn styled_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>, palette: &ThemePalette) -> egui::Response {
+    ui.add(styled_button_widget(label, palette))
 }
 
-fn styled_button_widget(label: impl Into<egui::WidgetText>) -> impl egui::Widget {
+fn styled_button_widget<'a>(label: impl Into<egui::WidgetText> + 'a, palette: &'a ThemePalette) -> impl egui::Widget + 'a {
     let label = label.into();
     move |ui: &mut egui::Ui| {
         ui.add(
             egui::Button::new(label.color(Color32::WHITE))
-                .fill(ACCENT)
+                .fill(palette.accent)
                 .corner_radius(egui::CornerRadius::same(4)),
         )
     }
@@ -3202,18 +3243,18 @@ fn styled_button_widget(label: impl Into<egui::WidgetText>) -> impl egui::Widget
 
 /// Renders a read-only path display box (Frame + Label).
 /// Returns the frame's Response so callers can attach `.on_hover_text()`.
-fn path_display_box(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, is_placeholder: bool, width: f32) -> egui::Response {
+fn path_display_box(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, is_placeholder: bool, width: f32, palette: &ThemePalette) -> egui::Response {
     let text = text.into();
     let text_color = if is_placeholder {
-        TEXT_MUTED
+        palette.text_muted
     } else {
-        Color32::WHITE
+        palette.text_normal
     };
     let frame_resp = egui::Frame::new()
-        .fill(Color32::from_rgb(20, 20, 30))
+        .fill(palette.widget_bg)
         .inner_margin(egui::Margin::symmetric(6, 4))
         .corner_radius(egui::CornerRadius::same(4))
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80)))
+        .stroke(egui::Stroke::new(1.0, palette.widget_border))
         .show(ui, |ui| {
             ui.set_width(width);
             ui.add(
@@ -3224,20 +3265,20 @@ fn path_display_box(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, is_pla
     frame_resp.response
 }
 
-fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect) {
+fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect, palette: &ThemePalette) {
     ui.painter().text(
         rect.center() - Vec2::new(0.0, 12.0),
         Align2::CENTER_CENTER,
         "🖼",
         FontId::proportional(48.0),
-        Color32::from_gray(60),
+        palette.hint_icon,
     );
     ui.painter().text(
         rect.center() + Vec2::new(0.0, 30.0),
         Align2::CENTER_CENTER,
         t!("hint.no_images").to_string(),
         FontId::proportional(16.0),
-        Color32::from_gray(100),
+        palette.hint_text,
     );
 }
 

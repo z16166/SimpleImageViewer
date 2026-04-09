@@ -9,6 +9,7 @@ mod loader;
 mod psb_reader;
 mod scanner;
 mod settings;
+mod theme;
 mod tile_cache;
 
 #[cfg(target_os = "windows")]
