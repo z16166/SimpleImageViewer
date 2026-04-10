@@ -85,7 +85,7 @@ status.found: "找到 %{count} 張圖片 — 使用方向鍵瀏覽"
 status.not_found: "此目錄中未找到支援的圖片。"
 status.no_images_left: "目錄中已沒有圖片。"
 status.delete_failed: "刪除檔案失敗：%{err}"
-status.load_failed: "載入圖片失敗：%{err}"
+status.load_failed: "載入圖片失敗 [%{path}]：%{err}"
 status.loading: "載入中…"
 
 # Hints (on canvas)

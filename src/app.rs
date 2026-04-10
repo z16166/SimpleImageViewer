@@ -933,8 +933,9 @@ impl ImageViewerApp {
                         idx
                     );
                     if idx == self.current_index {
+                        let path_str = self.image_files[idx].display().to_string();
                         self.error_message =
-                            Some(t!("status.load_failed", err = e.to_string()).to_string());
+                            Some(t!("status.load_failed", path = path_str, err = e.to_string()).to_string());
                     }
                 }
             }

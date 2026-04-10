@@ -85,7 +85,7 @@ status.found: "Found %{count} images — use arrow keys to navigate"
 status.not_found: "No supported images found in this directory."
 status.no_images_left: "No images left in directory."
 status.delete_failed: "Failed to delete file: %{err}"
-status.load_failed: "Failed to load image: %{err}"
+status.load_failed: "Failed to load image [%{path}]: %{err}"
 status.loading: "Loading…"
 
 # Hints (on canvas)

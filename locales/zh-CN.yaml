@@ -85,7 +85,7 @@ status.found: "找到 %{count} 张图片 — 使用方向键浏览"
 status.not_found: "该目录中未找到支持的图片。"
 status.no_images_left: "目录中已没有图片。"
 status.delete_failed: "删除文件失败：%{err}"
-status.load_failed: "加载图片失败：%{err}"
+status.load_failed: "加载图片失败 [%{path}]：%{err}"
 status.loading: "加载中…"
 
 # Hints (on canvas)
