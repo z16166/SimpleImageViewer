@@ -208,4 +208,4 @@ theme: "system"
 
 ## 许可证
 
-MIT — 详见 [LICENSE](LICENSE)。
+GNU General Public License v3 (GPL v3) — 详见 [LICENSE](LICENSE)。

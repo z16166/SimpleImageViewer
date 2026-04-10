@@ -195,4 +195,4 @@ Delete the file to reset all settings to defaults.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU General Public License v3 (GPL v3) — see [LICENSE](LICENSE).
