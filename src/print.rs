@@ -155,11 +155,15 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
     
-    if is_windows {
+    #[cfg(target_os = "windows")]
+    {
         let temp_jpg = temp_dir.join(format!("siv_print_temp_{}.jpg", ts));
         save_jpeg_with_quality(&print_rgb, &temp_jpg, JPEG_QUALITY)?;
         invoke_system_print(&temp_jpg)?;
-    } else {
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
         // Generate PDF for macOS/Linux
         let temp_pdf = temp_dir.join(format!("siv_print_temp_{}.pdf", ts));
         export_to_pdf_and_print(&print_rgb, &temp_pdf)?;
@@ -239,6 +243,7 @@ fn invoke_system_print(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String> {
     let (width, height) = img.dimensions();
     
