@@ -19,9 +19,32 @@ use crate::tile_cache::TileManager;
 use crate::theme::{AppTheme, SystemThemeCache, ThemePalette};
 use rust_i18n::t;
 
-const PRELOAD_AHEAD: usize = 1;
-const PRELOAD_BEHIND: usize = 1;
-const CACHE_SIZE: usize = 4; // 1 current + PRELOAD_AHEAD + PRELOAD_BEHIND + 1 buffer
+// -- Preload configuration --
+// Maximum number of images to preload in each direction.
+const MAX_PRELOAD_FORWARD: usize = 5;
+const MAX_PRELOAD_BACKWARD: usize = 3;
+// Texture cache must hold: current + forward + backward + buffer for transitions
+const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
+
+/// Compute preload byte budgets based on total system RAM.
+/// Forward budget = total_ram / 32, backward = total_ram / 64, both clamped.
+fn compute_preload_budgets() -> (u64, u64) {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let total = sys.total_memory(); // bytes
+
+    let forward  = (total / 32).clamp(64 * 1024 * 1024, 512 * 1024 * 1024);
+    let backward = (total / 64).clamp(32 * 1024 * 1024, 256 * 1024 * 1024);
+
+    log::info!(
+        "Preload budgets: forward={} MB, backward={} MB (system RAM={} MB)",
+        forward / (1024 * 1024),
+        backward / (1024 * 1024),
+        total / (1024 * 1024),
+    );
+    (forward, backward)
+}
 
 // self.cached_palette.accent colors for the UI (migrated to theme system)
 
@@ -166,6 +189,10 @@ pub struct ImageViewerApp {
 
     // Debounce for mouse wheel navigation
     last_mouse_wheel_nav: f64,
+
+    // Preload byte budgets (computed at startup from system RAM)
+    preload_budget_forward: u64,
+    preload_budget_backward: u64,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -204,6 +231,8 @@ impl ImageViewerApp {
                 }
             })
             .expect("failed to spawn settings saver thread");
+
+        let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
         let mut app = Self {
             settings,
@@ -266,6 +295,8 @@ impl ImageViewerApp {
             print_status_rx: None,
             pending_anim_frames: None,
             last_mouse_wheel_nav: 0.0,
+            preload_budget_forward: budget_fwd,
+            preload_budget_backward: budget_bwd,
         };
 
         // Restore last session state
@@ -571,31 +602,81 @@ impl ImageViewerApp {
             return;
         }
         let cur = self.current_index;
-        let mut indices = vec![cur];
- 
-        if self.settings.preload {
-            if forward {
-                for i in 1..=PRELOAD_AHEAD {
-                    indices.push((cur + i) % n);
-                }
-                if PRELOAD_BEHIND > 0 && cur > 0 {
-                    indices.push(cur - 1);
-                }
-            } else {
-                for i in 1..=PRELOAD_AHEAD {
-                    if cur >= i {
-                        indices.push(cur - i);
-                    }
-                }
-                indices.push((cur + 1) % n);
-            }
+
+        // Always load the current image
+        if !self.texture_cache.contains(cur) && !self.loader.is_loading(cur) {
+            let path = self.image_files[cur].clone();
+            self.loader.request_load(cur, self.generation, path);
         }
 
-        for idx in indices {
-            if !self.texture_cache.contains(idx) && !self.loader.is_loading(idx) {
-                let path = self.image_files[idx].clone();
-                self.loader.request_load(idx, self.generation, path);
+        if !self.settings.preload {
+            return;
+        }
+
+        // Determine the "primary" and "secondary" directions.
+        // Primary gets the larger budget; secondary gets the smaller one.
+        let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
+            (MAX_PRELOAD_FORWARD, self.preload_budget_forward,
+             MAX_PRELOAD_BACKWARD, self.preload_budget_backward)
+        } else {
+            (MAX_PRELOAD_BACKWARD, self.preload_budget_backward,
+             MAX_PRELOAD_FORWARD, self.preload_budget_forward)
+        };
+
+        // Collect indices for each direction
+        let primary_indices: Vec<usize> = (1..=n.min(primary_max + 10)) // +10 headroom to skip tiled images
+            .map(|i| if forward { (cur + i) % n } else { (cur + n - i) % n })
+            .collect();
+
+        let secondary_indices: Vec<usize> = (1..=n.min(secondary_max + 10))
+            .map(|i| if forward { (cur + n - i) % n } else { (cur + i) % n })
+            .collect();
+
+        self.preload_direction(primary_indices, primary_max, primary_budget);
+        self.preload_direction(secondary_indices, secondary_max, secondary_budget);
+    }
+
+    /// Preload images from a list of candidate indices, respecting count and byte limits.
+    /// Rule 1: Always preload at least 1 non-tiled image (guaranteed minimum).
+    /// Rule 2: Stop if count >= max_count OR cumulative NEW file size >= budget.
+    /// Tiled-candidate images are skipped entirely (they use on-demand tile loading).
+    /// Already-cached images occupy a count slot (preventing over-reach) but
+    /// do NOT consume byte budget (no new memory allocation occurs).
+    fn preload_direction(&mut self, candidates: Vec<usize>, max_count: usize, budget: u64) {
+        let mut count = 0usize;
+        let mut new_bytes = 0u64;
+
+        for idx in candidates {
+            if count >= max_count {
+                break;
             }
+
+            // Already cached or in-flight: occupies a slot but costs nothing new.
+            if self.texture_cache.contains(idx) || self.loader.is_loading(idx) {
+                count += 1;
+                continue;
+            }
+
+            let path = &self.image_files[idx];
+
+            // Check if this is a tiled candidate (too large for full preload).
+            // These are skipped and don't count towards N or byte budget.
+            if is_tiled_candidate(path) {
+                continue; 
+            }
+
+            let file_size = std::fs::metadata(path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            // After the guaranteed first image, enforce the byte budget
+            if count > 0 && new_bytes + file_size > budget {
+                break;
+            }
+
+            self.loader.request_load(idx, self.generation, path.clone());
+            count += 1;
+            new_bytes += file_size;
         }
     }
 
@@ -3614,3 +3695,22 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect, palette: &ThemePalette) {
     );
 }
 
+/// Check if an image file would exceed the tiled rendering threshold (64 megapixels).
+/// Uses a lightweight header-only dimension read when possible.
+/// For exotic formats (PSD/PSB/HEIC) where header reading may fail,
+/// falls back to a file size heuristic (> 200 MB).
+fn is_tiled_candidate(path: &std::path::Path) -> bool {
+    use crate::tile_cache::TILED_THRESHOLD;
+
+    // Try header-only dimension read (reads only a few KB, very fast)
+    if let Ok((w, h)) = image::image_dimensions(path) {
+        return (w as u64) * (h as u64) >= TILED_THRESHOLD;
+    }
+
+    // Fallback for formats not supported by image::image_dimensions() (PSD/PSB/HEIC):
+    // Use file size heuristic. Files over 200 MB are likely extremely large images.
+    const LARGE_FILE_THRESHOLD: u64 = 200 * 1024 * 1024;
+    std::fs::metadata(path)
+        .map(|m| m.len() >= LARGE_FILE_THRESHOLD)
+        .unwrap_or(false)
+}
