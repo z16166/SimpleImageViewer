@@ -254,42 +254,45 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     let width_mm = Mm(width as f32 * px_to_mm);
     let height_mm = Mm(height as f32 * px_to_mm);
 
-    // printpdf 0.9.x returns a tuple (PdfDocument, PageIndex, LayerIndex)
-    let (doc, page1, layer1) = PdfDocument::new("Print Image", width_mm, height_mm, "Layer 1");
-    let current_layer = doc.get_page(page1).get_layer(layer1);
+    // printpdf 0.9.x: create document, add image as RawImage, build page with ops
+    let mut doc = PdfDocument::new("Print Image");
 
-    // Encode or borrow bytes for the PDF image
-    let mut jpg_bytes: Vec<u8> = Vec::new();
-    {
-        use ::image::codecs::jpeg::JpegEncoder;
-        let mut encoder = JpegEncoder::new_with_quality(&mut jpg_bytes, JPEG_QUALITY);
-        encoder.encode(
-            img.as_raw(),
-            img.width(),
-            img.height(),
-            ::image::ExtendedColorType::Rgb8,
-        ).map_err(|e| e.to_string())?;
-    }
+    // Build a RawImage from the RGB pixel data
+    let raw_image = RawImage {
+        pixels: RawImageData::U8(img.as_raw().clone()),
+        width: width as usize,
+        height: height as usize,
+        data_format: RawImageFormat::RGB8,
+        tag: Vec::new(),
+    };
 
-    // Load image into document from bytes
-    let image = Image::from_bytes(&jpg_bytes).map_err(|e| e.to_string())?;
-    
-    // Position at 0,0 (bottom-left) and let it fill the page (since page is image size)
-    image.add_to_layer(
-        current_layer,
-        ImageTransform {
-            translate_x: Some(Mm(0.0)),
-            translate_y: Some(Mm(0.0)),
-            rotate: None,
-            scale_x: None,
-            scale_y: None,
-            dpi: Some(72.0),
+    // Add image to document resources, get its XObject ID
+    let image_id = doc.add_image(&raw_image);
+
+    // Create a page with the image placed at origin, filling the page
+    let page = PdfPage::new(width_mm, height_mm, vec![
+        Op::UseXobject {
+            id: image_id,
+            transform: XObjectTransform {
+                translate_x: Some(Pt(0.0)),
+                translate_y: Some(Pt(0.0)),
+                rotate: None,
+                scale_x: None,
+                scale_y: None,
+                dpi: Some(72.0),
+            },
         },
-    );
+    ]);
+    doc.with_pages(vec![page]);
 
     // Save directly to the target file path
     let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    doc.save(&mut std::io::BufWriter::new(file)).map_err(|e| e.to_string())?;
+    let mut warnings = Vec::new();
+    doc.save_writer(
+        &mut std::io::BufWriter::new(file),
+        &PdfSaveOptions::default(),
+        &mut warnings,
+    );
     
     // Invoke system open to print
     #[cfg(target_os = "macos")]
