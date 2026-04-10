@@ -13,6 +13,11 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with LRU cache management to keep VRAM usage constant
 - **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) decoded via a custom streaming parser with automatic RAM safety check before loading
 - **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos via a pure-Rust parser (cross-platform, zero C++ dependencies)
+- **Image Printing** — print images directly from the app.
+  - **Windows**: Uses the system native print wizard (`ShellExecuteW`). Supports high-quality JPEG (95% quality) and automatic alpha flattening.
+  - **macOS / Linux**: Automatically exports the image to a perfectly sized, margin-less PDF and opens it with the system default viewer for printing.
+  - **Flexible Modes**: Print the entire image or just the currently zoomed-in "Visible Area" with precise cropping.
+- **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
@@ -65,6 +70,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper) |
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
+| `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full or Visible Area) |
 | `Alt+F4` | Quit (Windows) |
 
 ---
@@ -77,7 +83,8 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 | **Display** | Full-screen toggle, scale-mode selector, and OSD info visibility toggle |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
-| **Font & Appearance** | Choose system font family and interface size (applied instantly) |
+| **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |
+| **Language** | Manually switch between English, Simplified Chinese, and Traditional Chinese |
 | **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
 
 
@@ -177,6 +184,8 @@ last_music_track: "D:\\Music\\Album\\CD1.flac"
 font_family: "Microsoft YaHei"
 font_size: 16.0
 preload: true
+language: "zh-CN"
+theme: "system"
 ```
 
 Delete the file to reset all settings to defaults.

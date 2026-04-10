@@ -1749,16 +1749,52 @@ impl ImageViewerApp {
                     ui.painter().galley(text_pos, galley, Color32::WHITE);
                 }
 
-                // Context menu
+                // Context menu (tiled path — same items as the normal image path)
                 canvas_resp.context_menu(|ui| {
                     let path = &self.image_files[self.current_index];
                     let path_str = path.to_string_lossy().to_string();
-                    if ui.button("📋 Copy Full Path").clicked() {
-                        ui.ctx().copy_text(path_str);
+
+                    if ui.button(t!("ctx.copy_path").to_string()).clicked() {
+                        ui.ctx().copy_text(path_str.clone());
                         ui.close();
                     }
-                    if ui.button("ℹ View XMP Info").clicked() {
+
+                    if ui.button(t!("ctx.copy_file").to_string()).clicked() {
+                        copy_file_to_clipboard(&path_str);
+                        ui.close();
+                    }
+
+                    ui.separator();
+
+                    if ui.button(t!("ctx.view_exif").to_string()).clicked() {
+                        self.cached_exif_data = extract_exif(path);
+                        self.show_exif_window = true;
+                        ui.close();
+                    }
+
+                    if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
                         self.show_xmp_window = true;
+                        ui.close();
+                    }
+
+                    ui.separator();
+                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_full").to_string() } else { t!("ctx.print_full").to_string() }).clicked() {
+                        self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
+                        ui.close();
+                    }
+                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_visible").to_string() } else { t!("ctx.print_visible").to_string() }).clicked() {
+                        self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
+                        ui.close();
+                    }
+
+                    ui.separator();
+                    if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
+                        self.show_wallpaper_dialog = true;
+                        if let Ok(p) = wallpaper::get() {
+                            self.current_system_wallpaper = Some(p);
+                        } else {
+                            self.current_system_wallpaper = Some("Unknown".to_string());
+                        }
                         ui.close();
                     }
                 });
