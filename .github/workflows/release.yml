@@ -88,23 +88,32 @@ jobs:
         run: |
           $archiveName = "SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           $binarySrc = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
-          Compress-Archive -Path $binarySrc, README.md, README_CN.md, LICENSE, assets/screenshot.jpg -DestinationPath $archiveName
+          mkdir staging/assets
+          cp $binarySrc, README.md, README_CN.md, LICENSE staging/
+          cp assets/screenshot.jpg staging/assets/
+          Compress-Archive -Path staging/* -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Package Artifacts (macOS)
         if: runner.os == 'macOS'
         run: |
           ARCHIVE_NAME="SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} .
-          zip -r $ARCHIVE_NAME ${{ matrix.binary_name }} README.md README_CN.md LICENSE assets/screenshot.jpg
+          mkdir -p staging/assets
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} staging/
+          cp README.md README_CN.md LICENSE staging/
+          cp assets/screenshot.jpg staging/assets/
+          cd staging && zip -r ../$ARCHIVE_NAME . && cd ..
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
 
       - name: Package Artifacts (Linux)
         if: runner.os == 'Linux'
         run: |
           ARCHIVE_NAME="SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} .
-          tar -czvf $ARCHIVE_NAME ${{ matrix.binary_name }} README.md README_CN.md LICENSE assets/screenshot.jpg
+          mkdir -p staging/assets
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} staging/
+          cp README.md README_CN.md LICENSE staging/
+          cp assets/screenshot.jpg staging/assets/
+          tar -czvf $ARCHIVE_NAME -C staging .
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
 
       - name: Upload binary
@@ -168,7 +177,10 @@ jobs:
         run: |
           $archiveName = "SimpleImageViewer-win7-x64.zip"
           $binarySrc = "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.exe"
-          Compress-Archive -Path $binarySrc, README.md, README_CN.md, LICENSE, assets/screenshot.jpg -DestinationPath $archiveName
+          mkdir staging/assets
+          cp $binarySrc, README.md, README_CN.md, LICENSE staging/
+          cp assets/screenshot.jpg staging/assets/
+          Compress-Archive -Path staging/* -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload binary
