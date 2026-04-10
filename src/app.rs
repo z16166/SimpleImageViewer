@@ -159,6 +159,18 @@ pub struct ImageViewerApp {
     // Printing state
     pub is_printing: Arc<AtomicBool>,
     pub print_status_rx: Option<crossbeam_channel::Receiver<Option<String>>>,
+
+    // Deferred animation frame uploads (throttled to avoid GPU stalls)
+    pending_anim_frames: Option<PendingAnimUpload>,
+}
+
+/// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
+struct PendingAnimUpload {
+    image_index: usize,
+    frames: Vec<crate::loader::AnimationFrame>,
+    textures: Vec<egui::TextureHandle>,
+    delays: Vec<std::time::Duration>,
+    next_frame: usize,
 }
 
 impl ImageViewerApp {
@@ -248,6 +260,7 @@ impl ImageViewerApp {
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),
             print_status_rx: None,
+            pending_anim_frames: None,
         };
 
         // Restore last session state
@@ -598,10 +611,24 @@ impl ImageViewerApp {
                 // Fast path: try direct path comparison first (no syscalls)
                 let found = self.image_files.iter().position(|p| p == path);
                 let found = found.or_else(|| {
-                    // Slow path: canonicalize and compare (syscalls, but only as fallback)
+                    // Fallback: canonicalize only the target, then compare
+                    // with case-insensitive file names to handle path variations
+                    // without calling canonicalize() on every file in the list.
                     let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+                    let target_name = target.file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase());
                     self.image_files.iter().position(|p| {
-                        p.canonicalize().unwrap_or_else(|_| p.clone()) == target
+                        // Compare canonical path of target against each file's parent + name
+                        if let Some(ref tn) = target_name {
+                            if let Some(name) = p.file_name() {
+                                if name.to_string_lossy().to_lowercase() == *tn {
+                                    // Same filename — now check parent dir cheaply
+                                    return p.parent() == target.parent()
+                                        || p.canonicalize().ok().as_ref() == Some(&target);
+                                }
+                            }
+                        }
+                        false
                     })
                 });
                 if let Some(pos) = found {
@@ -625,8 +652,60 @@ impl ImageViewerApp {
             }
         }
     }
-
     fn process_loaded_images(&mut self, ctx: &Context) {
+        // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
+        const ANIM_UPLOAD_QUOTA: usize = 8;
+        if let Some(ref mut pending) = self.pending_anim_frames {
+            let mut uploaded = 0;
+            while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
+                let i = pending.next_frame;
+                let frame = &pending.frames[i];
+                let color_image = ColorImage::from_rgba_unmultiplied(
+                    [frame.width as usize, frame.height as usize],
+                    &frame.pixels,
+                );
+                let name = format!("anim_{}_{}", pending.image_index, i);
+                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                pending.textures.push(handle);
+                pending.delays.push(frame.delay);
+                pending.next_frame += 1;
+                uploaded += 1;
+            }
+
+            // Check if all frames have been uploaded
+            if pending.next_frame >= pending.frames.len() {
+                let idx = pending.image_index;
+
+                // Build the final AnimationPlayback from the now-complete upload
+                let playback = AnimationPlayback {
+                    image_index: idx,
+                    textures: std::mem::take(&mut pending.textures),
+                    delays: std::mem::take(&mut pending.delays),
+                    current_frame: 0,
+                    frame_start: Instant::now(),
+                };
+
+                if idx == self.current_index {
+                    self.animation = Some(AnimationPlayback {
+                        image_index: playback.image_index,
+                        textures: playback.textures.clone(),
+                        delays: playback.delays.clone(),
+                        current_frame: 0,
+                        frame_start: Instant::now(),
+                    });
+                }
+                self.animation_cache.insert(idx, playback);
+                self.pending_anim_frames = None;
+            } else {
+                // More frames remain — ask for another repaint
+                ctx.request_repaint();
+            }
+        }
+
+        // ── 2. Process newly loaded images (max 2 per frame to avoid GPU stalls) ──
+        const STATIC_UPLOAD_QUOTA: usize = 2;
+        let mut uploads_this_frame = 0;
+
         while let Some(load_result) = self.loader.poll() {
             if load_result.generation != self.generation {
                 continue;
@@ -648,6 +727,11 @@ impl ImageViewerApp {
                         if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
                             self.animation = None;
                         }
+                    }
+                    uploads_this_frame += 1;
+                    if uploads_this_frame >= STATIC_UPLOAD_QUOTA {
+                        ctx.request_repaint();
+                        return;
                     }
                 }
                 Ok(ImageData::LargeStatic(decoded)) => {
@@ -680,7 +764,7 @@ impl ImageViewerApp {
                     // For non-current large images, we just drop the data (no preloading for large images)
                 }
                 Ok(ImageData::Animated(frames)) => {
-                    // 1. Upload first frame to the main texture cache (for transitions/preview)
+                    // 1. Upload first frame immediately (for transitions/preview)
                     if let Some(first) = frames.first() {
                         let color_image = ColorImage::from_rgba_unmultiplied(
                             [first.width as usize, first.height as usize],
@@ -696,8 +780,7 @@ impl ImageViewerApp {
                         }
                     }
 
-                    // 2. Predictive full-clip pre-upload
-                    // We upload the full sequence if it's the current image OR within preload range
+                    // 2. Defer remaining frames for throttled upload
                     let cur = self.current_index;
                     let n = self.image_files.len();
                     let is_in_range = if n > 0 {
@@ -708,37 +791,15 @@ impl ImageViewerApp {
                     } else { false };
 
                     if is_in_range {
-                        let mut textures = Vec::with_capacity(frames.len());
-                        let mut delays = Vec::with_capacity(frames.len());
-                        for (i, frame) in frames.iter().enumerate() {
-                            let color_image = ColorImage::from_rgba_unmultiplied(
-                                [frame.width as usize, frame.height as usize],
-                                &frame.pixels,
-                            );
-                            let name = format!("anim_{}_{}", idx, i);
-                            let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                            textures.push(handle);
-                            delays.push(frame.delay);
-                        }
-                        
-                        let playback = AnimationPlayback {
+                        // Queue frames for deferred upload instead of uploading all at once
+                        self.pending_anim_frames = Some(PendingAnimUpload {
                             image_index: idx,
-                            textures,
-                            delays,
-                            current_frame: 0,
-                            frame_start: Instant::now(),
-                        };
-
-                        if idx == self.current_index {
-                            self.animation = Some(AnimationPlayback {
-                                image_index: playback.image_index,
-                                textures: playback.textures.clone(),
-                                delays: playback.delays.clone(),
-                                current_frame: 0,
-                                frame_start: Instant::now(),
-                            });
-                        }
-                        self.animation_cache.insert(idx, playback);
+                            frames,
+                            textures: Vec::new(),
+                            delays: Vec::new(),
+                            next_frame: 0,
+                        });
+                        ctx.request_repaint();
                     }
                 }
                 Err(e) => {
@@ -2811,10 +2872,13 @@ impl eframe::App for ImageViewerApp {
         }
 
         // Automatic theme refresh (for System theme trailing detection)
-        let old_is_dark = self.cached_palette.is_dark;
-        self.cached_palette = self.settings.theme.resolve(&mut self.theme_cache);
-        if old_is_dark != self.cached_palette.is_dark {
-            setup_visuals(ctx, &self.settings, &self.cached_palette);
+        // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
+        if let Some(new_palette) = self.settings.theme.resolve_if_changed(&mut self.theme_cache) {
+            let changed = new_palette.is_dark != self.cached_palette.is_dark;
+            self.cached_palette = new_palette;
+            if changed {
+                setup_visuals(ctx, &self.settings, &self.cached_palette);
+            }
         }
 
         // Only update pixels_per_point when it actually changes

@@ -534,6 +534,7 @@ fn run_audio_loop(
                 playlist = new_list;
                 current_track_idx = start_file_idx.unwrap_or(0);
                 pending_start_track_idx = start_track_idx;
+                stopped = false;
                 player.clear();
                 if paused {
                     player.pause();

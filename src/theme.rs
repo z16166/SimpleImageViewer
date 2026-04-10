@@ -158,6 +158,8 @@ pub struct SystemThemeCache {
     last_check: Instant,
     /// The cached result: `true` = system is in dark mode.
     is_dark: bool,
+    /// The theme that was last resolved (to detect external changes).
+    last_resolved: Option<(AppTheme, bool)>,
 }
 
 impl Default for SystemThemeCache {
@@ -168,6 +170,7 @@ impl Default for SystemThemeCache {
                 .checked_sub(std::time::Duration::from_secs(60))
                 .unwrap_or_else(Instant::now),
             is_dark: true,
+            last_resolved: None,
         }
     }
 }
@@ -195,6 +198,33 @@ impl AppTheme {
                 }
             }
         }
+    }
+
+    /// Like `resolve`, but returns `Some` only when the palette has actually
+    /// changed since the last call (theme switch or OS dark/light toggle).
+    /// Returns `None` on no-change frames, avoiding struct construction overhead.
+    pub fn resolve_if_changed(&self, cache: &mut SystemThemeCache) -> Option<ThemePalette> {
+        // For System theme, refresh the OS detection periodically
+        if *self == AppTheme::System {
+            let now = Instant::now();
+            if now.duration_since(cache.last_check).as_secs() >= 5 {
+                cache.last_check = now;
+                cache.is_dark = detect_system_dark_mode();
+            }
+        }
+
+        let effective_dark = match self {
+            AppTheme::Dark => true,
+            AppTheme::Light => false,
+            AppTheme::System => cache.is_dark,
+        };
+
+        let key = (*self, effective_dark);
+        if cache.last_resolved == Some(key) {
+            return None; // Nothing changed
+        }
+        cache.last_resolved = Some(key);
+        Some(if effective_dark { ThemePalette::dark() } else { ThemePalette::light() })
     }
 
     /// Returns the effective boolean "is dark?" for the *current* state.
