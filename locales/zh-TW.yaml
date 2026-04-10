@@ -101,6 +101,17 @@ ctx.copy_file: "📁 複製檔案"
 ctx.view_exif: "ℹ 查看 EXIF 資訊"
 ctx.view_xmp: "ℹ 查看 XMP 資訊"
 ctx.set_wallpaper: "🖼 設為桌面桌布…"
+ctx.print_full: "🖨 列印全圖"
+ctx.print_visible: "🖨 列印可視區域"
+ctx.print_pdf_full: "🖨 匯出 PDF 並列印 (全圖)"
+ctx.print_pdf_visible: "🖨 匯出 PDF 並列印 (可視區域)"
+
+# Printing
+print.title: "列印"
+print.title_pdf: "匯出 PDF 並列印"
+print.processing: "正在處理圖片以供列印，請稍候…"
+print.failed: "列印失敗：%{err}"
+print.err_buffer: "內部錯誤：無法從預採樣緩衝區建立圖像。"
 
 # Wallpaper dialog
 wallpaper.title: "設為桌面桌布"
