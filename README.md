@@ -68,7 +68,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `G` | Open *Go to image…* dialog (jump to index) |
 | `F11` | Toggle full-screen |
 | `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
-| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper) |
+| `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
