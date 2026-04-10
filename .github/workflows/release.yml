@@ -133,8 +133,8 @@ jobs:
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Compile combase.dll
-        run: cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
+      - name: Compile siv_cb7.dll (shim)
+        run: cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:siv_cb7.dll
 
       - name: Download VC-LTL5 and YY-Thunks
         shell: pwsh
@@ -162,12 +162,36 @@ jobs:
           $env:RUSTFLAGS = "-C link-arg=/SUBSYSTEM:WINDOWS"
           thunk --os win7 --arch x64 -- --release
 
+      - name: Binary Patching (Obfuscation)
+        shell: pwsh
+        run: |
+          $binaryPath = "target/x86_64-pc-windows-msvc/release/SimpleImageViewer.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($binaryPath)
+          $search = [System.Text.Encoding]::ASCII.GetBytes("combase.dll")
+          $replace = [System.Text.Encoding]::ASCII.GetBytes("siv_cb7.dll")
+          
+          # We search for all occurrences of 'combase.dll' and replace them with 'siv_cb7.dll'
+          # This works because both names are exactly 11 characters long.
+          for ($i = 0; $i -le $bytes.Length - $search.Length; $i++) {
+              $match = $true
+              for ($j = 0; $j -lt $search.Length; $j++) {
+                  if ($bytes[$i + $j] -ne $search[$j]) { $match = $false; break }
+              }
+              if ($match) {
+                  for ($j = 0; $j -lt $replace.Length; $j++) {
+                      $bytes[$i + $j] = $replace[$j]
+                  }
+                  Write-Host "Patched occurrence at offset $i"
+              }
+          }
+          [System.IO.File]::WriteAllBytes($binaryPath, $bytes)
+
       - name: Package Artifacts
         shell: pwsh
         run: |
           $archiveName = "SimpleImageViewer-win7-x64.zip"
           $binarySrc = "target/x86_64-pc-windows-msvc/release/SimpleImageViewer.exe"
-          Compress-Archive -Path $binarySrc, combase.dll, README.md, README_CN.md, LICENSE, assets/screenshot.jpg -DestinationPath $archiveName
+          Compress-Archive -Path $binarySrc, siv_cb7.dll, README.md, README_CN.md, LICENSE, assets/screenshot.jpg -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload binary
