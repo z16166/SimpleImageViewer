@@ -162,6 +162,9 @@ pub struct ImageViewerApp {
 
     // Deferred animation frame uploads (throttled to avoid GPU stalls)
     pending_anim_frames: Option<PendingAnimUpload>,
+
+    // Debounce for mouse wheel navigation
+    last_mouse_wheel_nav: f64,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -261,6 +264,7 @@ impl ImageViewerApp {
             is_printing: Arc::new(AtomicBool::new(false)),
             print_status_rx: None,
             pending_anim_frames: None,
+            last_mouse_wheel_nav: 0.0,
         };
 
         // Restore last session state
@@ -866,7 +870,10 @@ impl ImageViewerApp {
         let mut zoom_reset = false;
         let mut toggle_fullscreen = false;
         let mut toggle_scale_mode = false;
-        let mut scroll_delta = 0.0_f32;
+        let mut scroll_delta = egui::Vec2::ZERO;
+        let mut zoom_delta = 1.0_f32;
+        let mut is_ctrl_pressed = false;
+        let mut mouse_pos: Option<egui::Pos2> = None;
         let mut toggle_auto_switch = false;
         let mut toggle_goto = false;
         let mut do_refresh = false;
@@ -923,8 +930,11 @@ impl ImageViewerApp {
                     }
                 }
             }
-            // Mouse wheel zoom — collected here, guarded before application below
-            scroll_delta = i.smooth_scroll_delta.y;
+            // Mouse wheel collected here, guarded before application below
+            scroll_delta = i.smooth_scroll_delta;
+            zoom_delta = i.zoom_delta();
+            is_ctrl_pressed = i.modifiers.command;
+            mouse_pos = i.pointer.latest_pos();
             // F11 — toggle fullscreen
             if i.key_pressed(Key::F11) {
                 toggle_fullscreen = true;
@@ -973,10 +983,10 @@ impl ImageViewerApp {
             if nav_last { self.navigate_last(); }
 
             if zoom_in {
-                self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
+                self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
             }
             if zoom_out {
-                self.zoom_factor = (self.zoom_factor / 1.25).max(0.05);
+                self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
             }
             if zoom_reset {
                 self.zoom_factor = 1.0;
@@ -1019,10 +1029,35 @@ impl ImageViewerApp {
         }
 
         let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.wants_pointer_input();
-        if !ui_consuming_scroll && scroll_delta > 0.0 {
-            self.zoom_factor = (self.zoom_factor * 1.25).min(20.0);
-        } else if !ui_consuming_scroll && scroll_delta < 0.0 {
-            self.zoom_factor = (self.zoom_factor / 1.25).max(0.05);
+        if !ui_consuming_scroll {
+            if is_ctrl_pressed {
+                // Zoom-to-cursor: the point under the mouse stays fixed during zoom.
+                // Math: image center = screen_center + pan_offset in both scale modes,
+                // so we adjust pan_offset to compensate for the scale change.
+                if zoom_delta != 1.0 {
+                    let old_zoom = self.zoom_factor;
+                    self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
+                    let ratio = self.zoom_factor / old_zoom;
+
+                    if let Some(mouse) = mouse_pos {
+                        let screen_center = ctx.screen_rect().center();
+                        let d = mouse - screen_center;
+                        // d * (1 - ratio) compensates for the scale change around the cursor
+                        self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
+                    }
+                }
+            } else if scroll_delta.y.abs() > 0.0 {
+                // Navigation with debounce (cooldown) to prevent rapid flipping
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 { // 200ms cooldown
+                    if scroll_delta.y > 0.0 {
+                        self.navigate_prev();
+                    } else {
+                        self.navigate_next();
+                    }
+                    self.last_mouse_wheel_nav = now;
+                }
+            }
         }
         if toggle_fullscreen {
             self.settings.fullscreen = !self.settings.fullscreen;
