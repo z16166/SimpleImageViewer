@@ -70,7 +70,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper) |
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
-| `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full or Visible Area) |
+| `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
 | `Alt+F4` | Quit (Windows) |
 
 ---
