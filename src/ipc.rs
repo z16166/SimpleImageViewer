@@ -192,13 +192,16 @@ pub fn force_foreground() {
     }
 
     unsafe {
-        let title: Vec<u16> = OsStr::new("Simple Image Viewer")
+        // Find window by Class Name (which is our App ID "Simple Image Viewer")
+        // rather than by Title, because the title changes with i18n or current file name.
+        let class_name: Vec<u16> = OsStr::new("Simple Image Viewer")
             .encode_wide()
             .chain(Some(0))
             .collect();
-        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
+        
         if hwnd == 0 {
-            log::warn!("force_foreground: could not find window by title");
+            log::warn!("force_foreground: could not find window by class name");
             return;
         }
 
