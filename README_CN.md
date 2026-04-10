@@ -108,7 +108,7 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 
 | 平台 | 状态 |
 |---|---|
-| Windows 10/11（最低兼容 Win 8） | ✅ 主要目标平台 — 原生图标、Win32 音频 |
+| Windows 10/11 / 7 x64 (兼容版) | ✅ 原生支持 10/11；提供专门的 Win7 x64 兼容版（不支持 32 位） |
 | macOS（Apple Silicon / Intel） | ✅ 少量改动即可编译运行 |
 | Linux（X11 / Wayland） | ✅ 需要音频库（见下文） |
 

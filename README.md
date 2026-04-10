@@ -95,7 +95,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Platform | Status |
 |---|---|
-| Windows 10/11 (Win 8+ required) | ✅ Primary target — native icon, Win32 audio |
+| Windows 10/11 / 7 x64 (Legacy) | ✅ Native on 10/11; Specialized build for 7 x64 (32-bit not supported) |
 | macOS (Apple Silicon / Intel) | ✅ Builds with minimal changes |
 | Linux (X11 / Wayland) | ✅ Requires audio libraries (see below) |
 
