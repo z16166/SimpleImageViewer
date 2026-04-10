@@ -85,13 +85,13 @@ impl ThemePalette {
         Self {
             canvas_bg:           Color32::from_rgb(18, 18, 24),
             panel_bg:            Color32::from_rgb(32, 33, 36),
-            widget_bg:           Color32::from_gray(35),
-            widget_hover:        Color32::from_gray(50),
-            widget_active:       Color32::from_gray(65),
-            extreme_bg:          Color32::from_gray(20),
+            widget_bg:           Color32::from_gray(48),
+            widget_hover:        Color32::from_gray(60),
+            widget_active:       Color32::from_gray(75),
+            extreme_bg:          Color32::from_gray(15),
 
-            widget_border:       Color32::from_gray(60),
-            widget_border_hover: Color32::from_gray(90),
+            widget_border:       Color32::from_gray(75),
+            widget_border_hover: Color32::from_gray(110),
 
             scrollbar_handle:    Color32::from_gray(100),
 
