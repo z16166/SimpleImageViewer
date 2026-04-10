@@ -61,7 +61,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `End` | Last image |
 | `+` / `-` | Zoom in / out |
 | `*` (or `Numpad *`) | Reset zoom & pan |
-| Mouse wheel | Zoom |
+| `Ctrl + Mouse wheel` | Zoom |
+| `Mouse wheel` | Next / Previous image |
 | `Space` | Pause / Resume slideshow |
 | `Z` | Toggle Fit ↔ Original size |
 | `G` | Open *Go to image…* dialog (jump to index) |
