@@ -25,7 +25,35 @@ fn main() {
 
     // Embed Windows resources (icon + metadata) into the PE
     #[cfg(target_os = "windows")]
-    embed_resources(&dst);
+    {
+        embed_resources(&dst);
+
+        // --- WIN7 COMPATIBILITY HACK ---
+        // We only apply this to the main binary and ONLY when legacy compatibility 
+        // tools (like YY-Thunks or VC-LTL) are detected in the environment.
+        let bin_name = std::env::var("CARGO_BIN_NAME").unwrap_or_default();
+        let is_legacy_build = std::env::var("YY_THUNKS").is_ok() || std::env::var("VC_LTL").is_ok();
+
+        if is_legacy_build && (bin_name == "SimpleImageViewer" || bin_name.is_empty()) {
+            // Redirect CoTaskMemFree from combase.dll (Win10+) back to ole32.dll (Win7)
+            
+            // 1. Force inclusion of ole32.lib
+            println!("cargo:rustc-link-lib=ole32");
+            
+            // 2. Instruct the MSVC linker to alias the import symbol.
+            println!("cargo:rustc-link-arg=/ALTERNATENAME:__imp_CoTaskMemFree=__imp_CoTaskMemFree");
+            
+            // 3. Exclude combase.lib to prevent the linker from adding a combase.dll dependency entry.
+            println!("cargo:rustc-link-arg=/NODEFAULTLIB:combase.lib");
+
+            // 4. Force GUI Subsystem to prevent the console window from appearing.
+            println!("cargo:rustc-link-arg=/SUBSYSTEM:WINDOWS");
+
+            // 5. Force the entry point to handle potential YY-Thunks redirection issues.
+            //    Using mainCRTStartup allows us to keep the 'fn main' but use the WINDOWS subsystem.
+            println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
+        }
+    }
 }
 
 /// Convert a PNG to a multi-resolution ICO (16, 32, 48, 64, 128, 256 px).
