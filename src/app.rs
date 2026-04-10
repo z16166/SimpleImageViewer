@@ -768,13 +768,14 @@ impl ImageViewerApp {
                     
                     // Try to resume from last played track
                     let mut start_idx = None;
-                    if let Some(last_path) = &self.settings.last_music_track {
+                    if let Some(last_path) = &self.settings.last_music_file {
                         if let Some(idx) = files.iter().position(|p| p == last_path) {
                             start_idx = Some(idx);
                         }
                     }
                     
-                    self.audio.start_at(files, start_idx);
+                    let start_track_idx = if start_idx.is_some() { self.settings.last_music_cue_track } else { None };
+                    self.audio.start_at(files, start_idx, start_track_idx);
                     self.audio.set_volume(self.settings.volume);
                     if self.settings.music_paused {
                         self.audio.pause();
@@ -2831,13 +2832,23 @@ impl eframe::App for ImageViewerApp {
         self.check_auto_switch();
         self.handle_keyboard(ctx);
 
-        // Sync currently playing track path for persistence
+        // Sync currently playing track path and CUE track for persistence
         if self.settings.play_music {
+            let mut changed = false;
             if let Some(current_path) = self.audio.get_current_track_path() {
-                if self.settings.last_music_track.as_ref() != Some(&current_path) {
-                    self.settings.last_music_track = Some(current_path);
-                    self.queue_save();
+                if self.settings.last_music_file.as_ref() != Some(&current_path) {
+                    self.settings.last_music_file = Some(current_path);
+                    changed = true;
                 }
+            }
+            let cue_idx = self.audio.get_current_cue_track();
+            if self.settings.last_music_cue_track != cue_idx {
+                self.settings.last_music_cue_track = cue_idx;
+                changed = true;
+            }
+            
+            if changed {
+                self.queue_save();
             }
         }
 

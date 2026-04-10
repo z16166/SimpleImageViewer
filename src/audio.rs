@@ -12,7 +12,7 @@ use rodio::Source;
 
 #[allow(dead_code)]
 pub enum AudioCommand {
-    SetPlaylist(Vec<PathBuf>, Option<usize>),
+    SetPlaylist(Vec<PathBuf>, Option<usize>, Option<usize>),
     SetVolume(f32),
     Play,
     Pause,
@@ -34,6 +34,7 @@ pub struct AudioPlayer {
     pub current_track_path: Arc<Mutex<Option<PathBuf>>>,
     pub current_metadata: Arc<Mutex<Option<String>>>,
     pub has_tracks: Arc<AtomicBool>,
+    pub current_cue_track: Arc<Mutex<Option<usize>>>,
 }
 
 impl AudioPlayer {
@@ -45,18 +46,19 @@ impl AudioPlayer {
             current_track_path: Arc::new(Mutex::new(None)),
             current_metadata: Arc::new(Mutex::new(None)),
             has_tracks: Arc::new(AtomicBool::new(false)),
+            current_cue_track: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Ensure the audio thread is running and playing the selected files.
     pub fn start(&mut self, files: Vec<PathBuf>) {
-        self.start_at(files, None);
+        self.start_at(files, None, None);
     }
 
-    pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>) {
+    pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>, start_track_index: Option<usize>) {
         self.ensure_thread_started();
         if let Some(tx) = &self.cmd_tx {
-            let _ = tx.send(AudioCommand::SetPlaylist(files, start_index));
+            let _ = tx.send(AudioCommand::SetPlaylist(files, start_index, start_track_index));
         }
     }
 
@@ -129,6 +131,10 @@ impl AudioPlayer {
         self.has_tracks.load(Ordering::Relaxed)
     }
 
+    pub fn get_current_cue_track(&self) -> Option<usize> {
+        self.current_cue_track.lock().ok()?.clone()
+    }
+
     fn ensure_thread_started(&mut self) {
         if self.cmd_tx.is_none() {
             let (tx, rx) = crossbeam_channel::unbounded::<AudioCommand>();
@@ -138,11 +144,12 @@ impl AudioPlayer {
             let path_slot = Arc::clone(&self.current_track_path);
             let meta_slot = Arc::clone(&self.current_metadata);
             let tracks_flag = Arc::clone(&self.has_tracks);
+            let cue_track_slot = Arc::clone(&self.current_cue_track);
 
             std::thread::Builder::new()
                 .name("audio-player".to_string())
                 .spawn(move || {
-                    run_audio_loop(rx, err_slot, track_slot, path_slot, meta_slot, tracks_flag)
+                    run_audio_loop(rx, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot)
                 })
                 .expect("failed to spawn audio thread");
         }
@@ -223,6 +230,12 @@ fn set_current_path(slot: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
 fn set_metadata(slot: &Arc<Mutex<Option<String>>>, meta: Option<String>) {
     if let Ok(mut g) = slot.lock() {
         *g = meta;
+    }
+}
+
+fn set_cue_track(slot: &Arc<Mutex<Option<usize>>>, idx: Option<usize>) {
+    if let Ok(mut g) = slot.lock() {
+        *g = idx;
     }
 }
 
@@ -350,6 +363,7 @@ fn run_audio_loop(
     path_slot: Arc<Mutex<Option<PathBuf>>>,
     meta_slot: Arc<Mutex<Option<String>>>,
     tracks_flag: Arc<AtomicBool>,
+    cue_track_slot: Arc<Mutex<Option<usize>>>,
 ) {
     // Open hardware ONLY ONCE per thread life. 
     // On Windows, frequent open/close can hang or crash.
@@ -379,6 +393,7 @@ fn run_audio_loop(
     // Pause-aware time tracking for CUE
     let mut paused_at: Option<Instant> = None;
     let mut total_paused: Duration = Duration::ZERO;
+    let mut pending_start_track_idx: Option<usize> = None;
 
     loop {
         // Wait for a command
@@ -515,19 +530,19 @@ fn run_audio_loop(
                     }
                 }
             }
-            Ok(AudioCommand::SetPlaylist(new_list, start_index)) => {
+            Ok(AudioCommand::SetPlaylist(new_list, start_file_idx, start_track_idx)) => {
                 playlist = new_list;
-                current_track_idx = start_index.unwrap_or(0);
-                stopped = false;
+                current_track_idx = start_file_idx.unwrap_or(0);
+                pending_start_track_idx = start_track_idx;
                 player.clear();
                 if paused {
                     player.pause();
                 } else {
                     player.play();
                 }
-                set_current_track(&track_slot, None);
                 set_current_path(&path_slot, None);
                 set_metadata(&meta_slot, None);
+                set_cue_track(&cue_track_slot, None);
             }
             Ok(AudioCommand::SetVolume(v)) => {
                 current_volume = v;
@@ -570,12 +585,41 @@ fn run_audio_loop(
                     }
 
                     player.append(source);
-                    player.set_volume(current_volume);
-                    player.play();
+                    
+                    // Reset timing variables before potential seek
+                    // (seek will override last_seek_offset if needed)
                     current_file_start = Instant::now();
                     last_seek_offset = Duration::ZERO;
                     total_paused = Duration::ZERO;
                     paused_at = None;
+
+                    // Initial track seek if requested via SetPlaylist
+                    if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
+                        if track_idx < cue.tracks.len() {
+                            let t = &cue.tracks[track_idx];
+                            if t.start > Duration::ZERO {
+                                // We already appended the 'source' above; 
+                                // to seek we need to clear and re-append a skipped source.
+                                player.clear();
+                                if let Ok(f2) = std::fs::File::open(&path) {
+                                    let r2 = std::io::BufReader::new(f2);
+                                    if let Ok(s2) = rodio::Decoder::new(r2) {
+                                        let s2 = rodio::Source::skip_duration(s2, t.start);
+                                        player.append(s2);
+                                        last_seek_offset = t.start;
+                                        current_file_start = Instant::now();
+                                        // Metadata
+                                        let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
+                                        set_metadata(&meta_slot, Some(meta));
+                                        set_cue_track(&cue_track_slot, Some(track_idx));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    player.set_volume(current_volume);
+                    player.play();
                 }
             }
         }
@@ -604,8 +648,11 @@ fn run_audio_loop(
                     if g.as_ref() != Some(&meta) {
                         drop(g);
                         set_metadata(&meta_slot, Some(meta));
+                        set_cue_track(&cue_track_slot, Some(idx));
                     }
                 }
+            } else {
+                set_cue_track(&cue_track_slot, None);
             }
         }
     }

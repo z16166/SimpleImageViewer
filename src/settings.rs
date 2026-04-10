@@ -115,7 +115,9 @@ pub struct Settings {
     #[serde(default)]
     pub music_paused: bool,
     #[serde(default)]
-    pub last_music_track: Option<PathBuf>,
+    pub last_music_file: Option<PathBuf>,
+    #[serde(default)]
+    pub last_music_cue_track: Option<usize>,
 
     // Font & Appearance
     #[serde(default = "default_font_family")]
@@ -170,7 +172,8 @@ impl Default for Settings {
             last_viewed_image: None,
             show_osd: true,
             music_paused: false,
-            last_music_track: None,
+            last_music_file: None,
+            last_music_cue_track: None,
             language: String::new(),
             theme: AppTheme::Dark,
         }
