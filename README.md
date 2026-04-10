@@ -1,6 +1,6 @@
 # Simple Image Viewer (SimpleImageViewer)
 
-A high-performance, cross-platform image viewer built with Rust and [egui](https://github.com/emilk/egui). Designed for fast browsing of large photo libraries with a clean, dark UI, background music playback, and persistent settings.
+A high-performance, cross-platform image viewer built with Rust and [egui](https://github.com/emilk/egui). Designed for fast browsing of large photo libraries with a clean, customizable UI (Dark/Light/System themes), background music playback, and persistent settings.
  
 ![Screenshot](assets/screenshot.jpg)
 
