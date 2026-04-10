@@ -113,9 +113,72 @@ jobs:
           name: binary-${{ matrix.target }}
           path: ${{ env.ARCHIVE_NAME }}
 
+  build-legacy-win7:
+    name: Build (Win7 x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: win7-legacy-x64
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile combase.dll
+        run: cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
+
+      - name: Download VC-LTL5 and YY-Thunks
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z" -OutFile "VC-LTL.7z"
+          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip" -OutFile "YY-Thunks-Lib.zip"
+          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip" -OutFile "YY-Thunks-Objs.zip"
+          
+          7z x VC-LTL.7z -oVC-LTL5
+          Expand-Archive -Path YY-Thunks-Lib.zip -DestinationPath YY-Thunks -Force
+          Expand-Archive -Path YY-Thunks-Objs.zip -DestinationPath YY-Thunks -Force
+          
+          echo "VC_LTL=$pwd\VC-LTL5" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "YY_THUNKS=$pwd\YY-Thunks" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install thunk-cli
+        run: cargo install thunk-cli
+
+      - name: Build with thunks
+        shell: pwsh
+        env:
+          VC_LTL: ${{ env.VC_LTL }}
+          YY_THUNKS: ${{ env.YY_THUNKS }}
+        run: |
+          $env:RUSTFLAGS = "-C link-arg=/SUBSYSTEM:WINDOWS"
+          thunk --os win7 --arch x64 -- --release
+
+      - name: Package Artifacts
+        shell: pwsh
+        run: |
+          $archiveName = "SimpleImageViewer-win7-x64.zip"
+          $binarySrc = "target/x86_64-pc-windows-msvc/release/SimpleImageViewer.exe"
+          Compress-Archive -Path $binarySrc, combase.dll, README.md, README_CN.md, LICENSE, assets/screenshot.jpg -DestinationPath $archiveName
+          echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-win7-x64
+          path: ${{ env.ARCHIVE_NAME }}
+
   create-release:
     name: Create Release
-    needs: build
+    needs: [build, build-legacy-win7]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
