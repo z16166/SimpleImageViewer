@@ -2879,6 +2879,33 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
+        // ── Drag-and-Drop handling (cross-platform via egui/winit) ───────
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
+        if let Some(dropped_file) = dropped.into_iter().next() {
+            if let Some(path) = dropped_file.path {
+                // Guard: don't re-trigger if we're already scanning from a previous drop
+                if !self.scanning {
+                    if path.is_dir() {
+                        // Dropped a directory — scan it (non-recursive to avoid surprises)
+                        log::info!("Drop: opening directory {:?}", path);
+                        self.settings.recursive = false;
+                        self.load_directory(path);
+                        self.queue_save();
+                    } else if path.is_file() {
+                        // Dropped a single file — open it and stop auto-switch
+                        log::info!("Drop: opening file {:?}", path);
+                        if let Some(parent) = path.parent() {
+                            self.initial_image = Some(path.clone());
+                            self.settings.auto_switch = false;
+                            self.load_directory(parent.to_path_buf());
+                            self.queue_save();
+                        }
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        }
+
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
