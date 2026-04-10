@@ -3,9 +3,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
-/// Maximum concurrent image decode tasks.
-/// = 1 (current) + PRELOAD_AHEAD (2) + PRELOAD_BEHIND (1)
-const LOADER_THREADS: usize = 4;
 
 pub struct DecodedImage {
     pub width: u32,
@@ -47,7 +44,6 @@ impl ImageLoader {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(LOADER_THREADS)
             .thread_name(|i| format!("img-loader-{i}"))
             .build()
             .expect("failed to create image loader thread pool");
