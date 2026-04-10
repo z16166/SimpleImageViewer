@@ -249,14 +249,16 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     
     use printpdf::*;
 
-    // Dimensions in mm. 1 pixel = 1 pt = 0.352778 mm
+    // PDF unit: 1pt = 1/72 inch = 0.352778 mm
     let px_to_mm = 0.352778_f32;
     let width_mm = Mm(width as f32 * px_to_mm);
     let height_mm = Mm(height as f32 * px_to_mm);
 
-    let mut doc = PdfDocument::new("Print Image");
+    // printpdf 0.9.x returns a tuple (PdfDocument, PageIndex, LayerIndex)
+    let (doc, page1, layer1) = PdfDocument::new("Print Image", width_mm, height_mm, "Layer 1");
+    let current_layer = doc.get_page(page1).get_layer(layer1);
 
-    // Encode to JPEG in memory with 95% quality
+    // Encode or borrow bytes for the PDF image
     let mut jpg_bytes: Vec<u8> = Vec::new();
     {
         use ::image::codecs::jpeg::JpegEncoder;
@@ -269,31 +271,27 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
         ).map_err(|e| e.to_string())?;
     }
 
-    // Add to doc
-    let raw_image = RawImage::decode_from_bytes(&jpg_bytes, &mut Vec::new()).map_err(|e| format!("{:?}", e))?;
-    let image_id = doc.add_image(&raw_image);
-
-    let mut ops = Vec::new();
-    ops.push(Op::UseXobject {
-        id: image_id,
-        transform: XObjectTransform {
-            translate_x: Some(Pt(0.0)),
-            translate_y: Some(Pt(0.0)),
+    // Load image into document from bytes
+    let image = Image::from_bytes(&jpg_bytes).map_err(|e| e.to_string())?;
+    
+    // Position at 0,0 (bottom-left) and let it fill the page (since page is image size)
+    image.add_to_layer(
+        current_layer,
+        ImageTransform {
+            translate_x: Some(Mm(0.0)),
+            translate_y: Some(Mm(0.0)),
             rotate: None,
-            scale_x: Some(1.0),
-            scale_y: Some(1.0),
+            scale_x: None,
+            scale_y: None,
             dpi: Some(72.0),
         },
-    });
+    );
 
-    let page = PdfPage::new(width_mm, height_mm, ops);
-    let bytes = doc
-        .with_pages(vec![page])
-        .save(&PdfSaveOptions::default(), &mut Vec::new());
-
-    std::fs::write(out_path, bytes).map_err(|e| e.to_string())?;
+    // Save directly to the target file path
+    let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
+    doc.save(&mut std::io::BufWriter::new(file)).map_err(|e| e.to_string())?;
     
-    // Invoke system open
+    // Invoke system open to print
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
