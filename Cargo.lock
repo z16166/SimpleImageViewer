@@ -4672,6 +4672,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "sysinfo",
+ "tiff",
  "trash",
  "walkdir",
  "wallpaper",
