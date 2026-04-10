@@ -12,6 +12,7 @@ use egui::{
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageData, ImageLoader, TextureCache};
+use crate::scanner::ScanMessage;
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
 use crate::tile_cache::TileManager;
@@ -60,7 +61,7 @@ pub struct ImageViewerApp {
     current_index: usize,
 
     // Channel receiving scanned file list
-    scan_rx: Option<Receiver<Vec<PathBuf>>>,
+    scan_rx: Option<Receiver<ScanMessage>>,
     scanning: bool,
 
     // Image loading
@@ -603,56 +604,95 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn process_scan_results(&mut self) {
-        let result = self.scan_rx.as_ref().and_then(|rx| rx.try_recv().ok());
-        if let Some(files) = result {
-            self.scan_rx = None;
-            self.scanning = false;
-            let count = files.len();
-            self.image_files = files;
-            self.current_index = 0;
+        let rx = match self.scan_rx.take() {
+            Some(rx) => rx,
+            None => return,
+        };
 
-            if let Some(ref path) = self.initial_image {
-                // Fast path: try direct path comparison first (no syscalls)
-                let found = self.image_files.iter().position(|p| p == path);
-                let found = found.or_else(|| {
-                    // Fallback: canonicalize only the target, then compare
-                    // with case-insensitive file names to handle path variations
-                    // without calling canonicalize() on every file in the list.
-                    let target = path.canonicalize().unwrap_or_else(|_| path.clone());
-                    let target_name = target.file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase());
-                    self.image_files.iter().position(|p| {
-                        // Compare canonical path of target against each file's parent + name
-                        if let Some(ref tn) = target_name {
-                            if let Some(name) = p.file_name() {
-                                if name.to_string_lossy().to_lowercase() == *tn {
-                                    // Same filename — now check parent dir cheaply
-                                    return p.parent() == target.parent()
-                                        || p.canonicalize().ok().as_ref() == Some(&target);
-                                }
-                            }
-                        }
-                        false
-                    })
-                });
-                if let Some(pos) = found {
-                    self.current_index = pos;
-                }
-                self.initial_image = None;
-            } else if self.settings.resume_last_image {
-                if let Some(last_path) = &self.settings.last_viewed_image {
-                    if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
-                        self.current_index = (pos + 1) % count;
+        let mut done = false;
+
+        // Drain all available messages this frame (non-blocking)
+        loop {
+            match rx.try_recv() {
+                Ok(ScanMessage::Batch(mut batch)) => {
+                    let is_first_batch = self.image_files.is_empty();
+                    self.image_files.append(&mut batch);
+
+                    let count = self.image_files.len();
+                    self.status_message = t!("status.found", count = count.to_string()).to_string();
+
+                    // On first batch: resolve initial position and start preloading immediately
+                    if is_first_batch && count > 0 {
+                        self.resolve_initial_position();
+                        self.show_settings = false;
+                        self.schedule_preloads(true);
                     }
                 }
-            }
+                Ok(ScanMessage::Done) => {
+                    done = true;
+                    self.scanning = false;
 
-            if count > 0 {
-                self.status_message = t!("status.found", count = count.to_string()).to_string();
-                self.show_settings = false;
-                self.schedule_preloads(true);
-            } else {
-                self.status_message = t!("status.not_found").to_string();
+                    if self.image_files.is_empty() {
+                        self.status_message = t!("status.not_found").to_string();
+                    } else {
+                        // Re-sort the full list now that all batches have arrived.
+                        // Each batch was individually sorted, but interleaving from
+                        // parallel workers means the combined list may not be sorted.
+                        self.image_files.sort();
+
+                        // Re-resolve position after global sort (indices may have shifted)
+                        self.resolve_initial_position();
+
+                        let count = self.image_files.len();
+                        self.status_message = t!("status.found", count = count.to_string()).to_string();
+                        self.schedule_preloads(true);
+                    }
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Put the receiver back if scanning is still in progress
+        if !done {
+            self.scan_rx = Some(rx);
+        }
+    }
+
+    /// Resolve the starting image index from initial_image or resume settings.
+    fn resolve_initial_position(&mut self) {
+        if let Some(ref path) = self.initial_image {
+            // Fast path: try direct path comparison first (no syscalls)
+            let found = self.image_files.iter().position(|p| p == path);
+            let found = found.or_else(|| {
+                // Fallback: canonicalize only the target, then compare
+                // with case-insensitive file names to handle path variations
+                // without calling canonicalize() on every file in the list.
+                let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let target_name = target.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase());
+                self.image_files.iter().position(|p| {
+                    if let Some(ref tn) = target_name {
+                        if let Some(name) = p.file_name() {
+                            if name.to_string_lossy().to_lowercase() == *tn {
+                                return p.parent() == target.parent()
+                                    || p.canonicalize().ok().as_ref() == Some(&target);
+                            }
+                        }
+                    }
+                    false
+                })
+            });
+            if let Some(pos) = found {
+                self.current_index = pos;
+            }
+            self.initial_image = None;
+        } else if self.settings.resume_last_image {
+            let count = self.image_files.len();
+            if let Some(last_path) = &self.settings.last_viewed_image {
+                if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
+                    self.current_index = (pos + 1) % count;
+                }
             }
         }
     }
