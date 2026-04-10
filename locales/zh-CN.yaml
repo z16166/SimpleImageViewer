@@ -101,6 +101,17 @@ ctx.copy_file: "📁 复制文件"
 ctx.view_exif: "ℹ 查看 EXIF 信息"
 ctx.view_xmp: "ℹ 查看 XMP 信息"
 ctx.set_wallpaper: "🖼 设为桌面壁纸…"
+ctx.print_full: "🖨 打印全图"
+ctx.print_visible: "🖨 打印可视区域"
+ctx.print_pdf_full: "🖨 导出 PDF 并打印 (全图)"
+ctx.print_pdf_visible: "🖨 导出 PDF 并打印 (可视区域)"
+
+# Printing
+print.title: "打印"
+print.title_pdf: "导出 PDF 并打印"
+print.processing: "正在处理图片以供打印，请稍候…"
+print.failed: "打印失败：%{err}"
+print.err_buffer: "内部错误：无法从预采样缓冲区创建图像。"
 
 # Wallpaper dialog
 wallpaper.title: "设为桌面壁纸"

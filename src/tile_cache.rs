@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use egui::TextureHandle;
 
 /// Tile size in pixels (each tile is TILE_SIZE x TILE_SIZE).
@@ -30,7 +31,8 @@ pub struct TileManager {
 
     /// The full decoded pixel buffer (RGBA8, row-major).
     /// This stays in CPU RAM so we can extract tiles on demand.
-    pixel_buffer: Vec<u8>,
+    /// Wrapped in Arc so the print module can cheaply share it with a background thread.
+    pixel_buffer: Arc<Vec<u8>>,
 
     /// Cached tile textures already uploaded to GPU.
     tiles: HashMap<TileCoord, TextureHandle>,
@@ -46,10 +48,15 @@ impl TileManager {
             full_width: width,
             full_height: height,
             preview_texture: None,
-            pixel_buffer: pixels,
+            pixel_buffer: Arc::new(pixels),
             tiles: HashMap::new(),
             lru_order: Vec::new(),
         }
+    }
+
+    /// Returns a cheap Arc clone of the raw pixel buffer for off-thread use (e.g. printing).
+    pub fn pixel_buffer_arc(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.pixel_buffer)
     }
 
     /// Number of tile columns in the grid.
@@ -155,7 +162,9 @@ impl TileManager {
         self.tiles.clear();
         self.lru_order.clear();
         self.preview_texture = None;
-        self.pixel_buffer.clear();
+        // Replace the Arc with a new empty one. If a background print thread
+        // still holds the old Arc, it will keep the data alive until it finishes.
+        self.pixel_buffer = Arc::new(Vec::new());
     }
 
     /// Compute which tiles are visible given the current viewport mapping.

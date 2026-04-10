@@ -101,6 +101,17 @@ ctx.copy_file: "📁 Copy File"
 ctx.view_exif: "ℹ View EXIF Info"
 ctx.view_xmp: "ℹ View XMP Info"
 ctx.set_wallpaper: "🖼 Set as desktop wallpaper…"
+ctx.print_full: "🖨 Print Full Image"
+ctx.print_visible: "🖨 Print Visible Area"
+ctx.print_pdf_full: "🖨 Export to PDF & Print (Full Image)"
+ctx.print_pdf_visible: "🖨 Export to PDF & Print (Visible Area)"
+
+# Printing
+print.title: "Print"
+print.title_pdf: "PDF Export & Print"
+print.processing: "Processing image for printing, please wait…"
+print.failed: "Print failed: %{err}"
+print.err_buffer: "Internal error: Failed to create image from pre-sampled buffer."
 
 # Wallpaper dialog
 wallpaper.title: "Set as desktop wallpaper"

@@ -155,6 +155,10 @@ pub struct ImageViewerApp {
     // Theme state
     theme_cache: SystemThemeCache,
     cached_palette: ThemePalette,
+
+    // Printing state
+    pub is_printing: Arc<AtomicBool>,
+    pub print_status_rx: Option<crossbeam_channel::Receiver<Option<String>>>,
 }
 
 impl ImageViewerApp {
@@ -242,6 +246,8 @@ impl ImageViewerApp {
             tile_manager: None,
             theme_cache,
             cached_palette,
+            is_printing: Arc::new(AtomicBool::new(false)),
+            print_status_rx: None,
         };
 
         // Restore last session state
@@ -362,6 +368,74 @@ impl ImageViewerApp {
             self.image_files[self.current_index].clone(),
         );
         self.schedule_preloads(true);
+    }
+
+    fn print_image(&mut self, ctx: &egui::Context, mode: crate::print::PrintMode) {
+        use crate::print::{PrintJob, spawn_print_job, PrintMode};
+        
+        if self.image_files.is_empty() { return; }
+        let path = self.image_files[self.current_index].clone();
+        
+        if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+
+        let is_tiled = self.tile_manager.is_some();
+        let mut crop_rect_pixels = None;
+        let mut tile_pixel_buffer = None;
+        let mut tile_full_width = 0u32;
+        let mut tile_full_height = 0u32;
+
+        if let Some(res) = self.current_image_res {
+            let img_size = egui::vec2(res.0 as f32, res.1 as f32);
+            let screen_rect = ctx.screen_rect(); 
+
+            if mode == PrintMode::VisibleArea {
+                let display_rect = self.compute_display_rect(img_size, screen_rect);
+                let intersect = display_rect.intersect(screen_rect);
+                if intersect.is_positive() {
+                    let scale = img_size.x / display_rect.width(); 
+                    
+                    let dx = (intersect.min.x - display_rect.min.x) * scale;
+                    let dy = (intersect.min.y - display_rect.min.y) * scale;
+                    let dw = intersect.width() * scale;
+                    let dh = intersect.height() * scale;
+                    
+                    crop_rect_pixels = Some([
+                        dx.max(0.0) as u32,
+                        dy.max(0.0) as u32,
+                        dw.min(img_size.x - dx).max(1.0) as u32,
+                        dh.min(img_size.y - dy).max(1.0) as u32,
+                    ]);
+                } else {
+                    crop_rect_pixels = Some([0, 0, 1, 1]); 
+                }
+            }
+
+            // For tiled images: pass the Arc'd pixel buffer (cheap clone)
+            // and dimensions. The background thread will do the actual 
+            // downsampling to avoid blocking the UI.
+            if is_tiled {
+                let tm = self.tile_manager.as_ref().unwrap();
+                tile_pixel_buffer = Some(tm.pixel_buffer_arc());
+                tile_full_width = tm.full_width;
+                tile_full_height = tm.full_height;
+            }
+        }
+
+        let job = PrintJob {
+            mode,
+            original_path: path,
+            crop_rect_pixels,
+            is_tiled,
+            tile_pixel_buffer,
+            tile_full_width,
+            tile_full_height,
+        };
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.print_status_rx = Some(rx);
+        spawn_print_job(job, self.is_printing.clone(), tx);
     }
 
     fn delete_current_image(&mut self, permanent: bool) {
@@ -738,6 +812,7 @@ impl ImageViewerApp {
         let mut do_quit = false;
         let mut do_delete = false;
         let mut do_permanent_delete = false;
+        let mut do_print_full = false;
 
         // Collect all modal flags to prevent deletion when a dialog is active
         // Collect all modal flags to prevent interaction when a dialog is active
@@ -800,6 +875,12 @@ impl ImageViewerApp {
             if i.key_pressed(Key::G) {
                 toggle_goto = true;
             }
+            // Print (Ctrl+P)
+            if !any_modal_open {
+                if i.modifiers.command && i.key_pressed(Key::P) {
+                    do_print_full = true;
+                }
+            }
             // Delete / Shift+Delete (Main window only)
             if !any_modal_open {
                 if i.key_pressed(Key::Delete) {
@@ -820,6 +901,7 @@ impl ImageViewerApp {
 
         if do_delete { self.delete_current_image(false); }
         if do_permanent_delete { self.delete_current_image(true); }
+        if do_print_full { self.print_image(ctx, crate::print::PrintMode::FullImage); }
 
         if !any_modal_open {
             if do_refresh { self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default()); }
@@ -2107,6 +2189,16 @@ impl ImageViewerApp {
                     }
                     
                     ui.separator();
+                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_full").to_string() } else { t!("ctx.print_full").to_string() }).clicked() {
+                        self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
+                        ui.close();
+                    }
+                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_visible").to_string() } else { t!("ctx.print_visible").to_string() }).clicked() {
+                        self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
+                        ui.close();
+                    }
+                    
+                    ui.separator();
                     if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
                         self.show_wallpaper_dialog = true;
                         if let Ok(p) = wallpaper::get() {
@@ -2737,6 +2829,33 @@ impl eframe::App for ImageViewerApp {
 
         // Draw image canvas (fills the central area)
         self.draw_image_canvas_ui(ui);
+
+        if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
+            egui::Window::new(if cfg!(not(target_os = "windows")) { t!("print.title_pdf").to_string() } else { t!("print.title").to_string() })
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("print.processing").to_string());
+                    });
+                });
+            
+            if let Some(rx) = &self.print_status_rx {
+                while let Ok(msg) = rx.try_recv() {
+                    if let Some(m) = msg {
+                        self.status_message = t!("print.failed", err = m).to_string();
+                    }
+                }
+            }
+        } else if let Some(rx) = self.print_status_rx.take() {
+            while let Ok(msg) = rx.try_recv() {
+                if let Some(m) = msg {
+                    self.status_message = t!("print.failed", err = m).to_string();
+                }
+            }
+        }
 
         // Settings panel overlay (hidden when file assoc dialog is modal)
         #[cfg(target_os = "windows")]
