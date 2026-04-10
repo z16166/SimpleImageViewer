@@ -28,7 +28,7 @@ A high-performance, cross-platform image viewer built with Rust and [egui](https
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
 - **Background music** — high-fidelity playback for MP3, FLAC, OGG, WAV, AAC, M4A via [rodio](https://github.com/RustAudio/rodio); pick a single file or a folder (scanned recursively)
-- **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for giant album images
+- **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for large single-file audio albums
 - **Smart Metadata Extraction** — automatically extracts Title, Artist, and Track info from files via [lofty](https://github.com/lofty-rb/lofty). Supports built-in tags and external CUE descriptions
 - **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) for quick navigation between physical music files and logical CUE tracks
 - **Dynamic Metadata Display** — two-line status display with **Middle Truncation** algorithm for long filenames (e.g., `Start...End.wav`), ensuring information remains legible in the settings panel
