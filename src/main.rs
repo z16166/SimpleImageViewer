@@ -181,6 +181,49 @@ fn init_logging() {
     let _ = logger.start();
 }
 
+fn log_env_info() {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    
+    let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
+    let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
+    let total_memory = sys.total_memory(); // Returns bytes
+    let memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
+    
+    let mut friendly_name = os_name.clone();
+    
+    if os_name.to_lowercase().contains("windows") {
+        let parts: Vec<&str> = os_version.split('.').collect();
+        if parts.len() >= 2 {
+            let major = parts[0];
+            let minor = parts[1];
+            let build = parts.get(2).cloned().unwrap_or("0");
+            let build_num: u32 = build.parse().unwrap_or(0);
+            
+            friendly_name = match (major, minor) {
+                ("6", "1") => "Windows 7".to_string(),
+                ("6", "2") => "Windows 8".to_string(),
+                ("6", "3") => "Windows 8.1".to_string(),
+                ("10", "0") => {
+                    if build_num >= 22000 {
+                        "Windows 11".to_string()
+                    } else {
+                        "Windows 10".to_string()
+                    }
+                }
+                _ => friendly_name,
+            };
+        }
+    }
+    
+    log::info!(
+        "Environment: {} [{}] (RAM: {:.2} GB)",
+        friendly_name, 
+        os_version,
+        memory_gb
+    );
+}
+
 fn main() -> eframe::Result {
     // 1. Parse initial image from arguments (needed for IPC)
     let mut initial_image = None;
@@ -200,6 +243,7 @@ fn main() -> eframe::Result {
 
     // 3. Primary Instance Initialization
     init_logging();
+    log_env_info();
 
     #[cfg(target_os = "windows")]
     {
