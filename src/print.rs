@@ -283,38 +283,24 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     let width_mm = Mm(width as f32 * px_to_mm);
     let height_mm = Mm(height as f32 * px_to_mm);
 
-    let mut doc = PdfDocument::new("Print Image");
+    // printpdf 0.9.1 uses a (PdfDocument, PageIndex, LayerIndex) triplet.
+    let (doc, page1, layer1) = PdfDocument::new("Print Image", width_mm, height_mm, "Layer 1");
+    let current_layer = doc.get_page(page1).get_layer(layer1);
 
     // Load image from the in-memory JPEG buffer
     let image_reader = std::io::Cursor::new(jpeg_data);
-    let decoder = ::image::codecs::jpeg::JpegDecoder::new(image_reader).map_err(|e: ::image::ImageError| e.to_string())?;
-    let image_xobject = ::printpdf::ImageXObject::try_from(decoder).map_err(|e| e.to_string())?;
+    let decoder = ::image::codecs::jpeg::JpegDecoder::new(image_reader)
+        .map_err(|e: ::image::ImageError| e.to_string())?;
     
-    let image_id = doc.add_image(&image_xobject);
+    // In printpdf 0.9.1, Image implements TryFrom for various decoders.
+    let image = Image::try_from(decoder).map_err(|e| e.to_string())?;
+    
+    // Add to layer with default transform (fits perfectly because page size == image size).
+    image.add_to_layer(current_layer, ImageTransform::default());
 
-    let page = PdfPage::new(width_mm, height_mm, vec![
-        Op::UseXobject {
-            id: image_id,
-            transform: XObjectTransform {
-                translate_x: Some(Pt(0.0)),
-                translate_y: Some(Pt(0.0)),
-                rotate: None,
-                scale_x: None,
-                scale_y: None,
-                dpi: Some(72.0),
-            },
-        },
-    ]);
-    doc.with_pages(vec![page]);
-
-    // Save directly to the target file path
+    // Save directly to the target file path using the 0.9.1 API.
     let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    let mut warnings = Vec::new();
-    doc.save_writer(
-        &mut std::io::BufWriter::new(file),
-        &PdfSaveOptions::default(),
-        &mut warnings,
-    );
+    doc.save(&mut std::io::BufWriter::new(file)).map_err(|e| e.to_string())?;
     
     // Invoke system open to print
     #[cfg(target_os = "macos")]
