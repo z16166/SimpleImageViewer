@@ -166,3 +166,8 @@ lang.zh_hk: "繁體中文 (zh-HK)"
 theme.dark: "Dark"
 theme.light: "Light"
 theme.system: "Follow System"
+
+# Startup Errors
+error.startup_failed: "Application startup failed"
+error.copied_to_clipboard: "(Diagnostic info has been automatically copied to the clipboard, you can paste it into your feedback)"
+dialog.startup_error_title: "Startup Error"

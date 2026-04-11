@@ -166,3 +166,8 @@ lang.zh_hk: "繁體中文 (zh-HK)"
 theme.dark: "深色"
 theme.light: "淺色"
 theme.system: "跟隨系統"
+
+# Startup Errors
+error.startup_failed: "程式啟動失敗"
+error.copied_to_clipboard: "(診斷資訊已自動複製到剪贴板，您可以直接貼上反饋)"
+dialog.startup_error_title: "啟動错误"

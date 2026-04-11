@@ -181,7 +181,7 @@ fn init_logging() {
     let _ = logger.start();
 }
 
-fn log_env_info() {
+fn log_env_info() -> String {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     
@@ -189,9 +189,8 @@ fn log_env_info() {
     let memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
     
     #[cfg(windows)]
-    {
+    let env_desc = {
         use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-        use windows::Win32::Foundation::HMODULE;
         use windows::core::PCSTR;
         
         #[repr(C)]
@@ -210,110 +209,105 @@ fn log_env_info() {
             wReserved: u8,
         }
 
-        unsafe {
-            if let Ok(h_ntdll) = GetModuleHandleW(windows::core::w!("ntdll.dll")) {
-                let proc = GetProcAddress(h_ntdll, PCSTR(b"RtlGetVersion\0".as_ptr()));
-                if let Some(rtl_get_version) = proc {
-                    let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 = std::mem::transmute(rtl_get_version);
-                    
-                    let mut osi: OSVERSIONINFOEXW = std::mem::zeroed();
-                    osi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
-                    
-                    if rtl_get_version(&mut osi) == 0 {
-                        let major = osi.dwMajorVersion;
-                        let minor = osi.dwMinorVersion;
-                        let build = osi.dwBuildNumber;
-                        let is_server = osi.wProductType != 1; // VER_NT_WORKSTATION = 1
-                        
-                        let service_pack = if let Ok(sp) = String::from_utf16(&osi.szCSDVersion) {
-                            sp.trim_matches(char::from(0)).to_string()
+        unsafe fn get_win_env(memory_gb: f64) -> Option<String> {
+            let h_ntdll = unsafe { GetModuleHandleW(windows::core::w!("ntdll.dll")).ok()? };
+            let proc = unsafe { GetProcAddress(h_ntdll, PCSTR(b"RtlGetVersion\0".as_ptr()))? };
+            let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 = unsafe { std::mem::transmute(proc) };
+            
+            let mut osi: OSVERSIONINFOEXW = unsafe { std::mem::zeroed() };
+            osi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
+            
+            if unsafe { rtl_get_version(&mut osi) } == 0 {
+                let major = osi.dwMajorVersion;
+                let minor = osi.dwMinorVersion;
+                let build = osi.dwBuildNumber;
+                let is_server = osi.wProductType != 1;
+                
+                let service_pack = String::from_utf16(&osi.szCSDVersion).ok()?
+                    .trim_matches(char::from(0)).to_string();
+
+                use winreg::enums::HKEY_LOCAL_MACHINE;
+                use winreg::RegKey;
+                let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+                
+                let marketing_name = match (major, minor) {
+                    (10, 0) => {
+                        if is_server {
+                            if build >= 26100 { "Server 2025" }
+                            else if build >= 20348 { "Server 2022" }
+                            else if build >= 17763 { "Server 2019" }
+                            else if build >= 14393 { "Server 2016" }
+                            else { "Server" }
                         } else {
-                            String::new()
-                        };
-
-                        // Use registry for Marketing names and Editions
-                        use winreg::enums::HKEY_LOCAL_MACHINE;
-                        use winreg::RegKey;
-                        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-                        
-                        let marketing_name = match (major, minor) {
-                            (10, 0) => {
-                                if is_server {
-                                    if build >= 26100 { "Server 2025" }
-                                    else if build >= 20348 { "Server 2022" }
-                                    else if build >= 17763 { "Server 2019" }
-                                    else if build >= 14393 { "Server 2016" }
-                                    else { "Server" }
-                                } else {
-                                    if build >= 22000 { "11" }
-                                    else { "10" }
-                                }
-                            }
-                            (6, 3) => if is_server { "Server 2012 R2" } else { "8.1" },
-                            (6, 2) => if is_server { "Server 2012" } else { "8" },
-                            (6, 1) => if is_server { "Server 2008 R2" } else { "7" },
-                            (6, 0) => if is_server { "Server 2008" } else { "Vista" },
-                            (5, 2) => if is_server { "Server 2003" } else { "XP" },
-                            (5, 1) => "XP",
-                            _ => "Unknown",
-                        };
-
-                        let mut display_name = format!("Windows {}", marketing_name);
-                        let mut display_version = String::new();
-                        let mut edition_id = String::new();
-                        let mut ubr: u32 = 0;
-
-                        if let Ok(key) = hklm.open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") {
-                            display_version = key.get_value("DisplayVersion")
-                                .or_else(|_| key.get_value("ReleaseId"))
-                                .unwrap_or_default();
-                            edition_id = key.get_value("EditionID").unwrap_or_default();
-                            ubr = key.get_value("UBR").unwrap_or(0);
+                            if build >= 22000 { "11" }
+                            else { "10" }
                         }
-
-                        if !edition_id.is_empty() {
-                            display_name.push_str(" ");
-                            display_name.push_str(&edition_id);
-                        }
-                        if !display_version.is_empty() {
-                            display_name.push_str(" ");
-                            display_name.push_str(&display_version);
-                        }
-                        if !service_pack.is_empty() {
-                            display_name.push_str(" ");
-                            display_name.push_str(&service_pack);
-                        }
-
-                        let full_version = if ubr > 0 {
-                            format!("{}.{}.{}.{}", major, minor, build, ubr)
-                        } else {
-                            format!("{}.{}.{}", major, minor, build)
-                        };
-
-                        log::info!(
-                            "Simple Image Viewer v{} | Environment: {} [{}] (Total RAM: {:.2} GB)",
-                            env!("CARGO_PKG_VERSION"),
-                            display_name,
-                            full_version,
-                            memory_gb
-                        );
-                        return;
                     }
-                }
-            }
-        }
-    }
+                    (6, 3) => if is_server { "Server 2012 R2" } else { "8.1" },
+                    (6, 2) => if is_server { "Server 2012" } else { "8" },
+                    (6, 1) => if is_server { "Server 2008 R2" } else { "7" },
+                    (6, 0) => if is_server { "Server 2008" } else { "Vista" },
+                    (5, 2) => if is_server { "Server 2003" } else { "XP" },
+                    (5, 1) => "XP",
+                    _ => "Unknown",
+                };
 
-    // Fallback logic remains unchanged
-    let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
-    let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
-    
+                let mut display_name = format!("Windows {}", marketing_name);
+                let mut display_version = String::new();
+                let mut edition_id = String::new();
+                let mut ubr: u32 = 0;
+
+                if let Ok(key) = hklm.open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") {
+                    display_version = key.get_value("DisplayVersion")
+                        .or_else(|_| key.get_value("ReleaseId"))
+                        .unwrap_or_default();
+                    edition_id = key.get_value("EditionID").unwrap_or_default();
+                    ubr = key.get_value("UBR").unwrap_or(0);
+                }
+
+                if !edition_id.is_empty() {
+                    display_name.push_str(" ");
+                    display_name.push_str(&edition_id);
+                }
+                if !display_version.is_empty() {
+                    display_name.push_str(" ");
+                    display_name.push_str(&display_version);
+                }
+                if !service_pack.is_empty() {
+                    display_name.push_str(" ");
+                    display_name.push_str(&service_pack);
+                }
+
+                let full_version = if ubr > 0 {
+                    format!("{}.{}.{}.{}", major, minor, build, ubr)
+                } else {
+                    format!("{}.{}.{}", major, minor, build)
+                };
+
+                return Some(format!("{} [{}] (RAM: {:.2} GB)", display_name, full_version, memory_gb));
+            }
+            None
+        }
+
+        unsafe { get_win_env(memory_gb) }
+    };
+
+    #[cfg(not(windows))]
+    let env_desc: Option<String> = None;
+
+    let final_desc = env_desc.unwrap_or_else(|| {
+        let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
+        let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
+        format!("{} [{}] (RAM: {:.2} GB)", os_name, os_version, memory_gb)
+    });
+
     log::info!(
-        "Environment: {} [{}] (Total RAM: {:.2} GB)",
-        os_name, 
-        os_version,
-        memory_gb
+        "Simple Image Viewer v{} | Environment: {}",
+        env!("CARGO_PKG_VERSION"),
+        final_desc
     );
+
+    final_desc
 }
 
 fn main() -> eframe::Result {
@@ -336,7 +330,7 @@ fn main() -> eframe::Result {
 
     // 3. Primary Instance Initialization
     init_logging();
-    log_env_info();
+    let env_info = log_env_info();
 
     #[cfg(target_os = "windows")]
     {
@@ -378,9 +372,37 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
-        "Simple Image Viewer", // Eframe specific, can stay in English as a unique identifier for egui
+    let result = eframe::run_native(
+        "Simple Image Viewer",
         native_options,
         Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, ipc_rx)) as Box<dyn eframe::App>)),
-    )
+    );
+
+    if let Err(e) = result {
+        let app_ver = env!("CARGO_PKG_VERSION");
+        let error_msg = format!(
+            "Simple Image Viewer v{}\nEnvironment: {}\n\n{}: {}",
+            app_ver, env_info, rust_i18n::t!("error.startup_failed"), e
+        );
+        
+        log::error!("Application startup failed: {}", e);
+
+        // Try to copy to clipboard
+        use clipboard_rs::{Clipboard, ClipboardContext};
+        if let Ok(ctx) = ClipboardContext::new() {
+            let _ = ctx.set_text(error_msg.clone());
+        }
+
+        let dialog_msg = format!("{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"));
+
+        rfd::MessageDialog::new()
+            .set_title(rust_i18n::t!("dialog.startup_error_title").to_string())
+            .set_description(&dialog_msg)
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        
+        return Err(e);
+    }
+
+    Ok(())
 }
