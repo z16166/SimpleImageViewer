@@ -190,7 +190,6 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
 }
 
 /// Save an RgbImage as JPEG with explicit quality (0–100).
-#[cfg(target_os = "windows")]
 /// Encode an RgbImage as JPEG with explicit quality (0–100) into a generic writer.
 fn encode_jpeg_to_memory<W: std::io::Write + std::io::Seek>(img: &RgbImage, writer: W, quality: u8) -> Result<(), String> {
     use ::image::codecs::jpeg::JpegEncoder;
@@ -288,8 +287,8 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
 
     // Load image from the in-memory JPEG buffer
     let image_reader = std::io::Cursor::new(jpeg_data);
-    let decoder = image::codecs::jpeg::JpegDecoder::new(image_reader).map_err(|e| e.to_string())?;
-    let image_xobject = ImageXObject::try_from(decoder).map_err(|e| e.to_string())?;
+    let decoder = ::image::codecs::jpeg::JpegDecoder::new(image_reader).map_err(|e: ::image::ImageError| e.to_string())?;
+    let image_xobject = ::printpdf::ImageXObject::try_from(decoder).map_err(|e| e.to_string())?;
     
     let image_id = doc.add_image(&image_xobject);
 

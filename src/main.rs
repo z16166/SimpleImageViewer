@@ -160,7 +160,7 @@ fn init_logging() {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let mut logger = flexi_logger::Logger::try_with_env_or_str("info")
+    let logger = flexi_logger::Logger::try_with_env_or_str("info")
         .expect("Failed to initialize logger")
         .log_to_file(flexi_logger::FileSpec::default()
             .directory(log_dir)
@@ -174,9 +174,7 @@ fn init_logging() {
         );
 
     #[cfg(debug_assertions)]
-    {
-        logger = logger.duplicate_to_stderr(flexi_logger::Duplicate::All);
-    }
+    let logger = logger.duplicate_to_stderr(flexi_logger::Duplicate::All);
 
     // Start the logger. The returned handle can be dropped as we don't
     // need to reconfigure the logger dynamically.
