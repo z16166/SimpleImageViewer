@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -101,15 +101,15 @@ impl ThemePalette {
         Self {
             canvas_bg:           Color32::from_rgb(18, 18, 24),
             panel_bg:            Color32::from_rgb(32, 33, 36),
-            widget_bg:           Color32::from_gray(48),
-            widget_hover:        Color32::from_gray(60),
-            widget_active:       Color32::from_gray(75),
+            widget_bg:           Color32::from_gray(65), // Increased from 48 for better contrast
+            widget_hover:        Color32::from_gray(80),
+            widget_active:       Color32::from_gray(100),
             extreme_bg:          Color32::from_gray(15),
 
             widget_border:       Color32::from_gray(75),
             widget_border_hover: Color32::from_gray(110),
 
-            scrollbar_handle:    Color32::from_gray(100),
+            scrollbar_handle:    Color32::from_gray(160), // Increased from 100 for better contrast
 
             text_normal:         Color32::from_rgb(240, 240, 240),
             text_muted:          Color32::from_rgb(154, 160, 166),

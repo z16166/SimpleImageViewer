@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by

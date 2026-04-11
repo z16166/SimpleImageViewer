@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -62,9 +62,27 @@ pub struct ImageLoader {
 impl ImageLoader {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("img-loader-{i}"))
-            .build()
+        let pool_builder = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("img-loader-{i}"));
+
+        #[cfg(target_os = "windows")]
+        let pool_builder = pool_builder.spawn_handler(|rayon_thread| {
+            let mut builder = std::thread::Builder::new();
+            if let Some(name) = rayon_thread.name() {
+                builder = builder.name(name.to_owned());
+            }
+            if let Some(stack_size) = rayon_thread.stack_size() {
+                builder = builder.stack_size(stack_size);
+            }
+
+            builder.spawn(move || {
+                let _com = crate::wic::ComGuard::new().expect("Failed to initialize COM on loader worker");
+                rayon_thread.run()
+            })?;
+            Ok(())
+        });
+
+        let pool = pool_builder.build()
             .expect("failed to create image loader thread pool");
         Self { tx, rx, loading: HashMap::new(), pool }
     }
@@ -110,19 +128,37 @@ impl ImageLoader {
 
 fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult {
     let result = (|| -> Result<ImageData, String> {
-        let ext = path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .unwrap_or_default();
+        let inner = || -> Result<ImageData, String> {
+            let ext = path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
 
-        match ext.as_str() {
-            "gif" => load_gif(path),
-            "png" | "apng" => load_png(path),
-            "webp" => load_webp(path),
-            "psd" | "psb" => load_psd(path),
-            "heif" | "heic" => load_heic(path),
-            _ => load_static(path),
+            match ext.as_str() {
+                "gif" => load_gif(path),
+                "png" | "apng" => load_png(path),
+                "webp" => load_webp(path),
+                "psd" | "psb" => load_psd(path),
+                "heif" | "heic" => load_heic(path),
+                _ => load_static(path),
+            }
+        };
+
+        let result = inner();
+        
+        #[cfg(target_os = "windows")]
+        if let Err(std_err) = result {
+            log::info!("Standard loader failed for {:?}, trying WIC fallback...", path);
+            match crate::wic::load_via_wic(path) {
+                Ok(wic_img) => return Ok(wic_img),
+                Err(wic_err) => {
+                    // Return both errors so the user can see why WIC also failed
+                    return Err(format!("{}\n(WIC: {})", std_err, wic_err));
+                }
+            }
         }
+
+        result
     })();
     LoadResult { index, generation, result }
 }

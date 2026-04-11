@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@ mod settings;
 pub mod theme;
 pub mod print;
 mod tile_cache;
+mod wic;
 
 #[cfg(target_os = "windows")]
 pub mod windows_utils {
@@ -114,10 +115,13 @@ pub mod windows_utils {
         }
 
         // 4. Remove our ProgID from each extension's OpenWithProgids
-        for ext in crate::scanner::SUPPORTED_EXTENSIONS {
-            let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
-            if let Ok(list_key) = hkcu.open_subkey_with_flags(&progid_list_path, KEY_WRITE) {
-                let _ = list_key.delete_value(APP_ID);
+        if let Ok(reg) = crate::wic::get_registry().read() {
+            for fmt in &reg.formats {
+                let ext = &fmt.extension;
+                let progid_list_path = format!(r"Software\Classes\.{}\OpenWithProgids", ext);
+                if let Ok(list_key) = hkcu.open_subkey_with_flags(&progid_list_path, KEY_WRITE) {
+                    let _ = list_key.delete_value(APP_ID);
+                }
             }
         }
 
@@ -149,6 +153,12 @@ fn load_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(target_os = "windows")]
+    {
+        wic::init_rayon_with_com();
+        wic::spawn_wic_discovery();
+    }
+
     env_logger::init();
 
     let mut settings = settings::Settings::load();

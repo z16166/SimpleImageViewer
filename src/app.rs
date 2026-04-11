@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -169,6 +169,8 @@ pub struct ImageViewerApp {
     #[cfg(target_os = "windows")]
     show_file_assoc_dialog: bool,
     #[cfg(target_os = "windows")]
+    file_assoc_formats: Vec<crate::wic::ImageFormat>,
+    #[cfg(target_os = "windows")]
     file_assoc_selections: Vec<bool>,
 
     // Transition state
@@ -295,7 +297,9 @@ impl ImageViewerApp {
             #[cfg(target_os = "windows")]
             show_file_assoc_dialog: false,
             #[cfg(target_os = "windows")]
-            file_assoc_selections: vec![true; scanner::SUPPORTED_EXTENSIONS.len()],
+            file_assoc_formats: Vec::new(),
+            #[cfg(target_os = "windows")]
+            file_assoc_selections: Vec::new(),
             prev_texture: None,
             transition_start: None,
             is_next: true,
@@ -1300,7 +1304,7 @@ impl ImageViewerApp {
             let (tx, rx) = crossbeam_channel::unbounded();
             self.music_scan_rx = Some(rx);
 
-            // Background scan – do NOT block the UI
+            // Background scan — do NOT block the UI
             std::thread::spawn(move || {
                 let files = collect_music_files(&path, Some(cancel_signal));
                 let _ = tx.send(files);
@@ -1595,7 +1599,7 @@ impl ImageViewerApp {
                                         ui.spacing_mut().item_spacing.x = 4.0;
                                         let has_tracks = self.audio.has_tracks();
                                         
-                                        // Buttons in RTL order: ⏭, ⏩, ▶/⏸, ⏪, ⏮
+                                        // Buttons in RTL order: NextFile, NextTrack, Play/Pause, PrevTrack, PrevFile
                                         if styled_button(ui, "⏭", &self.cached_palette).on_hover_text(t!("music.next_file")).clicked() {
                                             self.audio.next_file();
                                         }
@@ -1636,7 +1640,7 @@ impl ImageViewerApp {
                             ui.label(RichText::new(format!("[{short_f}]")).color(self.cached_palette.text_muted).small()).on_hover_text(&f);
                         });
                         if let Some(m) = metadata {
-                            ui.label(RichText::new(format!("✨ {m}")).color(self.cached_palette.accent2).small().italics());
+                            ui.label(RichText::new(format!("  │  {m}")).color(self.cached_palette.accent2).small().italics());
                         }
                     }
 
@@ -1775,9 +1779,12 @@ impl ImageViewerApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if styled_button(ui, t!("win.assoc_formats"), &self.cached_palette).clicked() {
-                            // Reset all selections to true (default: all selected)
-                            self.file_assoc_selections = vec![true; scanner::SUPPORTED_EXTENSIONS.len()];
-                            self.show_file_assoc_dialog = true;
+                            // Capture snapshot from registry
+                            if let Ok(reg) = crate::wic::get_registry().read() {
+                                self.file_assoc_formats = reg.formats.clone();
+                                self.file_assoc_selections = vec![true; self.file_assoc_formats.len()];
+                                self.show_file_assoc_dialog = true;
+                            }
                         }
                         ui.add_space(8.0);
                         if styled_button(ui, t!("win.remove_assoc"), &self.cached_palette).clicked() {
@@ -1889,7 +1896,7 @@ impl ImageViewerApp {
                 ui.painter().text(
                     screen_rect.center(),
                     Align2::CENTER_CENTER,
-                    format!("⚠ {err}"),
+                    format!("  ⚠ {err}"),
                     FontId::proportional(16.0),
                     Color32::from_rgb(255, 100, 100),
                 );
@@ -2843,27 +2850,57 @@ impl ImageViewerApp {
                 });
                 ui.add_space(4.0);
 
-                // Scrollable area with checkboxes in a 3-column grid
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    let exts = scanner::SUPPORTED_EXTENSIONS;
-                    let cols = 3;
-                    let rows = (exts.len() + cols - 1) / cols;
+                // Scrollable area with grouped checkboxes
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .auto_shrink([false, true]) // Don't shrink horizontally
+                    .show(ui, |ui| {
+                        // Add some right padding to avoid scrollbar overlap
+                        ui.set_max_width(ui.available_width() - 16.0);
+                    use crate::wic::FormatGroup;
+                    let groups = [
+                        (FormatGroup::Standard, "Standard Formats"),
+                        (FormatGroup::Pro, "Professional (PS/TIFF/HEIF)"),
+                        (FormatGroup::WicSystem, "Windows System (WIC)"),
+                        (FormatGroup::WicRaw, "Camera RAW (WIC)"),
+                        (FormatGroup::Others, "Other Formats"),
+                    ];
 
-                    egui::Grid::new("file_assoc_grid")
-                        .num_columns(cols)
-                        .spacing([24.0, 4.0])
-                        .show(ui, |ui| {
-                            for row in 0..rows {
-                                for col in 0..cols {
-                                    let idx = row * cols + col;
-                                    if idx < exts.len() {
-                                        let label = format!(".{}", exts[idx]);
-                                        ui.checkbox(&mut self.file_assoc_selections[idx], label);
+                    for (group, group_name) in groups {
+                        let group_indices: Vec<usize> = self.file_assoc_formats.iter()
+                            .enumerate()
+                            .filter(|(_, f)| f.group == group)
+                            .map(|(i, _)| i)
+                            .collect();
+
+                        if group_indices.is_empty() { continue; }
+
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(group_name).strong().color(self.cached_palette.accent2));
+                        ui.add_space(2.0);
+
+                        let cols = 5;
+                        let rows = (group_indices.len() + cols - 1) / cols;
+
+                        egui::Grid::new(format!("file_assoc_grid_{:?}", group))
+                            .num_columns(cols)
+                            .spacing([18.0, 4.0])
+                            .show(ui, |ui| {
+                                for row in 0..rows {
+                                    for col in 0..cols {
+                                        let grid_idx = row * cols + col;
+                                        if grid_idx < group_indices.len() {
+                                            let fmt_idx = group_indices[grid_idx];
+                                            let fmt = &self.file_assoc_formats[fmt_idx];
+                                            let label = format!(".{}", fmt.extension);
+                                            ui.checkbox(&mut self.file_assoc_selections[fmt_idx], label)
+                                                .on_hover_text(&fmt.description);
+                                        }
                                     }
+                                    ui.end_row();
                                 }
-                                ui.end_row();
-                            }
-                        });
+                            });
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -2898,11 +2935,11 @@ impl ImageViewerApp {
 
         if do_apply {
             // Collect selected extensions
-            let selected: Vec<&str> = scanner::SUPPORTED_EXTENSIONS
+            let selected: Vec<&str> = self.file_assoc_formats
                 .iter()
                 .zip(self.file_assoc_selections.iter())
                 .filter(|(_, sel)| **sel)
-                .map(|(&ext, _)| ext)
+                .map(|(fmt, _)| fmt.extension.as_str())
                 .collect();
             crate::windows_utils::register_file_associations(&selected);
             self.show_file_assoc_dialog = false;
@@ -3507,7 +3544,11 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, palette.text_muted);
 
     // Inactive: bg_fill → checkbox/scrollbar idle; weak_bg_fill → button backgrounds
-    visuals.widgets.inactive.bg_fill = palette.widget_bg;
+    visuals.widgets.inactive.bg_fill = if palette.is_dark { 
+        Color32::from_gray(85) 
+    } else { 
+        Color32::from_gray(210) // Slightly darker for better light-mode visibility (idle scrollbar)
+    };
     visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
     visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);

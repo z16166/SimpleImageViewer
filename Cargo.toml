@@ -52,6 +52,13 @@ quick-xml = "0.39"
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
 winreg = "0.11"
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Storage_FileSystem",
+] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 printpdf = { version = "0.9.1", features = ["images"] }

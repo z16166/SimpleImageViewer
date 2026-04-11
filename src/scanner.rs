@@ -1,5 +1,5 @@
 // Simple Image Viewer - A high-performance, cross-platform image viewer
-// Copyright (C) 2024 Simple Image Viewer Contributors
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,19 +19,15 @@ use crossbeam_channel::Sender;
 use std::fs::Metadata;
 use std::ffi::OsStr;
 
-pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif",
-    "webp", "ico", "tga", "hdr", "ppm", "pbm", "pgm", "pnm",
-    "avif", "qoi", "exr",
-    "psd", "psb",
-    "heif", "heic",
-];
-
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
-    ext.to_str()
-        .map(|e| SUPPORTED_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
+    if let Some(e) = ext.to_str() {
+        let e_lower = e.to_lowercase();
+        if let Ok(reg) = crate::wic::get_registry().read() {
+            return reg.extensions.contains(&e_lower);
+        }
+    }
+    false
 }
 
 /// Helper to check if a file is marked as "offline" (Windows specific).
