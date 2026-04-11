@@ -212,6 +212,10 @@ pub struct ImageViewerApp {
     // Preload byte budgets (computed at startup from system RAM)
     preload_budget_forward: u64,
     preload_budget_backward: u64,
+
+    // Custom right-click context menu (bypasses egui's context_menu which
+    // cannot re-open on consecutive right-clicks)
+    context_menu_pos: Option<Pos2>,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -318,6 +322,7 @@ impl ImageViewerApp {
             last_mouse_wheel_nav: 0.0,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
+            context_menu_pos: None,
         };
 
         // Restore last session state
@@ -1869,6 +1874,74 @@ impl ImageViewerApp {
     // UI: Image canvas
     // ------------------------------------------------------------------
 
+    /// Shared content for the right-click context menu (used by the custom
+    /// `egui::Area`-based popup in [`Self::draw_image_canvas_ui`]).
+    fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
+        let path = &self.image_files[self.current_index];
+        let path_str = path.to_string_lossy().to_string();
+
+        if ui.button(t!("ctx.copy_path").to_string()).clicked() {
+            ui.ctx().copy_text(path_str.clone());
+            self.context_menu_pos = None;
+        }
+
+        if ui.button(t!("ctx.copy_file").to_string()).clicked() {
+            copy_file_to_clipboard(&path_str);
+            self.context_menu_pos = None;
+        }
+
+        ui.separator();
+
+        if ui.button(t!("ctx.view_exif").to_string()).clicked() {
+            self.cached_exif_data = extract_exif(path);
+            self.show_exif_window = true;
+            self.context_menu_pos = None;
+        }
+
+        if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
+            self.show_xmp_window = true;
+            self.context_menu_pos = None;
+        }
+
+        ui.separator();
+        if ui
+            .button(if cfg!(not(target_os = "windows")) {
+                t!("ctx.print_pdf_full").to_string()
+            } else {
+                t!("ctx.print_full").to_string()
+            })
+            .clicked()
+        {
+            self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
+            self.context_menu_pos = None;
+        }
+        if ui
+            .button(if cfg!(not(target_os = "windows")) {
+                t!("ctx.print_pdf_visible").to_string()
+            } else {
+                t!("ctx.print_visible").to_string()
+            })
+            .clicked()
+        {
+            self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
+            self.context_menu_pos = None;
+        }
+
+        ui.separator();
+        if ui
+            .button(t!("ctx.set_wallpaper").to_string())
+            .clicked()
+        {
+            self.show_wallpaper_dialog = true;
+            if let Ok(p) = wallpaper::get() {
+                self.current_system_wallpaper = Some(p);
+            } else {
+                self.current_system_wallpaper = Some("Unknown".to_string());
+            }
+            self.context_menu_pos = None;
+        }
+    }
+
     fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
         // Collect modal flags to block mouse interaction
         let any_modal_open = self.show_wallpaper_dialog 
@@ -1887,12 +1960,71 @@ impl ImageViewerApp {
             let sense = if any_modal_open { Sense::hover() } else { Sense::click_and_drag() };
             let canvas_resp = ui.allocate_rect(screen_rect, sense);
 
+            // ── Custom right-click context menu ──────────────────────────
+            // We bypass `response.context_menu()` entirely because egui's
+            // popup layer consumes the secondary-click event when it closes
+            // an existing menu, making it impossible to re-open the menu
+            // with a single right-click.  Instead we detect raw right-clicks
+            // via `ctx.input()` and render the menu through `egui::Area`.
+            if !any_modal_open && !self.image_files.is_empty() {
+                let ctx = ui.ctx().clone();
+                let raw_secondary = ctx.input(|i| i.pointer.secondary_clicked());
+                let interact_pos  = ctx.input(|i| i.pointer.interact_pos());
+
+                // Open or reposition on right-click inside the canvas
+                if raw_secondary && canvas_resp.hovered() {
+                    if let Some(pos) = interact_pos {
+                        self.context_menu_pos = Some(pos);
+                    }
+                }
+
+                // Close on Escape
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.context_menu_pos = None;
+                }
+
+                // Render the popup and handle close-on-click / button actions
+                if let Some(pos) = self.context_menu_pos {
+                    let area_resp = egui::Area::new(egui::Id::new("__custom_canvas_ctx_menu"))
+                        .kind(egui::UiKind::Menu)
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(pos)
+                        .default_width(ctx.global_style().spacing.menu_width)
+                        .sense(Sense::hover())
+                        .show(&ctx, |ui| {
+                            egui::Frame::menu(ui.style()).show(ui, |ui| {
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                                    |ui| self.draw_context_menu_items(ui),
+                                );
+                            });
+                        });
+
+                    let menu_rect = area_resp.response.rect;
+
+                    // Close if the user clicked (primary) outside the menu
+                    let primary_clicked = ctx.input(|i| i.pointer.primary_clicked());
+                    if primary_clicked {
+                        if let Some(pp) = interact_pos {
+                            if !menu_rect.contains(pp) {
+                                self.context_menu_pos = None;
+                            }
+                        }
+                    }
+
+                    // Close if a button inside called ui.close()
+                    if area_resp.response.should_close() {
+                        self.context_menu_pos = None;
+                    }
+                }
+            }
+
             // Draw a dimmer rect if a modal is open
             if any_modal_open {
                 ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
             }
             
-            if self.show_settings && canvas_resp.clicked() {
+            if self.show_settings && canvas_resp.clicked_by(egui::PointerButton::Primary) {
                 self.show_settings = false;
             }
 
@@ -2007,56 +2139,6 @@ impl ImageViewerApp {
                     ui.painter().rect_filled(bg, 4.0, Color32::from_black_alpha(160));
                     ui.painter().galley(text_pos, galley, Color32::WHITE);
                 }
-
-                // Context menu (tiled path — same items as the normal image path)
-                canvas_resp.context_menu(|ui| {
-                    let path = &self.image_files[self.current_index];
-                    let path_str = path.to_string_lossy().to_string();
-
-                    if ui.button(t!("ctx.copy_path").to_string()).clicked() {
-                        ui.ctx().copy_text(path_str.clone());
-                        ui.close();
-                    }
-
-                    if ui.button(t!("ctx.copy_file").to_string()).clicked() {
-                        copy_file_to_clipboard(&path_str);
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-                        self.cached_exif_data = extract_exif(path);
-                        self.show_exif_window = true;
-                        ui.close();
-                    }
-
-                    if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-                        self.show_xmp_window = true;
-                        ui.close();
-                    }
-
-                    ui.separator();
-                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_full").to_string() } else { t!("ctx.print_full").to_string() }).clicked() {
-                        self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
-                        ui.close();
-                    }
-                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_visible").to_string() } else { t!("ctx.print_visible").to_string() }).clicked() {
-                        self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
-                        ui.close();
-                    }
-
-                    ui.separator();
-                    if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
-                        self.show_wallpaper_dialog = true;
-                        if let Ok(p) = wallpaper::get() {
-                            self.current_system_wallpaper = Some(p);
-                        } else {
-                            self.current_system_wallpaper = Some("Unknown".to_string());
-                        }
-                        ui.close();
-                    }
-                });
 
                 return;
             }
@@ -2454,56 +2536,6 @@ impl ImageViewerApp {
                         Color32::WHITE.linear_multiply(alpha),
                     );
                 }
-
-                // Right-click context menu (defines interactions for the canvas area)
-                canvas_resp.context_menu(|ui| {
-                    let path = &self.image_files[self.current_index];
-                    let path_str = path.to_string_lossy().to_string();
-
-                    if ui.button(t!("ctx.copy_path").to_string()).clicked() {
-                        ui.ctx().copy_text(path_str.clone());
-                        ui.close();
-                    }
-
-                    if ui.button(t!("ctx.copy_file").to_string()).clicked() {
-                        copy_file_to_clipboard(&path_str);
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-                        self.cached_exif_data = extract_exif(path);
-                        self.show_exif_window = true;
-                        ui.close();
-                    }
-
-                    if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-                        self.show_xmp_window = true;
-                        ui.close();
-                    }
-                    
-                    ui.separator();
-                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_full").to_string() } else { t!("ctx.print_full").to_string() }).clicked() {
-                        self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
-                        ui.close();
-                    }
-                    if ui.button(if cfg!(not(target_os = "windows")) { t!("ctx.print_pdf_visible").to_string() } else { t!("ctx.print_visible").to_string() }).clicked() {
-                        self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
-                        ui.close();
-                    }
-                    
-                    ui.separator();
-                    if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
-                        self.show_wallpaper_dialog = true;
-                        if let Ok(p) = wallpaper::get() {
-                            self.current_system_wallpaper = Some(p);
-                        } else {
-                            self.current_system_wallpaper = Some("Unknown".to_string());
-                        }
-                        ui.close();
-                    }
-                });
 
                 if self.settings.show_osd {
                     // HUD overlay
