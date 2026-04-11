@@ -269,54 +269,80 @@ fn invoke_system_print(_path: &Path) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String> {
+    use image::codecs::jpeg::{JpegDecoder, JpegEncoder};
+    use image::DynamicImage;
+    use printpdf::*;
+    use std::io::Cursor;
+
     let (width, height) = img.dimensions();
     
-    // 1. Encode to JPEG in memory to optimize PDF size
-    let mut jpeg_bytes = std::io::Cursor::new(Vec::new());
-    encode_jpeg_to_memory(img, &mut jpeg_bytes, 95)?;
-    let jpeg_data = jpeg_bytes.into_inner();
-
-    use printpdf::*;
-
-    // PDF unit: 1pt = 1/72 inch = 0.352778 mm
-    let px_to_mm = 0.352778_f32;
+    // 1. Setup PDF Document (Standardizing at 300 DPI for calculation)
+    // 1 pixel at 300 DPI = 25.4 / 300 = 0.084667 mm
+    let px_to_mm = 0.084667_f32; 
     let width_mm = Mm(width as f32 * px_to_mm);
     let height_mm = Mm(height as f32 * px_to_mm);
 
-    // printpdf 0.9.1 uses a (PdfDocument, PageIndex, LayerIndex) triplet.
-    let (doc, page1, layer1) = PdfDocument::new("Print Image", width_mm, height_mm, "Layer 1");
+    // printpdf 0.9.1 initialization
+    let (doc, page1, layer1) = PdfDocument::new("SIV Print", width_mm, height_mm, "Layer 1");
     let current_layer = doc.get_page(page1).get_layer(layer1);
 
-    // Load image from the in-memory JPEG buffer
-    let image_reader = std::io::Cursor::new(jpeg_data);
-    let decoder = ::image::codecs::jpeg::JpegDecoder::new(image_reader)
-        .map_err(|e: ::image::ImageError| e.to_string())?;
+    // 2. Encode to JPEG in memory (RGB8 only)
+    let mut compressed_buffer: Vec<u8> = Vec::new();
+    let quality = 90; 
+    let mut encoder = JpegEncoder::new_with_quality(&mut compressed_buffer, quality);
     
-    // In printpdf 0.9.1, Image implements TryFrom for various decoders.
-    let image = Image::try_from(decoder).map_err(|e| e.to_string())?;
-    
-    // Add to layer with default transform (fits perfectly because page size == image size).
-    image.add_to_layer(current_layer, ImageTransform::default());
+    // Wrap RgbImage into DynamicImage
+    let dynamic_img = DynamicImage::ImageRgb8(img.clone());
+    encoder.encode_image(&dynamic_img).map_err(|e| format!("JPEG encode error: {e}"))?;
 
-    // Save directly to the target file path using the 0.9.1 API.
+    // 3. Create JpegDecoder from memory buffer to trigger DCTDecode in printpdf
+    let decoder_cursor = Cursor::new(compressed_buffer);
+    let decoder = JpegDecoder::new(decoder_cursor).map_err(|e| format!("JPEG decode error: {e}"))?;
+
+    // 4. Create printpdf Image (DCTDecode)
+    let pdf_image = Image::try_from(decoder).map_err(|e| format!("PDF Image error: {e}"))?;
+
+    // 5. Add to layer with correct coordinate origin (0,0 is bottom-left)
+    pdf_image.add_to_layer(
+        current_layer,
+        ImageTransform {
+            translate_x: Some(Mm(0.0)),
+            translate_y: Some(Mm(0.0)),
+            dpi: Some(300.0), // Matches the px_to_mm calculation above
+            ..Default::default()
+        },
+    );
+
+    // 6. Save the PDF using the 0.9.1 API
     let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    doc.save(&mut std::io::BufWriter::new(file)).map_err(|e| e.to_string())?;
+    let mut writer = std::io::BufWriter::new(file);
+    doc.save(&mut writer).map_err(|e| e.to_string())?;
     
     // Invoke system open to print
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
+        let status = std::process::Command::new("open")
+            .arg("-a")
+            .arg("Preview")
             .arg(out_path)
-            .spawn()
-            .map_err(|e| format!("Failed to open PDF on macOS: {}", e))?;
+            .status()
+            .map_err(|e| format!("Failed to open preview: {}", e))?;
+        
+        if !status.success() {
+            return Err("Failed to open PDF in Preview".to_string());
+        }
     }
-    
+
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
+        let status = std::process::Command::new("xdg-open")
             .arg(out_path)
-            .spawn()
-            .map_err(|e| format!("Failed to open PDF on Linux: {}", e))?;
+            .status()
+            .map_err(|e| format!("Failed to open PDF in xdg-open: {}", e))?;
+        
+        if !status.success() {
+            return Err("Failed to open PDF in xdg-open".to_string());
+        }
     }
 
     Ok(())
