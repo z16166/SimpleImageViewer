@@ -152,14 +152,60 @@ fn load_icon() -> egui::IconData {
     }
 }
 
+fn init_logging() {
+    let log_dir = crate::settings::settings_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let mut logger = flexi_logger::Logger::try_with_env_or_str("info")
+        .expect("Failed to initialize logger")
+        .log_to_file(flexi_logger::FileSpec::default()
+            .directory(log_dir)
+            .basename("simple_image_viewer")
+        )
+        .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+        .rotate(
+            flexi_logger::Criterion::Size(10 * 1024 * 1024), // 10 MB
+            flexi_logger::Naming::Numbers,
+            flexi_logger::Cleanup::KeepLogFiles(3),
+        );
+
+    #[cfg(debug_assertions)]
+    {
+        logger = logger.duplicate_to_stderr(flexi_logger::Duplicate::All);
+    }
+
+    // Start the logger. The returned handle can be dropped as we don't
+    // need to reconfigure the logger dynamically.
+    let _ = logger.start();
+}
+
 fn main() -> eframe::Result {
+    // 1. Parse initial image from arguments (needed for IPC)
+    let mut initial_image = None;
+    if let Some(arg) = std::env::args_os().nth(1) {
+        let pic_path = std::path::PathBuf::from(arg);
+        if pic_path.is_file() {
+            initial_image = Some(pic_path);
+        }
+    }
+
+    // 2. IPC Single-instance check (prevents multiple processes from writing to the same log)
+    let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
+    let no_recursive = initial_image.is_some();
+    if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
+        std::process::exit(0);
+    }
+
+    // 3. Primary Instance Initialization
+    init_logging();
+
     #[cfg(target_os = "windows")]
     {
         wic::init_rayon_with_com();
         wic::spawn_wic_discovery();
     }
-
-    env_logger::init();
 
     let mut settings = settings::Settings::load();
 
@@ -169,25 +215,15 @@ fn main() -> eframe::Result {
     }
     rust_i18n::set_locale(&settings.language);
 
-    let mut initial_image = None;
-
-    if let Some(arg) = std::env::args_os().nth(1) {
-        let pic_path = std::path::PathBuf::from(arg);
-        if pic_path.is_file() {
-            if let Some(parent) = pic_path.parent() {
-                settings.last_image_dir = Some(parent.to_path_buf());
-            }
-            settings.auto_switch = false;
-            settings.recursive = false;
-            initial_image = Some(pic_path);
+    // Apply command-line overrides to settings
+    if let Some(ref path) = initial_image {
+        if let Some(parent) = path.parent() {
+            settings.last_image_dir = Some(parent.to_path_buf());
         }
+        settings.auto_switch = false;
+        settings.recursive = false;
     }
 
-    let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
-    let no_recursive = initial_image.is_some();
-    if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
-        std::process::exit(0);
-    }
 
     let fullscreen = settings.fullscreen;
 

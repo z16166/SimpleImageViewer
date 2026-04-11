@@ -949,9 +949,10 @@ impl ImageViewerApp {
                     }
                 }
                 Err(e) => {
-                    log::warn!(
-                        "Failed to load image at index {}: {e}",
-                        idx
+                    let path_str = self.image_files[idx].display().to_string();
+                    log::error!(
+                        "Failed to load image at index {} ({}): {e}",
+                        idx, path_str
                     );
                     if idx == self.current_index {
                         let path_str = self.image_files[idx].display().to_string();
@@ -1893,13 +1894,19 @@ impl ImageViewerApp {
 
             // Error message
             if let Some(ref err) = self.error_message {
-                ui.painter().text(
-                    screen_rect.center(),
-                    Align2::CENTER_CENTER,
-                    format!("  ⚠ {err}"),
-                    FontId::proportional(16.0),
-                    Color32::from_rgb(255, 100, 100),
-                );
+                let text = format!("⚠ {err}");
+                let font_id = FontId::proportional(16.0);
+                let color = Color32::from_rgb(255, 100, 100);
+
+                egui::Area::new("error_display".into())
+                    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(text).font(font_id).color(color))
+                                .selectable(true)
+                                .halign(egui::Align::Center)
+                        );
+                    });
                 return;
             }
 
@@ -3068,13 +3075,21 @@ impl eframe::App for ImageViewerApp {
                         self.load_directory(path);
                         self.queue_save();
                     } else if path.is_file() {
-                        // Dropped a single file — open it and stop auto-switch
-                        log::info!("Drop: opening file {:?}", path);
-                        if let Some(parent) = path.parent() {
-                            self.initial_image = Some(path.clone());
-                            self.settings.auto_switch = false;
-                            self.load_directory(parent.to_path_buf());
-                            self.queue_save();
+                        // Dropped a single file — check if it's a supported format
+                        let is_supported = path.extension()
+                            .map(|ext| crate::scanner::is_supported_extension(ext))
+                            .unwrap_or(false);
+
+                        if is_supported {
+                            log::info!("Drop: opening file {:?}", path);
+                            if let Some(parent) = path.parent() {
+                                self.initial_image = Some(path.clone());
+                                self.settings.auto_switch = false;
+                                self.load_directory(parent.to_path_buf());
+                                self.queue_save();
+                            }
+                        } else {
+                            log::warn!("Drop: ignored unsupported file format {:?}", path);
                         }
                     }
                     ctx.request_repaint();
