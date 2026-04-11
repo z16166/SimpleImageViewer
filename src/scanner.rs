@@ -21,13 +21,7 @@ use std::ffi::OsStr;
 
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
-    if let Some(e) = ext.to_str() {
-        let e_lower = e.to_lowercase();
-        if let Ok(reg) = crate::wic::get_registry().read() {
-            return reg.extensions.contains(&e_lower);
-        }
-    }
-    false
+    crate::formats::is_supported_extension(ext)
 }
 
 /// Helper to check if a file is marked as "offline" (Windows specific).

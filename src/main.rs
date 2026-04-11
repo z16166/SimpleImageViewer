@@ -28,6 +28,7 @@ mod settings;
 pub mod theme;
 pub mod print;
 mod tile_cache;
+mod formats;
 #[cfg(target_os = "windows")]
 mod wic;
 

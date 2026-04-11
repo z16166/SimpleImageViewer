@@ -169,7 +169,7 @@ pub struct ImageViewerApp {
     #[cfg(target_os = "windows")]
     show_file_assoc_dialog: bool,
     #[cfg(target_os = "windows")]
-    file_assoc_formats: Vec<crate::wic::ImageFormat>,
+    file_assoc_formats: Vec<crate::formats::ImageFormat>,
     #[cfg(target_os = "windows")]
     file_assoc_selections: Vec<bool>,
 
@@ -1781,7 +1781,7 @@ impl ImageViewerApp {
                     ui.horizontal(|ui| {
                         if styled_button(ui, t!("win.assoc_formats"), &self.cached_palette).clicked() {
                             // Capture snapshot from registry
-                            if let Ok(reg) = crate::wic::get_registry().read() {
+                            if let Ok(reg) = crate::formats::get_registry().read() {
                                 self.file_assoc_formats = reg.formats.clone();
                                 self.file_assoc_selections = vec![true; self.file_assoc_formats.len()];
                                 self.show_file_assoc_dialog = true;
@@ -2864,7 +2864,7 @@ impl ImageViewerApp {
                     .show(ui, |ui| {
                         // Add some right padding to avoid scrollbar overlap
                         ui.set_max_width(ui.available_width() - 16.0);
-                    use crate::wic::FormatGroup;
+                    use crate::formats::FormatGroup;
                     let groups = [
                         (FormatGroup::Standard, "Standard Formats"),
                         (FormatGroup::Pro, "Professional (PS/TIFF/HEIF)"),
