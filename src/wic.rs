@@ -91,13 +91,12 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
         let enumerator = factory.CreateComponentEnumerator(WICDecoder.0 as u32, WICComponentEnumerateDefault.0 as u32)?;
         
         let mut components = [None; 1];
-        let mut fetched = 0;
+        let mut _fetched = 0;
         let mut new_codecs = 0;
 
         loop {
-            let mut fetched = 0;
-            let hr = enumerator.Next(&mut components, Some(&mut fetched));
-            if hr.is_ok() && fetched > 0 {
+            let hr = enumerator.Next(&mut components, Some(&mut _fetched));
+            if hr.is_ok() && _fetched > 0 {
                 if let Some(unknown) = components[0].take() {
                     if let Ok(codec_info) = unknown.cast::<IWICBitmapCodecInfo>() {
                         let mut ext_buf = [0u16; 512];

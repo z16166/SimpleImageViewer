@@ -458,7 +458,7 @@ impl ImageViewerApp {
 
         if let Some(res) = self.current_image_res {
             let img_size = egui::vec2(res.0 as f32, res.1 as f32);
-            let screen_rect = ctx.screen_rect(); 
+            let screen_rect = ctx.input(|i| i.content_rect()); 
 
             if mode == PrintMode::VisibleArea {
                 let display_rect = self.compute_display_rect(img_size, screen_rect);
@@ -884,7 +884,7 @@ impl ImageViewerApp {
                     // Large image: create TileManager + preview, skip full GPU upload
                     if idx == self.current_index {
                         self.current_image_res = Some((decoded.width, decoded.height));
-                        let screen_size = ctx.screen_rect().size();
+                        let screen_size = ctx.input(|i| i.content_rect()).size();
                         let max_w = screen_size.x.max(1920.0) as u32;
                         let max_h = screen_size.y.max(1080.0) as u32;
                         let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels);
@@ -1172,7 +1172,7 @@ impl ImageViewerApp {
             }
         }
 
-        let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.wants_pointer_input();
+        let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.egui_wants_pointer_input();
         if !ui_consuming_scroll {
             if is_ctrl_pressed {
                 // Zoom-to-cursor: the point under the mouse stays fixed during zoom.
@@ -1184,7 +1184,7 @@ impl ImageViewerApp {
                     let ratio = self.zoom_factor / old_zoom;
 
                     if let Some(mouse) = mouse_pos {
-                        let screen_center = ctx.screen_rect().center();
+                        let screen_center = ctx.input(|i| i.content_rect()).center();
                         let d = mouse - screen_center;
                         // d * (1 - ratio) compensates for the scale change around the cursor
                         self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
@@ -2614,7 +2614,7 @@ impl ImageViewerApp {
 
         egui::Window::new(t!("wallpaper.title"))
             .id(egui::Id::new("wallpaper_window"))
-            .default_pos(ctx.screen_rect().center() - egui::vec2(260.0, 160.0))
+            .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(260.0, 160.0))
             .resizable(true)
             .collapsible(false)
             .frame(
@@ -2809,7 +2809,7 @@ impl ImageViewerApp {
         }
 
         // Dark background overlay (purely visual, settings panel is hidden)
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.input(|i| i.content_rect());
         let bg_layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("file_assoc_bg"));
         ctx.layer_painter(bg_layer).add(
             egui::Shape::rect_filled(
@@ -3257,7 +3257,7 @@ impl eframe::App for ImageViewerApp {
                 .id(egui::Id::new("exif_window"))
                 .collapsible(false)
                 .resizable(true)
-                .default_pos(ctx.screen_rect().center() - egui::vec2(300.0, 200.0))
+                .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(300.0, 200.0))
                 .default_size([600.0, 400.0])
                 .show(&ctx, |ui| {
                     ui.set_max_width(ui.available_width());
@@ -3266,7 +3266,8 @@ impl eframe::App for ImageViewerApp {
                         ui.label(RichText::new(t!("exif.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
                     }
 
-                    egui::TopBottomPanel::bottom("exif_footer")
+                    egui::Context::default().global_style_mut(|s| s.override_text_style = None);
+                    egui::Panel::bottom("exif_footer")
                         .resizable(false)
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
@@ -3300,7 +3301,7 @@ impl eframe::App for ImageViewerApp {
                                                     ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
                                                 });
                                                 row.col(|ui| {
-                                                    ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
+                                                    let _ = ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
                                                 });
                                             });
                                         });
@@ -3341,7 +3342,7 @@ impl eframe::App for ImageViewerApp {
                 // .id(egui::Id::new("xmp_window"))
                 .collapsible(false)
                 .resizable(true)
-                .default_pos(ctx.screen_rect().center() - egui::vec2(320.0, 240.0))
+                .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(320.0, 240.0))
                 .default_size([640.0, 500.0])
                 .show(&ctx, |ui| {
                     ui.set_max_width(ui.available_width());
@@ -3350,7 +3351,7 @@ impl eframe::App for ImageViewerApp {
                         ui.label(RichText::new(t!("xmp.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
                     }
 
-                    egui::TopBottomPanel::bottom("xmp_footer")
+                    egui::Panel::bottom("xmp_footer")
                         .resizable(false)
                         .show_inside(ui, |ui| {
                             ui.add_space(10.0);
@@ -3390,7 +3391,7 @@ impl eframe::App for ImageViewerApp {
                                                     ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
                                                 });
                                                 row.col(|ui| {
-                                                    ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
+                                                    let _ = ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
                                                 });
                                             });
                                         });

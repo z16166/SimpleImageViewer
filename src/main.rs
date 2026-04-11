@@ -219,7 +219,7 @@ fn log_env_info() -> String {
             let mut osi: OSVERSIONINFOEXW = unsafe { std::mem::zeroed() };
             osi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
             
-            if unsafe { rtl_get_version(&mut osi) } == 0 {
+            if rtl_get_version(&mut osi) == 0 {
                 let major = osi.dwMajorVersion;
                 let minor = osi.dwMinorVersion;
                 let build = osi.dwBuildNumber;

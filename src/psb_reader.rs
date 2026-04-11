@@ -27,7 +27,7 @@
 //!
 //! Reference: Adobe Photoshop File Formats Specification (March 2013)
 
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Decoded PSB composite image.
@@ -97,7 +97,7 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     // ── Section 5: Image Data (the flattened composite) ────────────
     let compression = read_u16(&mut r)?;
 
-    let num_channels = channels.min(4); // We only care about up to 4 channels (RGBA)
+    let _num_channels = channels.min(4); // We only care about up to 4 channels (RGBA)
     let total_rows = height as usize * channels as usize;
 
     let mut channel_data: Vec<Vec<u8>> = Vec::new();

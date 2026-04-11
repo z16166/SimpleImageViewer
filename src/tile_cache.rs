@@ -174,6 +174,7 @@ impl TileManager {
     }
 
     /// Clear all cached tiles (e.g. when switching images).
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.tiles.clear();
         self.lru_order.clear();

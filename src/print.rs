@@ -191,16 +191,23 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
 
 /// Save an RgbImage as JPEG with explicit quality (0–100).
 #[cfg(target_os = "windows")]
-fn save_jpeg_with_quality(img: &RgbImage, path: &Path, quality: u8) -> Result<(), String> {
+/// Encode an RgbImage as JPEG with explicit quality (0–100) into a generic writer.
+fn encode_jpeg_to_memory<W: std::io::Write + std::io::Seek>(img: &RgbImage, writer: W, quality: u8) -> Result<(), String> {
     use ::image::codecs::jpeg::JpegEncoder;
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut encoder = JpegEncoder::new_with_quality(std::io::BufWriter::new(file), quality);
+    let mut encoder = JpegEncoder::new_with_quality(writer, quality);
     encoder.encode(
         img.as_raw(),
         img.width(),
         img.height(),
         ::image::ExtendedColorType::Rgb8,
     ).map_err(|e| e.to_string())
+}
+
+/// Helper to save an RgbImage as JPEG with explicit quality to a file.
+#[cfg(target_os = "windows")]
+fn save_jpeg_with_quality(img: &RgbImage, path: &std::path::Path, quality: u8) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    encode_jpeg_to_memory(img, std::io::BufWriter::new(file), quality)
 }
 
 /// Helper to flatten RGBA to white-background RGB
@@ -265,6 +272,11 @@ fn invoke_system_print(_path: &Path) -> Result<(), String> {
 fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String> {
     let (width, height) = img.dimensions();
     
+    // 1. Encode to JPEG in memory to optimize PDF size
+    let mut jpeg_bytes = std::io::Cursor::new(Vec::new());
+    encode_jpeg_to_memory(img, &mut jpeg_bytes, 95)?;
+    let jpeg_data = jpeg_bytes.into_inner();
+
     use printpdf::*;
 
     // PDF unit: 1pt = 1/72 inch = 0.352778 mm
@@ -272,22 +284,15 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     let width_mm = Mm(width as f32 * px_to_mm);
     let height_mm = Mm(height as f32 * px_to_mm);
 
-    // printpdf 0.9.x: create document, add image as RawImage, build page with ops
     let mut doc = PdfDocument::new("Print Image");
 
-    // Build a RawImage from the RGB pixel data
-    let raw_image = RawImage {
-        pixels: RawImageData::U8(img.as_raw().clone()),
-        width: width as usize,
-        height: height as usize,
-        data_format: RawImageFormat::RGB8,
-        tag: Vec::new(),
-    };
+    // Load image from the in-memory JPEG buffer
+    let image_reader = std::io::Cursor::new(jpeg_data);
+    let decoder = image::codecs::jpeg::JpegDecoder::new(image_reader).map_err(|e| e.to_string())?;
+    let image_xobject = ImageXObject::try_from(decoder).map_err(|e| e.to_string())?;
+    
+    let image_id = doc.add_image(&image_xobject);
 
-    // Add image to document resources, get its XObject ID
-    let image_id = doc.add_image(&raw_image);
-
-    // Create a page with the image placed at origin, filling the page
     let page = PdfPage::new(width_mm, height_mm, vec![
         Op::UseXobject {
             id: image_id,

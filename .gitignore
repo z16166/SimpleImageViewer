@@ -13,5 +13,6 @@ siv_settings.yaml
 .DS_Store
 Thumbs.db
 desktop.ini
-error.log
 test_large.bmp
+*.log
+*.txt
