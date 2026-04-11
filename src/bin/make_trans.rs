@@ -2,7 +2,7 @@ use image::{GenericImageView, ImageBuffer, Rgba};
 fn main() {
     let src = "C:\\Users\\zhang\\.gemini\\antigravity\\brain\\997ed693-3a65-48bd-8fac-9810c0690265\\luxury_glass_icon_1775309872010.png";
     let dst = "f:\\Rust\\SimpleImageViewer\\assets\\icon.png";
-    let img = image::io::Reader::open(src).unwrap().with_guessed_format().unwrap().decode().unwrap();
+    let img = image::ImageReader::open(src).unwrap().with_guessed_format().unwrap().decode().unwrap();
     let (w, h) = img.dimensions();
     let mut out = ImageBuffer::new(w, h);
     
