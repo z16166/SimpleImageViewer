@@ -1361,7 +1361,7 @@ impl ImageViewerApp {
                 ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
 
                 ui.heading(
-                    RichText::new(t!("app.title"))
+                    RichText::new(format!("{} v{}", t!("app.title"), env!("CARGO_PKG_VERSION")))
                         .color(self.cached_palette.accent2)
                         .size(18.0),
                 );
