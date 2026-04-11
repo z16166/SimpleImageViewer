@@ -371,6 +371,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport,
         centered: true,
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 

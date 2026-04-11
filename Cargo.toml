@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "0.34", default-features = false, features = [
     "default_fonts",
-    "glow",
+    "wgpu",
     "wayland",
     "x11",
 ] }
@@ -48,11 +48,12 @@ sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 heic = "0.1"
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
+wgpu = { version = "24", features = ["dx12", "metal"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
 winreg = "0.11"
-windows = { version = "0.52", features = [
+windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Imaging",
     "Win32_System_Com",

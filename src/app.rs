@@ -2965,7 +2965,7 @@ impl ImageViewerApp {
 }
 
 impl eframe::App for ImageViewerApp {
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
             self.queue_save();
