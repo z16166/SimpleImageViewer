@@ -191,6 +191,7 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
 
 /// Save an RgbImage as JPEG with explicit quality (0–100).
 /// Encode an RgbImage as JPEG with explicit quality (0–100) into a generic writer.
+#[allow(dead_code)]
 fn encode_jpeg_to_memory<W: std::io::Write + std::io::Seek>(img: &RgbImage, writer: W, quality: u8) -> Result<(), String> {
     use ::image::codecs::jpeg::JpegEncoder;
     let mut encoder = JpegEncoder::new_with_quality(writer, quality);
@@ -269,7 +270,7 @@ fn invoke_system_print(_path: &Path) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String> {
-    use std::io::{Cursor, BufWriter};
+    use std::io::BufWriter;
     use std::fs::File;
 
     let (width, height) = img.dimensions();
@@ -280,10 +281,8 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     let width_mm = ::printpdf::Mm(width as f32 * px_to_mm);
     let height_mm = ::printpdf::Mm(height as f32 * px_to_mm);
 
-    // Correcting to the 0.9.1 API found via compiler errors
     let mut doc = ::printpdf::PdfDocument::new("SIV Print");
-    let (page1, layer1) = doc.add_page(width_mm, height_mm, "Layer 1");
-    let current_layer = doc.get_page(page1).get_layer(layer1);
+    let layer1 = doc.add_layer(&::printpdf::Layer::new("Layer 1"));
 
     // 2. Encode to JPEG in memory (RGB8 only)
     let mut compressed_buffer: Vec<u8> = Vec::new();
@@ -294,29 +293,53 @@ fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String
     let dynamic_img = ::image::DynamicImage::ImageRgb8(img.clone());
     encoder.encode_image(&dynamic_img).map_err(|e| format!("JPEG encode error: {e}"))?;
 
-    // 3. Create JpegDecoder from memory buffer to trigger DCTDecode in printpdf
-    let decoder_cursor = Cursor::new(compressed_buffer);
-    let decoder = ::image::codecs::jpeg::JpegDecoder::new(decoder_cursor)
-        .map_err(|e: ::image::ImageError| format!("JPEG decode error: {e}"))?;
+    // 3. Create ExternalXObject for the compressed DCTDecode bytes
+    let mut dict = std::collections::BTreeMap::new();
+    dict.insert("Type".to_string(), ::printpdf::DictItem::Name(b"XObject".to_vec()));
+    dict.insert("Subtype".to_string(), ::printpdf::DictItem::Name(b"Image".to_vec()));
+    dict.insert("Width".to_string(), ::printpdf::DictItem::Int(width as i64));
+    dict.insert("Height".to_string(), ::printpdf::DictItem::Int(height as i64));
+    dict.insert("ColorSpace".to_string(), ::printpdf::DictItem::Name(b"DeviceRGB".to_vec()));
+    dict.insert("BitsPerComponent".to_string(), ::printpdf::DictItem::Int(8));
+    dict.insert("Filter".to_string(), ::printpdf::DictItem::Name(b"DCTDecode".to_vec()));
 
-    // 4. Create printpdf Image (DCTDecode) via TryFrom
-    let pdf_image = ::printpdf::Image::try_from(decoder)
-        .map_err(|e| format!("PDF Image error: {e}"))?;
+    let external_stream = ::printpdf::ExternalStream {
+        dict,
+        content: compressed_buffer,
+        compress: false, // Already compressed by JPEG
+    };
 
-    // 5. Add to layer with correct coordinate origin (0,0 is bottom-left)
-    pdf_image.add_to_layer(
-        current_layer,
-        ::printpdf::ImageTransform {
-            translate_x: Some(::printpdf::Mm(0.0).into()),
-            translate_y: Some(::printpdf::Mm(0.0).into()),
-            dpi: Some(300.0), // Matches the px_to_mm calculation above
-            ..Default::default()
+    let external_xobject = ::printpdf::ExternalXObject {
+        stream: external_stream,
+        width: Some(::printpdf::Px(width as usize)),
+        height: Some(::printpdf::Px(height as usize)),
+        dpi: Some(300.0), // Matches the px_to_mm calculation above
+    };
+
+    let image_id = doc.add_xobject(&external_xobject);
+
+    let ops = vec![
+        ::printpdf::Op::BeginLayer { layer_id: layer1 },
+        ::printpdf::Op::UseXobject {
+            id: image_id,
+            transform: ::printpdf::XObjectTransform {
+                translate_x: Some(::printpdf::Pt(0.0)),
+                translate_y: Some(::printpdf::Pt(0.0)),
+                dpi: Some(300.0),
+                ..Default::default()
+            },
         },
-    );
+        ::printpdf::Op::EndLayer,
+    ];
 
-    // 6. Save the PDF using the 0.9.1 API with explicit error handling
+    let page1 = ::printpdf::PdfPage::new(width_mm, height_mm, ops);
+    doc.with_pages(vec![page1]);
+
+    let save_opts = ::printpdf::PdfSaveOptions::default();
+
+    let mut warnings = Vec::new();
     let file = File::create(out_path).map_err(|e| e.to_string())?;
-    doc.save(&mut BufWriter::new(file)).map_err(|e| format!("PDF save error: {e}"))?;
+    doc.save_writer(&mut BufWriter::new(file), &save_opts, &mut warnings);
     
     // Invoke system open to print
     #[cfg(target_os = "macos")]

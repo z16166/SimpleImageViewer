@@ -36,8 +36,10 @@ pub struct ImageFormat {
 }
 
 pub struct FormatRegistry {
+    #[allow(dead_code)]
     pub formats: Vec<ImageFormat>,
     pub extensions: HashSet<String>,
+    #[allow(dead_code)]
     pub discovery_finished: bool,
 }
 
@@ -101,6 +103,7 @@ impl FormatRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add_format(&mut self, format: ImageFormat) {
         if !self.extensions.contains(&format.extension) {
             self.extensions.insert(format.extension.clone());
