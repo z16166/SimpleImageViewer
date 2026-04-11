@@ -101,7 +101,7 @@ impl ThemePalette {
         Self {
             canvas_bg: Color32::from_rgb(13, 13, 15), // Obsidian
             panel_bg: Color32::from_rgb(24, 25, 27),  // Charcoal Black
-            widget_bg: Color32::from_gray(65), // Increased from 48 for better contrast
+            widget_bg: Color32::from_gray(65),        // Increased from 48 for better contrast
             widget_hover: Color32::from_gray(80),
             widget_active: Color32::from_gray(100),
             extreme_bg: Color32::from_gray(10),
@@ -112,10 +112,10 @@ impl ThemePalette {
             scrollbar_handle: Color32::from_gray(160), // Increased from 100 for better contrast
 
             text_normal: Color32::from_rgb(240, 240, 240),
-            text_muted: Color32::from_gray(210),   // Significantly lightened for small-text legibility
+            text_muted: Color32::from_gray(210), // Significantly lightened for small-text legibility
 
             accent: Color32::from_rgb(74, 144, 226), // Steel Blue
-            accent2: Color32::from_rgb(176, 184, 193), // Cool Silver
+            accent2: Color32::from_rgb(0, 212, 180), // Cool Silver
 
             hint_icon: Color32::from_gray(60),
             hint_text: Color32::from_gray(100),
@@ -156,7 +156,7 @@ impl ThemePalette {
             osd_text: Color32::from_rgba_unmultiplied(27, 38, 59, 200),
             osd_hint: Color32::from_rgba_unmultiplied(95, 99, 104, 160),
 
-            is_dark:             false,
+            is_dark: false,
         }
     }
 }
@@ -254,8 +254,8 @@ impl AppTheme {
     /// Used to decide whether to call `setup_visuals` after a change.
     pub fn effective_is_dark(&self, cache: &mut SystemThemeCache) -> bool {
         match self {
-            AppTheme::Dark   => true,
-            AppTheme::Light  => false,
+            AppTheme::Dark => true,
+            AppTheme::Light => false,
             AppTheme::System => {
                 // Reuse cached value (resolve() keeps it up to date)
                 cache.is_dark
