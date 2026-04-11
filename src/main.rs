@@ -185,40 +185,130 @@ fn log_env_info() {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     
-    let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
-    let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
-    let total_memory = sys.total_memory(); // Returns bytes
+    let total_memory = sys.total_memory();
     let memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
     
-    let mut friendly_name = os_name.clone();
-    
-    if os_name.to_lowercase().contains("windows") {
-        let parts: Vec<&str> = os_version.split('.').collect();
-        if parts.len() >= 2 {
-            let major = parts[0];
-            let minor = parts[1];
-            let build = parts.get(2).cloned().unwrap_or("0");
-            let build_num: u32 = build.parse().unwrap_or(0);
-            
-            friendly_name = match (major, minor) {
-                ("6", "1") => "Windows 7".to_string(),
-                ("6", "2") => "Windows 8".to_string(),
-                ("6", "3") => "Windows 8.1".to_string(),
-                ("10", "0") => {
-                    if build_num >= 22000 {
-                        "Windows 11".to_string()
-                    } else {
-                        "Windows 10".to_string()
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        use windows::Win32::Foundation::HMODULE;
+        use windows::core::PCSTR;
+        
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        struct OSVERSIONINFOEXW {
+            dwOSVersionInfoSize: u32,
+            dwMajorVersion: u32,
+            dwMinorVersion: u32,
+            dwBuildNumber: u32,
+            dwPlatformId: u32,
+            szCSDVersion: [u16; 128],
+            wServicePackMajor: u16,
+            wServicePackMinor: u16,
+            wSuiteMask: u16,
+            wProductType: u8,
+            wReserved: u8,
+        }
+
+        unsafe {
+            if let Ok(h_ntdll) = GetModuleHandleW(windows::core::w!("ntdll.dll")) {
+                let proc = GetProcAddress(h_ntdll, PCSTR(b"RtlGetVersion\0".as_ptr()));
+                if let Some(rtl_get_version) = proc {
+                    let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 = std::mem::transmute(rtl_get_version);
+                    
+                    let mut osi: OSVERSIONINFOEXW = std::mem::zeroed();
+                    osi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
+                    
+                    if rtl_get_version(&mut osi) == 0 {
+                        let major = osi.dwMajorVersion;
+                        let minor = osi.dwMinorVersion;
+                        let build = osi.dwBuildNumber;
+                        let is_server = osi.wProductType != 1; // VER_NT_WORKSTATION = 1
+                        
+                        let service_pack = if let Ok(sp) = String::from_utf16(&osi.szCSDVersion) {
+                            sp.trim_matches(char::from(0)).to_string()
+                        } else {
+                            String::new()
+                        };
+
+                        // Use registry for Marketing names and Editions
+                        use winreg::enums::HKEY_LOCAL_MACHINE;
+                        use winreg::RegKey;
+                        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+                        
+                        let marketing_name = match (major, minor) {
+                            (10, 0) => {
+                                if is_server {
+                                    if build >= 20348 { "Server 2022" }
+                                    else if build >= 17763 { "Server 2019" }
+                                    else if build >= 14393 { "Server 2016" }
+                                    else { "Server" }
+                                } else {
+                                    if build >= 22000 { "11" }
+                                    else { "10" }
+                                }
+                            }
+                            (6, 3) => if is_server { "Server 2012 R2" } else { "8.1" },
+                            (6, 2) => if is_server { "Server 2012" } else { "8" },
+                            (6, 1) => if is_server { "Server 2008 R2" } else { "7" },
+                            (6, 0) => if is_server { "Server 2008" } else { "Vista" },
+                            (5, 2) => if is_server { "Server 2003" } else { "XP" },
+                            (5, 1) => "XP",
+                            _ => "Unknown",
+                        };
+
+                        let mut display_name = format!("Windows {}", marketing_name);
+                        let mut display_version = String::new();
+                        let mut edition_id = String::new();
+                        let mut ubr: u32 = 0;
+
+                        if let Ok(key) = hklm.open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") {
+                            display_version = key.get_value("DisplayVersion")
+                                .or_else(|_| key.get_value("ReleaseId"))
+                                .unwrap_or_default();
+                            edition_id = key.get_value("EditionID").unwrap_or_default();
+                            ubr = key.get_value("UBR").unwrap_or(0);
+                        }
+
+                        if !edition_id.is_empty() {
+                            display_name.push_str(" ");
+                            display_name.push_str(&edition_id);
+                        }
+                        if !display_version.is_empty() {
+                            display_name.push_str(" ");
+                            display_name.push_str(&display_version);
+                        }
+                        if !service_pack.is_empty() {
+                            display_name.push_str(" ");
+                            display_name.push_str(&service_pack);
+                        }
+
+                        let full_version = if ubr > 0 {
+                            format!("{}.{}.{}.{}", major, minor, build, ubr)
+                        } else {
+                            format!("{}.{}.{}", major, minor, build)
+                        };
+
+                        log::info!(
+                            "Environment: {} [{}] (Total RAM: {:.2} GB)",
+                            display_name,
+                            full_version,
+                            memory_gb
+                        );
+                        return;
                     }
                 }
-                _ => friendly_name,
-            };
+            }
         }
     }
+
+    // Fallback logic remains unchanged
+    let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown".to_string());
+    let os_version = sysinfo::System::os_version().unwrap_or_else(|| "Unknown".to_string());
     
     log::info!(
-        "Environment: {} [{}] (RAM: {:.2} GB)",
-        friendly_name, 
+        "Environment: {} [{}] (Total RAM: {:.2} GB)",
+        os_name, 
         os_version,
         memory_gb
     );
@@ -234,10 +324,11 @@ fn main() -> eframe::Result {
         }
     }
 
-    // 2. IPC Single-instance check (prevents multiple processes from writing to the same log)
+    // 2. IPC Single-instance check
     let (ipc_tx, ipc_rx) = crossbeam_channel::unbounded();
     let no_recursive = initial_image.is_some();
     if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
+        // We Successfully forwarded to another instance, exit.
         std::process::exit(0);
     }
 
