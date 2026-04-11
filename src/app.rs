@@ -1823,13 +1823,7 @@ impl ImageViewerApp {
 
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(t!("btn.exit")).color(Color32::WHITE),
-                            )
-                            .fill(Color32::from_rgb(180, 40, 40))
-                            .corner_radius(egui::CornerRadius::same(4)),
-                        )
+                        .add(styled_button_widget(t!("btn.exit"), &self.cached_palette))
                         .clicked()
                     {
                         do_quit = true;
@@ -2596,7 +2590,7 @@ impl ImageViewerApp {
                             screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
                             Align2::RIGHT_BOTTOM,
                             t!("hint.keyboard").to_string(),
-                            FontId::proportional(11.0),
+                            FontId::proportional(13.0), // Increased from 11.0 for better visibility
                             self.cached_palette.osd_hint,
                         );
                     }
@@ -3610,21 +3604,55 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);
 
-    // Hovered: bg_fill → scrollbar hover; weak_bg_fill → button hover
+    // Hovered: bg_fill → scrollbar hover; weak_bg_fill → button/menu hover
     visuals.widgets.hovered.bg_fill = palette.scrollbar_handle;
-    visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
+    
+    // Thematic hover background for menus and dropdowns
+    if palette.is_dark {
+        let hover_base_color = palette.accent2;
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
+            hover_base_color.r(),
+            hover_base_color.g(),
+            hover_base_color.b(),
+            45,
+        );
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+    } else {
+        // Light Mode: Very subtle tint + color the text itself to avoid "muddy" look
+        let hover_base_color = palette.accent;
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
+            hover_base_color.r(),
+            hover_base_color.g(),
+            hover_base_color.b(),
+            20, // Very airy
+        );
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent); // The text turns indigo
+    }
+
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.widget_border_hover);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
 
     // Active: bg_fill → scrollbar drag; weak_bg_fill → button press
     visuals.widgets.active.bg_fill = palette.accent;
-    visuals.widgets.active.weak_bg_fill = palette.widget_active;
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.text_normal });
+    visuals.widgets.active.weak_bg_fill = if palette.is_dark {
+        palette.widget_active
+    } else {
+        Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 50)
+    };
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.accent });
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.accent });
 
-    // Selection
-    visuals.selection.bg_fill = palette.accent;
-    visuals.selection.stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { Color32::BLACK });
+    // Selection (used in ComboBox current item and SelectableLabel)
+    if palette.is_dark {
+        // Dark Mode: Monochrome Selection - Zero blue, just Silver & White
+        // This makes selected items feel like "Highlighted Steel"
+        visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(200, 200, 255, 10); // Very faint ice tint
+        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_gray(210));    // Sharp Silver outline
+    } else {
+        // Light Mode: Use a delicate outline + soft fill instead of a solid block
+        // Increased thickness to 2.0 for better hierarchy as requested
+        visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(palette.accent2.r(), palette.accent2.g(), palette.accent2.b(), 30);
+        visuals.selection.stroke = egui::Stroke::new(2.0, palette.accent2);
+    }
 
     ctx.set_visuals(visuals);
     ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
@@ -3632,6 +3660,14 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    
+    // Modernize rounding: Boost were it counts for a more "premium" feel
+    // 3.0 corner radius provides a much crisper, professional look as requested
+    style.visuals.window_corner_radius = egui::CornerRadius::same(6);
+    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(3);
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(3);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(3);
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(3);
     // Use bg_fill (not fg_stroke) for scrollbar handle color
     style.spacing.scroll.foreground_color = false;
 
@@ -3762,11 +3798,33 @@ fn styled_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>, palette:
 fn styled_button_widget<'a>(label: impl Into<egui::WidgetText> + 'a, palette: &'a ThemePalette) -> impl egui::Widget + 'a {
     let label = label.into();
     move |ui: &mut egui::Ui| {
-        ui.add(
-            egui::Button::new(label.color(Color32::WHITE))
-                .fill(palette.accent)
-                .corner_radius(egui::CornerRadius::same(4)),
-        )
+        ui.scope(|ui| {
+            let visuals = &mut ui.style_mut().visuals;
+            if palette.is_dark {
+                // Dark Mode: "Stealth Modern" Style (ComboBox-like)
+                // Using widget_bg and a crisp silver border for a professional, integrated look
+                visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
+                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_gray(100)); // Silver-Gray
+                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+                
+                visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, Color32::from_gray(180)); // Brighter Silver
+                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+                
+                ui.add(egui::Button::new(label.color(Color32::WHITE)).corner_radius(egui::CornerRadius::same(3)))
+            } else {
+                // Light Mode: Ghost style with reactive tint and border
+                visuals.widgets.inactive.weak_bg_fill = Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 10);
+                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5, palette.accent);
+                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+                
+                visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 40);
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.accent);
+                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+                
+                ui.add(egui::Button::new(label.color(palette.accent)).corner_radius(egui::CornerRadius::same(3)))
+            }
+        }).inner
     }
 }
 

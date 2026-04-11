@@ -99,31 +99,31 @@ impl ThemePalette {
     // ------------------------------------------------------------------
     pub fn dark() -> Self {
         Self {
-            canvas_bg:           Color32::from_rgb(18, 18, 24),
-            panel_bg:            Color32::from_rgb(32, 33, 36),
-            widget_bg:           Color32::from_gray(65), // Increased from 48 for better contrast
-            widget_hover:        Color32::from_gray(80),
-            widget_active:       Color32::from_gray(100),
-            extreme_bg:          Color32::from_gray(15),
+            canvas_bg: Color32::from_rgb(13, 13, 15), // Obsidian
+            panel_bg: Color32::from_rgb(24, 25, 27),  // Charcoal Black
+            widget_bg: Color32::from_gray(65), // Increased from 48 for better contrast
+            widget_hover: Color32::from_gray(80),
+            widget_active: Color32::from_gray(100),
+            extreme_bg: Color32::from_gray(10),
 
-            widget_border:       Color32::from_gray(75),
+            widget_border: Color32::from_gray(75),
             widget_border_hover: Color32::from_gray(110),
 
-            scrollbar_handle:    Color32::from_gray(160), // Increased from 100 for better contrast
+            scrollbar_handle: Color32::from_gray(160), // Increased from 100 for better contrast
 
-            text_normal:         Color32::from_rgb(240, 240, 240),
-            text_muted:          Color32::from_rgb(154, 160, 166),
+            text_normal: Color32::from_rgb(240, 240, 240),
+            text_muted: Color32::from_gray(210),   // Significantly lightened for small-text legibility
 
-            accent:              Color32::from_rgb(108, 92, 231),
-            accent2:             Color32::from_rgb(0, 199, 190),
+            accent: Color32::from_rgb(74, 144, 226), // Steel Blue
+            accent2: Color32::from_rgb(176, 184, 193), // Cool Silver
 
-            hint_icon:           Color32::from_gray(60),
-            hint_text:           Color32::from_gray(100),
+            hint_icon: Color32::from_gray(60),
+            hint_text: Color32::from_gray(100),
 
-            osd_text:            Color32::from_rgba_unmultiplied(220, 220, 240, 210),
-            osd_hint:            Color32::from_rgba_unmultiplied(160, 160, 180, 140),
+            osd_text: Color32::from_rgb(240, 240, 240), // Fully opaque and brighter
+            osd_hint: Color32::from_rgb(180, 180, 185), // Fully opaque and brighter
 
-            is_dark:             true,
+            is_dark: true,
         }
     }
 
@@ -132,32 +132,29 @@ impl ThemePalette {
     // ------------------------------------------------------------------
     pub fn light() -> Self {
         Self {
-            canvas_bg:           Color32::from_rgb(245, 245, 250),
-            panel_bg:            Color32::from_rgb(255, 255, 255),
-            widget_bg:           Color32::from_rgb(240, 240, 245),
-            widget_hover:        Color32::from_rgb(230, 230, 240),
-            widget_active:       Color32::from_rgb(215, 215, 225),
-            extreme_bg:          Color32::from_rgb(235, 235, 245),
+            canvas_bg: Color32::from_rgb(242, 239, 233), // Soft Sand
+            panel_bg: Color32::from_rgb(252, 250, 247),  // Warm Bone White
+            widget_bg: Color32::from_rgb(241, 243, 244),
+            widget_hover: Color32::from_rgb(232, 234, 237),
+            widget_active: Color32::from_rgb(218, 220, 224),
+            extreme_bg: Color32::from_rgb(242, 239, 233),
 
-            widget_border:       Color32::from_rgb(210, 210, 220),
-            widget_border_hover: Color32::from_rgb(170, 170, 190),
+            widget_border: Color32::from_rgb(218, 220, 224),
+            widget_border_hover: Color32::from_rgb(154, 160, 166),
 
-            // Deepened contrast to ensure the scrollbar handles do not optically fade into striped backgrounds
-            scrollbar_handle:    Color32::from_rgb(150, 150, 170),
+            scrollbar_handle: Color32::from_rgb(218, 220, 224),
 
-            text_normal:         Color32::from_rgb(33, 33, 44),
-            text_muted:          Color32::from_rgb(110, 110, 130),
+            text_normal: Color32::from_rgb(27, 38, 59), // Midnight Blue Ink
+            text_muted: Color32::from_rgb(95, 99, 104),
 
-            // A cleaner, slightly more vibrant purple for Light mode
-            accent:              Color32::from_rgb(125, 110, 245),
-            // Darker teal for headings on white background
-            accent2:             Color32::from_rgb(0, 140, 130),
+            accent: Color32::from_rgb(27, 38, 59), // Midnight Blue
+            accent2: Color32::from_rgb(74, 93, 78), // Deep Sage
 
-            hint_icon:           Color32::from_rgb(200, 200, 220),
-            hint_text:           Color32::from_rgb(150, 150, 170),
+            hint_icon: Color32::from_rgb(218, 220, 224),
+            hint_text: Color32::from_rgb(128, 134, 139),
 
-            osd_text:            Color32::from_rgba_unmultiplied(40, 40, 50, 200),
-            osd_hint:            Color32::from_rgba_unmultiplied(80, 80, 100, 160),
+            osd_text: Color32::from_rgba_unmultiplied(27, 38, 59, 200),
+            osd_hint: Color32::from_rgba_unmultiplied(95, 99, 104, 160),
 
             is_dark:             false,
         }
@@ -199,8 +196,8 @@ impl AppTheme {
     /// `SystemThemeCache` stored in `ImageViewerApp`.
     pub fn resolve(&self, cache: &mut SystemThemeCache) -> ThemePalette {
         match self {
-            AppTheme::Dark   => ThemePalette::dark(),
-            AppTheme::Light  => ThemePalette::light(),
+            AppTheme::Dark => ThemePalette::dark(),
+            AppTheme::Light => ThemePalette::light(),
             AppTheme::System => {
                 let now = Instant::now();
                 if now.duration_since(cache.last_check).as_secs() >= 5 {
@@ -240,7 +237,17 @@ impl AppTheme {
             return None; // Nothing changed
         }
         cache.last_resolved = Some(key);
-        Some(if effective_dark { ThemePalette::dark() } else { ThemePalette::light() })
+        Some(match self {
+            AppTheme::Dark => ThemePalette::dark(),
+            AppTheme::Light => ThemePalette::light(),
+            AppTheme::System => {
+                if cache.is_dark {
+                    ThemePalette::dark()
+                } else {
+                    ThemePalette::light()
+                }
+            }
+        })
     }
 
     /// Returns the effective boolean "is dark?" for the *current* state.
@@ -294,13 +301,13 @@ fn windows_is_dark_mode() -> bool {
     unsafe {
         unsafe extern "system" {
             fn RegGetValueW(
-                h_key:        *mut std::ffi::c_void,
-                lp_sub_key:   *const u16,
-                lp_value:     *const u16,
-                dw_flags:     u32,
-                pdw_type:     *mut u32,
-                pv_data:      *mut std::ffi::c_void,
-                pcb_data:     *mut u32,
+                h_key: *mut std::ffi::c_void,
+                lp_sub_key: *const u16,
+                lp_value: *const u16,
+                dw_flags: u32,
+                pdw_type: *mut u32,
+                pv_data: *mut std::ffi::c_void,
+                pcb_data: *mut u32,
             ) -> i32;
         }
 
@@ -309,9 +316,7 @@ fn windows_is_dark_mode() -> bool {
         // RRF_RT_REG_DWORD = 0x10
         const RRF_RT_REG_DWORD: u32 = 0x10;
 
-        let sub_key = to_wide(
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-        );
+        let sub_key = to_wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         let value = to_wide("AppsUseLightTheme");
 
         let mut data: u32 = 0;
