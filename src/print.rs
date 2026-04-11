@@ -269,54 +269,54 @@ fn invoke_system_print(_path: &Path) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 fn export_to_pdf_and_print(img: &RgbImage, out_path: &Path) -> Result<(), String> {
-    use image::codecs::jpeg::{JpegDecoder, JpegEncoder};
-    use image::DynamicImage;
-    use printpdf::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, BufWriter};
+    use std::fs::File;
 
     let (width, height) = img.dimensions();
     
     // 1. Setup PDF Document (Standardizing at 300 DPI for calculation)
     // 1 pixel at 300 DPI = 25.4 / 300 = 0.084667 mm
     let px_to_mm = 0.084667_f32; 
-    let width_mm = Mm(width as f32 * px_to_mm);
-    let height_mm = Mm(height as f32 * px_to_mm);
+    let width_mm = ::printpdf::Mm(width as f32 * px_to_mm);
+    let height_mm = ::printpdf::Mm(height as f32 * px_to_mm);
 
-    // printpdf 0.9.1 initialization
-    let (doc, page1, layer1) = PdfDocument::new("SIV Print", width_mm, height_mm, "Layer 1");
+    // Correcting to the 0.9.1 API found via compiler errors
+    let mut doc = ::printpdf::PdfDocument::new("SIV Print");
+    let (page1, layer1) = doc.add_page(width_mm, height_mm, "Layer 1");
     let current_layer = doc.get_page(page1).get_layer(layer1);
 
     // 2. Encode to JPEG in memory (RGB8 only)
     let mut compressed_buffer: Vec<u8> = Vec::new();
     let quality = 90; 
-    let mut encoder = JpegEncoder::new_with_quality(&mut compressed_buffer, quality);
+    let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut compressed_buffer, quality);
     
-    // Wrap RgbImage into DynamicImage
-    let dynamic_img = DynamicImage::ImageRgb8(img.clone());
+    // Use absolute path for DynamicImage to avoid conflict with printpdf's internal image module
+    let dynamic_img = ::image::DynamicImage::ImageRgb8(img.clone());
     encoder.encode_image(&dynamic_img).map_err(|e| format!("JPEG encode error: {e}"))?;
 
     // 3. Create JpegDecoder from memory buffer to trigger DCTDecode in printpdf
     let decoder_cursor = Cursor::new(compressed_buffer);
-    let decoder = JpegDecoder::new(decoder_cursor).map_err(|e| format!("JPEG decode error: {e}"))?;
+    let decoder = ::image::codecs::jpeg::JpegDecoder::new(decoder_cursor)
+        .map_err(|e: ::image::ImageError| format!("JPEG decode error: {e}"))?;
 
-    // 4. Create printpdf Image (DCTDecode)
-    let pdf_image = Image::try_from(decoder).map_err(|e| format!("PDF Image error: {e}"))?;
+    // 4. Create printpdf Image (DCTDecode) via TryFrom
+    let pdf_image = ::printpdf::Image::try_from(decoder)
+        .map_err(|e| format!("PDF Image error: {e}"))?;
 
     // 5. Add to layer with correct coordinate origin (0,0 is bottom-left)
     pdf_image.add_to_layer(
         current_layer,
-        ImageTransform {
-            translate_x: Some(Mm(0.0)),
-            translate_y: Some(Mm(0.0)),
+        ::printpdf::ImageTransform {
+            translate_x: Some(::printpdf::Mm(0.0).into()),
+            translate_y: Some(::printpdf::Mm(0.0).into()),
             dpi: Some(300.0), // Matches the px_to_mm calculation above
             ..Default::default()
         },
     );
 
-    // 6. Save the PDF using the 0.9.1 API
-    let file = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    let mut writer = std::io::BufWriter::new(file);
-    doc.save(&mut writer).map_err(|e| e.to_string())?;
+    // 6. Save the PDF using the 0.9.1 API with explicit error handling
+    let file = File::create(out_path).map_err(|e| e.to_string())?;
+    doc.save(&mut BufWriter::new(file)).map_err(|e| format!("PDF save error: {e}"))?;
     
     // Invoke system open to print
     #[cfg(target_os = "macos")]
