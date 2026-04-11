@@ -239,7 +239,8 @@ fn log_env_info() {
                         let marketing_name = match (major, minor) {
                             (10, 0) => {
                                 if is_server {
-                                    if build >= 20348 { "Server 2022" }
+                                    if build >= 26100 { "Server 2025" }
+                                    else if build >= 20348 { "Server 2022" }
                                     else if build >= 17763 { "Server 2019" }
                                     else if build >= 14393 { "Server 2016" }
                                     else { "Server" }
@@ -290,7 +291,8 @@ fn log_env_info() {
                         };
 
                         log::info!(
-                            "Environment: {} [{}] (Total RAM: {:.2} GB)",
+                            "Simple Image Viewer v{} | Environment: {} [{}] (Total RAM: {:.2} GB)",
+                            env!("CARGO_PKG_VERSION"),
                             display_name,
                             full_version,
                             memory_gb
