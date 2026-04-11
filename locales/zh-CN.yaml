@@ -91,9 +91,9 @@ status.loading: "加载中…"
 # Hints (on canvas)
 hint.no_images: "未加载图片\n按 F1 打开设置并选择文件夹"
 hint.keyboard: "F1 — 设置  │  +/- 或滚轮 — 缩放  │  * 重置  │  Z — 适应/原始  │  G — 跳转  │  F11 — 全屏"
-hint.quit_macos: "Esc / F1 切换设置面板  │  Cmd+Q 退出"
-hint.quit_linux: "Esc / F1 切换设置面板  │  Ctrl+Q 退出"
-hint.quit_windows: "Esc / F1 切换设置面板  │  Alt+F4 退出"
+hint.quit_macos: "F1 切换设置面板  │  Cmd+Q 退出"
+hint.quit_linux: "F1 切换设置面板  │  Ctrl+Q 退出"
+hint.quit_windows: "F1 切换设置面板  │  Alt+F4 退出"
 
 # Context menu
 ctx.copy_path: "📋 复制完整路径"

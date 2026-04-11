@@ -1044,10 +1044,10 @@ impl ImageViewerApp {
             if i.key_pressed(Key::Space) {
                 toggle_auto_switch = true;
             }
-            if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown) {
+            if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown) || i.key_pressed(Key::PageDown) {
                 nav_next = true;
             }
-            if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp) {
+            if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::PageUp) {
                 nav_prev = true;
             }
             if i.key_pressed(Key::Home) {
@@ -1056,8 +1056,17 @@ impl ImageViewerApp {
             if i.key_pressed(Key::End) {
                 nav_last = true;
             }
-            if i.key_pressed(Key::Escape) || i.key_pressed(Key::F1) {
+            // F1 is the ONLY key to toggle settings/options.
+            if i.key_pressed(Key::F1) {
                 toggle_settings = true;
+            }
+            // Escape: close modals or currently open settings. NEVER opens settings from main view.
+            if i.key_pressed(Key::Escape) {
+                if any_modal_open || self.show_settings {
+                    toggle_settings = true; 
+                } else if self.settings.fullscreen {
+                    toggle_fullscreen = true;
+                }
             }
             // Zoom keyboard: + / -
             if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
@@ -1079,8 +1088,8 @@ impl ImageViewerApp {
             zoom_delta = i.zoom_delta();
             is_ctrl_pressed = i.modifiers.command;
             mouse_pos = i.pointer.latest_pos();
-            // F11 — toggle fullscreen
-            if i.key_pressed(Key::F11) {
+            // F11 / F — toggle fullscreen
+            if i.key_pressed(Key::F11) || i.key_pressed(Key::F) {
                 toggle_fullscreen = true;
             }
             // Z — toggle scale mode (Fit ↔ Original)

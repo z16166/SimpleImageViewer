@@ -91,9 +91,9 @@ status.loading: "載入中…"
 # Hints (on canvas)
 hint.no_images: "未載入圖片\n按 F1 開啟設定並選擇資料夾"
 hint.keyboard: "F1 — 設定  │  +/- 或滾輪 — 縮放  │  * 重設  │  Z — 適應/原始  │  G — 跳轉  │  F11 — 全螢幕"
-hint.quit_macos: "Esc / F1 切換設定面板  │  Cmd+Q 結束"
-hint.quit_linux: "Esc / F1 切換設定面板  │  Ctrl+Q 結束"
-hint.quit_windows: "Esc / F1 切換設定面板  │  Alt+F4 結束"
+hint.quit_macos: "F1 切換設定面板  │  Cmd+Q 結束"
+hint.quit_linux: "F1 切換設定面板  │  Ctrl+Q 結束"
+hint.quit_windows: "F1 切換設定面板  │  Alt+F4 結束"
 
 # Context menu
 ctx.copy_path: "📋 複製完整路徑"

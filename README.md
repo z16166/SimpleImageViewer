@@ -20,7 +20,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
-- **Smooth navigation** — arrow keys, mouse wheel zoom, pan in 1:1 mode
+- **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
 - **Modal Dialogs** — metadata and settings dialogs now behave as true modals; background interactions are blocked with a visual dimmer for a focused experience
@@ -41,7 +41,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup
-- **Full-screen mode** — toggle with `F11`; app always starts windowed (OS title bar visible)
+- **Full-screen mode** — toggle with `F11` or `F`; app always starts windowed (OS title bar visible)
 - **Modern UI** — sleek two-column settings panel, click the background to quickly dismiss, and fully adjustable font sizes (12-32px)
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
@@ -55,8 +55,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Key / Action | Effect |
 |---|---|
-| `→` / `↓` | Next image |
-| `←` / `↑` | Previous image |
+| `→` / `↓` / `PageDown` | Next image |
+| `←` / `↑` / `PageUp` | Previous image |
 | `Home` | First image |
 | `End` | Last image |
 | `+` / `-` | Zoom in / out |
@@ -66,8 +66,10 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Space` | Pause / Resume slideshow |
 | `Z` | Toggle Fit ↔ Original size |
 | `G` | Open *Go to image…* dialog (jump to index) |
-| `F11` | Toggle full-screen |
-| `F1` / `Esc` / `Left-Click (bg)` | Open / close Settings panel |
+| `F` / `F11` | Toggle full-screen |
+| `F1` | Open / close Settings panel |
+| `Esc` | Exit full-screen / Close dialogs |
+| `Left-Click (bg)` | Close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
