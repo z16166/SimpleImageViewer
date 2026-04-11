@@ -50,10 +50,7 @@ impl AudioPlayer {
         }
     }
 
-    /// Ensure the audio thread is running and playing the selected files.
-    pub fn start(&mut self, files: Vec<PathBuf>) {
-        self.start_at(files, None, None);
-    }
+
 
     pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>, start_track_index: Option<usize>) {
         self.ensure_thread_started();

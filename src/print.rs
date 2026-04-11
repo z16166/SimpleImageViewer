@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
 
+#[cfg(target_os = "windows")]
 const JPEG_QUALITY: u8 = 95;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -189,6 +190,7 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
 }
 
 /// Save an RgbImage as JPEG with explicit quality (0–100).
+#[cfg(target_os = "windows")]
 fn save_jpeg_with_quality(img: &RgbImage, path: &Path, quality: u8) -> Result<(), String> {
     use ::image::codecs::jpeg::JpegEncoder;
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
