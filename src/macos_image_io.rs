@@ -120,13 +120,13 @@ pub fn discover_imageio_codecs() -> Vec<String> {
     unsafe {
         let array_ref = CGImageSourceCopyTypeIdentifiers();
         if !array_ref.is_null() {
-            let array: CFArray<CFTypeRef> = CFArray::from_ptr(array_ref);
+            let array: CFArray<CFTypeRef> = CFArray::wrap_under_create_rule(array_ref);
             for uti_ptr in array.iter() {
                 let uti_str_ref = *uti_ptr as CFStringRef;
                 let ext_ref = UTTypeCopyPreferredTagWithClass(uti_str_ref, tag_class.as_concrete_TypeRef());
                 
                 if !ext_ref.is_null() {
-                    let ext_cfstring: CFString = CFString::from_ptr(ext_ref);
+                    let ext_cfstring: CFString = CFString::wrap_under_create_rule(ext_ref);
                     let ext = ext_cfstring.to_string().to_lowercase();
                     if !ext.is_empty() {
                         extensions.insert(ext);

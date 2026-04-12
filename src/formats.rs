@@ -96,11 +96,29 @@ impl FormatRegistry {
             extensions.insert(ext.to_string());
         }
 
-        Self {
+        let mut registry = Self {
             formats,
             extensions,
             discovery_finished: cfg!(not(target_os = "windows")), // Non-windows is always "finished" discovering
+        };
+
+        #[cfg(target_os = "macos")]
+        {
+            let macos_exts = crate::macos_image_io::discover_imageio_codecs();
+            let discovered_count = macos_exts.len();
+            for ext in macos_exts {
+                registry.add_format(ImageFormat {
+                    extension: ext.clone(),
+                    group: FormatGroup::Others,
+                    description: format!("macOS {} Image", ext.to_uppercase()),
+                    wic_clsid: None,
+                });
+            }
+            log::info!("macOS ImageIO discovery: found {} system formats. Total registry size: {} extensions.", 
+                discovered_count, registry.extensions.len());
         }
+
+        registry
     }
 
     #[allow(dead_code)]

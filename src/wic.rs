@@ -92,30 +92,7 @@ pub fn spawn_wic_discovery() {
             log::error!("WIC codec discovery failed: {:?}", e);
         }
         
-        #[cfg(target_os = "macos")]
-        {
-            let extensions = crate::macos_image_io::discover_imageio_codecs();
-            if !extensions.is_empty() {
-                if let Ok(mut reg) = get_registry().write() {
-                    let mut added_count = 0;
-                    for ext in extensions {
-                        if !reg.is_supported(&ext) {
-                            reg.add_format(ImageFormat {
-                                extension: ext.clone(),
-                                group: FormatGroup::Others,
-                            });
-                            added_count += 1;
-                        }
-                    }
-                    log::info!("[ImageIO] Dynamic discovery: added {} new native formats from macOS", added_count);
-                }
-            }
-            if let Ok(mut reg) = get_registry().write() {
-                reg.discovery_finished = true;
-            }
-        }
-
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        #[cfg(not(target_os = "windows"))]
         if let Ok(mut reg) = get_registry().write() {
             reg.discovery_finished = true;
         }
