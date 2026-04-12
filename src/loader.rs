@@ -127,6 +127,8 @@ impl ImageLoader {
 }
 
 fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+
     let result = (|| -> Result<ImageData, String> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -139,11 +141,11 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         if is_tiff {
             match crate::wic::load_via_wic(path) {
                 Ok(wic_img) => return Ok(wic_img),
-                Err(wic_err) => log::info!("WIC failed for TIFF {:?}, falling back to standard loader: {}", path, wic_err),
+                Err(wic_err) => log::info!("[{}] WIC failed for TIFF, falling back to standard loader: {}", file_name, wic_err),
             }
         }
 
-        let inner = || -> Result<ImageData, String> {
+        let inner = || {
             match ext.as_str() {
                 "gif" => load_gif(path),
                 "png" | "apng" => load_png(path),
@@ -158,9 +160,8 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         
         #[cfg(target_os = "windows")]
         if let Err(ref std_err) = result {
-            // Already tried WIC for TIFF above, so only try it here for non-TIFF failures
             if !is_tiff {
-                log::info!("Standard loader failed for {:?}, trying WIC fallback...", path);
+                log::info!("[{}] Standard loader failed, trying WIC fallback...", file_name);
                 match crate::wic::load_via_wic(path) {
                     Ok(wic_img) => return Ok(wic_img),
                     Err(wic_err) => {
@@ -172,48 +173,59 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         result
     })();
     
-    // Post-process EVERY successful result to check for hardware limits.
-    // This is the SINGLE truth for tiling decisions across the whole app.
-    let result = match result {
+    // Post-process EVERY result for logging and limits
+    let final_result = match result {
         Ok(ImageData::Static(decoded)) => {
             let pixel_count = decoded.width as u64 * decoded.height as u64;
             let max_side = decoded.width.max(decoded.height);
             let limit = crate::tile_cache::get_max_texture_side();
             
             if pixel_count >= crate::tile_cache::TILED_THRESHOLD || max_side > limit {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-                log::info!("[{}] Tiling triggered for {}x{} (limit={}, threshold={}MP)", 
-                    file_name, decoded.width, decoded.height, limit, crate::tile_cache::TILED_THRESHOLD / 1_000_000);
+                log::info!("[{}] Decoded {}x{} ({:.1} MP) - Tiled Mode (limit={})", 
+                    file_name, decoded.width, decoded.height, pixel_count as f64 / 1_000_000.0, limit);
                 Ok(ImageData::LargeStatic(decoded))
             } else {
-                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-                log::info!("[{}] Static upload mode active ({}x{})", file_name, decoded.width, decoded.height);
+                log::info!("[{}] Decoded {}x{} ({:.1} MP) - Static Mode", 
+                    file_name, decoded.width, decoded.height, pixel_count as f64 / 1_000_000.0);
                 Ok(ImageData::Static(decoded))
             }
         }
         Ok(ImageData::Animated(frames)) => {
-            // Check if animation frames exceed GPU limits
             if let Some(first) = frames.first() {
-                let max_side = first.width.max(first.height);
+                let width = first.width;
+                let height = first.height;
+                let max_side = width.max(height);
                 let limit = crate::tile_cache::get_max_texture_side();
+                
+                let total_bytes: usize = frames.iter().map(|f| f.pixels.len()).sum();
+                let mb = total_bytes as f64 / (1024.0 * 1024.0);
+
                 if max_side > limit {
-                    log::warn!("Animated image ({}x{}) exceeds GPU limits. Falling back to static tiled mode.", first.width, first.height);
+                    log::warn!("[{}] Animated image ({}x{}) exceeds GPU limits. Falling back to tiled static mode.", file_name, width, height);
+                    log::info!("[{}] Decoded {}x{} ({} frames, {:.1} MB) - Tiled Mode (limit={})", 
+                        file_name, width, height, frames.len(), mb, limit);
                     Ok(ImageData::LargeStatic(DecodedImage {
-                        width: first.width,
-                        height: first.height,
+                        width,
+                        height,
                         pixels: first.pixels.clone(),
                     }))
                 } else {
+                    log::info!("[{}] Decoded {}x{} ({} frames, {:.1} MB) - Animated Mode", 
+                        file_name, width, height, frames.len(), mb);
                     Ok(ImageData::Animated(frames))
                 }
             } else {
                 Ok(ImageData::Animated(frames))
             }
         }
+        Err(e) => {
+            log::error!("[{}] Failed to load: {}", file_name, e);
+            Err(e)
+        }
         other => other,
     };
 
-    LoadResult { index, generation, result }
+    LoadResult { index, generation, result: final_result }
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
@@ -240,10 +252,6 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
-    let pixel_count = width as u64 * height as u64;
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-    log::info!("[{}] Decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, width, height,
-        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
     
     Ok(ImageData::Static(DecodedImage { width, height, pixels }))
 }
@@ -261,8 +269,6 @@ fn load_tiff_robust(path: &PathBuf) -> Result<ImageData, String> {
 
     // 2. Decode using the tiff crate directly
     let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
-    let spp = decoder.get_tag_u64(tiff::tags::Tag::SamplesPerPixel).unwrap_or(3);
-    
     let result = decoder.read_image().map_err(|e| format!("TIFF decode failed: {}", e))?;
     
     let predictor = decoder.get_tag_u64(tiff::tags::Tag::Predictor).unwrap_or(1);
@@ -343,11 +349,6 @@ fn load_tiff_robust(path: &PathBuf) -> Result<ImageData, String> {
         _ => return Err("Unsupported TIFF bit depth (expected 8 or 16-bit)".to_string()),
     };
     
-    let pixel_count = width as u64 * height as u64;
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-    log::info!("[{}] TIFF (Robust) decoded {}x{} ({:.1} MP, {:.0} MB RGBA, SPP={})", 
-        file_name, width, height, pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0), spp);
-
     Ok(ImageData::Static(DecodedImage { width, height, pixels }))
 }
 
@@ -628,11 +629,6 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         (psd_file.width(), psd_file.height(), psd_file.rgba())
     };
 
-    let pixel_count = w as u64 * h as u64;
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-    log::info!("[{}] PSD/PSB decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, w, h,
-        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
-
     Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
 }
 
@@ -651,11 +647,6 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
     let width = output.width;
     let height = output.height;
     let rgba = output.data;
-
-    let pixel_count = width as u64 * height as u64;
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-    log::info!("[{}] HEIC decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, width, height,
-        pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
 
     Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
 }
