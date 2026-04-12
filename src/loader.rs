@@ -265,44 +265,74 @@ fn load_tiff_robust(path: &PathBuf) -> Result<ImageData, String> {
     
     let result = decoder.read_image().map_err(|e| format!("TIFF decode failed: {}", e))?;
     
+    let predictor = decoder.get_tag_u64(tiff::tags::Tag::Predictor).unwrap_or(1);
+
     let pixels = match result {
-        tiff::decoder::DecodingResult::U8(data) => {
-            if spp == 4 && photometric == 2 {
-                // RGBA TIFF: verify buffer size and return as-is
-                if data.len() == (width as usize * height as usize * 4) {
-                    data
-                } else {
-                    return Err(format!("RGBA TIFF buffer size mismatch: expected {}, got {}", width as usize * height as usize * 4, data.len()));
+        tiff::decoder::DecodingResult::U8(mut data) => {
+            let total_pixels = width as usize * height as usize;
+            let current_channels = data.len() / total_pixels;
+
+            // 1. Manually undo Predictor 2 if the library failed to do so
+            if predictor == 2 && current_channels > 0 {
+                for row in 0..height as usize {
+                    let row_start = row * width as usize * current_channels;
+                    for col in 1..width as usize {
+                        for ch in 0..current_channels {
+                            let idx = row_start + (col * current_channels) + ch;
+                            let prev_idx = idx - current_channels;
+                            data[idx] = data[idx].wrapping_add(data[prev_idx]);
+                        }
+                    }
                 }
-            } else if spp == 3 && photometric == 2 {
-                // RGB TIFF: convert to RGBA
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+            }
+
+            // 2. Adaptive conversion to RGBA
+            if data.len() == total_pixels * 4 {
+                data
+            } else if data.len() == total_pixels * 3 {
+                let mut rgba = Vec::with_capacity(total_pixels * 4);
                 for chunk in data.chunks_exact(3) {
                     rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
                 }
                 rgba
-            } else if spp == 1 {
-                // Grayscale TIFF: convert to RGBA
-                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+            } else if data.len() == total_pixels {
+                let mut rgba = Vec::with_capacity(total_pixels * 4);
                 for &gray in &data {
                     rgba.extend_from_slice(&[gray, gray, gray, 255]);
                 }
                 rgba
             } else {
-                return Err(format!("Unsupported TIFF format: SPP={}, Photometric={}", spp, photometric));
+                return Err(format!("TIFF U8 buffer size mismatch: {}x{}, channels={}, len={}", width, height, current_channels, data.len()));
             }
         }
-        tiff::decoder::DecodingResult::U16(data) => {
-            // 16-bit TIFF: downsample to 8-bit
-            let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-            let samples_per_pixel = spp as usize;
-            for chunk in data.chunks_exact(samples_per_pixel) {
-                if samples_per_pixel >= 3 {
-                    let r = (chunk[0] >> 8) as u8;
-                    let g = (chunk[1] >> 8) as u8;
-                    let b = (chunk[2] >> 8) as u8;
-                    let a = if samples_per_pixel >= 4 { (chunk[3] >> 8) as u8 } else { 255 };
-                    rgba.extend_from_slice(&[r, g, b, a]);
+        tiff::decoder::DecodingResult::U16(mut data) => {
+            let total_pixels = width as usize * height as usize;
+            let current_channels = data.len() / total_pixels;
+
+            // 1. Manually undo Predictor 2 for U16
+            if predictor == 2 && current_channels > 0 {
+                for row in 0..height as usize {
+                    let row_start = row * width as usize * current_channels;
+                    for col in 1..width as usize {
+                        for ch in 0..current_channels {
+                            let idx = row_start + (col * current_channels) + ch;
+                            let prev_idx = idx - current_channels;
+                            data[idx] = data[idx].wrapping_add(data[prev_idx]);
+                        }
+                    }
+                }
+            }
+
+            // 2. Downsample to 8-bit RGBA
+            let mut rgba = Vec::with_capacity(total_pixels * 4);
+            for chunk in data.chunks_exact(current_channels) {
+                if current_channels >= 3 {
+                    rgba.extend_from_slice(&[
+                        (chunk[0] >> 8) as u8,
+                        (chunk[1] >> 8) as u8,
+                        (chunk[2] >> 8) as u8,
+                        if current_channels >= 4 { (chunk[3] >> 8) as u8 } else { 255 },
+                    ]);
                 } else {
                     let gray = (chunk[0] >> 8) as u8;
                     rgba.extend_from_slice(&[gray, gray, gray, 255]);
