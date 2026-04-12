@@ -128,12 +128,22 @@ impl ImageLoader {
 
 fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult {
     let result = (|| -> Result<ImageData, String> {
-        let inner = || -> Result<ImageData, String> {
-            let ext = path.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        let is_tiff = ext == "tif" || ext == "tiff";
 
+        // On Windows, prioritize WIC for TIFF files as it's more robust than the standard decoder
+        #[cfg(target_os = "windows")]
+        if is_tiff {
+            match crate::wic::load_via_wic(path) {
+                Ok(wic_img) => return Ok(wic_img),
+                Err(wic_err) => log::info!("WIC failed for TIFF {:?}, falling back to standard loader: {}", path, wic_err),
+            }
+        }
+
+        let inner = || -> Result<ImageData, String> {
             match ext.as_str() {
                 "gif" => load_gif(path),
                 "png" | "apng" => load_png(path),
@@ -147,19 +157,62 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         let result = inner();
         
         #[cfg(target_os = "windows")]
-        if let Err(std_err) = result {
-            log::info!("Standard loader failed for {:?}, trying WIC fallback...", path);
-            match crate::wic::load_via_wic(path) {
-                Ok(wic_img) => return Ok(wic_img),
-                Err(wic_err) => {
-                    // Return both errors so the user can see why WIC also failed
-                    return Err(format!("{}\n(WIC: {})", std_err, wic_err));
+        if let Err(ref std_err) = result {
+            // Already tried WIC for TIFF above, so only try it here for non-TIFF failures
+            if !is_tiff {
+                log::info!("Standard loader failed for {:?}, trying WIC fallback...", path);
+                match crate::wic::load_via_wic(path) {
+                    Ok(wic_img) => return Ok(wic_img),
+                    Err(wic_err) => {
+                        return Err(format!("{}\n(WIC: {})", std_err, wic_err));
+                    }
                 }
             }
         }
-
         result
     })();
+    
+    // Post-process EVERY successful result to check for hardware limits.
+    // This is the SINGLE truth for tiling decisions across the whole app.
+    let result = match result {
+        Ok(ImageData::Static(decoded)) => {
+            let pixel_count = decoded.width as u64 * decoded.height as u64;
+            let max_side = decoded.width.max(decoded.height);
+            let limit = crate::tile_cache::get_max_texture_side();
+            
+            if pixel_count >= crate::tile_cache::TILED_THRESHOLD || max_side > limit {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                log::info!("[{}] Tiling triggered for {}x{} (limit={}, threshold={}MP)", 
+                    file_name, decoded.width, decoded.height, limit, crate::tile_cache::TILED_THRESHOLD / 1_000_000);
+                Ok(ImageData::LargeStatic(decoded))
+            } else {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                log::info!("[{}] Static upload mode active ({}x{})", file_name, decoded.width, decoded.height);
+                Ok(ImageData::Static(decoded))
+            }
+        }
+        Ok(ImageData::Animated(frames)) => {
+            // Check if animation frames exceed GPU limits
+            if let Some(first) = frames.first() {
+                let max_side = first.width.max(first.height);
+                let limit = crate::tile_cache::get_max_texture_side();
+                if max_side > limit {
+                    log::warn!("Animated image ({}x{}) exceeds GPU limits. Falling back to static tiled mode.", first.width, first.height);
+                    Ok(ImageData::LargeStatic(DecodedImage {
+                        width: first.width,
+                        height: first.height,
+                        pixels: first.pixels.clone(),
+                    }))
+                } else {
+                    Ok(ImageData::Animated(frames))
+                }
+            } else {
+                Ok(ImageData::Animated(frames))
+            }
+        }
+        other => other,
+    };
+
     LoadResult { index, generation, result }
 }
 
@@ -170,39 +223,106 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
     // Remove the default memory limit (512MB) to allow gigapixel images
     decoder.no_limits();
+
+    // If it's a TIFF, we now use our robust decoder for better consistency across platforms
+    let is_tiff = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase() == "tif" || e.to_lowercase() == "tiff")
+        .unwrap_or(false);
+    if is_tiff {
+        return load_tiff_robust(path);
+    }
+
     let img = match decoder.decode() {
         Ok(img) => img,
-        Err(e) => {
-            // If the standard decoder fails on a TIFF, try tiff 0.11 which supports more formats
-            let path_str = path.to_string_lossy().to_lowercase();
-            if path_str.ends_with(".tif") || path_str.ends_with(".tiff") {
-                log::info!("Standard TIFF decoder failed, trying tiff 0.11 fallback: {}", e);
-                return load_tiff_fallback(path);
-            }
-            return Err(e.to_string());
-        }
+        Err(e) => return Err(e.to_string()),
     };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
     let pixel_count = width as u64 * height as u64;
-    log::info!("Decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    log::info!("[{}] Decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, width, height,
         pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
-    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
-        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels }))
-    } else {
-        Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+    
+    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
+}
+
+fn load_tiff_robust(path: &PathBuf) -> Result<ImageData, String> {
+    // 1. Pre-check for Palette TIFF (which requires patching)
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
+        .map_err(|e| e.to_string())?;
+    
+    let photometric = decoder.get_tag_u64(tiff::tags::Tag::PhotometricInterpretation).unwrap_or(2);
+    if photometric == 3 {
+        return load_tiff_palette_fallback(path);
     }
+
+    // 2. Decode using the tiff crate directly
+    let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
+    let spp = decoder.get_tag_u64(tiff::tags::Tag::SamplesPerPixel).unwrap_or(3);
+    
+    let result = decoder.read_image().map_err(|e| format!("TIFF decode failed: {}", e))?;
+    
+    let pixels = match result {
+        tiff::decoder::DecodingResult::U8(data) => {
+            if spp == 4 && photometric == 2 {
+                // RGBA TIFF: verify buffer size and return as-is
+                if data.len() == (width as usize * height as usize * 4) {
+                    data
+                } else {
+                    return Err(format!("RGBA TIFF buffer size mismatch: expected {}, got {}", width as usize * height as usize * 4, data.len()));
+                }
+            } else if spp == 3 && photometric == 2 {
+                // RGB TIFF: convert to RGBA
+                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                for chunk in data.chunks_exact(3) {
+                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                }
+                rgba
+            } else if spp == 1 {
+                // Grayscale TIFF: convert to RGBA
+                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                for &gray in &data {
+                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                }
+                rgba
+            } else {
+                return Err(format!("Unsupported TIFF format: SPP={}, Photometric={}", spp, photometric));
+            }
+        }
+        tiff::decoder::DecodingResult::U16(data) => {
+            // 16-bit TIFF: downsample to 8-bit
+            let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+            let samples_per_pixel = spp as usize;
+            for chunk in data.chunks_exact(samples_per_pixel) {
+                if samples_per_pixel >= 3 {
+                    let r = (chunk[0] >> 8) as u8;
+                    let g = (chunk[1] >> 8) as u8;
+                    let b = (chunk[2] >> 8) as u8;
+                    let a = if samples_per_pixel >= 4 { (chunk[3] >> 8) as u8 } else { 255 };
+                    rgba.extend_from_slice(&[r, g, b, a]);
+                } else {
+                    let gray = (chunk[0] >> 8) as u8;
+                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
+                }
+            }
+            rgba
+        }
+        _ => return Err("Unsupported TIFF bit depth (expected 8 or 16-bit)".to_string()),
+    };
+    
+    let pixel_count = width as u64 * height as u64;
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    log::info!("[{}] TIFF (Robust) decoded {}x{} ({:.1} MP, {:.0} MB RGBA, SPP={})", 
+        file_name, width, height, pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0), spp);
+
+    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
 }
 
 /// Fallback TIFF decoder for Palette-indexed (RGBPalette) images.
-///
-/// Neither tiff 0.9 nor 0.11 support decoding Palette TIFFs. We work around this by:
-/// 1. Reading the ColorMap from the original file (tiff crate can parse tags fine).
-/// 2. Patching the PhotometricInterpretation tag in a memory copy: Palette(3) → Grayscale(1).
-/// 3. Feeding the patched data to the decoder, which now happily decompresses the indices.
-/// 4. Manually mapping the grayscale "pixels" (actually palette indices) to true RGBA via ColorMap.
-fn load_tiff_fallback(path: &PathBuf) -> Result<ImageData, String> {
+fn load_tiff_palette_fallback(path: &PathBuf) -> Result<ImageData, String> {
     // Step 1: Read ColorMap from the original file
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
@@ -479,14 +599,11 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
     };
 
     let pixel_count = w as u64 * h as u64;
-    log::info!("PSD/PSB decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", w, h,
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    log::info!("[{}] PSD/PSB decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, w, h,
         pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
 
-    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
-        Ok(ImageData::LargeStatic(DecodedImage { width: w, height: h, pixels }))
-    } else {
-        Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
-    }
+    Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
 }
 
 // ---------------------------------------------------------------------------
@@ -506,14 +623,11 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
     let rgba = output.data;
 
     let pixel_count = width as u64 * height as u64;
-    log::info!("HEIC decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", width, height,
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    log::info!("[{}] HEIC decoded {}x{} ({:.1} MP, {:.0} MB RGBA)", file_name, width, height,
         pixel_count as f64 / 1e6, pixel_count as f64 * 4.0 / (1024.0 * 1024.0));
 
-    if pixel_count >= crate::tile_cache::TILED_THRESHOLD {
-        Ok(ImageData::LargeStatic(DecodedImage { width, height, pixels: rgba }))
-    } else {
-        Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
-    }
+    Ok(ImageData::Static(DecodedImage { width, height, pixels: rgba }))
 }
 
 // ---------------------------------------------------------------------------

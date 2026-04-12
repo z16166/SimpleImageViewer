@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use egui::TextureHandle;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Tile size in pixels (each tile is TILE_SIZE x TILE_SIZE).
 pub const TILE_SIZE: u32 = 512;
@@ -24,6 +25,15 @@ pub const TILE_SIZE: u32 = 512;
 /// Pixel count threshold above which tiled mode is activated.
 /// 64 megapixels = 8000x8000. Images below this use the normal full-upload path.
 pub const TILED_THRESHOLD: u64 = 64_000_000;
+
+/// Maximum texture side length supported by most GPUs (conservative limit).
+/// Large images exceeding this will be rendered using tiles.
+/// This value is updated dynamically at startup based on GPU hardware limits.
+pub static MAX_TEXTURE_SIDE: AtomicU32 = AtomicU32::new(8192);
+
+pub fn get_max_texture_side() -> u32 {
+    MAX_TEXTURE_SIDE.load(Ordering::Relaxed)
+}
 
 /// Maximum number of tile textures kept in GPU memory.
 /// 256 tiles * 512x512 * 4 bytes = 256MB VRAM.

@@ -259,6 +259,18 @@ impl ImageViewerApp {
 
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
+        // ── GPU Limits ───────────────────────────────────────────────────────
+        let max_texture_side_hw = cc.wgpu_render_state.as_ref()
+            .map(|s| s.adapter.limits().max_texture_dimension_2d)
+            .unwrap_or(8192);
+        
+        // Even if the hardware supports more (e.g., 16384), egui often caps at 8192.
+        // We cap it at 8192 here to be absolutely safe against framework panics.
+        let max_texture_side = max_texture_side_hw.min(8192);
+        
+        crate::tile_cache::MAX_TEXTURE_SIDE.store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
+        log::info!("GPU Capabilities: hw_max={}, applied_limit={}", max_texture_side_hw, max_texture_side);
+
         let mut app = Self {
             settings,
             save_tx,
@@ -911,9 +923,12 @@ impl ImageViewerApp {
                         tm.preview_texture = Some(preview_handle);
                         self.tile_manager = Some(tm);
                         self.animation = None;
+                        let file_name = self.image_files[idx].file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
                         log::info!(
-                            "Large image detected: {}x{} ({:.1} MP) — tiled mode active",
-                            decoded.width, decoded.height,
+                            "[{}] Large image detected: {}x{} ({:.1} MP) — tiled mode active",
+                            file_name, decoded.width, decoded.height,
                             (decoded.width as f64 * decoded.height as f64) / 1_000_000.0
                         );
                     }
