@@ -62,8 +62,10 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
 ] }
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
 printpdf = { version = "0.9.1", features = ["images"] }
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 # Build-time dependencies: only needed on Windows for PE resource embedding
 [target.'cfg(windows)'.build-dependencies]

@@ -136,12 +136,21 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             .unwrap_or_default();
         let is_tiff = ext == "tif" || ext == "tiff";
 
-        // On Windows, prioritize WIC for TIFF files as it's more robust than the standard decoder
+        // On Windows, prioritize WIC for TIFF files
         #[cfg(target_os = "windows")]
         if is_tiff {
             match crate::wic::load_via_wic(path) {
                 Ok(wic_img) => return Ok(wic_img),
                 Err(wic_err) => log::info!("[{}] WIC failed for TIFF, falling back to standard loader: {}", file_name, wic_err),
+            }
+        }
+
+        // On macOS, prioritize ImageIO for TIFF files
+        #[cfg(target_os = "macos")]
+        if is_tiff {
+            match crate::macos_image_io::load_via_image_io(path) {
+                Ok(img) => return Ok(img),
+                Err(err) => log::info!("[{}] ImageIO failed for TIFF, falling back: {}", file_name, err),
             }
         }
 
