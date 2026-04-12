@@ -16,6 +16,23 @@
 
 pub use crate::formats::{FormatGroup, ImageFormat, get_registry};
 use std::thread;
+use std::cell::RefCell;
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static WIC_FACTORY: RefCell<Option<IWICImagingFactory>> = RefCell::new(None);
+}
+
+#[cfg(target_os = "windows")]
+fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
+    WIC_FACTORY.with(|f| {
+        let mut factory = f.borrow_mut();
+        if factory.is_none() {
+            *factory = Some(unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? });
+        }
+        Ok(factory.as_ref().unwrap().clone())
+    })
+}
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Imaging::*;
@@ -86,7 +103,7 @@ pub fn spawn_wic_discovery() {
 fn discover_wic_codecs() -> windows::core::Result<()> {
     let _com = ComGuard::new()?;
     unsafe {
-        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+        let factory = get_wic_factory()?;
         
         let enumerator = factory.CreateComponentEnumerator(WICDecoder.0 as u32, WICComponentEnumerateDefault.0 as u32)?;
         
@@ -174,8 +191,7 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
 
-        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
-            .map_err(|e| format!("Factory creation failed: {:?}", e))?;
+        let factory = get_wic_factory().map_err(|e| format!("Factory access failed: {:?}", e))?;
 
         let path_os = path.as_os_str();
         use std::os::windows::ffi::OsStrExt;
