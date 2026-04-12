@@ -13,23 +13,35 @@ use core_graphics::color_space::CGColorSpace;
 #[cfg(target_os = "macos")]
 use core_graphics::context::CGContext;
 #[cfg(target_os = "macos")]
-use core_foundation::base::TCFType;
+use core_foundation::base::{TCFType, CFTypeRef};
 #[cfg(target_os = "macos")]
 use core_foundation::data::CFData;
+#[cfg(target_os = "macos")]
+use core_foundation::string::{CFString, CFStringRef};
+#[cfg(target_os = "macos")]
+use core_foundation::array::CFArray;
 #[cfg(target_os = "macos")]
 use std::fs;
 #[cfg(target_os = "macos")]
 use foreign_types::ForeignType;
 #[cfg(target_os = "macos")]
 
-// External link to ImageIO which is not always fully covered by core-graphics crate
+// External link to ImageIO and CoreServices
 #[cfg(target_os = "macos")]
 #[link(name = "ImageIO", kind = "framework")]
+#[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
     fn CGImageSourceCreateWithData(data: core_foundation::data::CFDataRef, options: core_foundation::dictionary::CFDictionaryRef) -> *const std::ffi::c_void;
     fn CGImageSourceCreateImageAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
     fn CFRelease(obj: *const std::ffi::c_void);
+    
+    // Discovery APIs
+    fn CGImageSourceCopyTypeIdentifiers() -> core_foundation::array::CFArrayRef;
+    fn UTTypeCopyPreferredTagWithClass(uti: CFStringRef, tag_class: CFStringRef) -> CFStringRef;
 }
+
+#[cfg(target_os = "macos")]
+static K_UT_TAG_CLASS_FILENAME_EXTENSION: &str = "public.filename-extension";
 
 #[cfg(target_os = "macos")]
 pub fn load_via_image_io(path: &PathBuf) -> Result<ImageData, String> {
@@ -96,4 +108,40 @@ pub fn load_via_image_io(path: &PathBuf) -> Result<ImageData, String> {
 #[allow(dead_code)]
 pub fn load_via_image_io(_path: &PathBuf) -> Result<ImageData, String> {
     Err("ImageIO is only supported on macOS".to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_imageio_codecs() -> Vec<String> {
+    use std::collections::HashSet;
+
+    let mut extensions = HashSet::new();
+    let tag_class = CFString::from_static_string(K_UT_TAG_CLASS_FILENAME_EXTENSION);
+
+    unsafe {
+        let array_ref = CGImageSourceCopyTypeIdentifiers();
+        if !array_ref.is_null() {
+            let array: CFArray<CFTypeRef> = CFArray::from_ptr(array_ref);
+            for uti_ptr in array.iter() {
+                let uti_str_ref = *uti_ptr as CFStringRef;
+                let ext_ref = UTTypeCopyPreferredTagWithClass(uti_str_ref, tag_class.as_concrete_TypeRef());
+                
+                if !ext_ref.is_null() {
+                    let ext_cfstring: CFString = CFString::from_ptr(ext_ref);
+                    let ext = ext_cfstring.to_string().to_lowercase();
+                    if !ext.is_empty() {
+                        extensions.insert(ext);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = extensions.into_iter().collect();
+    result.sort();
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn discover_imageio_codecs() -> Vec<String> {
+    vec![]
 }
