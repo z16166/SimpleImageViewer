@@ -14,3 +14,13 @@ rustflags = [
 # Linux Compatibility Note:
 # To ensure compatibility with older Linux distributions (e.g. Ubuntu 20.04+),
 # it is recommended to build the application on a system with an older GLIBC version.
+
+# ── Windows MSVC: static-link the CRT (no VCRUNTIME*.dll dependency) ──────────
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
