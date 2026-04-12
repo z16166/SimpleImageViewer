@@ -46,7 +46,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
 - **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
-- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, set as desktop wallpaper, or **Print** (Full or Visible Area) directly
+- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, set as desktop wallpaper, **Rotate 90° CW/CCW**, or **Print** (Full or Visible Area) directly
 - **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese - Taiwan & Hong Kong) with fallback support, and can be manually overridden in the settings panel.
 
 ---
@@ -74,6 +74,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
+| `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
+| `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
 | `Alt+F4` | Quit (Windows) |
 
 ---

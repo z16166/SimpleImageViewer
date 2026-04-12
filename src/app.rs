@@ -216,6 +216,8 @@ pub struct ImageViewerApp {
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
     context_menu_pos: Option<Pos2>,
+    /// Current view rotation in steps of 90 degrees clockwise (0-3).
+    current_rotation: i32,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -323,6 +325,7 @@ impl ImageViewerApp {
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
             context_menu_pos: None,
+            current_rotation: 0,
         };
 
         // Restore last session state
@@ -405,6 +408,7 @@ impl ImageViewerApp {
         }
 
         self.current_index = target_index;
+        self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
         // Reset animation playback — will be re-created if the new image is animated
@@ -567,6 +571,7 @@ impl ImageViewerApp {
             self.animation = None;
             self.prev_texture = None;
             self.transition_start = None;
+            self.current_rotation = 0;
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
             self.cached_exif_data = None;
@@ -1022,6 +1027,7 @@ impl ImageViewerApp {
         let mut scroll_delta = egui::Vec2::ZERO;
         let mut zoom_delta = 1.0_f32;
         let mut is_ctrl_pressed = false;
+        let mut is_alt_pressed = false;
         let mut mouse_pos: Option<egui::Pos2> = None;
         let mut toggle_auto_switch = false;
         let mut toggle_goto = false;
@@ -1031,6 +1037,8 @@ impl ImageViewerApp {
         let mut do_delete = false;
         let mut do_permanent_delete = false;
         let mut do_print_full = false;
+        let mut rotate_ccw = false;
+        let mut rotate_cw = false;
 
         // Collect all modal flags to prevent deletion when a dialog is active
         // Collect all modal flags to prevent interaction when a dialog is active
@@ -1092,6 +1100,7 @@ impl ImageViewerApp {
             scroll_delta = i.smooth_scroll_delta;
             zoom_delta = i.zoom_delta();
             is_ctrl_pressed = i.modifiers.command;
+            is_alt_pressed = i.modifiers.alt;
             mouse_pos = i.pointer.latest_pos();
             // F11 / F — toggle fullscreen
             if i.key_pressed(Key::F11) || i.key_pressed(Key::F) {
@@ -1105,7 +1114,17 @@ impl ImageViewerApp {
             if i.key_pressed(Key::G) {
                 toggle_goto = true;
             }
-            // Print (Ctrl+P)
+            // Rotation shortcuts: Ctrl+Left / Ctrl+Right
+            if i.modifiers.command {
+                if i.key_pressed(Key::ArrowLeft) {
+                    rotate_ccw = true;
+                    nav_prev = false; // Override navigation
+                }
+                if i.key_pressed(Key::ArrowRight) {
+                    rotate_cw = true;
+                    nav_next = false; // Override navigation
+                }
+            }
             if !any_modal_open {
                 if i.modifiers.command && i.key_pressed(Key::P) {
                     do_print_full = true;
@@ -1188,10 +1207,19 @@ impl ImageViewerApp {
 
         let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.egui_wants_pointer_input();
         if !ui_consuming_scroll {
-            if is_ctrl_pressed {
-                // Zoom-to-cursor: the point under the mouse stays fixed during zoom.
-                // Math: image center = screen_center + pan_offset in both scale modes,
-                // so we adjust pan_offset to compensate for the scale change.
+            if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
+                // Rotation with Alt + Mouse Wheel (steps of 90 degrees)
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 { // Reuse cooldown to prevent spinning
+                    if scroll_delta.y > 0.0 {
+                        rotate_ccw = true;
+                    } else if scroll_delta.y < 0.0 {
+                        rotate_cw = true;
+                    }
+                    self.last_mouse_wheel_nav = now;
+                }
+            } else if is_ctrl_pressed {
+                // Zoom-to-cursor...
                 if zoom_delta != 1.0 {
                     let old_zoom = self.zoom_factor;
                     self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
@@ -1244,6 +1272,10 @@ impl ImageViewerApp {
         if do_quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+
+        // Apply rotation if requested (by keys OR mouse wheel)
+        if rotate_ccw { self.current_rotation = (self.current_rotation + 3) % 4; }
+        if rotate_cw { self.current_rotation = (self.current_rotation + 1) % 4; }
     }
 
     // ------------------------------------------------------------------
@@ -1898,6 +1930,18 @@ impl ImageViewerApp {
         }
 
         ui.separator();
+
+        if ui.button(t!("ctx.rotate_ccw").to_string()).clicked() {
+            self.current_rotation = (self.current_rotation + 3) % 4;
+            self.context_menu_pos = None;
+        }
+
+        if ui.button(t!("ctx.rotate_cw").to_string()).clicked() {
+            self.current_rotation = (self.current_rotation + 1) % 4;
+            self.context_menu_pos = None;
+        }
+
+        ui.separator();
         if ui
             .button(if cfg!(not(target_os = "windows")) {
                 t!("ctx.print_pdf_full").to_string()
@@ -2051,31 +2095,47 @@ impl ImageViewerApp {
                     self.pan_offset += canvas_resp.drag_delta();
                 }
 
+                // Rotation logic
+                let rotation = self.current_rotation;
+                let needs_swap = rotation % 2 != 0;
+                let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
+
                 // Extract immutable data first (avoids borrow conflict with compute_display_rect)
                 let tm_ref = self.tile_manager.as_ref().unwrap();
                 let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
                 let full_w = tm_ref.full_width;
                 let full_h = tm_ref.full_height;
-                let dest = self.compute_display_rect(img_size, screen_rect);
+                
+                let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+                let dest = self.compute_display_rect(rotated_img_size, screen_rect);
+
+                // The painter transform will handle the actual rotation.
+                // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
+                let unrotated_size = if needs_swap { Vec2::new(dest.height(), dest.width()) } else { dest.size() };
+                let unrotated_dest = Rect::from_center_size(dest.center(), unrotated_size);
 
                 // 1. Draw preview texture as blurry background
                 if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
-                    ui.painter().image(
-                        preview.id(),
-                        dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
+                    let mut mesh = egui::Mesh::with_texture(preview.id());
+                    let color = Color32::WHITE;
+                    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                    mesh.add_rect_with_uv(unrotated_dest, uv, color);
+                    
+                    if rotation != 0 {
+                        let rot = egui::emath::Rot2::from_angle(angle);
+                        let pivot = dest.center();
+                        for v in &mut mesh.vertices {
+                            v.pos = pivot + rot * (v.pos - pivot);
+                        }
+                    }
+                    ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
                 }
 
                 // 2. Only render high-res tiles when zoomed in enough that they matter.
-                //    At low zoom (fit-to-window), the preview texture is already sufficient.
-                //    Threshold: 1 image pixel must map to at least 0.15 screen pixels.
-                //    For a 30000px image on 1920px screen (fit=0.065), tiles appear at ~2.3x zoom.
-                let effective_scale = dest.width() / img_size.x;
+                let effective_scale = dest.width() / rotated_img_size.x;
                 if effective_scale >= 0.15 {
-                    // Compute visible tiles (immutable borrow)
-                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(dest, screen_rect);
+                    // Compute visible tiles using the UNROTATED destination rect
+                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect);
 
                     // Upload and draw tiles (mutable borrow, scoped)
                     let ctx_ref = ui.ctx().clone();
@@ -2084,6 +2144,9 @@ impl ImageViewerApp {
 
                     {
                         let tm = self.tile_manager.as_mut().unwrap();
+                        let pivot = dest.center();
+                        let rot = if rotation != 0 { Some(egui::emath::Rot2::from_angle(angle)) } else { None };
+
                         for (coord, tile_screen_rect, uv) in visible {
                             let allow_create = newly_uploaded < TILE_UPLOAD_QUOTA;
                             let (handle_opt, created) = tm.get_or_create_tile(coord, &ctx_ref, allow_create);
@@ -2092,14 +2155,16 @@ impl ImageViewerApp {
                                 if created {
                                     newly_uploaded += 1;
                                 }
-                                ui.painter().image(
-                                    handle.id(),
-                                    tile_screen_rect,
-                                    uv,
-                                    Color32::WHITE,
-                                );
+                                
+                                let mut mesh = egui::Mesh::with_texture(handle.id());
+                                mesh.add_rect_with_uv(tile_screen_rect, uv, Color32::WHITE);
+                                if let Some(r) = rot {
+                                    for v in &mut mesh.vertices {
+                                        v.pos = pivot + r * (v.pos - pivot);
+                                    }
+                                }
+                                ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
                             }
-                            // If None, we don't draw anything (the blurry preview is already underneath)
                         }
                     }
                     
@@ -2215,12 +2280,23 @@ impl ImageViewerApp {
                     }
                 }
 
-                // Compute current display rect
-                let dest = self.compute_display_rect(img_size, screen_rect);
+                // Rotation logic
+                let rotation = self.current_rotation;
+                let needs_swap = rotation % 2 != 0;
+                let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
+
+                // Compute current display rect with swapped dimensions if needed for proper fit-to-window scaling
+                let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+                let dest = self.compute_display_rect(rotated_img_size, screen_rect);
                 let final_dest = Rect::from_center_size(
                     dest.center() + offset,
                     dest.size() * scale
                 );
+
+                // The painter transform handles the visual rotation.
+                // We draw the un-rotated texture into an "un-rotated" rect.
+                let unrotated_final_size = if needs_swap { Vec2::new(final_dest.height(), final_dest.width()) } else { final_dest.size() };
+                let unrotated_final_dest = Rect::from_center_size(final_dest.center(), unrotated_final_size);
 
                 // DRAW SEQUENCE:
                 // PageFlip and Ripple need custom rendering order.
@@ -2251,12 +2327,17 @@ impl ImageViewerApp {
                                 } else {
                                     new_clip.max.x = clip_x;
                                 }
-                                ui.painter().with_clip_rect(new_clip).image(
-                                    texture.id(),
-                                    final_dest,
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
+
+                                let mut mesh = egui::Mesh::with_texture(texture.id());
+                                mesh.add_rect_with_uv(unrotated_final_dest, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.linear_multiply(alpha));
+                                if rotation != 0 {
+                                    let rot = egui::emath::Rot2::from_angle(angle);
+                                    let pivot = final_dest.center();
+                                    for v in &mut mesh.vertices {
+                                        v.pos = pivot + rot * (v.pos - pivot);
+                                    }
+                                }
+                                ui.painter().with_clip_rect(new_clip).add(egui::Shape::mesh(mesh));
 
                                 // 2. Draw OLD image (unrevealed part, clipped)
                                 let mut old_clip = union_rect;
@@ -2377,6 +2458,14 @@ impl ImageViewerApp {
                                 mesh.indices.push(i + 2);
                             }
 
+                            let mut mesh = mesh;
+                            if rotation != 0 {
+                                let rot = egui::emath::Rot2::from_angle(angle);
+                                let pivot = dest.center();
+                                for v in &mut mesh.vertices {
+                                    v.pos = pivot + rot * (v.pos - pivot);
+                                }
+                            }
                             ui.painter().with_clip_rect(dest).add(egui::Shape::mesh(mesh));
 
                             // 4. Draw water ripple rings at the expanding edge
@@ -2523,19 +2612,23 @@ impl ImageViewerApp {
                     }
 
                     // 2. Draw NEW image (on top, with alpha/motion)
-                    ui.painter().image(
-                        texture.id(),
-                        final_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE.linear_multiply(alpha),
-                    );
+                    let mut mesh = egui::Mesh::with_texture(texture.id());
+                    mesh.add_rect_with_uv(unrotated_final_dest, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.linear_multiply(alpha));
+                    if rotation != 0 {
+                        let rot = egui::emath::Rot2::from_angle(angle);
+                        let pivot = final_dest.center();
+                        for v in &mut mesh.vertices {
+                            v.pos = pivot + rot * (v.pos - pivot);
+                        }
+                    }
+                    ui.painter().add(egui::Shape::mesh(mesh));
                 }
 
                 if self.settings.show_osd {
                     // HUD overlay
                     let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
-                    let img_w = img_size.x.round() as u32;
-                    let img_h = img_size.y.round() as u32;
+                    let img_w = rotated_img_size.x.round() as u32;
+                    let img_h = rotated_img_size.y.round() as u32;
                     let mode_label = self.settings.scale_mode.label();
 
                     let current_state = HudState {
