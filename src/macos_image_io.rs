@@ -18,13 +18,17 @@ use core_foundation::base::TCFType;
 use core_foundation::data::CFData;
 #[cfg(target_os = "macos")]
 use std::fs;
+#[cfg(target_os = "macos")]
+use foreign_types::ForeignType;
+#[cfg(target_os = "macos")]
 
 // External link to ImageIO which is not always fully covered by core-graphics crate
 #[cfg(target_os = "macos")]
 #[link(name = "ImageIO", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGImageSourceCreateWithData(data: core_foundation::data::CFDataRef, options: core_foundation::dictionary::CFDictionaryRef) -> *const std::ffi::c_void;
     fn CGImageSourceCreateImageAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
+    fn CFRelease(obj: *const std::ffi::c_void);
 }
 
 #[cfg(target_os = "macos")]
@@ -45,9 +49,10 @@ pub fn load_via_image_io(path: &PathBuf) -> Result<ImageData, String> {
         // 3. Create CGImage
         let cg_image_ref = CGImageSourceCreateImageAtIndex(source, 0, std::ptr::null());
         if cg_image_ref.is_null() {
+            CFRelease(source);
             return Err("Failed to create CGImage from source".to_string());
         }
-        let cg_image = CGImage::from_referenced_ptr(cg_image_ref);
+        let cg_image = CGImage::from_ptr(cg_image_ref);
         
         // 4. Create Bitmap Context to force RGBA8 format
         let width = cg_image.width();
@@ -69,10 +74,12 @@ pub fn load_via_image_io(path: &PathBuf) -> Result<ImageData, String> {
             &core_graphics::geometry::CGPoint::new(0.0, 0.0),
             &core_graphics::geometry::CGSize::new(width as f64, height as f64)
         );
-        context.draw_image(&rect, &cg_image);
+        context.draw_image(rect, &cg_image);
         
         // 6. Extract data
         let pixel_data = context.data().to_vec();
+        
+        CFRelease(source);
         
         log::info!("[{}] Decoded via MacOS ImageIO: {}x{}", file_name, width, height);
 

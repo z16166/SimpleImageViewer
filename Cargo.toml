@@ -66,6 +66,7 @@ windows = { version = "0.58", features = [
 printpdf = { version = "0.9.1", features = ["images"] }
 core-graphics = "0.24"
 core-foundation = "0.10"
+foreign-types = "0.5"
 
 # Build-time dependencies: only needed on Windows for PE resource embedding
 [target.'cfg(windows)'.build-dependencies]
