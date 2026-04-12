@@ -138,8 +138,8 @@ exif.copy: "📋 複製 EXIF"
 # XMP window
 xmp.title: "XMP 資訊"
 xmp.no_data: "⚠ 此圖片中未找到 XMP 資料。"
-xmp.copy_text: "📋 複製文字"
-xmp.copy_xml: "📄 複製 XML"
+xmp.copy_text: "📋 複製 XMP 文字"
+xmp.copy_xml: "📄 複製 XMP XML"
 
 # Windows system integration
 win.register_hint: "為圖片檔案在 Windows「開啟方式」選單中註冊此應用程式。"

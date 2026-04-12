@@ -3392,10 +3392,10 @@ impl eframe::App for ImageViewerApp {
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
                                 if let Some(xml_str) = &self.cached_xmp_xml {
-                                    if styled_button(ui, &format!("{} TEXT", t!("exif.copy")), &self.cached_palette).clicked() {
+                                    if styled_button(ui, &t!("xmp.copy_text").to_string(), &self.cached_palette).clicked() {
                                         close_and_copy = true;
                                     }
-                                    if styled_button(ui, &format!("{} XML", t!("exif.copy")), &self.cached_palette).clicked() {
+                                    if styled_button(ui, &t!("xmp.copy_xml").to_string(), &self.cached_palette).clicked() {
                                         ctx.copy_text(xml_str.clone());
                                         self.show_xmp_window = false;
                                     }

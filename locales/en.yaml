@@ -138,8 +138,8 @@ exif.copy: "📋 Copy EXIF"
 # XMP window
 xmp.title: "XMP Information"
 xmp.no_data: "⚠ No XMP data found in this image."
-xmp.copy_text: "📋 Copy Text"
-xmp.copy_xml: "📄 Copy XML"
+xmp.copy_text: "📋 Copy XMP Text"
+xmp.copy_xml: "📄 Copy XMP XML"
 
 # Windows system integration
 win.register_hint: "Register this app in Windows \"Open With\" menu for image files."
