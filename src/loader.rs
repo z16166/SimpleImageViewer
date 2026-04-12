@@ -185,6 +185,20 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
                 }
             }
         }
+
+        #[cfg(target_os = "macos")]
+        if let Err(ref std_err) = result {
+            if !is_tiff {
+                log::info!("[{}] Standard loader failed, trying ImageIO fallback...", file_name);
+                match crate::macos_image_io::load_via_image_io(path) {
+                    Ok(img) => return Ok(img),
+                    Err(err) => {
+                        return Err(format!("{}\n(ImageIO: {})", std_err, err));
+                    }
+                }
+            }
+        }
+
         result
     })();
     
