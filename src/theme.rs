@@ -276,12 +276,88 @@ fn detect_system_dark_mode() -> bool {
     {
         return windows_is_dark_mode();
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        // TODO: implement for GTK (org.gnome.desktop.interface color-scheme)
-        // and macOS (NSApplication.shared.effectiveAppearance).
+        return macos_is_dark_mode();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_is_dark_mode();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
         true
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_is_dark_mode() -> bool {
+    use std::process::Command;
+
+    // 1. Try XDG Settings Portal (Modern GNOME, KDE, and others)
+    // Values: 0 = no preference, 1 = prefer-dark, 2 = prefer-light
+    if let Ok(output) = Command::new("gdbus")
+        .args(&[
+            "call", "--session", 
+            "--dest", "org.freedesktop.portal.Desktop", 
+            "--object-path", "/org/freedesktop/portal/desktop", 
+            "--method", "org.freedesktop.portal.Settings.Read", 
+            "org.freedesktop.appearance", "color-scheme"
+        ])
+        .output() 
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        if s.contains("uint32 1") {
+            return true;
+        } else if s.contains("uint32 2") {
+            return false;
+        }
+    }
+
+    // 2. Try GNOME-specific setting (gsettings)
+    if let Ok(output) = Command::new("gsettings")
+        .args(&["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output() 
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        if s.contains("prefer-dark") {
+            return true;
+        } else if s.contains("prefer-light") {
+            return false;
+        }
+    }
+
+    // 3. Try KDE-specific setting (kreadconfig)
+    // Check kreadconfig6 first, then kreadconfig5
+    for cmd in &["kreadconfig6", "kreadconfig5"] {
+        if let Ok(output) = Command::new(cmd)
+            .args(&["--group", "General", "--key", "ColorScheme"])
+            .output() 
+        {
+            let s = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            if !s.is_empty() {
+                return s.contains("dark");
+            }
+        }
+    }
+
+    // Default to dark if detection fails
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn macos_is_dark_mode() -> bool {
+    use std::process::Command;
+    // defaults read -g AppleInterfaceStyle returns "Dark"
+    // If it's not set, the command fails with exit code 1, which means Light mode.
+    if let Ok(output) = Command::new("defaults")
+        .args(&["read", "-g", "AppleInterfaceStyle"])
+        .output() 
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        return s.trim() == "Dark";
+    }
+    false
 }
 
 #[cfg(target_os = "windows")]
