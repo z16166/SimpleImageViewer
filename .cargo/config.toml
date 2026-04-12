@@ -1,12 +1,16 @@
-# Cargo config for SimpleImageViewer
-# Applied automatically when building in this workspace.
+# macOS Deployment Target Configuration
+# Sets the minimum supported version to macOS 11.0 (Big Sur)
 
-# ── Windows MSVC: static-link the CRT (no VCRUNTIME*.dll dependency) ──────────
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-mmacosx-version-min=11.0"
+]
 
-[target.i686-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-mmacosx-version-min=11.0"
+]
 
-[target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+# Linux Compatibility Note:
+# To ensure compatibility with older Linux distributions (e.g. Ubuntu 20.04+),
+# it is recommended to build the application on a system with an older GLIBC version.
