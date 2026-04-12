@@ -32,6 +32,8 @@ mod macos_image_io;
 mod formats;
 #[cfg(target_os = "windows")]
 mod wic;
+#[cfg(target_os = "linux")]
+mod linux_tiff;
 
 #[cfg(target_os = "windows")]
 pub mod windows_utils {

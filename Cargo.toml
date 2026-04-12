@@ -30,7 +30,7 @@ encoding_rs = "0.8"
 rfd = "0.17"
 walkdir = "2"
 jwalk = "0.8"
-tiff = "0.11"
+# tiff = "0.11" // Removed in favor of libtiff via libloading on Linux and WIC/ImageIO elsewhere
 crossbeam-channel = "0.5"
 rayon = "1"
 log = "0.4"
@@ -49,6 +49,7 @@ heic = "0.1"
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
 wgpu = { version = "24", features = ["dx12", "metal"] }
+printpdf = { version = "0.9.1", features = ["images"] }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
@@ -63,10 +64,12 @@ windows = { version = "0.58", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-printpdf = { version = "0.9.1", features = ["images"] }
 core-graphics = "0.24"
 core-foundation = "0.10"
 foreign-types = "0.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
 
 # Build-time dependencies: only needed on Windows for PE resource embedding
 [target.'cfg(windows)'.build-dependencies]

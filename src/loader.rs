@@ -17,8 +17,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::fs::File;
-use std::io::BufReader;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 
@@ -145,12 +143,20 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             }
         }
 
-        // On macOS, prioritize ImageIO for TIFF files
         #[cfg(target_os = "macos")]
         if is_tiff {
             match crate::macos_image_io::load_via_image_io(path) {
                 Ok(img) => return Ok(img),
                 Err(err) => log::info!("[{}] ImageIO failed for TIFF, falling back: {}", file_name, err),
+            }
+        }
+
+        // On Linux, prioritize libtiff via dynamic loading
+        #[cfg(target_os = "linux")]
+        if is_tiff {
+            match crate::linux_tiff::load_via_libtiff(path) {
+                Ok(img) => return Ok(img),
+                Err(err) => log::info!("[{}] libtiff failed for TIFF, falling back: {}", file_name, err),
             }
         }
 
@@ -245,15 +251,6 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     // Remove the default memory limit (512MB) to allow gigapixel images
     decoder.no_limits();
 
-    // If it's a TIFF, we now use our robust decoder for better consistency across platforms
-    let is_tiff = path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase() == "tif" || e.to_lowercase() == "tiff")
-        .unwrap_or(false);
-    if is_tiff {
-        return load_tiff_robust(path);
-    }
-
     let img = match decoder.decode() {
         Ok(img) => img,
         Err(e) => return Err(e.to_string()),
@@ -263,247 +260,6 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let pixels = rgba.into_raw();
     
     Ok(ImageData::Static(DecodedImage { width, height, pixels }))
-}
-
-fn load_tiff_robust(path: &PathBuf) -> Result<ImageData, String> {
-    // 1. Pre-check for Palette TIFF (which requires patching)
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
-        .map_err(|e| e.to_string())?;
-    
-    let photometric = decoder.get_tag_u64(tiff::tags::Tag::PhotometricInterpretation).unwrap_or(2);
-    if photometric == 3 {
-        return load_tiff_palette_fallback(path);
-    }
-
-    // 2. Decode using the tiff crate directly
-    let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
-    let result = decoder.read_image().map_err(|e| format!("TIFF decode failed: {}", e))?;
-    
-    let predictor = decoder.get_tag_u64(tiff::tags::Tag::Predictor).unwrap_or(1);
-
-    let pixels = match result {
-        tiff::decoder::DecodingResult::U8(mut data) => {
-            let total_pixels = width as usize * height as usize;
-            let current_channels = data.len() / total_pixels;
-
-            // 1. Manually undo Predictor 2 if the library failed to do so
-            if predictor == 2 && current_channels > 0 {
-                for row in 0..height as usize {
-                    let row_start = row * width as usize * current_channels;
-                    for col in 1..width as usize {
-                        for ch in 0..current_channels {
-                            let idx = row_start + (col * current_channels) + ch;
-                            let prev_idx = idx - current_channels;
-                            data[idx] = data[idx].wrapping_add(data[prev_idx]);
-                        }
-                    }
-                }
-            }
-
-            // 2. Adaptive conversion to RGBA
-            if data.len() == total_pixels * 4 {
-                data
-            } else if data.len() == total_pixels * 3 {
-                let mut rgba = Vec::with_capacity(total_pixels * 4);
-                for chunk in data.chunks_exact(3) {
-                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-                }
-                rgba
-            } else if data.len() == total_pixels {
-                let mut rgba = Vec::with_capacity(total_pixels * 4);
-                for &gray in &data {
-                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
-                }
-                rgba
-            } else {
-                return Err(format!("TIFF U8 buffer size mismatch: {}x{}, channels={}, len={}", width, height, current_channels, data.len()));
-            }
-        }
-        tiff::decoder::DecodingResult::U16(mut data) => {
-            let total_pixels = width as usize * height as usize;
-            let current_channels = data.len() / total_pixels;
-
-            // 1. Manually undo Predictor 2 for U16
-            if predictor == 2 && current_channels > 0 {
-                for row in 0..height as usize {
-                    let row_start = row * width as usize * current_channels;
-                    for col in 1..width as usize {
-                        for ch in 0..current_channels {
-                            let idx = row_start + (col * current_channels) + ch;
-                            let prev_idx = idx - current_channels;
-                            data[idx] = data[idx].wrapping_add(data[prev_idx]);
-                        }
-                    }
-                }
-            }
-
-            // 2. Downsample to 8-bit RGBA
-            let mut rgba = Vec::with_capacity(total_pixels * 4);
-            for chunk in data.chunks_exact(current_channels) {
-                if current_channels >= 3 {
-                    rgba.extend_from_slice(&[
-                        (chunk[0] >> 8) as u8,
-                        (chunk[1] >> 8) as u8,
-                        (chunk[2] >> 8) as u8,
-                        if current_channels >= 4 { (chunk[3] >> 8) as u8 } else { 255 },
-                    ]);
-                } else {
-                    let gray = (chunk[0] >> 8) as u8;
-                    rgba.extend_from_slice(&[gray, gray, gray, 255]);
-                }
-            }
-            rgba
-        }
-        _ => return Err("Unsupported TIFF bit depth (expected 8 or 16-bit)".to_string()),
-    };
-    
-    Ok(ImageData::Static(DecodedImage { width, height, pixels }))
-}
-
-/// Fallback TIFF decoder for Palette-indexed (RGBPalette) images.
-fn load_tiff_palette_fallback(path: &PathBuf) -> Result<ImageData, String> {
-    // Step 1: Read ColorMap from the original file
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
-        .map_err(|e| e.to_string())?;
-    let color_map = decoder.get_tag_u16_vec(tiff::tags::Tag::ColorMap)
-        .map_err(|e| format!("No ColorMap in TIFF: {}", e))?;
-    let palette_size = color_map.len() / 3;
-    if palette_size == 0 {
-        return Err("Empty TIFF ColorMap".to_string());
-    }
-
-    // Step 2: Read entire file into memory and patch PhotometricInterpretation
-    let mut data = std::fs::read(path).map_err(|e| e.to_string())?;
-    if !patch_tiff_photometric(&mut data) {
-        return Err("Failed to patch TIFF PhotometricInterpretation tag".to_string());
-    }
-
-    // Step 3: Decode the patched data as "grayscale" (actually palette indices)
-    let cursor = std::io::Cursor::new(&data);
-    let mut decoder = tiff::decoder::Decoder::new(cursor)
-        .map_err(|e| format!("Failed to decode patched TIFF: {}", e))?
-        .with_limits(tiff::decoder::Limits::unlimited());
-
-    let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
-    let result = decoder.read_image().map_err(|e| format!("Patched TIFF decode failed: {}", e))?;
-
-    // Step 4: Map indices to RGBA using ColorMap
-    let indices = match result {
-        tiff::decoder::DecodingResult::U8(d) => d,
-        _ => return Err("Expected U8 indices from patched TIFF".to_string()),
-    };
-
-    let pixel_count = (width as usize) * (height as usize);
-    let mut rgba = Vec::with_capacity(pixel_count * 4);
-    for i in 0..pixel_count {
-        if i >= indices.len() { break; }
-        let idx = indices[i] as usize;
-        if idx < palette_size {
-            let r = (color_map[idx] >> 8) as u8;
-            let g = (color_map[idx + palette_size] >> 8) as u8;
-            let b = (color_map[idx + 2 * palette_size] >> 8) as u8;
-            rgba.extend_from_slice(&[r, g, b, 255]);
-        } else {
-            rgba.extend_from_slice(&[0, 0, 0, 255]);
-        }
-    }
-
-    log::info!("Decoded Palette TIFF {}x{} via in-memory patch fallback", width, height);
-
-    let decoded = DecodedImage { width, height, pixels: rgba };
-    if (pixel_count as u64) >= crate::tile_cache::TILED_THRESHOLD {
-        Ok(ImageData::LargeStatic(decoded))
-    } else {
-        Ok(ImageData::Static(decoded))
-    }
-}
-
-/// Patch TIFF tag 262 (PhotometricInterpretation) from Palette(3) to Grayscale(1) in-place.
-/// Returns true if the patch was applied successfully.
-fn patch_tiff_photometric(data: &mut [u8]) -> bool {
-    if data.len() < 8 { return false; }
-
-    // Determine byte order
-    let big_endian = match (data[0], data[1]) {
-        (b'M', b'M') => true,
-        (b'I', b'I') => false,
-        _ => return false,
-    };
-
-    let read_u16 = |d: &[u8], off: usize| -> u16 {
-        if big_endian {
-            u16::from_be_bytes([d[off], d[off + 1]])
-        } else {
-            u16::from_le_bytes([d[off], d[off + 1]])
-        }
-    };
-    let read_u32 = |d: &[u8], off: usize| -> u32 {
-        if big_endian {
-            u32::from_be_bytes([d[off], d[off + 1], d[off + 2], d[off + 3]])
-        } else {
-            u32::from_le_bytes([d[off], d[off + 1], d[off + 2], d[off + 3]])
-        }
-    };
-    let write_u16 = |d: &mut [u8], off: usize, val: u16| {
-        let bytes = if big_endian { val.to_be_bytes() } else { val.to_le_bytes() };
-        d[off] = bytes[0];
-        d[off + 1] = bytes[1];
-    };
-
-    let magic = read_u16(data, 2);
-
-    // Standard TIFF (magic=42): 4-byte offsets, 12-byte IFD entries
-    if magic == 42 {
-        let ifd_offset = read_u32(data, 4) as usize;
-        if ifd_offset + 2 > data.len() { return false; }
-        let entry_count = read_u16(data, ifd_offset) as usize;
-
-        for i in 0..entry_count {
-            let entry_off = ifd_offset + 2 + i * 12;
-            if entry_off + 12 > data.len() { return false; }
-            let tag = read_u16(data, entry_off);
-            if tag == 262 {
-                // PhotometricInterpretation: value is at offset+8 (SHORT, count=1)
-                let val = read_u16(data, entry_off + 8);
-                if val == 3 { // Palette
-                    write_u16(data, entry_off + 8, 1); // → Grayscale (BlackIsZero)
-                    // Also set SamplesPerPixel tag to 1 if needed (usually already 1 for palette)
-                    return true;
-                }
-            }
-        }
-    }
-    // BigTIFF (magic=43): 8-byte offsets, 20-byte IFD entries
-    else if magic == 43 {
-        if data.len() < 16 { return false; }
-        let read_u64 = |d: &[u8], off: usize| -> u64 {
-            if big_endian {
-                u64::from_be_bytes([d[off], d[off+1], d[off+2], d[off+3], d[off+4], d[off+5], d[off+6], d[off+7]])
-            } else {
-                u64::from_le_bytes([d[off], d[off+1], d[off+2], d[off+3], d[off+4], d[off+5], d[off+6], d[off+7]])
-            }
-        };
-        let ifd_offset = read_u64(data, 8) as usize;
-        if ifd_offset + 8 > data.len() { return false; }
-        let entry_count = read_u64(data, ifd_offset) as usize;
-
-        for i in 0..entry_count {
-            let entry_off = ifd_offset + 8 + i * 20;
-            if entry_off + 20 > data.len() { return false; }
-            let tag = read_u16(data, entry_off);
-            if tag == 262 {
-                let val = read_u16(data, entry_off + 12);
-                if val == 3 {
-                    write_u16(data, entry_off + 12, 1);
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
 }
 
 fn process_animation_frames(raw_frames: Vec<image::Frame>, path: &PathBuf) -> Result<ImageData, String> {
