@@ -28,7 +28,7 @@ use egui::{
 
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::ipc::IpcMessage;
-use crate::loader::{ImageData, ImageLoader, TextureCache};
+use crate::loader::{ImageData, ImageLoader, TextureCache, DecodedImage};
 use crate::scanner::ScanMessage;
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
@@ -541,6 +541,18 @@ impl ImageViewerApp {
             // Just remove from list if it's already gone
             self.image_files.remove(self.current_index);
         } else {
+            // CRITICAL: Drop all resources holding the file BEFORE attempting to delete it.
+            // On Windows, WIC's IStream and memmap2 will keep the file locked if we don't drop them.
+            self.current_image_res = None;
+            self.tile_manager = None;
+            self.animation = None;
+            self.texture_cache.clear();
+            self.animation_cache.clear();
+            self.prev_texture = None;
+            
+            // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
             let result = if permanent {
                 std::fs::remove_file(&path_to_delete).map_err(|e| e.to_string())
             } else {
@@ -555,14 +567,6 @@ impl ImageViewerApp {
             // Successfully deleted
             self.image_files.remove(self.current_index);
         }
-
-        // Texture cache is keyed by path/hash in our implementation usually, 
-        // but if it's indexed, we need to clear or shift. 
-        // Our texture_cache is likely a wrapper around a Map or similar.
-        // Let's clear the entire cache to be safe or re-request.
-        self.texture_cache.clear();
-        self.animation_cache.clear();
-        self.tile_manager = None;
 
         if self.image_files.is_empty() {
             self.current_index = 0;
@@ -906,11 +910,16 @@ impl ImageViewerApp {
                     // Large image: create TileManager + preview, skip full GPU upload
                     if idx == self.current_index {
                         self.current_image_res = Some((decoded.width, decoded.height));
-                        let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels);
-                        self.setup_tile_manager(ctx, idx, &mut tm);
+                        let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels.clone());
+                        let preview = DecodedImage {
+                            width: decoded.width,
+                            height: decoded.height,
+                            pixels: decoded.pixels,
+                        };
+                        self.setup_tile_manager(ctx, idx, &mut tm, preview);
                         self.tile_manager = Some(tm);
                         self.animation = None;
-                        self.log_large_image(idx, decoded.width, decoded.height);
+                        self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
                     }
                 }
                 Ok(ImageData::Tiled(source)) => {
@@ -918,7 +927,12 @@ impl ImageViewerApp {
                     if idx == self.current_index {
                         self.current_image_res = Some((source.width(), source.height()));
                         let mut tm = TileManager::with_source(source);
-                        self.setup_tile_manager(ctx, idx, &mut tm);
+                        
+                        // Extract pre-generated preview from the load result message
+                        if let Some(preview) = load_result.preview {
+                            self.setup_tile_manager(ctx, idx, &mut tm, preview);
+                        }
+                        
                         self.tile_manager = Some(tm);
                         self.animation = None;
                         self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
@@ -990,15 +1004,10 @@ impl ImageViewerApp {
         );
     }
 
-    fn setup_tile_manager(&self, ctx: &egui::Context, idx: usize, tm: &mut TileManager) {
-        let screen_size = ctx.input(|i| i.content_rect()).size();
-        let max_w = screen_size.x.max(1920.0) as u32;
-        let max_h = screen_size.y.max(1080.0) as u32;
-        let (pw, ph, preview_pixels) = tm.generate_preview(max_w, max_h);
-        
+    fn setup_tile_manager(&self, ctx: &egui::Context, idx: usize, tm: &mut TileManager, preview: DecodedImage) {
         let preview_img = egui::ColorImage::from_rgba_unmultiplied(
-            [pw as usize, ph as usize],
-            &preview_pixels,
+            [preview.width as usize, preview.height as usize],
+            &preview.pixels,
         );
         let preview_handle = ctx.load_texture(
             format!("preview_{}", idx),

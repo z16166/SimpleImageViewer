@@ -160,11 +160,6 @@ impl TileManager {
         (self.full_height + TILE_SIZE - 1) / TILE_SIZE
     }
 
-    /// Generate a downscaled preview image (fits within max_w x max_h).
-    /// Returns (width, height, rgba_pixels).
-    pub fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        self.source.generate_preview(max_w, max_h)
-    }
 
     /// Extract a single tile's pixel data.
     fn extract_tile(&self, coord: TileCoord) -> (u32, u32, Vec<u8>) {

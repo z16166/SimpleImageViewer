@@ -369,10 +369,38 @@ fn main() -> eframe::Result {
         .with_fullscreen(fullscreen)
         .with_icon(load_icon());
 
+    let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
+        let info = adapter.get_info();
+        log::info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
+        if info.backend == eframe::wgpu::Backend::Gl {
+            log::warn!("Running in compatibility mode (ANGLE/DX11).");
+        }
+        
+        let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
+            eframe::wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            eframe::wgpu::Limits::default()
+        };
+
+        eframe::wgpu::DeviceDescriptor {
+            label: Some("egui wgpu device"),
+            required_limits: eframe::wgpu::Limits {
+                max_texture_dimension_2d: 8192,
+                ..base_limits
+            },
+            ..Default::default()
+        }
+    });
+
     let native_options = eframe::NativeOptions {
         viewport,
         centered: true,
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

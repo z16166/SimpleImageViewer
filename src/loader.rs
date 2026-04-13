@@ -61,6 +61,7 @@ pub struct LoadResult {
     pub index: usize,
     pub generation: u64,
     pub result: Result<ImageData, String>,
+    pub preview: Option<DecodedImage>,
 }
 
 pub struct ImageLoader {
@@ -202,12 +203,19 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
     })();
     
     // Post-process EVERY result for logging and limits
+    let mut preview: Option<DecodedImage> = None;
+
     let final_result = match result {
         Ok(ImageData::Tiled(source)) => {
             log::info!("[{}] Tiled image source active: {}x{} ({:.1} MP)", 
                 file_name, source.width(), source.height(),
                 (source.width() as f64 * source.height() as f64) / 1_000_000.0
             );
+            
+            // Generate preview IMMEDIATELY on the worker thread to avoid UI blocking
+            let (pw, ph, p_pixels) = source.generate_preview(2048, 2048);
+            preview = Some(DecodedImage { width: pw, height: ph, pixels: p_pixels });
+            
             Ok(ImageData::Tiled(source))
         }
         Ok(ImageData::Static(decoded)) => {
@@ -260,7 +268,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         other => other,
     };
 
-    LoadResult { index, generation, result: final_result }
+    LoadResult { index, generation, result: final_result, preview }
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {

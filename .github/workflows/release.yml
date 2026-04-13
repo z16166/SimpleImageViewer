@@ -180,6 +180,15 @@ jobs:
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
+          cp "$env:SystemRoot\System32\d3dcompiler_47.dll" staging/
+          # 仅针对 Win7 额外增加 ANGLE 核心 DLL 探测 (从 Chrome 中提取)
+          $angleDll = Get-ChildItem -Path "C:\Program Files\Google\Chrome\Application" -Filter "libEGL.dll" -Recurse | Select-Object -First 1
+          if ($angleDll) {
+              $anglePath = $angleDll.DirectoryName
+              cp "$anglePath\libEGL.dll" staging/
+              cp "$anglePath\libGLESv2.dll" staging/
+              echo "Bundled ANGLE runtime from $anglePath"
+          }
           Compress-Archive -Path staging/* -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 

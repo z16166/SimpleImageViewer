@@ -96,6 +96,7 @@ impl FormatRegistry {
             extensions.insert(ext.to_string());
         }
 
+        #[allow(unused_mut)]
         let mut registry = Self {
             formats,
             extensions,
