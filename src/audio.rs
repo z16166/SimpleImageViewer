@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use lofty::prelude::*;
 use lofty::read_from_path;
-
+use std::io::{Read, Seek};
+use std::num::NonZero;
+use ape_decoder::ApeDecoder;
 
 #[allow(dead_code)]
 pub enum AudioCommand {
@@ -35,6 +37,8 @@ pub struct AudioPlayer {
     pub current_metadata: Arc<Mutex<Option<String>>>,
     pub has_tracks: Arc<AtomicBool>,
     pub current_cue_track: Arc<Mutex<Option<usize>>>,
+    pub shutdown_flag: Arc<AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl AudioPlayer {
@@ -47,6 +51,8 @@ impl AudioPlayer {
             current_metadata: Arc::new(Mutex::new(None)),
             has_tracks: Arc::new(AtomicBool::new(false)),
             current_cue_track: Arc::new(Mutex::new(None)),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            thread_handle: None,
         }
     }
 
@@ -109,19 +115,19 @@ impl AudioPlayer {
     }
 
     pub fn take_error(&self) -> Option<String> {
-        self.last_error.lock().ok()?.take()
+        self.last_error.try_lock().ok()?.take()
     }
 
     pub fn get_current_track(&self) -> Option<String> {
-        self.current_track.lock().ok()?.clone()
+        self.current_track.try_lock().ok()?.clone()
     }
 
     pub fn get_current_track_path(&self) -> Option<PathBuf> {
-        self.current_track_path.lock().ok()?.clone()
+        self.current_track_path.try_lock().ok()?.clone()
     }
 
     pub fn get_metadata(&self) -> Option<String> {
-        self.current_metadata.lock().ok()?.clone()
+        self.current_metadata.try_lock().ok()?.clone()
     }
 
     pub fn has_tracks(&self) -> bool {
@@ -129,7 +135,7 @@ impl AudioPlayer {
     }
 
     pub fn get_current_cue_track(&self) -> Option<usize> {
-        self.current_cue_track.lock().ok()?.clone()
+        self.current_cue_track.try_lock().ok()?.clone()
     }
 
     fn ensure_thread_started(&mut self) {
@@ -142,19 +148,23 @@ impl AudioPlayer {
             let meta_slot = Arc::clone(&self.current_metadata);
             let tracks_flag = Arc::clone(&self.has_tracks);
             let cue_track_slot = Arc::clone(&self.current_cue_track);
+            let shutdown_flag = Arc::clone(&self.shutdown_flag);
+            shutdown_flag.store(false, Ordering::Relaxed);
 
-            std::thread::Builder::new()
+            let handle = std::thread::Builder::new()
                 .name("audio-player".to_string())
                 .spawn(move || {
-                    run_audio_loop(rx, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot)
+                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot)
                 })
                 .expect("failed to spawn audio thread");
+            self.thread_handle = Some(handle);
         }
     }
 }
 
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
+        self.shutdown_flag.store(true, Ordering::Relaxed);
         if let Some(tx) = self.cmd_tx.take() {
             let _ = tx.send(AudioCommand::Shutdown);
         }
@@ -169,7 +179,7 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
     fn is_music(p: &Path) -> bool {
         p.extension()
             .and_then(|e| e.to_str())
-            .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a"))
+            .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape"))
             .unwrap_or(false)
     }
 
@@ -286,13 +296,8 @@ fn read_text_file_with_fallback(path: &Path) -> Option<String> {
     }
 }
 
-fn load_cue(audio_path: &Path) -> Option<CueSheet> {
-    let cue_path = audio_path.with_extension("cue");
-    if !cue_path.exists() {
-        return None;
-    }
-
-    let content = read_text_file_with_fallback(&cue_path)?;
+fn parse_cue_file(cue_path: &Path) -> Option<CueSheet> {
+    let content = read_text_file_with_fallback(cue_path)?;
     let mut tracks = Vec::new();
     let mut current_track: Option<CueTrack> = None;
     let mut album_performer = String::new();
@@ -305,7 +310,6 @@ fn load_cue(audio_path: &Path) -> Option<CueSheet> {
             if let Some(t) = current_track.take() {
                 tracks.push(t);
             }
-            // Use continue instead of ? to avoid losing already-parsed tracks
             let Some(num_str) = line.split_whitespace().nth(1) else { continue };
             let Ok(num) = num_str.parse::<u32>() else { continue };
             current_track = Some(CueTrack {
@@ -338,6 +342,190 @@ fn load_cue(audio_path: &Path) -> Option<CueSheet> {
     }
 }
 
+fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
+    // 1. Direct match
+    let cue_path = audio_path.with_extension("cue");
+    if cue_path.exists() {
+        return parse_cue_file(&cue_path);
+    }
+
+    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+
+    // 2. Pattern replacement (e.g. (APE).ape -> (CUE).cue)
+    if let Some(filename) = audio_path.file_name().and_then(|n| n.to_str()) {
+        if filename.contains("(APE)") {
+            let new_filename = filename.replace("(APE)", "(CUE)");
+            let alt_cue_path = audio_path.with_file_name(new_filename).with_extension("cue");
+            if alt_cue_path.exists() {
+                log::info!("Found CUE by pattern replacement: {:?}", alt_cue_path);
+                return parse_cue_file(&alt_cue_path);
+            }
+        }
+    }
+
+    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+
+    // 3. Directory scan and fuzzy matching
+    if let Some(parent) = audio_path.parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            let mut cue_files = Vec::new();
+            for entry in entries.flatten() {
+                if shutdown_flag.load(Ordering::Relaxed) { return None; }
+                let p = entry.path();
+                if p.is_file() && p.extension().map(|e| e.to_string_lossy().to_lowercase() == "cue").unwrap_or(false) {
+                    cue_files.push(p);
+                }
+            }
+
+            if cue_files.len() == 1 {
+                log::info!("Using the only CUE file in directory: {:?}", cue_files[0]);
+                return parse_cue_file(&cue_files[0]);
+            }
+            
+            if !cue_files.is_empty() {
+                let audio_stem = audio_path.file_stem().and_then(|s| s.to_str())?.to_lowercase();
+                // Remove common suffixes to increase matching success rate
+                let clean_audio = audio_stem.replace("(ape)", "").replace("(cue)", "").replace(" ", "").replace(".", "").replace("-", "");
+                
+                for cue_p in cue_files {
+                    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+                    if let Some(cue_stem) = cue_p.file_stem().and_then(|s| s.to_str()) {
+                        let cue_stem_lower = cue_stem.to_lowercase();
+                        let clean_cue = cue_stem_lower.replace("(ape)", "").replace("(cue)", "").replace(" ", "").replace(".", "").replace("-", "");
+                        if clean_audio == clean_cue || clean_audio.contains(&clean_cue) || clean_cue.contains(&clean_audio) {
+                            log::info!("Found CUE by fuzzy match: {:?} -> {:?}", audio_path.file_name(), cue_p.file_name());
+                            return parse_cue_file(&cue_p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Custom APE Source using ape-decoder
+// ---------------------------------------------------------------------------
+
+struct ApeSource<R: Read + Seek> {
+    decoder: ApeDecoder<R>,
+    current_frame: u32,
+    total_frames: u32,
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    buffer: Vec<f32>,
+    buffer_pos: usize,
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+impl<R: Read + Seek> ApeSource<R> {
+    pub fn new(read_seek: R, shutdown_flag: Arc<AtomicBool>) -> Option<Self> {
+        let decoder = ApeDecoder::new(read_seek).ok()?;
+        let info = decoder.info().clone();
+        let total_frames = info.total_frames;
+        let sample_rate = info.sample_rate;
+        let channels = info.channels;
+        let bits_per_sample = info.bits_per_sample;
+        
+        Some(Self {
+            decoder,
+            current_frame: 0,
+            total_frames,
+            sample_rate,
+            channels,
+            bits_per_sample,
+            buffer: Vec::new(),
+            buffer_pos: 0,
+            shutdown_flag,
+        })
+    }
+
+    fn decode_next_frame(&mut self) -> bool {
+        if self.current_frame >= self.total_frames {
+            return false;
+        }
+
+        if let Ok(pcm_data) = self.decoder.decode_frame(self.current_frame) {
+            self.current_frame += 1;
+            self.buffer.clear();
+            self.buffer_pos = 0;
+
+            let bytes_per_sample = (self.bits_per_sample / 8) as usize;
+            if bytes_per_sample == 0 { return false; }
+
+            for chunk in pcm_data.chunks_exact(bytes_per_sample) {
+                let sample_f32 = match self.bits_per_sample {
+                    8 => {
+                        // 8-bit APE is typically signed? 
+                        // Actually most APE are 16 or 24.
+                        let s = chunk[0] as i8;
+                        s as f32 / 128.0
+                    }
+                    16 => {
+                        let s = i16::from_le_bytes([chunk[0], chunk[1]]);
+                        s as f32 / 32768.0
+                    }
+                    24 => {
+                        // 24-bit signed little-endian
+                        let s = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 }]) as f32;
+                        s / 8388608.0
+                    }
+                    32 => {
+                        let s = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        s as f32 / 2147483648.0
+                    }
+                    _ => 0.0,
+                };
+                self.buffer.push(sample_f32);
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<R: Read + Seek> Iterator for ApeSource<R> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.shutdown_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+        if self.buffer_pos >= self.buffer.len() {
+            if !self.decode_next_frame() {
+                return None;
+            }
+        }
+        
+        let sample = self.buffer.get(self.buffer_pos)?;
+        self.buffer_pos += 1;
+        Some(*sample)
+    }
+}
+
+impl<R: Read + Seek> rodio::Source for ApeSource<R> {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> NonZero<u16> {
+        NonZero::new(self.channels).unwrap_or(NonZero::new(2).unwrap())
+    }
+
+    fn sample_rate(&self) -> NonZero<u32> {
+        NonZero::new(self.sample_rate).unwrap_or(NonZero::new(44100).unwrap())
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        let info = self.decoder.info();
+        Some(std::time::Duration::from_millis(info.duration_ms))
+    }
+}
+
 fn get_file_metadata(path: &Path) -> Option<String> {
     let tagged_file = read_from_path(path).ok()?;
     let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
@@ -353,8 +541,28 @@ fn get_file_metadata(path: &Path) -> Option<String> {
     }
 }
 
+fn create_source(
+    path: &Path,
+    reader: std::io::BufReader<std::fs::File>,
+    shutdown_flag: Arc<AtomicBool>,
+) -> Option<Box<dyn rodio::Source<Item = f32> + Send>> {
+    let is_ape = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase() == "ape")
+        .unwrap_or(false);
+    if is_ape {
+        ApeSource::new(reader, shutdown_flag).map(|s| Box::new(s) as Box<dyn rodio::Source<Item = f32> + Send>)
+    } else {
+        rodio::Decoder::new(reader)
+            .ok()
+            .map(|s| Box::new(s) as Box<dyn rodio::Source<Item = f32> + Send>)
+    }
+}
+
 fn run_audio_loop(
     cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
+    shutdown_flag: Arc<AtomicBool>,
     err_slot: AudioError,
     track_slot: Arc<Mutex<Option<String>>>,
     path_slot: Arc<Mutex<Option<PathBuf>>>,
@@ -462,7 +670,7 @@ fn run_audio_loop(
                         if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                             if let Ok(file) = std::fs::File::open(path) {
                                 let reader = std::io::BufReader::new(file);
-                                if let Ok(source) = rodio::Decoder::new(reader) {
+                                if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
                                     player.clear();
                                     let source = rodio::Source::skip_duration(source, next_t.start);
                                     player.append(source);
@@ -504,7 +712,7 @@ fn run_audio_loop(
                     if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                         if let Ok(file) = std::fs::File::open(path) {
                             let reader = std::io::BufReader::new(file);
-                            if let Ok(source) = rodio::Decoder::new(reader) {
+                            if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
                                 player.clear();
                                 if target_t.start > Duration::ZERO {
                                     let source = rodio::Source::skip_duration(source, target_t.start);
@@ -551,6 +759,7 @@ fn run_audio_loop(
 
         // Feed next track
         if !stopped && !paused && player.empty() && !playlist.is_empty() {
+            if shutdown_flag.load(Ordering::Relaxed) { return; }
             let path = playlist[current_track_idx % playlist.len()].clone();
             let filename = path
                 .file_name()
@@ -561,60 +770,58 @@ fn run_audio_loop(
 
             if let Ok(file) = std::fs::File::open(&path) {
                 let reader = std::io::BufReader::new(file);
-                if let Ok(source) = rodio::Decoder::new(reader) {
-                    set_current_track(&track_slot, Some(filename));
-                    set_current_path(&path_slot, Some(path.clone()));
+                if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
+                        set_current_track(&track_slot, Some(filename));
+                        set_current_path(&path_slot, Some(path.clone()));
 
-                    // Check CUE
-                    cue_sheet = load_cue(&path);
-                    tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
-
-                    // Metadata
-                    if let Some(ref cue) = cue_sheet {
-                        if let Some(first) = cue.tracks.first() {
-                            let meta =
-                                format!("{}. {} - {}", first.number, first.title, first.performer);
+                        cue_sheet = load_cue(&path, &shutdown_flag);
+                        tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
+                        
+                        // Metadata
+                        if let Some(ref cue) = cue_sheet {
+                            if let Some(first) = cue.tracks.first() {
+                                let meta = format!("{}. {} - {}", first.number, first.title, first.performer);
+                                set_metadata(&meta_slot, Some(meta));
+                            }
+                        } else if let Some(meta) = get_file_metadata(&path) {
                             set_metadata(&meta_slot, Some(meta));
+                        } else {
+                            set_metadata(&meta_slot, None);
                         }
-                    } else if let Some(meta) = get_file_metadata(&path) {
-                        set_metadata(&meta_slot, Some(meta));
-                    } else {
-                        set_metadata(&meta_slot, None);
-                    }
 
-                    player.append(source);
-                    
-                    // Reset timing variables before potential seek
-                    // (seek will override last_seek_offset if needed)
-                    current_file_start = Instant::now();
-                    last_seek_offset = Duration::ZERO;
-                    total_paused = Duration::ZERO;
-                    paused_at = None;
+                        player.append(source);
+                        
+                        // Reset timing variables before potential seek
+                        current_file_start = Instant::now();
+                        last_seek_offset = Duration::ZERO;
+                        total_paused = Duration::ZERO;
+                        paused_at = None;
 
-                    // Initial track seek if requested via SetPlaylist
-                    if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
-                        if track_idx < cue.tracks.len() {
-                            let t = &cue.tracks[track_idx];
-                            if t.start > Duration::ZERO {
-                                // We already appended the 'source' above; 
-                                // to seek we need to clear and re-append a skipped source.
-                                player.clear();
-                                if let Ok(f2) = std::fs::File::open(&path) {
-                                    let r2 = std::io::BufReader::new(f2);
-                                    if let Ok(s2) = rodio::Decoder::new(r2) {
-                                        let s2 = rodio::Source::skip_duration(s2, t.start);
-                                        player.append(s2);
-                                        last_seek_offset = t.start;
-                                        current_file_start = Instant::now();
-                                        // Metadata
-                                        let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
-                                        set_metadata(&meta_slot, Some(meta));
-                                        set_cue_track(&cue_track_slot, Some(track_idx));
+                        // Initial track seek if requested via SetPlaylist
+                        if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
+                            if track_idx < cue.tracks.len() {
+                                let t = &cue.tracks[track_idx];
+                                if t.start > Duration::ZERO {
+                                    // We already appended the 'source' above; 
+                                    // to seek we need to clear and re-append a skipped source.
+                                    player.clear();
+                                    if let Ok(f2) = std::fs::File::open(&path) {
+                                        let r2 = std::io::BufReader::new(f2);
+                                        // Re-open source for seeking
+                                        if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag)) {
+                                            let s2 = rodio::Source::skip_duration(s2, t.start);
+                                            player.append(s2);
+                                            last_seek_offset = t.start;
+                                            current_file_start = Instant::now();
+                                            // Metadata
+                                            let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
+                                            set_metadata(&meta_slot, Some(meta));
+                                            set_cue_track(&cue_track_slot, Some(track_idx));
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
                     player.set_volume(current_volume);
                     player.play();
@@ -624,6 +831,7 @@ fn run_audio_loop(
 
         // Handle mid-file metadata updates for CUE
         if !stopped && !paused && !player.empty() {
+            if shutdown_flag.load(Ordering::Relaxed) { return; }
             if let Some(ref cue) = cue_sheet {
                 let elapsed = current_file_start.elapsed()
                     .saturating_sub(total_paused)
@@ -641,11 +849,10 @@ fn run_audio_loop(
                     "{}. {} - {}",
                     current_t.number, current_t.title, current_t.performer
                 );
-                // Only update if changed to avoid expensive locking
-                if let Ok(g) = meta_slot.lock() {
+                // Metadata update: check without holding a long lock, then update safely
+                if let Ok(mut g) = meta_slot.try_lock() {
                     if g.as_ref() != Some(&meta) {
-                        drop(g);
-                        set_metadata(&meta_slot, Some(meta));
+                        *g = Some(meta);
                         set_cue_track(&cue_track_slot, Some(idx));
                     }
                 }

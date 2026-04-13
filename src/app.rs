@@ -1346,7 +1346,7 @@ impl ImageViewerApp {
 
     fn open_music_file_dialog(&mut self) {
         let dialog = rfd::FileDialog::new()
-            .add_filter("Music files", &["mp3", "flac", "ogg", "wav", "aac", "m4a"]);
+            .add_filter("Music files", &["mp3", "flac", "ogg", "wav", "aac", "m4a", "ape"]);
         if let Some(path) = dialog.pick_file() {
             self.settings.music_path = Some(path.clone());
             self.restart_audio_if_enabled();

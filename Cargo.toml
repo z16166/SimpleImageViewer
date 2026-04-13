@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "1.3.2"
+version = "1.3.3"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -25,6 +25,7 @@ image = { version = "0.25", default-features = false, features = [
     "png", "jpeg", "gif", "bmp", "tiff", "tga", "webp", "ico", "pnm", "hdr", "avif", "qoi", "exr",
 ] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
+ape-decoder = "0.3.2"
 lofty = "0.23"
 encoding_rs = "0.8"
 rfd = "0.17"

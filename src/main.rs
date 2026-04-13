@@ -410,6 +410,13 @@ fn main() -> eframe::Result {
         Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, ipc_rx)) as Box<dyn eframe::App>)),
     );
 
+    // Force exit: the audio thread may hold CPAL/WASAPI resources whose
+    // cleanup blocks indefinitely on Windows once the event loop is gone.
+    // Settings are already persisted in on_exit(), so this is safe.
+    if result.is_ok() {
+        std::process::exit(0);
+    }
+
     if let Err(e) = result {
         let app_ver = env!("CARGO_PKG_VERSION");
         let error_msg = format!(

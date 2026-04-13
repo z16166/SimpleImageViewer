@@ -162,7 +162,8 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         }
 
         // 2. If natively supported by the OS (TIFF, RAW, etc.), prioritize system loaders (WIC/ImageIO)
-        if is_system_native {
+        // Skip this step for animation-capable formats (GIF, WebP, APNG) so they use Step 3 instead.
+        if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
             if let Ok(img) = crate::wic::load_via_wic(path) {
                 return Ok(img);
@@ -431,6 +432,12 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
             Ok(ImageData::Static(img))
         }
     }
+}
+
+/// Returns true if the extension belongs to a format that we prefer to load 
+/// via image-rs to preserve animations (GIF, WebP, APNG).
+fn is_maybe_animated(ext: &str) -> bool {
+    matches!(ext, "gif" | "webp" | "apng" | "png")
 }
 
 // ---------------------------------------------------------------------------
