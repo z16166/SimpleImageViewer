@@ -310,6 +310,9 @@ fn log_env_info() -> String {
         final_desc
     );
 
+    #[cfg(feature = "legacy_win7")]
+    log::info!("Build Type: Windows 7 Legacy Compatibility Edition (x64)");
+
     final_desc
 }
 
