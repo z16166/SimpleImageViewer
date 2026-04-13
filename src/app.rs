@@ -288,7 +288,7 @@ impl ImageViewerApp {
             slideshow_paused: false,
             audio: AudioPlayer::new(),
             show_settings: true,
-            status_message: "Open a directory to start viewing images".to_string(),
+            status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
             error_message: None,
             pending_fullscreen: None,
             font_families: get_system_font_families(),
