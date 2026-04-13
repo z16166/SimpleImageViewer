@@ -159,7 +159,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
                  0 => { r.seek(SeekFrom::Current(pixel_count as i64)).map_err(|e| format!("Skip raw: {e}"))?; }
                  1 => {
                      for row in 0..height {
-                         let len = row_counts[ch_idx as usize * height as usize + row as usize];
+                         let idx = ch_idx as usize * height as usize + row as usize;
+                         let len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
                          r.seek(SeekFrom::Current(len as i64)).map_err(|e| format!("Skip RLE: {e}"))?;
                      }
                  }
@@ -185,7 +186,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
             1 => {
                 // RLE data
                 for row in 0..height {
-                    let compressed_len = row_counts[ch_idx as usize * height as usize + row as usize];
+                    let idx = ch_idx as usize * height as usize + row as usize;
+                    let compressed_len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
                     let mut compressed = vec![0u8; compressed_len];
                     r.read_exact(&mut compressed).map_err(|e| format!("Read RLE: {e}"))?;
                     let decompressed = unpack_bits(&compressed, width as usize);
@@ -266,7 +268,10 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
                 running_offset += cnt;
             }
         }
-        _ => return Err(format!("Unsupported compression: {compression}")),
+        _ => {
+            log::error!("[{}] PSB: Unsupported compression method {}", path.display(), compression);
+            return Err(format!("Unsupported compression: {compression}"));
+        }
     }
 
     Ok(PsbTiledSource {
@@ -302,7 +307,13 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 if global_row >= self.height { continue; }
                 
                 let idx = ch_idx as usize * self.height as usize + global_row as usize;
-                let offset = self.row_offsets[idx] as usize;
+                let offset = match self.row_offsets.get(idx) {
+                    Some(&o) => o as usize,
+                    None => {
+                        log::error!("[{}] PSB: Row offset index {} out of range", self.path.display(), idx);
+                        continue;
+                    }
+                };
                 
                 match self.compression {
                     0 => {
@@ -372,7 +383,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 let src_x = (x as f64 / scale) as usize;
                 let dst_off = (y as usize * out_w as usize + x as usize) * 4;
                 let src_off = src_x * 4;
-                if src_off + 4 <= row_rgba.len() {
+                if src_off + 4 <= row_rgba.len() && dst_off + 4 <= pixels.len() {
                     pixels[dst_off..dst_off+4].copy_from_slice(&row_rgba[src_off..src_off+4]);
                 }
             }

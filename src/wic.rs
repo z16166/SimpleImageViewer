@@ -28,9 +28,10 @@ fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
     WIC_FACTORY.with(|f| {
         let mut factory = f.borrow_mut();
         if factory.is_none() {
-            *factory = Some(unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? });
+            let instance = unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
+            *factory = Some(instance);
         }
-        Ok(factory.as_ref().unwrap().clone())
+        factory.as_ref().cloned().ok_or_else(|| windows::core::Error::from_win32())
     })
 }
 
@@ -237,15 +238,21 @@ impl crate::loader::TiledImageSource for WicTiledSource {
     fn height(&self) -> u32 { self.height }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
-        // Ensure COM is initialized on the current worker thread
-        let _com = ComGuard::new();
-        
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
         let stride = w * 4;
-        let mut pixels = vec![0u8; (stride * h) as usize];
+        
+        // Use a persistent converter to avoid re-allocating it for every tile
+        let _lock = match self.converter.lock() {
+            Ok(l) => l,
+            Err(_) => return pixels, // Poisoned mutex, return empty pixels
+        };
         
         let converter = match self.ensure_converter() {
             Ok(c) => c,
-            Err(_) => return pixels,
+            Err(e) => {
+                log::error!("[{}] WIC: Failed to ensure converter for tile: {:?}", self.path.display(), e);
+                return pixels;
+            }
         };
 
         let rect = WICRect {
@@ -272,7 +279,10 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         unsafe {
             let factory = match get_wic_factory() {
                 Ok(f) => f,
-                Err(_) => return (0, 0, Vec::new()),
+                Err(e) => {
+                    log::error!("[{}] WIC: Failed to get factory for preview: {:?}", self.path.display(), e);
+                    return (0, 0, Vec::new());
+                }
             };
 
             // Path 1: Extract embedded thumbnail if large enough
@@ -281,19 +291,20 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 let mut fh = 0;
                 if thumbnail.GetSize(&mut fw, &mut fh).is_ok() && fw >= out_w && fh >= out_h {
                     log::info!("WIC: Using embedded thumbnail as preview");
-                    let thumb_src: IWICBitmapSource = thumbnail.cast().unwrap();
-                    let mut thumb_final = thumb_src.clone();
-                    if self.transform_options != WICBitmapTransformOptions(0) {
-                        if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                            if rotator.Initialize(&thumb_src, self.transform_options).is_ok() {
-                                if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
-                                    thumb_final = src;
+                    if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
+                        let mut thumb_final = thumb_src.clone();
+                        if self.transform_options != WICBitmapTransformOptions(0) {
+                            if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
+                                if rotator.Initialize(&thumb_src, self.transform_options).is_ok() {
+                                    if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
+                                        thumb_final = src;
+                                    }
                                 }
                             }
                         }
-                    }
-                    if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
-                        return res;
+                        if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
+                            return res;
+                        }
                     }
                 }
             }
@@ -309,19 +320,20 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                                 // If it's a good intermediate size, use it
                                 if fw > 512 && fw < self.physical_width / 2 {
                                     log::info!("WIC: Using secondary frame {} as preview ({}x{})", i, fw, fh);
-                                    let f_src: IWICBitmapSource = f.cast().unwrap();
-                                    let mut f_final = f_src.clone();
-                                    if self.transform_options != WICBitmapTransformOptions(0) {
-                                        if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                            if rotator.Initialize(&f_src, self.transform_options).is_ok() {
-                                                if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
-                                                    f_final = src;
+                                    if let Ok(f_src) = f.cast::<IWICBitmapSource>() {
+                                        let mut f_final = f_src.clone();
+                                        if self.transform_options != WICBitmapTransformOptions(0) {
+                                            if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
+                                                if rotator.Initialize(&f_src, self.transform_options).is_ok() {
+                                                    if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
+                                                        f_final = src;
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                    if let Some(res) = render_source_to_pixels(&f_final, &factory) {
-                                        return res;
+                                        if let Some(res) = render_source_to_pixels(&f_final, &factory) {
+                                            return res;
+                                        }
                                     }
                                 }
                             }

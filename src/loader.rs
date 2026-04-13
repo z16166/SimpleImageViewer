@@ -89,8 +89,16 @@ impl ImageLoader {
             }
 
             builder.spawn(move || {
-                let _com = crate::wic::ComGuard::new().expect("Failed to initialize COM on loader worker");
-                rayon_thread.run()
+                match crate::wic::ComGuard::new() {
+                    Ok(_com) => {
+                        rayon_thread.run()
+                    }
+                    Err(e) => {
+                        log::error!("Failed to initialize COM on loader worker thread: {:?}", e);
+                        // Still run the rayon thread tasks, but WIC calls will likely fail gracefully
+                        rayon_thread.run()
+                    }
+                }
             })?;
             Ok(())
         });

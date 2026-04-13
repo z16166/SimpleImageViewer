@@ -192,7 +192,13 @@ impl TiledImageSource for LibTiffTiledSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
         LIB.with(|l| {
-            let lib = match l.as_ref() { Ok(l) => l, Err(_) => return };
+            let lib = match l.as_ref() { 
+                Ok(l) => l, 
+                Err(e) => {
+                    log::error!("[{}] Linux libtiff: Failed to access library for tile: {}", self._path.display(), e);
+                    return; 
+                }
+            };
             if let Ok(tif_lock) = self.tif.lock() {
                 let tw = self.tile_width;
                 let th = self.tile_height;
@@ -214,8 +220,11 @@ impl TiledImageSource for LibTiffTiledSource {
                                         let dest_y = py - y;
                                         let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
                                         let src_idx = (th - 1 - ty_in_p) as usize * tw as usize + tx_in_p as usize;
-                                        let pixel = tile_buf[src_idx].to_ne_bytes();
-                                        result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                                        
+                                        if src_idx < tile_buf.len() && dest_idx + 4 <= result.len() {
+                                            let pixel = tile_buf[src_idx].to_ne_bytes();
+                                            result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                                        }
                                     }
                                 }
                             }
@@ -243,6 +252,7 @@ impl TiledImageSource for LibTiffTiledSource {
 // --- Scanline Implementation (Mock Tiles from Strips) ---
 
 pub struct LibTiffScanlineSource {
+    path: PathBuf,
     width: u32,
     height: u32,
     rows_per_strip: u32,
@@ -272,7 +282,13 @@ impl TiledImageSource for LibTiffScanlineSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
         LIB.with(|l| {
-            let lib = match l.as_ref() { Ok(l) => l, Err(_) => return };
+            let lib = match l.as_ref() { 
+                Ok(l) => l, 
+                Err(e) => {
+                    log::error!("[{}] Linux libtiff: Failed to access library for scanline: {}", self.path.display(), e);
+                    return; 
+                }
+            };
             if let Ok(tif_lock) = self.tif.lock() {
                 let rps = self.rows_per_strip;
                 let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
@@ -301,10 +317,11 @@ impl TiledImageSource for LibTiffScanlineSource {
                             if px >= self.width { break; }
                             let dest_x = px - x;
                             let dest_y = py - y;
-                            let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
-                            
-                            let pixel = strip_buf[src_offset + px as usize].to_ne_bytes();
-                            result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                            let src_idx = src_offset + px as usize;
+                            if src_idx < strip_buf.len() && dest_idx + 4 <= result.len() {
+                                let pixel = strip_buf[src_idx].to_ne_bytes();
+                                result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
+                            }
                         }
                     }
                 }
@@ -336,8 +353,14 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
         let mut ctx = Box::new(TiffMmapContext { mmap: mmap.clone(), offset: 0 });
 
         unsafe {
-            let c_path = CString::new(path.to_str().unwrap_or("image.tif")).unwrap();
-            let c_mode = CString::new("r").unwrap();
+            let c_path = match CString::new(path.to_str().unwrap_or("image.tif")) {
+                Ok(c) => c,
+                Err(_) => return Err("Invalid path string for C conversion".to_string()),
+            };
+            let c_mode = match CString::new("r") {
+                Ok(c) => c,
+                Err(_) => return Err("Invalid mode string for C conversion".to_string()),
+            };
 
             let tif_ptr = (lib.client_open)(
                 c_path.as_ptr(), c_mode.as_ptr(),
@@ -384,6 +407,7 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
                     guard.tif = std::ptr::null_mut(); // Disarm guard
 
                     return Ok(ImageData::Tiled(Arc::new(LibTiffScanlineSource {
+                        path: path.to_path_buf(),
                         width, height, rows_per_strip: rps,
                         tif: Mutex::new(tif), _ctx: ctx,
                     })));

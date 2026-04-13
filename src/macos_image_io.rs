@@ -154,28 +154,35 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let color_space = CGColorSpace::create_device_rgb();
-        let mut context = CGContext::create_bitmap_context(
+        let context_opt = CGContext::create_bitmap_context(
             None, w as usize, h as usize, 8, w as usize * 4, &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast
         );
 
-        unsafe {
-            let options = create_no_cache_options();
-            let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
-            if !cg_image_ref.is_null() {
-                let cg_image = CGImage::from_ptr(cg_image_ref);
-                
-                context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
-                apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
-                
-                let rect = core_graphics::geometry::CGRect::new(
-                    &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-                    &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
-                );
-                context.draw_image(rect, &cg_image);
+        if let Some(mut context) = context_opt {
+            unsafe {
+                let options = create_no_cache_options();
+                let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
+                if !cg_image_ref.is_null() {
+                    let cg_image = CGImage::from_ptr(cg_image_ref);
+                    
+                    context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
+                    apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
+                    
+                    let rect = core_graphics::geometry::CGRect::new(
+                        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+                        &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
+                    );
+                    context.draw_image(rect, &cg_image);
+                } else {
+                    log::error!("[{}] MacOS ImageIO: Failed to create CGImage for tile at ({}, {})", self.path.display(), x, y);
+                }
             }
+            context.data().to_vec()
+        } else {
+            log::error!("[{}] MacOS ImageIO: Failed to create bitmap context for tile at ({}, {})", self.path.display(), x, y);
+            vec![0u8; (w * h * 4) as usize]
         }
-        context.data().to_vec()
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -186,28 +193,35 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
         let ph = (self.logical_height as f64 * scale).round().max(1.0) as u32;
 
         let color_space = CGColorSpace::create_device_rgb();
-        let mut context = CGContext::create_bitmap_context(
+        let context_opt = CGContext::create_bitmap_context(
             None, pw as usize, ph as usize, 8, pw as usize * 4, &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast
         );
 
-        unsafe {
-            let options = create_no_cache_options();
-            let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
-            if !cg_image_ref.is_null() {
-                let cg_image = CGImage::from_ptr(cg_image_ref);
-                
-                context.scale(scale, scale);
-                apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
-                
-                let rect = core_graphics::geometry::CGRect::new(
-                    &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-                    &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
-                );
-                context.draw_image(rect, &cg_image);
+        if let Some(mut context) = context_opt {
+            unsafe {
+                let options = create_no_cache_options();
+                let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
+                if !cg_image_ref.is_null() {
+                    let cg_image = CGImage::from_ptr(cg_image_ref);
+                    
+                    context.scale(scale, scale);
+                    apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
+                    
+                    let rect = core_graphics::geometry::CGRect::new(
+                        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+                        &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
+                    );
+                    context.draw_image(rect, &cg_image);
+                } else {
+                    log::error!("[{}] MacOS ImageIO: Failed to create CGImage for preview", self.path.display());
+                }
             }
+            (pw, ph, context.data().to_vec())
+        } else {
+            log::error!("[{}] MacOS ImageIO: Failed to create bitmap context for preview", self.path.display());
+            (pw, ph, vec![0u8; (pw * ph * 4) as usize])
         }
-        (pw, ph, context.data().to_vec())
     }
 
     fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> { None }
