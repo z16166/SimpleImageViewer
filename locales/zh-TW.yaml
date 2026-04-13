@@ -171,5 +171,6 @@ theme.system: "跟隨系統"
 
 # Startup Errors
 error.startup_failed: "程式啟動失敗"
-error.copied_to_clipboard: "(診斷資訊已自動複製到剪贴板，您可以直接貼上反饋)"
-dialog.startup_error_title: "啟動错误"
+error.copied_to_clipboard: "(診斷資訊已自動複製到剪貼簿，您可以直接貼上反饋)"
+error.win7_graphics_hint: "Windows 7 用戶提示：如果程式無法啟動，請確保您已安裝 Service Pack 1 和平台更新修補程式 (KB2670838)。並檢查您的顯示卡驅動程式是否支援 OpenGL 3.3。"
+dialog.startup_error_title: "啟動錯誤"

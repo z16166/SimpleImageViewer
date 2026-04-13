@@ -226,8 +226,8 @@ fn log_env_info() -> String {
                 let build = osi.dwBuildNumber;
                 let is_server = osi.wProductType != 1;
                 
-                let service_pack = String::from_utf16(&osi.szCSDVersion).ok()?
-                    .trim_matches(char::from(0)).to_string();
+                let service_pack = String::from_utf16_lossy(&osi.szCSDVersion);
+                let service_pack = service_pack.trim_matches('\0').trim().to_string();
 
                 use winreg::enums::HKEY_LOCAL_MACHINE;
                 use winreg::RegKey;
@@ -428,6 +428,15 @@ fn main() -> eframe::Result {
         );
         
         log::error!("Application startup failed: {}", e);
+        
+        let mut help_hint = String::new();
+        #[cfg(target_os = "windows")]
+        {
+            let os_version = sysinfo::System::os_version().unwrap_or_default();
+            if os_version.starts_with("6.1") { // Windows 7
+                help_hint = rust_i18n::t!("error.win7_graphics_hint").to_string();
+            }
+        }
 
         // Try to copy to clipboard
         use clipboard_rs::{Clipboard, ClipboardContext};
@@ -435,7 +444,11 @@ fn main() -> eframe::Result {
             let _ = ctx.set_text(error_msg.clone());
         }
 
-        let dialog_msg = format!("{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"));
+        let dialog_msg = if help_hint.is_empty() {
+            format!("{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"))
+        } else {
+            format!("{}\n\n{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"), help_hint)
+        };
 
         rfd::MessageDialog::new()
             .set_title(rust_i18n::t!("dialog.startup_error_title").to_string())

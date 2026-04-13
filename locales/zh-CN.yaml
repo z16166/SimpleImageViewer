@@ -172,4 +172,5 @@ theme.system: "跟随系统"
 # Startup Errors
 error.startup_failed: "程序启动失败"
 error.copied_to_clipboard: "(诊断信息已自动复制到剪贴板，您可以直接粘贴反馈)"
+error.win7_graphics_hint: "Windows 7 用户提示：如果程序无法启动，请确保您已安装 Service Pack 1 和平台更新补丁 (KB2670838)。并检查您的显卡驱动是否支持 OpenGL 3.3。"
 dialog.startup_error_title: "启动错误"
