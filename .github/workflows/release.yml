@@ -168,7 +168,7 @@ jobs:
           YY_THUNKS: ${{ env.YY_THUNKS }}
         run: |
           $env:RUSTFLAGS = "-C link-arg=/SUBSYSTEM:WINDOWS"
-          thunk --os win7 --arch x64 -- --release
+          thunk --os win7 --arch x64 -- --release --features legacy_win7
 
 
 

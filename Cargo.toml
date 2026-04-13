@@ -48,8 +48,12 @@ sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 heic = "0.1"
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
-wgpu = { version = "29", default-features = false, features = ["dx12", "vulkan", "metal", "gles", "angle", "wgsl"] }
+wgpu = { version = "29", default-features = false, features = ["dx12", "vulkan", "metal", "wgsl"] }
 memmap2 = "0.9"
+
+[features]
+# Feature for Windows 7 compatibility (ANGLE bridge)
+legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
