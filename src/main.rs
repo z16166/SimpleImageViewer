@@ -317,6 +317,13 @@ fn log_env_info() -> String {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(feature = "legacy_win7")]
+    unsafe {
+        // Force choice of ANGLE (OpenGL ES over DX11) for Windows 7 compatibility
+        std::env::set_var("WGPU_BACKEND", "gl");
+        std::env::set_var("WGPU_GL_BACKEND", "angle");
+    }
+
     // 1. Parse initial image from arguments (needed for IPC)
     let mut initial_image = None;
     if let Some(arg) = std::env::args_os().nth(1) {
