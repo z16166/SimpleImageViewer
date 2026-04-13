@@ -508,7 +508,7 @@ impl ImageViewerApp {
             // downsampling to avoid blocking the UI.
             if is_tiled {
                 let tm = self.tile_manager.as_ref().unwrap();
-                tile_pixel_buffer = Some(tm.pixel_buffer_arc());
+                tile_pixel_buffer = tm.pixel_buffer_arc();
                 tile_full_width = tm.full_width;
                 tile_full_height = tm.full_height;
             }
@@ -906,33 +906,23 @@ impl ImageViewerApp {
                     // Large image: create TileManager + preview, skip full GPU upload
                     if idx == self.current_index {
                         self.current_image_res = Some((decoded.width, decoded.height));
-                        let screen_size = ctx.input(|i| i.content_rect()).size();
-                        let max_w = screen_size.x.max(1920.0) as u32;
-                        let max_h = screen_size.y.max(1080.0) as u32;
                         let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels);
-                        let (pw, ph, preview_pixels) = tm.generate_preview(max_w, max_h);
-                        let preview_img = ColorImage::from_rgba_unmultiplied(
-                            [pw as usize, ph as usize],
-                            &preview_pixels,
-                        );
-                        let preview_handle = ctx.load_texture(
-                            format!("preview_{}", idx),
-                            preview_img,
-                            TextureOptions::LINEAR,
-                        );
-                        tm.preview_texture = Some(preview_handle);
+                        self.setup_tile_manager(ctx, idx, &mut tm);
                         self.tile_manager = Some(tm);
                         self.animation = None;
-                        let file_name = self.image_files[idx].file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        log::info!(
-                            "[{}] Large image detected: {}x{} ({:.1} MP) — tiled mode active",
-                            file_name, decoded.width, decoded.height,
-                            (decoded.width as f64 * decoded.height as f64) / 1_000_000.0
-                        );
+                        self.log_large_image(idx, decoded.width, decoded.height);
                     }
-                    // For non-current large images, we just drop the data (no preloading for large images)
+                }
+                Ok(ImageData::Tiled(source)) => {
+                    // Virtualized image: use disk-backed tiled source
+                    if idx == self.current_index {
+                        self.current_image_res = Some((source.width(), source.height()));
+                        let mut tm = TileManager::with_source(source);
+                        self.setup_tile_manager(ctx, idx, &mut tm);
+                        self.tile_manager = Some(tm);
+                        self.animation = None;
+                        self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+                    }
                 }
                 Ok(ImageData::Animated(frames)) => {
                     // 1. Upload first frame immediately (for transitions/preview)
@@ -987,6 +977,35 @@ impl ImageViewerApp {
                 }
             }
         }
+    }
+
+    fn log_large_image(&self, idx: usize, w: u32, h: u32) {
+        let file_name = self.image_files[idx].file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        log::info!(
+            "[{}] Large image detected: {}x{} ({:.1} MP) — tiled mode active",
+            file_name, w, h,
+            (w as f64 * h as f64) / 1_000_000.0
+        );
+    }
+
+    fn setup_tile_manager(&self, ctx: &egui::Context, idx: usize, tm: &mut TileManager) {
+        let screen_size = ctx.input(|i| i.content_rect()).size();
+        let max_w = screen_size.x.max(1920.0) as u32;
+        let max_h = screen_size.y.max(1080.0) as u32;
+        let (pw, ph, preview_pixels) = tm.generate_preview(max_w, max_h);
+        
+        let preview_img = egui::ColorImage::from_rgba_unmultiplied(
+            [pw as usize, ph as usize],
+            &preview_pixels,
+        );
+        let preview_handle = ctx.load_texture(
+            format!("preview_{}", idx),
+            preview_img,
+            egui::TextureOptions::LINEAR,
+        );
+        tm.preview_texture = Some(preview_handle);
     }
 
     fn process_music_scan_results(&mut self) {
@@ -2192,10 +2211,16 @@ impl ImageViewerApp {
                 // HUD for tiled mode
                 if self.settings.show_osd {
                     let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                    let fname = self.image_files[self.current_index]
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    
                     let hud_text = format!(
-                        "[{}/{}]  {}x{}  {}%  TILED",
+                        "[{}/{}]  {}  {}x{}  {}%  TILED",
                         self.current_index + 1,
                         self.image_files.len(),
+                        fname,
                         full_w,
                         full_h,
                         zoom_pct,

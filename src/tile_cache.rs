@@ -55,10 +55,8 @@ pub struct TileManager {
     /// The downscaled preview texture (fits on screen).
     pub preview_texture: Option<TextureHandle>,
 
-    /// The full decoded pixel buffer (RGBA8, row-major).
-    /// This stays in CPU RAM so we can extract tiles on demand.
-    /// Wrapped in Arc so the print module can cheaply share it with a background thread.
-    pixel_buffer: Arc<Vec<u8>>,
+    /// The source of pixel data (could be CPU RAM or an on-demand Disk source).
+    source: Arc<dyn crate::loader::TiledImageSource>,
 
     /// Cached tile textures already uploaded to GPU.
     tiles: HashMap<TileCoord, TextureHandle>,
@@ -67,22 +65,89 @@ pub struct TileManager {
     lru_order: Vec<TileCoord>,
 }
 
+/// A TiledImageSource implementation for images that are fully loaded in memory.
+pub struct MemorySource {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Arc<Vec<u8>>,
+}
+
+impl crate::loader::TiledImageSource for MemorySource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+    
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let src_stride = self.width as usize * 4;
+        let mut tile_pixels = vec![0u8; (w * h * 4) as usize];
+
+        for row in 0..h {
+            let src_off = ((y + row) as usize) * src_stride + (x as usize * 4);
+            let dst_off = (row as usize) * (w as usize * 4);
+            let len = w as usize * 4;
+            
+            let end = src_off + len;
+            if end <= self.pixels.len() {
+                tile_pixels[dst_off..dst_off + len].copy_from_slice(&self.pixels[src_off..end]);
+            }
+        }
+        tile_pixels
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        let scale = (max_w as f64 / self.width as f64)
+            .min(max_h as f64 / self.height as f64)
+            .min(1.0);
+        let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
+        let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
+
+        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+        let src_stride = self.width as usize * 4;
+
+        for y in 0..out_h {
+            let src_y = ((y as f64 / scale).min((self.height - 1) as f64)) as usize;
+            for x in 0..out_w {
+                let src_x = ((x as f64 / scale).min((self.width - 1) as f64)) as usize;
+                let src_off = src_y * src_stride + src_x * 4;
+                let dst_off = (y as usize * out_w as usize + x as usize) * 4;
+                if src_off + 4 <= self.pixels.len() {
+                    out[dst_off..dst_off + 4].copy_from_slice(&self.pixels[src_off..src_off + 4]);
+                }
+            }
+        }
+        (out_w, out_h, out)
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        Some(Arc::clone(&self.pixels))
+    }
+}
+
 impl TileManager {
     /// Create a new TileManager from a fully decoded RGBA8 pixel buffer.
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        let source = Arc::new(MemorySource {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+        });
+        Self::with_source(source)
+    }
+
+    /// Create a new TileManager from an arbitrary tiled image source.
+    pub fn with_source(source: Arc<dyn crate::loader::TiledImageSource>) -> Self {
         Self {
-            full_width: width,
-            full_height: height,
+            full_width: source.width(),
+            full_height: source.height(),
             preview_texture: None,
-            pixel_buffer: Arc::new(pixels),
+            source,
             tiles: HashMap::new(),
             lru_order: Vec::new(),
         }
     }
 
-    /// Returns a cheap Arc clone of the raw pixel buffer for off-thread use (e.g. printing).
-    pub fn pixel_buffer_arc(&self) -> Arc<Vec<u8>> {
-        Arc::clone(&self.pixel_buffer)
+    /// Returns a cheap Arc clone of the raw pixel buffer if available.
+    pub fn pixel_buffer_arc(&self) -> Option<Arc<Vec<u8>>> {
+        self.source.full_pixels()
     }
 
     /// Number of tile columns in the grid.
@@ -98,47 +163,18 @@ impl TileManager {
     /// Generate a downscaled preview image (fits within max_w x max_h).
     /// Returns (width, height, rgba_pixels).
     pub fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.full_width as f64)
-            .min(max_h as f64 / self.full_height as f64)
-            .min(1.0);
-        let out_w = (self.full_width as f64 * scale).round().max(1.0) as u32;
-        let out_h = (self.full_height as f64 * scale).round().max(1.0) as u32;
-
-        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
-        let src_stride = self.full_width as usize * 4;
-
-        for y in 0..out_h {
-            let src_y = ((y as f64 / scale).min((self.full_height - 1) as f64)) as usize;
-            for x in 0..out_w {
-                let src_x = ((x as f64 / scale).min((self.full_width - 1) as f64)) as usize;
-                let src_off = src_y * src_stride + src_x * 4;
-                let dst_off = (y as usize * out_w as usize + x as usize) * 4;
-                out[dst_off..dst_off + 4].copy_from_slice(&self.pixel_buffer[src_off..src_off + 4]);
-            }
-        }
-        (out_w, out_h, out)
+        self.source.generate_preview(max_w, max_h)
     }
 
-    /// Extract a single tile's pixel data from the CPU buffer.
-    /// Returns (tile_width, tile_height, rgba_pixels).
+    /// Extract a single tile's pixel data.
     fn extract_tile(&self, coord: TileCoord) -> (u32, u32, Vec<u8>) {
         let x0 = coord.col * TILE_SIZE;
         let y0 = coord.row * TILE_SIZE;
         let tw = TILE_SIZE.min(self.full_width - x0);
         let th = TILE_SIZE.min(self.full_height - y0);
 
-        let src_stride = self.full_width as usize * 4;
-        let mut tile_pixels = vec![0u8; (tw * th * 4) as usize];
-
-        for row in 0..th {
-            let src_off = ((y0 + row) as usize) * src_stride + (x0 as usize * 4);
-            let dst_off = (row as usize) * (tw as usize * 4);
-            let len = tw as usize * 4;
-            tile_pixels[dst_off..dst_off + len]
-                .copy_from_slice(&self.pixel_buffer[src_off..src_off + len]);
-        }
-
-        (tw, th, tile_pixels)
+        let pixels = self.source.extract_tile(x0, y0, tw, th);
+        (tw, th, pixels)
     }
 
     /// Get or create a tile texture for the given coordinate.
@@ -189,9 +225,7 @@ impl TileManager {
         self.tiles.clear();
         self.lru_order.clear();
         self.preview_texture = None;
-        // Replace the Arc with a new empty one. If a background print thread
-        // still holds the old Arc, it will keep the data alive until it finishes.
-        self.pixel_buffer = Arc::new(Vec::new());
+        // The source's lifecycle is managed via Arc.
     }
 
     /// Compute which tiles are visible given the current viewport mapping.

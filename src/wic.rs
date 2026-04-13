@@ -180,6 +180,85 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
     Ok(())
 }
 
+/// A tiled source for Windows Imaging Component (WIC) decoders.
+/// Allows on-demand decoding of any WIC-supported format without full memory allocation.
+pub struct WicTiledSource {
+    #[allow(dead_code)]
+    path: std::path::PathBuf,
+    width: u32,
+    height: u32,
+    #[allow(dead_code)]
+    frame: IWICBitmapFrameDecode,
+    converter: IWICFormatConverter,
+}
+
+// WIC interfaces are thread-safe for reading if COM was initialized as COINIT_MULTITHREADED.
+unsafe impl Send for WicTiledSource {}
+unsafe impl Sync for WicTiledSource {}
+
+impl crate::loader::TiledImageSource for WicTiledSource {
+    fn width(&self) -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let stride = w * 4;
+        let mut pixels = vec![0u8; (stride * h) as usize];
+        
+        let rect = WICRect {
+            X: x as i32,
+            Y: y as i32,
+            Width: w as i32,
+            Height: h as i32,
+        };
+
+        unsafe {
+            // WIC's CopyPixels is highly efficient and only decodes the required region
+            // if the underlying codec supports it (e.g., tiled TIFF).
+            let _ = self.converter.CopyPixels(&rect, stride, &mut pixels);
+        }
+        
+        pixels
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        let scale = (max_w as f64 / self.width as f64)
+            .min(max_h as f64 / self.height as f64)
+            .min(1.0);
+        let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
+        let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
+
+        // For general preview, we still use WIC but since it doesn't have a high-performance 
+        // downscaler built into CopyPixels, we just sample it or use a scaler if available.
+        // For now, to keep it simple and responsive, we extract at intervals or just decode 
+        // a thumbnail if WIC supports it.
+        
+        // Simple implementation: Use the scaler if possible (not implemented here for brevity, 
+        // fall back to interval sampling or just scaling the result of a larger CopyPixels).
+        // Actual implementation uses the same logic as PsbTiledSource for consistency.
+        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
+        for y in 0..out_h {
+            let src_y = ((y as f64 / scale).min((self.height - 1) as f64)) as u32;
+            let rect = WICRect { X: 0, Y: src_y as i32, Width: self.width as i32, Height: 1 };
+            let mut line = vec![0u8; (self.width * 4) as usize];
+            unsafe {
+                let _ = self.converter.CopyPixels(&rect, self.width * 4, &mut line);
+            }
+            for x in 0..out_w {
+                let src_x = ((x as f64 / scale).min((self.width - 1) as f64)) as usize;
+                let src_off = src_x * 4;
+                let dst_off = (y as usize * out_w as usize + x as usize) * 4;
+                out[dst_off..dst_off+4].copy_from_slice(&line[src_off..src_off+4]);
+            }
+        }
+
+        (out_w, out_h, out)
+    }
+
+    fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> {
+        None
+    }
+}
+
 pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader::ImageData, String> {
     #[cfg(not(target_os = "windows"))]
     {
@@ -256,6 +335,20 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         let mut width = 0;
         let mut height = 0;
         converter.GetSize(&mut width, &mut height).map_err(|e| format!("get size failed: {:?}", e))?;
+
+        let pixel_count = width as u64 * height as u64;
+        let limit = crate::tile_cache::get_max_texture_side();
+
+        if pixel_count >= crate::tile_cache::TILED_THRESHOLD || width > limit || height > limit {
+            // Virtualized path: return the Tiled source instead of decoding everything now
+            return Ok(crate::loader::ImageData::Tiled(std::sync::Arc::new(WicTiledSource {
+                path: path.to_path_buf(),
+                width,
+                height,
+                frame,
+                converter,
+            })));
+        }
 
         let stride = width * 4;
         let mut pixels = vec![0u8; (stride * height) as usize];

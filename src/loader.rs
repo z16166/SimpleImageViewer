@@ -27,6 +27,18 @@ pub struct DecodedImage {
     pub pixels: Vec<u8>, // RGBA8
 }
 
+/// Interface for images that can provide pixel data in tiles/chunks on demand.
+pub trait TiledImageSource: Send + Sync {
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    /// Extract a rectangular region of the image as RGBA8.
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8>;
+    /// Generate a downscaled preview of the full image.
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
+    /// Optionally provide the full pixel buffer if already in memory.
+    fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>>;
+}
+
 /// A single frame of an animated image.
 pub struct AnimationFrame {
     pub width: u32,
@@ -40,6 +52,8 @@ pub enum ImageData {
     Static(DecodedImage),
     /// Large image that exceeds the tiled threshold — kept in CPU RAM for on-demand tile extraction.
     LargeStatic(DecodedImage),
+    /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
+    Tiled(std::sync::Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
 }
 
@@ -132,70 +146,55 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
-        let is_tiff = ext == "tif" || ext == "tiff";
-
-        // On Windows, prioritize WIC for TIFF files
-        #[cfg(target_os = "windows")]
-        if is_tiff {
-            match crate::wic::load_via_wic(path) {
-                Ok(wic_img) => return Ok(wic_img),
-                Err(wic_err) => log::info!("[{}] WIC failed for TIFF, falling back to standard loader: {}", file_name, wic_err),
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        if is_tiff {
-            match crate::macos_image_io::load_via_image_io(path) {
-                Ok(img) => return Ok(img),
-                Err(err) => log::info!("[{}] ImageIO failed for TIFF, falling back: {}", file_name, err),
-            }
-        }
-
-        // On Linux, prioritize libtiff via dynamic loading
-        #[cfg(target_os = "linux")]
-        if is_tiff {
-            match crate::linux_tiff::load_via_libtiff(path) {
-                Ok(img) => return Ok(img),
-                Err(err) => log::info!("[{}] libtiff failed for TIFF, falling back: {}", file_name, err),
-            }
-        }
-
-        let inner = || {
-            match ext.as_str() {
-                "gif" => load_gif(path),
-                "png" | "apng" => load_png(path),
-                "webp" => load_webp(path),
-                "psd" | "psb" => load_psd(path),
-                "heif" | "heic" => load_heic(path),
-                _ => load_static(path),
-            }
+        // Get the system-native support registry for the current platform
+        let is_system_native = if let Ok(reg) = crate::formats::get_registry().read() {
+            reg.extensions.contains(&ext)
+        } else {
+            false
         };
 
-        let result = inner();
-        
-        #[cfg(target_os = "windows")]
-        if let Err(ref std_err) = result {
-            if !is_tiff {
-                log::info!("[{}] Standard loader failed, trying WIC fallback...", file_name);
-                match crate::wic::load_via_wic(path) {
-                    Ok(wic_img) => return Ok(wic_img),
-                    Err(wic_err) => {
-                        return Err(format!("{}\n(WIC: {})", std_err, wic_err));
-                    }
+        // 1. Try format-specific virtualized loaders first (e.g., PSB/PSD v2)
+        if ext == "psd" || ext == "psb" {
+            if let Ok(item) = load_psd(path) {
+                return Ok(item);
+            }
+        }
+
+        // 2. If natively supported by the OS (TIFF, RAW, etc.), prioritize system loaders (WIC/ImageIO)
+        if is_system_native {
+            #[cfg(target_os = "windows")]
+            if let Ok(img) = crate::wic::load_via_wic(path) {
+                return Ok(img);
+            }
+            #[cfg(target_os = "macos")]
+            if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
+                return Ok(img);
+            }
+            #[cfg(target_os = "linux")]
+            if ext == "tif" || ext == "tiff" {
+                if let Ok(img) = crate::linux_tiff::load_via_libtiff(path) {
+                    return Ok(img);
                 }
             }
         }
 
-        #[cfg(target_os = "macos")]
-        if let Err(ref std_err) = result {
-            if !is_tiff {
-                log::info!("[{}] Standard loader failed, trying ImageIO fallback...", file_name);
-                match crate::macos_image_io::load_via_image_io(path) {
-                    Ok(img) => return Ok(img),
-                    Err(err) => {
-                        return Err(format!("{}\n(ImageIO: {})", std_err, err));
-                    }
-                }
+        // 3. Try standard image-rs loaders (GIF, PNG, WebP, etc.)
+        let result = match ext.as_str() {
+            "gif" => load_gif(path),
+            "png" | "apng" => load_png(path),
+            "webp" => load_webp(path),
+            "heif" | "heic" => load_heic(path),
+            _ => load_static(path),
+        };
+        // 4. Final system-native fallback for any failures (e.g., unusual but supported files)
+        if result.is_err() {
+            #[cfg(target_os = "windows")]
+            if let Ok(img) = crate::wic::load_via_wic(path) {
+                return Ok(img);
+            }
+            #[cfg(target_os = "macos")]
+            if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
+                return Ok(img);
             }
         }
 
@@ -204,6 +203,13 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
     
     // Post-process EVERY result for logging and limits
     let final_result = match result {
+        Ok(ImageData::Tiled(source)) => {
+            log::info!("[{}] Tiled image source active: {}x{} ({:.1} MP)", 
+                file_name, source.width(), source.height(),
+                (source.width() as f64 * source.height() as f64) / 1_000_000.0
+            );
+            Ok(ImageData::Tiled(source))
+        }
         Ok(ImageData::Static(decoded)) => {
             let pixel_count = decoded.width as u64 * decoded.height as u64;
             let max_side = decoded.width.max(decoded.height);
@@ -395,20 +401,28 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
     }
     let version = u16::from_be_bytes([sig_buf[4], sig_buf[5]]);
 
-    let (w, h, pixels) = if version == 2 {
-        // PSB v2: use our custom streaming reader
-        log::info!("Using custom PSB reader for v2 format");
-        let composite = crate::psb_reader::read_composite(path)?;
-        (composite.width, composite.height, composite.pixels)
+    if version == 2 {
+        // PSB v2: Use tiled source for large files
+        log::info!("Using custom PSB tiled source for v2 format");
+        let source = crate::psb_reader::open_tiled_source(path)?;
+        let arc_source = std::sync::Arc::new(source);
+        Ok(ImageData::Tiled(arc_source))
     } else {
         // PSD v1: use the psd crate (reads entire file into memory)
         let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
         let psd_file = psd::Psd::from_bytes(&bytes)
             .map_err(|e| format!("Failed to parse PSD: {e}"))?;
-        (psd_file.width(), psd_file.height(), psd_file.rgba())
-    };
-
-    Ok(ImageData::Static(DecodedImage { width: w, height: h, pixels }))
+        let w = psd_file.width();
+        let h = psd_file.height();
+        let pixels = psd_file.rgba();
+        
+        let img = DecodedImage { width: w, height: h, pixels };
+        if (w as u64 * h as u64) > crate::tile_cache::TILED_THRESHOLD {
+            Ok(ImageData::LargeStatic(img))
+        } else {
+            Ok(ImageData::Static(img))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

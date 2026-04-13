@@ -4874,6 +4874,7 @@ dependencies = [
  "libloading",
  "lofty",
  "log",
+ "memmap2",
  "printpdf",
  "psd",
  "quick-xml",
