@@ -163,13 +163,19 @@ fn init_logging() {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let logger = flexi_logger::Logger::try_with_env_or_str("info")
+    let mut logger = flexi_logger::Logger::try_with_env_or_str("info")
         .expect("Failed to initialize logger")
         .log_to_file(flexi_logger::FileSpec::default()
             .directory(log_dir)
             .basename("simple_image_viewer")
-        )
-        .use_windows_line_ending()
+        );
+
+    #[cfg(windows)]
+    {
+        logger = logger.use_windows_line_ending();
+    }
+
+    let logger = logger
         .write_mode(flexi_logger::WriteMode::BufferAndFlush)
         .rotate(
             flexi_logger::Criterion::Size(10 * 1024 * 1024), // 10 MB
