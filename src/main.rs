@@ -169,6 +169,7 @@ fn init_logging() {
             .directory(log_dir)
             .basename("simple_image_viewer")
         )
+        .use_windows_line_ending()
         .write_mode(flexi_logger::WriteMode::BufferAndFlush)
         .rotate(
             flexi_logger::Criterion::Size(10 * 1024 * 1024), // 10 MB
