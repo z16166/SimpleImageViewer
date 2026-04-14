@@ -28,7 +28,7 @@ use egui::{
 
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::ipc::IpcMessage;
-use crate::loader::{ImageLoader, TextureCache, LoadResult, TileResult, PreviewResult, ImageData, DecodedImage, LoaderOutput};
+use crate::loader::{ImageLoader, TextureCache, LoadResult, TileResult, ImageData, DecodedImage, LoaderOutput, PreviewResult};
 use crate::scanner::ScanMessage;
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
@@ -90,6 +90,58 @@ struct HudState {
     current_track: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardwareTier {
+    Low,
+    Medium,
+    High,
+}
+
+impl HardwareTier {
+    pub fn max_tile_quota(&self) -> usize {
+        match self {
+            Self::Low => 16,
+            Self::Medium => 64,
+            Self::High => 128, // Reduced from 512 to avoid command queue saturation
+        }
+    }
+
+    pub fn look_ahead_padding(&self) -> f32 {
+        match self {
+            Self::Low => 512.0,
+            Self::Medium => 1024.0,
+            Self::High => 2048.0,
+        }
+    }
+
+    pub fn gpu_cache_tiles(&self) -> usize {
+        match self {
+            Self::Low => 128,     // 128MB VRAM
+            Self::Medium => 256,   // 256MB VRAM
+            Self::High => 512,     // 512MB VRAM (Conservative base)
+        }
+    }
+
+    pub fn cpu_cache_mb(&self) -> usize {
+        match self {
+            Self::Low => 512,
+            Self::Medium => 1024,
+            Self::High => 2048,
+        }
+    }
+
+    pub fn tiled_threshold_pixels(&self) -> u64 {
+        64_000_000 // Reverted to 64MP for all tiers as requested
+    }
+
+    pub fn max_preview_size(&self) -> u32 {
+        match self {
+            Self::Low => 1024,
+            Self::Medium => 2048,
+            Self::High => 4096, // Capped at 4k to prevent VRAM spikes
+        }
+    }
+}
 
 pub struct ImageViewerApp {
     settings: Settings,
@@ -218,6 +270,10 @@ pub struct ImageViewerApp {
     context_menu_pos: Option<Pos2>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
     current_rotation: i32,
+
+    // Adaptive tile upload quota based on hardware and current frame performance
+    tile_upload_quota: usize,
+    hardware_tier: HardwareTier,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -269,7 +325,41 @@ impl ImageViewerApp {
         let max_texture_side = max_texture_side_hw.min(8192);
         
         crate::tile_cache::MAX_TEXTURE_SIDE.store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
-        log::info!("GPU Capabilities: hw_max={}, applied_limit={}", max_texture_side_hw, max_texture_side);
+        
+        // --- Hardware Tier Detection ---
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let total_ram_gb = sys.total_memory() / (1024 * 1024 * 1024);
+        
+        let mut tier = HardwareTier::Low;
+        if let Some(state) = cc.wgpu_render_state.as_ref() {
+            let info = state.adapter.get_info();
+            match info.device_type {
+                wgpu::DeviceType::DiscreteGpu => {
+                    tier = if total_ram_gb >= 16 { HardwareTier::High } else { HardwareTier::Medium };
+                }
+                wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::VirtualGpu => {
+                    tier = if total_ram_gb >= 16 { HardwareTier::Medium } else { HardwareTier::Low };
+                }
+                _ => {}
+            }
+            log::info!("Hardware Detection: Tier={:?}, GPU={:?}, RAM={}GB, Adapter={}", 
+                tier, info.device_type, total_ram_gb, info.name);
+        } else {
+            tier = if total_ram_gb >= 16 { HardwareTier::Medium } else { HardwareTier::Low };
+            log::info!("Hardware Detection: Tier={:?} (No WGPU), RAM={}GB", tier, total_ram_gb);
+        }
+
+        let tile_quota = tier.max_tile_quota();
+
+        // Apply hardware budgets to global caches
+        crate::tile_cache::MAX_TILES_BASE.store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::TILED_THRESHOLD.store(tier.tiled_threshold_pixels(), std::sync::atomic::Ordering::Relaxed);
+        crate::loader::PREVIEW_LIMIT.store(tier.max_preview_size(), std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+            cache.set_max_mb(tier.cpu_cache_mb());
+        }
 
         let mut app = Self {
             settings,
@@ -338,6 +428,8 @@ impl ImageViewerApp {
             preload_budget_backward: budget_bwd,
             context_menu_pos: None,
             current_rotation: 0,
+            tile_upload_quota: tile_quota,
+            hardware_tier: tier,
         };
 
         // Restore last session state
@@ -1057,13 +1149,21 @@ impl ImageViewerApp {
         }
     }
 
+
     fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
         // Only update if it refers to the currently viewed image and matching generation
         if self.loader.current_generation(update.index) == update.generation {
-            if let Some(ref mut tm) = self.tile_manager {
-                if tm.image_index == update.index {
-                    tm.set_preview(update.preview, ctx);
-                    ctx.request_repaint();
+            match update.result {
+                Ok(preview) => {
+                    if let Some(ref mut tm) = self.tile_manager {
+                        if tm.image_index == update.index {
+                            tm.set_preview(preview, ctx);
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Preview update failed for index {}: {}", update.index, e);
                 }
             }
         }
@@ -1280,13 +1380,22 @@ impl ImageViewerApp {
 
             if zoom_in {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
             }
             if zoom_out {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
             }
             if zoom_reset {
                 self.zoom_factor = 1.0;
                 self.pan_offset = Vec2::ZERO;
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
             }
             if toggle_auto_switch {
                 self.settings.auto_switch = !self.settings.auto_switch;
@@ -1350,6 +1459,10 @@ impl ImageViewerApp {
                         // d * (1 - ratio) compensates for the scale change around the cursor
                         self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
                     }
+                    
+                    self.generation = self.generation.wrapping_add(1);
+                    self.loader.set_generation(self.generation);
+                    if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
                 }
             } else if scroll_delta.y.abs() > 0.0 {
                 // Navigation with debounce (cooldown) to prevent rapid flipping
@@ -2213,6 +2326,9 @@ impl ImageViewerApp {
             if self.tile_manager.is_some() {
                 if canvas_resp.dragged() {
                     self.pan_offset += canvas_resp.drag_delta();
+                    self.generation = self.generation.wrapping_add(1);
+                    self.loader.set_generation(self.generation);
+                    if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
                 }
 
                 // Rotation logic
@@ -2223,8 +2339,6 @@ impl ImageViewerApp {
                 // Extract immutable data first (avoids borrow conflict with compute_display_rect)
                 let tm_ref = self.tile_manager.as_ref().unwrap();
                 let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
-                let full_w = tm_ref.full_width;
-                let full_h = tm_ref.full_height;
                 
                 let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
                 let dest = self.compute_display_rect(rotated_img_size, screen_rect);
@@ -2242,8 +2356,8 @@ impl ImageViewerApp {
                     mesh.add_rect_with_uv(unrotated_dest, uv, color);
                     
                     if rotation != 0 {
-                        let rot = egui::emath::Rot2::from_angle(angle);
                         let pivot = dest.center();
+                        let rot = egui::emath::Rot2::from_angle(angle);
                         for v in &mut mesh.vertices {
                             v.pos = pivot + rot * (v.pos - pivot);
                         }
@@ -2252,21 +2366,44 @@ impl ImageViewerApp {
                 }
 
                 // 2. Render high-res tiles.
-                // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size),
-                // but trigger as soon as the user zooms in past the initial view.
+                // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size).
+                // For giant images, we also only trigger tiling when the effective scale exceeds 
+                // the preview scale, ensuring we don't thrash VRAM for no visual gain.
                 let fit_scale = (screen_rect.width() / rotated_img_size.x)
                     .min(screen_rect.height() / rotated_img_size.y)
                     .min(1.0);
-                let threshold = 0.05_f32.max(fit_scale * 1.05);
+                
+                let preview_scale = if let Some(ref p) = tm_ref.preview_texture {
+                    p.size()[0] as f32 / unrotated_size.x.max(1.0)
+                } else {
+                    0.1 // Fallback
+                };
+
+                // Trigger tiling based on two conditions:
+                // 1. We have zoomed past the actual resolution of the preview texture (native precision).
+                // 2. The image on screen is larger than the screen itself (screen saturation).
+                // Taking the min() ensures we pick whichever bottle-neck comes first.
+                let screen_fill_scale = (screen_rect.width() / rotated_img_size.x)
+                    .min(screen_rect.height() / rotated_img_size.y);
+                
+                let threshold = (preview_scale * 0.95)
+                    .min(screen_fill_scale * 1.02) // Add 2% buffer to avoid flickering at exact screen fit
+                    .max(fit_scale * 1.05);        // Never trigger in pure "Fit" mode unless slightly zoomed
 
                 let effective_scale = dest.width() / rotated_img_size.x;
                 if effective_scale >= threshold {
                     // Compute visible tiles using the UNROTATED destination rect
-                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect);
+                    let padding = self.hardware_tier.look_ahead_padding();
+                    let mut visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect, padding);
+                    
+                    // ANTI-THRASHING: Truncate visibility to what fits in VRAM.
+                    // This prevents the flickering "back-and-forth" when viewing more tiles than the cache can hold.
+                    visible.truncate(self.hardware_tier.gpu_cache_tiles());
 
                     // Upload and draw tiles (mutable borrow, scoped)
                     let ctx_ref = ui.ctx().clone();
-                    const TILE_UPLOAD_QUOTA: usize = 16; // Reverted to 16 for better stability on low-end hardware
+                    // Adaptive upload quota: adjusted dynamically in logic() based on frametime
+                    let tile_upload_quota = self.tile_upload_quota;
                     let mut newly_uploaded = 0;
 
                     {
@@ -2274,8 +2411,8 @@ impl ImageViewerApp {
                         let pivot = dest.center();
                         let rot = if rotation != 0 { Some(egui::emath::Rot2::from_angle(angle)) } else { None };
 
-                        for (coord, tile_screen_rect, uv) in &visible {
-                            let allow_upload = newly_uploaded < TILE_UPLOAD_QUOTA;
+                        for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
+                            let allow_upload = newly_uploaded < tile_upload_quota;
                             let (status, just_uploaded) = tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, visible.len());
                             
                             if just_uploaded {
@@ -2283,10 +2420,20 @@ impl ImageViewerApp {
                             }
 
                             match status {
-                                TileStatus::Ready(handle) => {
-                                    
+                                TileStatus::Ready(handle, ready_at) => {
+                                    let mut alpha = 1.0;
+                                    if let Some(at) = ready_at {
+                                        let elapsed = at.elapsed().as_secs_f32();
+                                        let duration = 0.15; // 150ms snappy fade
+                                        if elapsed < duration {
+                                            alpha = (elapsed / duration).clamp(0.0, 1.0);
+                                            ui.ctx().request_repaint(); // Smooth transition
+                                        }
+                                    }
+
+                                    let color = Color32::WHITE.linear_multiply(alpha);
                                     let mut mesh = egui::Mesh::with_texture(handle.id());
-                                    mesh.add_rect_with_uv(*tile_screen_rect, *uv, Color32::WHITE);
+                                    mesh.add_rect_with_uv(*tile_screen_rect, *uv, color);
                                     if let Some(r) = rot {
                                         for v in &mut mesh.vertices {
                                             v.pos = pivot + r * (v.pos - pivot);
@@ -2317,7 +2464,9 @@ impl ImageViewerApp {
                                     if needs_request {
                                         let source = tm.get_source();
                                         let generation = tm.generation;
-                                        self.loader.request_tile(self.current_index, generation, source, coord.col, coord.row);
+                                        // visible list is already sorted by distance to center
+                                        let priority = (visible.len() - idx) as f32;
+                                        self.loader.request_tile(self.current_index, generation, priority, source, coord.col, coord.row);
                                         tm.pending_tiles.insert(*coord);
                                     }
                                 }
@@ -2354,43 +2503,7 @@ impl ImageViewerApp {
                         ui.ctx().request_repaint();
                     }
                 }
-
-                // HUD for tiled mode
-                if self.settings.show_osd {
-                    let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
-                    let fname = self.image_files[self.current_index]
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
-                    
-                    let hud_text = format!(
-                        "[{}/{}]  {}  {}x{}  {}%  {}  TILED",
-                        self.current_index + 1,
-                        self.image_files.len(),
-                        fname,
-                        full_w,
-                        full_h,
-                        zoom_pct,
-                        self.settings.scale_mode.label(),
-                    );
-                    let galley = ui.painter().layout_no_wrap(
-                        hud_text,
-                        FontId::monospace(14.0),
-                        Color32::WHITE,
-                    );
-                    let text_pos = Pos2::new(screen_rect.min.x + 12.0, screen_rect.max.y - 32.0);
-                    let bg = Rect::from_min_size(
-                        text_pos - Vec2::new(4.0, 2.0),
-                        galley.size() + Vec2::new(8.0, 4.0),
-                    );
-                    ui.painter().rect_filled(bg, 4.0, Color32::from_black_alpha(160));
-                    ui.painter().galley(text_pos, galley, Color32::WHITE);
-                }
-
-                return;
-            }
-
-            if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
+            } else if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
                 // For animated images, advance the frame and use the animation frame texture
                 let texture = if let Some(ref mut anim) = self.animation {
                     if anim.image_index == self.current_index && !anim.textures.is_empty() {
@@ -2420,6 +2533,10 @@ impl ImageViewerApp {
 
                 if canvas_resp.dragged() {
                     self.pan_offset += canvas_resp.drag_delta();
+                    // Bumping generation here ensures that if we zoom into tiled mode later,
+                    // or if multiple levels of tiled loaders exist, the priority is reset.
+                    self.generation = self.generation.wrapping_add(1);
+                    self.loader.set_generation(self.generation);
                 }
 
                 // Transition handling
@@ -2816,20 +2933,41 @@ impl ImageViewerApp {
                     }
                     ui.painter().add(egui::Shape::mesh(mesh));
                 }
+            }
+            
+            // 3. GLOBAL HUD OVERLAY (OSD)
+            // Drawn outside the texture-success branch to ensure persistent display 
+            // during refinement, transitions, or slow tile loading.
+            if self.settings.show_osd {
+                let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                
+                // Determine resolution and mode tag
+                let mut res_w = 0;
+                let mut res_h = 0;
+                let mut mode_tag = "STATIC";
 
-                if self.settings.show_osd {
-                    // HUD overlay
-                    let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
-                    let img_w = rotated_img_size.x.round() as u32;
-                    let img_h = rotated_img_size.y.round() as u32;
-                    let mode_label = self.settings.scale_mode.label();
+                if let Some(tm) = &self.tile_manager {
+                    res_w = tm.full_width;
+                    res_h = tm.full_height;
+                    mode_tag = "TILED";
+                } else if let Some((w, h)) = self.current_image_res {
+                    res_w = w;
+                    res_h = h;
+                    
+                    // Pre-detect if this will become a TILED image based on threshold
+                    let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+                    if w as u64 * h as u64 > threshold {
+                        mode_tag = "TILED";
+                    }
+                }
 
-                    let current_state = HudState {
+                if res_w > 0 {
+                    let current_state = crate::app::HudState {
                         index: self.current_index,
                         total: self.image_files.len(),
                         zoom_pct,
-                        res: (img_w, img_h),
-                        mode: mode_label.to_string(),
+                        res: (res_w, res_h),
+                        mode: mode_tag.to_string(),
                         current_track: self.audio.get_current_track(),
                     };
 
@@ -2850,7 +2988,6 @@ impl ImageViewerApp {
                             current_state.mode,
                         );
 
-                        // Add Music info if playing
                         if let Some(ref track) = current_state.current_track {
                             hud.push_str(&format!("    ♪ {}", track));
                         }
@@ -2869,27 +3006,25 @@ impl ImageViewerApp {
                             self.cached_palette.osd_text,
                         );
                     }
-
-                    // Hint when settings hidden
-                    if !self.show_settings {
-                        ui.painter().text(
-                            screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
-                            Align2::RIGHT_BOTTOM,
-                            t!("hint.keyboard").to_string(),
-                            FontId::proportional(13.0), // Increased from 11.0 for better visibility
-                            self.cached_palette.osd_hint,
-                        );
-                    }
-                }
-            } else {
-                if self.settings.show_osd {
-                    // Loading spinner
+                } else {
+                    // While loading/parsing, show a minimal status
                     ui.painter().text(
                         screen_rect.center() - Vec2::new(0.0, 20.0),
                         Align2::CENTER_BOTTOM,
                         t!("status.loading").to_string(),
                         FontId::proportional(16.0),
                         self.cached_palette.text_muted,
+                    );
+                }
+
+                // Hint when settings hidden
+                if !self.show_settings {
+                    ui.painter().text(
+                        screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
+                        Align2::RIGHT_BOTTOM,
+                        t!("hint.keyboard").to_string(),
+                        FontId::proportional(13.0),
+                        self.cached_palette.osd_hint,
                     );
                 }
             }
@@ -3296,6 +3431,7 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+
         // Process IPC messages
         while let Ok(msg) = self.ipc_rx.try_recv() {
             match msg {

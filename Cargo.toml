@@ -33,7 +33,7 @@ walkdir = "2"
 jwalk = "0.8"
 # tiff = "0.11" // Removed in favor of libtiff via libloading on Linux and WIC/ImageIO elsewhere
 crossbeam-channel = "0.5"
-rayon = "1"
+rayon = "1.10"
 log = "0.4"
 flexi_logger = "0.29"
 serde = { version = "1", features = ["derive"] }
@@ -74,6 +74,7 @@ windows = { version = "0.58", features = [
 core-graphics = "0.24"
 core-foundation = "0.10"
 foreign-types = "0.5"
+tiff = "0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"

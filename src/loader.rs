@@ -14,13 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Condvar};
+use std::collections::{HashMap, BinaryHeap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
+use std::cmp::Ordering;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 
+pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2048);
 
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -51,6 +53,7 @@ pub struct AnimationFrame {
 }
 
 /// Decoded image data — either a static image, a large image (for tiled rendering), or an animated sequence.
+#[derive(Clone)]
 pub enum ImageData {
     Static(DecodedImage),
     /// Large image that exceeds the tiled threshold — kept in CPU RAM for on-demand tile extraction.
@@ -60,6 +63,7 @@ pub enum ImageData {
     Animated(Vec<AnimationFrame>),
 }
 
+#[derive(Clone)]
 pub struct LoadResult {
     pub index: usize,
     pub generation: u64,
@@ -77,13 +81,40 @@ pub struct TileResult {
 pub struct PreviewResult {
     pub index: usize,
     pub generation: u64,
-    pub preview: DecodedImage,
+    pub result: Result<DecodedImage, String>,
 }
 
 pub enum LoaderOutput {
     Image(LoadResult),
     Tile(TileResult),
     Preview(PreviewResult),
+}
+
+struct TileRequest {
+    generation: u64,
+    priority: f32, // Higher is better
+    index: usize,
+    col: u32,
+    row: u32,
+    source: Arc<dyn TiledImageSource>,
+}
+
+impl PartialEq for TileRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation && self.priority == other.priority
+    }
+}
+impl Eq for TileRequest {}
+impl PartialOrd for TileRequest {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TileRequest {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.generation.cmp(&other.generation)
+            .then_with(|| self.priority.partial_cmp(&other.priority).unwrap_or(Ordering::Equal))
+    }
 }
 
 pub struct ImageLoader {
@@ -95,6 +126,8 @@ pub struct ImageLoader {
     /// Spawned tasks check this to detect staleness and abort early.
     current_gen: Arc<std::sync::atomic::AtomicU64>,
     pool: Arc<rayon::ThreadPool>,
+    /// Priority queue for tile requests.
+    tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
 }
 
 impl ImageLoader {
@@ -130,11 +163,66 @@ impl ImageLoader {
 
         let pool = pool_builder.build()
             .expect("failed to create image loader thread pool");
+        
+        let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> = Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
+        
+        // Spawn dedicated tile worker threads (scaling with CPU count)
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).clamp(4, 12))
+            .unwrap_or(4);
+
+        for i in 0..worker_count {
+            let queue = Arc::clone(&tile_queue);
+            let tx = tx.clone();
+            let gen_ref = Arc::clone(&current_gen);
+            
+            std::thread::Builder::new()
+                .name(format!("tile-worker-{}", i))
+                .spawn(move || {
+                    #[cfg(target_os = "windows")]
+                    let _com = crate::wic::ComGuard::new();
+
+                    loop {
+                        let request = {
+                            let (lock, cvar) = &*queue;
+                            let mut heap = lock.lock().unwrap();
+                            while heap.is_empty() {
+                                heap = cvar.wait(heap).unwrap();
+                            }
+                            heap.pop().unwrap()
+                        };
+
+                        // Check if this request is still relevant for the global counter
+                        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > request.generation {
+                            continue;
+                        }
+
+                        let tile_size = crate::tile_cache::TILE_SIZE;
+                        let x = request.col * tile_size;
+                        let y = request.row * tile_size;
+                        let tw = tile_size.min(request.source.width() - x);
+                        let th = tile_size.min(request.source.height() - y);
+
+                        let pixels = request.source.extract_tile(x, y, tw, th);
+                        
+                        let _ = tx.send(LoaderOutput::Tile(TileResult {
+                            index: request.index,
+                            col: request.col,
+                            row: request.row,
+                            pixels,
+                        }));
+                    }
+                })
+                .ok();
+        }
+
         Self {
             tx, rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
-            current_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_gen,
             pool: Arc::new(pool),
+            tile_queue,
         }
     }
 
@@ -160,47 +248,38 @@ impl ImageLoader {
             loading.insert(index, generation);
         }
 
-        // An AtomicBool to ensure only ONE of the two spawns actually performs the load.
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let current_gen = Arc::clone(&self.current_gen);
 
-        // Build shared state for both spawns
+        let path1 = path.clone();
+        let path2 = path;
         let tx1 = self.tx.clone();
         let tx2 = self.tx.clone();
         let loading1 = Arc::clone(&self.loading);
         let loading2 = Arc::clone(&self.loading);
-        let path2 = path.clone();
         let claimed1 = Arc::clone(&claimed);
         let claimed2 = Arc::clone(&claimed);
+        let current_gen1 = Arc::clone(&current_gen);
         let current_gen2 = Arc::clone(&current_gen);
 
-        // SPAWN A: rayon pool (fast start when pool has capacity)
         self.pool.spawn(move || {
-            // Stale check
-            let global_gen = current_gen.load(std::sync::atomic::Ordering::Relaxed);
+            let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
             if generation < global_gen {
                 let loading = loading1.lock().unwrap();
                 if loading.get(&index) != Some(&generation) {
-                    log::debug!("[Loader] Aborting stale preload idx={} gen={} (cur={})", index, generation, global_gen);
                     return;
                 }
             }
-            // Try to claim the work
             if claimed1.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() {
-                return; // OS thread already claimed it
+                return;
             }
-            Self::do_load(index, generation, &path, tx1, loading1);
+            Self::do_load(index, generation, &path1, tx1, loading1);
         });
 
-        // SPAWN B: dedicated OS thread (safety net for pool saturation)
         std::thread::Builder::new()
             .name(format!("load-backup-{}", index))
             .spawn(move || {
-                // Give the pool a small head start (50ms) — if the pool is free,
-                // it will claim the work before we wake up.
                 std::thread::sleep(std::time::Duration::from_millis(50));
-
-                // Stale check
                 let global_gen = current_gen2.load(std::sync::atomic::Ordering::Relaxed);
                 if generation < global_gen {
                     let loading = loading2.lock().unwrap();
@@ -208,20 +287,15 @@ impl ImageLoader {
                         return;
                     }
                 }
-                // Try to claim
                 if claimed2.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() {
-                    return; // Pool already handled it
+                    return;
                 }
-                // Pool was saturated — we take over
                 #[cfg(target_os = "windows")]
                 let _com = crate::wic::ComGuard::new();
-                log::debug!("[Loader] OS-thread fallback for idx={} gen={}", index, generation);
                 Self::do_load(index, generation, &path2, tx2, loading2);
-            })
-            .ok();
+        });
     }
 
-    /// Shared load logic used by both pool.spawn and OS thread fallback.
     fn do_load(
         index: usize,
         generation: u64,
@@ -229,23 +303,36 @@ impl ImageLoader {
         tx: Sender<LoaderOutput>,
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
     ) {
-        let load_result = load_image_file(generation, index, path);
+        let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            load_image_file(generation, index, path)
+        })).unwrap_or_else(|e| {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic".to_string()
+            };
+            log::error!("[Loader] DECODER CRASH (panic) for index={}: {}", index, msg);
+            LoadResult {
+                index,
+                generation,
+                result: Err(format!("Decoder Panic: {}", msg)),
+                preview: None,
+            }
+        });
 
-        if let Err(e) = &load_result.result {
+        if let Err(ref e) = load_result.result {
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
 
-        let source_opt = if let Ok(ImageData::Tiled(ref source)) = load_result.result {
-            Some(Arc::clone(source))
-        } else {
-            None
-        };
+        let _ = tx.send(LoaderOutput::Image(load_result.clone()));
 
-        let _ = tx.send(LoaderOutput::Image(load_result));
-
-        if let Some(source_cloned) = source_opt {
+        if let Ok(ImageData::Tiled(source)) = load_result.result {
             let tx_cloned = tx.clone();
             let loading_p2 = Arc::clone(&loading_ref);
+            let index = index;
+            let generation = generation;
 
             std::thread::Builder::new()
                 .name(format!("refine-{}", index))
@@ -259,24 +346,23 @@ impl ImageLoader {
                     };
 
                     if still_valid {
-                        let limit = if source_cloned.width() > 32768 || source_cloned.height() > 32768 {
-                            4096
-                        } else {
-                            2048
-                        };
-                        let (pw, ph, pixels) = source_cloned.generate_preview(limit, limit);
+                        let limit = 4096;
+                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            source.generate_preview(limit, limit)
+                        }));
 
-                        let still_valid_after = {
-                            let loading = loading_p2.lock().unwrap();
-                            loading.get(&index) == Some(&generation)
-                        };
-
-                        if still_valid_after && pw > 0 && ph > 0 {
-                            let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
-                                index,
-                                generation,
-                                preview: DecodedImage { width: pw, height: ph, pixels },
-                            }));
+                        match r_result {
+                            Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                                let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
+                                    index,
+                                    generation,
+                                    result: Ok(DecodedImage { width: pw, height: ph, pixels: p_pixels }),
+                                }));
+                            }
+                            Err(e) => {
+                                log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
+                            }
+                            _ => {}
                         }
                     }
                 })
@@ -284,39 +370,17 @@ impl ImageLoader {
         }
     }
 
-    pub fn request_tile(&self, index: usize, generation: u64, source: std::sync::Arc<dyn TiledImageSource>, col: u32, row: u32) {
-        let tx = self.tx.clone();
-        let current_gen = self.current_gen.clone();
-        self.pool.spawn(move || {
-            // Check if this request is still relevant for the global counter
-            if current_gen.load(std::sync::atomic::Ordering::Relaxed) > generation {
-                return;
-            }
-
-            let tile_size = crate::tile_cache::TILE_SIZE;
-            let x = col * tile_size;
-            let y = row * tile_size;
-            let full_w = source.width();
-            let full_h = source.height();
-            let tw = tile_size.min(full_w - x);
-            let th = tile_size.min(full_h - y);
-            
-            // Telemetry: Start extraction
-            log::debug!("[Loader] Tile Request: idx={}, gen={}, coord=({},{})", index, generation, col, row);
-
-            let pixels = source.extract_tile(x, y, tw, th);
-            
-            let result = tx.send(LoaderOutput::Tile(TileResult {
-                index,
-                col,
-                row,
-                pixels,
-            }));
-
-            if result.is_err() {
-                log::error!("[Loader] Failed to send tile result for ({},{})", col, row);
-            }
+    pub fn request_tile(&self, index: usize, generation: u64, priority: f32, source: std::sync::Arc<dyn TiledImageSource>, col: u32, row: u32) {
+        let (lock, cvar) = &*self.tile_queue;
+        let mut heap = lock.lock().unwrap();
+        heap.push(TileRequest {
+            generation,
+            priority,
+            index,
+            col, row,
+            source,
         });
+        cvar.notify_one();
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {
@@ -337,10 +401,11 @@ impl ImageLoader {
     }
 
     pub fn cancel_all(&mut self) {
-        // Clear the in-flight set so completed results are discarded in poll().
-        // We cannot cancel work already submitted to rayon, but those results
-        // will harmlessly be ignored once the cache is cleared.
         self.loading.lock().unwrap().clear();
+        {
+            let (lock, _) = &*self.tile_queue;
+            lock.lock().unwrap().clear();
+        }
         while self.rx.try_recv().is_ok() {}
     }
 }
@@ -353,22 +418,18 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
-        // Get the system-native support registry for the current platform
         let is_system_native = if let Ok(reg) = crate::formats::get_registry().read() {
             reg.extensions.contains(&ext)
         } else {
             false
         };
 
-        // 1. Try format-specific virtualized loaders first (e.g., PSB/PSD v2)
         if ext == "psd" || ext == "psb" {
             if let Ok(item) = load_psd(path) {
                 return Ok(item);
             }
         }
 
-        // 2. If natively supported by the OS (TIFF, RAW, etc.), prioritize system loaders (WIC/ImageIO)
-        // Skip this step for animation-capable formats (GIF, WebP, APNG) so they use Step 3 instead.
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
             if let Ok(img) = crate::wic::load_via_wic(path) {
@@ -386,7 +447,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             }
         }
 
-        // 3. Try standard image-rs loaders (GIF, PNG, WebP, etc.)
         let result = match ext.as_str() {
             "gif" => load_gif(path),
             "png" | "apng" => load_png(path),
@@ -394,7 +454,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             "heif" | "heic" => load_heic(path),
             _ => load_static(path),
         };
-        // 4. Final system-native fallback for any failures (e.g., unusual but supported files)
         if result.is_err() {
             #[cfg(target_os = "windows")]
             if let Ok(img) = crate::wic::load_via_wic(path) {
@@ -409,7 +468,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
         result
     })();
     
-    // Post-process EVERY result for logging and limits
     let mut preview: Option<DecodedImage> = None;
 
     let final_result = match result {
@@ -419,7 +477,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
                 (source.width() as f64 * source.height() as f64) / 1_000_000.0
             );
             
-            // PHASE 1: Try instant thumbnail extraction (protected against panics)
             let t0 = std::time::Instant::now();
             let exif_thumb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 extract_exif_thumbnail(path)
@@ -460,7 +517,9 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
             let max_side = decoded.width.max(decoded.height);
             let limit = crate::tile_cache::get_max_texture_side();
             
-            if pixel_count >= crate::tile_cache::TILED_THRESHOLD || max_side > limit {
+            let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+            
+            if pixel_count >= tiled_limit || max_side > limit {
                 log::info!("[{}] Decoded {}x{} ({:.1} MP) - Tiled Mode (limit={})", 
                     file_name, decoded.width, decoded.height, pixel_count as f64 / 1_000_000.0, limit);
                 Ok(ImageData::LargeStatic(decoded))
@@ -662,7 +721,8 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         let pixels = psd_file.rgba();
         
         let img = DecodedImage { width: w, height: h, pixels };
-        if (w as u64 * h as u64) > crate::tile_cache::TILED_THRESHOLD {
+        let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        if (w as u64 * h as u64) > tiled_limit {
             Ok(ImageData::LargeStatic(img))
         } else {
             Ok(ImageData::Static(img))

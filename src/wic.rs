@@ -16,6 +16,7 @@
 
 pub use crate::formats::{FormatGroup, ImageFormat, get_registry};
 use std::thread;
+use std::sync::atomic::Ordering;
 use std::cell::RefCell;
 
 #[cfg(target_os = "windows")]
@@ -191,14 +192,16 @@ pub struct WicTiledSource {
     decoder: IWICBitmapDecoder, 
     frame: IWICBitmapFrameDecode,
     source: IWICBitmapSource,
+    raw_source: IWICBitmapSource,
     physical_width: u32,
     physical_height: u32,
     transform_options: WICBitmapTransformOptions,
+    // Removed shared Mutex converter to enable true thread-parallel decoding.
+    // Each thread will now create its own local converter in extract_tile.
     // Explicitly keep the stream alive to prevent data source invalidation
     #[allow(dead_code)]
     stream: Option<IWICStream>,
-    // Lazy initialized converter to avoid overhead during initial load
-    converter: std::sync::Mutex<Option<IWICFormatConverter>>,
+    // Removed shared converter to enable thread-parallel decoding
     // _mmap MUST be at the end to ensure it is dropped AFTER the WIC objects
     _mmap: Option<std::sync::Arc<memmap2::Mmap>>,
 }
@@ -222,48 +225,27 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         // Ensure COM is initialized on the current worker thread
         let _com = ComGuard::new();
 
-        // One lock acquisition to both ensure converter exists and copy pixels
-        let mut lock = match self.converter.lock() {
-            Ok(l) => l,
-            Err(_) => return pixels, // Poisoned
-        };
-
-        if lock.is_none() {
-            unsafe {
-                match self.factory.CreateFormatConverter() {
-                    Ok(converter) => {
-                        let res = converter.Initialize(
-                            &self.source,
-                            &GUID_WICPixelFormat32bppRGBA,
-                            WICBitmapDitherTypeNone,
-                            None,
-                            0.0,
-                            WICBitmapPaletteTypeCustom,
-                        );
-                        if res.is_ok() {
-                            *lock = Some(converter);
-                        } else {
-                            log::error!("[{}] WIC: Failed to initialize converter for tile (x={}, y={})", self.path.display(), x, y);
-                            return pixels;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[{}] WIC: Failed to create converter for tile: {:?}", self.path.display(), e);
-                        return pixels;
-                    }
+        unsafe {
+            // Create a local converter for this thread to allow parallel decoding.
+            // While initialization has a cost, it's dwarfed by the benefit of 
+            // utilizing all available CPU cores without lock contention.
+            if let Ok(converter) = self.factory.CreateFormatConverter() {
+                if converter.Initialize(
+                    &self.source,
+                    &GUID_WICPixelFormat32bppRGBA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                ).is_ok() {
+                    let rect = WICRect {
+                        X: x as i32,
+                        Y: y as i32,
+                        Width: w as i32,
+                        Height: h as i32,
+                    };
+                    let _ = converter.CopyPixels(&rect, stride, &mut pixels);
                 }
-            }
-        }
-
-        if let Some(converter) = &*lock {
-            let rect = WICRect {
-                X: x as i32,
-                Y: y as i32,
-                Width: w as i32,
-                Height: h as i32,
-            };
-            unsafe {
-                let _ = converter.CopyPixels(&rect, stride, &mut pixels);
             }
         }
         
@@ -278,20 +260,15 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
 
         unsafe {
-            let factory = match get_wic_factory() {
-                Ok(f) => f,
-                Err(e) => {
-                    log::error!("[{}] WIC: Failed to get factory for preview: {:?}", self.path.display(), e);
-                    return (0, 0, Vec::new());
-                }
-            };
+            let factory = &self.factory;
 
             // Path 1: Extract embedded thumbnail if large enough
             if let Ok(thumbnail) = self.frame.GetThumbnail() {
                 let mut fw = 0;
                 let mut fh = 0;
                 if thumbnail.GetSize(&mut fw, &mut fh).is_ok() && fw >= out_w && fh >= out_h {
-                    log::info!("WIC: Using embedded thumbnail as preview");
+                    log::info!("WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})", self.path.display(), fw, fh);
+
                     if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
                         let mut thumb_final = thumb_src.clone();
                         if self.transform_options != WICBitmapTransformOptions(0) {
@@ -304,10 +281,15 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             }
                         }
                         if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
+                            log::info!("WIC [Idx={}]: Successfully rendered embedded thumbnail", self.path.display());
                             return res;
                         }
                     }
+                } else {
+                    log::debug!("WIC [Idx={}]: Embedded thumbnail is too small ({}x{}) for requested {}x{}", self.path.display(), fw, fh, out_w, out_h);
                 }
+            } else {
+                log::debug!("WIC [Idx={}]: No embedded thumbnail found", self.path.display());
             }
 
             // Path 2: Check for secondary downscaled frames (e.g. Pyramid TIFFs)
@@ -353,7 +335,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                     if closest_phys_w < self.physical_width / 2 || closest_phys_h < self.physical_height / 2 {
                         let log_final_w = if swap { closest_phys_h } else { closest_phys_w };
                         let log_final_h = if swap { closest_phys_w } else { closest_phys_h };
-                        log::info!("WIC: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})", closest_phys_w, closest_phys_h, log_final_w, log_final_h);
+                        log::info!("WIC [Idx={}]: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})", self.path.display(), closest_phys_w, closest_phys_h, log_final_w, log_final_h);
                         let stride = log_final_w * 4;
                         let mut out = vec![0u8; (stride * log_final_h) as usize];
                         let rect = WICRect { X: 0, Y: 0, Width: closest_phys_w as i32, Height: closest_phys_h as i32 };
@@ -368,26 +350,31 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             &mut out
                         ).is_ok() {
                             return (log_final_w, log_final_h, out);
+                        } else {
+                            log::warn!("WIC [Idx={}]: Native Source Transform CopyPixels FAILED", self.path.display());
                         }
                     }
                 }
             }
 
             // Path 4: Sub-sampling scaler (High-speed fallback)
-            // Using NearestNeighbor is MUCH faster as it allows sub-sampling at the decoder level.
-            log::info!("WIC: No embedded thumbnail found for {:?}, falling back to high-speed NearestNeighbor scaler", self.path.file_name().unwrap_or_default());
+            log::info!("WIC [Idx={}]: No specialized preview source available, using standard Scaler (Target {}x{})", self.path.display(), out_w, out_h);
 
             let scaler: IWICBitmapScaler = match factory.CreateBitmapScaler() {
                 Ok(s) => s,
-                Err(_) => return (0, 0, Vec::new()),
+                Err(e) => {
+                    log::error!("WIC [Idx={}]: CreateBitmapScaler failed: {:?}", self.path.display(), e);
+                    return (0, 0, Vec::new());
+                }
             };
 
-            if scaler.Initialize(
-                &self.source,
+            if let Err(e) = scaler.Initialize(
+                &self.raw_source,
                 out_w,
                 out_h,
                 WICBitmapInterpolationModeNearestNeighbor,
-            ).is_err() {
+            ) {
+                log::error!("WIC [Idx={}]: Scaler.Initialize FAILED: {:?}", self.path.display(), e);
                 return (0, 0, Vec::new());
             }
 
@@ -609,10 +596,15 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         }
 
         let pixel_count = logical_width as u64 * logical_height as u64;
+        let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
         let limit = crate::tile_cache::get_max_texture_side();
+        if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit {
+            // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
+            // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.
+            let cached_bitmap = factory.CreateBitmapFromSource(&final_source, WICBitmapCacheOnDemand)
+                .map_err(|e| format!("failed to create cached bitmap: {:?}", e))?;
+            let cached_source: IWICBitmapSource = cached_bitmap.cast().map_err(|e| format!("cast failed: {:?}", e))?;
 
-        if pixel_count >= crate::tile_cache::TILED_THRESHOLD || logical_width > limit || logical_height > limit {
-            // Virtualized path: return the Tiled source instead of decoding everything now
             return Ok(crate::loader::ImageData::Tiled(std::sync::Arc::new(WicTiledSource {
                 path: path.to_path_buf(),
                 width: logical_width,
@@ -622,10 +614,10 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
                 transform_options,
                 factory: factory.clone(),
                 decoder: decoder,
-                frame: frame,
-                source: final_source,
+                frame: frame.clone(),
+                source: cached_source,
+                raw_source: final_source,
                 stream: stream_out,
-                converter: std::sync::Mutex::new(None),
                 _mmap: mmap_out,
             })));
         }
