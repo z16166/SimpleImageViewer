@@ -204,29 +204,7 @@ pub struct WicTiledSource {
 }
 
 impl WicTiledSource {
-    fn ensure_converter(&self) -> windows::core::Result<IWICFormatConverter> {
-        // Ensure COM is initialized on the current worker thread
-        let _com = ComGuard::new();
-        
-        let mut lock = self.converter.lock().unwrap();
-        if let Some(c) = &*lock {
-            return Ok(c.clone());
-        }
-
-        unsafe {
-            let converter = self.factory.CreateFormatConverter()?;
-            converter.Initialize(
-                &self.source,
-                &GUID_WICPixelFormat32bppRGBA,
-                WICBitmapDitherTypeNone,
-                None,
-                0.0,
-                WICBitmapPaletteTypeCustom,
-            )?;
-            *lock = Some(converter.clone());
-            Ok(converter)
-        }
-    }
+    // extract_tile handles its own converter initialization to avoid deadlocks.
 }
 
 // WIC interfaces are thread-safe for reading if COM was initialized as COINIT_MULTITHREADED.
@@ -241,29 +219,52 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         let stride = w * 4;
         
-        // Use a persistent converter to avoid re-allocating it for every tile
-        let _lock = match self.converter.lock() {
+        // Ensure COM is initialized on the current worker thread
+        let _com = ComGuard::new();
+
+        // One lock acquisition to both ensure converter exists and copy pixels
+        let mut lock = match self.converter.lock() {
             Ok(l) => l,
-            Err(_) => return pixels, // Poisoned mutex, return empty pixels
+            Err(_) => return pixels, // Poisoned
         };
-        
-        let converter = match self.ensure_converter() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("[{}] WIC: Failed to ensure converter for tile: {:?}", self.path.display(), e);
-                return pixels;
+
+        if lock.is_none() {
+            unsafe {
+                match self.factory.CreateFormatConverter() {
+                    Ok(converter) => {
+                        let res = converter.Initialize(
+                            &self.source,
+                            &GUID_WICPixelFormat32bppRGBA,
+                            WICBitmapDitherTypeNone,
+                            None,
+                            0.0,
+                            WICBitmapPaletteTypeCustom,
+                        );
+                        if res.is_ok() {
+                            *lock = Some(converter);
+                        } else {
+                            log::error!("[{}] WIC: Failed to initialize converter for tile (x={}, y={})", self.path.display(), x, y);
+                            return pixels;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[{}] WIC: Failed to create converter for tile: {:?}", self.path.display(), e);
+                        return pixels;
+                    }
+                }
             }
-        };
+        }
 
-        let rect = WICRect {
-            X: x as i32,
-            Y: y as i32,
-            Width: w as i32,
-            Height: h as i32,
-        };
-
-        unsafe {
-            let _ = converter.CopyPixels(&rect, stride, &mut pixels);
+        if let Some(converter) = &*lock {
+            let rect = WICRect {
+                X: x as i32,
+                Y: y as i32,
+                Width: w as i32,
+                Height: h as i32,
+            };
+            unsafe {
+                let _ = converter.CopyPixels(&rect, stride, &mut pixels);
+            }
         }
         
         pixels

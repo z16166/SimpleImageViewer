@@ -55,6 +55,8 @@ memmap2 = "0.9"
 [features]
 # Feature for Windows 7 compatibility (ANGLE bridge)
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
+# Diagnostic tools for tiled rendering (green borders and OSD stats)
+tile-debug = []
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

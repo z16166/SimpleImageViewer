@@ -28,11 +28,11 @@ use egui::{
 
 use crate::audio::{AudioPlayer, collect_music_files};
 use crate::ipc::IpcMessage;
-use crate::loader::{ImageData, ImageLoader, TextureCache, DecodedImage};
+use crate::loader::{ImageLoader, TextureCache, LoadResult, TileResult, PreviewResult, ImageData, DecodedImage, LoaderOutput};
 use crate::scanner::ScanMessage;
 use crate::scanner;
 use crate::settings::{ScaleMode, Settings, TransitionStyle};
-use crate::tile_cache::TileManager;
+use crate::tile_cache::{TileManager, TileCoord, TileStatus};
 use crate::theme::{AppTheme, SystemThemeCache, ThemePalette};
 use rust_i18n::t;
 
@@ -419,19 +419,24 @@ impl ImageViewerApp {
             }
         }
 
+        if self.current_index != target_index {
+            // Clear tiled rendering state when switching images
+            self.tile_manager = None;
+        }
         self.current_index = target_index;
         self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
-        // Reset animation playback — will be re-created if the new image is animated
         self.animation = None;
-        // Clear tiled rendering state when switching images
-        self.tile_manager = None;
 
-        // Update resolution if already in cache
-        if let Some(texture) = self.texture_cache.get(self.current_index) {
-            let size = texture.size();
-            self.current_image_res = Some((size[0] as u32, size[1] as u32));
+        // Update resolution if already in cache (for immediate low-res display)
+        if self.texture_cache.contains(self.current_index) {
+            if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                self.current_image_res = Some((w, h));
+            } else if let Some(texture) = self.texture_cache.get(self.current_index) {
+                let size = texture.size();
+                self.current_image_res = Some((size[0] as u32, size[1] as u32));
+            }
         } else {
             self.current_image_res = None;
         }
@@ -452,12 +457,17 @@ impl ImageViewerApp {
             });
         }
 
+        // ALWAYS increment generation on every navigation and request a fresh load.
+        // This ensures TileManager is re-initialized for large images and 
+        // low-res thumbnails are upgraded to full resolution.
         self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
         self.loader.request_load(
             self.current_index,
             self.generation,
             self.image_files[self.current_index].clone(),
         );
+
         self.schedule_preloads(true);
     }
 
@@ -594,8 +604,8 @@ impl ImageViewerApp {
             self.cached_xmp_data = None;
             self.error_message = None;
 
-            // Load the image now at the current index
             self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
             self.loader.request_load(
                 self.current_index,
                 self.generation,
@@ -705,12 +715,6 @@ impl ImageViewerApp {
             }
 
             let path = &self.image_files[idx];
-
-            // Check if this is a tiled candidate (too large for full preload).
-            // These are skipped and don't count towards N or byte budget.
-            if is_tiled_candidate(path) {
-                continue; 
-            }
 
             let file_size = std::fs::metadata(path)
                 .map(|m| m.len())
@@ -824,7 +828,8 @@ impl ImageViewerApp {
             }
         }
     }
-    fn process_loaded_images(&mut self, ctx: &Context) {
+    /// Process results from the background ImageLoader.
+    fn process_loaded_images(&mut self, ctx: &egui::Context) {
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
         if let Some(ref mut pending) = self.pending_anim_frames {
@@ -874,120 +879,191 @@ impl ImageViewerApp {
             }
         }
 
-        // ── 2. Process newly loaded images (max 2 per frame to avoid GPU stalls) ──
+        // ── 2. Process results from the background ImageLoader ──
         const STATIC_UPLOAD_QUOTA: usize = 2;
         let mut uploads_this_frame = 0;
 
-        while let Some(load_result) = self.loader.poll() {
-            if load_result.generation != self.generation {
-                continue;
+        while let Some(output) = self.loader.poll() {
+            match output {
+                LoaderOutput::Image(load_result) => {
+                    let idx = load_result.index;
+                    let is_current = idx == self.current_index;
+                    let gen_match = load_result.generation == self.generation;
+
+                    // Leniency: if this is the currently viewed image, accept it even if slightly "stale"
+                    if !is_current && !gen_match {
+                        continue;
+                    }
+                    self.handle_image_load_result(load_result, ctx);
+                    // Force repaint for the current image so it shows up immediately
+                    if is_current {
+                        ctx.request_repaint();
+                    } else {
+                        uploads_this_frame += 1;
+                        if uploads_this_frame >= STATIC_UPLOAD_QUOTA {
+                            ctx.request_repaint();
+                            break;
+                        }
+                    }
+                }
+                LoaderOutput::Tile(tile_result) => {
+                    self.handle_tile_load_result(tile_result, ctx);
+                }
+                LoaderOutput::Preview(preview_update) => {
+                    self.handle_preview_update(preview_update, ctx);
+                }
             }
-            let idx = load_result.index;
-            match load_result.result {
-                Ok(ImageData::Static(decoded)) => {
+        }
+    }
+
+    fn handle_image_load_result(&mut self, load_result: LoadResult, ctx: &egui::Context) {
+        let idx = load_result.index;
+        match load_result.result.as_ref() {
+            Ok(ImageData::Static(decoded)) => {
+                let color_image = ColorImage::from_rgba_unmultiplied(
+                    [decoded.width as usize, decoded.height as usize],
+                    &decoded.pixels,
+                );
+                let name = format!("img_{}", idx);
+                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, decoded.width, decoded.height, false, self.current_index, self.image_files.len()) {
+                    self.animation_cache.remove(&evicted_idx);
+                }
+                if idx == self.current_index {
+                    self.current_image_res = Some((decoded.width, decoded.height));
+                    if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
+                        self.animation = None;
+                    }
+                }
+            }
+            Ok(ImageData::LargeStatic(decoded)) => {
+                // Large image: create TileManager + preview, skip full GPU upload
+                if idx == self.current_index {
+                    self.current_image_res = Some((decoded.width, decoded.height));
+                    let mut tm = TileManager::new(idx, load_result.generation, decoded.width, decoded.height, decoded.pixels.clone());
+                    let preview = DecodedImage {
+                        width: decoded.width,
+                        height: decoded.height,
+                        pixels: decoded.pixels.clone(),
+                    };
+
+                    // Cache preview so LargeStatic also benefits from instant loading when returning
                     let color_image = ColorImage::from_rgba_unmultiplied(
-                        [decoded.width as usize, decoded.height as usize],
-                        &decoded.pixels,
+                        [preview.width as usize, preview.height as usize],
+                        &preview.pixels,
+                    );
+                    let handle = ctx.load_texture(format!("img_lstatic_{}", idx), color_image, TextureOptions::LINEAR);
+                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, decoded.width, decoded.height, true, self.current_index, self.image_files.len()) {
+                        self.animation_cache.remove(&evicted_idx);
+                    }
+
+                    self.setup_tile_manager(ctx, idx, &mut tm, preview);
+                    self.tile_manager = Some(tm);
+                    self.animation = None;
+                    self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+                }
+            }
+            Ok(ImageData::Tiled(source)) => {
+                // Upload preview into texture_cache so it persists across navigations.
+                // Without this, flipping away and back would re-trigger a 300ms+ load.
+                if let Some(preview) = load_result.preview.as_ref() {
+                    let color_image = ColorImage::from_rgba_unmultiplied(
+                        [preview.width as usize, preview.height as usize],
+                        &preview.pixels,
+                    );
+                    let name = format!("img_preview_{}", idx);
+                    let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, source.width(), source.height(), true, self.current_index, self.image_files.len()) {
+                        self.animation_cache.remove(&evicted_idx);
+                    }
+                }
+
+                if idx == self.current_index {
+                    self.current_image_res = Some((source.width(), source.height()));
+                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    
+                    if let Some(preview) = load_result.preview.as_ref() {
+                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
+                    }
+                    
+                    self.tile_manager = Some(tm);
+                    self.animation = None;
+                    self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+                } else {
+                    // Preloading: preview is already in texture_cache (above),
+                    // no need to load tile data for images the user hasn't viewed yet.
+                }
+            }
+            Ok(ImageData::Animated(frames)) => {
+                // Upload first frame immediately
+                if let Some(first) = frames.first() {
+                    let color_image = ColorImage::from_rgba_unmultiplied(
+                        [first.width as usize, first.height as usize],
+                        &first.pixels,
                     );
                     let name = format!("img_{}", idx);
                     let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, self.current_index) {
+                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, first.width, first.height, false, self.current_index, self.image_files.len()) {
                         self.animation_cache.remove(&evicted_idx);
                     }
                     if idx == self.current_index {
-                        self.current_image_res = Some((decoded.width, decoded.height));
-                        if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
-                            self.animation = None;
-                        }
-                    }
-                    uploads_this_frame += 1;
-                    if uploads_this_frame >= STATIC_UPLOAD_QUOTA {
-                        ctx.request_repaint();
-                        return;
+                        self.current_image_res = Some((first.width, first.height));
                     }
                 }
-                Ok(ImageData::LargeStatic(decoded)) => {
-                    // Large image: create TileManager + preview, skip full GPU upload
-                    if idx == self.current_index {
-                        self.current_image_res = Some((decoded.width, decoded.height));
-                        let mut tm = TileManager::new(decoded.width, decoded.height, decoded.pixels.clone());
-                        let preview = DecodedImage {
-                            width: decoded.width,
-                            height: decoded.height,
-                            pixels: decoded.pixels,
-                        };
-                        self.setup_tile_manager(ctx, idx, &mut tm, preview);
-                        self.tile_manager = Some(tm);
-                        self.animation = None;
-                        self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
-                    }
-                }
-                Ok(ImageData::Tiled(source)) => {
-                    // Virtualized image: use disk-backed tiled source
-                    if idx == self.current_index {
-                        self.current_image_res = Some((source.width(), source.height()));
-                        let mut tm = TileManager::with_source(source);
-                        
-                        // Extract pre-generated preview from the load result message
-                        if let Some(preview) = load_result.preview {
-                            self.setup_tile_manager(ctx, idx, &mut tm, preview);
-                        }
-                        
-                        self.tile_manager = Some(tm);
-                        self.animation = None;
-                        self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
-                    }
-                }
-                Ok(ImageData::Animated(frames)) => {
-                    // 1. Upload first frame immediately (for transitions/preview)
-                    if let Some(first) = frames.first() {
-                        let color_image = ColorImage::from_rgba_unmultiplied(
-                            [first.width as usize, first.height as usize],
-                            &first.pixels,
-                        );
-                        let name = format!("img_{}", idx);
-                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                        if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, self.current_index) {
-                            self.animation_cache.remove(&evicted_idx);
-                        }
-                        if idx == self.current_index {
-                            self.current_image_res = Some((first.width, first.height));
-                        }
-                    }
 
-                    // 2. Defer remaining frames for throttled upload
-                    let cur = self.current_index;
-                    let n = self.image_files.len();
-                    let is_in_range = if n > 0 {
-                        idx == cur 
-                        || idx == (cur + 1) % n 
-                        || (cur > 0 && idx == cur - 1) 
-                        || (cur == 0 && idx == n - 1)
-                    } else { false };
+                // Defer remaining
+                let cur = self.current_index;
+                let n = self.image_files.len();
+                let is_in_range = if n > 0 {
+                    idx == cur || idx == (cur + 1) % n || (cur > 0 && idx == cur - 1) || (cur == 0 && idx == n - 1)
+                } else { false };
 
-                    if is_in_range {
-                        // Queue frames for deferred upload instead of uploading all at once
-                        self.pending_anim_frames = Some(PendingAnimUpload {
-                            image_index: idx,
-                            frames,
-                            textures: Vec::new(),
-                            delays: Vec::new(),
-                            next_frame: 0,
-                        });
-                        ctx.request_repaint();
-                    }
+                if is_in_range {
+                    self.pending_anim_frames = Some(PendingAnimUpload {
+                        image_index: idx,
+                        frames: frames.clone(),
+                        textures: Vec::new(),
+                        delays: Vec::new(),
+                        next_frame: 0,
+                    });
+                    ctx.request_repaint();
                 }
-                Err(e) => {
-                    let path_str = self.image_files[idx].display().to_string();
-                    log::error!(
-                        "Failed to load image at index {} ({}): {e}",
-                        idx, path_str
-                    );
-                    if idx == self.current_index {
-                        let path_str = self.image_files[idx].display().to_string();
-                        self.error_message =
-                            Some(t!("status.load_failed", path = path_str, err = e.to_string()).to_string());
-                    }
+            }
+            Err(e) => {
+                let path_str = self.image_files[idx].display().to_string();
+                log::error!("Failed to load image at index {} ({}): {e}", idx, path_str);
+                if idx == self.current_index {
+                    self.error_message = Some(t!("status.load_failed", path = path_str, err = e.to_string()).to_string());
+                }
+            }
+        }
+    }
+
+    fn handle_tile_load_result(&mut self, tile_result: TileResult, _ctx: &egui::Context) {
+        let coord = TileCoord { col: tile_result.col, row: tile_result.row };
+        
+        // 1. Put into global CPU cache
+        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+            cache.insert(tile_result.index, coord, tile_result.pixels);
+        }
+
+        // 2. Mark as no longer pending in the current TileManager if it matches
+        if let Some(ref mut tm) = self.tile_manager {
+            if tm.image_index == tile_result.index {
+                tm.pending_tiles.remove(&coord);
+                // Trigger repaint so the next frame uploads this to GPU immediately
+                _ctx.request_repaint();
+            }
+        }
+    }
+
+    fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
+        // Only update if it refers to the currently viewed image and matching generation
+        if self.loader.current_generation(update.index) == update.generation {
+            if let Some(ref mut tm) = self.tile_manager {
+                if tm.image_index == update.index {
+                    tm.set_preview(update.preview, ctx);
+                    ctx.request_repaint();
                 }
             }
         }
@@ -1568,7 +1644,8 @@ impl ImageViewerApp {
 
                 ui.add_space(6.0);
                 ui.checkbox(&mut self.settings.show_osd, t!("label.show_osd"));
-                
+
+
                 // ── Transitions ──────────────────────────────────────────
                 ui.add_space(8.0);
                 ui.label(RichText::new(t!("section.transitions")).color(self.cached_palette.accent2).strong());
@@ -2174,15 +2251,22 @@ impl ImageViewerApp {
                     ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
                 }
 
-                // 2. Only render high-res tiles when zoomed in enough that they matter.
+                // 2. Render high-res tiles.
+                // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size),
+                // but trigger as soon as the user zooms in past the initial view.
+                let fit_scale = (screen_rect.width() / rotated_img_size.x)
+                    .min(screen_rect.height() / rotated_img_size.y)
+                    .min(1.0);
+                let threshold = 0.05_f32.max(fit_scale * 1.05);
+
                 let effective_scale = dest.width() / rotated_img_size.x;
-                if effective_scale >= 0.15 {
+                if effective_scale >= threshold {
                     // Compute visible tiles using the UNROTATED destination rect
                     let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect);
 
                     // Upload and draw tiles (mutable borrow, scoped)
                     let ctx_ref = ui.ctx().clone();
-                    const TILE_UPLOAD_QUOTA: usize = 4; // Max new tiles per frame
+                    const TILE_UPLOAD_QUOTA: usize = 16; // Reverted to 16 for better stability on low-end hardware
                     let mut newly_uploaded = 0;
 
                     {
@@ -2190,29 +2274,83 @@ impl ImageViewerApp {
                         let pivot = dest.center();
                         let rot = if rotation != 0 { Some(egui::emath::Rot2::from_angle(angle)) } else { None };
 
-                        for (coord, tile_screen_rect, uv) in visible {
-                            let allow_create = newly_uploaded < TILE_UPLOAD_QUOTA;
-                            let (handle_opt, created) = tm.get_or_create_tile(coord, &ctx_ref, allow_create);
+                        for (coord, tile_screen_rect, uv) in &visible {
+                            let allow_upload = newly_uploaded < TILE_UPLOAD_QUOTA;
+                            let (status, just_uploaded) = tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, visible.len());
                             
-                            if let Some(handle) = handle_opt {
-                                if created {
-                                    newly_uploaded += 1;
-                                }
-                                
-                                let mut mesh = egui::Mesh::with_texture(handle.id());
-                                mesh.add_rect_with_uv(tile_screen_rect, uv, Color32::WHITE);
-                                if let Some(r) = rot {
-                                    for v in &mut mesh.vertices {
-                                        v.pos = pivot + r * (v.pos - pivot);
+                            if just_uploaded {
+                                newly_uploaded += 1;
+                            }
+
+                            match status {
+                                TileStatus::Ready(handle) => {
+                                    
+                                    let mut mesh = egui::Mesh::with_texture(handle.id());
+                                    mesh.add_rect_with_uv(*tile_screen_rect, *uv, Color32::WHITE);
+                                    if let Some(r) = rot {
+                                        for v in &mut mesh.vertices {
+                                            v.pos = pivot + r * (v.pos - pivot);
+                                        }
+                                    }
+                                    ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
+                                    
+                                    // DEBUG: Visual confirmation of high-res tile placement
+                                    #[cfg(feature = "tile-debug")]
+                                    if self.settings.show_osd {
+                                        let debug_rect = *tile_screen_rect;
+                                        if let Some(r) = rot {
+                                            // Approximate rotation of rect for border
+                                            let p1 = pivot + r * (debug_rect.left_top() - pivot);
+                                            let p2 = pivot + r * (debug_rect.right_top() - pivot);
+                                            let p3 = pivot + r * (debug_rect.right_bottom() - pivot);
+                                            let p4 = pivot + r * (debug_rect.left_bottom() - pivot);
+                                            ui.painter().line_segment([p1, p2], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
+                                            ui.painter().line_segment([p2, p3], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
+                                            ui.painter().line_segment([p3, p4], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
+                                            ui.painter().line_segment([p4, p1], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
+                                        } else {
+                                            ui.painter().rect(debug_rect, 0.0, Color32::TRANSPARENT, egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)), egui::StrokeKind::Inside);
+                                        }
                                     }
                                 }
-                                ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
+                                TileStatus::Pending(needs_request) => {
+                                    if needs_request {
+                                        let source = tm.get_source();
+                                        let generation = tm.generation;
+                                        self.loader.request_tile(self.current_index, generation, source, coord.col, coord.row);
+                                        tm.pending_tiles.insert(*coord);
+                                    }
+                                }
                             }
                         }
                     }
                     
-                    // If we didn't finish all tiles, request a repaint to catch them next frame
-                    if newly_uploaded >= TILE_UPLOAD_QUOTA {
+                    // DEBUG HUD: real-time tiled rendering diagnostics
+                    #[cfg(feature = "tile-debug")]
+                    if self.settings.show_osd {
+                        let visible_coords: Vec<_> = visible.iter().map(|(c, _, _)| *c).collect();
+                        let (vis_gpu, vis_ready, vis_pending) = self.tile_manager.as_ref().unwrap().stats_for_visible(&visible_coords);
+                        let (total_gpu, total_mem, _total_pnd) = self.tile_manager.as_ref().unwrap().tiles_and_pending();
+                        
+                        let debug_text = format!(
+                            "VIS: {} (GPU:{} RDY:{} PND:{}) | ALL: (GPU:{} MEM:{}) | SCALE: {:.3}", 
+                            visible.len(), vis_gpu, vis_ready, vis_pending, total_gpu, total_mem, effective_scale
+                        );
+                        ui.painter().text(
+                            screen_rect.right_bottom() - egui::vec2(10.0, 10.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            debug_text,
+                            egui::FontId::monospace(14.0),
+                            Color32::from_rgb(0, 255, 0),
+                        );
+                    }
+
+                    // ANTI-STALL LOGIC:
+                    // If we uploaded tiles this frame, OR if there are more ready to upload in CPU cache,
+                    // request another repaint immediately to keep the pipeline moving.
+                    let visible_coords: Vec<_> = visible.iter().map(|(c, _, _)| *c).collect();
+                    let has_more_ready = self.tile_manager.as_ref().unwrap().has_ready_to_upload(&visible_coords);
+                    if newly_uploaded > 0 || has_more_ready {
                         ui.ctx().request_repaint();
                     }
                 }
@@ -2226,13 +2364,14 @@ impl ImageViewerApp {
                         .to_string_lossy();
                     
                     let hud_text = format!(
-                        "[{}/{}]  {}  {}x{}  {}%  TILED",
+                        "[{}/{}]  {}  {}x{}  {}%  {}  TILED",
                         self.current_index + 1,
                         self.image_files.len(),
                         fname,
                         full_w,
                         full_h,
                         zoom_pct,
+                        self.settings.scale_mode.label(),
                     );
                     let galley = ui.painter().layout_no_wrap(
                         hud_text,
@@ -2272,7 +2411,12 @@ impl ImageViewerApp {
                 } else {
                     texture
                 };
-                let img_size = texture.size_vec2();
+                // Use original image dimensions if known (Tiled previews are smaller than the real image)
+                let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                    Vec2::new(w as f32, h as f32)
+                } else {
+                    texture.size_vec2()
+                };
 
                 if canvas_resp.dragged() {
                     self.pan_offset += canvas_resp.drag_delta();
@@ -3323,6 +3467,7 @@ impl eframe::App for ImageViewerApp {
         self.process_scan_results();
         self.process_music_scan_results();
         self.process_loaded_images(ctx);
+
         self.check_auto_switch();
         self.handle_keyboard(ctx);
 
@@ -4009,24 +4154,4 @@ fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect, palette: &ThemePalette) {
         FontId::proportional(16.0),
         palette.hint_text,
     );
-}
-
-/// Check if an image file would exceed the tiled rendering threshold (64 megapixels).
-/// Uses a lightweight header-only dimension read when possible.
-/// For exotic formats (PSD/PSB/HEIC) where header reading may fail,
-/// falls back to a file size heuristic (> 200 MB).
-fn is_tiled_candidate(path: &std::path::Path) -> bool {
-    use crate::tile_cache::TILED_THRESHOLD;
-
-    // Try header-only dimension read (reads only a few KB, very fast)
-    if let Ok((w, h)) = image::image_dimensions(path) {
-        return (w as u64) * (h as u64) >= TILED_THRESHOLD;
-    }
-
-    // Fallback for formats not supported by image::image_dimensions() (PSD/PSB/HEIC):
-    // Use file size heuristic. Files over 200 MB are likely extremely large images.
-    const LARGE_FILE_THRESHOLD: u64 = 200 * 1024 * 1024;
-    std::fs::metadata(path)
-        .map(|m| m.len() >= LARGE_FILE_THRESHOLD)
-        .unwrap_or(false)
 }

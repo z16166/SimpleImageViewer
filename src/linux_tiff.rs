@@ -36,6 +36,7 @@ const TIFFTAG_IMAGELENGTH: uint32 = 257;
 const TIFFTAG_TILEWIDTH: uint32 = 322;
 const TIFFTAG_TILELENGTH: uint32 = 323;
 const TIFFTAG_ROWSPERSTRIP: uint32 = 278;
+const ORIENTATION_TOPLEFT: c_int = 1;
 
 // libtiff callback types
 type TIFFReadWriteProc = unsafe extern "C" fn(handle: *mut c_void, buf: *mut c_void, size: tsize_t) -> tsize_t;
@@ -62,6 +63,7 @@ type TIFFReadRGBAImageOrientedFn = unsafe extern "C" fn(
     tif: *mut TIFF, width: uint32, height: uint32, raster: *mut uint32, 
     orientation: c_int, stop_on_error: c_int
 ) -> c_int;
+type TIFFSetDirectoryFn = unsafe extern "C" fn(tif: *mut TIFF, dir: u16) -> c_int;
 
 struct LibTiff {
     _lib: &'static Library,
@@ -72,6 +74,7 @@ struct LibTiff {
     read_rgba_tile: Symbol<'static, TIFFReadRGBATileFn>,
     read_rgba_strip: Symbol<'static, TIFFReadRGBAStripFn>,
     read_rgba_image_oriented: Symbol<'static, TIFFReadRGBAImageOrientedFn>,
+    set_directory: Symbol<'static, TIFFSetDirectoryFn>,
 }
 
 impl LibTiff {
@@ -88,10 +91,12 @@ impl LibTiff {
                     let read_rgba_tile = lib.get(b"TIFFReadRGBATile").map_err(|e| e.to_string())?;
                     let read_rgba_strip = lib.get(b"TIFFReadRGBAStrip").map_err(|e| e.to_string())?;
                     let read_rgba_image_oriented = lib.get(b"TIFFReadRGBAImageOriented").map_err(|e| e.to_string())?;
-
+                    let set_directory = lib.get(b"TIFFSetDirectory").map_err(|e| e.to_string())?;
+                    
                     return Ok(Self {
                         _lib: lib, client_open, close, get_field, 
                         is_tiled, read_rgba_tile, read_rgba_strip, read_rgba_image_oriented,
+                        set_directory,
                     });
                 }
             }
@@ -160,19 +165,26 @@ unsafe extern "C" fn tiff_map_proc(handle: *mut c_void, base: *mut *mut c_void, 
 
 unsafe extern "C" fn tiff_unmap_proc(_: *mut c_void, _: *mut c_void, _: toff_t) {}
 
-/// RAII guard for a TIFF handle to ensure it is closed on drop
-struct TiffHandleGuard<'a> {
-    tif: *mut TIFF,
-    lib: &'a LibTiff,
+/// RAII handle for a TIFF object, ensures the handle is closed and context is kept alive.
+pub struct TiffHandle {
+    ptr: *mut TIFF,
+    _context: Box<TiffMmapContext>,
 }
 
-impl<'a> Drop for TiffHandleGuard<'a> {
+impl Drop for TiffHandle {
     fn drop(&mut self) {
-        if !self.tif.is_null() {
-            unsafe { (self.lib.close)(self.tif); }
+        if !self.ptr.is_null() {
+            LIB.with(|l| {
+                if let Ok(lib) = l.as_ref() {
+                    unsafe { (lib.close)(self.ptr); }
+                }
+            });
         }
     }
 }
+
+unsafe impl Send for TiffHandle {}
+unsafe impl Sync for TiffHandle {}
 
 // --- Tiled Implementation (Physical Tiles) ---
 
@@ -182,22 +194,41 @@ pub struct LibTiffTiledSource {
     height: u32,
     tile_width: u32,
     tile_height: u32,
-    tif: Mutex<*mut TIFF>,
-    _ctx: Box<TiffMmapContext>,
+    handle: Mutex<TiffHandle>,
 }
 
 unsafe impl Send for LibTiffTiledSource {}
 unsafe impl Sync for LibTiffTiledSource {}
 
-impl Drop for LibTiffTiledSource {
-    fn drop(&mut self) {
-        LIB.with(|l| {
-            if let Ok(lib) = l.as_ref() {
-                if let Ok(lock) = self.tif.lock() {
-                    unsafe { (lib.close)(*lock); }
+fn extract_embedded_thumbnail(lib: &LibTiff, tif: *mut TIFF, main_width: u32) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        // Try to see if there's a second directory (IFD 1) which often contains a thumbnail
+        if (lib.set_directory)(tif, 1) != 0 {
+            let mut tw: uint32 = 0;
+            let mut th: uint32 = 0;
+            (lib.get_field)(tif, TIFFTAG_IMAGEWIDTH, &mut tw);
+            (lib.get_field)(tif, TIFFTAG_IMAGELENGTH, &mut th);
+            
+            let res = if tw > 0 && th > 0 && (tw as u32) < main_width / 2 {
+                let mut raster = vec![0u32; (tw * th) as usize];
+                // Use orientation 1 (Top-Left) to avoid manual flipping
+                if (lib.read_rgba_image_oriented)(tif, tw, th, raster.as_mut_ptr(), ORIENTATION_TOPLEFT, 0) != 0 {
+                    let mut pixels = Vec::with_capacity((tw * th * 4) as usize);
+                    for p in raster { pixels.extend_from_slice(&p.to_ne_bytes()); }
+                    log::info!("Linux LibTiff: Using embedded IFD1 thumbnail ({}x{})", tw, th);
+                    Some((tw as u32, th as u32, pixels))
+                } else {
+                    None
                 }
-            }
-        });
+            } else {
+                None
+            };
+            
+            // Restore back to main directory Regardless of success
+            (lib.set_directory)(tif, 0);
+            return res;
+        }
+        None
     }
 }
 
@@ -215,7 +246,8 @@ impl TiledImageSource for LibTiffTiledSource {
                     return; 
                 }
             };
-            if let Ok(tif_lock) = self.tif.lock() {
+            if let Ok(handle_lock) = self.handle.lock() {
+                let tif_ptr = handle_lock.ptr;
                 let tw = self.tile_width;
                 let th = self.tile_height;
                 let mut tile_buf = vec![0u32; (tw as usize) * (th as usize)];
@@ -225,7 +257,7 @@ impl TiledImageSource for LibTiffTiledSource {
                 for curr_ty in (start_ty..(y + h)).step_by(th as usize) {
                     for curr_tx in (start_tx..(x + w)).step_by(tw as usize) {
                         unsafe {
-                            if (lib.read_rgba_tile)(*tif_lock, curr_tx, curr_ty, tile_buf.as_mut_ptr()) != 0 {
+                            if (lib.read_rgba_tile)(tif_ptr, curr_tx, curr_ty, tile_buf.as_mut_ptr()) != 0 {
                                 for ty_in_p in 0..th {
                                     let py = curr_ty + ty_in_p;
                                     if py < y || py >= y + h { continue; }
@@ -253,13 +285,20 @@ impl TiledImageSource for LibTiffTiledSource {
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
-        let pw = (self.width as f64 * scale) as u32;
-        let ph = (self.height as f64 * scale) as u32;
+        let embedded = LIB.with(|l| {
+            let lib = match l.as_ref() { Ok(l) => l, Err(_) => return None };
+            let handle_lock = match self.handle.lock() { Ok(lock) => lock, Err(_) => return None };
+            extract_embedded_thumbnail(lib, handle_lock.ptr, self.width)
+        });
 
-        let ew = pw.min(1024);
-        let eh = ph.min(1024);
-        (ew, eh, self.extract_tile(0, 0, ew, eh))
+        embedded.unwrap_or_else(|| {
+            // High-speed fallback for preview: subsample rows from main IFD
+            let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
+            let pw = (self.width as f64 * scale) as u32;
+            let ph = (self.height as f64 * scale) as u32;
+            log::info!("Linux LibTiff: Generating high-speed fallback preview ({}x{})", pw, ph);
+            (pw, ph, self.extract_tile(0, 0, pw, ph))
+        })
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> { None }
@@ -272,24 +311,11 @@ pub struct LibTiffScanlineSource {
     width: u32,
     height: u32,
     rows_per_strip: u32,
-    tif: Mutex<*mut TIFF>,
-    _ctx: Box<TiffMmapContext>,
+    handle: Mutex<TiffHandle>,
 }
 
 unsafe impl Send for LibTiffScanlineSource {}
 unsafe impl Sync for LibTiffScanlineSource {}
-
-impl Drop for LibTiffScanlineSource {
-    fn drop(&mut self) {
-        LIB.with(|l| {
-            if let Ok(lib) = l.as_ref() {
-                if let Ok(lock) = self.tif.lock() {
-                    unsafe { (lib.close)(*lock); }
-                }
-            }
-        });
-    }
-}
 
 impl TiledImageSource for LibTiffScanlineSource {
     fn width(&self) -> u32 { self.width }
@@ -305,7 +331,8 @@ impl TiledImageSource for LibTiffScanlineSource {
                     return; 
                 }
             };
-            if let Ok(tif_lock) = self.tif.lock() {
+            if let Ok(handle_lock) = self.handle.lock() {
+                let tif_ptr = handle_lock.ptr;
                 let rps = self.rows_per_strip;
                 let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
                 let mut last_strip_idx = u32::MAX;
@@ -317,7 +344,7 @@ impl TiledImageSource for LibTiffScanlineSource {
                     unsafe {
                         if strip_idx != last_strip_idx {
                             // Read the strip containing row 'py'
-                            if (lib.read_rgba_strip)(*tif_lock, strip_idx * rps, strip_buf.as_mut_ptr()) == 0 {
+                            if (lib.read_rgba_strip)(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr()) == 0 {
                                 continue;
                             }
                             last_strip_idx = strip_idx;
@@ -333,6 +360,7 @@ impl TiledImageSource for LibTiffScanlineSource {
                             if px >= self.width { break; }
                             let dest_x = px - x;
                             let dest_y = py - y;
+                            let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
                             let src_idx = src_offset + px as usize;
                             if src_idx < strip_buf.len() && dest_idx + 4 <= result.len() {
                                 let pixel = strip_buf[src_idx].to_ne_bytes();
@@ -347,13 +375,20 @@ impl TiledImageSource for LibTiffScanlineSource {
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
-        let pw = (self.width as f64 * scale) as u32;
-        let ph = (self.height as f64 * scale) as u32;
+        let embedded = LIB.with(|l| {
+            let lib = match l.as_ref() { Ok(l) => l, Err(_) => return None };
+            let handle_lock = match self.handle.lock() { Ok(lock) => lock, Err(_) => return None };
+            extract_embedded_thumbnail(lib, handle_lock.ptr, self.width)
+        });
 
-        let ew = pw.min(1024);
-        let eh = ph.min(1024);
-        (ew, eh, self.extract_tile(0, 0, ew, eh))
+        embedded.unwrap_or_else(|| {
+            // High-speed fallback for preview: subsample rows from main IFD
+            let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
+            let pw = (self.width as f64 * scale) as u32;
+            let ph = (self.height as f64 * scale) as u32;
+            log::info!("Linux LibTiff: Generating high-speed fallback preview ({}x{})", pw, ph);
+            (pw, ph, self.extract_tile(0, 0, pw, ph))
+        })
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> { None }
@@ -387,45 +422,38 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
 
             if tif_ptr.is_null() { return Err("TIFFClientOpen failed".to_string()); }
             
-            // Wrap in a guard to prevent leaks in early return paths
-            let mut guard = TiffHandleGuard { tif: tif_ptr, lib };
+            let handle = TiffHandle { ptr: tif_ptr, _context: ctx };
 
             let mut width: uint32 = 0;
             let mut height: uint32 = 0;
-            (lib.get_field)(guard.tif, TIFFTAG_IMAGEWIDTH, &mut width);
-            (lib.get_field)(guard.tif, TIFFTAG_IMAGELENGTH, &mut height);
+            (lib.get_field)(handle.ptr, TIFFTAG_IMAGEWIDTH, &mut width);
+            (lib.get_field)(handle.ptr, TIFFTAG_IMAGELENGTH, &mut height);
 
             let pixel_count = width as u64 * height as u64;
             let limit = crate::tile_cache::get_max_texture_side();
             let is_large = pixel_count >= crate::tile_cache::TILED_THRESHOLD || width > limit || height > limit;
 
             if is_large {
-                if (lib.is_tiled)(guard.tif) != 0 {
+                if (lib.is_tiled)(handle.ptr) != 0 {
                     let mut tile_width: uint32 = 0;
                     let mut tile_height: uint32 = 0;
-                    (lib.get_field)(guard.tif, TIFFTAG_TILEWIDTH, &mut tile_width);
-                    (lib.get_field)(guard.tif, TIFFTAG_TILELENGTH, &mut tile_height);
-
-                    let tif = guard.tif;
-                    guard.tif = std::ptr::null_mut(); // Disarm guard, TiledSource now owns the handle
+                    (lib.get_field)(handle.ptr, TIFFTAG_TILEWIDTH, &mut tile_width);
+                    (lib.get_field)(handle.ptr, TIFFTAG_TILELENGTH, &mut tile_height);
 
                     return Ok(ImageData::Tiled(Arc::new(LibTiffTiledSource {
                         _path: path.to_path_buf(), width, height, tile_width, tile_height,
-                        tif: Mutex::new(tif), _ctx: ctx,
+                        handle: Mutex::new(handle),
                     })));
                 } else {
                     let mut rps: uint32 = 0;
-                    if (lib.get_field)(guard.tif, TIFFTAG_ROWSPERSTRIP, &mut rps) == 0 {
+                    if (lib.get_field)(handle.ptr, TIFFTAG_ROWSPERSTRIP, &mut rps) == 0 {
                         rps = height; // Fallback to whole image if tag missing
                     }
                     
-                    let tif = guard.tif;
-                    guard.tif = std::ptr::null_mut(); // Disarm guard
-
                     return Ok(ImageData::Tiled(Arc::new(LibTiffScanlineSource {
                         path: path.to_path_buf(),
                         width, height, rows_per_strip: rps,
-                        tif: Mutex::new(tif), _ctx: ctx,
+                        handle: Mutex::new(handle),
                     })));
                 }
             }
@@ -433,13 +461,10 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
             // Fallback for regular small images
             let total_pixels = (width as usize) * (height as usize);
             let mut raster: Vec<uint32> = vec![0; total_pixels];
-            if (lib.read_rgba_image_oriented)(guard.tif, width, height, raster.as_mut_ptr(), 1, 0) == 0 {
+            if (lib.read_rgba_image_oriented)(handle.ptr, width, height, raster.as_mut_ptr(), 1, 0) == 0 {
                 return Err("TIFFReadRGBAImageOriented failed".to_string());
             }
 
-            // Guard will automatically call lib.close(tif) when it goes out of scope here
-            // because we don't nullify it for this path.
-            
             let mut pixels = Vec::with_capacity(total_pixels * 4);
             for p in raster { pixels.extend_from_slice(&p.to_ne_bytes()); }
             Ok(ImageData::Static(DecodedImage { width, height, pixels }))

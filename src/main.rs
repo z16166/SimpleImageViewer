@@ -163,7 +163,7 @@ fn init_logging() {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let mut logger = flexi_logger::Logger::try_with_env_or_str("info")
+    let logger = flexi_logger::Logger::try_with_env_or_str("info")
         .expect("Failed to initialize logger")
         .log_to_file(flexi_logger::FileSpec::default()
             .directory(log_dir)
@@ -171,9 +171,7 @@ fn init_logging() {
         );
 
     #[cfg(windows)]
-    {
-        logger = logger.use_windows_line_ending();
-    }
+    let logger = logger.use_windows_line_ending();
 
     let logger = logger
         .write_mode(flexi_logger::WriteMode::BufferAndFlush)
@@ -443,14 +441,19 @@ fn main() -> eframe::Result {
         
         log::error!("Application startup failed: {}", e);
         
-        let mut help_hint = String::new();
-        #[cfg(target_os = "windows")]
-        {
-            let os_version = sysinfo::System::os_version().unwrap_or_default();
-            if os_version.starts_with("6.1") { // Windows 7
-                help_hint = rust_i18n::t!("error.win7_graphics_hint").to_string();
+        let help_hint = {
+            #[cfg(target_os = "windows")]
+            {
+                let os_version = sysinfo::System::os_version().unwrap_or_default();
+                if os_version.starts_with("6.1") { // Windows 7
+                    rust_i18n::t!("error.win7_graphics_hint").to_string()
+                } else {
+                    String::new()
+                }
             }
-        }
+            #[cfg(not(target_os = "windows"))]
+            String::new()
+        };
 
         // Try to copy to clipboard
         use clipboard_rs::{Clipboard, ClipboardContext};

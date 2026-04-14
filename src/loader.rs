@@ -15,12 +15,14 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 
 
+#[derive(Debug, Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
@@ -40,6 +42,7 @@ pub trait TiledImageSource: Send + Sync {
 }
 
 /// A single frame of an animated image.
+#[derive(Debug, Clone)]
 pub struct AnimationFrame {
     pub width: u32,
     pub height: u32,
@@ -64,12 +67,34 @@ pub struct LoadResult {
     pub preview: Option<DecodedImage>,
 }
 
+pub struct TileResult {
+    pub index: usize,
+    pub col: u32,
+    pub row: u32,
+    pub pixels: Vec<u8>,
+}
+
+pub struct PreviewResult {
+    pub index: usize,
+    pub generation: u64,
+    pub preview: DecodedImage,
+}
+
+pub enum LoaderOutput {
+    Image(LoadResult),
+    Tile(TileResult),
+    Preview(PreviewResult),
+}
+
 pub struct ImageLoader {
-    tx: Sender<LoadResult>,
-    pub rx: Receiver<LoadResult>,
+    tx: Sender<LoaderOutput>,
+    pub rx: Receiver<LoaderOutput>,
     /// Maps image index -> latest requested generation ID.
-    loading: HashMap<usize, u64>,
-    pool: rayon::ThreadPool,
+    loading: Arc<Mutex<HashMap<usize, u64>>>,
+    /// Global generation counter — updated on every navigation.
+    /// Spawned tasks check this to detect staleness and abort early.
+    current_gen: Arc<std::sync::atomic::AtomicU64>,
+    pool: Arc<rayon::ThreadPool>,
 }
 
 impl ImageLoader {
@@ -105,34 +130,207 @@ impl ImageLoader {
 
         let pool = pool_builder.build()
             .expect("failed to create image loader thread pool");
-        Self { tx, rx, loading: HashMap::new(), pool }
+        Self {
+            tx, rx,
+            loading: Arc::new(Mutex::new(HashMap::new())),
+            current_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pool: Arc::new(pool),
+        }
     }
 
     pub fn is_loading(&self, index: usize) -> bool {
-        self.loading.contains_key(&index)
+        self.loading.lock().unwrap().contains_key(&index)
+    }
+
+    pub fn current_generation(&self, index: usize) -> u64 {
+        self.loading.lock().unwrap().get(&index).copied().unwrap_or(0)
+    }
+
+    /// Update the global generation counter so stale preloads abort early.
+    pub fn set_generation(&self, generation: u64) {
+        self.current_gen.store(generation, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn request_load(&mut self, index: usize, generation: u64, path: PathBuf) {
-        if self.loading.get(&index) == Some(&generation) {
-            return;
+        {
+            let mut loading = self.loading.lock().unwrap();
+            if loading.get(&index) == Some(&generation) {
+                return;
+            }
+            loading.insert(index, generation);
         }
-        self.loading.insert(index, generation);
-        let tx = self.tx.clone();
-        // Use the bounded thread pool instead of spawning a new OS thread each time.
+
+        // An AtomicBool to ensure only ONE of the two spawns actually performs the load.
+        let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let current_gen = Arc::clone(&self.current_gen);
+
+        // Build shared state for both spawns
+        let tx1 = self.tx.clone();
+        let tx2 = self.tx.clone();
+        let loading1 = Arc::clone(&self.loading);
+        let loading2 = Arc::clone(&self.loading);
+        let path2 = path.clone();
+        let claimed1 = Arc::clone(&claimed);
+        let claimed2 = Arc::clone(&claimed);
+        let current_gen2 = Arc::clone(&current_gen);
+
+        // SPAWN A: rayon pool (fast start when pool has capacity)
         self.pool.spawn(move || {
-            let result = load_image_file(generation, index, &path);
-            let _ = tx.send(result);
+            // Stale check
+            let global_gen = current_gen.load(std::sync::atomic::Ordering::Relaxed);
+            if generation < global_gen {
+                let loading = loading1.lock().unwrap();
+                if loading.get(&index) != Some(&generation) {
+                    log::debug!("[Loader] Aborting stale preload idx={} gen={} (cur={})", index, generation, global_gen);
+                    return;
+                }
+            }
+            // Try to claim the work
+            if claimed1.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() {
+                return; // OS thread already claimed it
+            }
+            Self::do_load(index, generation, &path, tx1, loading1);
+        });
+
+        // SPAWN B: dedicated OS thread (safety net for pool saturation)
+        std::thread::Builder::new()
+            .name(format!("load-backup-{}", index))
+            .spawn(move || {
+                // Give the pool a small head start (50ms) — if the pool is free,
+                // it will claim the work before we wake up.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+
+                // Stale check
+                let global_gen = current_gen2.load(std::sync::atomic::Ordering::Relaxed);
+                if generation < global_gen {
+                    let loading = loading2.lock().unwrap();
+                    if loading.get(&index) != Some(&generation) {
+                        return;
+                    }
+                }
+                // Try to claim
+                if claimed2.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Relaxed).is_err() {
+                    return; // Pool already handled it
+                }
+                // Pool was saturated — we take over
+                #[cfg(target_os = "windows")]
+                let _com = crate::wic::ComGuard::new();
+                log::debug!("[Loader] OS-thread fallback for idx={} gen={}", index, generation);
+                Self::do_load(index, generation, &path2, tx2, loading2);
+            })
+            .ok();
+    }
+
+    /// Shared load logic used by both pool.spawn and OS thread fallback.
+    fn do_load(
+        index: usize,
+        generation: u64,
+        path: &PathBuf,
+        tx: Sender<LoaderOutput>,
+        loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
+    ) {
+        let load_result = load_image_file(generation, index, path);
+
+        if let Err(e) = &load_result.result {
+            log::error!("[Loader] Load FAILED for index={}: {}", index, e);
+        }
+
+        let source_opt = if let Ok(ImageData::Tiled(ref source)) = load_result.result {
+            Some(Arc::clone(source))
+        } else {
+            None
+        };
+
+        let _ = tx.send(LoaderOutput::Image(load_result));
+
+        if let Some(source_cloned) = source_opt {
+            let tx_cloned = tx.clone();
+            let loading_p2 = Arc::clone(&loading_ref);
+
+            std::thread::Builder::new()
+                .name(format!("refine-{}", index))
+                .spawn(move || {
+                    #[cfg(target_os = "windows")]
+                    let _com = crate::wic::ComGuard::new();
+
+                    let still_valid = {
+                        let loading = loading_p2.lock().unwrap();
+                        loading.get(&index) == Some(&generation)
+                    };
+
+                    if still_valid {
+                        let limit = if source_cloned.width() > 32768 || source_cloned.height() > 32768 {
+                            4096
+                        } else {
+                            2048
+                        };
+                        let (pw, ph, pixels) = source_cloned.generate_preview(limit, limit);
+
+                        let still_valid_after = {
+                            let loading = loading_p2.lock().unwrap();
+                            loading.get(&index) == Some(&generation)
+                        };
+
+                        if still_valid_after && pw > 0 && ph > 0 {
+                            let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
+                                index,
+                                generation,
+                                preview: DecodedImage { width: pw, height: ph, pixels },
+                            }));
+                        }
+                    }
+                })
+                .ok();
+        }
+    }
+
+    pub fn request_tile(&self, index: usize, generation: u64, source: std::sync::Arc<dyn TiledImageSource>, col: u32, row: u32) {
+        let tx = self.tx.clone();
+        let current_gen = self.current_gen.clone();
+        self.pool.spawn(move || {
+            // Check if this request is still relevant for the global counter
+            if current_gen.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                return;
+            }
+
+            let tile_size = crate::tile_cache::TILE_SIZE;
+            let x = col * tile_size;
+            let y = row * tile_size;
+            let full_w = source.width();
+            let full_h = source.height();
+            let tw = tile_size.min(full_w - x);
+            let th = tile_size.min(full_h - y);
+            
+            // Telemetry: Start extraction
+            log::debug!("[Loader] Tile Request: idx={}, gen={}, coord=({},{})", index, generation, col, row);
+
+            let pixels = source.extract_tile(x, y, tw, th);
+            
+            let result = tx.send(LoaderOutput::Tile(TileResult {
+                index,
+                col,
+                row,
+                pixels,
+            }));
+
+            if result.is_err() {
+                log::error!("[Loader] Failed to send tile result for ({},{})", col, row);
+            }
         });
     }
 
-    pub fn poll(&mut self) -> Option<LoadResult> {
+    pub fn poll(&mut self) -> Option<LoaderOutput> {
         match self.rx.try_recv() {
-            Ok(result) => {
-                // Only remove from loading set if the generation matches what we expect
-                if self.loading.get(&result.index) == Some(&result.generation) {
-                    self.loading.remove(&result.index);
+            Ok(output) => {
+                if let LoaderOutput::Image(ref result) = output {
+                    let mut loading = self.loading.lock().unwrap();
+                    if let Some(&g) = loading.get(&result.index) {
+                        if g <= result.generation {
+                            loading.remove(&result.index);
+                        }
+                    }
                 }
-                Some(result)
+                Some(output)
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
         }
@@ -142,7 +340,7 @@ impl ImageLoader {
         // Clear the in-flight set so completed results are discarded in poll().
         // We cannot cancel work already submitted to rayon, but those results
         // will harmlessly be ignored once the cache is cleared.
-        self.loading.clear();
+        self.loading.lock().unwrap().clear();
         while self.rx.try_recv().is_ok() {}
     }
 }
@@ -221,9 +419,39 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
                 (source.width() as f64 * source.height() as f64) / 1_000_000.0
             );
             
-            // Generate preview IMMEDIATELY on the worker thread to avoid UI blocking
-            let (pw, ph, p_pixels) = source.generate_preview(2048, 2048);
-            preview = Some(DecodedImage { width: pw, height: ph, pixels: p_pixels });
+            // PHASE 1: Try instant thumbnail extraction (protected against panics)
+            let t0 = std::time::Instant::now();
+            let exif_thumb = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                extract_exif_thumbnail(path)
+            }));
+            match exif_thumb {
+                Ok(Some(thumb)) => {
+                    log::info!("[{}] EXIF thumbnail extracted in {:?}", file_name, t0.elapsed());
+                    preview = Some(thumb);
+                }
+                Ok(None) => {
+                    log::info!("[{}] No EXIF thumbnail found (took {:?}), generating 512px preview...", file_name, t0.elapsed());
+                    let t1 = std::time::Instant::now();
+                    let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        source.generate_preview(512, 512)
+                    }));
+                    match gen_result {
+                        Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                            log::info!("[{}] 512px preview generated ({}x{}) in {:?}", file_name, pw, ph, t1.elapsed());
+                            preview = Some(DecodedImage { width: pw, height: ph, pixels: p_pixels });
+                        }
+                        Ok(_) => {
+                            log::warn!("[{}] generate_preview returned empty/zero-size result in {:?}", file_name, t1.elapsed());
+                        }
+                        Err(e) => {
+                            log::error!("[{}] generate_preview PANICKED: {:?} in {:?}", file_name, e, t1.elapsed());
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("[{}] extract_exif_thumbnail PANICKED: {:?}", file_name, e);
+                }
+            }
             
             Ok(ImageData::Tiled(source))
         }
@@ -468,23 +696,82 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Metadata & Thumbnails
+// ---------------------------------------------------------------------------
+
+fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
+    use exif::Reader;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let exifreader = Reader::new();
+    
+    if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
+        // Find thumbnail offset and length in IFD1 (THUMBNAIL)
+        let offset = exif_data.get_field(exif::Tag::JPEGInterchangeFormat, exif::In::THUMBNAIL)
+            .and_then(|f| f.value.get_uint(0));
+        let length = exif_data.get_field(exif::Tag::JPEGInterchangeFormatLength, exif::In::THUMBNAIL)
+            .and_then(|f| f.value.get_uint(0));
+
+        if let (Some(off), Some(len)) = (offset, length) {
+            use std::io::{Seek, SeekFrom, Read};
+            let mut f = std::fs::File::open(path).ok()?;
+            f.seek(SeekFrom::Start(off as u64)).ok()?;
+            let mut blob = vec![0u8; len as usize];
+            if f.read_exact(&mut blob).is_ok() {
+                if let Ok(img) = image::load_from_memory(&blob) {
+                    let rgba = img.to_rgba8();
+                    log::info!("[{}] Extracted EXIF thumbnail ({}x{}) from offset {}", 
+                        path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"),
+                        rgba.width(), rgba.height(), off
+                    );
+                    return Some(DecodedImage {
+                        width: rgba.width(),
+                        height: rgba.height(),
+                        pixels: rgba.into_raw(),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Texture cache
 // ---------------------------------------------------------------------------
 
 pub struct TextureCache {
     pub textures: HashMap<usize, egui::TextureHandle>,
+    /// Original image dimensions (may differ from texture size for Tiled previews).
+    original_res: HashMap<usize, (u32, u32)>,
+    /// Flag indicating if the image was Tiled/Large and needs TileManager reconstruction.
+    is_tiled: HashMap<usize, bool>,
     max_size: usize,
 }
 
 impl TextureCache {
     pub fn new(max_size: usize) -> Self {
-        Self { textures: HashMap::new(), max_size }
+        Self { 
+            textures: HashMap::new(), 
+            original_res: HashMap::new(), 
+            is_tiled: HashMap::new(),
+            max_size 
+        }
     }
 
-    pub fn insert(&mut self, index: usize, handle: egui::TextureHandle, current_index: usize) -> Option<usize> {
+    pub fn insert(&mut self, index: usize, handle: egui::TextureHandle, orig_w: u32, orig_h: u32, tiled: bool, current_index: usize, total_count: usize) -> Option<usize> {
         self.textures.insert(index, handle);
-        self.evict(current_index)
+        self.original_res.insert(index, (orig_w, orig_h));
+        self.is_tiled.insert(index, tiled);
+        self.evict(current_index, total_count)
     }
+
+    /// Get the original image dimensions (not the texture/preview size).
+    pub fn get_original_res(&self, index: usize) -> Option<(u32, u32)> {
+        self.original_res.get(&index).copied()
+    }
+
+    /// Check if the image at index is a Tiled/Large image.
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
         self.textures.get(&index)
@@ -496,20 +783,33 @@ impl TextureCache {
 
     pub fn clear(&mut self) {
         self.textures.clear();
+        self.original_res.clear();
+        self.is_tiled.clear();
     }
 
-    fn evict(&mut self, current_index: usize) -> Option<usize> {
+    fn evict(&mut self, current_index: usize, total_count: usize) -> Option<usize> {
         if self.textures.len() <= self.max_size {
             return None;
         }
-        // Evict the texture farthest from the current index
+        // Evict the texture with the greatest CIRCULAR distance from current_index.
+        // In a 100-image list, index 99 is distance 1 from index 0 (wrapping around).
         let to_remove = self.textures
             .keys()
             .copied()
-            .max_by_key(|&idx| (idx as isize - current_index as isize).unsigned_abs());
+            .max_by_key(|&idx| {
+                if total_count == 0 {
+                    (idx as isize - current_index as isize).unsigned_abs()
+                } else {
+                    let forward = (idx + total_count - current_index) % total_count;
+                    let backward = (current_index + total_count - idx) % total_count;
+                    forward.min(backward)
+                }
+            });
         
         if let Some(idx) = to_remove {
             self.textures.remove(&idx);
+            self.original_res.remove(&idx);
+            self.is_tiled.remove(&idx);
             Some(idx)
         } else {
             None

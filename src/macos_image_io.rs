@@ -46,6 +46,7 @@ use foreign_types::ForeignType;
 unsafe extern "C" {
     fn CGImageSourceCreateWithData(data: core_foundation::data::CFDataRef, options: core_foundation::dictionary::CFDictionaryRef) -> *const std::ffi::c_void;
     fn CGImageSourceCreateImageAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
+    fn CGImageSourceCreateThumbnailAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
     fn CGImageSourceCopyPropertiesAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_foundation::dictionary::CFDictionaryRef;
     fn CFRelease(obj: *const std::ffi::c_void);
     fn CFDictionaryGetValue(theDict: core_foundation::dictionary::CFDictionaryRef, key: *const std::ffi::c_void) -> *const std::ffi::c_void;
@@ -69,15 +70,64 @@ unsafe extern "C" {
     static kCGImagePropertyOrientation: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelWidth: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelHeight: core_foundation::string::CFStringRef;
+    
+    // Thumbnail Keys
+    static kCGImageSourceCreateThumbnailWithTransform: core_foundation::string::CFStringRef;
+    static kCGImageSourceCreateThumbnailFromImageAlways: core_foundation::string::CFStringRef;
+    static kCGImageSourceThumbnailMaxPixelSize: core_foundation::string::CFStringRef;
+
+    // Color Space Keys
+    static kCGColorSpaceSRGB: core_foundation::string::CFStringRef;
+
+    fn CGImageSourceGetTypeID() -> core_foundation::base::CFTypeID;
+    fn CFRetain(obj: *const std::ffi::c_void) -> *const std::ffi::c_void;
 }
+
+#[cfg(target_os = "macos")]
+pub struct CGImageSource(core_foundation::base::CFTypeRef);
+
+#[cfg(target_os = "macos")]
+impl TCFType for CGImageSource {
+    type Ref = core_foundation::base::CFTypeRef;
+    fn as_concrete_TypeRef(&self) -> Self::Ref { self.0 }
+    unsafe fn wrap_under_get_rule(reference: Self::Ref) -> Self {
+        unsafe { CFRetain(reference); }
+        CGImageSource(reference)
+    }
+    unsafe fn wrap_under_create_rule(reference: Self::Ref) -> Self {
+        CGImageSource(reference)
+    }
+    fn as_CFTypeRef(&self) -> core_foundation::base::CFTypeRef { self.0 }
+    fn type_id() -> core_foundation::base::CFTypeID {
+        unsafe { CGImageSourceGetTypeID() }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for CGImageSource {
+    fn drop(&mut self) {
+        unsafe { CFRelease(self.0); }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Clone for CGImageSource {
+    fn clone(&self) -> Self {
+        unsafe { CGImageSource::wrap_under_get_rule(self.0) }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for CGImageSource {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for CGImageSource {}
 
 #[cfg(target_os = "macos")]
 static K_UT_TAG_CLASS_FILENAME_EXTENSION: &str = "public.filename-extension";
 
 #[cfg(target_os = "macos")]
 unsafe fn get_u32_property(dict: core_foundation::dictionary::CFDictionaryRef, key: core_foundation::string::CFStringRef) -> Option<u32> {
-    let key_ptr = key as *const std::ffi::c_void;
-    let val_ptr = unsafe { CFDictionaryGetValue(dict, key_ptr) };
+    let val_ptr = unsafe { CFDictionaryGetValue(dict, key as *const _) };
     if !val_ptr.is_null() {
         let type_id = unsafe { core_foundation::base::CFGetTypeID(val_ptr) };
         if type_id == core_foundation::number::CFNumber::type_id() {
@@ -144,7 +194,8 @@ pub struct ImageIoTiledSource {
     logical_width: u32,
     logical_height: u32,
     orientation: u32,
-    source: *const std::ffi::c_void, // CGImageSourceRef
+    source: CGImageSource,
+    image: CGImage,
     _mmap: std::sync::Arc<memmap2::Mmap>, // Keep data alive
 }
 
@@ -154,11 +205,6 @@ unsafe impl Send for ImageIoTiledSource {}
 unsafe impl Sync for ImageIoTiledSource {}
 
 #[cfg(target_os = "macos")]
-impl Drop for ImageIoTiledSource {
-    fn drop(&mut self) {
-        unsafe { CFRelease(self.source); }
-    }
-}
 
 #[cfg(target_os = "macos")]
 impl crate::loader::TiledImageSource for ImageIoTiledSource {
@@ -166,75 +212,100 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
     fn height(&self) -> u32 { self.logical_height }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
-        let color_space = CGColorSpace::create_device_rgb();
+        let color_space = unsafe { 
+            CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
+                .unwrap_or_else(|| CGColorSpace::create_device_rgb())
+        };
         let context_opt = CGContext::create_bitmap_context(
             None, w as usize, h as usize, 8, w as usize * 4, &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast
         );
 
-        if let Some(mut context) = context_opt {
-            unsafe {
-                let options = create_no_cache_options();
-                let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
-                if !cg_image_ref.is_null() {
-                    let cg_image = CGImage::from_ptr(cg_image_ref);
-                    
-                    context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
-                    apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
-                    
-                    let rect = core_graphics::geometry::CGRect::new(
-                        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-                        &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
-                    );
-                    context.draw_image(rect, &cg_image);
-                } else {
-                    log::error!("[{}] MacOS ImageIO: Failed to create CGImage for tile at ({}, {})", self.path.display(), x, y);
-                }
-            }
-            context.data().to_vec()
-        } else {
-            log::error!("[{}] MacOS ImageIO: Failed to create bitmap context for tile at ({}, {})", self.path.display(), x, y);
-            vec![0u8; (w * h * 4) as usize]
-        }
+        let mut context = context_opt;
+        context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
+        apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
+        
+        let rect = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
+        );
+        context.draw_image(rect, &self.image);
+        context.data().to_vec()
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        let max_size = max_w.max(max_h);
+        
+        unsafe {
+            use core_foundation::number::CFNumber;
+            use core_foundation::base::TCFType;
+            
+            let k_max_size = CFString::wrap_under_get_rule(kCGImageSourceThumbnailMaxPixelSize);
+            let v_max_size = CFNumber::from(max_size as i32);
+            
+            let k_always = CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailFromImageAlways);
+            let v_always = CFBoolean::true_value();
+            
+            let k_transform = CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailWithTransform);
+            let v_transform = CFBoolean::true_value();
+
+            let options = CFDictionary::from_CFType_pairs(&[
+                (k_max_size.as_CFType(), v_max_size.as_CFType()),
+                (k_always.as_CFType(), v_always.as_CFType()),
+                (k_transform.as_CFType(), v_transform.as_CFType()),
+            ]);
+
+            let cg_image_ref = CGImageSourceCreateThumbnailAtIndex(self.source.as_concrete_TypeRef(), 0, options.as_CFTypeRef() as _);
+            if !cg_image_ref.is_null() {
+                let cg_image = CGImage::from_ptr(cg_image_ref);
+                let pw = cg_image.width() as u32;
+                let ph = cg_image.height() as u32;
+                
+                let color_space = 
+                    CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
+                        .unwrap_or_else(|| CGColorSpace::create_device_rgb());
+                let context_opt = CGContext::create_bitmap_context(
+                    None, pw as usize, ph as usize, 8, pw as usize * 4, &color_space,
+                    core_graphics::base::kCGImageAlphaPremultipliedLast
+                );
+                
+                let mut context = context_opt;
+                let rect = core_graphics::geometry::CGRect::new(
+                    &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+                    &core_graphics::geometry::CGSize::new(pw as f64, ph as f64)
+                );
+                context.draw_image(rect, &cg_image);
+                log::info!("MacOS ImageIO: Generated {}x{} thumbnail via CGImageSourceCreateThumbnailAtIndex", pw, ph);
+                return (pw, ph, context.data().to_vec());
+            }
+        }
+        
+        // Fallback to naive scaling if thumbnail creation fails
+        log::warn!("[{}] MacOS ImageIO: Failed to create native thumbnail, falling back to full scale", self.path.display());
         let scale = (max_w as f64 / self.logical_width as f64)
             .min(max_h as f64 / self.logical_height as f64)
             .min(1.0);
         let pw = (self.logical_width as f64 * scale).round().max(1.0) as u32;
         let ph = (self.logical_height as f64 * scale).round().max(1.0) as u32;
 
-        let color_space = CGColorSpace::create_device_rgb();
+        let color_space = unsafe { 
+            CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
+                .unwrap_or_else(|| CGColorSpace::create_device_rgb())
+        };
         let context_opt = CGContext::create_bitmap_context(
             None, pw as usize, ph as usize, 8, pw as usize * 4, &color_space,
             core_graphics::base::kCGImageAlphaPremultipliedLast
         );
 
-        if let Some(mut context) = context_opt {
-            unsafe {
-                let options = create_no_cache_options();
-                let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source, 0, options.as_CFTypeRef() as _);
-                if !cg_image_ref.is_null() {
-                    let cg_image = CGImage::from_ptr(cg_image_ref);
-                    
-                    context.scale(scale, scale);
-                    apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
-                    
-                    let rect = core_graphics::geometry::CGRect::new(
-                        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-                        &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
-                    );
-                    context.draw_image(rect, &cg_image);
-                } else {
-                    log::error!("[{}] MacOS ImageIO: Failed to create CGImage for preview", self.path.display());
-                }
-            }
-            (pw, ph, context.data().to_vec())
-        } else {
-            log::error!("[{}] MacOS ImageIO: Failed to create bitmap context for preview", self.path.display());
-            (pw, ph, vec![0u8; (pw * ph * 4) as usize])
-        }
+        let mut context = context_opt;
+        context.scale(scale, scale);
+        apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
+        let rect = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
+        );
+        context.draw_image(rect, &self.image);
+        (pw, ph, context.data().to_vec())
     }
 
     fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> { None }
@@ -248,112 +319,123 @@ pub fn load_via_image_io(path: &std::path::PathBuf) -> Result<ImageData, String>
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| format!("Failed to mmap file: {}", e))? };
     let mmap_arc = std::sync::Arc::new(mmap);
 
-    unsafe {
-        let cf_data = CFDataCreateWithBytesNoCopy(
+    let (logical_width, logical_height, orientation, source_wrapper) = unsafe {
+        let cf_data_ref = CFDataCreateWithBytesNoCopy(
             std::ptr::null(),
             mmap_arc.as_ptr(),
             mmap_arc.len() as isize,
             kCFAllocatorNull
         );
         
-        if cf_data.is_null() {
+        if cf_data_ref.is_null() {
             return Err("Failed to create CFData from mmap".to_string());
         }
+        let _cf_data = core_foundation::data::CFData::wrap_under_create_rule(cf_data_ref);
 
         let options = create_no_cache_options();
-        let source = CGImageSourceCreateWithData(cf_data, options.as_CFTypeRef() as _);
-        CFRelease(cf_data as *const _); 
-        
-        if source.is_null() {
+        let source_ref = CGImageSourceCreateWithData(cf_data_ref, options.as_CFTypeRef() as _);
+        if source_ref.is_null() {
             return Err("Failed to create CGImageSource from data".to_string());
         }
+        let source = CGImageSource::wrap_under_create_rule(source_ref);
 
         let mut physical_width = 0;
         let mut physical_height = 0;
         let mut orientation = 1;
 
         let props_options = create_no_cache_options();
-        let props_ref = CGImageSourceCopyPropertiesAtIndex(source, 0, props_options.as_CFTypeRef() as _);
+        let props_ref = CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, props_options.as_CFTypeRef() as _);
         if !props_ref.is_null() {
-            if let Some(w) = get_u32_property(props_ref, kCGImagePropertyPixelWidth) { physical_width = w; }
-            if let Some(h) = get_u32_property(props_ref, kCGImagePropertyPixelHeight) { physical_height = h; }
-            if let Some(o) = get_u32_property(props_ref, kCGImagePropertyOrientation) { orientation = o; }
-            CFRelease(props_ref as *const _);
+            let props = CFDictionary::<CFString, core_foundation::base::CFType>::wrap_under_create_rule(props_ref as _);
+            if let Some(w) = get_u32_property(props.as_concrete_TypeRef() as _, kCGImagePropertyPixelWidth) { physical_width = w; }
+            if let Some(h) = get_u32_property(props.as_concrete_TypeRef() as _, kCGImagePropertyPixelHeight) { physical_height = h; }
+            if let Some(o) = get_u32_property(props.as_concrete_TypeRef() as _, kCGImagePropertyOrientation) { orientation = o; }
         }
 
         if physical_width == 0 || physical_height == 0 {
             let options2 = create_no_cache_options();
-            let cg_image_ref = CGImageSourceCreateImageAtIndex(source, 0, options2.as_CFTypeRef() as _);
+            let cg_image_ref = CGImageSourceCreateImageAtIndex(source.as_concrete_TypeRef(), 0, options2.as_CFTypeRef() as _);
             if !cg_image_ref.is_null() {
                 let cg_image = CGImage::from_ptr(cg_image_ref);
                 physical_width = cg_image.width() as u32;
                 physical_height = cg_image.height() as u32;
             } else {
-                CFRelease(source);
                 return Err("Failed to create CGImage from source (fallback)".to_string());
             }
         }
 
-        let (logical_width, logical_height) = match orientation {
+        let (lw, lh) = match orientation {
             5 | 6 | 7 | 8 => (physical_height, physical_width),
             _ => (physical_width, physical_height),
         };
-        
-        let pixel_count = logical_width as u64 * logical_height as u64;
-        let limit = crate::tile_cache::get_max_texture_side();
+        (lw, lh, orientation, source)
+    };
+    
+    let physical_width = if orientation <= 4 { logical_width } else { logical_height };
+    let physical_height = if orientation <= 4 { logical_height } else { logical_width };
+    
+    let pixel_count = logical_width as u64 * logical_height as u64;
+    let limit = crate::tile_cache::get_max_texture_side();
 
-        if pixel_count >= crate::tile_cache::TILED_THRESHOLD || logical_width > limit || logical_height > limit {
-            return Ok(ImageData::Tiled(std::sync::Arc::new(ImageIoTiledSource {
-                path: path.to_path_buf(),
-                physical_width,
-                physical_height,
-                logical_width,
-                logical_height,
-                orientation,
-                source,
-                _mmap: mmap_arc,
-            })));
-        }
-
-        let options3 = create_no_cache_options();
-        let cg_image_ref = CGImageSourceCreateImageAtIndex(source, 0, options3.as_CFTypeRef() as _);
+    if pixel_count >= crate::tile_cache::TILED_THRESHOLD || logical_width > limit || logical_height > limit {
+        let options_tiled = create_no_cache_options();
+        let cg_image_ref = unsafe { CGImageSourceCreateImageAtIndex(source_wrapper.as_concrete_TypeRef(), 0, options_tiled.as_CFTypeRef() as _) };
         if cg_image_ref.is_null() {
-            CFRelease(source);
-            return Err("Failed to create CGImage from source".to_string());
+            return Err("Failed to create CGImage handle for tiled source".to_string());
         }
-        let cg_image = CGImage::from_ptr(cg_image_ref);
+        let cg_image = unsafe { CGImage::from_ptr(cg_image_ref) };
 
-        let color_space = CGColorSpace::create_device_rgb();
-        let mut context = CGContext::create_bitmap_context(
-            None,
-            logical_width as usize,
-            logical_height as usize,
-            8,
-            logical_width as usize * 4,
-            &color_space,
-            core_graphics::base::kCGImageAlphaPremultipliedLast
-        );
-        
-        apply_orientation_ctm(&mut context, orientation, logical_width as f64, logical_height as f64);
-        
-        let rect = core_graphics::geometry::CGRect::new(
-            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(physical_width as f64, physical_height as f64)
-        );
-        context.draw_image(rect, &cg_image);
-        
-        let pixel_data = context.data().to_vec();
-        
-        CFRelease(source);
-        
-        log::info!("[{}] Decoded via MacOS ImageIO (Static/Mmap): {}x{} (Orientation: {})", file_name, logical_width, logical_height, orientation);
-
-        Ok(ImageData::Static(DecodedImage {
-            width: logical_width,
-            height: logical_height,
-            pixels: pixel_data,
-        }))
+        return Ok(ImageData::Tiled(std::sync::Arc::new(ImageIoTiledSource {
+            path: path.to_path_buf(),
+            physical_width,
+            physical_height,
+            logical_width,
+            logical_height,
+            orientation,
+            source: source_wrapper,
+            image: cg_image,
+            _mmap: mmap_arc,
+        })));
     }
+
+    let options3 = create_no_cache_options();
+    let cg_image_ref = unsafe { CGImageSourceCreateImageAtIndex(source_wrapper.as_concrete_TypeRef(), 0, options3.as_CFTypeRef() as _) };
+    if cg_image_ref.is_null() {
+        return Err("Failed to create CGImage from source".to_string());
+    }
+    let cg_image = unsafe { CGImage::from_ptr(cg_image_ref) };
+
+    let color_space = unsafe { 
+        CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
+            .unwrap_or_else(|| CGColorSpace::create_device_rgb())
+    };
+    let mut context = CGContext::create_bitmap_context(
+        None,
+        logical_width as usize,
+        logical_height as usize,
+        8,
+        logical_width as usize * 4,
+        &color_space,
+        core_graphics::base::kCGImageAlphaPremultipliedLast
+    );
+    
+    apply_orientation_ctm(&mut context, orientation, logical_width as f64, logical_height as f64);
+    
+    let rect = core_graphics::geometry::CGRect::new(
+        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+        &core_graphics::geometry::CGSize::new(physical_width as f64, physical_height as f64)
+    );
+    context.draw_image(rect, &cg_image);
+    
+    let pixel_data = context.data().to_vec();
+    
+    log::info!("[{}] Decoded via MacOS ImageIO (Static/Mmap RAII): {}x{} (Orientation: {})", file_name, logical_width, logical_height, orientation);
+
+    Ok(ImageData::Static(DecodedImage {
+        width: logical_width,
+        height: logical_height,
+        pixels: pixel_data,
+    }))
 }
 
 // Fallback for non-macos platforms so it compiles
