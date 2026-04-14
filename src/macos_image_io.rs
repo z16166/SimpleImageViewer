@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::loader::ImageData;
+use crate::loader::{ImageData, DecodedImage};
 #[cfg(target_os = "macos")]
 use std::sync::atomic::Ordering;
 #[cfg(target_os = "macos")]
@@ -622,28 +622,30 @@ fn apply_orientation_buffer(pixels: Vec<u8>, w: u32, h: u32, orientation: u32) -
 
 #[cfg(target_os = "macos")]
 unsafe fn render_cgimage_to_rgba_sync(cg_image: &CGImage, orientation: u32, lw: u32, lh: u32) -> DecodedImage {
-    let pw = cg_image.width() as u32;
-    let ph = cg_image.height() as u32;
-    let color_space = CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
-        .unwrap_or_else(|| CGColorSpace::create_device_rgb());
-    
-    let mut context = CGContext::create_bitmap_context(
-        None, lw as usize, lh as usize, 8, lw as usize * 4, &color_space,
-        core_graphics::base::kCGImageAlphaPremultipliedLast
-    );
+    unsafe {
+        let pw = cg_image.width() as u32;
+        let ph = cg_image.height() as u32;
+        let color_space = CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
+            .unwrap_or_else(|| CGColorSpace::create_device_rgb());
+        
+        let mut context = CGContext::create_bitmap_context(
+            None, lw as usize, lh as usize, 8, lw as usize * 4, &color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast
+        );
 
-    apply_orientation_ctm(&mut context, orientation, lw as f64, lh as f64);
-    
-    let rect = core_graphics::geometry::CGRect::new(
-        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-        &core_graphics::geometry::CGSize::new(pw as f64, ph as f64)
-    );
-    context.draw_image(rect, &cg_image);
-    
-    DecodedImage {
-        width: lw,
-        height: lh,
-        pixels: context.data().to_vec(),
+        apply_orientation_ctm(&mut context, orientation, lw as f64, lh as f64);
+        
+        let rect = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64)
+        );
+        context.draw_image(rect, &cg_image);
+        
+        DecodedImage {
+            width: lw,
+            height: lh,
+            pixels: context.data().to_vec(),
+        }
     }
 }
 

@@ -276,7 +276,7 @@ impl ImageLoader {
             Self::do_load(index, generation, &path1, tx1, loading1);
         });
 
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name(format!("load-backup-{}", index))
             .spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(50));

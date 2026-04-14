@@ -33,13 +33,6 @@ pub enum ScaleMode {
 }
 
 impl ScaleMode {
-    pub fn label(self) -> String {
-        match self {
-            Self::FitToWindow => rust_i18n::t!("scale.fit").to_string(),
-            Self::OriginalSize => rust_i18n::t!("scale.original").to_string(),
-        }
-    }
-
     pub fn toggled(self) -> Self {
         match self {
             Self::FitToWindow => Self::OriginalSize,
