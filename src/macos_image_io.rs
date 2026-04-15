@@ -867,7 +867,7 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
                 let tw_key = CFString::from_static_string("TileWidth");
                 let th_key = CFString::from_static_string("TileHeight");
 
-                if tiff_props.contains(&tw_key) && tiff_props.contains(&th_key) {
+                if tiff_props.contains_key(&tw_key) && tiff_props.contains_key(&th_key) {
                     log::info!("TIFF Diagnostics: [{}] is TILED", path.display());
                 } else {
                     log::info!(
