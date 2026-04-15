@@ -87,17 +87,6 @@ unsafe extern "C" {
     ) -> *const std::ffi::c_void;
     fn CGImageSourceGetCount(source: *const std::ffi::c_void) -> usize;
 
-    // URL & Data based creation
-    fn CFURLCreateWithFileSystemPath(
-        allocator: *const std::ffi::c_void,
-        filePath: core_foundation::string::CFStringRef,
-        pathStyle: isize,
-        isDirectory: bool,
-    ) -> *const std::ffi::c_void;
-    fn CGImageSourceCreateWithURL(
-        url: *const std::ffi::c_void,
-        options: core_foundation::dictionary::CFDictionaryRef,
-    ) -> *const std::ffi::c_void;
     fn CFDataCreateWithBytesNoCopy(
         allocator: *const std::ffi::c_void,
         bytes: *const u8,
@@ -867,7 +856,7 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
                 let tw_key = CFString::from_static_string("TileWidth");
                 let th_key = CFString::from_static_string("TileHeight");
 
-                if tiff_props.contains(&tw_key) && tiff_props.contains(&th_key) {
+                if tiff_props.contains_key(&tw_key) && tiff_props.contains_key(&th_key) {
                     log::info!("TIFF Diagnostics: [{}] is TILED", path.display());
                 } else {
                     log::info!(
