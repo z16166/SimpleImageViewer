@@ -278,13 +278,13 @@ impl Settings {
         Self::default()
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> Result<(), String> {
         let path = settings_path();
         match serde_yaml::to_string(self) {
             Ok(text) => {
-                let _ = std::fs::write(&path, text);
+                std::fs::write(&path, text).map_err(|e| e.to_string())
             }
-            Err(e) => eprintln!("[settings] serialize error: {e}"),
+            Err(e) => Err(format!("[settings] serialize error: {e}")),
         }
     }
 }

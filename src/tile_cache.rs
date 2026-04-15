@@ -327,7 +327,7 @@ impl TileManager {
         coord: TileCoord,
         ctx: &egui::Context,
         allow_upload: bool,
-        _visible_count: usize,
+        visible_coords: &[TileCoord],
     ) -> (TileStatus, bool) {
         // Touch LRU
         if let Some(pos) = self.lru_order.iter().position(|c| *c == coord) {
@@ -356,10 +356,24 @@ impl TileManager {
                 // We no longer expand the limit based on visible_count to prevent crashes.
                 let current_limit = MAX_TILES_BASE.load(Ordering::Relaxed);
 
-                // Evict if over limit
+                // Evict if over limit, but NEVER evict tiles currently in the visible set.
+                // This prevents the "circular hole" artifact on high-DPI screens.
                 while self.lru_order.len() > current_limit {
-                    let evicted = self.lru_order.remove(0);
-                    self.tiles.remove(&evicted);
+                    let mut found_non_visible = false;
+                    for i in 0..self.lru_order.len() {
+                        let potential_evict = self.lru_order[i];
+                        if !visible_coords.contains(&potential_evict) {
+                            self.lru_order.remove(i);
+                            self.tiles.remove(&potential_evict);
+                            found_non_visible = true;
+                            break;
+                        }
+                    }
+                    if !found_non_visible {
+                        // All cached tiles are currently visible! 
+                        // We must temporarily exceed the limit to maintain visual integrity.
+                        break;
+                    }
                 }
 
                 let tw = TILE_SIZE.min(self.full_width - coord.col * TILE_SIZE);

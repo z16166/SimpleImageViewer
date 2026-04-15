@@ -14,44 +14,45 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::loader::{ImageData, DecodedImage};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::Ordering;
+use crate::loader::{DecodedImage, ImageData};
 #[cfg(target_os = "macos")]
-use std::sync::Arc;
+use memmap2::Mmap;
 #[cfg(target_os = "macos")]
-use std::path::{Path, PathBuf};
+use rayon::prelude::*;
+#[cfg(target_os = "macos")]
+use std::collections::HashSet;
 #[cfg(target_os = "macos")]
 use std::io::Cursor;
 #[cfg(target_os = "macos")]
-use memmap2::Mmap;
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::Ordering;
 #[cfg(target_os = "macos")]
 use tiff::decoder::{Decoder, DecodingResult};
 #[cfg(target_os = "macos")]
 use tiff::tags::Tag;
-#[cfg(target_os = "macos")]
-use std::collections::HashSet;
-#[cfg(target_os = "macos")]
-use rayon::prelude::*;
 
 #[cfg(target_os = "macos")]
-use core_graphics::image::CGImage;
+use core_foundation::array::CFArray;
+#[cfg(target_os = "macos")]
+use core_foundation::base::{CFTypeRef, TCFType};
+#[cfg(target_os = "macos")]
+use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
+use core_foundation::dictionary::CFDictionary;
+#[cfg(target_os = "macos")]
+use core_foundation::number::CFNumber;
+#[cfg(target_os = "macos")]
+use core_foundation::string::{CFString, CFStringRef};
 #[cfg(target_os = "macos")]
 use core_graphics::color_space::CGColorSpace;
 #[cfg(target_os = "macos")]
 use core_graphics::context::CGContext;
 #[cfg(target_os = "macos")]
-use core_foundation::base::{TCFType, CFTypeRef};
-#[cfg(target_os = "macos")]
-use core_foundation::string::{CFString, CFStringRef};
-#[cfg(target_os = "macos")]
-use core_foundation::array::CFArray;
-#[cfg(target_os = "macos")]
-use core_foundation::dictionary::CFDictionary;
-#[cfg(target_os = "macos")]
-use core_foundation::boolean::CFBoolean;
-#[cfg(target_os = "macos")]
-use core_foundation::number::CFNumber;
+use core_graphics::image::CGImage;
 #[cfg(target_os = "macos")]
 use foreign_types::ForeignType;
 
@@ -60,20 +61,54 @@ use foreign_types::ForeignType;
 #[link(name = "ImageIO", kind = "framework")]
 #[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
-    fn CGImageSourceCreateImageAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
-    fn CGImageSourceCreateThumbnailAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_graphics::sys::CGImageRef;
-    fn CGImageSourceCopyPropertiesAtIndex(source: *const std::ffi::c_void, index: usize, options: core_foundation::dictionary::CFDictionaryRef) -> core_foundation::dictionary::CFDictionaryRef;
+    fn CGImageSourceCreateImageAtIndex(
+        source: *const std::ffi::c_void,
+        index: usize,
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> core_graphics::sys::CGImageRef;
+    fn CGImageSourceCreateThumbnailAtIndex(
+        source: *const std::ffi::c_void,
+        index: usize,
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> core_graphics::sys::CGImageRef;
+    fn CGImageSourceCreateWithData(
+        data: *const std::ffi::c_void,
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> *const std::ffi::c_void;
+    fn CGImageSourceCopyPropertiesAtIndex(
+        source: *const std::ffi::c_void,
+        index: usize,
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> core_foundation::dictionary::CFDictionaryRef;
     fn CFRelease(obj: *const std::ffi::c_void);
-    fn CFDictionaryGetValue(theDict: core_foundation::dictionary::CFDictionaryRef, key: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CFDictionaryGetValue(
+        theDict: core_foundation::dictionary::CFDictionaryRef,
+        key: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
     fn CGImageSourceGetCount(source: *const std::ffi::c_void) -> usize;
-    
+
     // URL & Data based creation
-    fn CFURLCreateWithFileSystemPath(allocator: *const std::ffi::c_void, filePath: core_foundation::string::CFStringRef, pathStyle: isize, isDirectory: bool) -> *const std::ffi::c_void;
-    fn CGImageSourceCreateWithURL(url: *const std::ffi::c_void, options: core_foundation::dictionary::CFDictionaryRef) -> *const std::ffi::c_void;
-    
+    fn CFURLCreateWithFileSystemPath(
+        allocator: *const std::ffi::c_void,
+        filePath: core_foundation::string::CFStringRef,
+        pathStyle: isize,
+        isDirectory: bool,
+    ) -> *const std::ffi::c_void;
+    fn CGImageSourceCreateWithURL(
+        url: *const std::ffi::c_void,
+        options: core_foundation::dictionary::CFDictionaryRef,
+    ) -> *const std::ffi::c_void;
+    fn CFDataCreateWithBytesNoCopy(
+        allocator: *const std::ffi::c_void,
+        bytes: *const u8,
+        length: isize,
+        bytesDeallocator: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
+
     // CoreFoundation Constants
     static kCFAllocatorDefault: *const std::ffi::c_void;
-    
+    static kCFAllocatorNull: *const std::ffi::c_void;
+
     // Discovery APIs
     fn CGImageSourceCopyTypeIdentifiers() -> core_foundation::array::CFArrayRef;
 
@@ -82,7 +117,7 @@ unsafe extern "C" {
     static kCGImagePropertyOrientation: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelWidth: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelHeight: core_foundation::string::CFStringRef;
-    
+
     // Thumbnail Keys
     static kCGImageSourceCreateThumbnailWithTransform: core_foundation::string::CFStringRef;
     static kCGImageSourceCreateThumbnailFromImageAlways: core_foundation::string::CFStringRef;
@@ -102,15 +137,21 @@ pub struct CGImageSource(core_foundation::base::CFTypeRef);
 #[cfg(target_os = "macos")]
 impl TCFType for CGImageSource {
     type Ref = core_foundation::base::CFTypeRef;
-    fn as_concrete_TypeRef(&self) -> Self::Ref { self.0 }
+    fn as_concrete_TypeRef(&self) -> Self::Ref {
+        self.0
+    }
     unsafe fn wrap_under_get_rule(reference: Self::Ref) -> Self {
-        unsafe { CFRetain(reference); }
+        unsafe {
+            CFRetain(reference);
+        }
         CGImageSource(reference)
     }
     unsafe fn wrap_under_create_rule(reference: Self::Ref) -> Self {
         CGImageSource(reference)
     }
-    fn as_CFTypeRef(&self) -> core_foundation::base::CFTypeRef { self.0 }
+    fn as_CFTypeRef(&self) -> core_foundation::base::CFTypeRef {
+        self.0
+    }
     fn type_id() -> core_foundation::base::CFTypeID {
         unsafe { CGImageSourceGetTypeID() }
     }
@@ -119,7 +160,9 @@ impl TCFType for CGImageSource {
 #[cfg(target_os = "macos")]
 impl Drop for CGImageSource {
     fn drop(&mut self) {
-        unsafe { CFRelease(self.0); }
+        unsafe {
+            CFRelease(self.0);
+        }
     }
 }
 
@@ -135,9 +178,11 @@ unsafe impl Send for CGImageSource {}
 #[cfg(target_os = "macos")]
 unsafe impl Sync for CGImageSource {}
 
-
 #[cfg(target_os = "macos")]
-unsafe fn get_cf_number_u32(dict: &CFDictionary<CFString, CFTypeRef>, key: CFTypeRef) -> Option<u32> {
+unsafe fn get_cf_number_u32(
+    dict: &CFDictionary<CFString, CFTypeRef>,
+    key: CFTypeRef,
+) -> Option<u32> {
     let val_ptr = unsafe { CFDictionaryGetValue(dict.as_concrete_TypeRef(), key as *const _) };
     if !val_ptr.is_null() {
         let type_id = unsafe { core_foundation::base::CFGetTypeID(val_ptr) };
@@ -152,7 +197,12 @@ unsafe fn get_cf_number_u32(dict: &CFDictionary<CFString, CFTypeRef>, key: CFTyp
 }
 
 #[cfg(target_os = "macos")]
-fn apply_orientation_ctm(context: &mut CGContext, orientation: u32, log_full_w: f64, log_full_h: f64) {
+fn apply_orientation_ctm(
+    context: &mut CGContext,
+    orientation: u32,
+    log_full_w: f64,
+    log_full_h: f64,
+) {
     match orientation {
         2 => {
             context.translate(log_full_w, 0.0);
@@ -196,57 +246,69 @@ pub struct ImageIoTiledSource {
     logical_height: u32,
     orientation: u32,
     source: CGImageSource,
+    cached_image: CGImage,
+    color_space: CGColorSpace,
+    _mmap: Arc<Mmap>,
 }
 
 #[cfg(target_os = "macos")]
+unsafe impl Send for ImageIoTiledSource {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for ImageIoTiledSource {}
+
+#[cfg(target_os = "macos")]
 impl crate::loader::TiledImageSource for ImageIoTiledSource {
-    fn width(&self) -> u32 { self.logical_width }
-    fn height(&self) -> u32 { self.logical_height }
+    fn width(&self) -> u32 {
+        self.logical_width
+    }
+    fn height(&self) -> u32 {
+        self.logical_height
+    }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
-        unsafe {
-            let k_cache = CFString::wrap_under_get_rule(kCGImageSourceShouldCache);
-            let options = CFDictionary::from_CFType_pairs(&[
-                (k_cache.as_CFType(), CFBoolean::true_value().as_CFType()),
-            ]);
-            
-            let cg_image_ref = CGImageSourceCreateImageAtIndex(self.source.as_concrete_TypeRef(), 0, options.as_CFTypeRef() as _);
-            if cg_image_ref.is_null() {
-                return vec![0u8; (w * h * 4) as usize];
-            }
-            let cg_image = CGImage::from_ptr(cg_image_ref);
+        let mut context = CGContext::create_bitmap_context(
+            None,
+            w as usize,
+            h as usize,
+            8,
+            w as usize * 4,
+            &self.color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast,
+        );
 
-            let color_space = CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
-                .unwrap_or_else(|| CGColorSpace::create_device_rgb());
-            
-            let mut context = CGContext::create_bitmap_context(
-                None, w as usize, h as usize, 8, w as usize * 4, &color_space,
-                core_graphics::base::kCGImageAlphaPremultipliedLast
-            );
+        context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
+        apply_orientation_ctm(
+            &mut context,
+            self.orientation,
+            self.logical_width as f64,
+            self.logical_height as f64,
+        );
 
-            context.translate(-(x as f64), -(self.logical_height as f64 - (y + h) as f64));
-            apply_orientation_ctm(&mut context, self.orientation, self.logical_width as f64, self.logical_height as f64);
-            
-            let rect = core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-                &core_graphics::geometry::CGSize::new(self.physical_width as f64, self.physical_height as f64)
-            );
-            context.draw_image(rect, &cg_image);
-            context.data().to_vec()
-        }
+        let rect = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(
+                self.physical_width as f64,
+                self.physical_height as f64,
+            ),
+        );
+        context.draw_image(rect, &self.cached_image);
+        context.data().to_vec()
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
         let max_size = max_w.max(max_h);
-        
+
         unsafe {
-            use core_foundation::number::CFNumber;
             use core_foundation::base::TCFType;
-            
+            use core_foundation::number::CFNumber;
+
             let k_max_size = CFString::wrap_under_get_rule(kCGImageSourceThumbnailMaxPixelSize);
-            let k_always = CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailFromImageAlways);
-            let k_if_absent = CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailFromImageIfAbsent);
-            let k_transform = CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailWithTransform);
+            let k_always =
+                CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailFromImageAlways);
+            let k_if_absent =
+                CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailFromImageIfAbsent);
+            let k_transform =
+                CFString::wrap_under_get_rule(kCGImageSourceCreateThumbnailWithTransform);
 
             // Step 1: Pyramid Discovery
             let count = CGImageSourceGetCount(self.source.as_concrete_TypeRef());
@@ -258,11 +320,16 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
                 let k_height = CFString::wrap_under_get_rule(kCGImagePropertyPixelHeight);
 
                 for i in 0..count {
-                    let props_ref = CGImageSourceCopyPropertiesAtIndex(self.source.as_concrete_TypeRef(), i, std::ptr::null());
+                    let props_ref = CGImageSourceCopyPropertiesAtIndex(
+                        self.source.as_concrete_TypeRef(),
+                        i,
+                        std::ptr::null(),
+                    );
                     if !props_ref.is_null() {
                         let props = CFDictionary::wrap_under_create_rule(props_ref);
                         let w = get_cf_number_u32(&props, k_width.as_CFTypeRef() as _).unwrap_or(0);
-                        let h = get_cf_number_u32(&props, k_height.as_CFTypeRef() as _).unwrap_or(0);
+                        let h =
+                            get_cf_number_u32(&props, k_height.as_CFTypeRef() as _).unwrap_or(0);
                         let dim = w.max(h);
 
                         if dim >= max_size && dim < smallest_fit_dim {
@@ -280,62 +347,95 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
             // FIX: k_if_absent = false prevents the 2.5s blocking behavior!
             // ========================================================
             let options_fast = CFDictionary::from_CFType_pairs(&[
-                (k_max_size.as_CFType(), CFNumber::from(max_size as i32).as_CFType()),
-                (k_if_absent.as_CFType(), CFBoolean::false_value().as_CFType()), // <-- Fixed the 2.5s spike
+                (
+                    k_max_size.as_CFType(),
+                    CFNumber::from(max_size as i32).as_CFType(),
+                ),
+                (
+                    k_if_absent.as_CFType(),
+                    CFBoolean::false_value().as_CFType(),
+                ), // <-- Fixed the 2.5s spike
                 (k_always.as_CFType(), CFBoolean::false_value().as_CFType()),
                 (k_transform.as_CFType(), CFBoolean::true_value().as_CFType()),
             ]);
 
-            let cg_image_ref = CGImageSourceCreateThumbnailAtIndex(self.source.as_concrete_TypeRef(), best_index, options_fast.as_CFTypeRef() as _);
+            let cg_image_ref = CGImageSourceCreateThumbnailAtIndex(
+                self.source.as_concrete_TypeRef(),
+                best_index,
+                options_fast.as_CFTypeRef() as _,
+            );
             if !cg_image_ref.is_null() {
                 let cg_image = CGImage::from_ptr(cg_image_ref);
                 let pw = cg_image.width() as u32;
-                
+
                 if max_size <= 512 || pw >= max_size || pw >= 2048 {
                     let res = self.render_cgimage_to_rgba(&cg_image);
-                    log::info!("MacOS ImageIO: Path 1 (Existing Thumb/Pyramid) took {}ms", main_start.elapsed().as_millis());
+                    log::info!(
+                        "MacOS ImageIO: Path 1 (Existing Thumb/Pyramid) took {}ms",
+                        main_start.elapsed().as_millis()
+                    );
                     return res;
                 }
             }
-            
+
             // ========================================================
             // Path 2 (Fast): The 'Ultima' Path - Parallel Rust Stride-Reading
             // ========================================================
             let is_giant = self.physical_width >= 4096 || self.physical_height >= 4096;
             if is_giant && best_index == 0 {
-                log::info!("MacOS ImageIO: Giant single-layer detected. Prioritizing Path 2 (Rayon Stride-Reader)...");
+                log::info!(
+                    "MacOS ImageIO: Giant single-layer detected. Prioritizing Path 2 (Rayon Stride-Reader)..."
+                );
                 let rust_start = std::time::Instant::now();
-                match HugeTiffStrideDecoder::decode_preview(&self._path, max_size, self.orientation) {
+                match HugeTiffStrideDecoder::decode_preview(&self._path, max_size, self.orientation)
+                {
                     Ok(res) => {
-                        log::info!("MacOS ImageIO: Path 2 (Rayon Stride-Reader) took {}ms", rust_start.elapsed().as_millis());
+                        log::info!(
+                            "MacOS ImageIO: Path 2 (Rayon Stride-Reader) took {}ms",
+                            rust_start.elapsed().as_millis()
+                        );
                         return res;
-                    },
-                    Err(e) => log::warn!("Rust Stride-Reader fallback: {}. Passing to Path 3...", e),
+                    }
+                    Err(e) => {
+                        log::warn!("Rust Stride-Reader fallback: {}. Passing to Path 3...", e)
+                    }
                 }
             }
-            
+
             // ========================================================
             // Path 3 (Fallback): ImageIO Generation (Only for normal images)
             // ========================================================
             let path3_start = std::time::Instant::now();
             let options_gen = CFDictionary::from_CFType_pairs(&[
-                (k_max_size.as_CFType(), CFNumber::from(max_size as i32).as_CFType()),
+                (
+                    k_max_size.as_CFType(),
+                    CFNumber::from(max_size as i32).as_CFType(),
+                ),
                 (k_always.as_CFType(), CFBoolean::true_value().as_CFType()),
                 (k_transform.as_CFType(), CFBoolean::true_value().as_CFType()),
             ]);
 
-            let cg_image_ref_gen = CGImageSourceCreateThumbnailAtIndex(self.source.as_concrete_TypeRef(), best_index, options_gen.as_CFTypeRef() as _);
+            let cg_image_ref_gen = CGImageSourceCreateThumbnailAtIndex(
+                self.source.as_concrete_TypeRef(),
+                best_index,
+                options_gen.as_CFTypeRef() as _,
+            );
             if !cg_image_ref_gen.is_null() {
                 let cg_image = CGImage::from_ptr(cg_image_ref_gen);
                 let res = self.render_cgimage_to_rgba(&cg_image);
-                log::info!("MacOS ImageIO: Path 3 (Forced ImageIO) took {}ms", path3_start.elapsed().as_millis());
+                log::info!(
+                    "MacOS ImageIO: Path 3 (Forced ImageIO) took {}ms",
+                    path3_start.elapsed().as_millis()
+                );
                 return res;
             }
         }
         (0, 0, vec![])
     }
 
-    fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> { None }
+    fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>> {
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -344,16 +444,23 @@ impl ImageIoTiledSource {
         let pw = cg_image.width() as u32;
         let ph = cg_image.height() as u32;
         let color_space = unsafe {
-            CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
-                .unwrap_or_else(|| CGColorSpace::create_device_rgb())
+            CGColorSpace::create_with_name(
+                CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef(),
+            )
+            .unwrap_or_else(|| CGColorSpace::create_device_rgb())
         };
         let mut context = CGContext::create_bitmap_context(
-            None, pw as usize, ph as usize, 8, pw as usize * 4, &color_space,
-            core_graphics::base::kCGImageAlphaPremultipliedLast
+            None,
+            pw as usize,
+            ph as usize,
+            8,
+            pw as usize * 4,
+            &color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
         let rect = core_graphics::geometry::CGRect::new(
             &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64)
+            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64),
         );
         context.draw_image(rect, &cg_image);
         (pw, ph, context.data().to_vec())
@@ -366,22 +473,28 @@ struct HugeTiffStrideDecoder;
 #[cfg(target_os = "macos")]
 impl HugeTiffStrideDecoder {
     /// Multi-threaded, Zero-Allocation Stride-Reader using Rayon + Mmap.
-    fn decode_preview(path: &Path, max_size: u32, orientation: u32) -> Result<(u32, u32, Vec<u8>), String> {
+    fn decode_preview(
+        path: &Path,
+        max_size: u32,
+        orientation: u32,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
-        
+
         let cursor = Cursor::new(&mmap[..]);
         let mut decoder = Decoder::new(cursor).map_err(|e| e.to_string())?;
 
         let (width, height) = decoder.dimensions().map_err(|e| e.to_string())?;
         let max_dim = width.max(height);
         let stride = (max_dim / max_size).max(1);
-        
+
         let target_w = width / stride;
         let target_h = height / stride;
-        
+
         let chunk_w = decoder.get_tag_u32(Tag::TileWidth).unwrap_or(width);
-        let chunk_h = decoder.get_tag_u32(Tag::TileLength).unwrap_or_else(|_| decoder.get_tag_u32(Tag::RowsPerStrip).unwrap_or(height));
+        let chunk_h = decoder
+            .get_tag_u32(Tag::TileLength)
+            .unwrap_or_else(|_| decoder.get_tag_u32(Tag::RowsPerStrip).unwrap_or(height));
         let is_tiled = decoder.get_tag_u32(Tag::TileWidth).is_ok();
 
         let color_type = decoder.colortype().map_err(|e| e.to_string())?;
@@ -393,23 +506,36 @@ impl HugeTiffStrideDecoder {
         };
 
         let mut preview_pixels = vec![0u8; (target_w * target_h * 4) as usize];
-        
+
         let tiles_across = (width + chunk_w - 1) / chunk_w;
         let tiles_down = (height + chunk_h - 1) / chunk_h;
         let total_chunks = tiles_across * tiles_down;
 
         let comp = decoder.get_tag_u32(Tag::Compression).unwrap_or(1);
         let planar = decoder.get_tag_u32(Tag::PlanarConfiguration).unwrap_or(1);
-        let is_8bit = matches!(color_type, tiff::ColorType::RGB(8) | tiff::ColorType::RGBA(8) | tiff::ColorType::CMYK(8) | tiff::ColorType::Gray(8));
+        let is_8bit = matches!(
+            color_type,
+            tiff::ColorType::RGB(8)
+                | tiff::ColorType::RGBA(8)
+                | tiff::ColorType::CMYK(8)
+                | tiff::ColorType::Gray(8)
+        );
         let is_cmyk = matches!(color_type, tiff::ColorType::CMYK(_));
 
-        let offsets_tag = if is_tiled { Tag::TileOffsets } else { Tag::StripOffsets };
+        let offsets_tag = if is_tiled {
+            Tag::TileOffsets
+        } else {
+            Tag::StripOffsets
+        };
         let offsets = if comp == 1 && planar == 1 && is_8bit {
             decoder.get_tag_u64_vec(offsets_tag).ok().or_else(|| {
-                decoder.get_tag_u32_vec(offsets_tag).ok().map(|v| v.into_iter().map(|x| x as u64).collect())
+                decoder
+                    .get_tag_u32_vec(offsets_tag)
+                    .ok()
+                    .map(|v| v.into_iter().map(|x| x as u64).collect())
             })
-        } else { 
-            None 
+        } else {
+            None
         };
 
         if let Some(offsets) = offsets {
@@ -426,38 +552,43 @@ impl HugeTiffStrideDecoder {
                     let chunk_col = x / chunk_w;
                     let chunk_idx = (chunk_row * tiles_across + chunk_col) as usize;
 
-                    if chunk_idx >= offsets.len() { continue; }
+                    if chunk_idx >= offsets.len() {
+                        continue;
+                    }
 
                     let offset_in_chunk = (y_in_chunk * chunk_w + (x % chunk_w)) * samples;
                     let src_offset = (offsets[chunk_idx] + offset_in_chunk as u64) as usize;
                     let dst_offset = dst_y_offset + (tx as usize) * 4;
 
-                    if src_offset + (samples as usize) > mmap.len() { continue; }
+                    if src_offset + (samples as usize) > mmap.len() {
+                        continue;
+                    }
 
                     if samples == 3 {
                         preview_pixels[dst_offset] = mmap[src_offset];
-                        preview_pixels[dst_offset+1] = mmap[src_offset+1];
-                        preview_pixels[dst_offset+2] = mmap[src_offset+2];
-                        preview_pixels[dst_offset+3] = 255;
+                        preview_pixels[dst_offset + 1] = mmap[src_offset + 1];
+                        preview_pixels[dst_offset + 2] = mmap[src_offset + 2];
+                        preview_pixels[dst_offset + 3] = 255;
                     } else if samples == 4 {
                         if is_cmyk {
                             let c = mmap[src_offset] as f32 / 255.0;
-                            let m = mmap[src_offset+1] as f32 / 255.0;
-                            let y = mmap[src_offset+2] as f32 / 255.0;
-                            let k = mmap[src_offset+3] as f32 / 255.0;
+                            let m = mmap[src_offset + 1] as f32 / 255.0;
+                            let y = mmap[src_offset + 2] as f32 / 255.0;
+                            let k = mmap[src_offset + 3] as f32 / 255.0;
                             preview_pixels[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset+1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset+2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset+3] = 255;
+                            preview_pixels[dst_offset + 1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
+                            preview_pixels[dst_offset + 2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
+                            preview_pixels[dst_offset + 3] = 255;
                         } else {
-                            preview_pixels[dst_offset..dst_offset+4].copy_from_slice(&mmap[src_offset..src_offset+4]);
+                            preview_pixels[dst_offset..dst_offset + 4]
+                                .copy_from_slice(&mmap[src_offset..src_offset + 4]);
                         }
                     } else if samples == 1 {
                         let g = mmap[src_offset];
                         preview_pixels[dst_offset] = g;
-                        preview_pixels[dst_offset+1] = g;
-                        preview_pixels[dst_offset+2] = g;
-                        preview_pixels[dst_offset+3] = 255;
+                        preview_pixels[dst_offset + 1] = g;
+                        preview_pixels[dst_offset + 2] = g;
+                        preview_pixels[dst_offset + 3] = 255;
                     }
                 }
             }
@@ -466,7 +597,7 @@ impl HugeTiffStrideDecoder {
             // Engine B: Rayon Multi-threaded Decompression + Zero Allocation
             // ========================================================
             log::info!("MacOS ImageIO: Engine B - Rayon Parallel Decompression (Zero Alloc)");
-            
+
             // 1. Identify which chunks are ACTUALLY required
             let mut required_chunks = HashSet::new();
             for ty in 0..target_h {
@@ -522,64 +653,76 @@ impl HugeTiffStrideDecoder {
                                 if src_offset + (samples as usize) <= v.len() {
                                     if samples == 3 {
                                         preview_pixels[dst_offset] = v[src_offset];
-                                        preview_pixels[dst_offset+1] = v[src_offset+1];
-                                        preview_pixels[dst_offset+2] = v[src_offset+2];
-                                        preview_pixels[dst_offset+3] = 255;
+                                        preview_pixels[dst_offset + 1] = v[src_offset + 1];
+                                        preview_pixels[dst_offset + 2] = v[src_offset + 2];
+                                        preview_pixels[dst_offset + 3] = 255;
                                     } else if samples == 4 {
                                         if is_cmyk {
                                             let c = v[src_offset] as f32 / 255.0;
-                                            let m = v[src_offset+1] as f32 / 255.0;
-                                            let y = v[src_offset+2] as f32 / 255.0;
-                                            let k = v[src_offset+3] as f32 / 255.0;
-                                            preview_pixels[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+3] = 255;
+                                            let m = v[src_offset + 1] as f32 / 255.0;
+                                            let y = v[src_offset + 2] as f32 / 255.0;
+                                            let k = v[src_offset + 3] as f32 / 255.0;
+                                            preview_pixels[dst_offset] =
+                                                (255.0 * (1.0 - c) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 1] =
+                                                (255.0 * (1.0 - m) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 2] =
+                                                (255.0 * (1.0 - y) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 3] = 255;
                                         } else {
-                                            preview_pixels[dst_offset..dst_offset+4].copy_from_slice(&v[src_offset..src_offset+4]);
+                                            preview_pixels[dst_offset..dst_offset + 4]
+                                                .copy_from_slice(&v[src_offset..src_offset + 4]);
                                         }
                                     } else if samples == 1 {
                                         let g = v[src_offset];
                                         preview_pixels[dst_offset] = g;
-                                        preview_pixels[dst_offset+1] = g;
-                                        preview_pixels[dst_offset+2] = g;
-                                        preview_pixels[dst_offset+3] = 255;
+                                        preview_pixels[dst_offset + 1] = g;
+                                        preview_pixels[dst_offset + 2] = g;
+                                        preview_pixels[dst_offset + 3] = 255;
                                     }
                                 }
-                            },
+                            }
                             DecodingResult::U16(v) => {
                                 // ZERO ALLOCATION: We shift bits exactly when writing to the canvas.
                                 if src_offset + (samples as usize) <= v.len() {
                                     if samples == 3 {
                                         preview_pixels[dst_offset] = (v[src_offset] >> 8) as u8;
-                                        preview_pixels[dst_offset+1] = (v[src_offset+1] >> 8) as u8;
-                                        preview_pixels[dst_offset+2] = (v[src_offset+2] >> 8) as u8;
-                                        preview_pixels[dst_offset+3] = 255;
+                                        preview_pixels[dst_offset + 1] =
+                                            (v[src_offset + 1] >> 8) as u8;
+                                        preview_pixels[dst_offset + 2] =
+                                            (v[src_offset + 2] >> 8) as u8;
+                                        preview_pixels[dst_offset + 3] = 255;
                                     } else if samples == 4 {
                                         if is_cmyk {
                                             let c = (v[src_offset] >> 8) as f32 / 255.0;
-                                            let m = (v[src_offset+1] >> 8) as f32 / 255.0;
-                                            let y = (v[src_offset+2] >> 8) as f32 / 255.0;
-                                            let k = (v[src_offset+3] >> 8) as f32 / 255.0;
-                                            preview_pixels[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset+3] = 255;
+                                            let m = (v[src_offset + 1] >> 8) as f32 / 255.0;
+                                            let y = (v[src_offset + 2] >> 8) as f32 / 255.0;
+                                            let k = (v[src_offset + 3] >> 8) as f32 / 255.0;
+                                            preview_pixels[dst_offset] =
+                                                (255.0 * (1.0 - c) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 1] =
+                                                (255.0 * (1.0 - m) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 2] =
+                                                (255.0 * (1.0 - y) * (1.0 - k)) as u8;
+                                            preview_pixels[dst_offset + 3] = 255;
                                         } else {
                                             preview_pixels[dst_offset] = (v[src_offset] >> 8) as u8;
-                                            preview_pixels[dst_offset+1] = (v[src_offset+1] >> 8) as u8;
-                                            preview_pixels[dst_offset+2] = (v[src_offset+2] >> 8) as u8;
-                                            preview_pixels[dst_offset+3] = (v[src_offset+3] >> 8) as u8;
+                                            preview_pixels[dst_offset + 1] =
+                                                (v[src_offset + 1] >> 8) as u8;
+                                            preview_pixels[dst_offset + 2] =
+                                                (v[src_offset + 2] >> 8) as u8;
+                                            preview_pixels[dst_offset + 3] =
+                                                (v[src_offset + 3] >> 8) as u8;
                                         }
                                     } else if samples == 1 {
                                         let g = (v[src_offset] >> 8) as u8;
                                         preview_pixels[dst_offset] = g;
-                                        preview_pixels[dst_offset+1] = g;
-                                        preview_pixels[dst_offset+2] = g;
-                                        preview_pixels[dst_offset+3] = 255;
+                                        preview_pixels[dst_offset + 1] = g;
+                                        preview_pixels[dst_offset + 2] = g;
+                                        preview_pixels[dst_offset + 3] = 255;
                                     }
                                 }
-                            },
+                            }
                             _ => {}
                         }
                     }
@@ -587,33 +730,49 @@ impl HugeTiffStrideDecoder {
             }
         }
 
-        Ok(apply_orientation_buffer(preview_pixels, target_w, target_h, orientation))
+        Ok(apply_orientation_buffer(
+            preview_pixels,
+            target_w,
+            target_h,
+            orientation,
+        ))
     }
 }
 
 #[cfg(target_os = "macos")]
-fn apply_orientation_buffer(pixels: Vec<u8>, w: u32, h: u32, orientation: u32) -> (u32, u32, Vec<u8>) {
-    if orientation <= 1 { return (w, h, pixels); }
+fn apply_orientation_buffer(
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
+    orientation: u32,
+) -> (u32, u32, Vec<u8>) {
+    if orientation <= 1 {
+        return (w, h, pixels);
+    }
 
-    let (out_w, out_h) = if orientation >= 5 && orientation <= 8 { (h, w) } else { (w, h) };
+    let (out_w, out_h) = if orientation >= 5 && orientation <= 8 {
+        (h, w)
+    } else {
+        (w, h)
+    };
     let mut out = vec![0u8; (out_w * out_h * 4) as usize];
 
     for y in 0..h {
         for x in 0..w {
             let (nx, ny) = match orientation {
-                2 => (w - 1 - x, y), 
-                3 => (w - 1 - x, h - 1 - y), 
-                4 => (x, h - 1 - y), 
-                5 => (y, x), 
-                6 => (h - 1 - y, x), 
-                7 => (h - 1 - y, w - 1 - x), 
-                8 => (y, w - 1 - x), 
+                2 => (w - 1 - x, y),
+                3 => (w - 1 - x, h - 1 - y),
+                4 => (x, h - 1 - y),
+                5 => (y, x),
+                6 => (h - 1 - y, x),
+                7 => (h - 1 - y, w - 1 - x),
+                8 => (y, w - 1 - x),
                 _ => (x, y),
             };
             let src_idx = (y * w + x) as usize * 4;
             let dst_idx = (ny * out_w + nx) as usize * 4;
             if dst_idx + 4 <= out.len() {
-                out[dst_idx..dst_idx+4].copy_from_slice(&pixels[src_idx..src_idx+4]);
+                out[dst_idx..dst_idx + 4].copy_from_slice(&pixels[src_idx..src_idx + 4]);
             }
         }
     }
@@ -621,26 +780,38 @@ fn apply_orientation_buffer(pixels: Vec<u8>, w: u32, h: u32, orientation: u32) -
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn render_cgimage_to_rgba_sync(cg_image: &CGImage, orientation: u32, lw: u32, lh: u32) -> DecodedImage {
+unsafe fn render_cgimage_to_rgba_sync(
+    cg_image: &CGImage,
+    orientation: u32,
+    lw: u32,
+    lh: u32,
+) -> DecodedImage {
     unsafe {
         let pw = cg_image.width() as u32;
         let ph = cg_image.height() as u32;
-        let color_space = CGColorSpace::create_with_name(CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef())
-            .unwrap_or_else(|| CGColorSpace::create_device_rgb());
-        
+        let color_space = CGColorSpace::create_with_name(
+            CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef(),
+        )
+        .unwrap_or_else(|| CGColorSpace::create_device_rgb());
+
         let mut context = CGContext::create_bitmap_context(
-            None, lw as usize, lh as usize, 8, lw as usize * 4, &color_space,
-            core_graphics::base::kCGImageAlphaPremultipliedLast
+            None,
+            lw as usize,
+            lh as usize,
+            8,
+            lw as usize * 4,
+            &color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast,
         );
 
         apply_orientation_ctm(&mut context, orientation, lw as f64, lh as f64);
-        
+
         let rect = core_graphics::geometry::CGRect::new(
             &core_graphics::geometry::CGPoint::new(0.0, 0.0),
-            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64)
+            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64),
         );
         context.draw_image(rect, &cg_image);
-        
+
         DecodedImage {
             width: lw,
             height: lh,
@@ -652,41 +823,71 @@ unsafe fn render_cgimage_to_rgba_sync(cg_image: &CGImage, orientation: u32, lw: 
 #[cfg(target_os = "macos")]
 pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
     unsafe {
-        let path_str = path.to_str().ok_or("Invalid path")?;
-        let cf_path = CFString::new(path_str);
-        
-        let cf_url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault, cf_path.as_concrete_TypeRef(), 0, false);
-        if cf_url.is_null() {
-            return Err("Failed to create CFURL".to_string());
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mmap = Arc::new(Mmap::map(&file).map_err(|e| e.to_string())?);
+
+        let cf_data = CFDataCreateWithBytesNoCopy(
+            kCFAllocatorDefault,
+            mmap.as_ptr(),
+            mmap.len() as isize,
+            kCFAllocatorNull,
+        );
+
+        if cf_data.is_null() {
+            return Err("Failed to create CFData from mmap".to_string());
         }
 
-        let options = CFDictionary::from_CFType_pairs(&[
-            (CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(), CFBoolean::false_value().as_CFType()),
-        ]);
+        let options = CFDictionary::from_CFType_pairs(&[(
+            CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
+            CFBoolean::false_value().as_CFType(),
+        )]);
 
-        let source_ref = CGImageSourceCreateWithURL(cf_url, options.as_CFTypeRef() as _);
-        CFRelease(cf_url);
+        let source_ref = CGImageSourceCreateWithData(cf_data, options.as_CFTypeRef() as _);
+        CFRelease(cf_data);
 
         if source_ref.is_null() {
-            return Err("Failed to create CGImageSource from URL".to_string());
+            return Err("Failed to create CGImageSource from data (mmap)".to_string());
         }
 
         let source = CGImageSource::wrap_under_create_rule(source_ref as _);
-        let props_ref = CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
-        
         let mut physical_width = 0u32;
         let mut physical_height = 0u32;
         let mut orientation = 1u32;
 
+        let props_ref =
+            CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
         if !props_ref.is_null() {
-            let props: CFDictionary<CFString, CFTypeRef> = CFDictionary::wrap_under_create_rule(props_ref);
-            physical_width = get_cf_number_u32(&props, kCGImagePropertyPixelWidth as _).unwrap_or(0);
-            physical_height = get_cf_number_u32(&props, kCGImagePropertyPixelHeight as _).unwrap_or(0);
+            let props = CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
+
+            // Diagnostics: Check if TIFF is tiled or stripped
+            let tiff_key = CFString::from_static_string("{TIFF}");
+            if let Some(tiff_props_ref) = props.find(&tiff_key) {
+                let tiff_props =
+                    CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(*tiff_props_ref as _);
+                let tw_key = CFString::from_static_string("TileWidth");
+                let th_key = CFString::from_static_string("TileHeight");
+
+                if tiff_props.contains(&tw_key) && tiff_props.contains(&th_key) {
+                    log::info!("TIFF Diagnostics: [{}] is TILED", path.display());
+                } else {
+                    log::info!(
+                        "TIFF Diagnostics: [{}] is STRIPPED (Potentially slower random access)",
+                        path.display()
+                    );
+                }
+            }
+
+            physical_width =
+                get_cf_number_u32(&props, kCGImagePropertyPixelWidth as _).unwrap_or(0);
+            physical_height =
+                get_cf_number_u32(&props, kCGImagePropertyPixelHeight as _).unwrap_or(0);
             orientation = get_cf_number_u32(&props, kCGImagePropertyOrientation as _).unwrap_or(1);
         }
 
         if physical_width == 0 || physical_height == 0 {
-            return Err("Failed to read image dimensions from metadata. File might be corrupted.".into());
+            return Err(
+                "Failed to read image dimensions from metadata. File might be corrupted.".into(),
+            );
         }
 
         let (logical_width, logical_height) = if orientation >= 5 && orientation <= 8 {
@@ -697,14 +898,45 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
 
         let tiled_threshold = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
         if (logical_width as u64 * logical_height as u64) < tiled_threshold {
-            let options_decode = CFDictionary::from_CFType_pairs(&[
-                (CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(), CFBoolean::false_value().as_CFType()),
-            ]);
-            let cg_image_ref = CGImageSourceCreateImageAtIndex(source.as_concrete_TypeRef(), 0, options_decode.as_CFTypeRef() as _);
-            if cg_image_ref.is_null() { return Err("Failed to decode".to_string()); }
-            let decoded = render_cgimage_to_rgba_sync(&CGImage::from_ptr(cg_image_ref), orientation, logical_width, logical_height);
+            let options_decode = CFDictionary::from_CFType_pairs(&[(
+                CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
+                CFBoolean::false_value().as_CFType(),
+            )]);
+            let cg_image_ref = CGImageSourceCreateImageAtIndex(
+                source.as_concrete_TypeRef(),
+                0,
+                options_decode.as_CFTypeRef() as _,
+            );
+            if cg_image_ref.is_null() {
+                return Err("Failed to decode".to_string());
+            }
+            let decoded = render_cgimage_to_rgba_sync(
+                &CGImage::from_ptr(cg_image_ref),
+                orientation,
+                logical_width,
+                logical_height,
+            );
             return Ok(ImageData::Static(decoded));
         }
+
+        let options_decode = CFDictionary::from_CFType_pairs(&[(
+            CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
+            CFBoolean::true_value().as_CFType(),
+        )]);
+        let cg_image_ref = CGImageSourceCreateImageAtIndex(
+            source.as_concrete_TypeRef(),
+            0,
+            options_decode.as_CFTypeRef() as _,
+        );
+        if cg_image_ref.is_null() {
+            return Err("Failed to create cached CGImage".to_string());
+        }
+        let cached_image = CGImage::from_ptr(cg_image_ref);
+
+        let color_space = CGColorSpace::create_with_name(
+            CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef(),
+        )
+        .unwrap_or_else(|| CGColorSpace::create_device_rgb());
 
         Ok(ImageData::Tiled(Arc::new(ImageIoTiledSource {
             _path: path.to_path_buf(),
@@ -714,13 +946,11 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
             logical_height,
             orientation,
             source,
+            cached_image,
+            color_space,
+            _mmap: mmap,
         })))
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn load_via_image_io(_path: &std::path::Path) -> Result<ImageData, String> {
-    Err("ImageIO only on macOS".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -734,8 +964,11 @@ pub fn discover_imageio_codecs() -> Vec<String> {
             }
         }
     }
-    vec!["tif".to_string(), "tiff".to_string(), "jpg".to_string(), "png".to_string(), "heic".to_string()]
+    vec![
+        "tif".to_string(),
+        "tiff".to_string(),
+        "jpg".to_string(),
+        "png".to_string(),
+        "heic".to_string(),
+    ]
 }
-
-#[cfg(not(target_os = "macos"))]
-pub fn discover_imageio_codecs() -> Vec<String> { vec![] }

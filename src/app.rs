@@ -116,9 +116,9 @@ impl HardwareTier {
 
     pub fn gpu_cache_tiles(&self) -> usize {
         match self {
-            Self::Low => 128,     // 128MB VRAM
-            Self::Medium => 256,   // 256MB VRAM
-            Self::High => 512,     // 512MB VRAM (Conservative base)
+            Self::Low => 256,     // Basic coverage
+            Self::Medium => 448,   // Retina/4K coverage
+            Self::High => 1024,    // Performance/Gigapixel coverage
         }
     }
 
@@ -271,6 +271,10 @@ pub struct ImageViewerApp {
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
     current_rotation: i32,
 
+    // Persistence error reporting
+    save_error_rx: crossbeam_channel::Receiver<String>,
+    last_save_error: Option<(String, Instant)>,
+    
     // Adaptive tile upload quota based on hardware and current frame performance
     tile_upload_quota: usize,
     hardware_tier: HardwareTier,
@@ -304,11 +308,14 @@ impl ImageViewerApp {
         setup_fonts(&cc.egui_ctx, &settings);
 
         let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
+        let (save_error_tx, save_error_rx) = crossbeam_channel::unbounded::<String>();
         std::thread::Builder::new()
             .name("settings-saver".to_string())
             .spawn(move || {
                 while let Ok(settings) = save_rx.recv() {
-                    settings.save();
+                    if let Err(e) = settings.save() {
+                        let _ = save_error_tx.send(e);
+                    }
                 }
             })
             .expect("failed to spawn settings saver thread");
@@ -428,6 +435,8 @@ impl ImageViewerApp {
             preload_budget_backward: budget_bwd,
             context_menu_pos: None,
             current_rotation: 0,
+            save_error_rx,
+            last_save_error: None,
             tile_upload_quota: tile_quota,
             hardware_tier: tier,
         };
@@ -2386,7 +2395,7 @@ impl ImageViewerApp {
                 let screen_fill_scale = (screen_rect.width() / rotated_img_size.x)
                     .min(screen_rect.height() / rotated_img_size.y);
                 
-                let threshold = (preview_scale * 0.95)
+                let threshold = (preview_scale * 1.02)
                     .min(screen_fill_scale * 1.02) // Add 2% buffer to avoid flickering at exact screen fit
                     .max(fit_scale * 1.05);        // Never trigger in pure "Fit" mode unless slightly zoomed
 
@@ -2394,16 +2403,25 @@ impl ImageViewerApp {
                 if effective_scale >= threshold {
                     // Compute visible tiles using the UNROTATED destination rect
                     let padding = self.hardware_tier.look_ahead_padding();
-                    let mut visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect, padding);
+                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect, padding);
                     
-                    // ANTI-THRASHING: Truncate visibility to what fits in VRAM.
-                    // This prevents the flickering "back-and-forth" when viewing more tiles than the cache can hold.
-                    visible.truncate(self.hardware_tier.gpu_cache_tiles());
+                    // ANTI-THRASHING: We no longer truncate 'visible' here.
+                    // Eviction logic is now handled in get_or_create_tile to prevent circular holes.
+                    // visible.truncate(self.hardware_tier.gpu_cache_tiles());
 
                     // Upload and draw tiles (mutable borrow, scoped)
                     let ctx_ref = ui.ctx().clone();
-                    // Adaptive upload quota: adjusted dynamically in logic() based on frametime
-                    let tile_upload_quota = self.tile_upload_quota;
+
+                    // BURST POLICY:
+                    // If we are NOT dragging and NOT scrolling (stable view), boost upload quota
+                    // to fill the screen quickly. Otherwise, keep it low to maintain 60FPS.
+                    let is_interacting = canvas_resp.dragged() || self.last_mouse_wheel_nav.abs() > 0.01;
+                    let tile_upload_quota = if !is_interacting {
+                        (self.tile_upload_quota * 4).min(48) // Burst mode
+                    } else {
+                        self.tile_upload_quota // Stable mode
+                    };
+                    
                     let mut newly_uploaded = 0;
 
                     {
@@ -2411,9 +2429,10 @@ impl ImageViewerApp {
                         let pivot = dest.center();
                         let rot = if rotation != 0 { Some(egui::emath::Rot2::from_angle(angle)) } else { None };
 
+                        let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
                         for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
                             let allow_upload = newly_uploaded < tile_upload_quota;
-                            let (status, just_uploaded) = tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, visible.len());
+                            let (status, just_uploaded) = tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
                             
                             if just_uploaded {
                                 newly_uploaded += 1;
@@ -2424,7 +2443,7 @@ impl ImageViewerApp {
                                     let mut alpha = 1.0;
                                     if let Some(at) = ready_at {
                                         let elapsed = at.elapsed().as_secs_f32();
-                                        let duration = 0.15; // 150ms snappy fade
+                                        let duration = 0.08; // 80ms crisp fade
                                         if elapsed < duration {
                                             alpha = (elapsed / duration).clamp(0.0, 1.0);
                                             ui.ctx().request_repaint(); // Smooth transition
@@ -3006,6 +3025,18 @@ impl ImageViewerApp {
                             self.cached_palette.osd_text,
                         );
                     }
+
+                    // Display persistence error if active
+                    if let Some((ref err, _)) = self.last_save_error {
+                        let err_pos = screen_rect.left_bottom() + Vec2::new(12.0, -32.0);
+                        ui.painter().text(
+                            err_pos,
+                            Align2::LEFT_BOTTOM,
+                            t!("error.settings_save_failed", error = err).to_string(),
+                            FontId::proportional(13.0),
+                            Color32::from_rgb(255, 100, 100),
+                        );
+                    }
                 } else {
                     // While loading/parsing, show a minimal status
                     ui.painter().text(
@@ -3584,22 +3615,31 @@ impl eframe::App for ImageViewerApp {
         // Automatic theme refresh (for System theme trailing detection)
         // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
         if let Some(new_palette) = self.settings.theme.resolve_if_changed(&mut self.theme_cache) {
-            let changed = new_palette.is_dark != self.cached_palette.is_dark;
             self.cached_palette = new_palette;
-            if changed {
-                setup_visuals(ctx, &self.settings, &self.cached_palette);
-            }
+            // Always refresh visuals if resolve_if_changed returns Some, to ensure
+            // all style properties (including those not in is_dark) are synchronized.
+            setup_visuals(ctx, &self.settings, &self.cached_palette);
         }
 
-        // Only update pixels_per_point when it actually changes
-        // (e.g. window dragged to a monitor with different DPI).
-        // setup_visuals() is called once at startup and on settings changes,
-        // NOT every frame — it rebuilds Style/Visuals objects needlessly.
         let ppp = ctx.pixels_per_point();
         if (ppp - self.cached_pixels_per_point).abs() > 0.001 {
             self.cached_pixels_per_point = ppp;
             setup_visuals(ctx, &self.settings, &self.cached_palette);
         }
+
+        // Poll persistence errors from the saver thread
+        while let Ok(err) = self.save_error_rx.try_recv() {
+            log::error!("Settings persistence error: {}", err);
+            self.last_save_error = Some((err, Instant::now()));
+        }
+
+        // Clear persistence error after 5 seconds
+        if let Some((_, start)) = self.last_save_error {
+            if start.elapsed().as_secs() >= 5 {
+                self.last_save_error = None;
+            }
+        }
+
         self.process_scan_results();
         self.process_music_scan_results();
         self.process_loaded_images(ctx);
@@ -4007,7 +4047,8 @@ fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)
 fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     let mut visuals = if palette.is_dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     visuals.window_fill = palette.panel_bg;
-    visuals.panel_fill = palette.canvas_bg;
+    visuals.panel_fill = palette.panel_bg;
+    visuals.window_fill = palette.panel_bg;
     visuals.extreme_bg_color = palette.extreme_bg;
     visuals.faint_bg_color = palette.widget_bg;
 
@@ -4027,18 +4068,13 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);
 
-    // Hovered: bg_fill → scrollbar hover; weak_bg_fill → button/menu hover
-    visuals.widgets.hovered.bg_fill = palette.scrollbar_handle;
+    // Harden opaque backgrounds for other states to avoid "Performance Mode" transparency glitches
+    visuals.widgets.hovered.bg_fill = if palette.is_dark { Color32::from_gray(100) } else { Color32::from_gray(225) };
+    visuals.widgets.active.bg_fill = if palette.is_dark { palette.widget_active } else { palette.accent };
     
     // Thematic hover background for menus and dropdowns
     if palette.is_dark {
-        let hover_base_color = palette.accent2;
-        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
-            hover_base_color.r(),
-            hover_base_color.g(),
-            hover_base_color.b(),
-            45,
-        );
+        visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
     } else {
         // Light Mode: Very subtle tint + color the text itself to avoid "muddy" look
@@ -4066,10 +4102,10 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
 
     // Selection (used in ComboBox current item and SelectableLabel)
     if palette.is_dark {
-        // Dark Mode: Monochrome Selection - Zero blue, just Silver & White
-        // This makes selected items feel like "Highlighted Steel"
-        visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(200, 200, 255, 10); // Very faint ice tint
-        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_gray(210));    // Sharp Silver outline
+        // Dark Mode: keep selected states fully opaque and neutral to avoid
+        // Windows "best performance" compositing glitches and unexpected blue highlights.
+        visuals.selection.bg_fill = Color32::from_gray(78);
+        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_gray(210));
     } else {
         // Light Mode: Use a delicate outline + soft fill instead of a solid block
         // Increased thickness to 2.0 for better hierarchy as requested
