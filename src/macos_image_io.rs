@@ -87,17 +87,6 @@ unsafe extern "C" {
     ) -> *const std::ffi::c_void;
     fn CGImageSourceGetCount(source: *const std::ffi::c_void) -> usize;
 
-    // URL & Data based creation
-    fn CFURLCreateWithFileSystemPath(
-        allocator: *const std::ffi::c_void,
-        filePath: core_foundation::string::CFStringRef,
-        pathStyle: isize,
-        isDirectory: bool,
-    ) -> *const std::ffi::c_void;
-    fn CGImageSourceCreateWithURL(
-        url: *const std::ffi::c_void,
-        options: core_foundation::dictionary::CFDictionaryRef,
-    ) -> *const std::ffi::c_void;
     fn CFDataCreateWithBytesNoCopy(
         allocator: *const std::ffi::c_void,
         bytes: *const u8,
