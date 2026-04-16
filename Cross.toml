@@ -2,6 +2,7 @@
 # Use pre-build to install dependencies for ARM64 inside the cross container
 pre-build = [
     "dpkg --add-architecture arm64",
+    "echo 'Acquire::Retries \"3\";' > /etc/apt/apt.conf.d/80-retries",
     "apt-get update",
-    "apt-get install --assume-yes pkg-config libasound2-dev:arm64 libxkbcommon-dev:arm64 libxcb-render0-dev:arm64 libxcb-shape0-dev:arm64 libxcb-xfixes0-dev:arm64 libfontconfig1-dev:arm64"
+    "apt-get install --assume-yes --fix-missing pkg-config libasound2-dev:arm64 libxkbcommon-dev:arm64 libxcb-render0-dev:arm64 libxcb-shape0-dev:arm64 libxcb-xfixes0-dev:arm64 libfontconfig1-dev:arm64"
 ]
