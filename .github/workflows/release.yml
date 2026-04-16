@@ -82,6 +82,14 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
         if: "!matrix.use_cross"
 
+      - name: Run SIMD Parity Tests (Cross)
+        if: matrix.use_cross
+        run: cross test --release --target ${{ matrix.target }} simd_swizzle
+
+      - name: Run SIMD Parity Tests (Native)
+        if: "!matrix.use_cross && matrix.target != 'aarch64-pc-windows-msvc'"
+        run: cargo test --release --target ${{ matrix.target }} simd_swizzle
+
       - name: Check glibc compatibility
         if: runner.os == 'Linux'
         run: |

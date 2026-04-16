@@ -32,6 +32,262 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use memmap2::Mmap;
 
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+#[cfg(target_arch = "aarch64")]
+use core::arch::aarch64::*;
+
+mod simd_swizzle {
+    #[cfg(target_arch = "x86_64")]
+    use core::arch::x86_64::*;
+
+    #[cfg(target_arch = "aarch64")]
+    use core::arch::aarch64::*;
+
+    pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
+        let len = r.len().min(g.len()).min(b.len()).min(a.len());
+        let mut i = 0;
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe { interleave_rgba_avx2(r, g, b, a, dst, &mut i, len); }
+            } else if is_x86_feature_detected!("sse4.1") {
+                unsafe { interleave_rgba_sse41(r, g, b, a, dst, &mut i, len); }
+            }
+            if i >= len { return; }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // NEON is always available on aarch64
+            unsafe { interleave_rgba_neon(r, g, b, a, dst, &mut i, len); }
+            if i >= len { return; }
+        }
+
+        while i < len {
+            let base = i * 4;
+            dst[base] = r[i];
+            dst[base + 1] = g[i];
+            dst[base + 2] = b[i];
+            dst[base + 3] = a[i];
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn interleave_rgba_avx2(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+        while *i + 32 <= len {
+            unsafe {
+                let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
+                let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
+                let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
+                let va = _mm256_loadu_si256(a.as_ptr().add(*i) as *const __m256i);
+
+                let rg_lo = _mm256_unpacklo_epi8(vr, vg);
+                let rg_hi = _mm256_unpackhi_epi8(vr, vg);
+                let ba_lo = _mm256_unpacklo_epi8(vb, va);
+                let ba_hi = _mm256_unpackhi_epi8(vb, va);
+
+                let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
+                let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
+                let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
+                let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
+
+                let p_dst = dst.as_mut_ptr().add(*i * 4);
+                _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
+                _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
+                _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
+                _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
+                _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
+                _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
+                _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
+                _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
+            }
+            *i += 32;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "sse4.1")]
+    unsafe fn interleave_rgba_sse41(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+        while *i + 16 <= len {
+            unsafe {
+                let vr = _mm_loadu_si128(r.as_ptr().add(*i) as *const __m128i);
+                let vg = _mm_loadu_si128(g.as_ptr().add(*i) as *const __m128i);
+                let vb = _mm_loadu_si128(b.as_ptr().add(*i) as *const __m128i);
+                let va = _mm_loadu_si128(a.as_ptr().add(*i) as *const __m128i);
+
+                let rg_lo = _mm_unpacklo_epi8(vr, vg);
+                let rg_hi = _mm_unpackhi_epi8(vr, vg);
+                let ba_lo = _mm_unpacklo_epi8(vb, va);
+                let ba_hi = _mm_unpackhi_epi8(vb, va);
+
+                let rgba0 = _mm_unpacklo_epi16(rg_lo, ba_lo);
+                let rgba1 = _mm_unpackhi_epi16(rg_lo, ba_lo);
+                let rgba2 = _mm_unpacklo_epi16(rg_hi, ba_hi);
+                let rgba3 = _mm_unpackhi_epi16(rg_hi, ba_hi);
+
+                let p_dst = dst.as_mut_ptr().add(*i * 4);
+                _mm_storeu_si128(p_dst as *mut __m128i, rgba0);
+                _mm_storeu_si128(p_dst.add(16) as *mut __m128i, rgba1);
+                _mm_storeu_si128(p_dst.add(32) as *mut __m128i, rgba2);
+                _mm_storeu_si128(p_dst.add(48) as *mut __m128i, rgba3);
+            }
+            *i += 16;
+        }
+    }
+
+    pub fn interleave_rgb(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8]) {
+        let len = r.len().min(g.len()).min(b.len());
+        let mut i = 0;
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe { interleave_rgb_avx2(r, g, b, alpha, dst, &mut i, len); }
+            }
+            if i >= len { return; }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe { interleave_rgb_neon(r, g, b, alpha, dst, &mut i, len); }
+            if i >= len { return; }
+        }
+
+        while i < len {
+            let base = i * 4;
+            dst[base] = r[i];
+            dst[base + 1] = g[i];
+            dst[base + 2] = b[i];
+            dst[base + 3] = alpha;
+            i += 1;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn interleave_rgb_avx2(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8], i: &mut usize, len: usize) {
+        unsafe {
+            let va = _mm256_set1_epi8(alpha as i8);
+            while *i + 32 <= len {
+                let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
+                let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
+                let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
+
+                let rg_lo = _mm256_unpacklo_epi8(vr, vg);
+                let rg_hi = _mm256_unpackhi_epi8(vr, vg);
+                let ba_lo = _mm256_unpacklo_epi8(vb, va);
+                let ba_hi = _mm256_unpackhi_epi8(vb, va);
+
+                let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
+                let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
+                let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
+                let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
+
+                let p_dst = dst.as_mut_ptr().add(*i * 4);
+                _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
+                _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
+                _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
+                _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
+                _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
+                _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
+                _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
+                _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
+                *i += 32;
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn interleave_rgba_neon(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+        while *i + 16 <= len {
+            unsafe {
+                let vr = vld1q_u8(r.as_ptr().add(*i));
+                let vg = vld1q_u8(g.as_ptr().add(*i));
+                let vb = vld1q_u8(b.as_ptr().add(*i));
+                let va = vld1q_u8(a.as_ptr().add(*i));
+                vst4q_u8(dst.as_mut_ptr().add(*i * 4), uint8x16x4_t(vr, vg, vb, va));
+            }
+            *i += 16;
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn interleave_rgb_neon(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8], i: &mut usize, len: usize) {
+        unsafe {
+            let va = vdupq_n_u8(alpha);
+            while *i + 16 <= len {
+                let vr = vld1q_u8(r.as_ptr().add(*i));
+                let vg = vld1q_u8(g.as_ptr().add(*i));
+                let vb = vld1q_u8(b.as_ptr().add(*i));
+                vst4q_u8(dst.as_mut_ptr().add(*i * 4), uint8x16x4_t(vr, vg, vb, va));
+                *i += 16;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_rgba_parity() {
+            // Test various lengths to cover aligned/unaligned data and SIMD transitions
+            for len in [0, 1, 15, 16, 17, 31, 32, 33, 1024, 1025] {
+                let r: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+                let g: Vec<u8> = (0..len).map(|i| ((i + 1) % 256) as u8).collect();
+                let b: Vec<u8> = (0..len).map(|i| ((i + 2) % 256) as u8).collect();
+                let a: Vec<u8> = (0..len).map(|i| ((i + 3) % 256) as u8).collect();
+                
+                let mut dst_simd = vec![0u8; len * 4];
+                let mut dst_ref = vec![0u8; len * 4];
+                
+                interleave_rgba(&r, &g, &b, &a, &mut dst_simd);
+                
+                // Naive reference (manually verifiable, 100% safe)
+                for i in 0..len {
+                    dst_ref[i * 4 + 0] = r[i];
+                    dst_ref[i * 4 + 1] = g[i];
+                    dst_ref[i * 4 + 2] = b[i];
+                    dst_ref[i * 4 + 3] = a[i];
+                }
+                
+                assert_eq!(dst_simd, dst_ref, "RGBA mismatch at len {}", len);
+            }
+        }
+
+        #[test]
+        fn test_rgb_parity() {
+            for len in [0, 1, 31, 32, 33, 1025] {
+                let r: Vec<u8> = (0..len).map(|i| (i % 256) as u8).collect();
+                let g: Vec<u8> = (0..len).map(|i| ((i + 1) % 256) as u8).collect();
+                let b: Vec<u8> = (0..len).map(|i| ((i + 2) % 256) as u8).collect();
+                let alpha = 255u8;
+                
+                let mut dst_simd = vec![0u8; len * 4];
+                let mut dst_ref = vec![0u8; len * 4];
+                
+                interleave_rgb(&r, &g, &b, alpha, &mut dst_simd);
+                
+                for i in 0..len {
+                    dst_ref[i * 4 + 0] = r[i];
+                    dst_ref[i * 4 + 1] = g[i];
+                    dst_ref[i * 4 + 2] = b[i];
+                    dst_ref[i * 4 + 3] = alpha;
+                }
+                
+                assert_eq!(dst_simd, dst_ref, "RGB mismatch at len {}", len);
+            }
+        }
+    }
+}
+
+
+
 /// Decoded PSB composite image (Full in-memory).
 #[allow(dead_code)]
 pub struct PsbComposite {
@@ -193,7 +449,6 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
 
     // Interleave channels directly into RGBA
     let pixel_count = width as usize * height as usize;
-    let mut rgba = vec![255u8; pixel_count * 4]; // Default alpha = 255
 
     // First: row byte counts for RLE (if applicable)
     let total_rows = height as usize * channels as usize;
@@ -210,70 +465,92 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
         }
     }
 
-    // Decoding and interleaving
+    // Step 1: Read all channel data into planar buffers (Sequential I/O)
+    let mut planar_channels: Vec<Option<Vec<u8>>> = vec![None; channels as usize];
     for ch_idx in 0..channels {
-        // Map channel index to RGBA component
-        // Mode 1 (Grayscale): 0=Gray, 1=Alpha
-        // Mode 3 (RGB): 0=R, 1=G, 2=B, 3=Alpha
-        let ch_target = match (color_mode, ch_idx) {
-            (1, 0) => vec![0, 1, 2], // Gray maps to R, G, B
-            (1, 1) => vec![3],       // Alpha
-            (3, 0) => vec![0],
-            (3, 1) => vec![1],
-            (3, 2) => vec![2],
-            (3, 3) => vec![3],
-            (_, 0..=2) => vec![ch_idx as usize],
-            _ => vec![], // Skip extra channels
+        let is_used = match (color_mode, ch_idx) {
+            (1, 0..=1) => true, // Gray, Alpha
+            (3, 0..=3) => true, // R, G, B, Alpha
+            (_, 0..=2) => true, // Generic R,G,B
+            _ => false,
         };
 
-        if ch_target.is_empty() {
-             // Skip this channel in the file
-             match compression {
-                 0 => { r.seek(SeekFrom::Current(pixel_count as i64)).map_err(|e| format!("Skip raw: {e}"))?; }
-                 1 => {
-                     for row in 0..height {
-                         let idx = ch_idx as usize * height as usize + row as usize;
-                         let len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                         r.seek(SeekFrom::Current(len as i64)).map_err(|e| format!("Skip RLE: {e}"))?;
-                     }
-                 }
-                 _ => {}
-             }
-             continue;
+        if is_used {
+            let mut ch_data = vec![0u8; pixel_count];
+            match compression {
+                0 => {
+                    r.read_exact(&mut ch_data).map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
+                }
+                1 => {
+                    for row in 0..height as usize {
+                        let idx = ch_idx as usize * height as usize + row;
+                        let compressed_len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                        let mut compressed = vec![0u8; compressed_len];
+                        r.read_exact(&mut compressed).map_err(|e| format!("Read RLE: {e}"))?;
+                        let decompressed = unpack_bits(&compressed, width as usize);
+                        let dst_start = row * width as usize;
+                        let copy_len = decompressed.len().min(width as usize);
+                        ch_data[dst_start..dst_start + copy_len].copy_from_slice(&decompressed[..copy_len]);
+                    }
+                }
+                _ => return Err(format!("Unsupported compression: {compression}")),
+            }
+            planar_channels[ch_idx as usize] = Some(ch_data);
+        } else {
+            // Skip unused channel
+            match compression {
+                0 => { r.seek(SeekFrom::Current(pixel_count as i64)).map_err(|e| format!("Skip raw: {e}"))?; }
+                1 => {
+                    for row in 0..height {
+                        let idx = ch_idx as usize * height as usize + row as usize;
+                        let len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                        r.seek(SeekFrom::Current(len as i64)).map_err(|e| format!("Skip RLE: {e}"))?;
+                    }
+                }
+                _ => {}
+            }
         }
+    }
 
-        match compression {
-            0 => {
-                // Raw data
-                for row in 0..height {
-                    let mut row_buf = vec![0u8; width as usize];
-                    r.read_exact(&mut row_buf).map_err(|e| format!("Read raw row: {e}"))?;
-                    for (col, &val) in row_buf.iter().enumerate() {
-                        let base = (row as usize * width as usize + col) * 4;
-                        for &target_offset in &ch_target {
-                            rgba[base + target_offset] = val;
+    // Step 2: Interleave planar buffers into final RGBA buffer (SIMD Swizzling)
+    let mut rgba = vec![255u8; pixel_count * 4];
+    for row in 0..height as usize {
+        let start = row * width as usize;
+        let end = start + width as usize;
+        let dst_row = &mut rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
+
+        match (color_mode, channels) {
+            (3, 3) | (3, 4) | (_, 3) | (_, 4) => {
+                let r = planar_channels[0].as_ref().map(|d| &d[start..end]);
+                let g = planar_channels[1].as_ref().map(|d| &d[start..end]);
+                let b = planar_channels[2].as_ref().map(|d| &d[start..end]);
+                if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+                    if channels >= 4 && planar_channels.get(3).and_then(|c| c.as_ref()).is_some() {
+                        let a = planar_channels[3].as_ref().unwrap();
+                        simd_swizzle::interleave_rgba(r, g, b, &a[start..end], dst_row);
+                    } else {
+                        simd_swizzle::interleave_rgb(r, g, b, 255, dst_row);
+                    }
+                }
+            }
+            (1, 1) | (1, 2) => {
+                if let Some(gray) = &planar_channels[0] {
+                    let g_row = &gray[start..end];
+                    let a_row = if channels >= 2 { planar_channels.get(1).and_then(|c| c.as_ref()).map(|d| &d[start..end]) } else { None };
+                    for (col, &v) in g_row.iter().enumerate() {
+                        let base = col * 4;
+                        dst_row[base] = v;
+                        dst_row[base + 1] = v;
+                        dst_row[base + 2] = v;
+                        if let Some(a) = a_row {
+                            if col < a.len() {
+                                dst_row[base + 3] = a[col];
+                            }
                         }
                     }
                 }
             }
-            1 => {
-                // RLE data
-                for row in 0..height {
-                    let idx = ch_idx as usize * height as usize + row as usize;
-                    let compressed_len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                    let mut compressed = vec![0u8; compressed_len];
-                    r.read_exact(&mut compressed).map_err(|e| format!("Read RLE: {e}"))?;
-                    let decompressed = unpack_bits(&compressed, width as usize);
-                    
-                    for (col, &val) in decompressed.iter().enumerate() {
-                        let base = (row as usize * width as usize + col) * 4;
-                        for &target_offset in &ch_target {
-                            rgba[base + target_offset] = val;
-                        }
-                    }
-                }
-            }
-            _ => return Err(format!("Unsupported compression: {compression}")),
+            _ => {}
         }
     }
 
@@ -393,8 +670,24 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut rgba = vec![255u8; (w * h * 4) as usize];
         
-        for ch_idx in 0..self.channels {
-            let ch_target = match (self.color_mode, ch_idx) {
+        // 1. Group rows by tile-relative Y for all channels
+        // This allows us to process all channels for a single row together (SIMD-friendly)
+        let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
+        for ch in 0..self.channels {
+            let rows = self.get_rows_batch(ch, y, h);
+            for (rel_y, data) in rows {
+                if (rel_y as usize) < h as usize {
+                    row_grid[rel_y as usize][ch as usize] = Some(data);
+                }
+            }
+        }
+        
+        let start = x as usize;
+        let end = (x + w) as usize;
+
+        // Pre-calculate channel target offsets to avoid match/vec overhead in hot loops
+        let channel_mappings: Vec<Vec<usize>> = (0..self.channels)
+            .map(|ch_idx| match (self.color_mode, ch_idx) {
                 (1, 0) => vec![0, 1, 2],
                 (1, 1) => vec![3],
                 (3, 0) => vec![0],
@@ -403,34 +696,76 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 (3, 3) => vec![3],
                 (_, 0..=2) => vec![ch_idx as usize],
                 _ => vec![],
-            };
-            if ch_target.is_empty() { continue; }
+            })
+            .collect();
 
-            // Batch: fetch all rows for this channel at once (2 lock ops instead of 512*2)
-            let rows = self.get_rows_batch(ch_idx, y, h);
+        // 2. Swizzle row-by-row
+        for rel_y in 0..h as usize {
+            let dst_row = &mut rgba[rel_y * w as usize * 4 .. (rel_y + 1) * w as usize * 4];
+            let src_channels = &row_grid[rel_y];
             
-            let start = x as usize;
-            let end = (x + w) as usize;
-            
-            for (row_in_tile, row_data) in &rows {
-                let row_len = row_data.len();
-                if start >= row_len { continue; }
-                let actual_end = end.min(row_len);
-                let data = &row_data[start..actual_end];
-                let actual_w = data.len();
-                
-                let dst_row_start = *row_in_tile as usize * w as usize;
-                
-                if ch_target.len() == 1 {
-                    let target = ch_target[0];
-                    for col in 0..actual_w {
-                        rgba[(dst_row_start + col) * 4 + target] = data[col];
+            // Optimized fast-paths for common color modes
+            let mut processed = false;
+            match (self.color_mode, self.channels) {
+                (3, 3) | (3, 4) => {
+                    // RGB or RGBA (Mode 3)
+                    let r = src_channels[0].as_ref().map(|d| &d[start..end.min(d.len())]);
+                    let g = src_channels[1].as_ref().map(|d| &d[start..end.min(d.len())]);
+                    let b = src_channels[2].as_ref().map(|d| &d[start..end.min(d.len())]);
+                    
+                    if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+                        if self.channels == 4 {
+                            if let Some(a) = src_channels[3].as_ref().map(|d| &d[start..end.min(d.len())]) {
+                                simd_swizzle::interleave_rgba(r, g, b, a, dst_row);
+                                processed = true;
+                            }
+                        } else {
+                            simd_swizzle::interleave_rgb(r, g, b, 255, dst_row);
+                            processed = true;
+                        }
                     }
-                } else {
-                    for col in 0..actual_w {
-                        let base = (dst_row_start + col) * 4;
-                        for &target in &ch_target {
-                            rgba[base + target] = data[col];
+                }
+                (1, 1) | (1, 2) => {
+                    // Grayscale (Mode 1)
+                    if let Some(gray) = src_channels[0].as_ref().map(|d| &d[start..end.min(d.len())]) {
+                        let alpha = if self.channels == 2 {
+                             src_channels[1].as_ref().map(|d| &d[start..end.min(d.len())])
+                        } else { None };
+
+                        for (col, &v) in gray.iter().enumerate() {
+                            let base = col * 4;
+                            dst_row[base] = v;
+                            dst_row[base + 1] = v;
+                            dst_row[base + 2] = v;
+                            if let Some(a_buf) = alpha {
+                                if col < a_buf.len() {
+                                    dst_row[base + 3] = a_buf[col];
+                                }
+                            }
+                        }
+                        processed = true;
+                    }
+                }
+                _ => {}
+            }
+
+            if !processed {
+                // Scalar fallback for complex channel mappings
+                for ch_idx in 0..self.channels {
+                    let ch_target = &channel_mappings[ch_idx as usize];
+                    if ch_target.is_empty() { continue; }
+                    
+                    if let Some(row_data) = &src_channels[ch_idx as usize] {
+                        let row_len = row_data.len();
+                        if start < row_len {
+                            let actual_end = end.min(row_len);
+                            let data = &row_data[start..actual_end];
+                            for (col, &val) in data.iter().enumerate() {
+                                let base = col * 4;
+                                for &target in ch_target {
+                                    dst_row[base + target] = val;
+                                }
+                            }
                         }
                     }
                 }
@@ -445,35 +780,45 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
         
         let mut pixels = vec![255u8; (out_w * out_h * 4) as usize];
+
+        // 1. Pre-calculate channel mappings to avoid hot-loop allocations
+        let channel_mappings: Vec<Vec<usize>> = (0..self.channels)
+            .map(|ch_idx| match (self.color_mode, ch_idx) {
+                (1, 0) => vec![0usize, 1, 2],
+                (1, 1) => vec![3],
+                (3, 0) => vec![0],
+                (3, 1) => vec![1],
+                (3, 2) => vec![2],
+                (3, 3) => vec![3],
+                (_, 0..=2) => vec![ch_idx as usize],
+                _ => vec![],
+            })
+            .collect();
+
+        // 2. Pre-calculate X indices to avoid floating point math in inner loops
+        let x_map: Vec<usize> = (0..out_w)
+            .map(|out_x| ((out_x as f64 / scale) as usize).min(self.width as usize - 1))
+            .collect();
         
         // For each sampled row, decode once per channel and pick pixels
         for out_y in 0..out_h {
             let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
+            let row_start_idx = out_y as usize * out_w as usize;
             
             for ch_idx in 0..self.channels {
-                let ch_target = match (self.color_mode, ch_idx) {
-                    (1, 0) => vec![0usize, 1, 2],
-                    (1, 1) => vec![3],
-                    (3, 0) => vec![0],
-                    (3, 1) => vec![1],
-                    (3, 2) => vec![2],
-                    (3, 3) => vec![3],
-                    (_, 0..=2) => vec![ch_idx as usize],
-                    _ => vec![],
-                };
+                let ch_target = &channel_mappings[ch_idx as usize];
                 if ch_target.is_empty() { continue; }
                 
                 let row_data = self.get_row(ch_idx, src_y);
+                let row_len = row_data.len();
                 
-                for out_x in 0..out_w {
-                    let src_x = ((out_x as f64 / scale) as usize).min(row_data.len().saturating_sub(1));
-                    let dst_off = (out_y as usize * out_w as usize + out_x as usize) * 4;
-                    if src_x < row_data.len() {
+                for out_x in 0..out_w as usize {
+                    let src_x = x_map[out_x];
+                    if src_x < row_len {
                         let val = row_data[src_x];
-                        for &target in &ch_target {
-                            if dst_off + target < pixels.len() {
-                                pixels[dst_off + target] = val;
-                            }
+                        let dst_off = (row_start_idx + out_x) * 4;
+                        for &target in ch_target {
+                            pixels[dst_off + target] = val;
                         }
                     }
                 }
@@ -507,9 +852,10 @@ fn unpack_bits(data: &[u8], expected_len: usize) -> Vec<u8> {
             if i < data.len() {
                 let val = data[i];
                 i += 1;
-                for _ in 0..count {
-                    if result.len() >= expected_len { break; }
-                    result.push(val);
+                let remaining = expected_len.saturating_sub(result.len());
+                let actual_count = count.min(remaining);
+                if actual_count > 0 {
+                    result.resize(result.len() + actual_count, val);
                 }
             }
         }
