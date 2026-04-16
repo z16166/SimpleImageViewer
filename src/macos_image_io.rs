@@ -21,8 +21,6 @@ use memmap2::Mmap;
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;
 #[cfg(target_os = "macos")]
-use std::collections::HashSet;
-#[cfg(target_os = "macos")]
 use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
@@ -33,7 +31,11 @@ use std::sync::atomic::Ordering;
 #[cfg(target_os = "macos")]
 use tiff::decoder::{Decoder, DecodingResult};
 #[cfg(target_os = "macos")]
+use std::collections::{HashSet, HashMap};
+#[cfg(target_os = "macos")]
 use tiff::tags::Tag;
+#[cfg(target_os = "macos")]
+use std::sync::Mutex;
 
 #[cfg(target_os = "macos")]
 use core_foundation::array::CFArray;
@@ -86,6 +88,10 @@ unsafe extern "C" {
         key: *const std::ffi::c_void,
     ) -> *const std::ffi::c_void;
     fn CGImageSourceGetCount(source: *const std::ffi::c_void) -> usize;
+    fn CGImageCreateWithImageInRect(
+        image: core_graphics::sys::CGImageRef,
+        rect: core_graphics::geometry::CGRect,
+    ) -> core_graphics::sys::CGImageRef;
 
     fn CFDataCreateWithBytesNoCopy(
         allocator: *const std::ffi::c_void,
@@ -457,6 +463,183 @@ impl ImageIoTiledSource {
 }
 
 #[cfg(target_os = "macos")]
+pub struct TiffStripCachingSource {
+    path: PathBuf,
+    _mmap: Arc<Mmap>,
+    cached_image: CGImage,
+    color_space: CGColorSpace,
+    physical_width: u32,
+    physical_height: u32,
+    logical_width: u32,
+    logical_height: u32,
+    chunk_w: u32,
+    chunk_h: u32,
+    orientation: u32,
+    // Key: chunk_idx, Value: Normalized RGBA8 buffer for that chunk
+    strip_cache: Mutex<HashMap<u32, Arc<Vec<u8>>>>,
+    cache_order: Mutex<Vec<u32>>,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for TiffStripCachingSource {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for TiffStripCachingSource {}
+
+#[cfg(target_os = "macos")]
+impl crate::loader::TiledImageSource for TiffStripCachingSource {
+    fn width(&self) -> u32 {
+        self.logical_width
+    }
+    fn height(&self) -> u32 {
+        self.logical_height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let mut rgba = vec![255u8; (w * h * 4) as usize];
+
+        // 1. Group processing by chunk to minimize Mutex locking overhead (CRITICAL PERF FIX)
+        let tiles_across = (self.physical_width + self.chunk_w - 1) / self.chunk_w;
+        
+        // Find which chunks intersect with this tile
+        let start_chunk_row = y / self.chunk_h;
+        let end_chunk_row = (y + h - 1) / self.chunk_h;
+        let start_chunk_col = x / self.chunk_w;
+        let end_chunk_col = (x + w - 1) / self.chunk_w;
+
+        for crow in start_chunk_row..=end_chunk_row {
+            for ccol in start_chunk_col..=end_chunk_col {
+                let chunk_idx = crow * tiles_across + ccol;
+                
+                // Get or decode the strip/tile (one lock per chunk instead of per pixel!)
+                if let Some(data) = self.get_or_decode_chunk(chunk_idx) {
+                    let chunk_y_start = crow * self.chunk_h;
+                    let chunk_x_start = ccol * self.chunk_w;
+                    
+                    // Calculate intersection between tile and this chunk
+                    let intersect_y_start = y.max(chunk_y_start);
+                    let intersect_y_end = (y + h).min(chunk_y_start + self.chunk_h).min(self.logical_height);
+                    let intersect_x_start = x.max(chunk_x_start);
+                    let intersect_x_end = (x + w).min(chunk_x_start + self.chunk_w).min(self.logical_width);
+
+                    if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end {
+                        continue;
+                    }
+
+                    for py in intersect_y_start..intersect_y_end {
+                        let y_in_chunk = py - chunk_y_start;
+                        let ty = py - y;
+                        
+                        let src_row_start = (y_in_chunk * self.chunk_w + (intersect_x_start - chunk_x_start)) as usize * 4;
+                        let dst_row_start = (ty * w + (intersect_x_start - x)) as usize * 4;
+                        let copy_px_count = intersect_x_end - intersect_x_start;
+                        let copy_bytes = copy_px_count as usize * 4;
+
+                        if src_row_start + copy_bytes <= data.len() && dst_row_start + copy_bytes <= rgba.len() {
+                            rgba[dst_row_start..dst_row_start + copy_bytes].copy_from_slice(&data[src_row_start..src_row_start + copy_bytes]);
+                        }
+                    }
+                } else {
+                    log::warn!("TiffStripCachingSource: Failed to decode chunk {}. Returning partial white tile.", chunk_idx);
+                }
+            }
+        }
+
+        // If orientation is not 1, we need to transform the whole tile
+        if self.orientation > 1 {
+            let (_ow, _oh, opixels) = apply_orientation_buffer(rgba, w, h, self.orientation);
+            // Note: apply_orientation_buffer might change dimensions if 90deg rotation is involved.
+            // But here extract_tile expects w, h. This needs careful handling.
+            // For now, if orientation > 1, we might just want to use ImageIO which handles it via CTM.
+            return opixels;
+        }
+
+        rgba
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        HugeTiffStrideDecoder::decode_preview(&self.path, max_w.max(max_h), self.orientation)
+            .unwrap_or((0, 0, vec![]))
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl TiffStripCachingSource {
+    fn get_or_decode_chunk(&self, chunk_idx: u32) -> Option<Arc<Vec<u8>>> {
+        {
+            let cache = self.strip_cache.lock().unwrap();
+            if let Some(chunk) = cache.get(&chunk_idx) {
+                return Some(Arc::clone(chunk));
+            }
+        }
+
+        // Decode
+        let data = self.decode_chunk_to_rgba8(chunk_idx)?;
+        let data_arc = Arc::new(data);
+
+        {
+            let mut cache = self.strip_cache.lock().unwrap();
+            let mut order = self.cache_order.lock().unwrap();
+
+            cache.insert(chunk_idx, Arc::clone(&data_arc));
+            order.push(chunk_idx);
+
+            // Evict if too many strips (Max 32 strips ~ 1.5GB for very giant images)
+            if order.len() > 32 {
+                let to_remove = order.remove(0);
+                cache.remove(&to_remove);
+            }
+        }
+
+        Some(data_arc)
+    }
+
+    fn decode_chunk_to_rgba8(&self, chunk_idx: u32) -> Option<Vec<u8>> {
+        let pw = self.physical_width;
+        let ph = self.physical_height;
+        let start_y = chunk_idx * self.chunk_h;
+        if start_y >= ph { return None; }
+        
+        let h = self.chunk_h.min(ph - start_y);
+        
+        // Render the strip by drawing the full CGImage into a small bitmap context
+        // with a translation offset. This is the same proven approach used by
+        // ImageIoTiledSource::extract_tile, which correctly handles CoreGraphics'
+        // bottom-up coordinate system.
+        let mut context = CGContext::create_bitmap_context(
+            None,
+            pw as usize,
+            h as usize,
+            8,
+            pw as usize * 4,
+            &self.color_space,
+            core_graphics::base::kCGImageAlphaPremultipliedLast,
+        );
+
+        // CoreGraphics has Y=0 at bottom. To extract strip at top-down row `start_y`,
+        // we need to translate so that the correct portion of the image lands in
+        // our h-pixel-tall bitmap context.
+        //
+        // The full image drawn at origin would place its bottom-left at (0,0).
+        // We want the rows [start_y .. start_y+h] (top-down) to appear in our context.
+        // In CG coords, those rows are at y = (ph - start_y - h) .. (ph - start_y).
+        // We translate by -(ph - start_y - h) to shift them into view.
+        let cg_y_offset = ph as f64 - start_y as f64 - h as f64;
+        context.translate(0.0, -cg_y_offset);
+
+        let full_rect = core_graphics::geometry::CGRect::new(
+            &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+            &core_graphics::geometry::CGSize::new(pw as f64, ph as f64),
+        );
+        context.draw_image(full_rect, &self.cached_image);
+        Some(context.data().to_vec())
+    }
+}
+
+#[cfg(target_os = "macos")]
 struct HugeTiffStrideDecoder;
 
 #[cfg(target_os = "macos")]
@@ -811,6 +994,10 @@ unsafe fn render_cgimage_to_rgba_sync(
 
 #[cfg(target_os = "macos")]
 pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
     unsafe {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mmap = Arc::new(Mmap::map(&file).map_err(|e| e.to_string())?);
@@ -906,6 +1093,72 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
                 logical_height,
             );
             return Ok(ImageData::Static(decoded));
+        }
+
+        // --- Tiled Path Selection ---
+        // Optimization: For giant STRIPPED TIFFs, use our custom caching loader to avoid CoreGraphics re-decoding overhead.
+        let is_tiff = ext == "tif" || ext == "tiff";
+        let mut is_stripped = false;
+        if is_tiff {
+            let props_ref = CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
+            if !props_ref.is_null() {
+                let props = CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
+                let tiff_key = CFString::from_static_string("{TIFF}");
+                if let Some(tiff_props_ref) = props.find(&tiff_key) {
+                    let tiff_props = CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(*tiff_props_ref as _);
+                    let tw_key = CFString::from_static_string("TileWidth");
+                    let th_key = CFString::from_static_string("TileHeight");
+                    if !tiff_props.contains_key(&tw_key) || !tiff_props.contains_key(&th_key) {
+                        is_stripped = true;
+                    }
+                }
+            }
+        }
+
+        if is_tiff && is_stripped && orientation == 1 {
+            log::info!("MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}). Using TiffStripCachingSource.", physical_width, physical_height);
+            
+            // Get RowsPerStrip or fallback to a reasonable chunk size (e.g., 256 for optimal scrolling)
+            let mut chunk_h = 256;
+            let cursor = Cursor::new(&mmap[..]);
+            if let Ok(mut decoder) = Decoder::new(cursor) {
+                chunk_h = decoder.get_tag_u32(Tag::RowsPerStrip).unwrap_or(256).min(physical_height);
+            }
+
+            let options_decode = CFDictionary::from_CFType_pairs(&[(
+                CFString::wrap_under_get_rule(kCGImageSourceShouldCache).as_CFType(),
+                CFBoolean::true_value().as_CFType(),
+            )]);
+            let cg_image_ref = CGImageSourceCreateImageAtIndex(
+                source.as_concrete_TypeRef(),
+                0,
+                options_decode.as_CFTypeRef() as _,
+            );
+            if cg_image_ref.is_null() {
+                return Err("Failed to create cached CGImage for optimized path".to_string());
+            }
+            let cached_image = CGImage::from_ptr(cg_image_ref);
+
+            let color_space = CGColorSpace::create_with_name(
+                CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef(),
+            )
+            .unwrap_or_else(|| CGColorSpace::create_device_rgb());
+
+            return Ok(ImageData::Tiled(Arc::new(TiffStripCachingSource {
+                path: path.to_path_buf(),
+                _mmap: Arc::clone(&mmap),
+                cached_image,
+                color_space,
+                physical_width,
+                physical_height,
+                logical_width,
+                logical_height,
+                chunk_w: physical_width,
+                chunk_h,
+                orientation,
+                strip_cache: Mutex::new(HashMap::new()),
+                cache_order: Mutex::new(Vec::new()),
+            })));
         }
 
         let options_decode = CFDictionary::from_CFType_pairs(&[(

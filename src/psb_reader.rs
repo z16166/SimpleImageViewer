@@ -40,6 +40,52 @@ pub struct PsbComposite {
     pub pixels: Vec<u8>, // RGBA8
 }
 
+/// LRU cache for decompressed PSB rows.
+/// Key: (channel_index, global_row) -> decompressed row bytes (exactly `width` bytes)
+struct PsbRowCache {
+    entries: std::collections::HashMap<(u32, u32), Arc<Vec<u8>>>,
+    order: std::collections::VecDeque<(u32, u32)>,
+    capacity: usize,
+}
+
+impl PsbRowCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get(&mut self, key: (u32, u32)) -> Option<Arc<Vec<u8>>> {
+        if let Some(data) = self.entries.get(&key) {
+            // Move to back (most recent)
+            if let Some(pos) = self.order.iter().position(|k| *k == key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            Some(Arc::clone(data))
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: (u32, u32), data: Arc<Vec<u8>>) {
+        if self.entries.contains_key(&key) {
+            return;
+        }
+        while self.entries.len() >= self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            } else {
+                break;
+            }
+        }
+        self.entries.insert(key, data);
+        self.order.push_back(key);
+    }
+}
+
 /// A tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 pub struct PsbTiledSource {
     #[allow(dead_code)]
@@ -55,6 +101,113 @@ pub struct PsbTiledSource {
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
     row_offsets: Vec<u64>,
+    /// Cache of recently decompressed rows to avoid re-decoding for adjacent tiles.
+    row_cache: std::sync::Mutex<PsbRowCache>,
+}
+
+impl PsbTiledSource {
+    /// Decode a single row without touching the cache. Pure computation.
+    fn decode_row_unlocked(&self, ch_idx: u32, global_row: u32) -> Vec<u8> {
+        let idx = ch_idx as usize * self.height as usize + global_row as usize;
+        match self.compression {
+            0 => {
+                let offset = match self.row_offsets.get(idx) {
+                    Some(&o) => o as usize,
+                    None => return vec![0u8; self.width as usize],
+                };
+                let end = offset + self.width as usize;
+                if end <= self.mmap.len() {
+                    self.mmap[offset..end].to_vec()
+                } else {
+                    vec![0u8; self.width as usize]
+                }
+            }
+            1 => {
+                let offset = match self.row_offsets.get(idx) {
+                    Some(&o) => o as usize,
+                    None => return vec![0u8; self.width as usize],
+                };
+                let next_offset = if (idx + 1) < self.row_offsets.len() {
+                    self.row_offsets[idx + 1] as usize
+                } else {
+                    self.mmap.len()
+                };
+                if offset < self.mmap.len() && next_offset <= self.mmap.len() && next_offset > offset {
+                    let compressed = &self.mmap[offset..next_offset];
+                    let mut decompressed = unpack_bits(compressed, self.width as usize);
+                    decompressed.resize(self.width as usize, 0);
+                    decompressed
+                } else {
+                    vec![0u8; self.width as usize]
+                }
+            }
+            _ => vec![0u8; self.width as usize],
+        }
+    }
+
+    /// Get a decompressed row for a given channel and global row index.
+    /// Used by generate_preview which processes one row at a time.
+    fn get_row(&self, ch_idx: u32, global_row: u32) -> Arc<Vec<u8>> {
+        let key = (ch_idx, global_row);
+        {
+            let mut cache = self.row_cache.lock().unwrap();
+            if let Some(data) = cache.get(key) {
+                return data;
+            }
+        }
+        let row_data = self.decode_row_unlocked(ch_idx, global_row);
+        let data = Arc::new(row_data);
+        {
+            let mut cache = self.row_cache.lock().unwrap();
+            cache.insert(key, Arc::clone(&data));
+        }
+        data
+    }
+
+    /// Batch-fetch rows for a tile: single lock for lookup, decode misses without lock,
+    /// single lock for insertion. Reduces lock ops from ~2048 to 2 per channel.
+    fn get_rows_batch(&self, ch_idx: u32, y: u32, h: u32) -> Vec<(u32, Arc<Vec<u8>>)> {
+        let mut result: Vec<(u32, Arc<Vec<u8>>)> = Vec::with_capacity(h as usize);
+        let mut missing: Vec<u32> = Vec::new();
+
+        // Phase 1: Single lock — batch cache lookup
+        {
+            let mut cache = self.row_cache.lock().unwrap();
+            for row_in_tile in 0..h {
+                let global_row = y + row_in_tile;
+                if global_row >= self.height { continue; }
+                let key = (ch_idx, global_row);
+                if let Some(data) = cache.get(key) {
+                    result.push((row_in_tile, data));
+                } else {
+                    missing.push(row_in_tile);
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            return result;
+        }
+
+        // Phase 2: Decode all missing rows WITHOUT holding the lock
+        let decoded: Vec<(u32, Arc<Vec<u8>>)> = missing.iter().map(|&row_in_tile| {
+            let global_row = y + row_in_tile;
+            let data = Arc::new(self.decode_row_unlocked(ch_idx, global_row));
+            (row_in_tile, data)
+        }).collect();
+
+        // Phase 3: Single lock — batch insert
+        {
+            let mut cache = self.row_cache.lock().unwrap();
+            for (row_in_tile, data) in &decoded {
+                let global_row = y + row_in_tile;
+                cache.insert((ch_idx, global_row), Arc::clone(data));
+            }
+        }
+
+        result.extend(decoded);
+        result
+    }
 }
 
 /// Read the flattened composite image from a PSD/PSB file.
@@ -274,13 +427,24 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         }
     }
 
+    // Cache capacity: memory-budget-based to avoid blowing up RAM on ultra-wide images.
+    // Budget: 128MB max. Each cached row is `width` bytes.
+    // Minimum: channels * 512 rows (needed to process one tile without cache thrashing).
+    const ROW_CACHE_BUDGET: usize = 128 * 1024 * 1024; // 128MB
+    let row_bytes = width as usize;
+    let budget_rows = ROW_CACHE_BUDGET / row_bytes.max(1);
+    let min_rows = channels as usize * 512; // Must cover one full tile height per channel
+    let cache_capacity = budget_rows.max(min_rows).min(channels as usize * 2048);
+
     Ok(PsbTiledSource {
         path: path.to_path_buf(),
         mmap: Arc::new(mmap),
         width, height, channels, color_mode, is_psb, compression,
         row_offsets,
+        row_cache: std::sync::Mutex::new(PsbRowCache::new(cache_capacity)),
     })
 }
+
 
 impl crate::loader::TiledImageSource for PsbTiledSource {
     fn width(&self) -> u32 { self.width }
@@ -302,89 +466,76 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
             };
             if ch_target.is_empty() { continue; }
 
-            for row_in_tile in 0..h {
-                let global_row = y + row_in_tile;
-                if global_row >= self.height { continue; }
+            // Batch: fetch all rows for this channel at once (2 lock ops instead of 512*2)
+            let rows = self.get_rows_batch(ch_idx, y, h);
+            
+            let start = x as usize;
+            let end = (x + w) as usize;
+            
+            for (row_in_tile, row_data) in &rows {
+                let row_len = row_data.len();
+                if start >= row_len { continue; }
+                let actual_end = end.min(row_len);
+                let data = &row_data[start..actual_end];
+                let actual_w = data.len();
                 
-                let idx = ch_idx as usize * self.height as usize + global_row as usize;
-                let offset = match self.row_offsets.get(idx) {
-                    Some(&o) => o as usize,
-                    None => {
-                        log::error!("[{}] PSB: Row offset index {} out of range", self.path.display(), idx);
-                        continue;
+                let dst_row_start = *row_in_tile as usize * w as usize;
+                
+                if ch_target.len() == 1 {
+                    let target = ch_target[0];
+                    for col in 0..actual_w {
+                        rgba[(dst_row_start + col) * 4 + target] = data[col];
                     }
-                };
-                
-                match self.compression {
-                    0 => {
-                        // Raw: just take the slice for the full line and then sub-slice it
-                        let line_start = offset + x as usize;
-                        let line_end = line_start + w as usize;
-                        if line_end <= self.mmap.len() {
-                            let data = &self.mmap[line_start..line_end];
-                            for (col, &val) in data.iter().enumerate() {
-                                let base = (row_in_tile as usize * w as usize + col) * 4;
-                                for &target_offset in &ch_target {
-                                    if base + target_offset < rgba.len() {
-                                        rgba[base + target_offset] = val;
-                                    }
-                                }
-                            }
+                } else {
+                    for col in 0..actual_w {
+                        let base = (dst_row_start + col) * 4;
+                        for &target in &ch_target {
+                            rgba[base + target] = data[col];
                         }
                     }
-                    1 => {
-                        // RLE: decompress the Row
-                        let next_offset = if (idx + 1) < self.row_offsets.len() {
-                            self.row_offsets[idx + 1] as usize
-                        } else { self.mmap.len() };
-                        
-                        if offset < self.mmap.len() && next_offset <= self.mmap.len() {
-                            let compressed = &self.mmap[offset..next_offset];
-                            let decompressed = unpack_bits(compressed, self.width as usize);
-                            
-                            let start = x as usize;
-                            let end = (x + w) as usize;
-                            if start < decompressed.len() {
-                                let data = &decompressed[start..end.min(decompressed.len())];
-                                for (col, &val) in data.iter().enumerate() {
-                                    let base = (row_in_tile as usize * w as usize + col) * 4;
-                                    for &target_offset in &ch_target {
-                                        if base + target_offset < rgba.len() {
-                                            rgba[base + target_offset] = val;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                };
+                }
             }
         }
         rgba
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        // For a preview, we can just grab even-spaced rows/columns.
-        // Even simpler: just use our existing extract_tile logic but specialized for downsampling if needed.
-        // For now, let's do a basic but correct downsampling by skipping rows.
         let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
         let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
         
         let mut pixels = vec![255u8; (out_w * out_h * 4) as usize];
         
-        // This is a naive downsampler, but it's FAST because it only decodes required rows
-        for y in 0..out_h {
-            let src_y = (y as f64 / scale) as u32;
-            // Decode JUST this one row at full width, then pick pixels
-            let row_rgba = self.extract_tile(0, src_y, self.width, 1);
-            for x in 0..out_w {
-                let src_x = (x as f64 / scale) as usize;
-                let dst_off = (y as usize * out_w as usize + x as usize) * 4;
-                let src_off = src_x * 4;
-                if src_off + 4 <= row_rgba.len() && dst_off + 4 <= pixels.len() {
-                    pixels[dst_off..dst_off+4].copy_from_slice(&row_rgba[src_off..src_off+4]);
+        // For each sampled row, decode once per channel and pick pixels
+        for out_y in 0..out_h {
+            let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
+            
+            for ch_idx in 0..self.channels {
+                let ch_target = match (self.color_mode, ch_idx) {
+                    (1, 0) => vec![0usize, 1, 2],
+                    (1, 1) => vec![3],
+                    (3, 0) => vec![0],
+                    (3, 1) => vec![1],
+                    (3, 2) => vec![2],
+                    (3, 3) => vec![3],
+                    (_, 0..=2) => vec![ch_idx as usize],
+                    _ => vec![],
+                };
+                if ch_target.is_empty() { continue; }
+                
+                let row_data = self.get_row(ch_idx, src_y);
+                
+                for out_x in 0..out_w {
+                    let src_x = ((out_x as f64 / scale) as usize).min(row_data.len().saturating_sub(1));
+                    let dst_off = (out_y as usize * out_w as usize + out_x as usize) * 4;
+                    if src_x < row_data.len() {
+                        let val = row_data[src_x];
+                        for &target in &ch_target {
+                            if dst_off + target < pixels.len() {
+                                pixels[dst_off + target] = val;
+                            }
+                        }
+                    }
                 }
             }
         }

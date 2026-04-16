@@ -1041,6 +1041,7 @@ impl ImageViewerApp {
                 // Large image: create TileManager + preview, skip full GPU upload
                 if idx == self.current_index {
                     self.current_image_res = Some((decoded.width, decoded.height));
+                    crate::tile_cache::set_tile_size_for_image(decoded.width, decoded.height);
                     let mut tm = TileManager::new(idx, load_result.generation, decoded.width, decoded.height, decoded.pixels.clone());
                     let preview = DecodedImage {
                         width: decoded.width,
@@ -1081,6 +1082,7 @@ impl ImageViewerApp {
 
                 if idx == self.current_index {
                     self.current_image_res = Some((source.width(), source.height()));
+                    crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
                     let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
                     
                     if let Some(preview) = load_result.preview.as_ref() {
@@ -1160,20 +1162,23 @@ impl ImageViewerApp {
 
 
     fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
-        // Only update if it refers to the currently viewed image and matching generation
-        if self.loader.current_generation(update.index) == update.generation {
-            match update.result {
-                Ok(preview) => {
-                    if let Some(ref mut tm) = self.tile_manager {
-                        if tm.image_index == update.index {
-                            tm.set_preview(preview, ctx);
-                            ctx.request_repaint();
-                        }
+        // Apply HQ preview if it matches the currently displayed tile manager.
+        // No generation check here: the loading map is cleared by poll() before
+        // the HQ preview arrives, making current_generation() always return 0.
+        // The tile manager's image_index match is sufficient validation.
+        match update.result {
+            Ok(preview) => {
+                if let Some(ref mut tm) = self.tile_manager {
+                    if tm.image_index == update.index {
+                        log::info!("[App] HQ preview applied for index {} ({}x{})", 
+                            update.index, preview.width, preview.height);
+                        tm.set_preview(preview, ctx);
+                        ctx.request_repaint();
                     }
                 }
-                Err(e) => {
-                    log::error!("Preview update failed for index {}: {}", update.index, e);
-                }
+            }
+            Err(e) => {
+                log::error!("Preview update failed for index {}: {}", update.index, e);
             }
         }
     }
@@ -1392,12 +1397,14 @@ impl ImageViewerApp {
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
                 if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                self.loader.flush_tile_queue();
             }
             if zoom_out {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
                 if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                self.loader.flush_tile_queue();
             }
             if zoom_reset {
                 self.zoom_factor = 1.0;
@@ -1405,10 +1412,7 @@ impl ImageViewerApp {
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
                 if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
-            }
-            if toggle_auto_switch {
-                self.settings.auto_switch = !self.settings.auto_switch;
-                self.queue_save();
+                self.loader.flush_tile_queue();
             }
         }
         if toggle_settings {
@@ -1472,6 +1476,7 @@ impl ImageViewerApp {
                     self.generation = self.generation.wrapping_add(1);
                     self.loader.set_generation(self.generation);
                     if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                    self.loader.flush_tile_queue();
                 }
             } else if scroll_delta.y.abs() > 0.0 {
                 // Navigation with debounce (cooldown) to prevent rapid flipping
@@ -1497,10 +1502,21 @@ impl ImageViewerApp {
             self.pan_offset = Vec2::ZERO;
             self.queue_save();
         }
-        if toggle_auto_switch && !self.show_settings && self.settings.auto_switch {
-            self.slideshow_paused = !self.slideshow_paused;
-            if !self.slideshow_paused {
+        if toggle_auto_switch && !self.show_settings {
+            if self.settings.auto_switch {
+                self.slideshow_paused = !self.slideshow_paused;
+                if !self.slideshow_paused {
+                    self.last_switch_time = Instant::now();
+                }
+            } else {
+                // If auto-switch is OFF, pressing space could optionally START it,
+                // but usually users expect Space to be Play/Pause for the feature.
+                // Let's make it also toggle the master switch IF it was off, 
+                // to make the key more useful.
+                self.settings.auto_switch = true;
+                self.slideshow_paused = false;
                 self.last_switch_time = Instant::now();
+                self.queue_save();
             }
         }
         if toggle_goto && !self.image_files.is_empty() {
@@ -2338,6 +2354,7 @@ impl ImageViewerApp {
                     self.generation = self.generation.wrapping_add(1);
                     self.loader.set_generation(self.generation);
                     if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                    self.loader.flush_tile_queue();
                 }
 
                 // Rotation logic
@@ -2382,24 +2399,51 @@ impl ImageViewerApp {
                     .min(screen_rect.height() / rotated_img_size.y)
                     .min(1.0);
                 
+                // preview_scale: ratio of preview texture resolution to the ORIGINAL image resolution.
+                // This tells us at what display scale the preview's native pixels would be 1:1.
+                // Above this scale, tiles provide higher quality than the preview.
                 let preview_scale = if let Some(ref p) = tm_ref.preview_texture {
-                    p.size()[0] as f32 / unrotated_size.x.max(1.0)
+                    p.size()[0] as f32 / rotated_img_size.x.max(1.0)
                 } else {
                     0.1 // Fallback
                 };
 
-                // Trigger tiling based on two conditions:
-                // 1. We have zoomed past the actual resolution of the preview texture (native precision).
-                // 2. The image on screen is larger than the screen itself (screen saturation).
-                // Taking the min() ensures we pick whichever bottle-neck comes first.
-                let screen_fill_scale = (screen_rect.width() / rotated_img_size.x)
-                    .min(screen_rect.height() / rotated_img_size.y);
-                
-                let threshold = (preview_scale * 1.02)
-                    .min(screen_fill_scale * 1.02) // Add 2% buffer to avoid flickering at exact screen fit
-                    .max(fit_scale * 1.05);        // Never trigger in pure "Fit" mode unless slightly zoomed
+                // Trigger tiling when the display resolution exceeds the preview's native resolution.
+                // Two scenarios:
+                // 1. HQ preview available (preview_scale >= fit_scale): tile when zoomed past preview quality
+                // 2. LQ bootstrap preview (preview_scale < fit_scale): use conservative threshold to avoid
+                //    flooding the queue with thousands of tiles before HQ preview arrives
+                let threshold = if preview_scale >= fit_scale {
+                    // Tile when zoomed sufficiently past preview's native resolution.
+                    // At preview_scale * 1.0, tiles offer no visible improvement over the preview.
+                    // At 1.2x, tiles are noticeably sharper while keeping tile count manageable.
+                    (preview_scale * 1.2).max(fit_scale * 1.05)
+                } else {
+                    // LQ bootstrap: require tiles to render at >= 64 screen pixels before loading
+                    let min_tile_screen_px = 64.0;
+                    let tile_scale_min = min_tile_screen_px / crate::tile_cache::get_tile_size() as f32;
+                    tile_scale_min.max(fit_scale * 1.05)
+                };
 
                 let effective_scale = dest.width() / rotated_img_size.x;
+                
+                // Log threshold diagnostics once per image load
+                {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static LAST_LOGGED_SCALE: AtomicU64 = AtomicU64::new(0);
+                    let scale_bits = (effective_scale * 1000.0) as u64;
+                    let prev = LAST_LOGGED_SCALE.load(Ordering::Relaxed);
+                    if scale_bits != prev {
+                        LAST_LOGGED_SCALE.store(scale_bits, Ordering::Relaxed);
+                        if effective_scale >= threshold * 0.9 && effective_scale <= threshold * 1.1 {
+                            let fname = self.image_files[self.current_index].file_name()
+                                .and_then(|n| n.to_str()).unwrap_or("?");
+                            log::info!("[Tiling] [{}] preview_scale={:.4}, fit_scale={:.4}, threshold={:.4}, effective={:.4}, img_w={}, tiled={}",
+                                fname, preview_scale, fit_scale, threshold, effective_scale, rotated_img_size.x as u32, effective_scale >= threshold);
+                        }
+                    }
+                }
+                
                 if effective_scale >= threshold {
                     // Compute visible tiles using the UNROTATED destination rect
                     let padding = self.hardware_tier.look_ahead_padding();
@@ -2481,6 +2525,25 @@ impl ImageViewerApp {
                                 }
                                 TileStatus::Pending(needs_request) => {
                                     if needs_request {
+                                        // Dynamic pending cap: scale inversely with visible tile count.
+                                        // At high zoom (few tiles visible), load fast.
+                                        // At low zoom (many visible), allow enough to keep worker threads busy.
+                                        // Scale down for larger tiles to keep memory bounded.
+                                        let visible_count = visible.len();
+                                        let ts = crate::tile_cache::get_tile_size();
+                                        let scale = if ts >= 1024 { 2 } else { 1 }; // halve caps for 1024 tiles
+                                        let max_pending = if visible_count > 1000 {
+                                            24 / scale
+                                        } else if visible_count > 200 {
+                                            48 / scale
+                                        } else if visible_count > 50 {
+                                            64 / scale
+                                        } else {
+                                            96 / scale
+                                        };
+                                        if tm.pending_tiles.len() >= max_pending {
+                                            continue; // Don't break — still need to draw already-Ready tiles below
+                                        }
                                         let source = tm.get_source();
                                         let generation = tm.generation;
                                         // visible list is already sorted by distance to center

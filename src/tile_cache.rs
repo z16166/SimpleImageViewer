@@ -21,8 +21,26 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, LazyLock};
 use std::time::Instant;
 
-/// Tile size in pixels (each tile is TILE_SIZE x TILE_SIZE).
-pub const TILE_SIZE: u32 = 512;
+/// Tile size in pixels (each tile is tile_size x tile_size).
+/// Dynamically adjusted: 1024 for gigapixel images (>500MP), 512 otherwise.
+pub static TILE_SIZE: AtomicU32 = AtomicU32::new(512);
+
+/// Get the current tile size.
+pub fn get_tile_size() -> u32 {
+    TILE_SIZE.load(Ordering::Relaxed)
+}
+
+/// Set tile size based on image dimensions.
+/// Also adjusts MAX_TILES_BASE to maintain constant VRAM budget.
+pub fn set_tile_size_for_image(width: u32, height: u32) {
+    let megapixels = (width as u64 * height as u64) / 1_000_000;
+    let size = if megapixels > 500 { 1024 } else { 512 };
+    TILE_SIZE.store(size, Ordering::Relaxed);
+    // Keep VRAM budget constant: 512 tiles * 512*512*4 = 512MB
+    // For 1024 tiles: 128 * 1024*1024*4 = 512MB
+    let max_tiles = if size == 1024 { 128 } else { 512 };
+    MAX_TILES_BASE.store(max_tiles, Ordering::Relaxed);
+}
 
 /// Pixel count threshold above which tiled mode is activated.
 /// Updated dynamically based on HardwareTier in app.rs.
@@ -311,12 +329,14 @@ impl TileManager {
 
     /// Number of tile columns in the grid.
     pub fn cols(&self) -> u32 {
-        (self.full_width + TILE_SIZE - 1) / TILE_SIZE
+        let ts = get_tile_size();
+        (self.full_width + ts - 1) / ts
     }
 
     /// Number of tile rows in the grid.
     pub fn rows(&self) -> u32 {
-        (self.full_height + TILE_SIZE - 1) / TILE_SIZE
+        let ts = get_tile_size();
+        (self.full_height + ts - 1) / ts
     }
 
 
@@ -376,8 +396,9 @@ impl TileManager {
                     }
                 }
 
-                let tw = TILE_SIZE.min(self.full_width - coord.col * TILE_SIZE);
-                let th = TILE_SIZE.min(self.full_height - coord.row * TILE_SIZE);
+                let ts = get_tile_size();
+                let tw = ts.min(self.full_width - coord.col * ts);
+                let th = ts.min(self.full_height - coord.row * ts);
 
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                     [tw as usize, th as usize],
@@ -451,10 +472,11 @@ impl TileManager {
         // Determine the range of tile indices (cols/rows) that are visible.
         // We subtract a tiny epsilon from max bounds to avoid including an extra tile when
         // the viewport edge aligns exactly with a tile boundary.
-        let min_col = (px_min_x / TILE_SIZE as f32).floor() as u32;
-        let max_col = ((px_max_x - 0.01) / TILE_SIZE as f32).floor() as u32;
-        let min_row = (px_min_y / TILE_SIZE as f32).floor() as u32;
-        let max_row = ((px_max_y - 0.01) / TILE_SIZE as f32).floor() as u32;
+        let ts = get_tile_size() as f32;
+        let min_col = (px_min_x / ts).floor() as u32;
+        let max_col = ((px_max_x - 0.01) / ts).floor() as u32;
+        let min_row = (px_min_y / ts).floor() as u32;
+        let max_row = ((px_max_y - 0.01) / ts).floor() as u32;
 
         let total_cols = self.cols();
         let total_rows = self.rows();
@@ -466,10 +488,11 @@ impl TileManager {
 
         for r in start_row..=end_row {
             for c in start_col..=end_col {
-                let tile_x0 = c * TILE_SIZE;
-                let tile_y0 = r * TILE_SIZE;
-                let tile_w = TILE_SIZE.min(self.full_width - tile_x0);
-                let tile_h = TILE_SIZE.min(self.full_height - tile_y0);
+                let ts = get_tile_size();
+                let tile_x0 = c * ts;
+                let tile_y0 = r * ts;
+                let tile_w = ts.min(self.full_width - tile_x0);
+                let tile_h = ts.min(self.full_height - tile_y0);
 
                 // Map tile pixel bounds to screen coordinates
                 let sx0 = viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();

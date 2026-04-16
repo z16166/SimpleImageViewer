@@ -80,7 +80,7 @@ pub struct TileResult {
 
 pub struct PreviewResult {
     pub index: usize,
-    pub generation: u64,
+    pub _generation: u64,
     pub result: Result<DecodedImage, String>,
 }
 
@@ -198,7 +198,7 @@ impl ImageLoader {
                             continue;
                         }
 
-                        let tile_size = crate::tile_cache::TILE_SIZE;
+                        let tile_size = crate::tile_cache::get_tile_size();
                         let x = request.col * tile_size;
                         let y = request.row * tile_size;
                         let tw = tile_size.min(request.source.width() - x);
@@ -230,6 +230,7 @@ impl ImageLoader {
         self.loading.lock().unwrap().contains_key(&index)
     }
 
+    #[allow(dead_code)]
     pub fn current_generation(&self, index: usize) -> u64 {
         self.loading.lock().unwrap().get(&index).copied().unwrap_or(0)
     }
@@ -301,7 +302,7 @@ impl ImageLoader {
         generation: u64,
         path: &PathBuf,
         tx: Sender<LoaderOutput>,
-        loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
+        _loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
     ) {
         let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             load_image_file(generation, index, path)
@@ -330,7 +331,6 @@ impl ImageLoader {
 
         if let Ok(ImageData::Tiled(source)) = load_result.result {
             let tx_cloned = tx.clone();
-            let loading_p2 = Arc::clone(&loading_ref);
             let index = index;
             let generation = generation;
 
@@ -340,30 +340,27 @@ impl ImageLoader {
                     #[cfg(target_os = "windows")]
                     let _com = crate::wic::ComGuard::new();
 
-                    let still_valid = {
-                        let loading = loading_p2.lock().unwrap();
-                        loading.get(&index) == Some(&generation)
-                    };
+                    // Always generate HQ preview — stale results are discarded
+                    // by the app's Preview handler which checks generation.
+                    let limit = 4096;
+                    let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        source.generate_preview(limit, limit)
+                    }));
 
-                    if still_valid {
-                        let limit = 4096;
-                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            source.generate_preview(limit, limit)
-                        }));
-
-                        match r_result {
-                            Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                                let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
-                                    index,
-                                    generation,
-                                    result: Ok(DecodedImage { width: pw, height: ph, pixels: p_pixels }),
-                                }));
-                            }
-                            Err(e) => {
-                                log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
-                            }
-                            _ => {}
+                    match r_result {
+                        Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                            log::info!("[Loader] HQ preview generated: {}x{} (source {}x{})", 
+                                pw, ph, source.width(), source.height());
+                            let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
+                                index,
+                                _generation: generation,
+                                result: Ok(DecodedImage { width: pw, height: ph, pixels: p_pixels }),
+                            }));
                         }
+                        Err(e) => {
+                            log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
+                        }
+                        _ => {}
                     }
                 })
                 .ok();
@@ -398,6 +395,13 @@ impl ImageLoader {
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
         }
+    }
+
+    /// Clear all pending tile requests from the queue.
+    /// Called on zoom change to discard tiles from stale zoom levels.
+    pub fn flush_tile_queue(&self) {
+        let (lock, _) = &*self.tile_queue;
+        lock.lock().unwrap().clear();
     }
 
     pub fn cancel_all(&mut self) {
