@@ -244,10 +244,10 @@ impl ImageLoader {
                         let tw = tile_size.min(request.source.width() - x);
                         let th = tile_size.min(request.source.height() - y);
 
-                        //#[cfg(feature = "tile-debug")]
+                        #[cfg(feature = "tile-debug")]
                         let t0 = std::time::Instant::now();
                         let pixels = request.source.extract_tile(x, y, tw, th);
-                        //#[cfg(feature = "tile-debug")]
+                        #[cfg(feature = "tile-debug")]
                         {
                             let decode_ms = t0.elapsed().as_millis();
                             if decode_ms > 50 {
