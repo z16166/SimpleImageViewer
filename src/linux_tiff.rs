@@ -468,6 +468,13 @@ pub struct LibTiffScanlineSource {
     height: u32,
     rows_per_strip: u32,
     pool: Mutex<Vec<TiffHandle>>,
+    /// Cache of decoded strips: key=strip_idx, value=RGBA pixels for that strip.
+    /// Each strip is width * rows_per_strip * 4 bytes.
+    strip_cache: Mutex<std::collections::HashMap<u32, Arc<Vec<u8>>>>,
+    /// LRU order for cache eviction (oldest first).
+    cache_order: Mutex<Vec<u32>>,
+    /// Maximum number of strips to keep in cache.
+    max_cached_strips: usize,
 }
 
 impl LibTiffScanlineSource {
@@ -485,6 +492,79 @@ impl LibTiffScanlineSource {
         if let Ok(mut pool) = self.pool.lock() {
             pool.push(handle);
         }
+    }
+
+    /// Get a decoded strip from cache, or decode it and insert into cache.
+    fn get_or_decode_strip(&self, strip_idx: u32, handle: &TiffHandle) -> Option<Arc<Vec<u8>>> {
+        // Phase 1: Check cache
+        {
+            let mut cache = self.strip_cache.lock().unwrap();
+            if let Some(data) = cache.get(&strip_idx) {
+                // Move to back of LRU
+                let mut order = self.cache_order.lock().unwrap();
+                if let Some(pos) = order.iter().position(|&k| k == strip_idx) {
+                    order.remove(pos);
+                }
+                order.push(strip_idx);
+                return Some(Arc::clone(data));
+            }
+        }
+
+        // Phase 2: Decode strip (no lock held)
+        let rps = self.rows_per_strip;
+        let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
+        
+        let decoded = LIB.with(|l| {
+            let lib = match l.as_ref() { Ok(l) => l, Err(_) => return false };
+            unsafe {
+                (lib.read_rgba_strip)(handle.ptr, strip_idx * rps, strip_buf.as_mut_ptr()) != 0
+            }
+        });
+        
+        if !decoded {
+            return None;
+        }
+        
+        // Convert ABGR u32 to RGBA u8 and flip rows (libtiff returns bottom-up within strip)
+        let actual_rows = if (strip_idx + 1) * rps > self.height {
+            self.height - strip_idx * rps
+        } else {
+            rps
+        };
+        let mut rgba = vec![0u8; (self.width as usize) * (actual_rows as usize) * 4];
+        for row in 0..actual_rows {
+            let src_row = (rps - 1 - row) as usize;
+            let src_offset = src_row * self.width as usize;
+            let dst_offset = row as usize * self.width as usize * 4;
+            for col in 0..self.width as usize {
+                let src_idx = src_offset + col;
+                if src_idx < strip_buf.len() {
+                    let pixel = strip_buf[src_idx].to_ne_bytes();
+                    let dst_idx = dst_offset + col * 4;
+                    rgba[dst_idx..dst_idx + 4].copy_from_slice(&pixel);
+                }
+            }
+        }
+        let data = Arc::new(rgba);
+
+        // Phase 3: Insert into cache with LRU eviction
+        {
+            let mut cache = self.strip_cache.lock().unwrap();
+            let mut order = self.cache_order.lock().unwrap();
+            
+            // Evict oldest strips if over capacity
+            while order.len() >= self.max_cached_strips {
+                if let Some(oldest) = order.first().copied() {
+                    order.remove(0);
+                    cache.remove(&oldest);
+                }
+            }
+            
+            cache.insert(strip_idx, Arc::clone(&data));
+            order.push(strip_idx);
+        }
+
+        Some(data)
     }
 }
 
@@ -505,50 +585,47 @@ impl TiledImageSource for LibTiffScanlineSource {
             }
         };
 
-        LIB.with(|l| {
-            let lib = match l.as_ref() { 
-                Ok(l) => l, 
-                Err(e) => {
-                    log::error!("[{}] Linux libtiff: Failed to access library for scanline: {}", self.path.display(), e);
-                    return; 
-                }
+        let rps = self.rows_per_strip;
+        let start_strip = y / rps;
+        let end_strip = (y + h - 1) / rps;
+
+        for strip_idx in start_strip..=end_strip {
+            let strip_data = match self.get_or_decode_strip(strip_idx, &handle) {
+                Some(d) => d,
+                None => continue,
             };
 
-            let tif_ptr = handle.ptr;
-            let rps = self.rows_per_strip;
-            let mut strip_buf = vec![0u32; (self.width as usize) * (rps as usize)];
-            let mut last_strip_idx = u32::MAX;
+            let strip_y_start = strip_idx * rps;
+            let actual_rows = if (strip_idx + 1) * rps > self.height {
+                self.height - strip_y_start
+            } else {
+                rps
+            };
 
-            for py in y..(y + h) {
-                if py >= self.height { break; }
-                let strip_idx = py / rps;
-                
-                unsafe {
-                    if strip_idx != last_strip_idx {
-                        if (lib.read_rgba_strip)(tif_ptr, strip_idx * rps, strip_buf.as_mut_ptr()) == 0 {
-                            continue;
-                        }
-                        last_strip_idx = strip_idx;
-                    }
+            // Calculate intersection between tile and this strip
+            let intersect_y_start = y.max(strip_y_start);
+            let intersect_y_end = (y + h).min(strip_y_start + actual_rows).min(self.height);
+            let intersect_x_start = x;
+            let intersect_x_end = (x + w).min(self.width);
 
-                    let row_in_strip = py % rps;
-                    let src_row = (rps - 1 - row_in_strip) as usize;
-                    let src_offset = src_row * self.width as usize;
+            if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end {
+                continue;
+            }
 
-                    for px in x..(x + w) {
-                        if px >= self.width { break; }
-                        let dest_x = px - x;
-                        let dest_y = py - y;
-                        let dest_idx = (dest_y as usize * w as usize + dest_x as usize) * 4;
-                        let src_idx = src_offset + px as usize;
-                        if src_idx < strip_buf.len() && dest_idx + 4 <= result.len() {
-                            let pixel = strip_buf[src_idx].to_ne_bytes();
-                            result[dest_idx..dest_idx + 4].copy_from_slice(&pixel);
-                        }
-                    }
+            let copy_bytes = (intersect_x_end - intersect_x_start) as usize * 4;
+
+            for py in intersect_y_start..intersect_y_end {
+                let row_in_strip = (py - strip_y_start) as usize;
+                let src_offset = (row_in_strip * self.width as usize + intersect_x_start as usize) * 4;
+                let dst_y = (py - y) as usize;
+                let dst_offset = (dst_y * w as usize + (intersect_x_start - x) as usize) * 4;
+
+                if src_offset + copy_bytes <= strip_data.len() && dst_offset + copy_bytes <= result.len() {
+                    result[dst_offset..dst_offset + copy_bytes]
+                        .copy_from_slice(&strip_data[src_offset..src_offset + copy_bytes]);
                 }
             }
-        });
+        }
 
         self.release_handle(handle);
         result
@@ -702,10 +779,23 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
                         return Err("TIFF scanline height is zero".to_string());
                     }
                     
+                    // Calculate cache capacity: ~256MB budget
+                    let strip_bytes = width as usize * rps as usize * 4;
+                    let max_cached = if strip_bytes > 0 {
+                        (256 * 1024 * 1024 / strip_bytes).max(16)
+                    } else {
+                        64
+                    };
+                    log::info!("Linux LibTiff: Stripped TIFF {}x{}, rps={}, cache capacity={} strips ({} MB budget)",
+                        width, height, rps, max_cached, max_cached * strip_bytes / (1024 * 1024));
+                    
                     return Ok(ImageData::Tiled(Arc::new(LibTiffScanlineSource {
                         path: path.to_path_buf(), mmap: mmap.clone(),
                         width, height, rows_per_strip: rps,
                         pool: Mutex::new(vec![handle]),
+                        strip_cache: Mutex::new(std::collections::HashMap::new()),
+                        cache_order: Mutex::new(Vec::new()),
+                        max_cached_strips: max_cached,
                     })));
                 }
             }

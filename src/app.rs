@@ -1508,16 +1508,8 @@ impl ImageViewerApp {
                 if !self.slideshow_paused {
                     self.last_switch_time = Instant::now();
                 }
-            } else {
-                // If auto-switch is OFF, pressing space could optionally START it,
-                // but usually users expect Space to be Play/Pause for the feature.
-                // Let's make it also toggle the master switch IF it was off, 
-                // to make the key more useful.
-                self.settings.auto_switch = true;
-                self.slideshow_paused = false;
-                self.last_switch_time = Instant::now();
-                self.queue_save();
             }
+            // If auto_switch is OFF, space does nothing — user must enable it via settings.
         }
         if toggle_goto && !self.image_files.is_empty() {
             self.show_goto = !self.show_goto;
