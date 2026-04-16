@@ -333,7 +333,7 @@ fn main() -> eframe::Result {
             }
         }
         #[cfg(not(feature = "legacy_win7"))]
-        {
+        unsafe {
             // Only set default priority if user hasn't specified one
             if std::env::var("WGPU_BACKEND").is_err() {
                 // Prioritize DX12 for modern Windows, fallback to Vulkan or GL
