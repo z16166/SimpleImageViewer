@@ -322,20 +322,23 @@ fn log_env_info() -> String {
 }
 
 fn main() -> eframe::Result {
-    #[cfg(feature = "legacy_win7")]
-    unsafe {
-        if std::env::var("WGPU_BACKEND").is_err() {
-            // Force choice of ANGLE (OpenGL ES over DX11) for Windows 7 compatibility
-            std::env::set_var("WGPU_BACKEND", "gl");
-            std::env::set_var("WGPU_GL_BACKEND", "angle");
-        }
-    }
-    #[cfg(not(feature = "legacy_win7"))]
+    #[cfg(target_os = "windows")]
     {
-        // Only set default priority if user hasn't specified one
-        if std::env::var("WGPU_BACKEND").is_err() {
-            // Prioritize DX12 for modern Windows, fallback to Vulkan or GL
-            std::env::set_var("WGPU_BACKEND", "dx12,vulkan,gl");
+        #[cfg(feature = "legacy_win7")]
+        unsafe {
+            if std::env::var("WGPU_BACKEND").is_err() {
+                // Force choice of ANGLE (OpenGL ES over DX11) for Windows 7 compatibility
+                std::env::set_var("WGPU_BACKEND", "gl");
+                std::env::set_var("WGPU_GL_BACKEND", "angle");
+            }
+        }
+        #[cfg(not(feature = "legacy_win7"))]
+        {
+            // Only set default priority if user hasn't specified one
+            if std::env::var("WGPU_BACKEND").is_err() {
+                // Prioritize DX12 for modern Windows, fallback to Vulkan or GL
+                std::env::set_var("WGPU_BACKEND", "dx12,vulkan,gl");
+            }
         }
     }
 
