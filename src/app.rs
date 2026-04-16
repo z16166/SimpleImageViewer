@@ -1145,12 +1145,8 @@ impl ImageViewerApp {
     fn handle_tile_load_result(&mut self, tile_result: TileResult, _ctx: &egui::Context) {
         let coord = TileCoord { col: tile_result.col, row: tile_result.row };
         
-        // 1. Put into global CPU cache
-        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.insert(tile_result.index, coord, tile_result.pixels);
-        }
-
-        // 2. Mark as no longer pending in the current TileManager if it matches
+        // Pixels are already in PIXEL_CACHE (inserted by the worker thread).
+        // We only need to mark as no longer pending and trigger repaint for GPU upload.
         if let Some(ref mut tm) = self.tile_manager {
             if tm.image_index == tile_result.index {
                 tm.pending_tiles.remove(&coord);

@@ -40,51 +40,9 @@ pub struct PsbComposite {
     pub pixels: Vec<u8>, // RGBA8
 }
 
-/// LRU cache for decompressed PSB rows.
-/// Key: (channel_index, global_row) -> decompressed row bytes (exactly `width` bytes)
-struct PsbRowCache {
-    entries: std::collections::HashMap<(u32, u32), Arc<Vec<u8>>>,
-    order: std::collections::VecDeque<(u32, u32)>,
-    capacity: usize,
-}
-
-impl PsbRowCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            entries: std::collections::HashMap::new(),
-            order: std::collections::VecDeque::new(),
-            capacity,
-        }
-    }
-
-    fn get(&mut self, key: (u32, u32)) -> Option<Arc<Vec<u8>>> {
-        if let Some(data) = self.entries.get(&key) {
-            // Move to back (most recent)
-            if let Some(pos) = self.order.iter().position(|k| *k == key) {
-                self.order.remove(pos);
-            }
-            self.order.push_back(key);
-            Some(Arc::clone(data))
-        } else {
-            None
-        }
-    }
-
-    fn insert(&mut self, key: (u32, u32), data: Arc<Vec<u8>>) {
-        if self.entries.contains_key(&key) {
-            return;
-        }
-        while self.entries.len() >= self.capacity {
-            if let Some(evicted) = self.order.pop_front() {
-                self.entries.remove(&evicted);
-            } else {
-                break;
-            }
-        }
-        self.entries.insert(key, data);
-        self.order.push_back(key);
-    }
-}
+/// Row cache is now handled by moka::sync::Cache in PsbTiledSource.
+/// Provides concurrent access without explicit locking, built-in LRU eviction,
+/// and automatic coalescing of concurrent requests for the same key.
 
 /// A tiled source for PSD/PSB files that decodes regions on demand from a memory-mapped file.
 pub struct PsbTiledSource {
@@ -101,8 +59,9 @@ pub struct PsbTiledSource {
     /// Absolute file offsets for the start of each row's data.
     /// Index: ch_idx * height + row_idx
     row_offsets: Vec<u64>,
-    /// Cache of recently decompressed rows to avoid re-decoding for adjacent tiles.
-    row_cache: std::sync::Mutex<PsbRowCache>,
+    /// Concurrent LRU cache for decompressed rows. Uses moka for lock-free
+    /// access and automatic coalescing of concurrent requests for the same key.
+    row_cache: moka::sync::Cache<(u32, u32), Arc<Vec<u8>>>,
 }
 
 impl PsbTiledSource {
@@ -146,66 +105,27 @@ impl PsbTiledSource {
     }
 
     /// Get a decompressed row for a given channel and global row index.
-    /// Used by generate_preview which processes one row at a time.
+    /// moka's get_with automatically coalesces concurrent requests: if two
+    /// workers request the same row, only one decode runs.
     fn get_row(&self, ch_idx: u32, global_row: u32) -> Arc<Vec<u8>> {
         let key = (ch_idx, global_row);
-        {
-            let mut cache = self.row_cache.lock().unwrap();
-            if let Some(data) = cache.get(key) {
-                return data;
-            }
-        }
-        let row_data = self.decode_row_unlocked(ch_idx, global_row);
-        let data = Arc::new(row_data);
-        {
-            let mut cache = self.row_cache.lock().unwrap();
-            cache.insert(key, Arc::clone(&data));
-        }
-        data
+        self.row_cache.get_with(key, || {
+            Arc::new(self.decode_row_unlocked(ch_idx, global_row))
+        })
     }
 
-    /// Batch-fetch rows for a tile: single lock for lookup, decode misses without lock,
-    /// single lock for insertion. Reduces lock ops from ~2048 to 2 per channel.
+    /// Batch-fetch rows for a tile. Each row is fetched through the moka cache
+    /// which handles concurrent access, LRU eviction, and request coalescing.
     fn get_rows_batch(&self, ch_idx: u32, y: u32, h: u32) -> Vec<(u32, Arc<Vec<u8>>)> {
         let mut result: Vec<(u32, Arc<Vec<u8>>)> = Vec::with_capacity(h as usize);
-        let mut missing: Vec<u32> = Vec::new();
-
-        // Phase 1: Single lock — batch cache lookup
-        {
-            let mut cache = self.row_cache.lock().unwrap();
-            for row_in_tile in 0..h {
-                let global_row = y + row_in_tile;
-                if global_row >= self.height { continue; }
-                let key = (ch_idx, global_row);
-                if let Some(data) = cache.get(key) {
-                    result.push((row_in_tile, data));
-                } else {
-                    missing.push(row_in_tile);
-                }
-            }
-        }
-
-        if missing.is_empty() {
-            return result;
-        }
-
-        // Phase 2: Decode all missing rows WITHOUT holding the lock
-        let decoded: Vec<(u32, Arc<Vec<u8>>)> = missing.iter().map(|&row_in_tile| {
+        for row_in_tile in 0..h {
             let global_row = y + row_in_tile;
-            let data = Arc::new(self.decode_row_unlocked(ch_idx, global_row));
-            (row_in_tile, data)
-        }).collect();
-
-        // Phase 3: Single lock — batch insert
-        {
-            let mut cache = self.row_cache.lock().unwrap();
-            for (row_in_tile, data) in &decoded {
-                let global_row = y + row_in_tile;
-                cache.insert((ch_idx, global_row), Arc::clone(data));
+            if global_row >= self.height {
+                continue;
             }
+            let data = self.get_row(ch_idx, global_row);
+            result.push((row_in_tile, data));
         }
-
-        result.extend(decoded);
         result
     }
 }
@@ -362,7 +282,21 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
 
 /// Initialize a tiled source for a PSB file.
 pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
+    // On Windows, use FILE_FLAG_RANDOM_ACCESS to disable aggressive sequential
+    // prefetching. Tile workers access scattered regions of a 6GB+ file — the
+    // default sequential read-ahead causes workers' prefetched pages to evict
+    // each other from the OS page cache, creating a "prefetch storm".
+    let file = {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_RANDOM_ACCESS: u32 = 0x10000000;
+            opts.custom_flags(FILE_FLAG_RANDOM_ACCESS);
+        }
+        opts.open(path).map_err(|e| format!("Cannot open file: {e}"))?
+    };
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
     let mut cursor = std::io::Cursor::new(&mmap[..]);
 
@@ -427,21 +361,27 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         }
     }
 
-    // Cache capacity: memory-budget-based to avoid blowing up RAM on ultra-wide images.
-    // Budget: 128MB max. Each cached row is `width` bytes.
-    // Minimum: channels * 512 rows (needed to process one tile without cache thrashing).
-    const ROW_CACHE_BUDGET: usize = 128 * 1024 * 1024; // 128MB
+    // Cache capacity: must hold at least (workers × tile_height × channels) rows
+    // to avoid thrashing when multiple workers decode tiles concurrently.
+    // moka handles LRU eviction and concurrent access internally.
+    let tile_size = crate::tile_cache::get_tile_size() as usize;
+    let worker_count = std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).clamp(4, 12))
+        .unwrap_or(4);
+    const ROW_CACHE_BUDGET: usize = 512 * 1024 * 1024; // 512MB
     let row_bytes = width as usize;
     let budget_rows = ROW_CACHE_BUDGET / row_bytes.max(1);
-    let min_rows = channels as usize * 512; // Must cover one full tile height per channel
-    let cache_capacity = budget_rows.max(min_rows).min(channels as usize * 2048);
+    let min_rows = channels as usize * tile_size * worker_count;
+    let cache_capacity = budget_rows.max(min_rows);
+
+    let row_cache = moka::sync::Cache::new(cache_capacity as u64);
 
     Ok(PsbTiledSource {
         path: path.to_path_buf(),
         mmap: Arc::new(mmap),
         width, height, channels, color_mode, is_psb, compression,
         row_offsets,
-        row_cache: std::sync::Mutex::new(PsbRowCache::new(cache_capacity)),
+        row_cache,
     })
 }
 

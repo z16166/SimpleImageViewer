@@ -51,6 +51,8 @@ xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg",
 quick-xml = "0.39"
 wgpu = { version = "29", default-features = false, features = ["dx12", "vulkan", "metal", "wgsl"] }
 memmap2 = "0.9"
+mimalloc = "0.1.48"
+moka = { version = "0.12.15", features = ["sync"] }
 
 [features]
 # Feature for Windows 7 compatibility (ANGLE bridge)

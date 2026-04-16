@@ -16,6 +16,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Use mimalloc for all platforms — the default Windows HeapAlloc has severe
+// lock contention when many threads concurrently allocate/free ~68KB buffers
+// (one per PSB row decode). mimalloc uses per-thread heaps to eliminate this.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 rust_i18n::i18n!("locales");
 
 mod app;
