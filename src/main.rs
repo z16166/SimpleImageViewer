@@ -340,12 +340,8 @@ fn main() -> eframe::Result {
             }
         }
         #[cfg(not(feature = "legacy_win7"))]
-        unsafe {
-            // Only set default priority if user hasn't specified one
-            if std::env::var("WGPU_BACKEND").is_err() {
-                // Prioritize DX12 for modern Windows, fallback to Vulkan or GL
-                std::env::set_var("WGPU_BACKEND", "dx12,vulkan,gl");
-            }
+        {
+            // Environment variable hacks are removed in favor of explicit adapter probing below
         }
     }
 
@@ -409,7 +405,7 @@ fn main() -> eframe::Result {
         let info = adapter.get_info();
         log::info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
         if info.backend == eframe::wgpu::Backend::Gl {
-            log::warn!("Running in compatibility mode (ANGLE/DX11).");
+            log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
         }
         
         let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
@@ -427,6 +423,28 @@ fn main() -> eframe::Result {
             ..Default::default()
         }
     });
+
+    // Explicit hardware probing to prioritize DX12 on modern Windows
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    {
+        // Use a temporary instance to probe adapter capabilities
+        let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapters = pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
+        
+        let has_real_dx12 = adapters.iter().any(|a| {
+            let info = a.get_info();
+            info.backend == eframe::wgpu::Backend::Dx12 && 
+            matches!(info.device_type, eframe::wgpu::DeviceType::DiscreteGpu | eframe::wgpu::DeviceType::IntegratedGpu)
+        });
+
+        if has_real_dx12 {
+            log::info!("Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend.");
+            wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+            wgpu_setup.power_preference = eframe::wgpu::PowerPreference::HighPerformance;
+        } else {
+            log::info!("No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection.");
+        }
+    }
 
     let native_options = eframe::NativeOptions {
         viewport,
