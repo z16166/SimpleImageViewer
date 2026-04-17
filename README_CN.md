@@ -113,9 +113,10 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 
 | 平台 | 状态 |
 |---|---|
-| Windows 10/11 / 7+ x64 | ✅ 原生支持 10/11；提供专门的 Win7 x64 兼容版（可在 Win7 及以上系统运行）* |
+| Windows 10/11 (x64 / arm64) | ✅ 原生支持 |
+| Windows 7+ (x64) | ✅ 提供专门的 Win7 x64 兼容版（可在 Win7 及以上系统运行）* |
 | macOS（Apple Silicon / Intel） | ✅ 原生支持 |
-| Linux（X11 / Wayland） | ✅ 需要音频库（见下文） |
+| Linux (x64 / arm64) | ✅ 需要音频库（见下文） |
 
 *\*Windows 7 注意事项：系统必须升级至 **Service Pack 1 (SP1)** 并安装 **KB2670838**（Windows 7 平台更新/图形增强补丁），且显卡驱动需支持 **DirectX 11**。*
 

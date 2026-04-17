@@ -100,9 +100,10 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Platform | Status |
 |---|---|
-| Windows 10/11 / 7+ x64 | ✅ Native on 10/11; Win7 x64 release package is compatible with Windows 7 and above* |
+| Windows 10/11 (x64 / arm64) | ✅ Native support |
+| Windows 7+ (x64) | ✅ Specialized Win7 x64 release package is compatible with Windows 7 and above* |
 | macOS (Apple Silicon / Intel) | ✅ Native support |
-| Linux (X11 / Wayland) | ✅ Requires audio libraries (see below) |
+| Linux (x64 / arm64) | ✅ Requires audio libraries (see below) |
 
 *\*Note for Windows 7: Requires **Service Pack 1 (SP1)**, **KB2670838** (Platform Update for Windows 7), and a GPU driver that supports **DirectX 11**.*
 
