@@ -176,7 +176,24 @@ impl RawProcessor {
                         pixels: rgba,
                     })
                 } else {
-                    Err(format!("Unsupported bitmap thumbnail format: colors={}, bits={}", img.colors, img.bits))
+                    // Heuristic fallback: Some cameras (like Fuji) might report a thumbnail as 
+                    // a bitmap type but actually embed a JPEG, or report bits/colors as 0.
+                    // We check for the JPEG magic bytes (FF D8 FF).
+                    if slice.len() > 3 && slice[0] == 0xFF && slice[1] == 0xD8 && slice[2] == 0xFF {
+                        match image::load_from_memory(slice) {
+                            Ok(decoded) => {
+                                let rgba = decoded.to_rgba8();
+                                Ok(crate::loader::DecodedImage {
+                                    width: rgba.width(),
+                                    height: rgba.height(),
+                                    pixels: rgba.into_raw(),
+                                })
+                            }
+                            Err(e) => Err(format!("Heuristic JPEG detection failed: {}", e)),
+                        }
+                    } else {
+                        Err(format!("Unsupported bitmap thumbnail format: colors={}, bits={}, image_type={}", img.colors, img.bits, img.image_type))
+                    }
                 }
             } else {
                 Err(format!("Unknown thumbnail type: {}", img.image_type))
