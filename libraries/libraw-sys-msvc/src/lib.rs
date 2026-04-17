@@ -16,6 +16,15 @@
 
 use libc::{c_char, c_int, c_uchar, c_uint, c_ushort};
 
+/// Matches LibRaw's `enum LibRaw_image_formats` from `libraw_const.h`.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum LibRaw_image_formats {
+    LIBRAW_IMAGE_JPEG   = 1,
+    LIBRAW_IMAGE_BITMAP = 2,
+}
+
 #[repr(C)]
 pub struct libraw_processed_image_t {
     pub image_type: c_uint,

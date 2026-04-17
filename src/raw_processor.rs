@@ -100,9 +100,9 @@ impl RawProcessor {
             }
 
             let img = &*processed;
-            if img.image_type != 1 { // LIBRAW_IMAGE_BITMAP
+            if img.image_type != ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
                 ffi::libraw_dcraw_clear_mem(processed);
-                return Err("Unsupported processed image type (not bitmap)".to_string());
+                return Err(format!("Unsupported processed image type: {} (expected BITMAP={})", img.image_type, ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32));
             }
 
             if img.colors != 3 || img.bits != 8 {
@@ -144,10 +144,7 @@ impl RawProcessor {
             let data_size = img.data_size as usize;
             let slice = std::slice::from_raw_parts(data_ptr, data_size);
 
-            // LibRaw processed_image_t.image_type:
-            // 1: Bitmap (RGB)
-            // 2: JPEG
-            let result = if img.image_type == 2 {
+            let result = if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_JPEG as u32 {
                 // JPEG thumbnail
                 match image::load_from_memory(slice) {
                     Ok(decoded) => {
@@ -160,7 +157,7 @@ impl RawProcessor {
                     }
                     Err(e) => Err(format!("Failed to decode JPEG thumbnail: {}", e)),
                 }
-            } else if img.image_type == 1 {
+            } else if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
                 // Bitmap thumbnail (RGB)
                 if img.colors == 3 && img.bits == 8 {
                     let mut rgba = Vec::with_capacity(img.width as usize * img.height as usize * 4);

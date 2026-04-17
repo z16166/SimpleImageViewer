@@ -1080,6 +1080,16 @@ impl ImageViewerApp {
                         
                         self.loader.flush_tile_queue();
                         ctx.request_repaint();
+                    } else {
+                        // Refinement completed for a non-current image (e.g. prefetched).
+                        // Invalidate stale caches so tiles are re-extracted from the updated
+                        // high-resolution buffer when the user navigates to this image.
+                        log::info!("[App] Refined: background update for index {} (not current). Invalidating caches.", idx);
+                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                            cache.remove_image(idx);
+                        }
+                        self.prefetched_tiles.remove(&idx);
+                        self.texture_cache.remove(idx);
                     }
                 }
             }
@@ -3592,6 +3602,15 @@ impl eframe::App for ImageViewerApp {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
             self.queue_save();
         }
+
+        // Force-terminate BEFORE eframe tries to tear down GPU resources.
+        // This avoids a DLL loader lock deadlock on Windows where:
+        //   - rayon worker threads hold the loader lock during TLS cleanup
+        //   - WIC's CCodecFactory destructor calls MFShutdown which waits for internal timer threads
+        //   - main thread's D3D12 adapter drop calls FreeLibrary which needs the loader lock
+        // Settings are already persisted above, so this is safe.
+        #[cfg(target_os = "windows")]
+        std::process::exit(0);
     }
 
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.

@@ -336,46 +336,65 @@ impl ImageLoader {
                     }
 
                     // 2. Perform heavy development
+                    log::info!("[Refinement] Starting full demosaic for {:?} (gen={})", req.path.file_name().unwrap_or_default(), req.generation);
+                    let t0 = std::time::Instant::now();
+
                     let mut processor = match RawProcessor::new() {
                         Some(p) => p,
-                        None => continue,
+                        None => {
+                            log::error!("[Refinement] Failed to create RawProcessor");
+                            continue;
+                        }
                     };
 
-                    if processor.open(&req.path).is_ok() {
-                        if let Ok(full_img) = processor.develop() {
+                    match processor.open(&req.path) {
+                        Ok(()) => {},
+                        Err(e) => {
+                            log::error!("[Refinement] Failed to open {:?}: {}", req.path.file_name().unwrap_or_default(), e);
+                            continue;
+                        }
+                    }
+
+                    match processor.develop() {
+                        Ok(full_img) => {
+                            let elapsed = t0.elapsed();
                             // Convert to RGBA bits
                             let rgba = full_img.to_rgba8();
                             let (w, h) = rgba.dimensions();
                             let pixels = rgba.into_raw();
                             
-                            // Re-check generation before commit
-                            if req.generation >= worker_gen.load(std::sync::atomic::Ordering::Relaxed) {
-                                let dynamic = DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, pixels).unwrap());
-                                
-                                // Generate a high-quality 4096px preview for the UI so the user gets
-                                // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
-                                let limit = 4096;
-                                let scaled = dynamic.thumbnail(limit, limit);
-                                let prev_rgba = scaled.to_rgba8();
-                                let preview = DecodedImage {
-                                    width: prev_rgba.width(),
-                                    height: prev_rgba.height(),
-                                    pixels: prev_rgba.into_raw(),
-                                };
-                                
-                                let mut dev_lock = req.developed_image.write();
-                                *dev_lock = Some(dynamic);
-                                drop(dev_lock);
+                            // Always commit the result — develop() is expensive and already done.
+                            // The UI handler decides how to use it based on current state.
+                            let dynamic = DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, pixels).unwrap());
+                            
+                            // Generate a high-quality 4096px preview for the UI so the user gets
+                            // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
+                            let limit = 4096;
+                            let scaled = dynamic.thumbnail(limit, limit);
+                            let prev_rgba = scaled.to_rgba8();
+                            let preview = DecodedImage {
+                                width: prev_rgba.width(),
+                                height: prev_rgba.height(),
+                                pixels: prev_rgba.into_raw(),
+                            };
+                            
+                            let mut dev_lock = req.developed_image.write();
+                            *dev_lock = Some(dynamic);
+                            drop(dev_lock);
 
-                                let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                    index: req.index,
-                                    _generation: req.generation,
-                                    result: Ok(preview),
-                                }));
+                            let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+                                index: req.index,
+                                _generation: req.generation,
+                                result: Ok(preview),
+                            }));
 
-                                // Notify UI to clear cache and cross-fade
-                                let _ = worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
-                            }
+                            // Notify UI to clear cache and cross-fade
+                            let _ = worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
+                            log::info!("[Refinement] Completed {}x{} in {:.1}s", w, h, elapsed.as_secs_f64());
+                        }
+                        Err(e) => {
+                            log::error!("[Refinement] LibRaw develop failed for {:?} after {:.1}s: {}", 
+                                req.path.file_name().unwrap_or_default(), t0.elapsed().as_secs_f64(), e);
                         }
                     }
                 }
@@ -656,9 +675,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
 
         if is_raw {
-            if let Ok(item) = load_raw(index, generation, path, refine_tx.clone()) {
-                return Ok(item);
-            }
+            return load_raw(index, generation, path, refine_tx.clone());
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
@@ -1219,9 +1236,10 @@ impl TextureCache {
 
 pub struct RawImageSource {
     _path: PathBuf,
+    /// True RAW sensor dimensions (not thumbnail dimensions).
     width: u32,
     height: u32,
-    /// Initially the system preview, eventually replaced by LibRaw demosaiced image.
+    /// Initially the system preview (upscaled to RAW dimensions), eventually replaced by LibRaw demosaiced image.
     developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
 }
 
@@ -1229,18 +1247,18 @@ impl RawImageSource {
     pub fn new(
         path: PathBuf,
         preview: DecodedImage,
+        raw_width: u32,
+        raw_height: u32,
         index: usize,
         generation: u64,
         refine_tx: Sender<RefinementRequest>,
     ) -> Self {
-        let width = preview.width;
-        let height = preview.height;
+        // Upscale the preview to match the true RAW dimensions so tiles line up correctly.
+        let rgba = image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels).unwrap();
+        let preview_dyn = DynamicImage::ImageRgba8(rgba);
+        let upscaled = preview_dyn.resize_exact(raw_width, raw_height, image::imageops::FilterType::Triangle);
 
-        // Wrap preview in DynamicImage for the initial state
-        let rgba = image::RgbaImage::from_raw(width, height, preview.pixels).unwrap();
-        let initial_img = DynamicImage::ImageRgba8(rgba);
-
-        let developed_image = Arc::new(PLRwLock::new(Some(initial_img)));
+        let developed_image = Arc::new(PLRwLock::new(Some(upscaled)));
 
         let _ = refine_tx.send(RefinementRequest {
             path: path.clone(),
@@ -1251,8 +1269,8 @@ impl RawImageSource {
 
         Self {
             _path: path,
-            width,
-            height,
+            width: raw_width,
+            height: raw_height,
             developed_image,
         }
     }
@@ -1362,6 +1380,8 @@ fn load_raw(
     let source = Arc::new(RawImageSource::new(
         path.clone(),
         preview.clone(),
+        width,
+        height,
         index,
         generation,
         refine_tx,
