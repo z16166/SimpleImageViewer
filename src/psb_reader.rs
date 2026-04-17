@@ -32,11 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use memmap2::Mmap;
 
-#[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::*;
-
-#[cfg(target_arch = "aarch64")]
-use core::arch::aarch64::*;
+// SIMD architecture-specific imports are handled within submodules
 
 mod simd_swizzle {
     #[cfg(target_arch = "x86_64")]

@@ -2625,6 +2625,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "libraw-sys-msvc"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4818,11 +4826,13 @@ dependencies = [
  "jwalk",
  "kamadak-exif",
  "libloading",
+ "libraw-sys-msvc",
  "lofty",
  "log",
  "memmap2",
  "mimalloc",
  "moka",
+ "parking_lot",
  "printpdf",
  "psd",
  "quick-xml",

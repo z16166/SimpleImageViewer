@@ -247,6 +247,9 @@ pub struct ImageViewerApp {
     // Tiled rendering for large images
     tile_manager: Option<TileManager>,
     
+    // Tiled rendering instances decoded during prefetch
+    prefetched_tiles: HashMap<usize, TileManager>,
+    
     // Theme state
     theme_cache: SystemThemeCache,
     cached_palette: ThemePalette,
@@ -425,6 +428,7 @@ impl ImageViewerApp {
             ipc_rx,
             animation_cache: std::collections::HashMap::new(),
             tile_manager: None,
+            prefetched_tiles: std::collections::HashMap::new(),
             theme_cache,
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),
@@ -440,6 +444,7 @@ impl ImageViewerApp {
             tile_upload_quota: tile_quota,
             hardware_tier: tier,
         };
+        log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
 
         // Restore last session state
         if let Some(dir) = app.settings.last_image_dir.clone() {
@@ -558,16 +563,46 @@ impl ImageViewerApp {
             });
         }
 
-        // ALWAYS increment generation on every navigation and request a fresh load.
-        // This ensures TileManager is re-initialized for large images and 
-        // low-res thumbnails are upgraded to full resolution.
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
-        self.loader.request_load(
-            self.current_index,
-            self.generation,
-            self.image_files[self.current_index].clone(),
-        );
+        // Check if we have a prefetched TileManager ready to use!
+        if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
+            // We successfully hit the cache!
+            // The prefetch completed previously (or is still decoding in background).
+            // We MUST update its generation to match the current navigation sequence,
+            // otherwise its internal tile queue matching will fail.
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            
+            tm.generation = self.generation;
+            self.current_image_res = Some((tm.full_width, tm.full_height));
+            self.tile_manager = Some(tm);
+            
+            log::info!("[App] Cache Hit: Restored prefetched TileManager for index {}", self.current_index);
+        } else {
+            // ALWAYS increment generation on every navigation and request a fresh load.
+            // This ensures TileManager is re-initialized for large images and 
+            // low-res thumbnails are upgraded to full resolution.
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            self.loader.request_load(
+                self.current_index,
+                self.generation,
+                self.image_files[self.current_index].clone(),
+            );
+        }
+
+        // Housekeeping: evict stale prefetched TileManagers to prevent memory leaks
+        let len = self.image_files.len();
+        self.prefetched_tiles.retain(|&idx, _| {
+            if len == 0 {
+                return false;
+            }
+            let dist_forward = (idx + len - self.current_index % len) % len;
+            let dist_backward = (self.current_index + len - idx % len) % len;
+            let circular_distance = dist_forward.min(dist_backward);
+            
+            // Keep tiles only within distance 2
+            circular_distance <= 2
+        });
 
         self.schedule_preloads(true);
     }
@@ -1013,6 +1048,40 @@ impl ImageViewerApp {
                 LoaderOutput::Preview(preview_update) => {
                     self.handle_preview_update(preview_update, ctx);
                 }
+                LoaderOutput::Refined(idx, gen_id) => {
+                    if idx == self.current_index && gen_id == self.generation {
+                        log::info!("[App] Refined image notification for {}, index={}", idx, idx);
+                        
+                        // 1. Clear the pixel cache for this image
+                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                            cache.remove_image(idx);
+                        }
+
+                        // 2. Bump generation and clear tile queue to force TileManager to re-pull tiles
+                        // from the newly developed high-resolution buffer, discarding any blurred thumbnail tiles.
+                        self.generation = self.generation.wrapping_add(1);
+                        self.loader.set_generation(self.generation);
+                        
+                        if let Some(tm) = &mut self.tile_manager {
+                            log::info!("[App] Refined: Tiled mode - forcing tile upgrade to high definition");
+                            tm.generation = self.generation;
+                            tm.pending_tiles.clear();
+                            // Also evict the fallback preview texture
+                            self.texture_cache.remove(idx);
+                        } else {
+                            log::warn!("[App] Refined: Static mode encountered unexpectedly. Attempting to reload.");
+                            self.texture_cache.remove(idx);
+                            self.loader.request_load(
+                                self.current_index,
+                                self.generation,
+                                self.image_files[self.current_index].clone(),
+                            );
+                        }
+                        
+                        self.loader.flush_tile_queue();
+                        ctx.request_repaint();
+                    }
+                }
             }
         }
     }
@@ -1063,6 +1132,15 @@ impl ImageViewerApp {
                     self.tile_manager = Some(tm);
                     self.animation = None;
                     self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+                } else {
+                    let mut tm = TileManager::new(idx, load_result.generation, decoded.width, decoded.height, decoded.pixels.clone());
+                    let preview = DecodedImage {
+                        width: decoded.width,
+                        height: decoded.height,
+                        pixels: decoded.pixels.clone(),
+                    };
+                    self.setup_tile_manager(ctx, idx, &mut tm, preview);
+                    self.prefetched_tiles.insert(idx, tm);
                 }
             }
             Ok(ImageData::Tiled(source)) => {
@@ -1093,8 +1171,14 @@ impl ImageViewerApp {
                     self.animation = None;
                     self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
                 } else {
-                    // Preloading: preview is already in texture_cache (above),
-                    // no need to load tile data for images the user hasn't viewed yet.
+                    // Preloading: create the TileManager and store it in prefetched_tiles
+                    // so that when the user switches to this image, the source (and its 
+                    // background refined RAW data) is immediately available!
+                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    if let Some(preview) = load_result.preview.as_ref() {
+                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
+                    }
+                    self.prefetched_tiles.insert(idx, tm);
                 }
             }
             Ok(ImageData::Animated(frames)) => {
@@ -2475,7 +2559,7 @@ impl ImageViewerApp {
                                     let mut alpha = 1.0;
                                     if let Some(at) = ready_at {
                                         let elapsed = at.elapsed().as_secs_f32();
-                                        let duration = 0.08; // 80ms crisp fade
+                                        let duration = 0.2; // 200ms smooth fade
                                         if elapsed < duration {
                                             alpha = (elapsed / duration).clamp(0.0, 1.0);
                                             ui.ctx().request_repaint(); // Smooth transition

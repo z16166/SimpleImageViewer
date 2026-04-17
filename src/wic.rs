@@ -559,12 +559,30 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         }
 
         let decoder = decoder_res.map_err(|e| format!("WIC decoder creation failed: {:?}", e))?;
-        let frame = decoder.GetFrame(0).map_err(|e| format!("failed to get frame: {:?}", e))?;
-
-        // Extract dimensions directly from frame (FASTER than from converter)
+        
+        let frame_count = decoder.GetFrameCount().unwrap_or(1);
+        let mut best_frame_idx = 0;
+        let mut max_p = 0;
         let mut width = 0;
         let mut height = 0;
-        frame.GetSize(&mut width, &mut height).map_err(|e| format!("get size failed: {:?}", e))?;
+
+        for i in 0..frame_count {
+            if let Ok(f) = decoder.GetFrame(i) {
+                let mut w = 0;
+                let mut h = 0;
+                if f.GetSize(&mut w, &mut h).is_ok() {
+                    let p = w as u64 * h as u64;
+                    if p > max_p {
+                        max_p = p;
+                        width = w;
+                        height = h;
+                        best_frame_idx = i;
+                    }
+                }
+            }
+        }
+
+        let frame = decoder.GetFrame(best_frame_idx).map_err(|e| format!("failed to get frame: {:?}", e))?;
 
         let orientation = get_exif_orientation(path);
         let transform_options = match orientation {
@@ -598,7 +616,10 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         let pixel_count = logical_width as u64 * logical_height as u64;
         let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(Ordering::Relaxed);
         let limit = crate::tile_cache::get_max_texture_side();
-        if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit {
+        
+        // If it's a RAW file, we ALWAYS want a fast preview path for the initial placeholder,
+        let is_raw = crate::raw_processor::is_raw_extension(&ext);
+        if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit || is_raw {
             // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
             // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.
             let cached_bitmap = factory.CreateBitmapFromSource(&final_source, WICBitmapCacheOnDemand)

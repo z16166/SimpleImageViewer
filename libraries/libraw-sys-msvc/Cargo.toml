@@ -1,0 +1,11 @@
+[package]
+name = "libraw-sys-msvc"
+version = "0.1.0"
+edition = "2024"
+links = "raw"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.0"

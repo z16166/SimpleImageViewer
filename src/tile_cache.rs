@@ -134,6 +134,23 @@ impl TilePixelCache {
             self.current_bytes += bytes;
         }
     }
+
+    /// Remove all tiles belonging to a specific image index.
+    pub fn remove_image(&mut self, index: usize) {
+        let keys_to_remove: Vec<_> = self.entries.keys()
+            .filter(|(idx, _, _)| *idx == index)
+            .copied()
+            .collect();
+        
+        for key in keys_to_remove {
+            if let Some(pixels) = self.entries.remove(&key) {
+                self.current_bytes -= pixels.len();
+            }
+            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
+                self.lru.remove(pos);
+            }
+        }
+    }
 }
 
 /// The global tile pixel cache instance.

@@ -76,6 +76,7 @@ impl FormatRegistry {
             ("heic", "HEIC Image"),
         ];
 
+
         for (ext, desc) in builtin_standard {
             formats.push(ImageFormat {
                 extension: ext.to_string(),
@@ -95,6 +96,23 @@ impl FormatRegistry {
             });
             extensions.insert(ext.to_string());
         }
+
+        // Dynamically register all RAW formats supported by LibRaw.
+        // We use our custom-exported libraw_get_supported_extensions() API.
+        let libraw_exts = crate::raw_processor::get_supported_extensions();
+        let libraw_count = libraw_exts.len();
+        for ext in libraw_exts {
+            if !extensions.contains(&ext) {
+                formats.push(ImageFormat {
+                    extension: ext.clone(),
+                    group: FormatGroup::WicRaw,
+                    description: format!("{} RAW Image", ext.to_uppercase()),
+                    wic_clsid: None,
+                });
+                extensions.insert(ext);
+            }
+        }
+        log::info!("LibRaw dynamic discovery: successfully registered {} camera formats.", libraw_count);
 
         #[allow(unused_mut)]
         let mut registry = Self {

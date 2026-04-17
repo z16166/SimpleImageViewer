@@ -23,11 +23,26 @@ use std::time::Duration;
 
 pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2048);
 
+use crate::raw_processor::RawProcessor;
+use parking_lot::RwLock as PLRwLock;
+use image::DynamicImage;
+
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>, // RGBA8
+}
+
+impl From<image::RgbaImage> for DecodedImage {
+    fn from(img: image::RgbaImage) -> Self {
+        let (width, height) = img.dimensions();
+        Self {
+            width,
+            height,
+            pixels: img.into_raw(),
+        }
+    }
 }
 
 /// Interface for images that can provide pixel data in tiles/chunks on demand.
@@ -40,6 +55,7 @@ pub trait TiledImageSource: Send + Sync {
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
     /// Optionally provide the full pixel buffer if already in memory.
     fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>>;
+    // fn is_high_quality(&self) -> bool { true }
 }
 
 /// A single frame of an animated image.
@@ -86,6 +102,15 @@ pub enum LoaderOutput {
     Image(LoadResult),
     Tile(TileResult),
     Preview(PreviewResult),
+    /// Background refinement finished (e.g. LibRaw demosaic)
+    Refined(usize, u64),
+}
+
+pub struct RefinementRequest {
+    pub path: PathBuf,
+    pub index: usize,
+    pub generation: u64,
+    pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
 }
 
 struct TileRequest {
@@ -129,11 +154,14 @@ pub struct ImageLoader {
     pool: Arc<rayon::ThreadPool>,
     /// Priority queue for tile requests.
     tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
+    /// Channel for background refinement tasks (LibRaw).
+    refine_tx: Sender<RefinementRequest>,
 }
 
 impl ImageLoader {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) = crossbeam_channel::unbounded();
         let pool_builder =
             rayon::ThreadPoolBuilder::new().thread_name(|i| format!("img-loader-{i}"));
 
@@ -294,6 +322,65 @@ impl ImageLoader {
                 .ok();
         }
 
+        // Start dedicated Background Refinement Worker (Throttled)
+        let worker_tx = tx.clone();
+        let worker_gen = current_gen.clone();
+        let _ = std::thread::Builder::new()
+            .name("refinement-worker".to_string())
+            .spawn(move || {
+                while let Ok(req) = refine_rx.recv() {
+                    // 1. Quick check: Is this image still the current one?
+                    let global_gen = worker_gen.load(std::sync::atomic::Ordering::Relaxed);
+                    if req.generation < global_gen {
+                        continue; // Skip stale refinements
+                    }
+
+                    // 2. Perform heavy development
+                    let mut processor = match RawProcessor::new() {
+                        Some(p) => p,
+                        None => continue,
+                    };
+
+                    if processor.open(&req.path).is_ok() {
+                        if let Ok(full_img) = processor.develop() {
+                            // Convert to RGBA bits
+                            let rgba = full_img.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            let pixels = rgba.into_raw();
+                            
+                            // Re-check generation before commit
+                            if req.generation >= worker_gen.load(std::sync::atomic::Ordering::Relaxed) {
+                                let dynamic = DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, pixels).unwrap());
+                                
+                                // Generate a high-quality 4096px preview for the UI so the user gets
+                                // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
+                                let limit = 4096;
+                                let scaled = dynamic.thumbnail(limit, limit);
+                                let prev_rgba = scaled.to_rgba8();
+                                let preview = DecodedImage {
+                                    width: prev_rgba.width(),
+                                    height: prev_rgba.height(),
+                                    pixels: prev_rgba.into_raw(),
+                                };
+                                
+                                let mut dev_lock = req.developed_image.write();
+                                *dev_lock = Some(dynamic);
+                                drop(dev_lock);
+
+                                let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
+                                    index: req.index,
+                                    _generation: req.generation,
+                                    result: Ok(preview),
+                                }));
+
+                                // Notify UI to clear cache and cross-fade
+                                let _ = worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
+                            }
+                        }
+                    }
+                }
+            });
+
         Self {
             tx,
             rx,
@@ -301,6 +388,7 @@ impl ImageLoader {
             current_gen,
             pool: Arc::new(pool),
             tile_queue,
+            refine_tx,
         }
     }
 
@@ -346,6 +434,8 @@ impl ImageLoader {
         let claimed2 = Arc::clone(&claimed);
         let current_gen1 = Arc::clone(&current_gen);
         let current_gen2 = Arc::clone(&current_gen);
+        let rtx1 = self.refine_tx.clone();
+        let rtx2 = self.refine_tx.clone();
 
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
@@ -366,7 +456,7 @@ impl ImageLoader {
             {
                 return;
             }
-            Self::do_load(index, generation, &path1, tx1, loading1);
+            Self::do_load(index, generation, &path1, tx1, rtx1, loading1);
         });
 
         let _ = std::thread::Builder::new()
@@ -375,9 +465,10 @@ impl ImageLoader {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 let global_gen = current_gen2.load(std::sync::atomic::Ordering::Relaxed);
                 if generation < global_gen {
-                    let loading = loading2.lock().unwrap();
-                    if loading.get(&index) != Some(&generation) {
-                        return;
+                    if let Some(g) = loading2.lock().unwrap().get(&index) {
+                        if *g != generation {
+                            return;
+                        }
                     }
                 }
                 if claimed2
@@ -393,7 +484,7 @@ impl ImageLoader {
                 }
                 #[cfg(target_os = "windows")]
                 let _com = crate::wic::ComGuard::new();
-                Self::do_load(index, generation, &path2, tx2, loading2);
+                Self::do_load(index, generation, &path2, tx2, rtx2, loading2);
             });
     }
 
@@ -402,10 +493,11 @@ impl ImageLoader {
         generation: u64,
         path: &PathBuf,
         tx: Sender<LoaderOutput>,
+        refine_tx: Sender<RefinementRequest>,
         _loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
     ) {
         let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_image_file(generation, index, path)
+            load_image_file(generation, index, path, tx.clone(), refine_tx.clone())
         }))
         .unwrap_or_else(|e| {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -537,7 +629,7 @@ impl ImageLoader {
     }
 }
 
-fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult {
+fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<LoaderOutput>, refine_tx: Sender<RefinementRequest>) -> LoadResult {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -557,6 +649,14 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf) -> LoadResult 
 
         if ext == "psd" || ext == "psb" {
             if let Ok(item) = load_psd(path) {
+                return Ok(item);
+            }
+        }
+
+        let is_raw = crate::raw_processor::is_raw_extension(&ext);
+
+        if is_raw {
+            if let Ok(item) = load_raw(index, generation, path, refine_tx.clone()) {
                 return Ok(item);
             }
         }
@@ -1060,9 +1160,14 @@ impl TextureCache {
         self.evict(current_index, total_count)
     }
 
-    /// Get the original image dimensions (not the texture/preview size).
     pub fn get_original_res(&self, index: usize) -> Option<(u32, u32)> {
         self.original_res.get(&index).copied()
+    }
+
+    pub fn remove(&mut self, index: usize) {
+        self.textures.remove(&index);
+        self.original_res.remove(&index);
+        self.is_tiled.remove(&index);
     }
 
     /// Check if the image at index is a Tiled/Large image.
@@ -1106,4 +1211,163 @@ impl TextureCache {
             None
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// RAW Image Support (LibRaw)
+// ---------------------------------------------------------------------------
+
+pub struct RawImageSource {
+    _path: PathBuf,
+    width: u32,
+    height: u32,
+    /// Initially the system preview, eventually replaced by LibRaw demosaiced image.
+    developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+}
+
+impl RawImageSource {
+    pub fn new(
+        path: PathBuf,
+        preview: DecodedImage,
+        index: usize,
+        generation: u64,
+        refine_tx: Sender<RefinementRequest>,
+    ) -> Self {
+        let width = preview.width;
+        let height = preview.height;
+
+        // Wrap preview in DynamicImage for the initial state
+        let rgba = image::RgbaImage::from_raw(width, height, preview.pixels).unwrap();
+        let initial_img = DynamicImage::ImageRgba8(rgba);
+
+        let developed_image = Arc::new(PLRwLock::new(Some(initial_img)));
+
+        let _ = refine_tx.send(RefinementRequest {
+            path: path.clone(),
+            index,
+            generation,
+            developed_image: developed_image.clone(),
+        });
+
+        Self {
+            _path: path,
+            width,
+            height,
+            developed_image,
+        }
+    }
+}
+
+impl TiledImageSource for RawImageSource {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let img_lock = self.developed_image.read();
+        if let Some(ref img) = *img_lock {
+            // Very simple cropping for now.
+            // In a more advanced version, we'd use LibRaw ROI here.
+            let crop = img.crop_imm(x, y, w, h);
+            crop.to_rgba8().into_raw()
+        } else {
+            vec![0; (w * h * 4) as usize]
+        }
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        let img_lock = self.developed_image.read();
+        if let Some(ref img) = *img_lock {
+            let scaled = img.thumbnail(max_w, max_h);
+            let rgba = scaled.to_rgba8();
+            (rgba.width(), rgba.height(), rgba.into_raw())
+        } else {
+            (0, 0, Vec::new())
+        }
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        let img_lock = self.developed_image.read();
+        if let Some(ref img) = *img_lock {
+            Some(Arc::new(img.to_rgba8().into_raw()))
+        } else {
+            None
+        }
+    }
+
+    // fn is_high_quality(&self) -> bool {
+    //     self.developed_image.read().is_some()
+    // }
+}
+
+fn load_raw(
+    index: usize,
+    generation: u64,
+    path: &PathBuf,
+    refine_tx: Sender<RefinementRequest>,
+) -> Result<ImageData, String> {
+    // 1. Unpack header to get dimensions
+    let mut processor = RawProcessor::new().ok_or("Failed to init LibRaw")?;
+    processor.open(path)?;
+    let (width, height) = (processor.width() as u32, processor.height() as u32);
+    let area = width as u64 * height as u64;
+    let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+
+    // 2. Rule 1: < 64MP pictures MUST entirely pre-read TRUE RAW PIXELS natively.
+    // They completely ignore embedded JPEGs and do not use Tiled presentation at all.
+    if area < threshold {
+        log::info!("[Loader] RAW {}x{} ({:.1} MP) < 64MP. Synchronously extracting original pixels to support full prefetch...", 
+            width, height, area as f64 / 1_000_000.0);
+        
+        if let Ok(full_img) = processor.develop() {
+            let rgba = full_img.to_rgba8();
+            let decoded = DecodedImage {
+                width: rgba.width(),
+                height: rgba.height(),
+                pixels: rgba.into_raw(),
+            };
+            return Ok(ImageData::Static(decoded));
+        } else {
+            log::error!("[Loader] Failed to synchronously extract RAW pixels. Falling back to preview...");
+        }
+    }
+
+    // 3. Rule 2: Giant RAWs (>= 64MP) (or fallback from errors) use the Tiled async pipeline.
+    // We fetch a preview to show instantly, while original pixels decode in background.
+    #[cfg(target_os = "windows")]
+    let preview_res = crate::wic::load_via_wic(path);
+    #[cfg(target_os = "macos")]
+    let preview_res = crate::macos_image_io::load_via_image_io(path);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let preview_res: Result<ImageData, String> = Err("Unsupported".to_string());
+
+    let preview = match preview_res {
+        Ok(ImageData::Static(img)) => img,
+        Ok(ImageData::LargeStatic(img)) => img,
+        _ => {
+            match processor.unpack_thumb() {
+                Ok(thumb) => thumb,
+                Err(e) => {
+                    log::warn!("[Loader] LibRaw fast thumbnail failed for {:?}: {}. Falling back to low-quality develop...", path, e);
+                    processor.develop()?.to_rgba8().into()
+                }
+            }
+        }
+    };
+
+    let source = Arc::new(RawImageSource::new(
+        path.clone(),
+        preview.clone(),
+        index,
+        generation,
+        refine_tx,
+    ));
+
+    log::info!("[Loader] RAW {}x{} ({:.1} MP) >= 64MP - Falling back to Async Tiled preview refinement.", 
+        width, height, area as f64 / 1_000_000.0);
+    Ok(ImageData::Tiled(source))
 }

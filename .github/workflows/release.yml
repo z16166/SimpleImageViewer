@@ -11,6 +11,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  LIBRAW_VERSION: "0.22.1"
+  LIBRAW_INSTALL_DIR: "3rdparty/LibRaw"
 
 jobs:
   build:
@@ -54,6 +56,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup LibRaw (Ubuntu/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.tar.gz -o libraw.tar.gz
+          tar -xzf libraw.tar.gz
+          mkdir -p ${{ env.LIBRAW_INSTALL_DIR }}
+          cp -r LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/
+
+      - name: Setup LibRaw (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
+          Expand-Archive libraw.zip -DestinationPath .
+          if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
+          Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux' && !matrix.use_cross
@@ -151,6 +171,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup LibRaw (Windows)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
+          Expand-Archive libraw.zip -DestinationPath .
+          if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
+          Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

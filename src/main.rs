@@ -40,6 +40,7 @@ mod formats;
 mod wic;
 #[cfg(target_os = "linux")]
 mod linux_tiff;
+mod raw_processor;
 
 #[cfg(target_os = "windows")]
 pub mod windows_utils {
