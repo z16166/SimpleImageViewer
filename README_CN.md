@@ -15,7 +15,8 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 ## 特性列表
 
 - **快速图片加载** — 后台线程预加载前后图片，翻页无延迟
-- **广泛格式支持** — JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、HDR、AVIF、HEIF/HEIC、QOI、EXR、PSD、PSB
+- **广泛格式支持** — JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、HDR、AVIF、HEIF/HEIC、QOI、EXR、PSD、PSB **以及超过 60 种相机 RAW 格式**
+- **专业相机 RAW 支持** — 通过 LibRaw 原生支持超过 60 种相机 RAW 格式的查看（暂不支持编辑），涵盖佳能 (`.cr2`, `.cr3`)、尼康 (`.nef`, `.nrw`)、索尼 (`.arw`)、富士 (`.raf`)、松下 (`.rw2`)、奥林巴斯 (`.orf`)、宾得 (`.pef`)、哈苏 (`.3fr`)、飞思 (`.iiq`) 等主流及专业机型
 - **超大图分片渲染** — 内置分片渲染引擎，支持超高分辨率图片（1亿像素以上）；仅将视口内的切片上传至 GPU，通过 LRU 缓存管理保持显存占用恒定
 - **PSD / PSB 支持** — 原生 Photoshop 文件读取器；PSB 大文件格式（4 GB+）通过自研流式解析器解码，加载前自动检测系统可用内存
 - **HEIF / HEIC 支持** — 原生支持 iPhone 高效率图片格式；采用纯 Rust 解码方案，无复杂 C++ 依赖，跨平台兼容性好
@@ -112,9 +113,11 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 
 | 平台 | 状态 |
 |---|---|
-| Windows 10/11 / 7 x64 (兼容版) | ✅ 原生支持 10/11；提供专门的 Win7 x64 兼容版（不支持 32 位） |
-| macOS（Apple Silicon / Intel） | ✅ 少量改动即可编译运行 |
+| Windows 10/11 / 7+ x64 | ✅ 原生支持 10/11；提供专门的 Win7 x64 兼容版（可在 Win7 及以上系统运行）* |
+| macOS（Apple Silicon / Intel） | ✅ 原生支持 |
 | Linux（X11 / Wayland） | ✅ 需要音频库（见下文） |
+
+*\*Windows 7 注意事项：系统必须升级至 **Service Pack 1 (SP1)** 并安装 **KB2670838**（Windows 7 平台更新/图形增强补丁），且显卡驱动需支持 **DirectX 11**。*
 
 ---
 
@@ -150,36 +153,6 @@ cargo run --bin make_ico   # 将 assets/icon.jpg 转换为 assets/icon.ico
 ```
 
 ---
-
-### Windows 7 x64 支持 (实验性)
-
-如果需要编译一个能在 Windows 7 上正常运行的可执行文件，请参考以下步骤：
-
-1.  下载 [VC-LTL-Binary.7z](https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z)，解压到 `f:\win7\VC-LTL5`。
-2.  下载 [YY-Thunks-Lib.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip) 和 [YY-Thunks-Objs.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip)，均解压到 `f:\win7\YY-Thunks`。
-3.  安装 thunk-cli：
-    ```powershell
-    cargo install thunk-cli
-    ```
-4.  执行编译命令：
-    ```powershell
-    set VC_LTL=f:\win7\VC-LTL5
-    set YY_THUNKS=f:\win7\YY-Thunks
-    thunk --os win7 --arch x64 -- --release
-    ```
-    *注意：这样得到的 EXE 是一个控制台程序。请使用 [CFF Explorer](http://www.ntcore.com/exsuite.php) 将其子系统属性从 "Windows Console" 修改为 "Windows GUI"。*
-
-5.  新建一个 `combase.c` 文件，内容如下：
-    ```c
-    #pragma comment(linker, "/export:CoTaskMemFree=ole32.CoTaskMemFree")
-    ```
-6.  打开 **Visual Studio x64 Native Tools Command Prompt**，执行以下命令编译得到 `combase.dll`：
-    ```cmd
-    cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
-    ```
-7.  将 `combase.dll` 和 `SimpleImageViewer.exe` 放在同一个目录下即可支持 Win7 x64。
-
-*注意：如果被某些杀毒软件报毒，请忽略或添加信任。*
 
 ---
 

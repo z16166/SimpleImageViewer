@@ -4833,6 +4833,7 @@ dependencies = [
  "mimalloc",
  "moka",
  "parking_lot",
+ "pollster",
  "printpdf",
  "psd",
  "quick-xml",

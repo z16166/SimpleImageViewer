@@ -9,7 +9,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB
+- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB and **60+ Camera RAW formats**
+- **Professional RAW Support** — viewing-only support for 60+ RAW formats via LibRaw, including Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and many more.
 - **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with LRU cache management to keep VRAM usage constant
 - **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) decoded via a custom streaming parser with automatic RAM safety check before loading
 - **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos via a pure-Rust parser (cross-platform, zero C++ dependencies)
@@ -99,9 +100,11 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Platform | Status |
 |---|---|
-| Windows 10/11 / 7 x64 (Legacy) | ✅ Native on 10/11; Specialized build for 7 x64 (32-bit not supported) |
-| macOS (Apple Silicon / Intel) | ✅ Builds with minimal changes |
+| Windows 10/11 / 7+ x64 | ✅ Native on 10/11; Win7 x64 release package is compatible with Windows 7 and above* |
+| macOS (Apple Silicon / Intel) | ✅ Native support |
 | Linux (X11 / Wayland) | ✅ Requires audio libraries (see below) |
+
+*\*Note for Windows 7: Requires **Service Pack 1 (SP1)**, **KB2670838** (Platform Update for Windows 7), and a GPU driver that supports **DirectX 11**.*
 
 ---
 
@@ -137,36 +140,6 @@ cargo run --bin make_ico   # converts assets/icon.jpg → assets/icon.ico
 ```
 
 ---
-
-### Windows 7 x64 Support (Experimental)
-
-To build a version of the executable that runs on Windows 7, follow these steps:
-
-1.  Download [VC-LTL-Binary.7z](https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z) and extract it to `f:\win7\VC-LTL5`.
-2.  Download [YY-Thunks-Lib.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip) and [YY-Thunks-Objs.zip](https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip), and extract both to `f:\win7\YY-Thunks`.
-3.  Install the thunk CLI:
-    ```powershell
-    cargo install thunk-cli
-    ```
-4.  Run the build command:
-    ```powershell
-    set VC_LTL=f:\win7\VC-LTL5
-    set YY_THUNKS=f:\win7\YY-Thunks
-    thunk --os win7 --arch x64 -- --release
-    ```
-    *Note: The generated EXE will be a console application. Use [CFF Explorer](http://www.ntcore.com/exsuite.php) to change the subsystem from "Windows Console" to "Windows GUI".*
-
-5.  Create a file named `combase.c` with the following content:
-    ```c
-    #pragma comment(linker, "/export:CoTaskMemFree=ole32.CoTaskMemFree")
-    ```
-6.  Open the **Visual Studio x64 Native Tools Command Prompt** and compile `combase.dll`:
-    ```cmd
-    cl.exe /LD combase.c /link /NODEFAULTLIB /NOENTRY /out:combase.dll
-    ```
-7.  Place `combase.dll` in the same directory as `SimpleImageViewer.exe`.
-
-*Note: If flagged by antivirus software, please add an exception or ignore the warning.*
 
 ---
 
