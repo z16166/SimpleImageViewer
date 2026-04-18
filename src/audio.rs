@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::scanner::is_offline;
+use crate::constants::AUDIO_BUFFER_CAPACITY;
 use crossbeam_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -685,7 +686,7 @@ fn run_audio_loop(
                         // Seek to next track
                         if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                             if let Ok(file) = std::fs::File::open(path) {
-                                let reader = std::io::BufReader::new(file);
+                                let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                                 if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
                                     player.clear();
                                     let source = rodio::Source::skip_duration(source, next_t.start);
@@ -727,7 +728,7 @@ fn run_audio_loop(
 
                     if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                         if let Ok(file) = std::fs::File::open(path) {
-                            let reader = std::io::BufReader::new(file);
+                            let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                             if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
                                 player.clear();
                                 if target_t.start > Duration::ZERO {
@@ -785,7 +786,7 @@ fn run_audio_loop(
             current_track_idx += 1;
 
             if let Ok(file) = std::fs::File::open(&path) {
-                let reader = std::io::BufReader::new(file);
+                let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                 if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
                         set_current_track(&track_slot, Some(filename));
                         set_current_path(&path_slot, Some(path.clone()));
@@ -822,7 +823,7 @@ fn run_audio_loop(
                                     // to seek we need to clear and re-append a skipped source.
                                     player.clear();
                                     if let Ok(f2) = std::fs::File::open(&path) {
-                                        let r2 = std::io::BufReader::new(f2);
+                                        let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
                                         // Re-open source for seeking
                                         if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag)) {
                                             let s2 = rodio::Source::skip_duration(s2, t.start);

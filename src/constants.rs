@@ -45,3 +45,8 @@ pub const DEFAULT_ANIMATION_DELAY_MS: u32 = 100;
 /// broken and should use the default fallback (standard browser behavior).
 pub const MIN_ANIMATION_DELAY_THRESHOLD_MS: u32 = 10;
 
+/// Default capacity for audio file read buffers (8 MB).
+/// High capacity helps prevent stuttering on slow HDDs (like WD Green) 
+/// when images are being loaded in parallel, as it reduces disk seek frequency.
+pub const AUDIO_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
+
