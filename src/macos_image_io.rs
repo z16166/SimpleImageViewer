@@ -376,7 +376,7 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
             // ========================================================
             // Path 2 (Fast): The 'Ultima' Path - Parallel Rust Stride-Reading
             // ========================================================
-            let is_giant = self.physical_width >= 4096 || self.physical_height >= 4096;
+            let is_giant = self.physical_width >= crate::constants::MAX_QUALITY_PREVIEW_SIZE || self.physical_height >= crate::constants::MAX_QUALITY_PREVIEW_SIZE;
             if is_giant && best_index == 0 {
                 log::info!(
                     "MacOS ImageIO: Giant single-layer detected. Prioritizing Path 2 (Rayon Stride-Reader)..."

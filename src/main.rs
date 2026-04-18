@@ -25,6 +25,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 rust_i18n::i18n!("locales");
 
 mod app;
+mod constants;
 mod audio;
 mod ipc;
 mod loader;
@@ -32,6 +33,7 @@ mod psb_reader;
 mod scanner;
 mod settings;
 pub mod theme;
+mod ui;
 pub mod print;
 mod tile_cache;
 mod macos_image_io;
@@ -417,7 +419,7 @@ fn main() -> eframe::Result {
         eframe::wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
             required_limits: eframe::wgpu::Limits {
-                max_texture_dimension_2d: 8192,
+                max_texture_dimension_2d: crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE,
                 ..base_limits
             },
             ..Default::default()

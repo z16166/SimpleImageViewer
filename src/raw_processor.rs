@@ -32,6 +32,7 @@ impl RawProcessor {
         unsafe {
             let data = ffi::libraw_init(0);
             if data.is_null() {
+                log::error!("{}", rust_i18n::t!("error.libraw_init"));
                 None
             } else {
                 Some(Self { data, is_unpacked: false })
@@ -46,7 +47,7 @@ impl RawProcessor {
         unsafe {
             let ret = ffi::libraw_open_file(self.data, c_path.as_ptr());
             if ret != 0 {
-                return Err(format!("LibRaw failed to open file: {}", ret));
+                return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
             }
         }
         Ok(())
@@ -74,7 +75,7 @@ impl RawProcessor {
         unsafe {
             let ret = ffi::libraw_unpack(self.data);
             if ret != 0 {
-                return Err(format!("LibRaw unpack failed: {}", ret));
+                return Err(rust_i18n::t!("error.libraw_unpack", code = ret).to_string());
             }
             self.is_unpacked = true;
         }
@@ -90,37 +91,37 @@ impl RawProcessor {
             // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {
-                return Err(format!("LibRaw process failed: {}", ret));
+                return Err(rust_i18n::t!("error.libraw_process", code = ret).to_string());
             }
 
             let mut err = 0;
             let processed = ffi::libraw_dcraw_make_mem_image(self.data, &mut err);
             if processed.is_null() {
-                return Err(format!("LibRaw make_mem_image failed: {}", err));
+                return Err(rust_i18n::t!("error.libraw_mem_image", code = err).to_string());
             }
 
             let img = &*processed;
             if img.image_type != ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
                 ffi::libraw_dcraw_clear_mem(processed);
-                return Err(format!("Unsupported processed image type: {} (expected BITMAP={})", img.image_type, ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32));
+                return Err(rust_i18n::t!("error.unsupported_raw_type", img_type = img.image_type, expected = ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32).to_string());
             }
 
-            if img.colors != 3 || img.bits != 8 {
+            if img.colors != crate::constants::RGB_CHANNELS as u16 || img.bits != crate::constants::BIT_DEPTH_8 as u16 {
                 ffi::libraw_dcraw_clear_mem(processed);
-                return Err(format!("Unsupported image format: colors={}, bits={}", img.colors, img.bits));
+                return Err(rust_i18n::t!("error.unsupported_raw_format", colors = img.colors, bits = img.bits).to_string());
             }
 
             // Create RgbImage from the data
             let width = img.width as u32;
             let height = img.height as u32;
             let data_ptr = &img.data as *const u8;
-            let data_len = (width * height * 3) as usize;
+            let data_len = (width * height * crate::constants::RGB_CHANNELS as u32) as usize;
             let data = std::slice::from_raw_parts(data_ptr, data_len).to_vec();
 
             ffi::libraw_dcraw_clear_mem(processed);
 
             let rgb = RgbImage::from_raw(width, height, data)
-                .ok_or("Failed to create RgbImage from buffer")?;
+                .ok_or_else(|| rust_i18n::t!("error.rgb_image_create_failed").to_string())?;
             
             Ok(DynamicImage::ImageRgb8(rgb))
         }
@@ -131,12 +132,12 @@ impl RawProcessor {
         unsafe {
             let res = ffi::libraw_unpack_thumb(self.data);
             if res != 0 {
-                return Err(format!("libraw_unpack_thumb failed: {}", res));
+                return Err(rust_i18n::t!("error.libraw_unpack", code = res).to_string());
             }
 
             let processed = ffi::libraw_dcraw_make_mem_thumb(self.data, &mut err);
             if processed.is_null() {
-                return Err(format!("libraw_dcraw_make_mem_thumb failed: {}", err));
+                return Err(rust_i18n::t!("error.libraw_mem_image", code = err).to_string());
             }
 
             let img = &*processed;
@@ -155,17 +156,17 @@ impl RawProcessor {
                             pixels: rgba.into_raw(),
                         })
                     }
-                    Err(e) => Err(format!("Failed to decode JPEG thumbnail: {}", e)),
+                    Err(e) => Err(rust_i18n::t!("error.decode_thumb_failed", err = e).to_string()),
                 }
             } else if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
                 // Bitmap thumbnail (RGB)
-                if img.colors == 3 && img.bits == 8 {
-                    let mut rgba = Vec::with_capacity(img.width as usize * img.height as usize * 4);
+                if img.colors == crate::constants::RGB_CHANNELS as u16 && img.bits == crate::constants::BIT_DEPTH_8 as u16 {
+                    let mut rgba = Vec::with_capacity(img.width as usize * img.height as usize * crate::constants::RGBA_CHANNELS);
                     for i in 0..(img.width as usize * img.height as usize) {
-                        rgba.push(slice[i * 3]);
-                        rgba.push(slice[i * 3 + 1]);
-                        rgba.push(slice[i * 3 + 2]);
-                        rgba.push(255);
+                        rgba.push(slice[i * crate::constants::RGB_CHANNELS]);
+                        rgba.push(slice[i * crate::constants::RGB_CHANNELS + 1]);
+                        rgba.push(slice[i * crate::constants::RGB_CHANNELS + 2]);
+                        rgba.push(crate::constants::MAX_CHANNEL_VALUE);
                     }
                     Ok(crate::loader::DecodedImage {
                         width: img.width as u32,
@@ -176,7 +177,7 @@ impl RawProcessor {
                     // Heuristic fallback: Some cameras (like Fuji) might report a thumbnail as 
                     // a bitmap type but actually embed a JPEG, or report bits/colors as 0.
                     // We check for the JPEG magic bytes (FF D8 FF).
-                    if slice.len() > 3 && slice[0] == 0xFF && slice[1] == 0xD8 && slice[2] == 0xFF {
+                    if slice.len() > crate::constants::RGB_CHANNELS && slice[0] == 0xFF && slice[1] == 0xD8 && slice[2] == 0xFF {
                         match image::load_from_memory(slice) {
                             Ok(decoded) => {
                                 let rgba = decoded.to_rgba8();
@@ -186,14 +187,14 @@ impl RawProcessor {
                                     pixels: rgba.into_raw(),
                                 })
                             }
-                            Err(e) => Err(format!("Heuristic JPEG detection failed: {}", e)),
+                            Err(e) => Err(rust_i18n::t!("error.heuristic_jpeg_failed", err = e).to_string()),
                         }
                     } else {
-                        Err(format!("Unsupported bitmap thumbnail format: colors={}, bits={}, image_type={}", img.colors, img.bits, img.image_type))
+                        Err(rust_i18n::t!("error.unsupported_thumb_format", colors = img.colors, bits = img.bits, img_type = img.image_type).to_string())
                     }
                 }
             } else {
-                Err(format!("Unknown thumbnail type: {}", img.image_type))
+                Err(rust_i18n::t!("error.unknown_thumb_type", img_type = img.image_type).to_string())
             };
 
             ffi::libraw_dcraw_clear_mem(processed);

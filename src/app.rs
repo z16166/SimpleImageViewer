@@ -79,16 +79,7 @@ struct AnimationPlayback {
     frame_start: Instant,
 }
 
-/// Parameters that affect the OSD status text.
-#[derive(PartialEq)]
-struct HudState {
-    index: usize,
-    total: usize,
-    zoom_pct: u32,
-    res: (u32, u32),
-    mode: String,
-    current_track: Option<String>,
-}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
@@ -138,7 +129,7 @@ impl HardwareTier {
         match self {
             Self::Low => 1024,
             Self::Medium => 2048,
-            Self::High => 4096, // Capped at 4k to prevent VRAM spikes
+            Self::High => crate::constants::MAX_QUALITY_PREVIEW_SIZE, // Capped at 4k to prevent VRAM spikes
         }
     }
 }
@@ -230,9 +221,8 @@ pub struct ImageViewerApp {
     transition_start: Option<Instant>,
     is_next: bool,
 
-    // Caching for OSD performance
-    cached_hud: Option<String>,
-    last_hud_state: Option<HudState>,
+    // OSD renderer
+    osd: crate::ui::osd::OsdRenderer,
 
     // Window lifecycle
     last_minimized: bool,
@@ -328,11 +318,11 @@ impl ImageViewerApp {
         // ── GPU Limits ───────────────────────────────────────────────────────
         let max_texture_side_hw = cc.wgpu_render_state.as_ref()
             .map(|s| s.adapter.limits().max_texture_dimension_2d)
-            .unwrap_or(8192);
+            .unwrap_or(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
         
         // Even if the hardware supports more (e.g., 16384), egui often caps at 8192.
         // We cap it at 8192 here to be absolutely safe against framework panics.
-        let max_texture_side = max_texture_side_hw.min(8192);
+        let max_texture_side = max_texture_side_hw.min(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
         
         crate::tile_cache::MAX_TEXTURE_SIDE.store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
         
@@ -421,8 +411,7 @@ impl ImageViewerApp {
             prev_texture: None,
             transition_start: None,
             is_next: true,
-            cached_hud: None,
-            last_hud_state: None,
+            osd: crate::ui::osd::OsdRenderer::new(),
             last_minimized: false,
             last_frame_time: Instant::now(),
             ipc_rx,
@@ -574,6 +563,12 @@ impl ImageViewerApp {
             
             tm.generation = self.generation;
             self.current_image_res = Some((tm.full_width, tm.full_height));
+
+            // Trigger deferred refinement now that this image is actively viewed.
+            // Prefetched RAW images defer refinement to avoid ~400MB develop allocations
+            // for images the user might never actually look at.
+            tm.get_source().request_refinement(self.current_index, self.generation);
+
             self.tile_manager = Some(tm);
             
             log::info!("[App] Cache Hit: Restored prefetched TileManager for index {}", self.current_index);
@@ -751,7 +746,7 @@ impl ImageViewerApp {
         }
         
         // Force HUD update
-        self.last_hud_state = None;
+        self.osd.invalidate();
     }
 
     fn navigate_next(&mut self) {
@@ -1116,76 +1111,54 @@ impl ImageViewerApp {
                     }
                 }
             }
-            Ok(ImageData::LargeStatic(decoded)) => {
-                // Large image: create TileManager + preview, skip full GPU upload
-                if idx == self.current_index {
-                    self.current_image_res = Some((decoded.width, decoded.height));
-                    crate::tile_cache::set_tile_size_for_image(decoded.width, decoded.height);
-                    let mut tm = TileManager::new(idx, load_result.generation, decoded.width, decoded.height, decoded.pixels.clone());
-                    let preview = DecodedImage {
-                        width: decoded.width,
-                        height: decoded.height,
-                        pixels: decoded.pixels.clone(),
-                    };
-
-                    // Cache preview so LargeStatic also benefits from instant loading when returning
-                    let color_image = ColorImage::from_rgba_unmultiplied(
-                        [preview.width as usize, preview.height as usize],
-                        &preview.pixels,
-                    );
-                    let handle = ctx.load_texture(format!("img_lstatic_{}", idx), color_image, TextureOptions::LINEAR);
-                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, decoded.width, decoded.height, true, self.current_index, self.image_files.len()) {
-                        self.animation_cache.remove(&evicted_idx);
-                    }
-
-                    self.setup_tile_manager(ctx, idx, &mut tm, preview);
-                    self.tile_manager = Some(tm);
-                    self.animation = None;
-                    self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
-                } else {
-                    let mut tm = TileManager::new(idx, load_result.generation, decoded.width, decoded.height, decoded.pixels.clone());
-                    let preview = DecodedImage {
-                        width: decoded.width,
-                        height: decoded.height,
-                        pixels: decoded.pixels.clone(),
-                    };
-                    self.setup_tile_manager(ctx, idx, &mut tm, preview);
-                    self.prefetched_tiles.insert(idx, tm);
-                }
-            }
             Ok(ImageData::Tiled(source)) => {
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
                 if let Some(preview) = load_result.preview.as_ref() {
-                    let color_image = ColorImage::from_rgba_unmultiplied(
-                        [preview.width as usize, preview.height as usize],
-                        &preview.pixels,
-                    );
-                    let name = format!("img_preview_{}", idx);
-                    let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, source.width(), source.height(), true, self.current_index, self.image_files.len()) {
-                        self.animation_cache.remove(&evicted_idx);
+                    // Update texture cache if it's empty OR if it currently holds a low-res preview.
+                    // This ensures we can upgrade an EXIF thumbnail to an HQ preview while protecting full static images.
+                    if !self.texture_cache.contains(idx) || self.texture_cache.is_preview_placeholder(idx) {
+                        let color_image = ColorImage::from_rgba_unmultiplied(
+                            [preview.width as usize, preview.height as usize],
+                            &preview.pixels,
+                        );
+                        let name = format!("img_preview_{}", idx);
+                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                        if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, source.width(), source.height(), true, self.current_index, self.image_files.len()) {
+                            self.animation_cache.remove(&evicted_idx);
+                        }
                     }
                 }
 
                 if idx == self.current_index {
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(&source));
                     
-                    if let Some(preview) = load_result.preview.as_ref() {
+                    // Prefer existing cached texture (might be HQ) over the initial low-res preview
+                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
+                        tm.preview_texture = Some(cached_handle);
+                    } else if let Some(preview) = load_result.preview.as_ref() {
                         self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
                     }
                     
                     self.tile_manager = Some(tm);
                     self.animation = None;
                     self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+
+                    // Trigger refinement ONLY for the actively-viewed image.
+                    // Prefetched images stay at preview quality until navigated to.
+                    source.request_refinement(idx, self.generation);
                 } else {
                     // Preloading: create the TileManager and store it in prefetched_tiles
                     // so that when the user switches to this image, the source (and its 
                     // background refined RAW data) is immediately available!
                     let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
-                    if let Some(preview) = load_result.preview.as_ref() {
+                    
+                    // Prefer existing cached texture (might be HQ) over the initial low-res preview
+                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
+                        tm.preview_texture = Some(cached_handle);
+                    } else if let Some(preview) = load_result.preview.as_ref() {
                         self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
                     }
                     self.prefetched_tiles.insert(idx, tm);
@@ -1253,18 +1226,50 @@ impl ImageViewerApp {
 
     fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
         // Apply HQ preview if it matches the currently displayed tile manager.
-        // No generation check here: the loading map is cleared by poll() before
-        // the HQ preview arrives, making current_generation() always return 0.
-        // The tile manager's image_index match is sufficient validation.
+        // Also check prefetched tiles and update the texture cache for future navigations.
         match update.result {
             Ok(preview) => {
+                // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index {
-                        log::info!("[App] HQ preview applied for index {} ({}x{})", 
+                        log::info!("[App] HQ preview applied for current index {} ({}x{})", 
                             update.index, preview.width, preview.height);
-                        tm.set_preview(preview, ctx);
+                        tm.set_preview(preview.clone(), ctx);
                         ctx.request_repaint();
                     }
+                }
+
+                // 2. Update prefetched TileManagers
+                if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
+                    log::info!("[App] HQ preview applied for prefetched index {} ({}x{})", 
+                        update.index, preview.width, preview.height);
+                    tm.set_preview(preview.clone(), ctx);
+                }
+
+                // 3. Update global texture cache (so instant-flips also get HQ texture).
+                // Only update if it's empty or currently holds a preview (don't downgrade full static images).
+                if !self.texture_cache.contains(update.index) || self.texture_cache.is_preview_placeholder(update.index) {
+                    // Preserve the TRUE image dimensions (e.g. 11648×8736) when updating the preview texture.
+                    // Without this, a small preview (e.g. 160×120 EXIF thumbnail) would overwrite
+                    // original_res, causing the OSD to display wildly wrong zoom percentages (e.g. 16000%).
+                    let (orig_w, orig_h) = self.texture_cache.get_original_res(update.index)
+                        .unwrap_or((preview.width, preview.height));
+
+                    let name = format!("img_hq_preview_{}", update.index);
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                        [preview.width as usize, preview.height as usize],
+                        &preview.pixels,
+                    );
+                    let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
+                    self.texture_cache.insert(
+                        update.index,
+                        handle,
+                        orig_w,
+                        orig_h,
+                        true, // is_tiled
+                        self.current_index,
+                        self.image_files.len(),
+                    );
                 }
             }
             Err(e) => {
@@ -1613,8 +1618,8 @@ impl ImageViewerApp {
         }
 
         // Apply rotation if requested (by keys OR mouse wheel)
-        if rotate_ccw { self.current_rotation = (self.current_rotation + 3) % 4; }
-        if rotate_cw { self.current_rotation = (self.current_rotation + 1) % 4; }
+        if rotate_ccw { self.apply_rotation_with_tracking(false, ctx); }
+        if rotate_cw { self.apply_rotation_with_tracking(true, ctx); }
     }
 
     // ------------------------------------------------------------------
@@ -2272,12 +2277,12 @@ impl ImageViewerApp {
         ui.separator();
 
         if ui.button(t!("ctx.rotate_ccw").to_string()).clicked() {
-            self.current_rotation = (self.current_rotation + 3) % 4;
+            self.apply_rotation_with_tracking(false, ui.ctx());
             self.context_menu_pos = None;
         }
-
+        
         if ui.button(t!("ctx.rotate_cw").to_string()).clicked() {
-            self.current_rotation = (self.current_rotation + 1) % 4;
+            self.apply_rotation_with_tracking(true, ui.ctx());
             self.context_menu_pos = None;
         }
 
@@ -3086,6 +3091,7 @@ impl ImageViewerApp {
                     }
 
                     // 2. Draw NEW image (on top, with alpha/motion)
+
                     let mut mesh = egui::Mesh::with_texture(texture.id());
                     mesh.add_rect_with_uv(unrotated_final_dest, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.linear_multiply(alpha));
                     if rotation != 0 {
@@ -3103,7 +3109,14 @@ impl ImageViewerApp {
             // Drawn outside the texture-success branch to ensure persistent display 
             // during refinement, transitions, or slow tile loading.
             if self.settings.show_osd {
-                let zoom_pct = (self.zoom_factor * 100.0).round() as u32;
+                let res = if let Some(r) = self.current_image_res { r } else { (0, 0) };
+                let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                let rotation = self.current_rotation;
+                let needs_swap = rotation % 2 != 0;
+                let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+
+                let effective_scale = self.calculate_effective_scale(rotated_img_size, screen_rect);
+                let zoom_pct = (effective_scale * self.cached_pixels_per_point * 100.0).round() as u32;
                 
                 // Determine resolution and mode tag
                 let mut res_w = 0;
@@ -3126,7 +3139,7 @@ impl ImageViewerApp {
                 }
 
                 if res_w > 0 {
-                    let current_state = crate::app::HudState {
+                    let current_state = crate::ui::osd::OsdState {
                         index: self.current_index,
                         total: self.image_files.len(),
                         zoom_pct,
@@ -3135,62 +3148,22 @@ impl ImageViewerApp {
                         current_track: self.audio.get_current_track(),
                     };
 
-                    if self.last_hud_state.as_ref() != Some(&current_state) {
-                        let fname = self.image_files[self.current_index]
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-                        
-                        let mut hud = format!(
-                            "{} / {}    {}    {}%    {}×{}    [{}]",
-                            current_state.index + 1,
-                            current_state.total,
-                            fname,
-                            current_state.zoom_pct,
-                            current_state.res.0,
-                            current_state.res.1,
-                            current_state.mode,
-                        );
-
-                        if let Some(ref track) = current_state.current_track {
-                            hud.push_str(&format!("    ♪ {}", track));
-                        }
-                        
-                        self.cached_hud = Some(hud);
-                        self.last_hud_state = Some(current_state);
-                    }
-
-                    if let Some(hud) = &self.cached_hud {
-                        let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
-                        ui.painter().text(
-                            hud_pos,
-                            Align2::LEFT_BOTTOM,
-                            hud,
-                            FontId::proportional(13.0),
-                            self.cached_palette.osd_text,
-                        );
-                    }
-
-                    // Display persistence error if active
-                    if let Some((ref err, _)) = self.last_save_error {
-                        let err_pos = screen_rect.left_bottom() + Vec2::new(12.0, -32.0);
-                        ui.painter().text(
-                            err_pos,
-                            Align2::LEFT_BOTTOM,
-                            t!("error.settings_save_failed", error = err).to_string(),
-                            FontId::proportional(13.0),
-                            Color32::from_rgb(255, 100, 100),
-                        );
-                    }
+                    let fname = self.image_files[self.current_index]
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    
+                    self.osd.render(
+                        ui,
+                        screen_rect,
+                        current_state,
+                        &fname,
+                        &self.cached_palette,
+                        &self.last_save_error,
+                    );
                 } else {
                     // While loading/parsing, show a minimal status
-                    ui.painter().text(
-                        screen_rect.center() - Vec2::new(0.0, 20.0),
-                        Align2::CENTER_BOTTOM,
-                        t!("status.loading").to_string(),
-                        FontId::proportional(16.0),
-                        self.cached_palette.text_muted,
-                    );
+                    self.osd.render_loading_hint(ui, screen_rect, &self.cached_palette);
                 }
 
                 // Hint when settings hidden
@@ -3207,13 +3180,27 @@ impl ImageViewerApp {
         });
     }
 
-    /// Compute the display rect for an image texture within the screen.
-    fn compute_display_rect(&self, img_size: Vec2, screen_rect: Rect) -> Rect {
+    /// Calculate current absolute display scale relative to image pixels (logical scale).
+    fn calculate_effective_scale(&self, img_size: Vec2, screen_rect: Rect) -> f32 {
         match self.settings.scale_mode {
             ScaleMode::FitToWindow => {
-                let fit_scale = (screen_rect.width() / img_size.x)
-                    .min(screen_rect.height() / img_size.y);
-                let scale = fit_scale * self.zoom_factor;
+                if img_size.x > 0.1 && img_size.y > 0.1 {
+                    (screen_rect.width() / img_size.x)
+                        .min(screen_rect.height() / img_size.y)
+                        * self.zoom_factor
+                } else {
+                    self.zoom_factor
+                }
+            }
+            ScaleMode::OriginalSize => self.zoom_factor / self.cached_pixels_per_point,
+        }
+    }
+
+    /// Compute the display rect for an image texture within the screen.
+    fn compute_display_rect(&self, img_size: Vec2, screen_rect: Rect) -> Rect {
+        let scale = self.calculate_effective_scale(img_size, screen_rect);
+        match self.settings.scale_mode {
+            ScaleMode::FitToWindow => {
                 let disp = img_size * scale;
                 let off = (screen_rect.size() - disp) * 0.5;
                 Rect::from_min_size(
@@ -3229,6 +3216,61 @@ impl ImageViewerApp {
                 let center = screen_rect.center() + self.pan_offset;
                 Rect::from_center_size(center, disp)
             }
+        }
+    }
+    
+    /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.
+    fn apply_rotation_with_tracking(&mut self, clockwise: bool, ctx: &Context) {
+        if self.image_files.is_empty() { return; }
+        
+        // 1. Get original image resolution
+        let res = if let Some(r) = self.current_image_res { r } else { return; };
+        let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+        let screen_rect = ctx.input(|i| i.content_rect());
+        
+        // 2. Calculate current scale
+        let old_rotation = self.current_rotation;
+        let old_needs_swap = old_rotation % 2 != 0;
+        let old_rotated_size = if old_needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+        let old_scale = self.calculate_effective_scale(old_rotated_size, screen_rect);
+
+        // 3. Update rotation state
+        if clockwise {
+            self.current_rotation = (self.current_rotation + 1) % 4;
+        } else {
+            self.current_rotation = (self.current_rotation + 3) % 4;
+        }
+
+        // 4. Calculate new scale (FitToWindow scale might change due to aspect ratio swap)
+        let new_rotation = self.current_rotation;
+        let new_needs_swap = new_rotation % 2 != 0;
+        let new_rotated_size = if new_needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+
+        let new_scale = self.calculate_effective_scale(new_rotated_size, screen_rect);
+
+        // 5. Transform pan_offset to maintain center alignment.
+        // Rotation around image center maps (x, y) to (-y, x) for CW 90.
+        // We also compensate for scale changes to keep the visual point fixed.
+        let p = self.pan_offset;
+        if clockwise {
+            // Clockwise: (x, y) -> (-y, x)
+            self.pan_offset = Vec2::new(-p.y, p.x);
+        } else {
+            // Counter-clockwise: (x, y) -> (y, -x)
+            self.pan_offset = Vec2::new(p.y, -p.x);
+        }
+
+        // Adjust for scale ratio (critical for FitToWindow)
+        if old_scale > 0.0001 {
+            self.pan_offset *= new_scale / old_scale;
+        }
+
+        // Invalidate tiled caches to re-request tiles in new orientation
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        if let Some(tm) = &mut self.tile_manager {
+            tm.generation = self.generation;
+            tm.pending_tiles.clear();
         }
     }
 
@@ -3762,7 +3804,7 @@ impl eframe::App for ImageViewerApp {
         // Just restored from minimized state: force a clean UI refresh
         if self.last_minimized {
             self.last_minimized = false;
-            self.last_hud_state = None; // Invalidate HUD cache to force total redraw
+            self.osd.invalidate(); // Invalidate HUD cache to force total redraw
             ctx.request_repaint();
         }
 

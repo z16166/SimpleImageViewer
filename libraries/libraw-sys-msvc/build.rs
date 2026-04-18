@@ -17,7 +17,25 @@
 use std::path::{PathBuf};
 
 fn main() {
-    let root = PathBuf::from("../../3rdparty/LibRaw");
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    
+    // Explicitly navigate up to workspace root: libraries/libraw-sys-msvc -> libraries -> root
+    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let root_raw = workspace_root.join("3rdparty/LibRaw");
+    
+    // Physical normalization: Resolves all '..', '.', and symlinks.
+    // This produces a clean, absolute path that is safer for various compilers/environments.
+    let root_canonical = std::fs::canonicalize(&root_raw)
+        .expect(&format!("Could not find LibRaw source at {:?}. Please ensure submodules are checked out.", root_raw));
+        
+    // Handle Windows UNC prefix (\\?\) which can break some toolchains
+    let root_str = root_canonical.to_string_lossy();
+    let root = if root_str.starts_with(r"\\?\") {
+        PathBuf::from(&root_str[4..])
+    } else {
+        root_canonical
+    };
+
     let src = root.join("src");
 
     let mut build = cc::Build::new();
@@ -93,5 +111,5 @@ fn main() {
         println!("cargo:rustc-link-lib=m");
     }
 
-    println!("cargo:rerun-if-changed=../../3rdparty/LibRaw");
+    println!("cargo:rerun-if-changed={}", root.display());
 }

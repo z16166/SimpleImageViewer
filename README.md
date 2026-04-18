@@ -10,12 +10,12 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
 - **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB and **60+ Camera RAW formats**
-- **Professional RAW Support** — viewing-only support for 60+ RAW formats via LibRaw, including Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and many more.
-- **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with LRU cache management to keep VRAM usage constant
-- **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) decoded via a custom streaming parser with automatic RAM safety check before loading
-- **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos via a pure-Rust parser (cross-platform, zero C++ dependencies)
+- **Professional RAW Support** — viewing-only support for 60+ RAW formats, including Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and many more.
+- **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with efficient memory management to keep VRAM usage constant
+- **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) supported with automatic RAM safety check before loading
+- **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos with high performance and cross-platform compatibility
 - **Image Printing** — print images directly from the app.
-  - **Windows**: Uses the system native print wizard (`ShellExecuteW`). Supports high-quality JPEG (95% quality) and automatic alpha flattening.
+  - **Windows**: Uses the system native print wizard. Supports high-quality JPEG (95% quality) and automatic alpha flattening.
   - **macOS / Linux**: Automatically exports the image to a perfectly sized, margin-less PDF and opens it with the system default viewer for printing.
   - **Flexible Modes**: Print the entire image or just the currently zoomed-in "Visible Area" with precise cropping.
 - **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
@@ -32,20 +32,21 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for large single-file audio albums
 - **Smart Metadata Extraction** — automatically extracts Title, Artist, and Track info from files. Supports built-in tags and external CUE descriptions
 - **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) for quick navigation between physical music files and logical CUE tracks
-- **Dynamic Metadata Display** — two-line status display with **Middle Truncation** algorithm for long filenames (e.g., `Start...End.wav`), ensuring information remains legible in the settings panel
+- **Dynamic Metadata Display** — two-line status display with smart truncation for long filenames (e.g., `Start...End.wav`), ensuring information remains legible in the settings panel
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
 - **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, **Page Flip**, **Ripple (Water)**, and **Curtain**.
 - **Customizable Duration**: Fluid animations with adjustable duration (50ms - 2000ms).
 - **Audio Integration**: Play background music during your viewing session.
-- **CJK filename rendering** — loads the system CJK font (Microsoft YaHei / PingFang / Noto CJK) so Chinese, Japanese, and Korean characters in file paths display correctly
+- **CJK filename rendering** — loads standard CJK fonts so Chinese, Japanese, and Korean characters in file paths display correctly
 - **Persistent settings** — all preferences are saved to `siv_settings.yaml` next to the executable and restored on next launch
 - **Session restore** — last image directory and music path are remembered and auto-loaded on startup
 - **Full-screen mode** — toggle with `F11` or `F`; app always starts windowed (OS title bar visible)
 - **Modern UI** — sleek two-column settings panel, click the background to quickly dismiss, and fully adjustable font sizes (12-32px)
 - **Image Preloading Toggle** — optionally disable neighbor preloading to save resources
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
+- **Smart Format Detection** — automatically identifies the true image format even if the file extension is mismatched (e.g., a JPEG file incorrectly named as `.png`), ensuring robust loading for mislabeled files.
 - **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
 - **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, set as desktop wallpaper, **Rotate 90° CW/CCW**, or **Print** (Full or Visible Area) directly
 - **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese - Taiwan & Hong Kong) with fallback support, and can be manually overridden in the settings panel.

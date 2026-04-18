@@ -15,17 +15,33 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use std::sync::LazyLock;
+use crate::constants::{
+    MAX_QUALITY_PREVIEW_SIZE, RGBA_CHANNELS, BYTES_PER_MB, 
+    BYTES_PER_GB, DEFAULT_PREVIEW_SIZE, DEFAULT_ANIMATION_DELAY_MS,
+    MIN_ANIMATION_DELAY_THRESHOLD_MS
+};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2048);
+pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
+
+/// Dedicated pool for heavy high-quality preview generation (refinement).
+/// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
+static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .thread_name(|i| format!("refinement-worker-{}", i))
+        .build()
+        .expect("Failed to create refinement pool")
+});
 
 use crate::raw_processor::RawProcessor;
 use parking_lot::RwLock as PLRwLock;
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -55,7 +71,9 @@ pub trait TiledImageSource: Send + Sync {
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
     /// Optionally provide the full pixel buffer if already in memory.
     fn full_pixels(&self) -> Option<std::sync::Arc<Vec<u8>>>;
-    // fn is_high_quality(&self) -> bool { true }
+    /// Trigger background refinement to replace preview data with full-quality pixels.
+    /// Default no-op; only RAW sources need background demosaicing.
+    fn request_refinement(&self, _index: usize, _generation: u64) {}
 }
 
 /// A single frame of an animated image.
@@ -71,8 +89,6 @@ pub struct AnimationFrame {
 #[derive(Clone)]
 pub enum ImageData {
     Static(DecodedImage),
-    /// Large image that exceeds the tiled threshold — kept in CPU RAM for on-demand tile extraction.
-    LargeStatic(DecodedImage),
     /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
     Tiled(std::sync::Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
@@ -329,10 +345,12 @@ impl ImageLoader {
             .name("refinement-worker".to_string())
             .spawn(move || {
                 while let Ok(req) = refine_rx.recv() {
-                    // 1. Quick check: Is this image still the current one?
+                    // 1. Pre-develop staleness check
                     let global_gen = worker_gen.load(std::sync::atomic::Ordering::Relaxed);
                     if req.generation < global_gen {
-                        continue; // Skip stale refinements
+                        log::info!("[Refinement] Skipping stale request for {:?} (gen {} < {})",
+                            req.path.file_name().unwrap_or_default(), req.generation, global_gen);
+                        continue;
                     }
 
                     // 2. Perform heavy development
@@ -358,18 +376,27 @@ impl ImageLoader {
                     match processor.develop() {
                         Ok(full_img) => {
                             let elapsed = t0.elapsed();
+
+                            // 3. Post-develop staleness check — develop() takes seconds.
+                            // If the user navigated away during that time, discard the
+                            // ~400MB result immediately instead of storing it.
+                            let global_gen = worker_gen.load(std::sync::atomic::Ordering::Relaxed);
+                            if req.generation < global_gen {
+                                log::info!("[Refinement] Discarding stale develop result for {:?} (gen {} < {}) — saving ~400MB",
+                                    req.path.file_name().unwrap_or_default(), req.generation, global_gen);
+                                continue;
+                            }
+
                             // Convert to RGBA bits
                             let rgba = full_img.to_rgba8();
                             let (w, h) = rgba.dimensions();
                             let pixels = rgba.into_raw();
                             
-                            // Always commit the result — develop() is expensive and already done.
-                            // The UI handler decides how to use it based on current state.
                             let dynamic = DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, pixels).unwrap());
                             
-                            // Generate a high-quality 4096px preview for the UI so the user gets
+                            // Generate a high-quality preview for the UI so the user gets
                             // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
-                            let limit = 4096;
+                            let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
                             let scaled = dynamic.thumbnail(limit, limit);
                             let prev_rgba = scaled.to_rgba8();
                             let preview = DecodedImage {
@@ -475,11 +502,15 @@ impl ImageLoader {
             {
                 return;
             }
-            Self::do_load(index, generation, &path1, tx1, rtx1, loading1);
+            Self::do_load(index, generation, &path1, tx1, rtx1, loading1, current_gen1);
         });
 
-        let _ = std::thread::Builder::new()
-            .name(format!("load-backup-{}", index))
+        // Fallback loader: If the primary thread pool is congested or stalls,
+        // we spawn a delayed task to ensure the image eventually loads.
+        // NOTE: We use std::thread::spawn here instead of self.pool.spawn to ensure
+        // this fallback runs independently of the worker pool's current congestion state.
+        std::thread::Builder::new()
+            .name(format!("loader-fallback-{}", index))
             .spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 let global_gen = current_gen2.load(std::sync::atomic::Ordering::Relaxed);
@@ -503,8 +534,9 @@ impl ImageLoader {
                 }
                 #[cfg(target_os = "windows")]
                 let _com = crate::wic::ComGuard::new();
-                Self::do_load(index, generation, &path2, tx2, rtx2, loading2);
-            });
+                Self::do_load(index, generation, &path2, tx2, rtx2, loading2, current_gen2);
+            })
+            .ok();
     }
 
     fn do_load(
@@ -514,6 +546,7 @@ impl ImageLoader {
         tx: Sender<LoaderOutput>,
         refine_tx: Sender<RefinementRequest>,
         _loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
+        current_gen: Arc<std::sync::atomic::AtomicU64>,
     ) {
         let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             load_image_file(generation, index, path, tx.clone(), refine_tx.clone())
@@ -549,46 +582,52 @@ impl ImageLoader {
             let tx_cloned = tx.clone();
             let index = index;
             let generation = generation;
+            let gen_ref = Arc::clone(&current_gen);
 
-            std::thread::Builder::new()
-                .name(format!("refine-{}", index))
-                .spawn(move || {
-                    #[cfg(target_os = "windows")]
-                    let _com = crate::wic::ComGuard::new();
+            REFINEMENT_POOL.spawn(move || {
+                // Staleness check: Abort if the user has navigated to a new image
+                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                    return;
+                }
 
-                    // Always generate HQ preview — stale results are discarded
-                    // by the app's Preview handler which checks generation.
-                    let limit = 4096;
-                    let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        source.generate_preview(limit, limit)
-                    }));
+                #[cfg(target_os = "windows")]
+                let _com = crate::wic::ComGuard::new();
 
-                    match r_result {
-                        Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                            log::info!(
-                                "[Loader] HQ preview generated: {}x{} (source {}x{})",
-                                pw,
-                                ph,
-                                source.width(),
-                                source.height()
-                            );
-                            let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
-                                index,
-                                _generation: generation,
-                                result: Ok(DecodedImage {
-                                    width: pw,
-                                    height: ph,
-                                    pixels: p_pixels,
-                                }),
-                            }));
+                let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
+                let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    source.generate_preview(limit, limit)
+                }));
+
+                match r_result {
+                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                        // Double check staleness after the expensive thumbnailing
+                        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                            return;
                         }
-                        Err(e) => {
-                            log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
-                        }
-                        _ => {}
+
+                        log::info!(
+                            "[Loader] HQ preview generated: {}x{} (source {}x{})",
+                            pw,
+                            ph,
+                            source.width(),
+                            source.height()
+                        );
+                        let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
+                            index,
+                            _generation: generation,
+                            result: Ok(DecodedImage {
+                                width: pw,
+                                height: ph,
+                                pixels: p_pixels,
+                            }),
+                        }));
                     }
-                })
-                .ok();
+                    Err(e) => {
+                        log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
+                    }
+                    _ => {}
+                }
+            });
         }
     }
 
@@ -711,6 +750,12 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
                 return Ok(img);
             }
+
+            // Last resort: Detect format by content (magic bytes)
+            if let Ok(retry_img) = load_via_content_detection(path) {
+                log::info!("[{}] Successfully recovered via content-based detection", file_name);
+                return Ok(retry_img);
+            }
         }
 
         result
@@ -743,19 +788,21 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
                 }
                 Ok(None) => {
                     log::info!(
-                        "[{}] No EXIF thumbnail found (took {:?}), generating 512px preview...",
+                        "[{}] No EXIF thumbnail found (took {:?}), generating {}px preview...",
                         file_name,
-                        t0.elapsed()
+                        t0.elapsed(),
+                        DEFAULT_PREVIEW_SIZE
                     );
                     let t1 = std::time::Instant::now();
                     let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        source.generate_preview(512, 512)
+                        source.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
                     }));
                     match gen_result {
                         Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
                             log::info!(
-                                "[{}] 512px preview generated ({}x{}) in {:?}",
+                                "[{}] {}px preview generated ({}x{}) in {:?}",
                                 file_name,
+                                DEFAULT_PREVIEW_SIZE,
                                 pw,
                                 ph,
                                 t1.elapsed()
@@ -791,33 +838,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             Ok(ImageData::Tiled(source))
         }
         Ok(ImageData::Static(decoded)) => {
-            let pixel_count = decoded.width as u64 * decoded.height as u64;
-            let max_side = decoded.width.max(decoded.height);
-            let limit = crate::tile_cache::get_max_texture_side();
-
-            let tiled_limit =
-                crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-
-            if pixel_count >= tiled_limit || max_side > limit {
-                log::info!(
-                    "[{}] Decoded {}x{} ({:.1} MP) - Tiled Mode (limit={})",
-                    file_name,
-                    decoded.width,
-                    decoded.height,
-                    pixel_count as f64 / 1_000_000.0,
-                    limit
-                );
-                Ok(ImageData::LargeStatic(decoded))
-            } else {
-                log::info!(
-                    "[{}] Decoded {}x{} ({:.1} MP) - Static Mode",
-                    file_name,
-                    decoded.width,
-                    decoded.height,
-                    pixel_count as f64 / 1_000_000.0
-                );
-                Ok(ImageData::Static(decoded))
-            }
+            Ok(make_image_data(decoded))
         }
         Ok(ImageData::Animated(frames)) => {
             if let Some(first) = frames.first() {
@@ -827,7 +848,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
                 let limit = crate::tile_cache::get_max_texture_side();
 
                 let total_bytes: usize = frames.iter().map(|f| f.pixels.len()).sum();
-                let mb = total_bytes as f64 / (1024.0 * 1024.0);
+                let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
                 if max_side > limit {
                     log::warn!(
@@ -836,16 +857,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
                         width,
                         height
                     );
-                    log::info!(
-                        "[{}] Decoded {}x{} ({} frames, {:.1} MB) - Tiled Mode (limit={})",
-                        file_name,
-                        width,
-                        height,
-                        frames.len(),
-                        mb,
-                        limit
-                    );
-                    Ok(ImageData::LargeStatic(DecodedImage {
+                    Ok(make_image_data(DecodedImage {
                         width,
                         height,
                         pixels: first.pixels.clone(),
@@ -869,7 +881,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             log::error!("[{}] Failed to load: {}", file_name, e);
             Err(e)
         }
-        other => other,
     };
 
     LoadResult {
@@ -896,7 +907,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
-    Ok(ImageData::Static(DecodedImage {
+    Ok(make_image_data(DecodedImage {
         width,
         height,
         pixels,
@@ -915,9 +926,9 @@ fn process_animation_frames(
         .into_iter()
         .map(|frame| {
             let (numer, denom) = frame.delay().numer_denom_ms();
-            let delay_ms = if denom == 0 { 100 } else { numer / denom };
+            let delay_ms = if denom == 0 { DEFAULT_ANIMATION_DELAY_MS } else { numer / denom };
             // Standard browser behavior: delays <= 10ms are treated as 100ms
-            let delay_ms = if delay_ms <= 10 { 100 } else { delay_ms };
+            let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS { DEFAULT_ANIMATION_DELAY_MS } else { delay_ms };
             let buffer = frame.into_buffer();
             let (width, height) = buffer.dimensions();
             let pixels = buffer.into_raw();
@@ -999,16 +1010,16 @@ fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
 fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
     // Step 1: Estimate memory requirement from header
     let (width, height, _channels, estimated_bytes) = crate::psb_reader::estimate_memory(path)?;
-    let estimated_mb = estimated_bytes / (1024 * 1024);
+    let estimated_mb = estimated_bytes / BYTES_PER_MB;
 
     // Step 2: Check available RAM
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
-    let available_mb = sys.available_memory() / (1024 * 1024);
+    let available_mb = sys.available_memory() / BYTES_PER_MB;
 
     // Reserve at least 1GB for the OS + app overhead
-    let safe_available = available_mb.saturating_sub(1024);
+    let safe_available = available_mb.saturating_sub(BYTES_PER_GB / BYTES_PER_MB);
     if estimated_mb > safe_available {
         return Err(format!(
             "Image requires ~{estimated_mb} MB RAM but only ~{safe_available} MB is available. \
@@ -1051,13 +1062,7 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
             height: h,
             pixels,
         };
-        let tiled_limit =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        if (w as u64 * h as u64) > tiled_limit {
-            Ok(ImageData::LargeStatic(img))
-        } else {
-            Ok(ImageData::Static(img))
-        }
+        Ok(make_image_data(img))
     }
 }
 
@@ -1083,11 +1088,78 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
     let height = output.height;
     let rgba = output.data;
 
-    Ok(ImageData::Static(DecodedImage {
+    Ok(make_image_data(DecodedImage {
         width,
         height,
         pixels: rgba,
     }))
+}
+
+/// Helper to create ImageData that respects GPU texture limits.
+/// If the image is too large for a single GPU texture, it is returned as ImageData::Tiled
+/// using a MemoryImageSource to avoid hardware panics while preserving full resolution.
+fn make_image_data(img: DecodedImage) -> ImageData {
+    let pixel_count = img.width as u64 * img.height as u64;
+    let max_side = img.width.max(img.height);
+    let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
+    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+
+    if pixel_count >= tiled_limit || max_side > limit {
+        log::info!(
+            "[Loader] Image {}x{} ({:.1} MP) exceeds GPU limit ({}) or threshold ({:.1} MP). Using forced tiling.",
+            img.width, img.height, pixel_count as f64 / 1_000_000.0, limit, tiled_limit as f64 / 1_000_000.0
+        );
+        ImageData::Tiled(Arc::new(MemoryImageSource::new(img.width, img.height, img.pixels)))
+    } else {
+        ImageData::Static(img)
+    }
+}
+
+const DETECTION_BUFFER_SIZE: usize = 16;
+
+fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<ImageData, String> {
+    match format {
+        image::ImageFormat::Png => load_png(path),
+        image::ImageFormat::Gif => load_gif(path),
+        image::ImageFormat::WebP => load_webp(path),
+        image::ImageFormat::Tiff => {
+            #[cfg(target_os = "linux")]
+            return crate::linux_tiff::load_via_libtiff(path);
+            #[cfg(not(target_os = "linux"))]
+            return load_static(path);
+        }
+        // Standard single-frame formats handled by load_static
+        image::ImageFormat::Jpeg | image::ImageFormat::Bmp | image::ImageFormat::Ico |
+        image::ImageFormat::Pnm | image::ImageFormat::Tga | image::ImageFormat::Dds |
+        image::ImageFormat::Hdr | image::ImageFormat::Farbfeld | image::ImageFormat::OpenExr |
+        image::ImageFormat::Avif | image::ImageFormat::Qoi => load_static(path),
+        _ => Err(rust_i18n::t!("error.unsupported_detected_format", format = format!("{:?}", format)).to_string()),
+    }
+}
+
+fn load_via_content_detection(path: &PathBuf) -> Result<ImageData, String> {
+    use std::io::{Read};
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    
+    // Use constant for buffer size
+    let mut header = [0u8; DETECTION_BUFFER_SIZE];
+    let n = file.read(&mut header).unwrap_or(0);
+    
+    // 1. Try standard image-rs detection
+    if let Ok(guessed) = image::guess_format(&header[..n]) {
+        return load_by_image_format(guessed, path);
+    }
+
+    // 2. Manual HEIC detection (since image-rs 0.25 doesn't natively guess it)
+    // HEIF/HEIC signature: "ftyp" (at offset 4) followed by various brands.
+    if n >= 12 && &header[4..8] == b"ftyp" {
+        let sub = &header[8..12];
+        if sub == b"heic" || sub == b"heix" || sub == b"hevc" || sub == b"hevx" || sub == b"mif1" || sub == b"msf1" {
+            return load_heic(path);
+        }
+    }
+
+    Err(rust_i18n::t!("error.detection_failed").to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1269,10 @@ impl TextureCache {
         self.textures.contains_key(&index)
     }
 
+    pub fn is_preview_placeholder(&self, index: usize) -> bool {
+        self.is_tiled.get(&index).copied().unwrap_or(false)
+    }
+
     pub fn clear(&mut self) {
         self.textures.clear();
         self.original_res.clear();
@@ -1235,12 +1311,18 @@ impl TextureCache {
 // ---------------------------------------------------------------------------
 
 pub struct RawImageSource {
-    _path: PathBuf,
+    path: PathBuf,
     /// True RAW sensor dimensions (not thumbnail dimensions).
     width: u32,
     height: u32,
-    /// Initially the system preview (upscaled to RAW dimensions), eventually replaced by LibRaw demosaiced image.
+    /// Initially holds the system preview at its ORIGINAL resolution (NOT upscaled).
+    /// The refinement worker replaces this with the full-res LibRaw demosaiced image.
+    /// extract_tile() dynamically maps coordinates between RAW space and preview space.
     developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+    /// Channel to send refinement requests. Kept here so `request_refinement()` can
+    /// be called later (only when the image becomes active) instead of eagerly in the
+    /// constructor, preventing prefetched images from spawning ~400MB develop tasks.
+    refine_tx: Sender<RefinementRequest>,
 }
 
 impl RawImageSource {
@@ -1249,29 +1331,28 @@ impl RawImageSource {
         preview: DecodedImage,
         raw_width: u32,
         raw_height: u32,
-        index: usize,
-        generation: u64,
         refine_tx: Sender<RefinementRequest>,
     ) -> Self {
-        // Upscale the preview to match the true RAW dimensions so tiles line up correctly.
+        // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
+        // Previously this called resize_exact(raw_width, raw_height) which allocated
+        // ~400MB per image (e.g. 11648×8736×4). With rapid switching and prefetching,
+        // multiple concurrent allocations of this size caused OOM crashes.
+        // Instead, extract_tile() maps coordinates from RAW space to preview space on demand.
+        //
+        // ALSO: We do NOT send a refinement request here. Refinement is deferred until
+        // the image becomes the actively-viewed one (via request_refinement()). This
+        // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
         let rgba = image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels).unwrap();
         let preview_dyn = DynamicImage::ImageRgba8(rgba);
-        let upscaled = preview_dyn.resize_exact(raw_width, raw_height, image::imageops::FilterType::Triangle);
 
-        let developed_image = Arc::new(PLRwLock::new(Some(upscaled)));
-
-        let _ = refine_tx.send(RefinementRequest {
-            path: path.clone(),
-            index,
-            generation,
-            developed_image: developed_image.clone(),
-        });
+        let developed_image = Arc::new(PLRwLock::new(Some(preview_dyn)));
 
         Self {
-            _path: path,
+            path,
             width: raw_width,
             height: raw_height,
             developed_image,
+            refine_tx,
         }
     }
 }
@@ -1288,12 +1369,29 @@ impl TiledImageSource for RawImageSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let img_lock = self.developed_image.read();
         if let Some(ref img) = *img_lock {
-            // Very simple cropping for now.
-            // In a more advanced version, we'd use LibRaw ROI here.
-            let crop = img.crop_imm(x, y, w, h);
-            crop.to_rgba8().into_raw()
+            let (iw, ih) = img.dimensions();
+            if iw == self.width && ih == self.height {
+                // Full-res developed image available — direct crop, no scaling needed.
+                let crop = img.crop_imm(x, y, w, h);
+                crop.to_rgba8().into_raw()
+            } else {
+                // Preview image (smaller than RAW dimensions).
+                // Map tile coordinates from RAW sensor space → preview space,
+                // extract the corresponding small region, then scale it up to
+                // the requested tile size. This only allocates ~1MB per tile
+                // (e.g. 512×512×4) instead of ~400MB for the whole image.
+                let scale_x = iw as f64 / self.width as f64;
+                let scale_y = ih as f64 / self.height as f64;
+                let px = (x as f64 * scale_x) as u32;
+                let py = (y as f64 * scale_y) as u32;
+                let pw = ((w as f64 * scale_x).ceil() as u32).min(iw.saturating_sub(px)).max(1);
+                let ph = ((h as f64 * scale_y).ceil() as u32).min(ih.saturating_sub(py)).max(1);
+                let crop = img.crop_imm(px, py, pw, ph);
+                let resized = crop.resize_exact(w, h, image::imageops::FilterType::Triangle);
+                resized.to_rgba8().into_raw()
+            }
         } else {
-            vec![0; (w * h * 4) as usize]
+            vec![0; (w * h * RGBA_CHANNELS as u32) as usize]
         }
     }
 
@@ -1311,25 +1409,39 @@ impl TiledImageSource for RawImageSource {
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
         let img_lock = self.developed_image.read();
         if let Some(ref img) = *img_lock {
-            Some(Arc::new(img.to_rgba8().into_raw()))
+            let (iw, ih) = img.dimensions();
+            // Only return pixels when we have the full-res developed image.
+            // If it's still the small preview, the stride would mismatch
+            // self.width/self.height and corrupt downstream consumers (e.g. printing).
+            if iw == self.width && ih == self.height {
+                Some(Arc::new(img.to_rgba8().into_raw()))
+            } else {
+                None
+            }
         } else {
             None
         }
     }
 
-    // fn is_high_quality(&self) -> bool {
-    //     self.developed_image.read().is_some()
-    // }
+    fn request_refinement(&self, index: usize, generation: u64) {
+        log::info!("[RawImageSource] Triggering refinement for index={}, gen={}", index, generation);
+        let _ = self.refine_tx.send(RefinementRequest {
+            path: self.path.clone(),
+            index,
+            generation,
+            developed_image: self.developed_image.clone(),
+        });
+    }
 }
 
 fn load_raw(
-    index: usize,
-    generation: u64,
+    _index: usize,
+    _generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
 ) -> Result<ImageData, String> {
     // 1. Unpack header to get dimensions
-    let mut processor = RawProcessor::new().ok_or("Failed to init LibRaw")?;
+    let mut processor = RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
     processor.open(path)?;
     let (width, height) = (processor.width() as u32, processor.height() as u32);
     let area = width as u64 * height as u64;
@@ -1337,8 +1449,9 @@ fn load_raw(
 
     // 2. Rule 1: < 64MP pictures MUST entirely pre-read TRUE RAW PIXELS natively.
     // They completely ignore embedded JPEGs and do not use Tiled presentation at all.
-    if area < threshold {
-        log::info!("[Loader] RAW {}x{} ({:.1} MP) < 64MP. Synchronously extracting original pixels to support full prefetch...", 
+    // CRITICAL: We also check for GPU texture limits (8192px). If exceeded, we MUST tile.
+    if area < threshold && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        log::info!("[Loader] RAW {}x{} ({:.1} MP) < 64MP and fits in GPU. Synchronously extracting original pixels...", 
             width, height, area as f64 / 1_000_000.0);
         
         if let Ok(full_img) = processor.develop() {
@@ -1365,7 +1478,10 @@ fn load_raw(
 
     let preview = match preview_res {
         Ok(ImageData::Static(img)) => img,
-        Ok(ImageData::LargeStatic(img)) => img,
+        Ok(ImageData::Tiled(source)) => {
+            let (pw, ph, p) = source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
+            DecodedImage { width: pw, height: ph, pixels: p }
+        }
         _ => {
             match processor.unpack_thumb() {
                 Ok(thumb) => thumb,
@@ -1382,12 +1498,71 @@ fn load_raw(
         preview.clone(),
         width,
         height,
-        index,
-        generation,
         refine_tx,
     ));
 
     log::info!("[Loader] RAW {}x{} ({:.1} MP) >= 64MP - Falling back to Async Tiled preview refinement.", 
         width, height, area as f64 / 1_000_000.0);
     Ok(ImageData::Tiled(source))
+}
+
+/// A TiledImageSource that serves tiles from an in-memory byte buffer.
+/// Primarily used for common formats (PNG, JPEG, etc.) that exceed the GPU's single texture limit.
+pub struct MemoryImageSource {
+    width: u32,
+    height: u32,
+    pixels: Arc<Vec<u8>>,
+}
+
+impl MemoryImageSource {
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+        }
+    }
+}
+
+impl TiledImageSource for MemoryImageSource {
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
+        let stride = self.width as usize * 4;
+        
+        for row in y..(y + h) {
+            let start = (row as usize * stride) + (x as usize * 4);
+            let end = start + (w as usize * 4);
+            if end <= self.pixels.len() {
+                tile_pixels.extend_from_slice(&self.pixels[start..end]);
+            } else {
+                // Safety fallback for out-of-bounds
+                tile_pixels.resize(tile_pixels.len() + (w * 4) as usize, 0);
+            }
+        }
+        tile_pixels
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        // Since we already have the full image in memory, we can use the image crate
+        // to generate a high-quality downscaled preview.
+        // OPTIMIZATION: Use ImageBuffer with reference (slice) to avoid cloning giant pixel buffer.
+        if let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(self.width, self.height, &self.pixels) {
+            let img = image::imageops::thumbnail(&buf, max_w, max_h);
+            (img.width(), img.height(), img.into_raw())
+        } else {
+            (0, 0, Vec::new())
+        }
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        Some(Arc::clone(&self.pixels))
+    }
 }

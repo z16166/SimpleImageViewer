@@ -49,7 +49,7 @@ pub static TILED_THRESHOLD: AtomicU64 = AtomicU64::new(64_000_000);
 /// Maximum texture side length supported by most GPUs (conservative limit).
 /// Large images exceeding this will be rendered using tiles.
 /// This value is updated dynamically at startup based on GPU hardware limits.
-pub static MAX_TEXTURE_SIDE: AtomicU32 = AtomicU32::new(8192);
+pub static MAX_TEXTURE_SIDE: AtomicU32 = AtomicU32::new(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
 
 pub fn get_max_texture_side() -> u32 {
     MAX_TEXTURE_SIDE.load(Ordering::Relaxed)
@@ -193,74 +193,7 @@ pub enum TileStatus {
     Pending(bool),
 }
 
-/// A TiledImageSource implementation for images that are fully loaded in memory.
-pub struct MemorySource {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Arc<Vec<u8>>,
-}
-
-impl crate::loader::TiledImageSource for MemorySource {
-    fn width(&self) -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
-    
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
-        let src_stride = self.width as usize * 4;
-        let mut tile_pixels = vec![0u8; (w * h * 4) as usize];
-
-        for row in 0..h {
-            let src_off = ((y + row) as usize) * src_stride + (x as usize * 4);
-            let dst_off = (row as usize) * (w as usize * 4);
-            let len = w as usize * 4;
-            
-            let end = src_off + len;
-            if end <= self.pixels.len() {
-                tile_pixels[dst_off..dst_off + len].copy_from_slice(&self.pixels[src_off..end]);
-            }
-        }
-        tile_pixels
-    }
-
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.width as f64)
-            .min(max_h as f64 / self.height as f64)
-            .min(1.0);
-        let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
-        let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
-
-        let mut out = vec![0u8; (out_w * out_h * 4) as usize];
-        let src_stride = self.width as usize * 4;
-
-        for y in 0..out_h {
-            let src_y = ((y as f64 / scale).min((self.height - 1) as f64)) as usize;
-            for x in 0..out_w {
-                let src_x = ((x as f64 / scale).min((self.width - 1) as f64)) as usize;
-                let src_off = src_y * src_stride + src_x * 4;
-                let dst_off = (y as usize * out_w as usize + x as usize) * 4;
-                if src_off + 4 <= self.pixels.len() {
-                    out[dst_off..dst_off + 4].copy_from_slice(&self.pixels[src_off..src_off + 4]);
-                }
-            }
-        }
-        (out_w, out_h, out)
-    }
-
-    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        Some(Arc::clone(&self.pixels))
-    }
-}
-
 impl TileManager {
-    /// Create a new TileManager from a fully decoded RGBA8 pixel buffer.
-    pub fn new(index: usize, generation: u64, width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        let source = Arc::new(MemorySource {
-            width,
-            height,
-            pixels: Arc::new(pixels),
-        });
-        Self::with_source(index, generation, source)
-    }
-
     /// Create a new TileManager from an arbitrary tiled image source.
     pub fn with_source(index: usize, generation: u64, source: Arc<dyn crate::loader::TiledImageSource>) -> Self {
         Self {
