@@ -587,20 +587,33 @@ fn run_audio_loop(
     tracks_flag: Arc<AtomicBool>,
     cue_track_slot: Arc<Mutex<Option<usize>>>,
 ) {
-    // Open hardware ONLY ONCE per thread life. 
-    // On Windows, frequent open/close can hang or crash.
-    let device_sink = match rodio::DeviceSinkBuilder::open_default_sink() {
-        Ok(h) => h,
-        Err(e) => {
-            let msg = format!("Audio device error: {e}");
-            log::warn!("{msg}");
-            set_error(&err_slot, msg);
-            return;
-        }
-    };
+    let mut backend_sink = None;
+    let mut backend_player: Option<rodio::Player> = None;
 
-    let player = rodio::Player::connect_new(device_sink.mixer());
-    player.play();
+    macro_rules! ensure_backend {
+        ($v:expr, $p:expr) => {
+            if backend_sink.is_none() {
+                match rodio::DeviceSinkBuilder::open_default_sink() {
+                    Ok(sink) => {
+                        let p = rodio::Player::connect_new(sink.mixer());
+                        p.set_volume($v);
+                        if $p { p.pause(); } else { p.play(); }
+                        backend_sink = Some(sink);
+                        backend_player = Some(p);
+                        true
+                    }
+                    Err(e) => {
+                        let msg = format!("Audio device error: {e}");
+                        log::warn!("{msg}");
+                        set_error(&err_slot, msg);
+                        false
+                    }
+                }
+            } else {
+                true
+            }
+        };
+    }
 
     let mut playlist: Vec<PathBuf> = Vec::new();
     // current_track_idx = index of NEXT file to play; the currently playing file is at idx-1
@@ -623,7 +636,8 @@ fn run_audio_loop(
 
         match cmd {
             Ok(AudioCommand::Shutdown) => {
-                player.stop();
+                backend_player.take().map(|p| p.stop());
+                backend_sink.take();
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
                 return;
@@ -631,7 +645,9 @@ fn run_audio_loop(
             Ok(AudioCommand::Stop) => {
                 stopped = true;
                 playlist.clear();
-                player.clear();
+                // Drop backend to release WASAPI/Exclusive resources to the system
+                backend_player = None;
+                backend_sink = None;
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
                 tracks_flag.store(false, Ordering::Relaxed);
@@ -644,15 +660,23 @@ fn run_audio_loop(
                 if let Some(pa) = paused_at.take() {
                     total_paused += pa.elapsed();
                 }
-                player.play();
+                if ensure_backend!(current_volume, paused) {
+                    if let Some(ref p) = backend_player {
+                        p.play();
+                    }
+                }
             }
             Ok(AudioCommand::Pause) => {
                 paused = true;
                 paused_at = Some(Instant::now());
-                player.pause();
+                if let Some(ref p) = backend_player {
+                    p.pause();
+                }
             }
             Ok(AudioCommand::NextFile) => {
-                player.clear();
+                if let Some(ref p) = backend_player {
+                    p.clear();
+                }
                 cue_sheet = None;
                 tracks_flag.store(false, Ordering::Relaxed);
             }
@@ -665,7 +689,9 @@ fn run_audio_loop(
                     // Wrap around to last file
                     current_track_idx = playlist.len().saturating_sub(1);
                 }
-                player.clear();
+                if let Some(ref p) = backend_player {
+                    p.clear();
+                }
                 cue_sheet = None;
                 tracks_flag.store(false, Ordering::Relaxed);
             }
@@ -688,10 +714,14 @@ fn run_audio_loop(
                             if let Ok(file) = std::fs::File::open(path) {
                                 let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                                 if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
-                                    player.clear();
-                                    let source = rodio::Source::skip_duration(source, next_t.start);
-                                    player.append(source);
-                                    player.play();
+                                    if ensure_backend!(current_volume, paused) {
+                                        if let Some(ref p) = backend_player {
+                                            p.clear();
+                                            let source = rodio::Source::skip_duration(source, next_t.start);
+                                            p.append(source);
+                                            p.play();
+                                        }
+                                    }
                                     last_seek_offset = next_t.start;
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
@@ -706,7 +736,9 @@ fn run_audio_loop(
                         }
                     } else {
                         // Beyond last track: go to next file
-                        player.clear();
+                        if let Some(ref p) = backend_player {
+                            p.clear();
+                        }
                     }
                 }
             }
@@ -730,14 +762,18 @@ fn run_audio_loop(
                         if let Ok(file) = std::fs::File::open(path) {
                             let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                             if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
-                                player.clear();
-                                if target_t.start > Duration::ZERO {
-                                    let source = rodio::Source::skip_duration(source, target_t.start);
-                                    player.append(source);
-                                } else {
-                                    player.append(source);
+                                if ensure_backend!(current_volume, paused) {
+                                    if let Some(ref p) = backend_player {
+                                        p.clear();
+                                        if target_t.start > Duration::ZERO {
+                                            let source = rodio::Source::skip_duration(source, target_t.start);
+                                            p.append(source);
+                                        } else {
+                                            p.append(source);
+                                        }
+                                        p.play();
+                                    }
                                 }
-                                player.play();
                                 last_seek_offset = target_t.start;
                                 current_file_start = Instant::now();
                                 total_paused = Duration::ZERO;
@@ -757,11 +793,15 @@ fn run_audio_loop(
                 current_track_idx = start_file_idx.unwrap_or(0);
                 pending_start_track_idx = start_track_idx;
                 stopped = false;
-                player.clear();
-                if paused {
-                    player.pause();
-                } else {
-                    player.play();
+                if ensure_backend!(current_volume, paused) {
+                    if let Some(ref p) = backend_player {
+                        p.clear();
+                        if paused {
+                            p.pause();
+                        } else {
+                            p.play();
+                        }
+                    }
                 }
                 set_current_path(&path_slot, None);
                 set_metadata(&meta_slot, None);
@@ -769,13 +809,15 @@ fn run_audio_loop(
             }
             Ok(AudioCommand::SetVolume(v)) => {
                 current_volume = v;
-                player.set_volume(v);
+                if let Some(ref p) = backend_player {
+                    p.set_volume(v);
+                }
             }
             Err(_) => {}
         }
 
         // Feed next track
-        if !stopped && !paused && player.empty() && !playlist.is_empty() {
+        if !stopped && !paused && backend_player.as_ref().map_or(true, |p| p.empty()) && !playlist.is_empty() {
             if shutdown_flag.load(Ordering::Relaxed) { return; }
             let path = playlist[current_track_idx % playlist.len()].clone();
             let filename = path
@@ -806,7 +848,11 @@ fn run_audio_loop(
                             set_metadata(&meta_slot, None);
                         }
 
-                        player.append(source);
+                        if ensure_backend!(current_volume, paused) {
+                            if let Some(ref p) = backend_player {
+                                p.append(source);
+                            }
+                        }
                         
                         // Reset timing variables before potential seek
                         current_file_start = Instant::now();
@@ -821,33 +867,39 @@ fn run_audio_loop(
                                 if t.start > Duration::ZERO {
                                     // We already appended the 'source' above; 
                                     // to seek we need to clear and re-append a skipped source.
-                                    player.clear();
                                     if let Ok(f2) = std::fs::File::open(&path) {
                                         let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
                                         // Re-open source for seeking
                                         if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag)) {
-                                            let s2 = rodio::Source::skip_duration(s2, t.start);
-                                            player.append(s2);
-                                            last_seek_offset = t.start;
-                                            current_file_start = Instant::now();
-                                            // Metadata
-                                            let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
-                                            set_metadata(&meta_slot, Some(meta));
-                                            set_cue_track(&cue_track_slot, Some(track_idx));
+                                            if ensure_backend!(current_volume, paused) {
+                                                if let Some(ref p) = backend_player {
+                                                    p.clear();
+                                                    let s2 = rodio::Source::skip_duration(s2, t.start);
+                                                    p.append(s2);
+                                                    last_seek_offset = t.start;
+                                                    current_file_start = Instant::now();
+                                                    // Metadata
+                                                    let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
+                                                    set_metadata(&meta_slot, Some(meta));
+                                                    set_cue_track(&cue_track_slot, Some(track_idx));
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
 
-                    player.set_volume(current_volume);
-                    player.play();
+                    if let Some(ref p) = backend_player {
+                        p.set_volume(current_volume);
+                        p.play();
+                    }
                 }
             }
         }
 
         // Handle mid-file metadata updates for CUE
-        if !stopped && !paused && !player.empty() {
+        if !stopped && !paused && backend_player.as_ref().map_or(false, |p| !p.empty()) {
             if shutdown_flag.load(Ordering::Relaxed) { return; }
             if let Some(ref cue) = cue_sheet {
                 let elapsed = current_file_start.elapsed()
