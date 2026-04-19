@@ -1300,15 +1300,28 @@ fn run_audio_loop(
                     let elapsed = current_file_start.elapsed()
                         .saturating_sub(total_paused)
                         .saturating_add(last_seek_offset);
-                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed.saturating_sub(Duration::from_secs(3))).unwrap_or(cue.tracks.len()).saturating_sub(1);
-                    let target_idx = current_idx.saturating_sub(1);
+                    // Determine which CUE track is currently playing
+                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    let current_t = &cue.tracks[current_idx];
+
+                    // Car-audio style: compute time elapsed within the current CUE track.
+                    // If >3s into the track, restart from _this_ track's beginning;
+                    // if ≤3s (or at track 0), jump to the previous track.
+                    let time_in_track = elapsed.saturating_sub(current_t.start);
+                    let target_idx = if time_in_track > Duration::from_secs(3) || current_idx == 0 {
+                        current_idx // Restart current track
+                    } else {
+                        current_idx - 1 // Jump to previous track
+                    };
                     let target_t = &cue.tracks[target_idx];
+
                     if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                         if let Ok(file) = std::fs::File::open(path) {
                             let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                             if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag), target_t.start) {
                                 if ensure_backend!(current_volume, paused) {
                                     if let Some(ref p) = backend_player {
+                                        p.clear(); // Must clear before appending to jump immediately
                                         let total_dur = source.total_duration();
                                         p.append(source);
                                         p.play();

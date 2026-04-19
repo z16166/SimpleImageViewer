@@ -28,7 +28,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
 - **Auto-play Slideshow** — configurable interval (0.5 s – 1 h), with optional loop / stop-at-end
-- **Background music** — high-fidelity playback for MP3, FLAC, OGG, WAV, AAC, M4A, **APE**; includes specialized **audio device auto-reconnection** on Windows to handle exclusive-mode conflicts (e.g., from foobar2000)
+- **Background music** — high-fidelity playback for MP3, FLAC, OGG, WAV, AAC, M4A, **APE**; includes specialized **audio device auto-reconnection** on Windows. **Car audio logic for Previous Track**: first click restarts the track (if >3s played), second click jumps to the previous track.
 - **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for large single-file audio albums
 - **Smart Metadata Extraction** — automatically extracts Title, Artist, and Track info from files. Supports built-in tags and external CUE descriptions
 - **Enhanced Music HUD (OSD)** — minimalist overlay that automatically prioritizes track metadata (Index + Title) from CUE sheets or tags over raw filenames. 

@@ -3410,64 +3410,6 @@ impl ImageViewerApp {
                 }
             }
 
-            // ── Music HUD (independent of show_osd) ─────────────────────
-            if self.settings.show_music_osd {
-                let mut cur_ms = self.audio.get_pos_ms();
-                // Smart seek locking logic for HUD (match target or 30s timeout)
-                if let Some(target_ms) = self.music_seeking_target_ms {
-                    let diff = (cur_ms as i64 - target_ms as i64).abs();
-                    let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
-                    if diff < 2000 || timed_out {
-                        self.music_seeking_target_ms = None;
-                        self.music_seek_timeout = None;
-                    } else {
-                        cur_ms = target_ms;
-                    }
-                }
-
-                let is_active = self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
-
-                // Wake-up: mouse proximity to bottom center hotzone
-                {
-                    let hud_width = crate::constants::MUSIC_HUD_WIDTH;
-                    let hud_pos = screen_rect.center_bottom() + egui::Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
-                    let hud_rect = egui::Rect::from_center_size(hud_pos, egui::Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT));
-
-                    if let Some(ptr) = ui.ctx().input(|i| i.pointer.hover_pos()) {
-                        let in_hotzone = ptr.y > screen_rect.bottom() - 100.0 && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
-                        if hud_rect.contains(ptr) || in_hotzone {
-                            self.music_hud_last_activity = Instant::now();
-                        }
-                    }
-                }
-
-                // Render if active and audio is loaded
-                if is_active && self.audio.get_duration_ms() > 0 && self.audio.get_current_track().is_some() {
-                    let music_state = crate::ui::osd::OsdState {
-                        index: self.current_index,
-                        total: self.image_files.len(),
-                        zoom_pct: 0,
-                        res: (0, 0),
-                        mode: String::new(),
-                        current_track: self.audio.get_current_track(),
-                        metadata: self.audio.get_metadata(),
-                        current_cue_track: self.audio.get_current_cue_track(),
-                        current_pos_ms: cur_ms,
-                        total_duration_ms: self.audio.get_duration_ms(),
-                        cue_markers: self.audio.get_cue_markers(),
-                    };
-
-                    self.osd.render_music_hud(ui, screen_rect, &music_state, &self.cached_palette);
-                }
-
-                // Handle seek from Music HUD
-                if let Some(target_s) = ui.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))) {
-                    self.audio.seek(Duration::from_secs_f32(target_s));
-                    self.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
-                    self.music_seek_timeout = Some(Instant::now());
-                    self.music_hud_last_activity = Instant::now();
-                }
-            }
         });
     }
 
@@ -3925,6 +3867,98 @@ impl ImageViewerApp {
         }
         if do_cancel {
             self.show_file_assoc_dialog = false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Music HUD — Foreground overlay (drawn on top of all windows)
+    // ------------------------------------------------------------------
+
+    /// Renders the Music HUD as a top-most floating overlay using `egui::Area`
+    /// with `Order::Foreground`. This guarantees it is always visible, even
+    /// when the Settings panel or other modal dialogs are open.
+    fn draw_music_hud_foreground(&mut self, ctx: &Context) {
+        if !self.settings.show_music_osd {
+            return;
+        }
+
+        let screen_rect = ctx.input(|i| i.content_rect());
+
+        let mut cur_ms = self.audio.get_pos_ms();
+        // Smart seek locking logic for HUD (match target or 30s timeout)
+        if let Some(target_ms) = self.music_seeking_target_ms {
+            let diff = (cur_ms as i64 - target_ms as i64).abs();
+            let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
+            if diff < 2000 || timed_out {
+                self.music_seeking_target_ms = None;
+                self.music_seek_timeout = None;
+            } else {
+                cur_ms = target_ms;
+            }
+        }
+
+        let is_active = self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
+
+        // Wake-up: mouse proximity to bottom center hotzone
+        {
+            let hud_width = crate::constants::MUSIC_HUD_WIDTH;
+            let hud_pos = screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
+            let hud_rect = Rect::from_center_size(hud_pos, Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT));
+
+            if let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()) {
+                let in_hotzone = ptr.y > screen_rect.bottom() - 140.0 && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
+                if hud_rect.contains(ptr) || in_hotzone {
+                    self.music_hud_last_activity = Instant::now();
+                }
+            }
+        }
+
+        // Only render when active and audio is loaded
+        if !is_active || self.audio.get_duration_ms() == 0 || self.audio.get_current_track().is_none() {
+            return;
+        }
+
+        let music_state = crate::ui::osd::OsdState {
+            index: self.current_index,
+            total: self.image_files.len(),
+            zoom_pct: 0,
+            res: (0, 0),
+            mode: String::new(),
+            current_track: self.audio.get_current_track(),
+            metadata: self.audio.get_metadata(),
+            current_cue_track: self.audio.get_current_cue_track(),
+            current_pos_ms: cur_ms,
+            total_duration_ms: self.audio.get_duration_ms(),
+            cue_markers: self.audio.get_cue_markers(),
+        };
+
+        // Use a Foreground-order Area so the HUD floats above Settings and modals
+        let hud_pos = screen_rect.center_bottom() + Vec2::new(
+            -(crate::constants::MUSIC_HUD_WIDTH / 2.0),
+            crate::constants::MUSIC_HUD_BOTTOM_OFFSET - (crate::constants::MUSIC_HUD_HEIGHT / 2.0),
+        );
+
+        egui::Area::new(egui::Id::new("music_hud_foreground"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(hud_pos)
+            .interactable(true)
+            .show(ctx, |ui| {
+                // Allocate a fixed-size rect for the HUD content
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(crate::constants::MUSIC_HUD_WIDTH, crate::constants::MUSIC_HUD_HEIGHT),
+                    Sense::hover(),
+                );
+                // Render using the existing OSD renderer within this scoped UI
+                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                self.osd.render_music_hud(&mut child_ui, screen_rect, &music_state, &self.cached_palette);
+            });
+
+        // Handle seek from Music HUD (check the shared memory slot)
+        if let Some(target_s) = ctx.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))) {
+            self.audio.seek(Duration::from_secs_f32(target_s));
+            self.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
+            self.music_seek_timeout = Some(Instant::now());
+            self.music_hud_last_activity = Instant::now();
         }
     }
 }
@@ -4414,6 +4448,11 @@ impl eframe::App for ImageViewerApp {
                 self.show_xmp_window = false;
             }
         }
+
+        // ── Music HUD (Foreground Layer) ─────────────────────────────────
+        // Rendered last via Area::Order::Foreground so it always appears
+        // on top of the Settings panel and other modal windows.
+        self.draw_music_hud_foreground(&ctx);
     }
 }
 

@@ -57,7 +57,7 @@ pub const AUDIO_RECOVERY_COOLDOWN: std::time::Duration = std::time::Duration::fr
 /// Dimensions and layout for the Music HUD (OSD).
 pub const MUSIC_HUD_WIDTH: f32 = 400.0;
 pub const MUSIC_HUD_HEIGHT: f32 = 42.0;
-pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -60.0;
+pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -100.0;
 
 /// Number of idle seconds before the Music HUD auto-hides.
 pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
