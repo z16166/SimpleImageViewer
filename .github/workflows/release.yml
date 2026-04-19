@@ -171,7 +171,9 @@ jobs:
         run: |
           $pdbPath = "target/${{ matrix.target }}/release/SimpleImageViewer.pdb"
           if (Test-Path $pdbPath) {
-            Move-Item $pdbPath "target/${{ matrix.target }}/release/SimpleImageViewer-${{ matrix.target }}.pdb"
+            $zipName = "SimpleImageViewer-${{ matrix.target }}-pdb.zip"
+            Compress-Archive -Path $pdbPath -DestinationPath $zipName
+            echo "PDB_ZIP=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
 
       - name: Upload PDB artifact (Windows)
@@ -179,7 +181,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pdb-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/SimpleImageViewer-${{ matrix.target }}.pdb
+          path: ${{ env.PDB_ZIP }}
           if-no-files-found: warn
 
   build-legacy-win7:
@@ -272,14 +274,16 @@ jobs:
         run: |
           $pdbPath = "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.pdb"
           if (Test-Path $pdbPath) {
-            Move-Item $pdbPath "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer-win7-x64.pdb"
+            $zipName = "SimpleImageViewer-win7-x64-pdb.zip"
+            Compress-Archive -Path $pdbPath -DestinationPath $zipName
+            echo "PDB_ZIP=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
 
       - name: Upload PDB artifact (Win7)
         uses: actions/upload-artifact@v4
         with:
           name: pdb-win7-x64
-          path: target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer-win7-x64.pdb
+          path: ${{ env.PDB_ZIP }}
           if-no-files-found: warn
 
   create-release:
