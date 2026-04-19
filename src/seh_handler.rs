@@ -192,15 +192,15 @@ unsafe fn write_text_report(
             pos = append_str(&mut buf, pos, "\r\nRegisters (ARM64):\r\n");
             pos = append_reg(&mut buf, pos, "PC ", ctx.Pc);
             pos = append_reg(&mut buf, pos, "SP ", ctx.Sp);
-            pos = append_reg(&mut buf, pos, "FP ", ctx.Fp);
-            pos = append_reg(&mut buf, pos, "LR ", ctx.Lr);
+            pos = append_reg(&mut buf, pos, "FP ", ctx.Anonymous.Anonymous.Fp);
+            pos = append_reg(&mut buf, pos, "LR ", ctx.Anonymous.Anonymous.Lr);
             // First 8 general-purpose registers
             for i in 0..8u32 {
                 let mut name = [b'X', b'0', b' '];
                 name[1] = b'0' + i as u8;
                 pos = append_str(&mut buf, pos, unsafe { core::str::from_utf8_unchecked(&name) });
                 pos = append_str(&mut buf, pos, " = 0x");
-                pos = append_hex64(&mut buf, pos, ctx.X[i as usize]);
+                pos = append_hex64(&mut buf, pos, ctx.Anonymous.X[i as usize]);
                 pos = append_str(&mut buf, pos, "\r\n");
             }
         }
