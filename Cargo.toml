@@ -93,6 +93,7 @@ winresource = "0.1"
 
 # image is needed by build.rs on all platforms for PNG→ICO conversion
 [build-dependencies]
+cc = "1.2.60"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 
 [profile.release]

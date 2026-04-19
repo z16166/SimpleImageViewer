@@ -50,3 +50,7 @@ pub const MIN_ANIMATION_DELAY_THRESHOLD_MS: u32 = 10;
 /// when images are being loaded in parallel, as it reduces disk seek frequency.
 pub const AUDIO_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
+/// Cooldown period (2s) between audio backend initialization attempts.
+/// Prevents hot-looping when the hardware is busy or in exclusive mode.
+pub const AUDIO_RECOVERY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+

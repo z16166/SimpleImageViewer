@@ -44,6 +44,16 @@ fn main() {
     {
         embed_resources(&dst);
 
+        // Compile C++ WASAPI helper
+        cc::Build::new()
+            .cpp(true)
+            .file("src/audio_helper.cpp")
+            .compile("audio_helper");
+
+        // Link COM and WASAPI related libraries
+        println!("cargo:rustc-link-lib=ole32");
+        println!("cargo:rustc-link-lib=uuid");
+
         // --- WIN7 COMPATIBILITY HACK ---
         // We only apply this to the main binary and ONLY when legacy compatibility 
         // tools (like YY-Thunks or VC-LTL) are detected in the environment.
@@ -189,3 +199,4 @@ fn embed_resources(ico_path: &std::path::Path) {
         eprintln!("build.rs: winresource error: {e}");
     }
 }
+ 

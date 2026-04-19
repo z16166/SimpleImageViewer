@@ -1709,6 +1709,28 @@ impl ImageViewerApp {
     }
 
     // ------------------------------------------------------------------
+    // Audio: Force restart after hardware stall
+    // ------------------------------------------------------------------
+
+    /// Force a full audio restart, bypassing the "already scanned" guard.
+    /// Used when the audio watchdog detects a hardware stall.
+    fn force_restart_audio(&mut self) {
+        // Stop audio and clear ALL scan state so restart_audio_if_enabled
+        // doesn't short-circuit with "already scanning this path".
+        if let Some(cancel) = self.music_scan_cancel.take() {
+            cancel.store(false, Ordering::Relaxed);
+        }
+        self.audio.stop();
+        self.scanning_music = false;
+        self.music_scan_rx = None;
+        self.music_scan_path = None;
+        self.cached_music_count = None;
+
+        // Now trigger a full restart (will re-scan and SetPlaylist)
+        self.restart_audio_if_enabled();
+    }
+
+    // ------------------------------------------------------------------
     // UI: Settings panel
     // ------------------------------------------------------------------
 
@@ -3839,6 +3861,13 @@ impl eframe::App for ImageViewerApp {
         self.process_scan_results();
         self.process_music_scan_results();
         self.process_loaded_images(ctx);
+
+        // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
+        // mode preemption) and needs a full restart — same path as toggling the checkbox.
+        if self.settings.play_music && self.audio.take_needs_restart() {
+            log::warn!("[UI] Audio stall detected by watchdog, triggering full restart");
+            self.force_restart_audio();
+        }
 
         self.check_auto_switch();
         self.handle_keyboard(ctx);

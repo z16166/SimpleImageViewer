@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::scanner::is_offline;
-use crate::constants::AUDIO_BUFFER_CAPACITY;
+use crate::constants::{AUDIO_BUFFER_CAPACITY, AUDIO_RECOVERY_COOLDOWN};
 use crossbeam_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,23 @@ use lofty::read_from_path;
 use std::io::{Read, Seek};
 use std::num::NonZero;
 use ape_decoder::ApeDecoder;
+
+#[cfg(windows)]
+unsafe extern "C" {
+    fn wasapi_monitor_init();
+    fn wasapi_monitor_uninit();
+    fn wasapi_is_device_available() -> bool;
+    fn wasapi_poll_device_lost() -> bool;
+}
+
+#[cfg(not(windows))]
+unsafe fn wasapi_monitor_init() {}
+#[cfg(not(windows))]
+unsafe fn wasapi_monitor_uninit() {}
+#[cfg(not(windows))]
+unsafe fn wasapi_is_device_available() -> bool { true }
+#[cfg(not(windows))]
+unsafe fn wasapi_poll_device_lost() -> bool { false }
 
 #[allow(dead_code)]
 pub enum AudioCommand {
@@ -55,6 +72,9 @@ pub struct AudioPlayer {
     pub has_tracks: Arc<AtomicBool>,
     pub current_cue_track: Arc<Mutex<Option<usize>>>,
     pub shutdown_flag: Arc<AtomicBool>,
+    /// Set by the audio thread when a hardware stall is detected.
+    /// The UI thread should poll this and trigger a full restart.
+    pub needs_restart: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -69,6 +89,7 @@ impl AudioPlayer {
             has_tracks: Arc::new(AtomicBool::new(false)),
             current_cue_track: Arc::new(Mutex::new(None)),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
+            needs_restart: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
         }
     }
@@ -166,16 +187,24 @@ impl AudioPlayer {
             let tracks_flag = Arc::clone(&self.has_tracks);
             let cue_track_slot = Arc::clone(&self.current_cue_track);
             let shutdown_flag = Arc::clone(&self.shutdown_flag);
+            let needs_restart = Arc::clone(&self.needs_restart);
             shutdown_flag.store(false, Ordering::Relaxed);
+            needs_restart.store(false, Ordering::Relaxed);
 
             let handle = std::thread::Builder::new()
                 .name("audio-player".to_string())
                 .spawn(move || {
-                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot)
+                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot, needs_restart)
                 })
                 .expect("failed to spawn audio thread");
             self.thread_handle = Some(handle);
         }
+    }
+
+    /// Returns true if the audio thread signaled a stall and needs a full restart.
+    /// Clears the flag.
+    pub fn take_needs_restart(&self) -> bool {
+        self.needs_restart.swap(false, Ordering::Relaxed)
     }
 }
 
@@ -374,7 +403,7 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
             let new_filename = filename.replace("(APE)", "(CUE)");
             let alt_cue_path = audio_path.with_file_name(new_filename).with_extension("cue");
             if alt_cue_path.exists() {
-                log::info!("Found CUE by pattern replacement: {:?}", alt_cue_path);
+                log::debug!("Found CUE by pattern replacement: {:?}", alt_cue_path);
                 return parse_cue_file(&alt_cue_path);
             }
         }
@@ -395,7 +424,7 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
             }
 
             if cue_files.len() == 1 {
-                log::info!("Using the only CUE file in directory: {:?}", cue_files[0]);
+                log::debug!("Using the only CUE file in directory: {:?}", cue_files[0]);
                 return parse_cue_file(&cue_files[0]);
             }
             
@@ -410,7 +439,7 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
                         let cue_stem_lower = cue_stem.to_lowercase();
                         let clean_cue = cue_stem_lower.replace("(ape)", "").replace("(cue)", "").replace(" ", "").replace(".", "").replace("-", "");
                         if clean_audio == clean_cue || clean_audio.contains(&clean_cue) || clean_cue.contains(&clean_audio) {
-                            log::info!("Found CUE by fuzzy match: {:?} -> {:?}", audio_path.file_name(), cue_p.file_name());
+                            log::debug!("Found CUE by fuzzy match: {:?} -> {:?}", audio_path.file_name(), cue_p.file_name());
                             return parse_cue_file(&cue_p);
                         }
                     }
@@ -586,39 +615,60 @@ fn run_audio_loop(
     meta_slot: Arc<Mutex<Option<String>>>,
     tracks_flag: Arc<AtomicBool>,
     cue_track_slot: Arc<Mutex<Option<usize>>>,
+    needs_restart: Arc<AtomicBool>,
 ) {
     let mut backend_sink = None;
     let mut backend_player: Option<rodio::Player> = None;
+    let mut last_backend_attempt: Option<Instant> = None;
+
+    // Initialize the WASAPI session listener (Windows only)
+    unsafe { wasapi_monitor_init(); }
+
 
     macro_rules! ensure_backend {
-        ($v:expr, $p:expr) => {
+        ($v:expr, $p:expr) => {{
+            let mut res = true;
             if backend_sink.is_none() {
-                match rodio::DeviceSinkBuilder::open_default_sink() {
-                    Ok(sink) => {
-                        let p = rodio::Player::connect_new(sink.mixer());
-                        p.set_volume($v);
-                        if $p { p.pause(); } else { p.play(); }
-                        backend_sink = Some(sink);
-                        backend_player = Some(p);
-                        true
+                let can_retry = last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
+                if can_retry {
+                    last_backend_attempt = Some(Instant::now());
+
+                    // Check if the hardware is actually available before trying to open it.
+                    // This prevents creating a "zombie" sink that accepts samples but makes no sound.
+                    if !unsafe { wasapi_is_device_available() } {
+                        log::debug!("[RECOVERY] ensure_backend: Hardware is busy, skipping attempt");
+                        res = false;
+                    } else {
+                        match rodio::DeviceSinkBuilder::open_default_sink() {
+                            Ok(sink) => {
+                                let p = rodio::Player::connect_new(sink.mixer());
+                                p.set_volume($v);
+                                if $p { p.pause(); } else { p.play(); }
+                                backend_sink = Some(sink);
+                                backend_player = Some(p);
+                                log::debug!("[RECOVERY] ensure_backend: device opened successfully");
+                                res = true;
+                            }
+                            Err(e) => {
+                                let msg = format!("Audio device error: {e}");
+                                log::warn!("{msg}");
+                                set_error(&err_slot, msg);
+                                res = false;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let msg = format!("Audio device error: {e}");
-                        log::warn!("{msg}");
-                        set_error(&err_slot, msg);
-                        false
-                    }
+                } else {
+                    res = false;
                 }
-            } else {
-                true
             }
-        };
+            res
+        }};
     }
 
     let mut playlist: Vec<PathBuf> = Vec::new();
-    // current_track_idx = index of NEXT file to play; the currently playing file is at idx-1
     let mut current_track_idx: usize = 0;
     let mut stopped = true;
+    let mut last_hw_pos: Duration = Duration::ZERO;
     let mut paused = false;
     let mut current_volume: f32 = 1.0;
 
@@ -640,12 +690,12 @@ fn run_audio_loop(
                 backend_sink.take();
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
+                unsafe { wasapi_monitor_uninit(); }
                 return;
             }
             Ok(AudioCommand::Stop) => {
                 stopped = true;
                 playlist.clear();
-                // Drop backend to release WASAPI/Exclusive resources to the system
                 backend_player = None;
                 backend_sink = None;
                 set_current_track(&track_slot, None);
@@ -656,13 +706,35 @@ fn run_audio_loop(
             Ok(AudioCommand::Play) => {
                 paused = false;
                 stopped = false;
-                // Accumulate paused duration for accurate CUE time tracking
                 if let Some(pa) = paused_at.take() {
                     total_paused += pa.elapsed();
                 }
-                if ensure_backend!(current_volume, paused) {
-                    if let Some(ref p) = backend_player {
-                        p.play();
+                // Save absolute file position for resume seek.
+                // last_hw_pos is relative to the appended source; add last_seek_offset
+                // to get the absolute position within the file.
+                let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
+                backend_player = None;
+                backend_sink = None;
+                if current_track_idx > 0 { current_track_idx -= 1; }
+                // Re-open the file and seek to resume_pos
+                let path = playlist[current_track_idx % playlist.len()].clone();
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                    if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
+                        if ensure_backend!(current_volume, paused) {
+                            if let Some(ref p) = backend_player {
+                                if resume_pos > Duration::ZERO {
+                                    let skipped = rodio::Source::skip_duration(source, resume_pos);
+                                    p.append(skipped);
+                                } else {
+                                    p.append(source);
+                                }
+                                current_track_idx += 1;
+                                last_seek_offset = resume_pos;
+                                last_hw_pos = Duration::ZERO;
+                                p.play();
+                            }
+                        }
                     }
                 }
             }
@@ -816,26 +888,55 @@ fn run_audio_loop(
             Err(_) => {}
         }
 
+        // Watchdog: detect if hardware is lost (e.g. WASAPI exclusive preemption).
+        // On Windows, this relies on native session events from the C++ monitor.
+        if !stopped && !paused {
+            if unsafe { wasapi_poll_device_lost() } {
+                log::warn!("[WATCHDOG] Audio device lost (native event). Requesting full restart.");
+                stopped = true;
+                backend_player = None;
+                backend_sink = None;
+                needs_restart.store(true, Ordering::Relaxed);
+            }
+        }
+
         // Feed next track
-        if !stopped && !paused && backend_player.as_ref().map_or(true, |p| p.empty()) && !playlist.is_empty() {
-            if shutdown_flag.load(Ordering::Relaxed) { return; }
-            let path = playlist[current_track_idx % playlist.len()].clone();
-            let filename = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Unknown".to_string());
+        if !stopped && !paused && !playlist.is_empty() {
+            let player_empty = backend_player.as_ref().map_or(true, |p| p.empty());
 
-            current_track_idx += 1;
+            if player_empty {
+                // Early-out: if backend is missing and cooldown hasn't expired,
+                // skip all expensive file/CUE work to avoid hot-looping.
+                if backend_sink.is_none() {
+                    let can_retry = last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
+                    if !can_retry {
+                        continue;
+                    }
+                }
 
-            if let Ok(file) = std::fs::File::open(&path) {
-                let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
+                log::debug!(
+                    "[FEED] player_empty=true, track_idx={}",
+                    current_track_idx
+                );
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    unsafe { wasapi_monitor_uninit(); }
+                    return;
+                }
+                let path = playlist[current_track_idx % playlist.len()].clone();
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                    if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
                         set_current_track(&track_slot, Some(filename));
                         set_current_path(&path_slot, Some(path.clone()));
 
                         cue_sheet = load_cue(&path, &shutdown_flag);
                         tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
-                        
+
                         // Metadata
                         if let Some(ref cue) = cue_sheet {
                             if let Some(first) = cue.tracks.first() {
@@ -851,25 +952,22 @@ fn run_audio_loop(
                         if ensure_backend!(current_volume, paused) {
                             if let Some(ref p) = backend_player {
                                 p.append(source);
+                                current_track_idx += 1;
+                                last_seek_offset = Duration::ZERO;
+                                last_hw_pos = Duration::ZERO;
                             }
+                        } else {
+                            log::debug!("[FEED] ensure_backend FAILED, will retry next cycle");
+                            continue;
                         }
-                        
-                        // Reset timing variables before potential seek
-                        current_file_start = Instant::now();
-                        last_seek_offset = Duration::ZERO;
-                        total_paused = Duration::ZERO;
-                        paused_at = None;
 
                         // Initial track seek if requested via SetPlaylist
                         if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
                             if track_idx < cue.tracks.len() {
                                 let t = &cue.tracks[track_idx];
                                 if t.start > Duration::ZERO {
-                                    // We already appended the 'source' above; 
-                                    // to seek we need to clear and re-append a skipped source.
                                     if let Ok(f2) = std::fs::File::open(&path) {
                                         let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
-                                        // Re-open source for seeking
                                         if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag)) {
                                             if ensure_backend!(current_volume, paused) {
                                                 if let Some(ref p) = backend_player {
@@ -878,7 +976,6 @@ fn run_audio_loop(
                                                     p.append(s2);
                                                     last_seek_offset = t.start;
                                                     current_file_start = Instant::now();
-                                                    // Metadata
                                                     let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
                                                     set_metadata(&meta_slot, Some(meta));
                                                     set_cue_track(&cue_track_slot, Some(track_idx));
@@ -890,23 +987,25 @@ fn run_audio_loop(
                             }
                         }
 
-                    if let Some(ref p) = backend_player {
-                        p.set_volume(current_volume);
-                        p.play();
+                        if let Some(ref p) = backend_player {
+                            p.set_volume(current_volume);
+                            p.play();
+                        }
                     }
                 }
             }
         }
 
-        // Handle mid-file metadata updates for CUE
+        // Handle mid-file metadata updates for CUE (using hardware position)
         if !stopped && !paused && backend_player.as_ref().map_or(false, |p| !p.empty()) {
             if shutdown_flag.load(Ordering::Relaxed) { return; }
             if let Some(ref cue) = cue_sheet {
-                let elapsed = current_file_start.elapsed()
-                    .saturating_sub(total_paused)
-                    .saturating_add(last_seek_offset);
-                // What track are we in?
-                let idx = cue
+                if let Some(ref p) = backend_player {
+                    // get_pos() returns position relative to the appended source.
+                    // Add last_seek_offset to get the absolute file position.
+                    let elapsed = p.get_pos().saturating_add(last_seek_offset);
+                    // What track are we in?
+                    let idx = cue
                     .tracks
                     .iter()
                     .position(|t| t.start > elapsed)
@@ -924,10 +1023,12 @@ fn run_audio_loop(
                         *g = Some(meta);
                         set_cue_track(&cue_track_slot, Some(idx));
                     }
+                    }
                 }
             } else {
                 set_cue_track(&cue_track_slot, None);
             }
         }
+        
     }
 }
