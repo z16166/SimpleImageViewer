@@ -40,6 +40,8 @@ mod macos_image_io;
 mod formats;
 #[cfg(target_os = "windows")]
 mod wic;
+#[cfg(target_os = "windows")]
+mod seh_handler;
 #[cfg(target_os = "linux")]
 mod linux_tiff;
 mod raw_processor;
@@ -440,6 +442,14 @@ fn main() -> eframe::Result {
     }
 
     // 3. Primary Instance Initialization
+
+    // Install the Windows SEH exception filter as early as possible.
+    // This catches native crashes (ACCESS_VIOLATION, STACK_OVERFLOW, etc.)
+    // that bypass Rust's panic mechanism and would otherwise cause a
+    // silent exit with no diagnostic output.
+    #[cfg(target_os = "windows")]
+    seh_handler::install();
+
     init_logging();
     let env_info = log_env_info();
 

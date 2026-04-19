@@ -165,6 +165,14 @@ jobs:
           name: binary-${{ matrix.target }}
           path: ${{ env.ARCHIVE_NAME }}
 
+      - name: Archive PDB symbols (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/SimpleImageViewer.pdb
+          if-no-files-found: warn
+
   build-legacy-win7:
     name: Build (Win7 x64)
     runs-on: windows-latest
@@ -249,6 +257,13 @@ jobs:
         with:
           name: binary-win7-x64
           path: ${{ env.ARCHIVE_NAME }}
+
+      - name: Archive PDB symbols (Win7)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdb-win7-x64
+          path: target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.pdb
+          if-no-files-found: warn
 
   create-release:
     name: Create Release

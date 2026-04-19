@@ -53,6 +53,8 @@ fn main() {
         // Link COM and WASAPI related libraries
         println!("cargo:rustc-link-lib=ole32");
         println!("cargo:rustc-link-lib=uuid");
+        // DbgHelp provides MiniDumpWriteDump for the SEH crash handler
+        println!("cargo:rustc-link-lib=dbghelp");
 
         // --- WIN7 COMPATIBILITY HACK ---
         // We only apply this to the main binary and ONLY when legacy compatibility 

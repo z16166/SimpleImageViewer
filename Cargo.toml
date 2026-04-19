@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "1.4.3"
+version = "1.4.4"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -71,7 +71,13 @@ winreg = "0.11"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Imaging",
+    "Win32_Security",
     "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
@@ -102,7 +108,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = true
+# Do NOT strip symbols: on MSVC targets `strip = true` deletes the .pdb
+# entirely, making crash dumps useless.  `strip = "debuginfo"` keeps the
+# .pdb but strips DWARF from the binary (relevant for cross-compiled ELF).
+# The .pdb is NOT shipped to users but archived separately in CI.
+strip = "debuginfo"
 
 [profile.dev]
 opt-level = 1
