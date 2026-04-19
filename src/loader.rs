@@ -32,11 +32,16 @@ pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 /// Dedicated pool for heavy high-quality preview generation (refinement).
 /// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
 static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-    rayon::ThreadPoolBuilder::new()
+    match rayon::ThreadPoolBuilder::new()
         .num_threads(2)
         .thread_name(|i| format!("refinement-worker-{}", i))
-        .build()
-        .expect("Failed to create refinement pool")
+        .build() {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("[Loader] Failed to create refinement pool: {}. Falling back to default pool.", e);
+                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+            }
+        }
 });
 
 use crate::raw_processor::RawProcessor;
@@ -204,9 +209,13 @@ impl ImageLoader {
             Ok(())
         });
 
-        let pool = pool_builder
-            .build()
-            .expect("failed to create image loader thread pool");
+        let pool = match pool_builder.build() {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("[Loader] Failed to create image loader thread pool: {}. Falling back to minimal pool.", e);
+                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+            }
+        };
 
         let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
@@ -246,7 +255,11 @@ impl ImageLoader {
                             while heap.is_empty() {
                                 heap = cvar.wait(heap).unwrap();
                             }
-                            heap.pop().unwrap()
+                            if let Some(req) = heap.pop() {
+                                req
+                            } else {
+                                continue;
+                            }
                         };
 
                         // Check if this request is still relevant for the global counter
@@ -392,7 +405,12 @@ impl ImageLoader {
                             let (w, h) = rgba.dimensions();
                             let pixels = rgba.into_raw();
                             
-                            let dynamic = DynamicImage::ImageRgba8(image::ImageBuffer::from_raw(w, h, pixels).unwrap());
+                            let dynamic = if let Some(buf) = image::ImageBuffer::from_raw(w, h, pixels) {
+                                DynamicImage::ImageRgba8(buf)
+                            } else {
+                                log::error!("[Refinement] Failed to create image buffer from raw bits ({}x{})", w, h);
+                                continue;
+                            };
                             
                             // Generate a high-quality preview for the UI so the user gets
                             // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
@@ -1342,7 +1360,12 @@ impl RawImageSource {
         // ALSO: We do NOT send a refinement request here. Refinement is deferred until
         // the image becomes the actively-viewed one (via request_refinement()). This
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
-        let rgba = image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels).unwrap();
+        let rgba = if let Some(buf) = image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels) {
+            buf
+        } else {
+            log::error!("[Loader] Failed to create preview RGBA image buffer ({}x{}) for {:?}", preview.width, preview.height, path);
+            image::RgbaImage::new(1, 1)
+        };
         let preview_dyn = DynamicImage::ImageRgba8(rgba);
 
         let developed_image = Arc::new(PLRwLock::new(Some(preview_dyn)));

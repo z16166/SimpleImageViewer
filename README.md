@@ -31,8 +31,9 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Background music** — high-fidelity playback for MP3, FLAC, OGG, WAV, AAC, M4A, **APE**; includes specialized **audio device auto-reconnection** on Windows to handle exclusive-mode conflicts (e.g., from foobar2000)
 - **CUE Sheet & Precise Navigation** — full support for `.cue` files (WAV+CUE, FLAC+CUE, etc.). Accurate track skipping based on `INDEX 01` timestamps is supported even for large single-file audio albums
 - **Smart Metadata Extraction** — automatically extracts Title, Artist, and Track info from files. Supports built-in tags and external CUE descriptions
-- **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) for quick navigation between physical music files and logical CUE tracks
-- **Dynamic Metadata Display** — two-line status display with smart truncation for long filenames (e.g., `Start...End.wav`), ensuring information remains legible in the settings panel
+- **Enhanced Music HUD (OSD)** — minimalist overlay that automatically prioritizes track metadata (Index + Title) from CUE sheets or tags over raw filenames. 
+- **Intelligent Auto-Hide** — the music HUD automatically fades away after 5 seconds of inactivity to keep your view unobstructed. It wakes up instantly on mouse movement or audio interaction.
+- **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) in the settings panel for physical music files and logical CUE tracks.
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
@@ -50,6 +51,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
 - **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, set as desktop wallpaper, **Rotate 90° CW/CCW**, or **Print** (Full or Visible Area) directly
 - **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese - Taiwan & Hong Kong) with fallback support, and can be manually overridden in the settings panel.
+- **Advanced Crash Resilience & Diagnostics** — built-in global exception monitoring that captures localized diagnostic reports and automated clipboard support for simplified troubleshooting. Provides persistent crash logging even in fatal scenarios.
 
 ---
 
@@ -160,6 +162,7 @@ play_music: true
 music_path: "D:\\Music"
 volume: 0.8
 music_paused: false
+show_music_osd: true
 last_music_track: "D:\\Music\\Album\\CD1.flac"
 font_family: "Microsoft YaHei"
 font_size: 16.0

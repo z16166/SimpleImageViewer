@@ -54,3 +54,44 @@ pub const AUDIO_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 /// Prevents hot-looping when the hardware is busy or in exclusive mode.
 pub const AUDIO_RECOVERY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Dimensions and layout for the Music HUD (OSD).
+pub const MUSIC_HUD_WIDTH: f32 = 400.0;
+pub const MUSIC_HUD_HEIGHT: f32 = 42.0;
+pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -60.0;
+
+/// Number of idle seconds before the Music HUD auto-hides.
+pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
+
+/// Color brightness multiplier for HUD text to ensure contrast in light themes.
+pub const MUSIC_HUD_CONTRAST_BOOST: f32 = 2.5;
+
+/// Threshold for character count before truncating track titles in the OSD.
+pub const MUSIC_HUD_MAX_CHARS: usize = 45;
+pub const MUSIC_HUD_TRUNCATE_LEN: usize = 42;
+
+/// Shared egui data ID for pending seek operations.
+pub const ID_PENDING_SEEK: &str = "pending_seek";
+
+/// Default sample rate for audio decoding (44.1 kHz).
+pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
+/// Default number of audio channels (Stereo).
+pub const DEFAULT_CHANNELS: u16 = 2;
+
+/// The number of samples per decoding chunk for the background audio buffer.
+/// A value of 4096 provides a good balance between memory overhead and 
+/// synchronization granularity (approx. 46ms at 44.1kHz stereo).
+pub const AUDIO_CHUNK_SIZE: usize = 4096;
+
+/// The number of audio chunks to keep in the background decoding queue.
+/// 16 chunks of 4096 samples equals approx 1.5 seconds of audio buffer.
+pub const AUDIO_BUFFER_QUEUE_DEPTH: usize = 16;
+
+/// Filename for the emergency diagnostic crash report.
+pub const CRASH_REPORT_FILENAME: &str = "crash_report.txt";
+
+/// Default fallback title for the error dialog when i18n is not yet available.
+pub const CRASH_DIALOG_FALLBACK_TITLE: &str = "Application Error";
+
+/// Default fallback message for the error dialog when i18n is not yet available.
+pub const CRASH_DIALOG_FALLBACK_MSG: &str = "An unexpected error occurred.\n\nDiagnostic info has been copied to the clipboard and saved to the crash report file.";
+

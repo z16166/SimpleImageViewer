@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 parking_lot = "0.12"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
+symphonia = { version = "0.5", features = ["all"] }
 ape-decoder = "0.3.2"
 lofty = "0.23"
 encoding_rs = "0.8"
@@ -40,6 +41,7 @@ flexi_logger = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 font-kit = "0.14"
+ttf-parser = "0.25"
 kamadak-exif = "0.6.1"
 clipboard-rs = "0.3"
 wallpaper = "3.2.0"

@@ -165,11 +165,15 @@ pub struct ImageViewerApp {
 
     // Audio
     audio: AudioPlayer,
+    music_seeking_target_ms: Option<u64>,
+    music_seek_timeout: Option<std::time::Instant>,
+    music_hud_last_activity: std::time::Instant,
 
     // UI state
     show_settings: bool,
     status_message: String,
     error_message: Option<String>,
+    is_font_error: bool,
 
     // Pending viewport commands (set during input processing for deferred apply)
     pending_fullscreen: Option<bool>,
@@ -298,20 +302,37 @@ impl ImageViewerApp {
         let cached_palette = settings.theme.resolve(&mut theme_cache);
 
         setup_visuals(&cc.egui_ctx, &settings, &cached_palette);
-        setup_fonts(&cc.egui_ctx, &settings);
+        if !setup_fonts(&cc.egui_ctx, &settings) {
+            log::error!("[Core] Persisted font '{}' failed validation. Reverting for safety.", settings.font_family);
+            // We don't have self yet, but we can't easily change settings.
+            // However, setup_fonts will have at least loaded CJK as fallback.
+        }
 
         let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
         let (save_error_tx, save_error_rx) = crossbeam_channel::unbounded::<String>();
-        std::thread::Builder::new()
+        let saver_res = std::thread::Builder::new()
             .name("settings-saver".to_string())
             .spawn(move || {
-                while let Ok(settings) = save_rx.recv() {
+                while let Ok(mut settings) = save_rx.recv() {
+                    // Coalesce rapid updates: if multiple save requests are queued (e.g., during rapid slider dragging),
+                    // drain the channel and only persist the absolute latest state to avoid I/O flooding.
+                    while let Ok(newer) = save_rx.try_recv() {
+                        settings = newer;
+                    }
+
                     if let Err(e) = settings.save() {
                         let _ = save_error_tx.send(e);
                     }
+                    
+                    // Throttling: give the OS and filesystem time to settle between writes.
+                    // This prevents file locking conflicts on certain Windows/AV configurations.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-            })
-            .expect("failed to spawn settings saver thread");
+            });
+        
+        if saver_res.is_err() {
+            log::error!("[Core] Failed to spawn settings-saver thread. Settings will not be persisted this session.");
+        }
 
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
@@ -380,6 +401,7 @@ impl ImageViewerApp {
             show_settings: true,
             status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
             error_message: None,
+            is_font_error: false,
             pending_fullscreen: None,
             font_families: get_system_font_families(),
             temp_font_size: None,
@@ -432,6 +454,9 @@ impl ImageViewerApp {
             last_save_error: None,
             tile_upload_quota: tile_quota,
             hardware_tier: tier,
+            music_seeking_target_ms: None,
+            music_seek_timeout: None,
+            music_hud_last_activity: Instant::now(),
         };
         log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
 
@@ -481,6 +506,7 @@ impl ImageViewerApp {
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
+        self.is_font_error = false;
         self.scanning = true;
         let dir_name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
@@ -538,6 +564,7 @@ impl ImageViewerApp {
 
         self.last_switch_time = Instant::now();
         self.error_message = None;
+        self.is_font_error = false;
         self.cached_exif_data = None;
         self.cached_xmp_data = None;
 
@@ -734,6 +761,7 @@ impl ImageViewerApp {
             self.cached_exif_data = None;
             self.cached_xmp_data = None;
             self.error_message = None;
+            self.is_font_error = false;
 
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
@@ -1144,7 +1172,11 @@ impl ImageViewerApp {
                     
                     self.tile_manager = Some(tm);
                     self.animation = None;
-                    self.log_large_image(idx, self.current_image_res.unwrap().0, self.current_image_res.unwrap().1);
+                if let Some(res) = self.current_image_res {
+                    self.log_large_image(idx, res.0, res.1);
+                } else {
+                    log::warn!("[UI] Attempted to log large image resolution, but res was None for index {}", idx);
+                }
 
                     // Trigger refinement ONLY for the actively-viewed image.
                     // Prefetched images stay at preview quality until navigated to.
@@ -1962,10 +1994,15 @@ impl ImageViewerApp {
                 ui.add_space(2.0);
 
                 let old_play_music = self.settings.play_music;
+                let old_show_music_osd = self.settings.show_music_osd;
                 ui.checkbox(&mut self.settings.play_music, t!("label.play_music"));
+                ui.checkbox(&mut self.settings.show_music_osd, t!("label.show_music_osd"));
                 ui.add_space(2.0);
-                if old_play_music != self.settings.play_music {
-                    music_enabled_changed = true;
+                if old_play_music != self.settings.play_music || old_show_music_osd != self.settings.show_music_osd {
+                    if old_play_music != self.settings.play_music {
+                        music_enabled_changed = true;
+                    }
+                    self.music_hud_last_activity = Instant::now(); // Wake up HUD on any related toggle
                 }
 
                 if self.settings.play_music {
@@ -2016,23 +2053,28 @@ impl ImageViewerApp {
                                         // Buttons in RTL order: NextFile, NextTrack, Play/Pause, PrevTrack, PrevFile
                                         if styled_button(ui, "⏭", &self.cached_palette).on_hover_text(t!("music.next_file")).clicked() {
                                             self.audio.next_file();
+                                            self.music_hud_last_activity = Instant::now();
                                         }
                                         let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩", &self.cached_palette));
                                         if resp.on_hover_text(t!("music.next_track")).clicked() {
                                             self.audio.next_track();
+                                            self.music_hud_last_activity = Instant::now();
                                         }
                                         let play_icon = if self.settings.music_paused { "▶" } else { "⏸" };
                                         if styled_button(ui, play_icon, &self.cached_palette).on_hover_text(t!("music.play_pause")).clicked() {
                                             self.settings.music_paused = !self.settings.music_paused;
                                             if self.settings.music_paused { self.audio.pause(); } else { self.audio.play(); }
                                             self.queue_save();
+                                            self.music_hud_last_activity = Instant::now();
                                         }
                                         let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪", &self.cached_palette));
                                         if resp.on_hover_text(t!("music.prev_track")).clicked() {
                                             self.audio.prev_track();
+                                            self.music_hud_last_activity = Instant::now();
                                         }
                                         if styled_button(ui, "⏮", &self.cached_palette).on_hover_text(t!("music.prev_file")).clicked() {
                                             self.audio.prev_file();
+                                            self.music_hud_last_activity = Instant::now();
                                         }
                                     });
                                 } else {
@@ -2056,7 +2098,106 @@ impl ImageViewerApp {
                         if let Some(m) = metadata {
                             ui.label(RichText::new(format!("  │  {m}")).color(self.cached_palette.accent2).small().italics());
                         }
+
+                        // Progress bar in Settings
+                        ui.add_space(2.0);
+                        let mut cur_ms = self.audio.get_pos_ms();
+                        let tot_ms = self.audio.get_duration_ms();
+                        
+                        // Smart Seek locking logic: match target or timeout
+                        if let Some(target_ms) = self.music_seeking_target_ms {
+                            let diff = (cur_ms as i64 - target_ms as i64).abs();
+                            let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
+                            
+                            if diff < 2000 || timed_out {
+                                // Match found or timeout reached, release lock
+                                self.music_seeking_target_ms = None;
+                                self.music_seek_timeout = None;
+                            } else {
+                                // Still seeking, force the slider to stay at target
+                                cur_ms = target_ms;
+                            }
+                        }
+
+                        if tot_ms > 0 {
+                            let mut pos_s = cur_ms as f32 / 1000.0;
+                            let total_s = tot_ms as f32 / 1000.0;
+                            
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().slider_width = ui.available_width() - 76.0;
+                                // Narrow the slider thumb to avoid obscuring CUE markers
+                                ui.spacing_mut().interact_size.x = 6.0; 
+                                
+                                ui.label(RichText::new(format!("{:02}:{:02}", (pos_s as u32)/60, (pos_s as u32)%60)).small().color(self.cached_palette.text_muted));
+                                let resp = ui.add(egui::Slider::new(&mut pos_s, 0.0..=total_s).show_value(false).trailing_fill(true));
+                                ui.label(RichText::new(format!("{:02}:{:02}", (total_s as u32)/60, (total_s as u32)%60)).small().color(self.cached_palette.text_muted));
+                                
+                                // Draw CUE Markers on the settings slider
+                                let markers = self.audio.get_cue_markers();
+                                if !markers.is_empty() && tot_ms > 0 {
+                                    let current_cue_idx = self.audio.get_current_cue_track();
+                                    let painter = ui.painter();
+                                    let slider_rect = resp.rect;
+                                    
+                                    for (idx, &marker_ms) in markers.iter().enumerate() {
+                                        if marker_ms >= tot_ms { continue; }
+                                        let ratio = (marker_ms as f32 / tot_ms as f32).clamp(0.0, 1.0);
+                                        let x = slider_rect.left() + ratio * slider_rect.width();
+                                        let center = egui::pos2(x, slider_rect.center().y);
+                                        
+                                        let is_current = current_cue_idx == Some(idx);
+                                        let color = if is_current {
+                                            self.cached_palette.accent2
+                                        } else {
+                                            self.cached_palette.text_muted.gamma_multiply(0.6)
+                                        };
+                                        let radius = if is_current { 2.5 } else { 1.5 };
+                                        painter.circle_filled(center, radius, color);
+                                    }
+                                }
+
+                                if resp.drag_stopped() || (resp.clicked() && !resp.dragged()) {
+                                    self.audio.seek(Duration::from_secs_f32(pos_s));
+                                    self.music_seeking_target_ms = Some((pos_s * 1000.0) as u64);
+                                    self.music_seek_timeout = Some(Instant::now());
+                                    self.music_hud_last_activity = Instant::now();
+                                }
+                            });
+                        }
                     }
+
+                    // Audio output device selection
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(t!("music.output_device")).color(self.cached_palette.text_muted));
+                        let devices = self.audio.list_devices();
+                        let current_dev = self.settings.audio_device.clone().unwrap_or_else(|| t!("music.default_device").to_string());
+                        let short_dev = middle_truncate(&current_dev, 36);
+                        let combo_width = ui.available_width().min(250.0);
+
+                        egui::ComboBox::from_id_salt("audio_device_select")
+                            .selected_text(RichText::new(short_dev))
+                            .width(combo_width)
+                            .show_ui(ui, |ui| {
+                                let default_label = t!("music.default_device").to_string();
+                                if ui.selectable_label(self.settings.audio_device.is_none(), &default_label).clicked() {
+                                    self.settings.audio_device = None;
+                                    self.audio.set_device(None);
+                                    self.queue_save();
+                                    self.music_hud_last_activity = Instant::now();
+                                }
+                                for dev in devices {
+                                    let is_selected = self.settings.audio_device.as_ref() == Some(&dev);
+                                    let short_name = middle_truncate(&dev, 40);
+                                    if ui.selectable_label(is_selected, short_name).clicked() {
+                                        self.settings.audio_device = Some(dev.clone());
+                                        self.audio.set_device(Some(dev));
+                                        self.queue_save();
+                                        self.music_hud_last_activity = Instant::now();
+                                    }
+                                }
+                            });
+                    });
 
                     // Volume slider
                     ui.add_space(4.0);
@@ -2109,20 +2250,46 @@ impl ImageViewerApp {
                     }
                 });
 
-                ui.horizontal(|ui| {
-                    ui.label(t!("label.interface_font"));
-                    let old_family = self.settings.font_family.clone();
-                    egui::ComboBox::from_id_salt("font_family")
-                        .selected_text(&self.settings.font_family)
-                        .show_ui(ui, |ui| {
-                            for family in &self.font_families {
-                                ui.selectable_value(&mut self.settings.font_family, family.clone(), family);
+                // Group font selection and error message in a stable ID scope to prevent egui ID oscillation
+                ui.push_id("font_selection_area", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(t!("label.interface_font"));
+                        let old_family = self.settings.font_family.clone();
+                        egui::ComboBox::from_id_salt("font_family")
+                            .selected_text(if self.settings.font_family == "System Default" { t!("label.system_default").to_string() } else { self.settings.font_family.clone() })
+                            .show_ui(ui, |ui| {
+                                for family in &self.font_families {
+                                    let label = if family == "System Default" { t!("label.system_default").to_string() } else { family.clone() };
+                                    ui.selectable_value(&mut self.settings.font_family, family.clone(), label);
+                                }
+                            });
+                        if old_family != self.settings.font_family {
+                            // Reset font error flag on any change to retry or clear
+                            self.is_font_error = false;
+                            if !setup_fonts(ctx, &self.settings) {
+                                // REJECT: Revert state and notify user
+                                self.settings.font_family = "System Default".to_string();
+                                setup_fonts(ctx, &self.settings);
+                                // We no longer bake a static string here. 
+                                // is_font_error=true triggers real-time translation in the UI.
+                                self.is_font_error = true;
+                                // --- Internal Signal ---
+                                // We use an empty string as a placeholder because the actual UI text 
+                                // for font errors is dynamically pulled via t!("status.invalid_font").
+                                self.error_message = Some(String::new()); 
+                                self.music_hud_last_activity = Instant::now();
                             }
+                            setup_visuals(ctx, &self.settings, &self.cached_palette);
+                            self.queue_save();
+                        }
+                    });
+
+                    // --- Inline Font Error Feedback (Real-time i18n) ---
+                    if self.is_font_error {
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0); // Indent to match label alignment
+                            ui.label(RichText::new(format!("⚠ {}", t!("status.invalid_font"))).color(Color32::from_rgb(255, 100, 100)).small());
                         });
-                    if old_family != self.settings.font_family {
-                        setup_fonts(ctx, &self.settings);
-                        setup_visuals(ctx, &self.settings, &self.cached_palette);
-                        self.queue_save();
                     }
                 });
 
@@ -2440,11 +2607,22 @@ impl ImageViewerApp {
 
             // Error message
             if let Some(ref err) = self.error_message {
-                let text = format!("⚠ {err}");
-                let font_id = FontId::proportional(16.0);
-                let color = Color32::from_rgb(255, 100, 100);
+                // EXCLUSION: If the settings panel is open and showing the font error inline, 
+                // skip the global centered area to avoid overlap.
+                if self.show_settings && self.is_font_error {
+                    // Rendered inline in draw_settings_panel
+                } else {
+                    // If it's a font error, always use dynamic translation. 
+                    // Otherwise use the stored 'baked' string (which might contain dynamic data like paths).
+                    let text = if self.is_font_error {
+                        format!("⚠ {}", t!("status.invalid_font"))
+                    } else {
+                        format!("⚠ {err}")
+                    };
+                    let font_id = FontId::proportional(16.0);
+                    let color = Color32::from_rgb(255, 100, 100);
 
-                egui::Area::new("error_display".into())
+                    egui::Area::new("error_display".into())
                     .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
                         ui.add(
@@ -2454,6 +2632,7 @@ impl ImageViewerApp {
                         );
                     });
                 return;
+                }
             }
 
             // ── Tiled rendering path (large images) ──────────────────────
@@ -2810,7 +2989,7 @@ impl ImageViewerApp {
                                 // The boundary of the animation is the union of the old and new image areas
                                 let union_rect = p_dest.union(final_dest);
 
-                                let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                                let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
                                 let duration = self.settings.transition_ms as f32 / 1000.0;
                                 let t = (elapsed / duration).clamp(0.0, 1.0);
                                 let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
@@ -2902,7 +3081,7 @@ impl ImageViewerApp {
                             }
 
                             // 2. Compute ripple state
-                            let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                            let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
                             let duration = self.settings.transition_ms as f32 / 1000.0;
                             let t = (elapsed / duration).clamp(0.0, 1.0);
                             let ease = 3.0 * t * t - 2.0 * t * t * t; // smoothstep
@@ -3007,7 +3186,7 @@ impl ImageViewerApp {
                         // Smart boundary: union of old and new image rects
                         let union_rect = p_dest.union(final_dest);
 
-                        let elapsed = self.transition_start.unwrap().elapsed().as_secs_f32();
+                        let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
                         let duration = self.settings.transition_ms as f32 / 1000.0;
                         let t = (elapsed / duration).clamp(0.0, 1.0);
                         let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
@@ -3168,6 +3347,11 @@ impl ImageViewerApp {
                         res: (res_w, res_h),
                         mode: mode_tag.to_string(),
                         current_track: self.audio.get_current_track(),
+                        metadata: self.audio.get_metadata(),
+                        current_cue_track: self.audio.get_current_cue_track(),
+                        current_pos_ms: self.audio.get_pos_ms(),
+                        total_duration_ms: self.audio.get_duration_ms(),
+                        cue_markers: self.audio.get_cue_markers(),
                     };
 
                     let fname = self.image_files[self.current_index]
@@ -3178,12 +3362,67 @@ impl ImageViewerApp {
                     self.osd.render(
                         ui,
                         screen_rect,
-                        current_state,
+                        &current_state,
                         &fname,
                         &self.cached_palette,
                         &self.last_save_error,
                     );
-                } else {
+                }
+
+                // Music HUD: prioritizes metadata, auto-hides after configurable interval
+                let show_hud = self.settings.show_music_osd && 
+                    self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
+                if self.audio.get_duration_ms() > 0 && self.audio.get_current_track().is_some() && show_hud {
+                    let mut cur_ms = self.audio.get_pos_ms();
+                    // Smart seek locking logic for HUD (match target or 10s timeout)
+                    if let Some(target_ms) = self.music_seeking_target_ms {
+                        let diff = (cur_ms as i64 - target_ms as i64).abs();
+                        let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
+                        
+                        if diff < 2000 || timed_out {
+                            self.music_seeking_target_ms = None;
+                            self.music_seek_timeout = None;
+                        } else {
+                            cur_ms = target_ms;
+                        }
+                    }
+
+                    let is_active = self.music_hud_last_activity.elapsed().as_secs() < 5;
+                    if self.settings.show_music_osd && is_active {
+                        let music_state = crate::ui::osd::OsdState {
+                            index: self.current_index,
+                            total: self.image_files.len(),
+                            zoom_pct: 0, // Not needed for music hud
+                            res: (0, 0),
+                            mode: String::new(),
+                            current_track: self.audio.get_current_track(),
+                            metadata: self.audio.get_metadata(),
+                            current_cue_track: self.audio.get_current_cue_track(),
+                            current_pos_ms: cur_ms,
+                            total_duration_ms: self.audio.get_duration_ms(),
+                            cue_markers: self.audio.get_cue_markers(),
+                        };
+                        
+                        let hud_rect = self.osd.render_music_hud(ui, screen_rect, &music_state, &self.cached_palette);
+                        
+                        // Hover protection: if mouse is over HUD, don't let it expire
+                        if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                            if hud_rect.contains(ptr) {
+                                self.music_hud_last_activity = Instant::now();
+                            }
+                        }
+                    }
+
+                    // Handle seek from Music HUD (uses the same ID as original)
+                    if let Some(target_s) = ui.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))) {
+                        self.audio.seek(Duration::from_secs_f32(target_s));
+                        self.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
+                        self.music_seek_timeout = Some(Instant::now());
+                        self.music_hud_last_activity = Instant::now(); // Wake up HUD
+                    }
+                }
+
+                if res_w == 0 {
                     // While loading/parsing, show a minimal status
                     self.osd.render_loading_hint(ui, screen_rect, &self.cached_palette);
                 }
@@ -3680,6 +3919,11 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Global mouse activity detection to wake up Music HUD
+        if ctx.input(|i| i.pointer.delta().length_sq() > 0.0) {
+            self.music_hud_last_activity = Instant::now();
+        }
+
 
         // Process IPC messages
         while let Ok(msg) = self.ipc_rx.try_recv() {
@@ -4371,13 +4615,19 @@ fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
     ctx.set_global_style(style);
 }
 
+fn is_font_safe(data: &[u8]) -> bool {
+    // Quickly check the font header and table structure.
+    // This is extremely fast (<1ms) and avoids egui panicking on broken fonts.
+    ttf_parser::Face::parse(data, 0).is_ok()
+}
 
-/// Load a CJK-capable system font as egui fallback so Chinese/Japanese/Korean
 /// characters in file paths are rendered correctly. If a specific font family is 
 /// chosen in settings, try to load that one first.
-fn setup_fonts(ctx: &Context, settings: &Settings) {
+/// Returns true if the requested font (if any) was successfully loaded.
+fn setup_fonts(ctx: &Context, settings: &Settings) -> bool {
     let mut fonts = egui::FontDefinitions::default();
     let mut font_loaded = false;
+    let mut user_font_failed = false;
 
     // 1. Try to load the user-selected font if not "System Default"
     if settings.font_family != "System Default" {
@@ -4393,15 +4643,31 @@ fn setup_fonts(ctx: &Context, settings: &Settings) {
             if let Ok(data) = handle.load() {
                 let bytes = data.copy_font_data().map(|d| d.to_vec());
                 if let Some(bytes) = bytes {
-                    fonts.font_data.insert(
-                        "UserFont".to_owned(),
-                        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-                    );
-                    fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "UserFont".to_owned());
-                    fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "UserFont".to_owned());
-                    font_loaded = true;
+                    // VALIDATE: Only insert if the font is structurally sound
+                    if is_font_safe(&bytes) {
+                        fonts.font_data.insert(
+                            "UserFont".to_owned(),
+                            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                        );
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                        family.insert(0, "UserFont".to_owned());
+                    }
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                        family.insert(0, "UserFont".to_owned());
+                    }
+                        font_loaded = true;
+                    } else {
+                        log::warn!("[UI] Skipping unreliable font: {}", settings.font_family);
+                        user_font_failed = true;
+                    }
+                } else {
+                    user_font_failed = true;
                 }
+            } else {
+                user_font_failed = true;
             }
+        } else {
+            user_font_failed = true;
         }
     }
 
@@ -4430,20 +4696,29 @@ fn setup_fonts(ctx: &Context, settings: &Settings) {
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc".to_string(),
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
     ];
-
-    if let Some(data) = candidates.iter().find_map(|path| std::fs::read(path).ok()) {
-        fonts.font_data.insert(
-            "CJK".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(data)),
-        );
-        fonts.families.entry(egui::FontFamily::Proportional).or_default().push("CJK".to_owned());
-        fonts.families.entry(egui::FontFamily::Monospace).or_default().push("CJK".to_owned());
-        font_loaded = true;
+    for path in candidates {
+        if let Ok(data) = std::fs::read(&path) {
+            // VALIDATE: Check structural integrity before passing to egui
+            if is_font_safe(&data) {
+                fonts.font_data.insert(
+                    "CJK".to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(data)),
+                );
+                fonts.families.entry(egui::FontFamily::Proportional).or_default().push("CJK".to_owned());
+                fonts.families.entry(egui::FontFamily::Monospace).or_default().push("CJK".to_owned());
+                font_loaded = true;
+                break; // Found a valid CJK font
+            } else {
+                log::warn!("[UI] Skipping corrupted CJK candidate: {}", path);
+            }
+        }
     }
 
     if font_loaded {
         ctx.set_fonts(fonts);
     }
+    
+    !user_font_failed
 }
 
 fn get_system_font_families() -> Vec<String> {

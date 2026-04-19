@@ -127,6 +127,8 @@ pub struct Settings {
     pub last_music_file: Option<PathBuf>,
     #[serde(default)]
     pub last_music_cue_track: Option<usize>,
+    #[serde(default)]
+    pub audio_device: Option<String>,
 
     // Font & Appearance
     #[serde(default = "default_font_family")]
@@ -137,6 +139,8 @@ pub struct Settings {
     // Overlay (OSD)
     #[serde(default = "default_true")]
     pub show_osd: bool,
+    #[serde(default = "default_true")]
+    pub show_music_osd: bool,
 
     // Language (locale code: "en", "zh-CN", "zh-HK")
     #[serde(default)]
@@ -180,9 +184,11 @@ impl Default for Settings {
             resume_last_image: false,
             last_viewed_image: None,
             show_osd: true,
+            show_music_osd: true,
             music_paused: false,
             last_music_file: None,
             last_music_cue_track: None,
+            audio_device: None,
             language: String::new(),
             theme: AppTheme::Dark,
         }

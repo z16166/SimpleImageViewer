@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::scanner::is_offline;
-use crate::constants::{AUDIO_BUFFER_CAPACITY, AUDIO_RECOVERY_COOLDOWN};
+use crate::constants::{AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, AUDIO_RECOVERY_COOLDOWN, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE};
 use crossbeam_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,17 @@ use lofty::read_from_path;
 use std::io::{Read, Seek};
 use std::num::NonZero;
 use ape_decoder::ApeDecoder;
+use rodio::Source;
+
+use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+use symphonia::core::units::Time;
+use symphonia::core::conv::FromSample;
 
 #[cfg(windows)]
 unsafe extern "C" {
@@ -57,6 +68,8 @@ pub enum AudioCommand {
     NextTrack,
     PrevTrack,
     Stop,     // Clears playlist and stops playback, but keeps thread alive
+    Seek(Duration),
+    SetDevice(Option<String>),
     Shutdown, // Terminates the thread
 }
 
@@ -71,10 +84,14 @@ pub struct AudioPlayer {
     pub current_metadata: Arc<Mutex<Option<String>>>,
     pub has_tracks: Arc<AtomicBool>,
     pub current_cue_track: Arc<Mutex<Option<usize>>>,
+    pub pos_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub dur_ms: Arc<std::sync::atomic::AtomicU64>,
+    pub current_device: Arc<Mutex<Option<String>>>,
     pub shutdown_flag: Arc<AtomicBool>,
     /// Set by the audio thread when a hardware stall is detected.
     /// The UI thread should poll this and trigger a full restart.
     pub needs_restart: Arc<AtomicBool>,
+    pub cue_markers: Arc<Mutex<Vec<u64>>>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -88,8 +105,12 @@ impl AudioPlayer {
             current_metadata: Arc::new(Mutex::new(None)),
             has_tracks: Arc::new(AtomicBool::new(false)),
             current_cue_track: Arc::new(Mutex::new(None)),
+            pos_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            dur_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            current_device: Arc::new(Mutex::new(None)),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             needs_restart: Arc::new(AtomicBool::new(false)),
+            cue_markers: Arc::new(Mutex::new(Vec::new())),
             thread_handle: None,
         }
     }
@@ -172,10 +193,6 @@ impl AudioPlayer {
         self.has_tracks.load(Ordering::Relaxed)
     }
 
-    pub fn get_current_cue_track(&self) -> Option<usize> {
-        self.current_cue_track.try_lock().ok()?.clone()
-    }
-
     fn ensure_thread_started(&mut self) {
         if self.cmd_tx.is_none() {
             let (tx, rx) = crossbeam_channel::unbounded::<AudioCommand>();
@@ -186,25 +203,81 @@ impl AudioPlayer {
             let meta_slot = Arc::clone(&self.current_metadata);
             let tracks_flag = Arc::clone(&self.has_tracks);
             let cue_track_slot = Arc::clone(&self.current_cue_track);
+            let pos_ms = Arc::clone(&self.pos_ms);
+            let dur_ms = Arc::clone(&self.dur_ms);
+            let dev_slot = Arc::clone(&self.current_device);
             let shutdown_flag = Arc::clone(&self.shutdown_flag);
             let needs_restart = Arc::clone(&self.needs_restart);
+            let cue_markers_slot = Arc::clone(&self.cue_markers);
             shutdown_flag.store(false, Ordering::Relaxed);
             needs_restart.store(false, Ordering::Relaxed);
 
-            let handle = std::thread::Builder::new()
+            let res = std::thread::Builder::new()
                 .name("audio-player".to_string())
                 .spawn(move || {
-                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot, needs_restart)
-                })
-                .expect("failed to spawn audio thread");
-            self.thread_handle = Some(handle);
+                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot, needs_restart, cue_markers_slot, pos_ms, dur_ms, dev_slot)
+                });
+            match res {
+                Ok(handle) => { self.thread_handle = Some(handle); }
+                Err(e) => { log::error!("[Audio] Failed to spawn audio thread: {}", e); }
+            }
         }
     }
 
-    /// Returns true if the audio thread signaled a stall and needs a full restart.
-    /// Clears the flag.
     pub fn take_needs_restart(&self) -> bool {
         self.needs_restart.swap(false, Ordering::Relaxed)
+    }
+
+
+    pub fn get_pos_ms(&self) -> u64 {
+        self.pos_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn get_duration_ms(&self) -> u64 {
+        self.dur_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn get_current_cue_track(&self) -> Option<usize> {
+        self.current_cue_track.try_lock().ok()?.clone()
+    }
+
+    pub fn get_cue_markers(&self) -> Vec<u64> {
+        self.cue_markers.lock().unwrap().clone()
+    }
+
+
+    pub fn seek(&self, pos: Duration) {
+        if let Some(tx) = &self.cmd_tx {
+            let _ = tx.send(AudioCommand::Seek(pos));
+        }
+    }
+
+    pub fn list_devices(&self) -> Vec<String> {
+        use ::rodio::cpal::traits::{DeviceTrait, HostTrait};
+        match ::rodio::cpal::default_host().output_devices() {
+            Ok(devices) => devices
+                .filter_map(|d| {
+                    d.description().ok().map(|desc| {
+                        let name = desc.name();
+                        if let Some(driver) = desc.driver() {
+                            format!("{} ({})", name, driver)
+                        } else {
+                            name.to_string()
+                        }
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn set_device(&self, device_name: Option<String>) {
+        if let Ok(mut guard) = self.current_device.try_lock() {
+            *guard = device_name.clone();
+        }
+        if let Some(tx) = &self.cmd_tx {
+            let _ = tx.send(AudioCommand::SetDevice(device_name));
+        }
     }
 }
 
@@ -289,6 +362,12 @@ fn set_metadata(slot: &Arc<Mutex<Option<String>>>, meta: Option<String>) {
 fn set_cue_track(slot: &Arc<Mutex<Option<usize>>>, idx: Option<usize>) {
     if let Ok(mut g) = slot.lock() {
         *g = idx;
+    }
+}
+
+fn set_cue_markers(slot: &Arc<Mutex<Vec<u64>>>, markers: Vec<u64>) {
+    if let Ok(mut g) = slot.lock() {
+        *g = markers;
     }
 }
 
@@ -469,16 +548,29 @@ struct ApeSource<R: Read + Seek> {
 
 impl<R: Read + Seek> ApeSource<R> {
     pub fn new(read_seek: R, shutdown_flag: Arc<AtomicBool>) -> Option<Self> {
+        Self::new_with_offset(read_seek, shutdown_flag, Duration::ZERO)
+    }
+
+    pub fn new_with_offset(read_seek: R, shutdown_flag: Arc<AtomicBool>, offset: Duration) -> Option<Self> {
         let decoder = ApeDecoder::new(read_seek).ok()?;
         let info = decoder.info().clone();
         let total_frames = info.total_frames;
         let sample_rate = info.sample_rate;
         let channels = info.channels;
         let bits_per_sample = info.bits_per_sample;
+        let duration_ms = info.duration_ms;
+
+        let start_frame = if offset > Duration::ZERO && duration_ms > 0 {
+            let ratio = offset.as_millis() as f64 / duration_ms as f64;
+            let frame = (ratio * total_frames as f64) as u32;
+            frame.min(total_frames.saturating_sub(1))
+        } else {
+            0
+        };
         
         Some(Self {
             decoder,
-            current_frame: 0,
+            current_frame: start_frame,
             total_frames,
             sample_rate,
             channels,
@@ -559,16 +651,325 @@ impl<R: Read + Seek> rodio::Source for ApeSource<R> {
     }
 
     fn channels(&self) -> NonZero<u16> {
-        NonZero::new(self.channels).unwrap_or(NonZero::new(2).unwrap())
+        NonZero::new(self.channels).unwrap_or(NonZero::new(DEFAULT_CHANNELS).unwrap())
     }
 
     fn sample_rate(&self) -> NonZero<u32> {
-        NonZero::new(self.sample_rate).unwrap_or(NonZero::new(44100).unwrap())
+        NonZero::new(self.sample_rate).unwrap_or(NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
     }
 
     fn total_duration(&self) -> Option<std::time::Duration> {
         let info = self.decoder.info();
         Some(std::time::Duration::from_millis(info.duration_ms))
+    }
+}
+
+struct SymphoniaSource {
+    reader: Box<dyn FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    track_id: u32,
+    buffer: Vec<f32>,
+    buffer_pos: usize,
+    sample_rate: u32,
+    channels: u16,
+    total_duration: Option<Duration>,
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+impl SymphoniaSource {
+    pub fn new_with_offset(
+        path: &Path,
+        shutdown_flag: Arc<AtomicBool>,
+        offset: Duration,
+    ) -> Option<Self> {
+        let file = std::fs::File::open(path).ok()?;
+        let mut hint = Hint::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let format_opts = FormatOptions::default();
+        let metadata_opts = MetadataOptions::default();
+        let decoder_opts = DecoderOptions { verify: false };
+
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &format_opts, &metadata_opts)
+            .ok()?;
+            
+        let mut reader = probed.format;
+
+        let track = reader
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)?;
+            
+        let track_id = track.id;
+        let sample_rate = track.codec_params.sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE);
+        let channels = track.codec_params.channels.map(|c| c.count() as u16).unwrap_or(DEFAULT_CHANNELS);
+        
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &decoder_opts)
+            .ok()?;
+
+        let total_duration = match (track.codec_params.n_frames, track.codec_params.sample_rate) {
+            (Some(n), Some(s)) => Some(Duration::from_secs_f64(n as f64 / s as f64)),
+            _ => None,
+        };
+
+        // Perform native seek if offset > 0
+        if offset > Duration::ZERO {
+            let seek_to = SeekTo::Time {
+                time: Time::from(offset.as_secs_f64()),
+                track_id: Some(track_id),
+            };
+            let _ = reader.seek(SeekMode::Accurate, seek_to);
+        }
+
+        Some(Self {
+            reader,
+            decoder,
+            track_id,
+            buffer: Vec::new(),
+            buffer_pos: 0,
+            sample_rate,
+            channels,
+            total_duration,
+            shutdown_flag,
+        })
+    }
+
+    fn refill_buffer(&mut self) -> bool {
+        loop {
+            if self.shutdown_flag.load(Ordering::Relaxed) {
+                return false;
+            }
+
+            let packet = match self.reader.next_packet() {
+                Ok(packet) => packet,
+                Err(SymphoniaError::IoError(_)) => return false,
+                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(_) => return false,
+            };
+
+            if packet.track_id() != self.track_id {
+                continue;
+            }
+
+            match self.decoder.decode(&packet) {
+                Ok(decoded) => {
+                    self.buffer.clear();
+                    self.buffer_pos = 0;
+                    
+                    match decoded {
+                        AudioBufferRef::F32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::U8(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::U16(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::U24(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::U32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::S8(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::S16(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::S24(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::S32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::F64(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        _ => {
+                           log::warn!("[AUDIO] Unsupported symphonia buffer format");
+                           continue;
+                        }
+                    }
+                    return true;
+                }
+                Err(SymphoniaError::IoError(_)) => return false,
+                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+
+    fn push_interleaved_to_vec<S: symphonia::core::sample::Sample>(target: &mut Vec<f32>, buf: &AudioBuffer<S>) 
+    where f32: symphonia::core::conv::FromSample<S> {
+        let channels = buf.spec().channels.count();
+        let frames = buf.frames();
+        target.reserve(frames * channels);
+        
+        for i in 0..frames {
+            for c in 0..channels {
+                let sample = buf.chan(c)[i];
+                target.push(f32::from_sample(sample));
+            }
+        }
+    }
+}
+
+/// A wrapper for audio sources that performs decoding in a background thread to prevent stuttering.
+struct BufferedSource {
+    rx: crossbeam_channel::Receiver<Vec<f32>>,
+    current_chunk: Vec<f32>,
+    current_pos: usize,
+    sample_rate: u32,
+    channels: u16,
+    total_duration: Option<Duration>,
+    local_shutdown: Arc<AtomicBool>,
+}
+
+impl BufferedSource {
+    pub fn new<S>(source: S, global_shutdown: Arc<AtomicBool>) -> Self 
+    where S: rodio::Source<Item = f32> + Send + 'static 
+    {
+        let sample_rate = source.sample_rate().get();
+        let channels = source.channels().get();
+        let total_duration = source.total_duration();
+
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(AUDIO_BUFFER_QUEUE_DEPTH);
+        let local_shutdown = Arc::new(AtomicBool::new(false));
+        let thread_local_shutdown = Arc::clone(&local_shutdown);
+        let thread_global_shutdown = Arc::clone(&global_shutdown);
+
+        let res = std::thread::Builder::new()
+            .name("audio-decoder".to_string())
+            .spawn(move || {
+                let mut source = source;
+                let mut chunk = Vec::with_capacity(AUDIO_CHUNK_SIZE);
+                
+                loop {
+                    // Stop if either local source is dropped OR global app is shutting down
+                    if thread_local_shutdown.load(Ordering::Relaxed) || thread_global_shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    if let Some(sample) = source.next() {
+                        chunk.push(sample);
+                        if chunk.len() >= AUDIO_CHUNK_SIZE {
+                            if tx.send(std::mem::take(&mut chunk)).is_err() {
+                                break;
+                            }
+                            chunk.reserve(AUDIO_CHUNK_SIZE);
+                        }
+                    } else {
+                        if !chunk.is_empty() {
+                            let _ = tx.send(chunk);
+                        }
+                        break;
+                    }
+                }
+            });
+        if let Err(e) = res {
+            log::error!("[Audio] Failed to spawn audio decoder thread: {}", e);
+        }
+
+        // WARM-UP: Wait briefly for the first chunk to ensure we don't start with silence.
+        let mut current_chunk = Vec::new();
+        if let Ok(first_chunk) = rx.recv_timeout(Duration::from_millis(100)) {
+            current_chunk = first_chunk;
+        }
+
+        Self {
+            rx,
+            current_chunk,
+            current_pos: 0,
+            sample_rate,
+            channels,
+            total_duration,
+            local_shutdown,
+        }
+    }
+
+    /// Calculates the duration of audio currently held in the internal buffers.
+    pub fn get_buffered_duration(&self) -> Duration {
+        let samples_in_channel = self.rx.len() * AUDIO_CHUNK_SIZE;
+        let samples_in_chunk = self.current_chunk.len().saturating_sub(self.current_pos);
+        let total_samples = samples_in_channel + samples_in_chunk;
+        
+        if self.channels > 0 && self.sample_rate > 0 {
+            Duration::from_secs_f64(total_samples as f64 / (self.channels as f64 * self.sample_rate as f64))
+        } else {
+            Duration::ZERO
+        }
+    }
+}
+
+impl Iterator for BufferedSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_pos >= self.current_chunk.len() {
+            // Use try_recv to NEVER block the mixer thread.
+            match self.rx.try_recv() {
+                Ok(chunk) => {
+                    self.current_chunk = chunk;
+                    self.current_pos = 0;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    // Buffer underrun: return silence instead of blocking.
+                    return Some(0.0);
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return None;
+                }
+            }
+        }
+        
+        let sample = *self.current_chunk.get(self.current_pos).unwrap_or(&0.0);
+        self.current_pos += 1;
+        Some(sample)
+    }
+}
+
+impl rodio::Source for BufferedSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> std::num::NonZero<u16> {
+        std::num::NonZero::new(self.channels).unwrap_or(std::num::NonZero::new(DEFAULT_CHANNELS).unwrap())
+    }
+
+    fn sample_rate(&self) -> std::num::NonZero<u32> {
+        std::num::NonZero::new(self.sample_rate).unwrap_or(std::num::NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.total_duration
+    }
+}
+
+impl Drop for BufferedSource {
+    fn drop(&mut self) {
+        // Trigger local shutdown only!
+        self.local_shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Iterator for SymphoniaSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer_pos >= self.buffer.len() {
+            if !self.refill_buffer() {
+                return None;
+            }
+        }
+        let sample = self.buffer[self.buffer_pos];
+        self.buffer_pos += 1;
+        Some(sample)
+    }
+}
+
+impl rodio::Source for SymphoniaSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> NonZero<u16> {
+        NonZero::new(self.channels).unwrap_or(NonZero::new(DEFAULT_CHANNELS).unwrap())
+    }
+
+    fn sample_rate(&self) -> NonZero<u32> {
+        NonZero::new(self.sample_rate).unwrap_or(NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.total_duration
     }
 }
 
@@ -591,6 +992,7 @@ fn create_source(
     path: &Path,
     reader: std::io::BufReader<std::fs::File>,
     shutdown_flag: Arc<AtomicBool>,
+    offset: Duration,
 ) -> Option<Box<dyn rodio::Source<Item = f32> + Send>> {
     let is_ape = path
         .extension()
@@ -598,16 +1000,17 @@ fn create_source(
         .map(|e| e.to_lowercase() == "ape")
         .unwrap_or(false);
     if is_ape {
-        ApeSource::new(reader, shutdown_flag).map(|s| Box::new(s) as Box<dyn rodio::Source<Item = f32> + Send>)
+        ApeSource::new_with_offset(reader, Arc::clone(&shutdown_flag), offset)
+            .map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
     } else {
-        rodio::Decoder::new(reader)
-            .ok()
-            .map(|s| Box::new(s) as Box<dyn rodio::Source<Item = f32> + Send>)
+        // Use our high-performance SymphoniaSource for all other formats
+        SymphoniaSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset)
+            .map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
     }
 }
 
 fn run_audio_loop(
-    cmd_rx: crossbeam_channel::Receiver<AudioCommand>,
+    rx: crossbeam_channel::Receiver<AudioCommand>,
     shutdown_flag: Arc<AtomicBool>,
     err_slot: AudioError,
     track_slot: Arc<Mutex<Option<String>>>,
@@ -616,6 +1019,10 @@ fn run_audio_loop(
     tracks_flag: Arc<AtomicBool>,
     cue_track_slot: Arc<Mutex<Option<usize>>>,
     needs_restart: Arc<AtomicBool>,
+    cue_markers_slot: Arc<Mutex<Vec<u64>>>,
+    pos_ms: Arc<std::sync::atomic::AtomicU64>,
+    dur_ms: Arc<std::sync::atomic::AtomicU64>,
+    device_slot: Arc<Mutex<Option<String>>>,
 ) {
     let mut backend_sink = None;
     let mut backend_player: Option<rodio::Player> = None;
@@ -624,22 +1031,39 @@ fn run_audio_loop(
     // Initialize the WASAPI session listener (Windows only)
     unsafe { wasapi_monitor_init(); }
 
-
     macro_rules! ensure_backend {
         ($v:expr, $p:expr) => {{
             let mut res = true;
-            if backend_sink.is_none() {
+            if backend_sink.is_none() || backend_player.is_none() {
                 let can_retry = last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
                 if can_retry {
                     last_backend_attempt = Some(Instant::now());
 
-                    // Check if the hardware is actually available before trying to open it.
-                    // This prevents creating a "zombie" sink that accepts samples but makes no sound.
                     if !unsafe { wasapi_is_device_available() } {
                         log::debug!("[RECOVERY] ensure_backend: Hardware is busy, skipping attempt");
                         res = false;
                     } else {
-                        match rodio::DeviceSinkBuilder::open_default_sink() {
+                        // Support custom device selection
+                        let selected_device = device_slot.lock().unwrap().clone();
+                        let sink_result = if let Some(ref name) = selected_device {
+                             use ::rodio::cpal::traits::{HostTrait, DeviceTrait};
+                             ::rodio::cpal::default_host().output_devices()
+                                .ok()
+                                .and_then(|mut ds| ds.find(|d| d.description().ok().map(|desc| {
+                                     let n = desc.name();
+                                     if let Some(drv) = desc.driver() {
+                                         format!("{} ({})", n, drv)
+                                     } else {
+                                         n.to_string()
+                                     }
+                                 }).as_ref() == Some(name)))
+                                .map(|d| rodio::DeviceSinkBuilder::from_device(d).and_then(|b| b.open_stream()))
+                                .unwrap_or_else(|| Ok(rodio::DeviceSinkBuilder::open_default_sink()?))
+                        } else {
+                            rodio::DeviceSinkBuilder::open_default_sink()
+                        };
+
+                        match sink_result {
                             Ok(sink) => {
                                 let p = rodio::Player::connect_new(sink.mixer());
                                 p.set_volume($v);
@@ -675,14 +1099,13 @@ fn run_audio_loop(
     let mut cue_sheet: Option<CueSheet> = None;
     let mut current_file_start: Instant = Instant::now();
     let mut last_seek_offset: Duration = Duration::ZERO;
-    // Pause-aware time tracking for CUE
     let mut paused_at: Option<Instant> = None;
     let mut total_paused: Duration = Duration::ZERO;
     let mut pending_start_track_idx: Option<usize> = None;
 
     loop {
-        // Wait for a command
-        let cmd = cmd_rx.recv_timeout(Duration::from_millis(200));
+        let timeout = if !stopped && !paused { Duration::from_millis(100) } else { Duration::from_secs(1) };
+        let cmd = rx.recv_timeout(timeout);
 
         match cmd {
             Ok(AudioCommand::Shutdown) => {
@@ -701,48 +1124,117 @@ fn run_audio_loop(
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
                 tracks_flag.store(false, Ordering::Relaxed);
+                set_cue_markers(&cue_markers_slot, Vec::new());
                 cue_sheet = None;
-            }
-            Ok(AudioCommand::Play) => {
-                paused = false;
-                stopped = false;
-                if let Some(pa) = paused_at.take() {
-                    total_paused += pa.elapsed();
-                }
-                // Save absolute file position for resume seek.
-                // last_hw_pos is relative to the appended source; add last_seek_offset
-                // to get the absolute position within the file.
-                let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
-                backend_player = None;
-                backend_sink = None;
-                if current_track_idx > 0 { current_track_idx -= 1; }
-                // Re-open the file and seek to resume_pos
-                let path = playlist[current_track_idx % playlist.len()].clone();
-                if let Ok(file) = std::fs::File::open(&path) {
-                    let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                    if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
-                        if ensure_backend!(current_volume, paused) {
-                            if let Some(ref p) = backend_player {
-                                if resume_pos > Duration::ZERO {
-                                    let skipped = rodio::Source::skip_duration(source, resume_pos);
-                                    p.append(skipped);
-                                } else {
-                                    p.append(source);
-                                }
-                                current_track_idx += 1;
-                                last_seek_offset = resume_pos;
-                                last_hw_pos = Duration::ZERO;
-                                p.play();
-                            }
-                        }
-                    }
-                }
             }
             Ok(AudioCommand::Pause) => {
                 paused = true;
                 paused_at = Some(Instant::now());
                 if let Some(ref p) = backend_player {
                     p.pause();
+                }
+            }
+            Ok(AudioCommand::Play) => {
+                if paused {
+                    paused = false;
+                    if let Some(pa) = paused_at.take() {
+                        total_paused += pa.elapsed();
+                    }
+                }
+                if stopped && !playlist.is_empty() {
+                    stopped = false;
+                    let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
+                    backend_player = None;
+                    backend_sink = None;
+                    if current_track_idx > 0 { current_track_idx -= 1; }
+                    let path = playlist[current_track_idx % playlist.len()].clone();
+                    if let Ok(file) = fs::File::open(&path) {
+                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                            if ensure_backend!(current_volume, paused) {
+                                if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
+                                    dur_ms.store(source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0), Ordering::Relaxed);
+                                }
+                                if let Some(ref p) = backend_player {
+                                    p.append(source);
+                                    last_seek_offset = resume_pos;
+                                    p.play();
+                                    current_track_idx += 1;
+                                    last_hw_pos = Duration::ZERO;
+                                    current_file_start = Instant::now();
+                                    total_paused = Duration::ZERO;
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(ref p) = backend_player {
+                    p.play();
+                }
+            }
+            Ok(AudioCommand::Seek(pos)) => {
+                if !playlist.is_empty() {
+                    let path_idx = current_track_idx.saturating_sub(1) % playlist.len();
+                    let path = playlist[path_idx].clone();
+                    if let Ok(file) = fs::File::open(&path) {
+                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), pos) {
+                            // Ensure backend exists but DON'T let it restart the sink if unnecessary
+                            if ensure_backend!(current_volume, paused) {
+                                if let Some(ref p) = backend_player {
+                                    // Clear ONLY after we have a valid source ready to append.
+                                    // This prevents the player from being momentarily empty,
+                                    // which would trigger false "end of playlist" detection.
+                                    p.clear();
+                                    let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                                    p.append(source);
+                                    if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
+                                        dur_ms.store(total_dur, Ordering::Relaxed);
+                                    }
+                                    last_seek_offset = pos;
+                                    last_hw_pos = Duration::ZERO;
+                                    current_file_start = Instant::now();
+                                    total_paused = Duration::ZERO;
+                                    if !paused { p.play(); }
+                                    log::debug!("[AUDIO] Seek to {} ms successful", pos.as_millis());
+                                }
+                            }
+                        }
+                    } else {
+                        log::error!("[AUDIO] Failed to re-open file for seek: {:?}", path);
+                    }
+                }
+            }
+            Ok(AudioCommand::SetDevice(_)) => {
+                // Seamless switching: Capture current position before tearing down
+                let resume_pos = if let Some(ref p) = backend_player {
+                    p.get_pos().saturating_add(last_seek_offset)
+                } else {
+                    last_seek_offset
+                };
+
+                backend_sink = None;
+                backend_player = None;
+
+                // If we were playing, immediately trigger a restart on the new device
+                if !playlist.is_empty() && !stopped {
+                    let path_idx = current_track_idx.saturating_sub(1) % playlist.len();
+                    let path = playlist[path_idx].clone();
+                    if let Ok(file) = fs::File::open(&path) {
+                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                            if ensure_backend!(current_volume, paused) {
+                                if let Some(ref p) = backend_player {
+                                    p.append(source);
+                                    last_seek_offset = resume_pos;
+                                    last_hw_pos = Duration::ZERO;
+                                    current_file_start = Instant::now();
+                                    total_paused = Duration::ZERO;
+                                    if !paused { p.play(); }
+                                    log::info!("[AUDIO] Device switched, playback resumed at {}ms", resume_pos.as_millis());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Ok(AudioCommand::NextFile) => {
@@ -753,12 +1245,9 @@ fn run_audio_loop(
                 tracks_flag.store(false, Ordering::Relaxed);
             }
             Ok(AudioCommand::PrevFile) => {
-                // current_track_idx points to the NEXT file to play.
-                // Subtract 2 to replay the previous file (Feed loop will +1).
                 if current_track_idx > 1 {
                     current_track_idx -= 2;
                 } else {
-                    // Wrap around to last file
                     current_track_idx = playlist.len().saturating_sub(1);
                 }
                 if let Some(ref p) = backend_player {
@@ -772,45 +1261,37 @@ fn run_audio_loop(
                     let elapsed = current_file_start.elapsed()
                         .saturating_sub(total_paused)
                         .saturating_add(last_seek_offset);
-                    // Find current track index
-                    let idx = cue
-                        .tracks
-                        .iter()
-                        .position(|t| t.start > elapsed)
-                        .unwrap_or(cue.tracks.len());
-
-                    if idx < cue.tracks.len() {
-                        let next_t = &cue.tracks[idx];
-                        // Seek to next track
-                        if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
-                            if let Ok(file) = std::fs::File::open(path) {
-                                let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                                if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
-                                    if ensure_backend!(current_volume, paused) {
-                                        if let Some(ref p) = backend_player {
-                                            p.clear();
-                                            let source = rodio::Source::skip_duration(source, next_t.start);
-                                            p.append(source);
-                                            p.play();
-                                        }
-                                    }
+                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    if current_idx + 1 < cue.tracks.len() {
+                        let next_t = &cue.tracks[current_idx + 1];
+                                if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
+                                    if let Ok(file) = std::fs::File::open(path) {
+                                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                                        if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag), next_t.start) {
+                                            if ensure_backend!(current_volume, paused) {
+                                                if let Some(ref p) = backend_player {
+                                                    p.clear();
+                                                    let total_dur = source.total_duration();
+                                                    p.append(source);
+                                                    p.play();
+                                                    if cue_sheet.is_none() {
+                                                        let dur = cue.tracks.get(current_idx + 2).map(|t| t.start).unwrap_or_else(|| total_dur.unwrap_or(Duration::ZERO)).saturating_sub(next_t.start);
+                                                        dur_ms.store(dur.as_millis() as u64, Ordering::Relaxed);
+                                                    }
+                                                }
+                                            }
                                     last_seek_offset = next_t.start;
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
                                     paused_at = None;
-                                    let meta = format!(
-                                        "{}. {} - {}",
-                                        next_t.number, next_t.title, next_t.performer
-                                    );
+                                    let meta = format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
                                     set_metadata(&meta_slot, Some(meta));
+                                    set_cue_track(&cue_track_slot, Some(current_idx + 1));
                                 }
                             }
                         }
-                    } else {
-                        // Beyond last track: go to next file
-                        if let Some(ref p) = backend_player {
-                            p.clear();
-                        }
+                    } else if let Some(ref p) = backend_player {
+                        p.clear();
                     }
                 }
             }
@@ -819,65 +1300,50 @@ fn run_audio_loop(
                     let elapsed = current_file_start.elapsed()
                         .saturating_sub(total_paused)
                         .saturating_add(last_seek_offset);
-                    // Find current track index
-                    let current_idx = cue
-                        .tracks
-                        .iter()
-                        .position(|t| t.start > elapsed.saturating_sub(Duration::from_secs(3))) // 3s leeway
-                        .unwrap_or(cue.tracks.len())
-                        .saturating_sub(1);
-
+                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed.saturating_sub(Duration::from_secs(3))).unwrap_or(cue.tracks.len()).saturating_sub(1);
                     let target_idx = current_idx.saturating_sub(1);
                     let target_t = &cue.tracks[target_idx];
-
                     if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                         if let Ok(file) = std::fs::File::open(path) {
                             let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                            if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag)) {
+                            if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag), target_t.start) {
                                 if ensure_backend!(current_volume, paused) {
                                     if let Some(ref p) = backend_player {
-                                        p.clear();
-                                        if target_t.start > Duration::ZERO {
-                                            let source = rodio::Source::skip_duration(source, target_t.start);
-                                            p.append(source);
-                                        } else {
-                                            p.append(source);
-                                        }
+                                        let total_dur = source.total_duration();
+                                        p.append(source);
                                         p.play();
+                                        if cue_sheet.is_none() {
+                                            let dur = cue.tracks.get(target_idx + 1).map(|t| t.start).unwrap_or_else(|| total_dur.unwrap_or(Duration::ZERO)).saturating_sub(target_t.start);
+                                            dur_ms.store(dur.as_millis() as u64, Ordering::Relaxed);
+                                        }
                                     }
                                 }
                                 last_seek_offset = target_t.start;
                                 current_file_start = Instant::now();
                                 total_paused = Duration::ZERO;
                                 paused_at = None;
-                                let meta = format!(
-                                    "{}. {} - {}",
-                                    target_t.number, target_t.title, target_t.performer
-                                );
+                                let meta = format!("{}. {} - {}", target_t.number, target_t.title, target_t.performer);
                                 set_metadata(&meta_slot, Some(meta));
+                                set_cue_track(&cue_track_slot, Some(target_idx));
                             }
                         }
                     }
                 }
             }
-            Ok(AudioCommand::SetPlaylist(new_list, start_file_idx, start_track_idx)) => {
+            Ok(AudioCommand::SetPlaylist(new_list, start_idx, start_track_idx)) => {
                 playlist = new_list;
-                current_track_idx = start_file_idx.unwrap_or(0);
+                current_track_idx = start_idx.unwrap_or(0);
                 pending_start_track_idx = start_track_idx;
                 stopped = false;
                 if ensure_backend!(current_volume, paused) {
+                    dur_ms.store(0, Ordering::Relaxed); // Will be updated by FEED when loading first file
                     if let Some(ref p) = backend_player {
                         p.clear();
-                        if paused {
-                            p.pause();
-                        } else {
-                            p.play();
-                        }
+                        if paused { p.pause(); } else { p.play(); }
                     }
                 }
                 set_current_path(&path_slot, None);
                 set_metadata(&meta_slot, None);
-                set_cue_track(&cue_track_slot, None);
             }
             Ok(AudioCommand::SetVolume(v)) => {
                 current_volume = v;
@@ -888,9 +1354,8 @@ fn run_audio_loop(
             Err(_) => {}
         }
 
-        // Watchdog: detect if hardware is lost (e.g. WASAPI exclusive preemption).
-        // On Windows, this relies on native session events from the C++ monitor.
-        if !stopped && !paused {
+        #[cfg(windows)]
+        {
             if unsafe { wasapi_poll_device_lost() } {
                 log::warn!("[WATCHDOG] Audio device lost (native event). Requesting full restart.");
                 stopped = true;
@@ -900,79 +1365,64 @@ fn run_audio_loop(
             }
         }
 
-        // Feed next track
         if !stopped && !paused && !playlist.is_empty() {
-            let player_empty = backend_player.as_ref().map_or(true, |p| p.empty());
+            let player_exists = backend_player.is_some();
+            let player_empty = backend_player.as_ref().map_or(false, |p| p.empty());
 
             if player_empty {
-                // Early-out: if backend is missing and cooldown hasn't expired,
-                // skip all expensive file/CUE work to avoid hot-looping.
-                if backend_sink.is_none() {
-                    let can_retry = last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
-                    if !can_retry {
-                        continue;
-                    }
-                }
+                // Natural end of track - proceed to next
+                if current_track_idx < playlist.len() {
+                    let path = playlist[current_track_idx].clone();
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    if let Ok(file) = fs::File::open(&path) {
+                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), Duration::ZERO) {
+                            set_current_track(&track_slot, Some(filename));
+                            set_current_path(&path_slot, Some(path.clone()));
+                            cue_sheet = load_cue(&path, &shutdown_flag);
+                            tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
 
-                log::debug!(
-                    "[FEED] player_empty=true, track_idx={}",
-                    current_track_idx
-                );
-                if shutdown_flag.load(Ordering::Relaxed) {
-                    unsafe { wasapi_monitor_uninit(); }
-                    return;
-                }
-                let path = playlist[current_track_idx % playlist.len()].clone();
-                let filename = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                if let Ok(file) = std::fs::File::open(&path) {
-                    let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                    if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag)) {
-                        set_current_track(&track_slot, Some(filename));
-                        set_current_path(&path_slot, Some(path.clone()));
-
-                        cue_sheet = load_cue(&path, &shutdown_flag);
-                        tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
-
-                        // Metadata
-                        if let Some(ref cue) = cue_sheet {
-                            if let Some(first) = cue.tracks.first() {
-                                let meta = format!("{}. {} - {}", first.number, first.title, first.performer);
+                            if let Some(ref cue) = cue_sheet {
+                                if let Some(first) = cue.tracks.first() {
+                                    let meta = format!("{}. {} - {}", first.number, first.title, first.performer);
+                                    set_metadata(&meta_slot, Some(meta));
+                                }
+                                let markers: Vec<u64> = cue.tracks.iter().map(|t| t.start.as_millis() as u64).collect();
+                                set_cue_markers(&cue_markers_slot, markers);
+                            } else if let Some(meta) = get_file_metadata(&path) {
                                 set_metadata(&meta_slot, Some(meta));
+                                set_cue_markers(&cue_markers_slot, Vec::new());
+                            } else {
+                                set_metadata(&meta_slot, None);
+                                set_cue_markers(&cue_markers_slot, Vec::new());
                             }
-                        } else if let Some(meta) = get_file_metadata(&path) {
-                            set_metadata(&meta_slot, Some(meta));
-                        } else {
-                            set_metadata(&meta_slot, None);
-                        }
 
-                        if ensure_backend!(current_volume, paused) {
-                            if let Some(ref p) = backend_player {
-                                p.append(source);
-                                current_track_idx += 1;
-                                last_seek_offset = Duration::ZERO;
-                                last_hw_pos = Duration::ZERO;
+                            if ensure_backend!(current_volume, paused) {
+                                if let Some(ref p) = backend_player {
+                                    let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                                    p.append(source);
+                                    if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
+                                        dur_ms.store(total_dur, Ordering::Relaxed);
+                                    }
+                                    current_track_idx += 1;
+                                    last_seek_offset = Duration::ZERO;
+                                    last_hw_pos = Duration::ZERO;
+                                }
+                            } else {
+                                continue;
                             }
-                        } else {
-                            log::debug!("[FEED] ensure_backend FAILED, will retry next cycle");
-                            continue;
-                        }
 
-                        // Initial track seek if requested via SetPlaylist
-                        if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
-                            if track_idx < cue.tracks.len() {
-                                let t = &cue.tracks[track_idx];
-                                if t.start > Duration::ZERO {
+                            if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
+                                if track_idx < cue.tracks.len() {
+                                    let t = &cue.tracks[track_idx];
+                                    if t.start > Duration::ZERO {
                                     if let Ok(f2) = std::fs::File::open(&path) {
                                         let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
-                                        if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag)) {
+                                        if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag), t.start) {
                                             if ensure_backend!(current_volume, paused) {
                                                 if let Some(ref p) = backend_player {
                                                     p.clear();
-                                                    let s2 = rodio::Source::skip_duration(s2, t.start);
+                                                    let _total_dur = s2.total_duration();
                                                     p.append(s2);
                                                     last_seek_offset = t.start;
                                                     current_file_start = Instant::now();
@@ -983,52 +1433,89 @@ fn run_audio_loop(
                                             }
                                         }
                                     }
+                                    }
                                 }
                             }
-                        }
 
-                        if let Some(ref p) = backend_player {
-                            p.set_volume(current_volume);
-                            p.play();
+                            if let Some(ref p) = backend_player {
+                                p.set_volume(current_volume);
+                                p.play();
+                            }
+                        }
+                    }
+                } else {
+                    stopped = true;
+                    set_current_track(&track_slot, None);
+                    set_current_path(&path_slot, None);
+                    set_metadata(&meta_slot, None);
+                    tracks_flag.store(false, Ordering::Relaxed);
+                    set_cue_markers(&cue_markers_slot, Vec::new());
+                }
+            } else if !player_exists {
+                // ORPHANED STATE: !stopped but no backend_player.
+                // This happens during device switch recovery or hardware lost.
+                if ensure_backend!(current_volume, paused) {
+                    // Try to restore current track at last known position
+                    let path_idx = current_track_idx.saturating_sub(1) % playlist.len();
+                    let path = playlist[path_idx].clone();
+                    if let Ok(file) = fs::File::open(&path) {
+                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                        let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
+                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                            if let Some(ref p) = backend_player {
+                                p.append(source);
+                                last_seek_offset = resume_pos;
+                                last_hw_pos = Duration::ZERO;
+                                current_file_start = Instant::now();
+                                total_paused = Duration::ZERO;
+                                if !paused { p.play(); }
+                                log::info!("[AUDIO] Auto-recovered playback at {}ms", resume_pos.as_millis());
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Handle mid-file metadata updates for CUE (using hardware position)
         if !stopped && !paused && backend_player.as_ref().map_or(false, |p| !p.empty()) {
             if shutdown_flag.load(Ordering::Relaxed) { return; }
             if let Some(ref cue) = cue_sheet {
                 if let Some(ref p) = backend_player {
-                    // get_pos() returns position relative to the appended source.
-                    // Add last_seek_offset to get the absolute file position.
                     let elapsed = p.get_pos().saturating_add(last_seek_offset);
-                    // What track are we in?
-                    let idx = cue
-                    .tracks
-                    .iter()
-                    .position(|t| t.start > elapsed)
-                    .unwrap_or(cue.tracks.len())
-                    .saturating_sub(1);
-
-                let current_t = &cue.tracks[idx];
-                let meta = format!(
-                    "{}. {} - {}",
-                    current_t.number, current_t.title, current_t.performer
-                );
-                // Metadata update: check without holding a long lock, then update safely
-                if let Ok(mut g) = meta_slot.try_lock() {
-                    if g.as_ref() != Some(&meta) {
-                        *g = Some(meta);
-                        set_cue_track(&cue_track_slot, Some(idx));
-                    }
+                    let idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    let current_t = &cue.tracks[idx];
+                    let meta = format!("{}. {} - {}", current_t.number, current_t.title, current_t.performer);
+                    if let Ok(mut g) = meta_slot.try_lock() {
+                        if g.as_ref() != Some(&meta) {
+                            *g = Some(meta);
+                            set_cue_track(&cue_track_slot, Some(idx));
+                        }
                     }
                 }
             } else {
                 set_cue_track(&cue_track_slot, None);
             }
         }
-        
+
+        if stopped {
+            pos_ms.store(0, Ordering::Relaxed);
+            dur_ms.store(0, Ordering::Relaxed);
+        } else if let Some(ref p) = backend_player {
+            let hw_pos = p.get_pos();
+            last_hw_pos = hw_pos;
+            
+            // 1. Calculate the raw mixer position in the file
+            let raw_abs_pos = hw_pos.saturating_add(last_seek_offset);
+            
+            // 2. COMPENSATE for the decoding buffer latency (approx 0.7s - 1.5s).
+            // Since we can't easily poll the Boxed source, and the mixer is ahead,
+            // we use the stored buffer info if available or a consistent approach.
+            // For now, we report the mixer position, but ensure it's absolute so it matches ticks.
+            
+            // 3. Update the global position for the UI
+            // In CD mode (as seen in screenshot), the slider needs to be absolute
+            // to align with the blue CUE track tick.
+            pos_ms.store(raw_abs_pos.as_millis() as u64, Ordering::Relaxed);
+        }
     }
 }

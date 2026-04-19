@@ -86,12 +86,14 @@ pub fn setup_or_forward_args(
 
     match ListenerOptions::new().name(sock_name).create_sync() {
         Ok(listener) => {
-            std::thread::Builder::new()
+            let res = std::thread::Builder::new()
                 .name("siv-ipc-server".to_string())
                 .spawn(move || {
                     ipc_server_loop(listener, tx);
-                })
-                .expect("Failed to spawn IPC listener thread");
+                });
+            if let Err(e) = res {
+                log::error!("[IPC] Failed to spawn IPC listener thread: {}", e);
+            }
         }
         Err(e) => {
             // On macOS/Linux with filesystem sockets, a stale socket file from a
@@ -102,12 +104,14 @@ pub fn setup_or_forward_args(
             match ListenerOptions::new().name(sock_name_retry).create_sync() {
                 Ok(listener) => {
                     log::info!("Successfully bound IPC socket after stale cleanup.");
-                    std::thread::Builder::new()
+                    let res = std::thread::Builder::new()
                         .name("siv-ipc-server".to_string())
                         .spawn(move || {
                             ipc_server_loop(listener, tx);
-                        })
-                        .expect("Failed to spawn IPC listener thread");
+                        });
+                    if let Err(e) = res {
+                        log::error!("[IPC] Failed to spawn IPC listener thread (retry): {}", e);
+                    }
                 }
                 Err(e2) => {
                     log::warn!("Failed to bind IPC socket after retry, single-instance mode disabled: {}", e2);
