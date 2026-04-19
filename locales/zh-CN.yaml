@@ -114,6 +114,8 @@ ctx.print_full: "🖨 打印全图"
 ctx.print_visible: "🖨 打印可视区域"
 ctx.print_pdf_full: "🖨 导出 PDF 并打印 (全图)"
 ctx.print_pdf_visible: "🖨 导出 PDF 并打印 (可视区域)"
+ctx.fullscreen_enter: "⛶ 全屏显示"
+ctx.fullscreen_exit: "⛶ 退出全屏"
 
 # Printing
 print.title: "打印"

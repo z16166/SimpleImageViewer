@@ -114,6 +114,8 @@ ctx.print_full: "🖨 Print Full Image"
 ctx.print_visible: "🖨 Print Visible Area"
 ctx.print_pdf_full: "🖨 Export to PDF & Print (Full Image)"
 ctx.print_pdf_visible: "🖨 Export to PDF & Print (Visible Area)"
+ctx.fullscreen_enter: "⛶ Fullscreen"
+ctx.fullscreen_exit: "⛶ Exit Fullscreen"
 
 # Printing
 print.title: "Print"

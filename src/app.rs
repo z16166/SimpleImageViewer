@@ -2536,6 +2536,19 @@ impl ImageViewerApp {
             }
             self.context_menu_pos = None;
         }
+
+        ui.separator();
+        let fs_label = if self.settings.fullscreen {
+            t!("ctx.fullscreen_exit").to_string()
+        } else {
+            t!("ctx.fullscreen_enter").to_string()
+        };
+        if ui.button(fs_label).clicked() {
+            self.settings.fullscreen = !self.settings.fullscreen;
+            self.pending_fullscreen = Some(self.settings.fullscreen);
+            self.queue_save();
+            self.context_menu_pos = None;
+        }
     }
 
     fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
