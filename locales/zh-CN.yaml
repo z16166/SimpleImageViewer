@@ -82,6 +82,7 @@ music.prev_file: "上一文件"
 music.audio_error: "⚠ 音频错误：%{err}"
 music.output_device: "输出设备"
 music.default_device: "默认设备"
+music.refresh_devices: "刷新设备列表"
 
 # Status messages
 status.scanning: "正在扫描 %{dir}…"

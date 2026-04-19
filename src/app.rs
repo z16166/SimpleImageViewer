@@ -275,6 +275,10 @@ pub struct ImageViewerApp {
     // Adaptive tile upload quota based on hardware and current frame performance
     tile_upload_quota: usize,
     hardware_tier: HardwareTier,
+
+    // Audio device caching
+    cached_audio_devices: Vec<String>,
+    last_show_settings: bool,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -287,6 +291,11 @@ struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
+    pub fn refresh_audio_devices(&mut self) {
+        log::info!("[Audio] Refreshing audio device list...");
+        self.cached_audio_devices = self.audio.list_devices();
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         settings: Settings,
@@ -457,8 +466,12 @@ impl ImageViewerApp {
             music_seeking_target_ms: None,
             music_seek_timeout: None,
             music_hud_last_activity: Instant::now(),
+            cached_audio_devices: Vec::new(),
+            last_show_settings: true,
         };
         log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
+
+        app.refresh_audio_devices();
 
         // Restore last session state
         if let Some(dir) = app.settings.last_image_dir.clone() {
@@ -1767,6 +1780,12 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     fn draw_settings_panel(&mut self, ctx: &Context) {
+        // Detect when settings panel is opened to refresh audio devices
+        if !self.last_show_settings {
+            self.refresh_audio_devices();
+        }
+        self.last_show_settings = true;
+
         let mut open_dir = false;
         let mut open_music_file = false;
         let mut open_music_dir = false;
@@ -2170,10 +2189,15 @@ impl ImageViewerApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t!("music.output_device")).color(self.cached_palette.text_muted));
-                        let devices = self.audio.list_devices();
+                        
+                        // Manual refresh button
+                        if ui.button("⟲").on_hover_text(t!("music.refresh_devices")).clicked() {
+                            self.refresh_audio_devices();
+                        }
+
                         let current_dev = self.settings.audio_device.clone().unwrap_or_else(|| t!("music.default_device").to_string());
                         let short_dev = middle_truncate(&current_dev, 36);
-                        let combo_width = ui.available_width().min(250.0);
+                        let combo_width = ui.available_width().min(230.0); // Slightly reduced to fit refresh button
 
                         egui::ComboBox::from_id_salt("audio_device_select")
                             .selected_text(RichText::new(short_dev))
@@ -2186,12 +2210,12 @@ impl ImageViewerApp {
                                     self.queue_save();
                                     self.music_hud_last_activity = Instant::now();
                                 }
-                                for dev in devices {
-                                    let is_selected = self.settings.audio_device.as_ref() == Some(&dev);
-                                    let short_name = middle_truncate(&dev, 40);
+                                for dev in &self.cached_audio_devices {
+                                    let is_selected = self.settings.audio_device.as_ref() == Some(dev);
+                                    let short_name = middle_truncate(dev, 40);
                                     if ui.selectable_label(is_selected, short_name).clicked() {
                                         self.settings.audio_device = Some(dev.clone());
-                                        self.audio.set_device(Some(dev));
+                                        self.audio.set_device(Some(dev.clone()));
                                         self.queue_save();
                                         self.music_hud_last_activity = Instant::now();
                                     }
@@ -4202,6 +4226,8 @@ impl eframe::App for ImageViewerApp {
 
         if self.show_settings && !skip_settings {
             self.draw_settings_panel(&ctx);
+        } else {
+            self.last_show_settings = false;
         }
 
         if self.show_wallpaper_dialog {

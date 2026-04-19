@@ -82,6 +82,7 @@ music.prev_file: "上一檔案"
 music.audio_error: "⚠ 音訊錯誤：%{err}"
 music.output_device: "輸出裝置"
 music.default_device: "預設裝置"
+music.refresh_devices: "刷新裝置列表"
 
 # Status messages
 status.scanning: "正在掃描 %{dir}…"

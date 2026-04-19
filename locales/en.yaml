@@ -82,6 +82,7 @@ music.prev_file: "Previous File"
 music.audio_error: "⚠ Audio: %{err}"
 music.output_device: "Output Device"
 music.default_device: "Default Device"
+music.refresh_devices: "Refresh device list"
 
 # Status messages
 status.scanning: "Scanning %{dir}…"
