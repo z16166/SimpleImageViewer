@@ -3369,30 +3369,43 @@ impl ImageViewerApp {
                     );
                 }
 
-                // Music HUD: prioritizes metadata, auto-hides after configurable interval
-                let show_hud = self.settings.show_music_osd && 
-                    self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
-                if self.audio.get_duration_ms() > 0 && self.audio.get_current_track().is_some() && show_hud {
                     let mut cur_ms = self.audio.get_pos_ms();
-                    // Smart seek locking logic for HUD (match target or 10s timeout)
+                    // Smart seek locking logic for HUD (match target or 30s timeout)
                     if let Some(target_ms) = self.music_seeking_target_ms {
                         let diff = (cur_ms as i64 - target_ms as i64).abs();
                         let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
-                        
                         if diff < 2000 || timed_out {
                             self.music_seeking_target_ms = None;
                             self.music_seek_timeout = None;
                         } else {
-                            cur_ms = target_ms;
+                            cur_ms = target_ms; // Lock slider to target while seeking
                         }
                     }
 
-                    let is_active = self.music_hud_last_activity.elapsed().as_secs() < 5;
-                    if self.settings.show_music_osd && is_active {
+                    let is_active = self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
+                    
+                    // 1. Wake-up Logic (Always active if music is loaded and OSD is enabled)
+                    if self.settings.show_music_osd {
+                        let hud_width = crate::constants::MUSIC_HUD_WIDTH;
+                        let hud_height = crate::constants::MUSIC_HUD_HEIGHT;
+                        let hud_pos = screen_rect.center_bottom() + egui::Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
+                        let hud_rect = egui::Rect::from_center_size(hud_pos, egui::Vec2::new(hud_width, hud_height));
+
+                        if let Some(ptr) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                            // Wake up if over HUD area OR near the bottom edge (hotzone)
+                            let in_hotzone = ptr.y > screen_rect.bottom() - 100.0 && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
+                            if hud_rect.contains(ptr) || in_hotzone {
+                                self.music_hud_last_activity = Instant::now();
+                            }
+                        }
+                    }
+
+                    // 2. Rendering Logic (Only if visible and active)
+                    if self.settings.show_music_osd && is_active && self.audio.get_duration_ms() > 0 && self.audio.get_current_track().is_some() {
                         let music_state = crate::ui::osd::OsdState {
                             index: self.current_index,
                             total: self.image_files.len(),
-                            zoom_pct: 0, // Not needed for music hud
+                            zoom_pct: 0,
                             res: (0, 0),
                             mode: String::new(),
                             current_track: self.audio.get_current_track(),
@@ -3403,14 +3416,7 @@ impl ImageViewerApp {
                             cue_markers: self.audio.get_cue_markers(),
                         };
                         
-                        let hud_rect = self.osd.render_music_hud(ui, screen_rect, &music_state, &self.cached_palette);
-                        
-                        // Hover protection: if mouse is over HUD, don't let it expire
-                        if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
-                            if hud_rect.contains(ptr) {
-                                self.music_hud_last_activity = Instant::now();
-                            }
-                        }
+                        self.osd.render_music_hud(ui, screen_rect, &music_state, &self.cached_palette);
                     }
 
                     // Handle seek from Music HUD (uses the same ID as original)
@@ -3418,9 +3424,8 @@ impl ImageViewerApp {
                         self.audio.seek(Duration::from_secs_f32(target_s));
                         self.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
                         self.music_seek_timeout = Some(Instant::now());
-                        self.music_hud_last_activity = Instant::now(); // Wake up HUD
+                        self.music_hud_last_activity = Instant::now(); // Wake up HUD on interaction
                     }
-                }
 
                 if res_w == 0 {
                     // While loading/parsing, show a minimal status
