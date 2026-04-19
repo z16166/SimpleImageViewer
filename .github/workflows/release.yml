@@ -167,10 +167,19 @@ jobs:
 
       - name: Archive PDB symbols (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pdbPath = "target/${{ matrix.target }}/release/SimpleImageViewer.pdb"
+          if (Test-Path $pdbPath) {
+            Move-Item $pdbPath "target/${{ matrix.target }}/release/SimpleImageViewer-${{ matrix.target }}.pdb"
+          }
+
+      - name: Upload PDB artifact (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: pdb-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/SimpleImageViewer.pdb
+          path: target/${{ matrix.target }}/release/SimpleImageViewer-${{ matrix.target }}.pdb
           if-no-files-found: warn
 
   build-legacy-win7:
@@ -259,10 +268,18 @@ jobs:
           path: ${{ env.ARCHIVE_NAME }}
 
       - name: Archive PDB symbols (Win7)
+        shell: pwsh
+        run: |
+          $pdbPath = "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.pdb"
+          if (Test-Path $pdbPath) {
+            Move-Item $pdbPath "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer-win7-x64.pdb"
+          }
+
+      - name: Upload PDB artifact (Win7)
         uses: actions/upload-artifact@v4
         with:
           name: pdb-win7-x64
-          path: target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.pdb
+          path: target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer-win7-x64.pdb
           if-no-files-found: warn
 
   create-release:
@@ -295,7 +312,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
-          pattern: binary-*
           merge-multiple: true
 
       - name: Create or Update Release
