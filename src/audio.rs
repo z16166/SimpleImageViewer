@@ -1018,7 +1018,7 @@ fn run_audio_loop(
     meta_slot: Arc<Mutex<Option<String>>>,
     tracks_flag: Arc<AtomicBool>,
     cue_track_slot: Arc<Mutex<Option<usize>>>,
-    needs_restart: Arc<AtomicBool>,
+    _needs_restart: Arc<AtomicBool>,
     cue_markers_slot: Arc<Mutex<Vec<u64>>>,
     pos_ms: Arc<std::sync::atomic::AtomicU64>,
     dur_ms: Arc<std::sync::atomic::AtomicU64>,
@@ -1357,11 +1357,13 @@ fn run_audio_loop(
         #[cfg(windows)]
         {
             if unsafe { wasapi_poll_device_lost() } {
-                log::warn!("[WATCHDOG] Audio device lost (native event). Requesting full restart.");
-                stopped = true;
+                log::warn!("[WATCHDOG] Audio device lost (native event). Dropping backend for orphan recovery.");
+                // Do NOT set stopped=true — that would clear pos/dur and trigger a full restart.
+                // Instead, just drop the backend. The "ORPHANED STATE" branch (below) will
+                // automatically rebuild the backend at the last known position once the device
+                // becomes available again.
                 backend_player = None;
                 backend_sink = None;
-                needs_restart.store(true, Ordering::Relaxed);
             }
         }
 
