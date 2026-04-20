@@ -279,6 +279,9 @@ pub struct ImageViewerApp {
     // Audio device caching
     cached_audio_devices: Vec<String>,
     last_show_settings: bool,
+
+    // Music HUD drag offset (user-adjustable position relative to default bottom-center)
+    music_hud_drag_offset: Vec2,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -350,9 +353,11 @@ impl ImageViewerApp {
             .map(|s| s.adapter.limits().max_texture_dimension_2d)
             .unwrap_or(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
         
-        // Even if the hardware supports more (e.g., 16384), egui often caps at 8192.
-        // We cap it at 8192 here to be absolutely safe against framework panics.
-        let max_texture_side = max_texture_side_hw.min(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
+        // Use the hardware-reported limit directly. The wgpu device was already
+        // created with this same adapter limit, so it is safe to upload textures
+        // up to this size. No additional capping needed.
+        let max_texture_side = max_texture_side_hw;
+        log::info!("Using max_texture_side: {} (hw reported: {})", max_texture_side, max_texture_side_hw);
         
         crate::tile_cache::MAX_TEXTURE_SIDE.store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
         
@@ -468,6 +473,7 @@ impl ImageViewerApp {
             music_hud_last_activity: Instant::now(),
             cached_audio_devices: Vec::new(),
             last_show_settings: true,
+            music_hud_drag_offset: Vec2::ZERO,
         };
         log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
 
@@ -2770,9 +2776,31 @@ impl ImageViewerApp {
                 }
                 
                 if effective_scale >= threshold {
-                    // Compute visible tiles using the UNROTATED destination rect
+                    // Compute visible tiles using the UNROTATED destination rect.
+                    // When rotation is active, we must inverse-rotate the screen clip
+                    // region into unrotated coordinate space. Otherwise, for extremely
+                    // tall/narrow images rotated 90°/270°, the unrotated rect is narrow
+                    // and its intersection with screen_rect only covers the center tiles.
                     let padding = self.hardware_tier.look_ahead_padding();
-                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, screen_rect, padding);
+                    let tile_clip = if rotation != 0 {
+                        let inv_rot = egui::emath::Rot2::from_angle(-angle);
+                        let pivot = dest.center();
+                        let corners = [
+                            screen_rect.left_top(),
+                            screen_rect.right_top(),
+                            screen_rect.right_bottom(),
+                            screen_rect.left_bottom(),
+                        ].map(|p| pivot + inv_rot * (p - pivot));
+                        // Compute the axis-aligned bounding box of the rotated corners
+                        let min_x = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+                        let max_x = corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+                        let min_y = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                        let max_y = corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                        Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
+                    } else {
+                        screen_rect
+                    };
+                    let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, tile_clip, padding);
                     
                     // ANTI-THRASHING: We no longer truncate 'visible' here.
                     // Eviction logic is now handled in get_or_create_tile to prevent circular holes.
@@ -3945,22 +3973,39 @@ impl ImageViewerApp {
             cue_markers: self.audio.get_cue_markers(),
         };
 
-        // Use a Foreground-order Area so the HUD floats above Settings and modals
-        let hud_pos = screen_rect.center_bottom() + Vec2::new(
+        // HUD position: always anchored to screen bottom-center, plus user drag offset.
+        // This way the HUD follows window resizing but also remembers user repositioning.
+        let hud_base_pos = screen_rect.center_bottom() + Vec2::new(
             -(crate::constants::MUSIC_HUD_WIDTH / 2.0),
             crate::constants::MUSIC_HUD_BOTTOM_OFFSET - (crate::constants::MUSIC_HUD_HEIGHT / 2.0),
         );
+        let hud_pos = hud_base_pos + self.music_hud_drag_offset;
 
-        egui::Area::new(egui::Id::new("music_hud_foreground"))
+        let area_resp = egui::Area::new(egui::Id::new("music_hud_foreground"))
             .order(egui::Order::Foreground)
             .fixed_pos(hud_pos)
             .interactable(true)
             .show(ctx, |ui| {
-                // Allocate a fixed-size rect for the HUD content
-                let (rect, _) = ui.allocate_exact_size(
+                // Allocate a fixed-size rect for the HUD content.
+                // Sense::click_and_drag so we can detect drag for repositioning.
+                let (rect, resp) = ui.allocate_exact_size(
                     Vec2::new(crate::constants::MUSIC_HUD_WIDTH, crate::constants::MUSIC_HUD_HEIGHT),
-                    Sense::hover(),
+                    Sense::click_and_drag(),
                 );
+                // Keep HUD awake while interacting
+                if resp.hovered() {
+                    self.music_hud_last_activity = Instant::now();
+                }
+                // Accumulate drag offset for repositioning
+                if resp.dragged() {
+                    self.music_hud_drag_offset += resp.drag_delta();
+                    self.music_hud_last_activity = Instant::now();
+                }
+                // Double-click to reset position
+                if resp.double_clicked() {
+                    self.music_hud_drag_offset = Vec2::ZERO;
+                    self.music_hud_last_activity = Instant::now();
+                }
                 // Render using the existing OSD renderer within this scoped UI
                 let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 self.osd.render_music_hud(&mut child_ui, screen_rect, &music_state, &self.cached_palette);

@@ -105,7 +105,7 @@ impl OsdRenderer {
     pub fn render_music_hud(
         &mut self,
         ui: &mut egui::Ui,
-        screen_rect: egui::Rect,
+        _screen_rect: egui::Rect,
         state: &OsdState,
         palette: &ThemePalette,
     ) -> egui::Rect {
@@ -113,11 +113,9 @@ impl OsdRenderer {
             return egui::Rect::NOTHING;
         }
 
-        let hud_width = crate::constants::MUSIC_HUD_WIDTH;
-        let hud_height = crate::constants::MUSIC_HUD_HEIGHT;
-        let hud_pos = screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
-        
-        let hud_rect = Rect::from_center_size(hud_pos, Vec2::new(hud_width, hud_height));
+        // Use the rect provided by the parent Area/UI, NOT a hard-coded screen position.
+        // This allows the HUD to be repositioned by dragging the Area.
+        let hud_rect = ui.max_rect();
         
         // Premium glassmorphism background
         ui.painter().add(egui::Shape::rect_filled(

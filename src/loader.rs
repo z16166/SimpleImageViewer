@@ -1119,6 +1119,12 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
 fn make_image_data(img: DecodedImage) -> ImageData {
     let pixel_count = img.width as u64 * img.height as u64;
     let max_side = img.width.max(img.height);
+    // Use the conservative ABSOLUTE_MAX_TEXTURE_SIDE (8192) for the tiling decision,
+    // consistent with WIC, macOS ImageIO, and Linux libtiff paths.
+    // Images exceeding 8192 on any side benefit from the tiled preview pipeline
+    // (instant EXIF preview + async HQ preview) regardless of GPU capability.
+    // The GPU's actual texture limit (often 16384) is used only at the wgpu device
+    // level to allow tile textures of any supported size.
     let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
 

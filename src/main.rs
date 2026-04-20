@@ -504,10 +504,18 @@ fn main() -> eframe::Result {
             eframe::wgpu::Limits::default()
         };
 
+        // Request the GPU's actual texture limit rather than a hardcoded 8192.
+        // This allows panoramic images (e.g. 16380×1538) to be loaded as a single
+        // texture on hardware that supports it, avoiding the slow tiled preview path.
+        // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
+        // the device will be created safely with that lower limit.
+        let hw_max_texture = adapter.limits().max_texture_dimension_2d;
+        log::info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
+
         eframe::wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
             required_limits: eframe::wgpu::Limits {
-                max_texture_dimension_2d: crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE,
+                max_texture_dimension_2d: hw_max_texture,
                 ..base_limits
             },
             ..Default::default()
