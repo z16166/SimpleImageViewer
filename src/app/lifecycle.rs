@@ -203,6 +203,7 @@ impl ImageViewerApp {
             app.load_directory(dir);
         }
         if app.settings.play_music {
+            app.settings.music_paused = true; // Always start paused to avoid start-up noise
             app.restart_audio_if_enabled();
         }
 
