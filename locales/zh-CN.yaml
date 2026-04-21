@@ -67,6 +67,7 @@ transition.push: "推入"
 transition.page_flip: "翻页"
 transition.ripple: "水波纹"
 transition.curtain: "幕帘"
+transition.random: "随机"
 
 # Music
 music.scanning: "正在扫描音乐…"

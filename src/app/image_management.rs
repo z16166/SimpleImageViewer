@@ -8,6 +8,7 @@ use crate::loader::{LoadResult, TileResult, ImageData, DecodedImage, PreviewResu
 use crate::scanner::{self, ScanMessage};
 use crate::tile_cache::{TileManager, TileCoord};
 use rust_i18n::t;
+use rand::seq::SliceRandom;
 
 impl ImageViewerApp {
     // ------------------------------------------------------------------
@@ -64,12 +65,22 @@ impl ImageViewerApp {
 
         // Setup transition if enabled
         if self.settings.transition_style != TransitionStyle::None {
+            if self.settings.transition_style == TransitionStyle::Random {
+                // Pick a random style from the pool using rand for uniform distribution
+                let pool = TransitionStyle::RANDOM_POOL;
+                self.active_transition = *pool.choose(&mut rand::thread_rng()).unwrap_or(&TransitionStyle::Fade);
+            } else {
+                self.active_transition = self.settings.transition_style;
+            }
+
             if let Some(tex) = self.texture_cache.get(self.current_index) {
                 self.prev_texture = Some(tex.clone());
                 self.transition_start = Some(Instant::now());
                 // Handle wrap-around logic for direction
                 self.is_next = target_index > self.current_index || (target_index == 0 && self.current_index == self.image_files.len() - 1);
             }
+        } else {
+            self.active_transition = TransitionStyle::None;
         }
 
         if self.current_index != target_index {

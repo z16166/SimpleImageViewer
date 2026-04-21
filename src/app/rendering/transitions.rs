@@ -58,8 +58,8 @@ impl ImageViewerApp {
                 let t = (elapsed / duration).clamp(0.0, 1.0);
                 // Easing: Cubic Out
                 let ease_out = 1.0 - (1.0 - t).powi(3);
-
-                match self.settings.transition_style {
+                
+                match self.active_transition {
                     TransitionStyle::Fade => {
                         p.alpha = ease_out;
                         p.prev_alpha = 1.0 - t;
@@ -111,7 +111,7 @@ impl ImageViewerApp {
         angle: f32,
         alpha: f32,
     ) {
-        match self.settings.transition_style {
+        match self.active_transition {
             TransitionStyle::PageFlip => {
                 if let Some(prev) = self.prev_texture.as_ref() {
                     let p_size = prev.size_vec2();

@@ -1,4 +1,4 @@
-﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -232,6 +232,7 @@ pub struct ImageViewerApp {
     pub(crate) prev_texture: Option<egui::TextureHandle>,
     pub(crate) transition_start: Option<Instant>,
     pub(crate) is_next: bool,
+    pub(crate) active_transition: TransitionStyle,
 
     // OSD renderer
     pub(crate) osd: crate::ui::osd::OsdRenderer,

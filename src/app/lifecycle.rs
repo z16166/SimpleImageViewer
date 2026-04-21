@@ -116,7 +116,6 @@ impl ImageViewerApp {
         }
 
         let mut app = Self {
-            settings,
             save_tx,
             initial_image,
             image_files: Vec::new(),
@@ -166,6 +165,7 @@ impl ImageViewerApp {
             prev_texture: None,
             transition_start: None,
             is_next: true,
+            active_transition: settings.transition_style,
             osd: crate::ui::osd::OsdRenderer::new(),
             last_minimized: false,
             last_frame_time: Instant::now(),
@@ -193,6 +193,7 @@ impl ImageViewerApp {
             cached_audio_devices: Vec::new(),
             last_show_settings: true,
             music_hud_drag_offset: Vec2::ZERO,
+            settings,
         };
         log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
 

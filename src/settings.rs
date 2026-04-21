@@ -45,33 +45,42 @@ impl ScaleMode {
 // TransitionStyle
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransitionStyle {
-    None,
-    Fade,
-    ZoomFade,
-    Slide,
-    Push,
-    PageFlip,
-    Ripple,
-    Curtain,
-}
+macro_rules! define_transition_styles {
+    ($($variant:ident => $key:expr),*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum TransitionStyle {
+            None,
+            $($variant),*,
+            Random,
+        }
 
-impl TransitionStyle {
-    pub fn label(self) -> String {
-        match self {
-            Self::None     => rust_i18n::t!("transition.none").to_string(),
-            Self::Fade     => rust_i18n::t!("transition.fade").to_string(),
-            Self::ZoomFade => rust_i18n::t!("transition.zoom_fade").to_string(),
-            Self::Slide    => rust_i18n::t!("transition.slide").to_string(),
-            Self::Push     => rust_i18n::t!("transition.push").to_string(),
-            Self::PageFlip => rust_i18n::t!("transition.page_flip").to_string(),
-            Self::Ripple   => rust_i18n::t!("transition.ripple").to_string(),
-            Self::Curtain  => rust_i18n::t!("transition.curtain").to_string(),
+        impl TransitionStyle {
+            /// List of styles used for random selection, automatically synced with the enum
+            pub const RANDOM_POOL: &[TransitionStyle] = &[
+                $(Self::$variant),*
+            ];
+
+            pub fn label(self) -> String {
+                match self {
+                    Self::None => rust_i18n::t!("transition.none").to_string(),
+                    Self::Random => rust_i18n::t!("transition.random").to_string(),
+                    $(Self::$variant => rust_i18n::t!($key).to_string()),*
+                }
+            }
         }
     }
 }
+
+define_transition_styles!(
+    Fade     => "transition.fade",
+    ZoomFade => "transition.zoom_fade",
+    Slide    => "transition.slide",
+    Push     => "transition.push",
+    PageFlip => "transition.page_flip",
+    Ripple   => "transition.ripple",
+    Curtain  => "transition.curtain"
+);
 
 // ---------------------------------------------------------------------------
 // Settings

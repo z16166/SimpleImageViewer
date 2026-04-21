@@ -67,6 +67,7 @@ transition.push: "Push"
 transition.page_flip: "Page Flip"
 transition.ripple: "Ripple (Water)"
 transition.curtain: "Curtain"
+transition.random: "Random"
 
 # Music
 music.scanning: "Scanning music…"

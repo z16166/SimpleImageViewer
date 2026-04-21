@@ -237,6 +237,7 @@ fn draw_settings_left_col(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir:
                     ui.selectable_value(&mut app.settings.transition_style, TransitionStyle::PageFlip, TransitionStyle::PageFlip.label());
                     ui.selectable_value(&mut app.settings.transition_style, TransitionStyle::Ripple, TransitionStyle::Ripple.label());
                     ui.selectable_value(&mut app.settings.transition_style, TransitionStyle::Curtain, TransitionStyle::Curtain.label());
+                    ui.selectable_value(&mut app.settings.transition_style, TransitionStyle::Random, TransitionStyle::Random.label());
                 });
             if old_style != app.settings.transition_style {
                 app.queue_save();

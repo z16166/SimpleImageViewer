@@ -12,6 +12,7 @@ name = "SimpleImageViewer"
 path = "src/main.rs"
 
 [dependencies]
+rand = "0.8"
 eframe = { version = "0.34", default-features = false, features = [
     "default_fonts",
     "wgpu",

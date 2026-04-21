@@ -66,7 +66,7 @@ impl ImageViewerApp {
         // --- Transition parameter computation ---
         // Slide and Push use normalised offsets; multiply by screen width here.
         let mut tp = self.compute_transition_params();
-        if matches!(self.settings.transition_style, TransitionStyle::Slide | TransitionStyle::Push) {
+        if matches!(self.active_transition, TransitionStyle::Slide | TransitionStyle::Push) {
             tp.offset.x     *= screen_rect.width();
             tp.prev_offset.x *= screen_rect.width();
         }
@@ -95,7 +95,7 @@ impl ImageViewerApp {
 
         // --- Draw sequence ---
         if tp.is_animating && matches!(
-            self.settings.transition_style,
+            self.active_transition,
             TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
         ) {
             // Complex per-pixel transitions handled in transitions.rs
