@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Align2, Color32, FontId, Vec2, Rect, CornerRadius, Stroke, RichText, StrokeKind};
+use eframe::egui::{self, Align2, Color32, FontId, Vec2, CornerRadius, Stroke, RichText, StrokeKind};
 use std::time::Instant;
 use crate::theme::ThemePalette;
 use rust_i18n::t;

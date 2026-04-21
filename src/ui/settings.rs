@@ -466,13 +466,17 @@ fn draw_settings_right_col(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Co
                 if ui.button("⟲").on_hover_text(t!("music.refresh_devices")).clicked() {
                     app.refresh_audio_devices();
                 }
-                let current_dev = app.settings.audio_device.clone().unwrap_or_else(|| t!("music.default_device").to_string());
-                let short_dev = middle_truncate(&current_dev, 36);
-                let combo_width = ui.available_width().min(230.0);
 
+                let current_dev = app.settings.audio_device.clone()
+                    .unwrap_or_else(|| t!("music.default_device").to_string());
+
+                // .width(remaining) + .truncate() lets egui clip the selected text with
+                // a trailing "…" when the device name is too long for the available space,
+                // without ever expanding the settings window horizontally.
                 egui::ComboBox::from_id_salt("audio_device_select")
-                    .selected_text(egui::RichText::new(short_dev))
-                    .width(combo_width)
+                    .selected_text(&current_dev)
+                    .width(ui.available_width())
+                    .truncate()
                     .show_ui(ui, |ui| {
                         let default_label = t!("music.default_device").to_string();
                         if ui.selectable_label(app.settings.audio_device.is_none(), &default_label).clicked() {
@@ -493,6 +497,7 @@ fn draw_settings_right_col(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Co
                         }
                     });
             });
+
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
