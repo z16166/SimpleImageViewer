@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, VecDeque, HashSet};
 use std::sync::Arc;
-use egui::TextureHandle;
+use eframe::egui::{self, TextureHandle};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, LazyLock};
 use std::time::Instant;

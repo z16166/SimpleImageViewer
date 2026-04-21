@@ -14,8 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod osd;
-pub mod utils;
-pub mod settings;
-pub mod hud;
-pub mod dialogs;
+pub mod wallpaper;
+pub mod goto;
+pub mod exif;
+pub mod xmp;
+
+#[cfg(target_os = "windows")]
+pub mod file_assoc;

@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use crossbeam_channel::{Receiver, Sender};
-use egui::{
-    Align2, Color32, ColorImage, Context, FontId, Frame, Key, Pos2, Rect, RichText,
+use eframe::egui::{
+    self, Align2, Color32, ColorImage, Context, FontId, Frame, Key, Pos2, Rect, RichText,
     Sense, TextureOptions, Vec2,
 };
 
@@ -31,9 +31,12 @@ use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache, LoadResult, TileResult, ImageData, DecodedImage, LoaderOutput, PreviewResult};
 use crate::scanner::ScanMessage;
 use crate::scanner;
-use crate::settings::{ScaleMode, Settings, TransitionStyle};
+pub(crate) use crate::settings::{ScaleMode, Settings, TransitionStyle};
+pub(crate) use crate::theme::AppTheme;
 use crate::tile_cache::{TileManager, TileCoord, TileStatus};
-use crate::theme::{AppTheme, SystemThemeCache, ThemePalette};
+use crate::theme::{SystemThemeCache, ThemePalette};
+use crate::ui::{settings as ui_settings, hud as ui_hud, dialogs as ui_dialogs};
+use crate::ui::utils::{setup_visuals, setup_fonts, draw_empty_hint, copy_file_to_clipboard, get_system_font_families};
 use rust_i18n::t;
 
 // -- Preload configuration --
@@ -135,153 +138,152 @@ impl HardwareTier {
 }
 
 pub struct ImageViewerApp {
-    settings: Settings,
-    save_tx: Sender<Settings>,
-    initial_image: Option<PathBuf>,
+    // Core state
+    pub(crate) settings: Settings,
+    pub(crate) image_files: Vec<PathBuf>,
+    pub(crate) current_index: usize,
+    pub(crate) initial_image: Option<PathBuf>,
+    pub(crate) scanning: bool,
 
-    // File list
-    image_files: Vec<PathBuf>,
-    current_index: usize,
-
-    // Channel receiving scanned file list
-    scan_rx: Option<Receiver<ScanMessage>>,
-    scanning: bool,
+    // Performance tracking
+    pub(crate) hardware_tier: HardwareTier,
 
     // Image loading
-    loader: ImageLoader,
-    texture_cache: TextureCache,
+    pub(crate) loader: ImageLoader,
+    pub(crate) texture_cache: TextureCache,
     /// Animated image playback state (None for static images).
-    animation: Option<AnimationPlayback>,
+    pub(crate) animation: Option<AnimationPlayback>,
 
     // Pan/drag state (used in non-fullscreen 1:1 mode)
-    pan_offset: Vec2,
+    pub(crate) pan_offset: Vec2,
 
     // Manual zoom factor (1.0 = 100%); applied on top of any fit-to-screen scale
-    zoom_factor: f32,
+    pub(crate) zoom_factor: f32,
 
     // Auto-switch timer
-    last_switch_time: Instant,
-    slideshow_paused: bool,
+    pub(crate) last_switch_time: Instant,
+    pub(crate) slideshow_paused: bool,
 
     // Audio
-    audio: AudioPlayer,
-    music_seeking_target_ms: Option<u64>,
-    music_seek_timeout: Option<std::time::Instant>,
-    music_hud_last_activity: std::time::Instant,
+    pub(crate) audio: AudioPlayer,
+    pub(crate) music_seeking_target_ms: Option<u64>,
+    pub(crate) music_seek_timeout: Option<std::time::Instant>,
+    pub(crate) music_hud_last_activity: std::time::Instant,
 
     // UI state
-    show_settings: bool,
-    status_message: String,
-    error_message: Option<String>,
-    is_font_error: bool,
+    pub(crate) show_settings: bool,
+    pub(crate) last_show_settings: bool,
+    pub(crate) status_message: String,
+    pub(crate) error_message: Option<String>,
+    pub(crate) is_font_error: bool,
 
     // Pending viewport commands (set during input processing for deferred apply)
-    pending_fullscreen: Option<bool>,
+    pub(crate) pending_fullscreen: Option<bool>,
 
     // Cached system font families
-    font_families: Vec<String>,
-    temp_font_size: Option<f32>,
+    pub(crate) font_families: Vec<String>,
+    pub(crate) temp_font_size: Option<f32>,
 
     // Cached state
-    generation: u64,
-    cached_music_count: Option<usize>,
-    cached_pixels_per_point: f32,
+    pub(crate) generation: u64,
+    pub(crate) cached_music_count: Option<usize>,
+    pub(crate) cached_pixels_per_point: f32,
 
     // EXIF dialog state
-    show_exif_window: bool,
-    cached_exif_data: Option<Vec<(String, String)>>,
+    pub(crate) show_exif_window: bool,
+    pub(crate) cached_exif_data: Option<Vec<(String, String)>>,
     // XMP dialog state
-    show_xmp_window: bool,
-    cached_xmp_data: Option<Vec<(String, String)>>,
-    cached_xmp_xml: Option<String>,
+    pub(crate) show_xmp_window: bool,
+    pub(crate) cached_xmp_data: Option<Vec<(String, String)>>,
+    pub(crate) cached_xmp_xml: Option<String>,
 
     // Goto dialog state
-    show_goto: bool,
-    goto_input: String,
-    goto_needs_focus: bool,
+    pub(crate) show_goto: bool,
+    pub(crate) goto_input: String,
+    pub(crate) goto_needs_focus: bool,
 
     // Async music scanning
-    music_scan_rx: Option<Receiver<Vec<PathBuf>>>,
-    scanning_music: bool,
-    music_scan_cancel: Option<Arc<AtomicBool>>,
-    music_scan_path: Option<PathBuf>,
+    pub(crate) music_scan_rx: Option<Receiver<Vec<PathBuf>>>,
+    pub(crate) scanning_music: bool,
+    pub(crate) music_scan_cancel: Option<Arc<AtomicBool>>,
+    pub(crate) music_scan_path: Option<PathBuf>,
+    pub(crate) scan_rx: Option<Receiver<scanner::ScanMessage>>,
 
     // Wallpaper dialog state
-    show_wallpaper_dialog: bool,
-    selected_wallpaper_mode: String,
-    current_image_res: Option<(u32, u32)>,
-    current_system_wallpaper: Option<String>,
+    pub(crate) show_wallpaper_dialog: bool,
+    pub(crate) selected_wallpaper_mode: String,
+    pub(crate) current_image_res: Option<(u32, u32)>,
+    pub(crate) current_system_wallpaper: Option<String>,
 
     // File association dialog state (Windows only)
     #[cfg(target_os = "windows")]
-    show_file_assoc_dialog: bool,
+    pub(crate) show_file_assoc_dialog: bool,
     #[cfg(target_os = "windows")]
-    file_assoc_formats: Vec<crate::formats::ImageFormat>,
+    pub(crate) file_assoc_formats: Vec<crate::formats::ImageFormat>,
     #[cfg(target_os = "windows")]
-    file_assoc_selections: Vec<bool>,
+    pub(crate) file_assoc_selections: Vec<bool>,
 
     // Transition state
-    prev_texture: Option<egui::TextureHandle>,
-    transition_start: Option<Instant>,
-    is_next: bool,
+    pub(crate) prev_texture: Option<egui::TextureHandle>,
+    pub(crate) transition_start: Option<Instant>,
+    pub(crate) is_next: bool,
 
     // OSD renderer
-    osd: crate::ui::osd::OsdRenderer,
+    pub(crate) osd: crate::ui::osd::OsdRenderer,
 
     // Window lifecycle
-    last_minimized: bool,
-    last_frame_time: Instant,
+    pub(crate) last_minimized: bool,
+    pub(crate) last_frame_time: Instant,
 
     // IPC receiver
-    ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
+    pub(crate) ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
     
     // Predictive animation cache (decoded and uploaded to GPU)
-    animation_cache: HashMap<usize, AnimationPlayback>,
+    pub(crate) animation_cache: HashMap<usize, AnimationPlayback>,
 
     // Tiled rendering for large images
-    tile_manager: Option<TileManager>,
+    pub(crate) tile_manager: Option<TileManager>,
     
     // Tiled rendering instances decoded during prefetch
-    prefetched_tiles: HashMap<usize, TileManager>,
+    pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
     
     // Theme state
-    theme_cache: SystemThemeCache,
-    cached_palette: ThemePalette,
+    pub(crate) theme_cache: SystemThemeCache,
+    pub(crate) cached_palette: ThemePalette,
 
     // Printing state
     pub is_printing: Arc<AtomicBool>,
     pub print_status_rx: Option<crossbeam_channel::Receiver<Option<String>>>,
 
     // Deferred animation frame uploads (throttled to avoid GPU stalls)
-    pending_anim_frames: Option<PendingAnimUpload>,
+    pub(crate) pending_anim_frames: Option<PendingAnimUpload>,
 
     // Debounce for mouse wheel navigation
-    last_mouse_wheel_nav: f64,
+    pub(crate) last_mouse_wheel_nav: f64,
+
+    // Settings persistence channel
+    pub(crate) save_tx: Sender<Settings>,
+    pub(crate) save_error_rx: Receiver<String>,
+    pub(crate) last_save_error: Option<(String, Instant)>,
 
     // Preload byte budgets (computed at startup from system RAM)
-    preload_budget_forward: u64,
-    preload_budget_backward: u64,
+    pub(crate) preload_budget_forward: u64,
+    pub(crate) preload_budget_backward: u64,
 
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
-    context_menu_pos: Option<Pos2>,
+    pub (crate) context_menu_pos: Option<Pos2>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
-    current_rotation: i32,
-
-    // Persistence error reporting
-    save_error_rx: crossbeam_channel::Receiver<String>,
-    last_save_error: Option<(String, Instant)>,
+    pub (crate) current_rotation: i32,
     
     // Adaptive tile upload quota based on hardware and current frame performance
-    tile_upload_quota: usize,
-    hardware_tier: HardwareTier,
+    pub (crate) tile_upload_quota: usize,
 
     // Audio device caching
-    cached_audio_devices: Vec<String>,
-    last_show_settings: bool,
+    pub(crate) cached_audio_devices: Vec<String>,
 
     // Music HUD drag offset (user-adjustable position relative to default bottom-center)
-    music_hud_drag_offset: Vec2,
+    pub(crate) music_hud_drag_offset: Vec2,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -494,7 +496,7 @@ impl ImageViewerApp {
     // Persistent Storage
     // ------------------------------------------------------------------
 
-    fn queue_save(&self) {
+    pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
     }
 
@@ -502,17 +504,18 @@ impl ImageViewerApp {
     // Directory loading
     // ------------------------------------------------------------------
 
-    fn open_directory_dialog(&mut self) {
+    pub(crate) fn open_directory_dialog(&mut self) {
         let mut dialog = rfd::FileDialog::new();
         if let Some(ref dir) = self.settings.last_image_dir.clone() {
             dialog = dialog.set_directory(dir);
         }
         if let Some(dir) = dialog.pick_folder() {
             self.load_directory(dir);
+            self.queue_save();
         }
     }
 
-    fn load_directory(&mut self, dir: PathBuf) {
+    pub(crate) fn load_directory(&mut self, dir: PathBuf) {
         self.settings.last_image_dir = Some(dir.clone());
         self.image_files.clear();
         self.current_index = 0;
@@ -539,7 +542,7 @@ impl ImageViewerApp {
     // Navigation
     // ------------------------------------------------------------------
 
-    fn navigate_to(&mut self, new_index: usize) {
+    pub(crate) fn navigate_to(&mut self, new_index: usize) {
         if self.image_files.is_empty() {
             return;
         }
@@ -1696,7 +1699,7 @@ impl ImageViewerApp {
     // Audio helpers
     // ------------------------------------------------------------------
 
-    fn open_music_file_dialog(&mut self) {
+    pub(crate) fn open_music_file_dialog(&mut self) {
         let dialog = rfd::FileDialog::new()
             .add_filter("Music files", &["mp3", "flac", "ogg", "wav", "aac", "m4a", "ape"]);
         if let Some(path) = dialog.pick_file() {
@@ -1705,14 +1708,14 @@ impl ImageViewerApp {
         }
     }
 
-    fn open_music_dir_dialog(&mut self) {
+    pub(crate) fn open_music_dir_dialog(&mut self) {
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             self.settings.music_path = Some(dir.clone());
             self.restart_audio_if_enabled();
         }
     }
 
-    fn restart_audio_if_enabled(&mut self) {
+    pub(crate) fn restart_audio_if_enabled(&mut self) {
         // If not playing music, cancel any running scan and stop audio
         if !self.settings.play_music {
             if let Some(cancel) = self.music_scan_cancel.take() {
@@ -1785,679 +1788,25 @@ impl ImageViewerApp {
     // UI: Settings panel
     // ------------------------------------------------------------------
 
-    fn draw_settings_panel(&mut self, ctx: &Context) {
-        // Detect when settings panel is opened to refresh audio devices
-        if !self.last_show_settings {
-            self.refresh_audio_devices();
-        }
-        self.last_show_settings = true;
+    fn draw_settings_panel(&mut self, ctx: &egui::Context) {
+        ui_settings::draw(self, ctx);
+    }
 
-        let mut open_dir = false;
-        let mut open_music_file = false;
-        let mut open_music_dir = false;
-        let mut fullscreen_changed = false;
-        let mut music_enabled_changed = false;
-        let mut do_quit = false;
+    fn draw_wallpaper_dialog(&mut self, ctx: &egui::Context) {
+        ui_dialogs::wallpaper::draw(self, ctx);
+    }
 
-        egui::Window::new(t!("app.window_title"))
-            .id(egui::Id::new("settings_window"))
-            .default_pos(Pos2::new(12.0, 12.0))
-            .resizable(true)
-            .collapsible(true)
-            .frame(
-                Frame::window(&ctx.global_style())
-                    .fill(self.cached_palette.panel_bg)
-                    .shadow(egui::epaint::Shadow::NONE),
-            )
-            .min_width(550.0)
-            .default_width(640.0)
-            .max_width(800.0)
-            .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
+    fn draw_goto_dialog(&mut self, ctx: &egui::Context) {
+        ui_dialogs::goto::draw(self, ctx);
+    }
 
-                ui.heading(
-                    RichText::new(format!("{} v{}", t!("app.title"), env!("CARGO_PKG_VERSION")))
-                        .color(self.cached_palette.accent2)
-                        .size(18.0),
-                );
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(6.0);
+    #[cfg(target_os = "windows")]
+    fn draw_file_assoc_dialog(&mut self, ctx: &egui::Context) {
+        ui_dialogs::file_assoc::draw(self, ctx);
+    }
 
-                ui.columns(2, |cols| {
-                cols[0].vertical(|ui| {
-                
-                // ── Directory ──────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.directory")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                // Path display: short name in box, full path as tooltip
-                let dir_full = self.settings.last_image_dir
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned());
-                let dir_short = self.settings.last_image_dir
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| dir_full.clone().unwrap_or_default());
-                let dir_empty = self.settings.last_image_dir.is_none();
-                let dir_label = if dir_empty { t!("label.no_dir").to_string() } else { dir_short };
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if styled_button(ui, t!("btn.pick"), &self.cached_palette).clicked() {
-                            open_dir = true;
-                        }
-                        ui.add_space(4.0);
-                        if styled_button(ui, t!("btn.refresh"), &self.cached_palette).clicked() {
-                            if let Some(dir) = self.settings.last_image_dir.clone() {
-                                self.load_directory(dir);
-                            }
-                        }
-                        
-                        let box_w = (ui.available_width() - 16.0).max(20.0);
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let resp = path_display_box(ui, &dir_label, dir_empty, box_w, &self.cached_palette);
-                            if let Some(full) = &dir_full {
-                                resp.on_hover_text(full.as_str());
-                            }
-                        });
-                    });
-                });
-
-                ui.add_space(4.0);
-                let old_recursive = self.settings.recursive;
-                ui.checkbox(&mut self.settings.recursive, t!("label.recursive_scan").to_string());
-                if !old_recursive && self.settings.recursive {
-                    // User just turned ON recursive scan — warn them first
-                    let confirmed = rfd::MessageDialog::new()
-                        .set_title(t!("win.confirm_recursive_title").to_string())
-                        .set_description(t!("win.confirm_recursive_msg").to_string())
-                        .set_buttons(rfd::MessageButtons::OkCancel)
-                        .set_level(rfd::MessageLevel::Warning)
-                        .show() == rfd::MessageDialogResult::Ok;
-                    if !confirmed {
-                        // User cancelled — revert the checkbox
-                        self.settings.recursive = false;
-                    }
-                }
-                if old_recursive != self.settings.recursive {
-                    if let Some(dir) = self.settings.last_image_dir.clone() {
-                        self.load_directory(dir);
-                    }
-                    self.queue_save();
-                }
-
-                if ui.checkbox(&mut self.settings.preload, t!("label.enable_preload").to_string()).changed() {
-                    self.queue_save();
-                }
-
-                if ui.checkbox(&mut self.settings.resume_last_image, t!("label.resume_last").to_string()).changed() {
-                    self.queue_save();
-                }
-
-                if self.scanning {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(RichText::new(&self.status_message).color(self.cached_palette.text_muted));
-                    });
-                }
-
-                ui.add_space(8.0);
-
-                // ── Display ────────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.display")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                let old_fullscreen = self.settings.fullscreen;
-                ui.checkbox(&mut self.settings.fullscreen, t!("label.fullscreen").to_string());
-                if old_fullscreen != self.settings.fullscreen {
-                    fullscreen_changed = true;
-                }
-
-                ui.add_space(6.0);
-
-                // Scale mode selector
-                ui.label(RichText::new(t!("label.scale_mode")).color(self.cached_palette.text_muted).small());
-                ui.add_space(2.0);
-                let old_scale = self.settings.scale_mode;
-                ui.horizontal(|ui| {
-                    let fit_active = self.settings.scale_mode == ScaleMode::FitToWindow;
-                    if ui.add(egui::Button::selectable(fit_active, t!("scale.fit_btn").to_string())).clicked()
-                        && !fit_active
-                    {
-                        self.settings.scale_mode = ScaleMode::FitToWindow;
-                    }
-                    let orig_active = self.settings.scale_mode == ScaleMode::OriginalSize;
-                    if ui.add(egui::Button::selectable(orig_active, t!("scale.original_btn").to_string())).clicked()
-                        && !orig_active
-                    {
-                        self.settings.scale_mode = ScaleMode::OriginalSize;
-                    }
-                });
-                if old_scale != self.settings.scale_mode {
-                    self.zoom_factor = 1.0;
-                    self.pan_offset = Vec2::ZERO;
-                    self.queue_save();
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(t!("label.z_toggle_hint"))
-                        .color(self.cached_palette.text_muted)
-                        .small(),
-                );
-
-                ui.add_space(6.0);
-                ui.checkbox(&mut self.settings.show_osd, t!("label.show_osd"));
-
-
-                // ── Transitions ──────────────────────────────────────────
-                ui.add_space(8.0);
-                ui.label(RichText::new(t!("section.transitions")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                ui.horizontal(|ui| {
-                    ui.label(t!("label.style"));
-                    let old_style = self.settings.transition_style;
-                    egui::ComboBox::from_id_salt("transition_style")
-                        .selected_text(self.settings.transition_style.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::None, TransitionStyle::None.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Fade, TransitionStyle::Fade.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::ZoomFade, TransitionStyle::ZoomFade.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Slide, TransitionStyle::Slide.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Push, TransitionStyle::Push.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::PageFlip, TransitionStyle::PageFlip.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Ripple, TransitionStyle::Ripple.label());
-                            ui.selectable_value(&mut self.settings.transition_style, TransitionStyle::Curtain, TransitionStyle::Curtain.label());
-                        });
-                    if old_style != self.settings.transition_style {
-                        self.queue_save();
-                    }
-                });
-
-                if self.settings.transition_style != TransitionStyle::None {
-                    ui.horizontal(|ui| {
-                        ui.label(t!("label.duration"));
-                        let old_ms = self.settings.transition_ms;
-                        ui.add(egui::Slider::new(&mut self.settings.transition_ms, 50..=2000).suffix("ms"));
-                        if old_ms != self.settings.transition_ms {
-                            self.queue_save();
-                        }
-                    });
-                }
-                
-                }); // End Left Column
-                
-                cols[1].vertical(|ui| {
-                // ── Slideshow ────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.slideshow")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                let old_auto_switch = self.settings.auto_switch;
-                if ui.checkbox(&mut self.settings.auto_switch, t!("label.auto_advance")).changed() {
-                    self.slideshow_paused = false;  // Reset pause when toggling via UI
-                }
-                if self.settings.auto_switch {
-                    ui.horizontal(|ui| {
-                        ui.label(t!("label.interval_sec"));
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.auto_switch_interval)
-                                .range(0.5..=3600.0)
-                                .speed(0.5),
-                        );
-                    });
-                    ui.checkbox(&mut self.settings.loop_playback, t!("label.loop_wrap"));
-                }
-                if old_auto_switch != self.settings.auto_switch {
-                    self.queue_save();
-                }
-
-                ui.add_space(8.0);
-
-                // ── Music ──────────────────────────────────────────────────
-                ui.label(RichText::new(t!("section.music")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                let old_play_music = self.settings.play_music;
-                let old_show_music_osd = self.settings.show_music_osd;
-                ui.checkbox(&mut self.settings.play_music, t!("label.play_music"));
-                ui.checkbox(&mut self.settings.show_music_osd, t!("label.show_music_osd"));
-                ui.add_space(2.0);
-                if old_play_music != self.settings.play_music || old_show_music_osd != self.settings.show_music_osd {
-                    if old_play_music != self.settings.play_music {
-                        music_enabled_changed = true;
-                    }
-                    self.music_hud_last_activity = Instant::now(); // Wake up HUD on any related toggle
-                }
-
-                if self.settings.play_music {
-                    // Path: short name in box, full path as tooltip
-                    let music_full = self.settings.music_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let music_short = self.settings.music_path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| music_full.clone().unwrap_or_default());
-                    let music_empty = self.settings.music_path.is_none();
-                    let music_label = if music_empty { t!("label.no_music").to_string() } else { music_short };
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if styled_button(ui, t!("btn.pick_dir"), &self.cached_palette).clicked() {
-                                open_music_dir = true;
-                            }
-                            if styled_button(ui, t!("btn.pick_file"), &self.cached_palette).clicked() {
-                                open_music_file = true;
-                            }
-                            let box_w = (ui.available_width() - 16.0).max(20.0);
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let resp = path_display_box(ui, &music_label, music_empty, box_w, &self.cached_palette);
-                                if let Some(full) = &music_full {
-                                    resp.on_hover_text(full.as_str());
-                                }
-                            });
-                        });
-                    });
-                    // File count badge
-                    if self.settings.music_path.is_some() {
-                        ui.add_space(2.0);
-                        ui.horizontal(|ui| {
-                            if self.scanning_music {
-                                ui.spinner();
-                                ui.label(RichText::new(t!("music.scanning")).color(self.cached_palette.text_muted).small());
-                            } else if let Some(count) = self.cached_music_count {
-                                if count > 0 {
-                                    ui.label(RichText::new(t!("music.files_ready", count = count.to_string())).color(self.cached_palette.accent2).small());
-                                    
-                                    // Align 5-buttons to the right to match the "Dir" row above
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let has_tracks = self.audio.has_tracks();
-                                        
-                                        // Buttons in RTL order: NextFile, NextTrack, Play/Pause, PrevTrack, PrevFile
-                                        if styled_button(ui, "⏭", &self.cached_palette).on_hover_text(t!("music.next_file")).clicked() {
-                                            self.audio.next_file();
-                                            self.music_hud_last_activity = Instant::now();
-                                        }
-                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏩", &self.cached_palette));
-                                        if resp.on_hover_text(t!("music.next_track")).clicked() {
-                                            self.audio.next_track();
-                                            self.music_hud_last_activity = Instant::now();
-                                        }
-                                        let play_icon = if self.settings.music_paused { "▶" } else { "⏸" };
-                                        if styled_button(ui, play_icon, &self.cached_palette).on_hover_text(t!("music.play_pause")).clicked() {
-                                            self.settings.music_paused = !self.settings.music_paused;
-                                            if self.settings.music_paused { self.audio.pause(); } else { self.audio.play(); }
-                                            self.queue_save();
-                                            self.music_hud_last_activity = Instant::now();
-                                        }
-                                        let resp = ui.add_enabled(has_tracks, styled_button_widget("⏪", &self.cached_palette));
-                                        if resp.on_hover_text(t!("music.prev_track")).clicked() {
-                                            self.audio.prev_track();
-                                            self.music_hud_last_activity = Instant::now();
-                                        }
-                                        if styled_button(ui, "⏮", &self.cached_palette).on_hover_text(t!("music.prev_file")).clicked() {
-                                            self.audio.prev_file();
-                                            self.music_hud_last_activity = Instant::now();
-                                        }
-                                    });
-                                } else {
-                                    ui.label(RichText::new(t!("music.no_audio")).color(Color32::from_rgb(255, 180, 60)).small());
-                                }
-                            }
-                        });
-                    }
-                    // Now playing status: show filename and metadata in two lines to handle long names
-                    let filename = self.audio.get_current_track();
-                    let metadata = self.audio.get_metadata();
-
-                    if let Some(f) = filename {
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let status = if self.settings.music_paused { t!("music.paused").to_string() } else { t!("music.playing").to_string() };
-                            ui.label(RichText::new(status).color(self.cached_palette.text_muted).small());
-                            let short_f = middle_truncate(&f, 40);
-                            ui.label(RichText::new(format!("[{short_f}]")).color(self.cached_palette.text_muted).small()).on_hover_text(&f);
-                        });
-                        if let Some(m) = metadata {
-                            ui.label(RichText::new(format!("  │  {m}")).color(self.cached_palette.accent2).small().italics());
-                        }
-
-                        // Progress bar in Settings
-                        ui.add_space(2.0);
-                        let mut cur_ms = self.audio.get_pos_ms();
-                        let tot_ms = self.audio.get_duration_ms();
-                        
-                        // Smart Seek locking logic: match target or timeout
-                        if let Some(target_ms) = self.music_seeking_target_ms {
-                            let diff = (cur_ms as i64 - target_ms as i64).abs();
-                            let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
-                            
-                            if diff < 2000 || timed_out {
-                                // Match found or timeout reached, release lock
-                                self.music_seeking_target_ms = None;
-                                self.music_seek_timeout = None;
-                            } else {
-                                // Still seeking, force the slider to stay at target
-                                cur_ms = target_ms;
-                            }
-                        }
-
-                        if tot_ms > 0 {
-                            let mut pos_s = cur_ms as f32 / 1000.0;
-                            let total_s = tot_ms as f32 / 1000.0;
-                            
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().slider_width = ui.available_width() - 76.0;
-                                // Narrow the slider thumb to avoid obscuring CUE markers
-                                ui.spacing_mut().interact_size.x = 6.0; 
-                                
-                                ui.label(RichText::new(format!("{:02}:{:02}", (pos_s as u32)/60, (pos_s as u32)%60)).small().color(self.cached_palette.text_muted));
-                                let resp = ui.add(egui::Slider::new(&mut pos_s, 0.0..=total_s).show_value(false).trailing_fill(true));
-                                ui.label(RichText::new(format!("{:02}:{:02}", (total_s as u32)/60, (total_s as u32)%60)).small().color(self.cached_palette.text_muted));
-                                
-                                // Draw CUE Markers on the settings slider
-                                let markers = self.audio.get_cue_markers();
-                                if !markers.is_empty() && tot_ms > 0 {
-                                    let current_cue_idx = self.audio.get_current_cue_track();
-                                    let painter = ui.painter();
-                                    let slider_rect = resp.rect;
-                                    
-                                    for (idx, &marker_ms) in markers.iter().enumerate() {
-                                        if marker_ms >= tot_ms { continue; }
-                                        let ratio = (marker_ms as f32 / tot_ms as f32).clamp(0.0, 1.0);
-                                        let x = slider_rect.left() + ratio * slider_rect.width();
-                                        let center = egui::pos2(x, slider_rect.center().y);
-                                        
-                                        let is_current = current_cue_idx == Some(idx);
-                                        let color = if is_current {
-                                            self.cached_palette.accent2
-                                        } else {
-                                            self.cached_palette.text_muted.gamma_multiply(0.6)
-                                        };
-                                        let radius = if is_current { 2.5 } else { 1.5 };
-                                        painter.circle_filled(center, radius, color);
-                                    }
-                                }
-
-                                if resp.drag_stopped() || (resp.clicked() && !resp.dragged()) {
-                                    self.audio.seek(Duration::from_secs_f32(pos_s));
-                                    self.music_seeking_target_ms = Some((pos_s * 1000.0) as u64);
-                                    self.music_seek_timeout = Some(Instant::now());
-                                    self.music_hud_last_activity = Instant::now();
-                                }
-                            });
-                        }
-                    }
-
-                    // Audio output device selection
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(t!("music.output_device")).color(self.cached_palette.text_muted));
-                        
-                        // Manual refresh button
-                        if ui.button("⟲").on_hover_text(t!("music.refresh_devices")).clicked() {
-                            self.refresh_audio_devices();
-                        }
-
-                        let current_dev = self.settings.audio_device.clone().unwrap_or_else(|| t!("music.default_device").to_string());
-                        let short_dev = middle_truncate(&current_dev, 36);
-                        let combo_width = ui.available_width().min(230.0); // Slightly reduced to fit refresh button
-
-                        egui::ComboBox::from_id_salt("audio_device_select")
-                            .selected_text(RichText::new(short_dev))
-                            .width(combo_width)
-                            .show_ui(ui, |ui| {
-                                let default_label = t!("music.default_device").to_string();
-                                if ui.selectable_label(self.settings.audio_device.is_none(), &default_label).clicked() {
-                                    self.settings.audio_device = None;
-                                    self.audio.set_device(None);
-                                    self.queue_save();
-                                    self.music_hud_last_activity = Instant::now();
-                                }
-                                for dev in &self.cached_audio_devices {
-                                    let is_selected = self.settings.audio_device.as_ref() == Some(dev);
-                                    let short_name = middle_truncate(dev, 40);
-                                    if ui.selectable_label(is_selected, short_name).clicked() {
-                                        self.settings.audio_device = Some(dev.clone());
-                                        self.audio.set_device(Some(dev.clone()));
-                                        self.queue_save();
-                                        self.music_hud_last_activity = Instant::now();
-                                    }
-                                }
-                            });
-                    });
-
-                    // Volume slider
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(t!("label.volume")).color(self.cached_palette.text_muted));
-                        let old_vol = self.settings.volume;
-                        let resp = ui.add(
-                            egui::Slider::new(&mut self.settings.volume, 0.0..=1.0)
-                                .show_value(true)
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                        );
-                        // Update audio volume in real-time (cheap, no I/O)
-                        if (old_vol - self.settings.volume).abs() > 0.001 {
-                            self.audio.set_volume(self.settings.volume);
-                        }
-                        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                            self.queue_save();
-                        }
-                    });
-                    // Audio error feedback
-                    if let Some(err) = self.audio.take_error() {
-                        ui.label(
-                            RichText::new(t!("music.audio_error", err = err))
-                                .color(Color32::from_rgb(255, 100, 100))
-                                .small(),
-                        );
-                    }
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                // ── Font & Appearance ──────────────────────────────────────
-                ui.label(RichText::new(t!("section.font")).color(self.cached_palette.accent2).strong());
-                ui.add_space(2.0);
-
-                ui.horizontal(|ui| {
-                    ui.label(t!("label.interface_size"));
-                    let mut current_size = self.temp_font_size.unwrap_or(self.settings.font_size);
-                    let resp = ui.add(egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0));
-                    
-                    if resp.dragged() {
-                        self.temp_font_size = Some(current_size);
-                    } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                        self.settings.font_size = current_size;
-                        self.temp_font_size = None;
-                        setup_visuals(ctx, &self.settings, &self.cached_palette);
-                        self.queue_save();
-                    }
-                });
-
-                // Group font selection and error message in a stable ID scope to prevent egui ID oscillation
-                ui.push_id("font_selection_area", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(t!("label.interface_font"));
-                        let old_family = self.settings.font_family.clone();
-                        egui::ComboBox::from_id_salt("font_family")
-                            .selected_text(if self.settings.font_family == "System Default" { t!("label.system_default").to_string() } else { self.settings.font_family.clone() })
-                            .show_ui(ui, |ui| {
-                                for family in &self.font_families {
-                                    let label = if family == "System Default" { t!("label.system_default").to_string() } else { family.clone() };
-                                    ui.selectable_value(&mut self.settings.font_family, family.clone(), label);
-                                }
-                            });
-                        if old_family != self.settings.font_family {
-                            // Reset font error flag on any change to retry or clear
-                            self.is_font_error = false;
-                            if !setup_fonts(ctx, &self.settings) {
-                                // REJECT: Revert state and notify user
-                                self.settings.font_family = "System Default".to_string();
-                                setup_fonts(ctx, &self.settings);
-                                // We no longer bake a static string here. 
-                                // is_font_error=true triggers real-time translation in the UI.
-                                self.is_font_error = true;
-                                // --- Internal Signal ---
-                                // We use an empty string as a placeholder because the actual UI text 
-                                // for font errors is dynamically pulled via t!("status.invalid_font").
-                                self.error_message = Some(String::new()); 
-                                self.music_hud_last_activity = Instant::now();
-                            }
-                            setup_visuals(ctx, &self.settings, &self.cached_palette);
-                            self.queue_save();
-                        }
-                    });
-
-                    // --- Inline Font Error Feedback (Real-time i18n) ---
-                    if self.is_font_error {
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0); // Indent to match label alignment
-                            ui.label(RichText::new(format!("⚠ {}", t!("status.invalid_font"))).color(Color32::from_rgb(255, 100, 100)).small());
-                        });
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(t!("section.language"));
-                    let old_lang = self.settings.language.clone();
-                    egui::ComboBox::from_id_salt("language")
-                        .selected_text(match self.settings.language.as_str() {
-                            "zh-CN" => t!("lang.zh_cn"),
-                            "zh-TW" => t!("lang.zh_tw"),
-                            "zh-HK" => t!("lang.zh_hk"),
-                            _ => t!("lang.en"),
-                        }.to_string())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.settings.language, "en".to_string(), t!("lang.en").to_string());
-                            ui.selectable_value(&mut self.settings.language, "zh-CN".to_string(), t!("lang.zh_cn").to_string());
-                            ui.selectable_value(&mut self.settings.language, "zh-TW".to_string(), t!("lang.zh_tw").to_string());
-                            ui.selectable_value(&mut self.settings.language, "zh-HK".to_string(), t!("lang.zh_hk").to_string());
-                        });
-                    if old_lang != self.settings.language {
-                        rust_i18n::set_locale(&self.settings.language);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(t!("app.title").to_string()));
-                        self.queue_save();
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(t!("section.theme"));
-                    let old_theme = self.settings.theme;
-                    egui::ComboBox::from_id_salt("theme_selector")
-                        .selected_text(match self.settings.theme {
-                            AppTheme::Dark => t!("theme.dark"),
-                            AppTheme::Light => t!("theme.light"),
-                            AppTheme::System => t!("theme.system"),
-                        }.to_string())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.settings.theme, AppTheme::Dark, t!("theme.dark").to_string());
-                            ui.selectable_value(&mut self.settings.theme, AppTheme::Light, t!("theme.light").to_string());
-                            ui.selectable_value(&mut self.settings.theme, AppTheme::System, t!("theme.system").to_string());
-                        });
-                    
-                    if old_theme != self.settings.theme {
-                        self.cached_palette = self.settings.theme.resolve(&mut self.theme_cache);
-                        setup_visuals(ctx, &self.settings, &self.cached_palette);
-                        self.queue_save();
-                    }
-                });
-
-                ui.add_space(8.0);
-                }); // End of Right Column
-                }); // End of ui.columns
-
-                ui.separator();
-                ui.add_space(6.0);
-
-                // ── System Integration (Windows only) ─────────────────────
-                #[cfg(target_os = "windows")]
-                {
-                    ui.label(RichText::new(t!("section.system_windows")).color(self.cached_palette.accent2).strong());
-                    ui.add_space(2.0);
-                    ui.label(
-                        RichText::new(t!("win.register_hint"))
-                            .color(self.cached_palette.text_muted)
-                            .small(),
-                    );
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if styled_button(ui, t!("win.assoc_formats"), &self.cached_palette).clicked() {
-                            // Capture snapshot from registry
-                            if let Ok(reg) = crate::formats::get_registry().read() {
-                                self.file_assoc_formats = reg.formats.clone();
-                                self.file_assoc_selections = vec![true; self.file_assoc_formats.len()];
-                                self.show_file_assoc_dialog = true;
-                            }
-                        }
-                        ui.add_space(8.0);
-                        if styled_button(ui, t!("win.remove_assoc"), &self.cached_palette).clicked() {
-                            let confirmed = rfd::MessageDialog::new()
-                                .set_title(t!("win.confirm_remove_title").to_string())
-                                .set_description(t!("win.confirm_remove_msg").to_string())
-                                .set_buttons(rfd::MessageButtons::OkCancel)
-                                .set_level(rfd::MessageLevel::Warning)
-                                .show() == rfd::MessageDialogResult::Ok;
-                            if confirmed {
-                                crate::windows_utils::unregister_file_associations();
-                            }
-                        }
-                    });
-                    ui.add_space(6.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                }
-
-                // ── Exit area ────────────────────────────────────────────────
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(styled_button_widget(t!("btn.exit"), &self.cached_palette))
-                        .clicked()
-                    {
-                        do_quit = true;
-                    }
-                    ui.add_space(12.0);
-                    #[cfg(target_os = "macos")]
-                    ui.label(RichText::new(t!("hint.quit_macos")).color(self.cached_palette.text_muted).small());
-                    #[cfg(target_os = "linux")]
-                    ui.label(RichText::new(t!("hint.quit_linux")).color(self.cached_palette.text_muted).small());
-                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                    ui.label(RichText::new(t!("hint.quit_windows")).color(self.cached_palette.text_muted).small());
-                });
-            });
-
-        // Deferred actions (avoid borrow issues with closures)
-        if open_dir {
-            self.open_directory_dialog();
-            self.queue_save();
-        }
-        if open_music_file {
-            self.open_music_file_dialog();
-            self.queue_save();
-        }
-        if open_music_dir {
-            self.open_music_dir_dialog();
-            self.queue_save(); // saves music_path
-        }
-        if fullscreen_changed {
-            self.pending_fullscreen = Some(self.settings.fullscreen);
-            self.queue_save();
-        }
-        if music_enabled_changed {
-            self.restart_audio_if_enabled();
-            self.queue_save();
-        }
-        if do_quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+    fn draw_music_hud_foreground(&mut self, ctx: &egui::Context) {
+        ui_hud::draw(self, ctx);
     }
 
     // ------------------------------------------------------------------
@@ -3534,7 +2883,6 @@ impl ImageViewerApp {
             self.pan_offset = Vec2::new(p.y, -p.x);
         }
 
-        // Adjust for scale ratio (critical for FitToWindow)
         if old_scale > 0.0001 {
             self.pan_offset *= new_scale / old_scale;
         }
@@ -3545,478 +2893,6 @@ impl ImageViewerApp {
         if let Some(tm) = &mut self.tile_manager {
             tm.generation = self.generation;
             tm.pending_tiles.clear();
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Wallpaper Dialog
-    // ------------------------------------------------------------------
-
-    fn draw_wallpaper_dialog(&mut self, ctx: &Context) {
-        if !self.show_wallpaper_dialog {
-            return;
-        }
-
-        let mut do_close = false;
-        let mut do_set = false;
-
-        egui::Window::new(t!("wallpaper.title"))
-            .id(egui::Id::new("wallpaper_window"))
-            .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(260.0, 160.0))
-            .resizable(true)
-            .collapsible(false)
-            .frame(
-                Frame::window(&ctx.global_style())
-                    .fill(self.cached_palette.panel_bg)
-                    .shadow(egui::epaint::Shadow::NONE),
-            )
-            .default_size([520.0, 320.0])
-            .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
-                ui.add_space(8.0);
-
-                if let Some(ref current) = self.current_system_wallpaper {
-                    ui.label(RichText::new(t!("wallpaper.current")).color(self.cached_palette.text_muted).small());
-                    egui::ScrollArea::horizontal()
-                        .id_salt("curr_wp_scroll")
-                        .min_scrolled_height(24.0)
-                        .show(ui, |ui| {
-                            ui.vertical(|ui| {
-                                ui.add_space(2.0);
-                                ui.add(egui::Label::new(current).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
-                                ui.add_space(4.0);
-                            });
-                        });
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                }
-
-                let path = self.image_files[self.current_index].to_string_lossy().into_owned();
-                ui.label(RichText::new(t!("wallpaper.new_path")).color(self.cached_palette.text_muted).small());
-                egui::ScrollArea::horizontal()
-                    .id_salt("new_wp_scroll")
-                    .min_scrolled_height(24.0)
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            ui.add_space(2.0);
-                            ui.add(egui::Label::new(&path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
-                            ui.add_space(4.0);
-                        });
-                    });
-                
-                if let Some((w, h)) = self.current_image_res {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(t!("wallpaper.resolution")).color(self.cached_palette.text_muted).small());
-                    ui.label(format!("{} × {}", w, h));
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.label(RichText::new(t!("wallpaper.mode")).color(self.cached_palette.accent2).strong());
-
-                ui.vertical(|ui| {
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Crop".to_string(), t!("wallpaper.crop").to_string());
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Fit".to_string(), t!("wallpaper.fit").to_string());
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Stretch".to_string(), t!("wallpaper.stretch").to_string());
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Tile".to_string(), t!("wallpaper.tile").to_string());
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Center".to_string(), t!("wallpaper.center").to_string());
-                    ui.radio_value(&mut self.selected_wallpaper_mode, "Span".to_string(), t!("wallpaper.span").to_string());
-                });
-
-                ui.add_space(16.0);
-                ui.horizontal(|ui| {
-                    if styled_button(ui, &t!("btn.set_wallpaper").to_string(), &self.cached_palette).clicked() {
-                        do_set = true;
-                    }
-                    if styled_button(ui, &t!("btn.cancel").to_string(), &self.cached_palette).clicked() {
-                        do_close = true;
-                    }
-                });
-            });
-
-        if do_set {
-            let path = self.image_files[self.current_index].clone();
-            let mode_str = self.selected_wallpaper_mode.clone();
-            
-            // Map string to wallpaper::Mode
-            let mode = match mode_str.as_str() {
-                "Center" => wallpaper::Mode::Center,
-                "Crop" => wallpaper::Mode::Crop,
-                "Fit" => wallpaper::Mode::Fit,
-                "Span" => wallpaper::Mode::Span,
-                "Stretch" => wallpaper::Mode::Stretch,
-                "Tile" => wallpaper::Mode::Tile,
-                _ => wallpaper::Mode::Crop,
-            };
-
-            // execute wallpaper setting (can take a second on Windows)
-            std::thread::spawn(move || {
-                let _ = wallpaper::set_mode(mode);
-                if let Err(e) = wallpaper::set_from_path(path.to_str().unwrap_or_default()) {
-                    log::error!("Failed to set wallpaper: {e}");
-                }
-            });
-            
-            do_close = true;
-        }
-
-        if do_close {
-            self.show_wallpaper_dialog = false;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // UI: Goto dialog
-    // ------------------------------------------------------------------
-
-    fn draw_goto_dialog(&mut self, ctx: &Context) {
-        let total = self.image_files.len();
-        if total == 0 {
-            return;
-        }
-
-        let mut do_close = false;
-        let mut do_jump = false;
-
-        egui::Window::new(t!("goto.title"))
-            .id(egui::Id::new("goto_window"))
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .resizable(false)
-            .collapsible(false)
-            .frame(
-                Frame::window(&ctx.global_style())
-                    .fill(self.cached_palette.panel_bg)
-                    .shadow(egui::epaint::Shadow::NONE),
-            )
-            .fixed_size([320.0, 120.0])
-            .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(Color32::WHITE);
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(t!("goto.hint", total = total.to_string()))
-                        .color(self.cached_palette.text_muted)
-                        .small(),
-                );
-                ui.add_space(6.0);
-
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.goto_input)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(format!("{}", self.current_index + 1)),
-                );
-
-                // Auto-focus the text field when the dialog first opens
-                if self.goto_needs_focus {
-                    resp.request_focus();
-                    self.goto_needs_focus = false;
-                }
-
-                // Enter key confirms; Escape closes
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    do_jump = true;
-                }
-                if ui.input(|i| i.key_pressed(Key::Escape)) {
-                    do_close = true;
-                }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if styled_button(ui, t!("btn.go"), &self.cached_palette).clicked() {
-                        do_jump = true;
-                    }
-                    if styled_button(ui, &t!("btn.cancel").to_string(), &self.cached_palette).clicked() {
-                        do_close = true;
-                    }
-                });
-            });
-
-        if do_jump {
-            let raw: usize = self.goto_input.trim().parse().unwrap_or(0);
-            // Input is 1-based; clamp to valid range
-            if raw >= 1 {
-                let idx = (raw - 1).min(total - 1);
-                self.show_goto = false;
-                self.navigate_to(idx);
-            }
-        }
-        if do_close {
-            self.show_goto = false;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // UI: File association dialog (Windows only)
-    // ------------------------------------------------------------------
-
-    #[cfg(target_os = "windows")]
-    fn draw_file_assoc_dialog(&mut self, ctx: &Context) {
-        if !self.show_file_assoc_dialog {
-            return;
-        }
-
-        // Dark background overlay (purely visual, settings panel is hidden)
-        let screen_rect = ctx.input(|i| i.content_rect());
-        let bg_layer = egui::LayerId::new(egui::Order::Background, egui::Id::new("file_assoc_bg"));
-        ctx.layer_painter(bg_layer).add(
-            egui::Shape::rect_filled(
-                screen_rect,
-                egui::CornerRadius::ZERO,
-                Color32::from_black_alpha(180),
-            ),
-        );
-
-        let mut do_apply = false;
-        let mut do_cancel = false;
-
-        egui::Window::new(t!("win.assoc_dialog_title"))
-            .id(egui::Id::new("assoc_dialog"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .default_width(420.0)
-            .frame(
-                Frame::window(&ctx.global_style())
-                    .fill(self.cached_palette.panel_bg)
-                    .shadow(egui::epaint::Shadow::NONE),
-            )
-            .show(ctx, |ui| {
-                ui.visuals_mut().override_text_color = Some(self.cached_palette.text_normal);
-
-                ui.label(
-                    RichText::new(t!("win.assoc_dialog_msg").to_string())
-                        .color(self.cached_palette.text_muted),
-                );
-                ui.add_space(8.0);
-
-                // Select All / Deselect All
-                ui.horizontal(|ui| {
-                    if styled_button(ui, t!("btn.select_all"), &self.cached_palette).clicked() {
-                        for sel in self.file_assoc_selections.iter_mut() {
-                            *sel = true;
-                        }
-                    }
-                    if styled_button(ui, t!("btn.deselect_all"), &self.cached_palette).clicked() {
-                        for sel in self.file_assoc_selections.iter_mut() {
-                            *sel = false;
-                        }
-                    }
-                });
-                ui.add_space(4.0);
-
-                // Scrollable area with grouped checkboxes
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .auto_shrink([false, true]) // Don't shrink horizontally
-                    .show(ui, |ui| {
-                        // Add some right padding to avoid scrollbar overlap
-                        ui.set_max_width(ui.available_width() - 16.0);
-                    use crate::formats::FormatGroup;
-                    let groups = [
-                        (FormatGroup::Standard, "Standard Formats"),
-                        (FormatGroup::Pro, "Professional (PS/TIFF/HEIF)"),
-                        (FormatGroup::WicSystem, "Windows System (WIC)"),
-                        (FormatGroup::WicRaw, "Camera RAW (WIC)"),
-                        (FormatGroup::Others, "Other Formats"),
-                    ];
-
-                    for (group, group_name) in groups {
-                        let group_indices: Vec<usize> = self.file_assoc_formats.iter()
-                            .enumerate()
-                            .filter(|(_, f)| f.group == group)
-                            .map(|(i, _)| i)
-                            .collect();
-
-                        if group_indices.is_empty() { continue; }
-
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(group_name).strong().color(self.cached_palette.accent2));
-                        ui.add_space(2.0);
-
-                        let cols = 5;
-                        let rows = (group_indices.len() + cols - 1) / cols;
-
-                        egui::Grid::new(format!("file_assoc_grid_{:?}", group))
-                            .num_columns(cols)
-                            .spacing([18.0, 4.0])
-                            .show(ui, |ui| {
-                                for row in 0..rows {
-                                    for col in 0..cols {
-                                        let grid_idx = row * cols + col;
-                                        if grid_idx < group_indices.len() {
-                                            let fmt_idx = group_indices[grid_idx];
-                                            let fmt = &self.file_assoc_formats[fmt_idx];
-                                            let label = format!(".{}", fmt.extension);
-                                            ui.checkbox(&mut self.file_assoc_selections[fmt_idx], label)
-                                                .on_hover_text(&fmt.description);
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-
-                // Count selected
-                let selected_count = self.file_assoc_selections.iter().filter(|&&s| s).count();
-
-                ui.horizontal(|ui| {
-                    let apply_enabled = selected_count > 0;
-                    if ui
-                        .add_enabled(
-                            apply_enabled,
-                            egui::Button::new(
-                                RichText::new(t!("win.apply_formats", count = selected_count.to_string()))
-                                    .color(Color32::WHITE)
-                            )
-                            .fill(self.cached_palette.accent)
-                            .corner_radius(egui::CornerRadius::same(4)),
-                        )
-                        .clicked()
-                    {
-                        do_apply = true;
-                    }
-                    ui.add_space(8.0);
-                    if styled_button(ui, t!("win.btn_cancel"), &self.cached_palette).clicked() {
-                        do_cancel = true;
-                    }
-                });
-            });
-
-        if do_apply {
-            // Collect selected extensions
-            let selected: Vec<&str> = self.file_assoc_formats
-                .iter()
-                .zip(self.file_assoc_selections.iter())
-                .filter(|(_, sel)| **sel)
-                .map(|(fmt, _)| fmt.extension.as_str())
-                .collect();
-            crate::windows_utils::register_file_associations(&selected);
-            self.show_file_assoc_dialog = false;
-
-            rfd::MessageDialog::new()
-                .set_title(t!("win.assoc_done_title").to_string())
-                .set_description(t!("win.assoc_done_msg").to_string())
-                .set_buttons(rfd::MessageButtons::Ok)
-                .set_level(rfd::MessageLevel::Info)
-                .show();
-        }
-        if do_cancel {
-            self.show_file_assoc_dialog = false;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Music HUD — Foreground overlay (drawn on top of all windows)
-    // ------------------------------------------------------------------
-
-    /// Renders the Music HUD as a top-most floating overlay using `egui::Area`
-    /// with `Order::Foreground`. This guarantees it is always visible, even
-    /// when the Settings panel or other modal dialogs are open.
-    fn draw_music_hud_foreground(&mut self, ctx: &Context) {
-        if !self.settings.show_music_osd {
-            return;
-        }
-
-        let screen_rect = ctx.input(|i| i.content_rect());
-
-        let mut cur_ms = self.audio.get_pos_ms();
-        // Smart seek locking logic for HUD (match target or 30s timeout)
-        if let Some(target_ms) = self.music_seeking_target_ms {
-            let diff = (cur_ms as i64 - target_ms as i64).abs();
-            let timed_out = self.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
-            if diff < 2000 || timed_out {
-                self.music_seeking_target_ms = None;
-                self.music_seek_timeout = None;
-            } else {
-                cur_ms = target_ms;
-            }
-        }
-
-        let is_active = self.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
-
-        // Wake-up: mouse proximity to bottom center hotzone
-        {
-            let hud_width = crate::constants::MUSIC_HUD_WIDTH;
-            let hud_pos = screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
-            let hud_rect = Rect::from_center_size(hud_pos, Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT));
-
-            if let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()) {
-                let in_hotzone = ptr.y > screen_rect.bottom() - 140.0 && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
-                if hud_rect.contains(ptr) || in_hotzone {
-                    self.music_hud_last_activity = Instant::now();
-                }
-            }
-        }
-
-        // Only render when active and audio is loaded
-        if !is_active || self.audio.get_duration_ms() == 0 || self.audio.get_current_track().is_none() {
-            return;
-        }
-
-        let music_state = crate::ui::osd::OsdState {
-            index: self.current_index,
-            total: self.image_files.len(),
-            zoom_pct: 0,
-            res: (0, 0),
-            mode: String::new(),
-            current_track: self.audio.get_current_track(),
-            metadata: self.audio.get_metadata(),
-            current_cue_track: self.audio.get_current_cue_track(),
-            current_pos_ms: cur_ms,
-            total_duration_ms: self.audio.get_duration_ms(),
-            cue_markers: self.audio.get_cue_markers(),
-        };
-
-        // HUD position: always anchored to screen bottom-center, plus user drag offset.
-        // This way the HUD follows window resizing but also remembers user repositioning.
-        let hud_base_pos = screen_rect.center_bottom() + Vec2::new(
-            -(crate::constants::MUSIC_HUD_WIDTH / 2.0),
-            crate::constants::MUSIC_HUD_BOTTOM_OFFSET - (crate::constants::MUSIC_HUD_HEIGHT / 2.0),
-        );
-        let hud_pos = hud_base_pos + self.music_hud_drag_offset;
-
-        let area_resp = egui::Area::new(egui::Id::new("music_hud_foreground"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(hud_pos)
-            .interactable(true)
-            .show(ctx, |ui| {
-                // Allocate a fixed-size rect for the HUD content.
-                // Sense::click_and_drag so we can detect drag for repositioning.
-                let (rect, resp) = ui.allocate_exact_size(
-                    Vec2::new(crate::constants::MUSIC_HUD_WIDTH, crate::constants::MUSIC_HUD_HEIGHT),
-                    Sense::click_and_drag(),
-                );
-                // Keep HUD awake while interacting
-                if resp.hovered() {
-                    self.music_hud_last_activity = Instant::now();
-                }
-                // Accumulate drag offset for repositioning
-                if resp.dragged() {
-                    self.music_hud_drag_offset += resp.drag_delta();
-                    self.music_hud_last_activity = Instant::now();
-                }
-                // Double-click to reset position
-                if resp.double_clicked() {
-                    self.music_hud_drag_offset = Vec2::ZERO;
-                    self.music_hud_last_activity = Instant::now();
-                }
-                // Render using the existing OSD renderer within this scoped UI
-                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                self.osd.render_music_hud(&mut child_ui, screen_rect, &music_state, &self.cached_palette);
-            });
-
-        // Handle seek from Music HUD (check the shared memory slot)
-        if let Some(target_s) = ctx.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))) {
-            self.audio.seek(Duration::from_secs_f32(target_s));
-            self.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
-            self.music_seek_timeout = Some(Instant::now());
-            self.music_hud_last_activity = Instant::now();
         }
     }
 }
@@ -4316,205 +3192,25 @@ impl eframe::App for ImageViewerApp {
         #[cfg(not(target_os = "windows"))]
         let skip_settings = false;
 
+        // Settings panel & Dialogs
         if self.show_settings && !skip_settings {
             self.draw_settings_panel(&ctx);
         } else {
             self.last_show_settings = false;
         }
-
-        if self.show_wallpaper_dialog {
-            self.draw_wallpaper_dialog(&ctx);
-        }
-
-        // File association dialog (Windows only, modal)
+        self.draw_wallpaper_dialog(&ctx);
         #[cfg(target_os = "windows")]
         self.draw_file_assoc_dialog(&ctx);
-
-        // Goto dialog
-        if self.show_goto {
-            self.draw_goto_dialog(&ctx);
-        }
-
-        // EXIF window
-        if self.show_exif_window {
-            if self.cached_exif_data.is_none() && !self.image_files.is_empty() {
-                let path = &self.image_files[self.current_index];
-                self.cached_exif_data = extract_exif(path);
-            }
-
-            let mut close_exif = false;
-            let mut close_and_copy = false;
-            egui::Window::new(t!("exif.title"))
-                .id(egui::Id::new("exif_window"))
-                .collapsible(false)
-                .resizable(true)
-                .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(300.0, 200.0))
-                .default_size([600.0, 400.0])
-                .show(&ctx, |ui| {
-                    ui.set_max_width(ui.available_width());
-                    if self.cached_exif_data.is_none() {
-                        ui.add_space(10.0);
-                        ui.label(RichText::new(t!("exif.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
-                    }
-
-                    egui::Context::default().global_style_mut(|s| s.override_text_style = None);
-                    egui::Panel::bottom("exif_footer")
-                        .resizable(false)
-                        .show_inside(ui, |ui| {
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                if styled_button(ui, &t!("exif.copy").to_string(), &self.cached_palette).clicked() {
-                                    close_and_copy = true;
-                                }
-                                if styled_button(ui, &t!("btn.close").to_string(), &self.cached_palette).clicked() {
-                                    close_exif = true;
-                                }
-                            });
-                            ui.add_space(10.0);
-                        });
-
-                    if let Some(data) = &self.cached_exif_data {
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
-                            use egui_extras::{Column, TableBuilder};
-                            egui::ScrollArea::horizontal().show(ui, |ui| {
-                                    TableBuilder::new(ui)
-                                        .striped(true)
-                                        .resizable(true)
-                                        .vscroll(true)
-                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                        .column(Column::initial(160.0).at_least(100.0))
-                                        .column(Column::remainder().at_least(100.0))
-                                        .body(|body| {
-                                            body.rows(24.0, data.len(), |mut row| {
-                                                let index = row.index();
-                                                let (k, v) = &data[index];
-                                                row.col(|ui| {
-                                                    ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
-                                                });
-                                                row.col(|ui| {
-                                                    let _ = ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
-                                                });
-                                            });
-                                        });
-                                });
-                        });
-                    }
-                    ui.add_space(10.0);
-                });
-
-            if close_and_copy {
-                if let Some(data) = &self.cached_exif_data {
-                    let text = data.iter()
-                        .map(|(k, v)| format!("{}: {}", k, v))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    ctx.copy_text(text);
-                }
-                self.show_exif_window = false;
-            }
-            if close_exif {
-                self.show_exif_window = false;
-            }
-        }
-
-        // XMP window
-        if self.show_xmp_window {
-            if self.cached_xmp_data.is_none() && !self.image_files.is_empty() {
-                let path = &self.image_files[self.current_index];
-                if let Some((data, raw)) = extract_xmp(path) {
-                    self.cached_xmp_data = Some(data);
-                    self.cached_xmp_xml = Some(raw);
-                }
-            }
-
-            let mut close_xmp = false;
-            let mut close_and_copy = false;
-            egui::Window::new(t!("xmp.title").to_string())
-                // .id(egui::Id::new("xmp_window"))
-                .collapsible(false)
-                .resizable(true)
-                .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(320.0, 240.0))
-                .default_size([640.0, 500.0])
-                .show(&ctx, |ui| {
-                    ui.set_max_width(ui.available_width());
-                    if self.cached_xmp_data.is_none() {
-                        ui.add_space(10.0);
-                        ui.label(RichText::new(t!("xmp.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
-                    }
-
-                    egui::Panel::bottom("xmp_footer")
-                        .resizable(false)
-                        .show_inside(ui, |ui| {
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                if let Some(xml_str) = &self.cached_xmp_xml {
-                                    if styled_button(ui, &t!("xmp.copy_text").to_string(), &self.cached_palette).clicked() {
-                                        close_and_copy = true;
-                                    }
-                                    if styled_button(ui, &t!("xmp.copy_xml").to_string(), &self.cached_palette).clicked() {
-                                        ctx.copy_text(xml_str.clone());
-                                        self.show_xmp_window = false;
-                                    }
-                                }
-                                if styled_button(ui, &t!("btn.close").to_string(), &self.cached_palette).clicked() {
-                                    close_xmp = true;
-                                }
-                            });
-                            ui.add_space(10.0);
-                        });
-
-                    if let Some(data) = &self.cached_xmp_data {
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
-                            use egui_extras::{Column, TableBuilder};
-                            egui::ScrollArea::horizontal().show(ui, |ui| {
-                                    TableBuilder::new(ui)
-                                        .striped(true)
-                                        .resizable(true)
-                                        .vscroll(true)
-                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                        .column(Column::initial(180.0).at_least(120.0))
-                                        .column(Column::remainder().at_least(100.0))
-                                        .body(|body| {
-                                            body.rows(24.0, data.len(), |mut row| {
-                                                let index = row.index();
-                                                let (k, v) = &data[index];
-                                                row.col(|ui| {
-                                                    ui.label(RichText::new(k).color(self.cached_palette.text_muted).monospace());
-                                                });
-                                                row.col(|ui| {
-                                                    let _ = ui.selectable_label(false, RichText::new(v).color(self.cached_palette.text_normal).monospace());
-                                                });
-                                            });
-                                        });
-                                });
-                        });
-                    }
-                    ui.add_space(10.0);
-                });
-
-            if close_and_copy {
-                if let Some(data) = &self.cached_xmp_data {
-                    let text = data.iter()
-                        .map(|(k, v)| format!("{}: {}", k, v))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    ctx.copy_text(text);
-                }
-                self.show_xmp_window = false;
-            }
-            if close_xmp {
-                self.show_xmp_window = false;
-            }
-        }
+        self.draw_goto_dialog(&ctx);
+        ui_dialogs::exif::draw(self, &ctx);
+        ui_dialogs::xmp::draw(self, &ctx);
 
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
-        // Rendered last via Area::Order::Foreground so it always appears
-        // on top of the Settings panel and other modal windows.
         self.draw_music_hud_foreground(&ctx);
     }
 }
 
-fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String)>> {
+pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String)>> {
     use std::fs::File;
     use std::io::BufReader;
     
@@ -4537,7 +3233,7 @@ fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String)>> {
     }
 }
 
-fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)> {
+pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)> {
     use xmpkit::XmpFile;
     use quick_xml::reader::Reader;
     use quick_xml::events::Event;
@@ -4638,321 +3334,3 @@ fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
-    let mut visuals = if palette.is_dark { egui::Visuals::dark() } else { egui::Visuals::light() };
-    visuals.window_fill = palette.panel_bg;
-    visuals.panel_fill = palette.panel_bg;
-    visuals.window_fill = palette.panel_bg;
-    visuals.extreme_bg_color = palette.extreme_bg;
-    visuals.faint_bg_color = palette.widget_bg;
-
-    // Non-interactive (scrollbar tracks, separator lines, etc.)
-    visuals.widgets.noninteractive.bg_fill = palette.widget_bg;
-    visuals.widgets.noninteractive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, palette.text_muted);
-
-    // Inactive: bg_fill → checkbox/scrollbar idle; weak_bg_fill → button backgrounds
-    visuals.widgets.inactive.bg_fill = if palette.is_dark { 
-        Color32::from_gray(85) 
-    } else { 
-        Color32::from_gray(210) // Slightly darker for better light-mode visibility (idle scrollbar)
-    };
-    visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);
-
-    // Harden opaque backgrounds for other states to avoid "Performance Mode" transparency glitches
-    visuals.widgets.hovered.bg_fill = if palette.is_dark { Color32::from_gray(100) } else { Color32::from_gray(225) };
-    visuals.widgets.active.bg_fill = if palette.is_dark { palette.widget_active } else { palette.accent };
-    
-    // Thematic hover background for menus and dropdowns
-    if palette.is_dark {
-        visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
-    } else {
-        // Light Mode: Very subtle tint + color the text itself to avoid "muddy" look
-        let hover_base_color = palette.accent;
-        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
-            hover_base_color.r(),
-            hover_base_color.g(),
-            hover_base_color.b(),
-            20, // Very airy
-        );
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent); // The text turns indigo
-    }
-
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.widget_border_hover);
-
-    // Active: bg_fill → scrollbar drag; weak_bg_fill → button press
-    visuals.widgets.active.bg_fill = palette.accent;
-    visuals.widgets.active.weak_bg_fill = if palette.is_dark {
-        palette.widget_active
-    } else {
-        Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 50)
-    };
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.accent });
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, if palette.is_dark { Color32::WHITE } else { palette.accent });
-
-    // Selection (used in ComboBox current item and SelectableLabel)
-    if palette.is_dark {
-        // Dark Mode: keep selected states fully opaque and neutral to avoid
-        // Windows "best performance" compositing glitches and unexpected blue highlights.
-        visuals.selection.bg_fill = Color32::from_gray(78);
-        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_gray(210));
-    } else {
-        // Light Mode: Use a delicate outline + soft fill instead of a solid block
-        // Increased thickness to 2.0 for better hierarchy as requested
-        visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(palette.accent2.r(), palette.accent2.g(), palette.accent2.b(), 30);
-        visuals.selection.stroke = egui::Stroke::new(2.0, palette.accent2);
-    }
-
-    ctx.set_visuals(visuals);
-    ctx.set_pixels_per_point(ctx.native_pixels_per_point().unwrap_or(1.0));
-
-    let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-    style.spacing.button_padding = Vec2::new(10.0, 5.0);
-    
-    // Modernize rounding: Boost were it counts for a more "premium" feel
-    // 3.0 corner radius provides a much crisper, professional look as requested
-    style.visuals.window_corner_radius = egui::CornerRadius::same(6);
-    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(3);
-    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(3);
-    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(3);
-    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(3);
-    // Use bg_fill (not fg_stroke) for scrollbar handle color
-    style.spacing.scroll.foreground_color = false;
-
-    // Apply global font size
-    let size = settings.font_size;
-    for id in style.text_styles.values_mut() {
-        id.size = size;
-    }
-    // Headings should be slightly larger
-    if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
-        id.size = size * 1.25;
-    }
-    if let Some(id) = style.text_styles.get_mut(&egui::TextStyle::Small) {
-        id.size = size * 0.8;
-    }
-
-    ctx.set_global_style(style);
-}
-
-fn is_font_safe(data: &[u8]) -> bool {
-    // Quickly check the font header and table structure.
-    // This is extremely fast (<1ms) and avoids egui panicking on broken fonts.
-    ttf_parser::Face::parse(data, 0).is_ok()
-}
-
-/// characters in file paths are rendered correctly. If a specific font family is 
-/// chosen in settings, try to load that one first.
-/// Returns true if the requested font (if any) was successfully loaded.
-fn setup_fonts(ctx: &Context, settings: &Settings) -> bool {
-    let mut fonts = egui::FontDefinitions::default();
-    let mut font_loaded = false;
-    let mut user_font_failed = false;
-
-    // 1. Try to load the user-selected font if not "System Default"
-    if settings.font_family != "System Default" {
-        use font_kit::source::SystemSource;
-        use font_kit::family_name::FamilyName;
-        use font_kit::properties::Properties;
-        
-        let source = SystemSource::new();
-        if let Ok(handle) = source.select_best_match(
-            &[FamilyName::Title(settings.font_family.clone())],
-            &Properties::new(),
-        ) {
-            if let Ok(data) = handle.load() {
-                let bytes = data.copy_font_data().map(|d| d.to_vec());
-                if let Some(bytes) = bytes {
-                    // VALIDATE: Only insert if the font is structurally sound
-                    if is_font_safe(&bytes) {
-                        fonts.font_data.insert(
-                            "UserFont".to_owned(),
-                            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-                        );
-                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                        family.insert(0, "UserFont".to_owned());
-                    }
-                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                        family.insert(0, "UserFont".to_owned());
-                    }
-                        font_loaded = true;
-                    } else {
-                        log::warn!("[UI] Skipping unreliable font: {}", settings.font_family);
-                        user_font_failed = true;
-                    }
-                } else {
-                    user_font_failed = true;
-                }
-            } else {
-                user_font_failed = true;
-            }
-        } else {
-            user_font_failed = true;
-        }
-    }
-
-    // 2. Fallback to existing CJK logic if no font loaded or as secondary fallback
-    #[cfg(target_os = "windows")]
-    let win_fonts: String = {
-        let root = std::env::var("WINDIR")
-            .or_else(|_| std::env::var("SystemRoot"))
-            .unwrap_or_else(|_| r"C:\Windows".to_string());
-        format!(r"{}\Fonts", root)
-    };
-    #[cfg(target_os = "windows")]
-    let candidates: Vec<String> = vec![
-        format!(r"{}\msyh.ttc",   win_fonts),
-        format!(r"{}\msyhbd.ttc", win_fonts),
-        format!(r"{}\simsun.ttc", win_fonts),
-    ];
-    #[cfg(target_os = "macos")]
-    let candidates: Vec<String> = vec![
-        "/System/Library/Fonts/PingFang.ttc".to_string(),
-        "/Library/Fonts/Arial Unicode.ttf".to_string(),
-    ];
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let candidates: Vec<String> = vec![
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string(),
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc".to_string(),
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
-    ];
-    for path in candidates {
-        if let Ok(data) = std::fs::read(&path) {
-            // VALIDATE: Check structural integrity before passing to egui
-            if is_font_safe(&data) {
-                fonts.font_data.insert(
-                    "CJK".to_owned(),
-                    std::sync::Arc::new(egui::FontData::from_owned(data)),
-                );
-                fonts.families.entry(egui::FontFamily::Proportional).or_default().push("CJK".to_owned());
-                fonts.families.entry(egui::FontFamily::Monospace).or_default().push("CJK".to_owned());
-                font_loaded = true;
-                break; // Found a valid CJK font
-            } else {
-                log::warn!("[UI] Skipping corrupted CJK candidate: {}", path);
-            }
-        }
-    }
-
-    if font_loaded {
-        ctx.set_fonts(fonts);
-    }
-    
-    !user_font_failed
-}
-
-fn get_system_font_families() -> Vec<String> {
-    use font_kit::source::SystemSource;
-    let source = SystemSource::new();
-    let mut families = source.all_families().unwrap_or_default();
-    families.sort();
-    // Insert "System Default" at the beginning
-    families.insert(0, "System Default".to_string());
-    families
-}
-
-fn copy_file_to_clipboard(path: &str) {
-    use clipboard_rs::{Clipboard, ClipboardContext};
-    if let Ok(ctx) = ClipboardContext::new() {
-        let _ = ctx.set_files(vec![path.to_string()]);
-    }
-}
-
-fn middle_truncate(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        return s.to_string();
-    }
-    let half = (max_chars.saturating_sub(3)) / 2;
-    let chars: Vec<char> = s.chars().collect();
-    let start: String = chars.iter().take(half).collect();
-    let end: String = chars.iter().skip(char_count - half).collect();
-    format!("{}...{}", start, end)
-}
-
-fn styled_button(ui: &mut egui::Ui, label: impl Into<egui::WidgetText>, palette: &ThemePalette) -> egui::Response {
-    ui.add(styled_button_widget(label, palette))
-}
-
-fn styled_button_widget<'a>(label: impl Into<egui::WidgetText> + 'a, palette: &'a ThemePalette) -> impl egui::Widget + 'a {
-    let label = label.into();
-    move |ui: &mut egui::Ui| {
-        ui.scope(|ui| {
-            let visuals = &mut ui.style_mut().visuals;
-            if palette.is_dark {
-                // Dark Mode: "Stealth Modern" Style (ComboBox-like)
-                // Using widget_bg and a crisp silver border for a professional, integrated look
-                visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
-                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, Color32::from_gray(100)); // Silver-Gray
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
-                
-                visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, Color32::from_gray(180)); // Brighter Silver
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
-                
-                ui.add(egui::Button::new(label.color(Color32::WHITE)).corner_radius(egui::CornerRadius::same(3)))
-            } else {
-                // Light Mode: Ghost style with reactive tint and border
-                visuals.widgets.inactive.weak_bg_fill = Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 10);
-                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5, palette.accent);
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.accent);
-                
-                visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), 40);
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.accent);
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent);
-                
-                ui.add(egui::Button::new(label.color(palette.accent)).corner_radius(egui::CornerRadius::same(3)))
-            }
-        }).inner
-    }
-}
-
-/// Renders a read-only path display box (Frame + Label).
-/// Returns the frame's Response so callers can attach `.on_hover_text()`.
-fn path_display_box(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, is_placeholder: bool, width: f32, palette: &ThemePalette) -> egui::Response {
-    let text = text.into();
-    let text_color = if is_placeholder {
-        palette.text_muted
-    } else {
-        palette.text_normal
-    };
-    let frame_resp = egui::Frame::new()
-        .fill(palette.widget_bg)
-        .inner_margin(egui::Margin::symmetric(6, 4))
-        .corner_radius(egui::CornerRadius::same(4))
-        .stroke(egui::Stroke::new(1.0, palette.widget_border))
-        .show(ui, |ui| {
-            ui.set_width(width);
-            ui.add(
-                egui::Label::new(text.color(text_color).small())
-                    .truncate(),
-            );
-        });
-    frame_resp.response
-}
-
-fn draw_empty_hint(ui: &mut egui::Ui, rect: Rect, palette: &ThemePalette) {
-    ui.painter().text(
-        rect.center() - Vec2::new(0.0, 12.0),
-        Align2::CENTER_CENTER,
-        "🖼",
-        FontId::proportional(48.0),
-        palette.hint_icon,
-    );
-    ui.painter().text(
-        rect.center() + Vec2::new(0.0, 30.0),
-        Align2::CENTER_CENTER,
-        t!("hint.no_images").to_string(),
-        FontId::proportional(16.0),
-        palette.hint_text,
-    );
-}

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use egui::Color32;
+use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 

@@ -99,3 +99,34 @@ pub const CRASH_DIALOG_FALLBACK_TITLE: &str = "Application Error";
 /// Default fallback message for the error dialog when i18n is not yet available.
 pub const CRASH_DIALOG_FALLBACK_MSG: &str = "An unexpected error occurred.\n\nDiagnostic info has been copied to the clipboard and saved to the crash report file.";
 
+/// The standard thickness for strokes (e.g. borders, lines).
+pub const STANDARD_STROKE_WIDTH: f32 = 1.0;
+
+/// Default position for the settings window.
+pub const SETTINGS_WINDOW_DEFAULT_POS: [f32; 2] = [12.0, 12.0];
+/// Minimum width for the settings window.
+pub const SETTINGS_WINDOW_MIN_WIDTH: f32 = 550.0;
+/// Default width for the settings window.
+pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 640.0;
+/// Maximum width for the settings window.
+pub const SETTINGS_WINDOW_MAX_WIDTH: f32 = 800.0;
+
+/// Margin for standard OSD elements.
+pub const OSD_MARGIN: f32 = 12.0;
+/// Text size for OSD status information.
+pub const OSD_TEXT_SIZE: f32 = 12.0;
+/// Text size for OSD error messages.
+pub const OSD_ERROR_TEXT_SIZE: f32 = 13.0;
+/// Vertical offset for OSD error messages (to avoid overlapping status text).
+pub const OSD_ERROR_OFFSET: f32 = 32.0;
+
+/// Width deduction for the progress slider in the OSD/HUD to account for labels.
+pub const SLIDER_WIDTH_LABEL_OFFSET: f32 = 40.0;
+
+/// Text size for large loading hints.
+pub const LOADING_HINT_TEXT_SIZE: f32 = 16.0;
+
+/// Common spacing between items in vertical layouts (e.g. dialogs).
+pub const UI_ITEM_SPACING_X: f32 = 8.0;
+pub const UI_ITEM_SPACING_Y: f32 = 6.0;
+

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use egui::{Align2, Color32, FontId, Vec2, Rect, CornerRadius, Stroke, RichText, StrokeKind};
+use eframe::egui::{self, Align2, Color32, FontId, Vec2, Rect, CornerRadius, Stroke, RichText, StrokeKind};
 use std::time::Instant;
 use crate::theme::ThemePalette;
 use rust_i18n::t;
@@ -78,24 +78,24 @@ impl OsdRenderer {
         }
 
         if let Some(hud) = &self.cached_hud {
-            let hud_pos = screen_rect.left_bottom() + Vec2::new(12.0, -12.0);
+            let hud_pos = screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
             ui.painter().text(
                 hud_pos,
                 Align2::LEFT_BOTTOM,
                 hud,
-                FontId::proportional(12.0),
+                FontId::proportional(crate::constants::OSD_TEXT_SIZE),
                 palette.osd_text,
             );
         }
 
         // Display persistence error if active
         if let Some((err, _)) = save_error {
-            let err_pos = screen_rect.left_bottom() + Vec2::new(12.0, -32.0);
+            let err_pos = screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_ERROR_OFFSET);
             ui.painter().text(
                 err_pos,
                 Align2::LEFT_BOTTOM,
                 t!("error.settings_save_failed", error = err).to_string(),
-                FontId::proportional(13.0),
+                FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE),
                 Color32::from_rgb(255, 100, 100),
             );
         }
@@ -161,7 +161,7 @@ impl OsdRenderer {
                     
                     ui.label(RichText::new(cur_str).small().color(palette.text_muted));
                     
-                    ui.spacing_mut().slider_width = ui.available_width() - 40.0;
+                    ui.spacing_mut().slider_width = ui.available_width() - crate::constants::SLIDER_WIDTH_LABEL_OFFSET;
                     let resp = ui.add(
                         egui::Slider::new(&mut pos, 0.0..=total)
                             .show_value(false)
@@ -208,7 +208,7 @@ impl OsdRenderer {
             screen_rect.center() - Vec2::new(0.0, 20.0),
             Align2::CENTER_BOTTOM,
             t!("status.loading").to_string(),
-            FontId::proportional(16.0),
+            FontId::proportional(crate::constants::LOADING_HINT_TEXT_SIZE),
             palette.text_muted,
         );
     }

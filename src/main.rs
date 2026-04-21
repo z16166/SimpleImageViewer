@@ -25,6 +25,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 rust_i18n::i18n!("locales");
 
 mod app;
+use eframe::egui;
 mod constants;
 mod audio;
 mod ipc;
