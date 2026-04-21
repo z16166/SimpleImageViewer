@@ -306,7 +306,19 @@ impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self) {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
-            self.queue_save();
+        }
+        // Shut down the async saver thread first: dropping the sender closes the
+        // channel, causing the saver's `recv()` loop to exit after finishing any
+        // in-progress write. This eliminates the race between the saver and our
+        // synchronous save below.
+        let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
+        let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
+        drop(old_tx);
+        // Brief yield to let the saver thread finish any in-progress I/O
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        
+        if let Err(e) = self.settings.save() {
+            log::error!("[on_exit] Failed to save settings: {}", e);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.

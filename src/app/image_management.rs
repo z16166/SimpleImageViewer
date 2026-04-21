@@ -375,10 +375,9 @@ impl ImageViewerApp {
             }
             self.initial_image = None;
         } else if self.settings.resume_last_image {
-            let count = self.image_files.len();
             if let Some(last_path) = &self.settings.last_viewed_image {
                 if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
-                    self.current_index = (pos + 1) % count;
+                    self.current_index = pos;
                 }
             }
         }

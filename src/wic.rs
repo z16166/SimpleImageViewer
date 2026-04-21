@@ -270,10 +270,16 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                     log::info!("WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})", self.path.display(), fw, fh);
 
                     if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
-                        let mut thumb_final = thumb_src.clone();
+                        // Cache the thumbnail before rotation to prevent JPEG decoder
+                        // thrashing. Embedded thumbnails can be up to 4096px+ on modern
+                        // cameras, making this a real performance concern.
+                        let thumb_cached = factory.CreateBitmapFromSource(&thumb_src, WICBitmapCacheOnDemand)
+                            .and_then(|b| b.cast::<IWICBitmapSource>())
+                            .unwrap_or_else(|_| thumb_src.clone());
+                        let mut thumb_final = thumb_cached.clone();
                         if self.transform_options != WICBitmapTransformOptions(0) {
                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                if rotator.Initialize(&thumb_src, self.transform_options).is_ok() {
+                                if rotator.Initialize(&thumb_cached, self.transform_options).is_ok() {
                                     if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
                                         thumb_final = src;
                                     }
@@ -304,10 +310,13 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                                 if fw > 512 && fw < self.physical_width / 2 {
                                     log::info!("WIC: Using secondary frame {} as preview ({}x{})", i, fw, fh);
                                     if let Ok(f_src) = f.cast::<IWICBitmapSource>() {
-                                        let mut f_final = f_src.clone();
+                                        let f_cached = factory.CreateBitmapFromSource(&f_src, WICBitmapCacheOnDemand)
+                                            .and_then(|b| b.cast::<IWICBitmapSource>())
+                                            .unwrap_or_else(|_| f_src.clone());
+                                        let mut f_final = f_cached.clone();
                                         if self.transform_options != WICBitmapTransformOptions(0) {
                                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                                if rotator.Initialize(&f_src, self.transform_options).is_ok() {
+                                                if rotator.Initialize(&f_cached, self.transform_options).is_ok() {
                                                     if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
                                                         f_final = src;
                                                     }
@@ -605,11 +614,20 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         let logical_height = if swap_wh { width } else { height };
 
         let base_source: IWICBitmapSource = frame.cast().map_err(|e| format!("cast failed: {:?}", e))?;
-        let mut final_source = base_source.clone();
+        
+        // --- PERFORMANCE FIX: Decoder Caching ---
+        // JPEG/PNG decoders can be extremely slow when accessed non-linearly (e.g. during rotation).
+        // Wrapping the source in a cache ensures the decoder is read linearly and the results
+        // are reused, preventing O(N^2) thrashing in the Rotator.
+        let cached_bitmap = factory.CreateBitmapFromSource(&base_source, WICBitmapCacheOnDemand)
+            .map_err(|e| format!("failed to create source cache: {:?}", e))?;
+        let cached_source: IWICBitmapSource = cached_bitmap.cast().map_err(|e| format!("cast failed: {:?}", e))?;
+        
+        let mut final_source = cached_source.clone();
 
         if transform_options != WICBitmapTransformOptions(0) {
             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                if rotator.Initialize(&base_source, transform_options).is_ok() {
+                if rotator.Initialize(&cached_source, transform_options).is_ok() {
                     if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
                         final_source = src;
                     }
