@@ -14,52 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#[cfg(target_os = "macos")]
 use crate::loader::{DecodedImage, ImageData};
-#[cfg(target_os = "macos")]
 use memmap2::Mmap;
-#[cfg(target_os = "macos")]
 use rayon::prelude::*;
-#[cfg(target_os = "macos")]
 use std::io::Cursor;
-#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "macos")]
 use tiff::decoder::{Decoder, DecodingResult};
-#[cfg(target_os = "macos")]
 use std::collections::{HashSet, HashMap};
-#[cfg(target_os = "macos")]
 use tiff::tags::Tag;
-#[cfg(target_os = "macos")]
 use std::sync::Mutex;
 
-#[cfg(target_os = "macos")]
 use core_foundation::array::CFArray;
-#[cfg(target_os = "macos")]
 use core_foundation::base::{CFTypeRef, TCFType};
-#[cfg(target_os = "macos")]
 use core_foundation::boolean::CFBoolean;
-#[cfg(target_os = "macos")]
 use core_foundation::dictionary::CFDictionary;
-#[cfg(target_os = "macos")]
 use core_foundation::number::CFNumber;
-#[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
-#[cfg(target_os = "macos")]
 use core_graphics::color_space::CGColorSpace;
-#[cfg(target_os = "macos")]
 use core_graphics::context::CGContext;
-#[cfg(target_os = "macos")]
 use core_graphics::image::CGImage;
-#[cfg(target_os = "macos")]
 use foreign_types::ForeignType;
 
 // External link to ImageIO and CoreServices
-#[cfg(target_os = "macos")]
 #[link(name = "ImageIO", kind = "framework")]
 #[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
@@ -126,10 +104,8 @@ unsafe extern "C" {
     fn CFRetain(obj: *const std::ffi::c_void) -> *const std::ffi::c_void;
 }
 
-#[cfg(target_os = "macos")]
 pub struct CGImageSource(core_foundation::base::CFTypeRef);
 
-#[cfg(target_os = "macos")]
 impl TCFType for CGImageSource {
     type Ref = core_foundation::base::CFTypeRef;
     fn as_concrete_TypeRef(&self) -> Self::Ref {
@@ -152,7 +128,6 @@ impl TCFType for CGImageSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Drop for CGImageSource {
     fn drop(&mut self) {
         unsafe {
@@ -161,19 +136,15 @@ impl Drop for CGImageSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Clone for CGImageSource {
     fn clone(&self) -> Self {
         unsafe { CGImageSource::wrap_under_get_rule(self.0) }
     }
 }
 
-#[cfg(target_os = "macos")]
 unsafe impl Send for CGImageSource {}
-#[cfg(target_os = "macos")]
 unsafe impl Sync for CGImageSource {}
 
-#[cfg(target_os = "macos")]
 unsafe fn get_cf_number_u32(
     dict: &CFDictionary<CFString, CFTypeRef>,
     key: CFTypeRef,
@@ -191,7 +162,6 @@ unsafe fn get_cf_number_u32(
     None
 }
 
-#[cfg(target_os = "macos")]
 fn apply_orientation_ctm(
     context: &mut CGContext,
     orientation: u32,
@@ -232,7 +202,6 @@ fn apply_orientation_ctm(
     }
 }
 
-#[cfg(target_os = "macos")]
 pub struct ImageIoTiledSource {
     _path: PathBuf,
     physical_width: u32,
@@ -246,12 +215,9 @@ pub struct ImageIoTiledSource {
     _mmap: Arc<Mmap>,
 }
 
-#[cfg(target_os = "macos")]
 unsafe impl Send for ImageIoTiledSource {}
-#[cfg(target_os = "macos")]
 unsafe impl Sync for ImageIoTiledSource {}
 
-#[cfg(target_os = "macos")]
 impl crate::loader::TiledImageSource for ImageIoTiledSource {
     fn width(&self) -> u32 {
         self.logical_width
@@ -433,7 +399,6 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl ImageIoTiledSource {
     fn render_cgimage_to_rgba(&self, cg_image: &CGImage) -> (u32, u32, Vec<u8>) {
         let pw = cg_image.width() as u32;
@@ -462,7 +427,6 @@ impl ImageIoTiledSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub struct TiffStripCachingSource {
     path: PathBuf,
     _mmap: Arc<Mmap>,
@@ -480,12 +444,9 @@ pub struct TiffStripCachingSource {
     cache_order: Mutex<Vec<u32>>,
 }
 
-#[cfg(target_os = "macos")]
 unsafe impl Send for TiffStripCachingSource {}
-#[cfg(target_os = "macos")]
 unsafe impl Sync for TiffStripCachingSource {}
 
-#[cfg(target_os = "macos")]
 impl crate::loader::TiledImageSource for TiffStripCachingSource {
     fn width(&self) -> u32 {
         self.logical_width
@@ -566,7 +527,6 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 impl TiffStripCachingSource {
     fn get_or_decode_chunk(&self, chunk_idx: u32) -> Option<Arc<Vec<u8>>> {
         {
@@ -639,10 +599,8 @@ impl TiffStripCachingSource {
     }
 }
 
-#[cfg(target_os = "macos")]
 struct HugeTiffStrideDecoder;
 
-#[cfg(target_os = "macos")]
 impl HugeTiffStrideDecoder {
     /// Multi-threaded, Zero-Allocation Stride-Reader using Rayon + Mmap.
     fn decode_preview(
@@ -911,7 +869,6 @@ impl HugeTiffStrideDecoder {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn apply_orientation_buffer(
     pixels: Vec<u8>,
     w: u32,
@@ -951,7 +908,6 @@ fn apply_orientation_buffer(
     (out_w, out_h, out)
 }
 
-#[cfg(target_os = "macos")]
 unsafe fn render_cgimage_to_rgba_sync(
     cg_image: &CGImage,
     orientation: u32,
@@ -992,7 +948,6 @@ unsafe fn render_cgimage_to_rgba_sync(
     }
 }
 
-#[cfg(target_os = "macos")]
 pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
     let ext = path.extension()
         .and_then(|e| e.to_str())
@@ -1195,7 +1150,6 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub fn discover_imageio_codecs() -> Vec<String> {
     unsafe {
         let array_ref = CGImageSourceCopyTypeIdentifiers();

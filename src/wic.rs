@@ -19,12 +19,10 @@ use std::thread;
 use std::sync::atomic::Ordering;
 use std::cell::RefCell;
 
-#[cfg(target_os = "windows")]
 thread_local! {
     static WIC_FACTORY: RefCell<Option<IWICImagingFactory>> = RefCell::new(None);
 }
 
-#[cfg(target_os = "windows")]
 fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
     WIC_FACTORY.with(|f| {
         let mut factory = f.borrow_mut();
@@ -36,20 +34,15 @@ fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
     })
 }
 
-#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Imaging::*;
-#[cfg(target_os = "windows")]
 use windows::Win32::System::Com::*;
-#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::GENERIC_READ;
-#[cfg(target_os = "windows")]
 use windows::core::*;
 
 pub struct ComGuard;
 
 impl ComGuard {
     pub fn new() -> windows::core::Result<Self> {
-        #[cfg(target_os = "windows")]
         unsafe {
             CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
         }
@@ -57,7 +50,6 @@ impl ComGuard {
     }
 }
 
-#[cfg(target_os = "windows")]
 impl Drop for ComGuard {
     fn drop(&mut self) {
         unsafe {
@@ -89,19 +81,12 @@ pub fn init_rayon_with_com() {
 
 pub fn spawn_wic_discovery() {
     thread::spawn(|| {
-        #[cfg(target_os = "windows")]
         if let Err(e) = discover_wic_codecs() {
             log::error!("WIC codec discovery failed: {:?}", e);
-        }
-        
-        #[cfg(not(target_os = "windows"))]
-        if let Ok(mut reg) = get_registry().write() {
-            reg.discovery_finished = true;
         }
     });
 }
 
-#[cfg(target_os = "windows")]
 fn discover_wic_codecs() -> windows::core::Result<()> {
     let _com = ComGuard::new()?;
     unsafe {
@@ -477,13 +462,6 @@ fn get_exif_orientation(path: &std::path::Path) -> u32 {
 }
 
 pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader::ImageData, String> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = path;
-        return Err("WIC is only available on Windows".to_string());
-    }
-
-    #[cfg(target_os = "windows")]
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
 
