@@ -208,6 +208,16 @@ pub struct WicTiledSource {
 
 impl WicTiledSource {
     // extract_tile handles its own converter initialization to avoid deadlocks.
+
+    /// Wraps a source in a WICBitmapCacheOnDemand to prevent decoder thrashing during transforms.
+    fn wrap_with_cache(factory: &IWICImagingFactory, source: &IWICBitmapSource) -> IWICBitmapSource {
+        unsafe {
+            match factory.CreateBitmapFromSource(source, WICBitmapCacheOnDemand) {
+                Ok(bitmap) => bitmap.cast::<IWICBitmapSource>().unwrap_or_else(|_| source.clone()),
+                Err(_) => source.clone(),
+            }
+        }
+    }
 }
 
 // WIC interfaces are thread-safe for reading if COM was initialized as COINIT_MULTITHREADED.
@@ -249,7 +259,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
             }
         }
         
-        pixels
+    pixels
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -273,9 +283,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                         // Cache the thumbnail before rotation to prevent JPEG decoder
                         // thrashing. Embedded thumbnails can be up to 4096px+ on modern
                         // cameras, making this a real performance concern.
-                        let thumb_cached = factory.CreateBitmapFromSource(&thumb_src, WICBitmapCacheOnDemand)
-                            .and_then(|b| b.cast::<IWICBitmapSource>())
-                            .unwrap_or_else(|_| thumb_src.clone());
+                        let thumb_cached = Self::wrap_with_cache(factory, &thumb_src);
                         let mut thumb_final = thumb_cached.clone();
                         if self.transform_options != WICBitmapTransformOptions(0) {
                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
@@ -310,9 +318,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                                 if fw > 512 && fw < self.physical_width / 2 {
                                     log::info!("WIC: Using secondary frame {} as preview ({}x{})", i, fw, fh);
                                     if let Ok(f_src) = f.cast::<IWICBitmapSource>() {
-                                        let f_cached = factory.CreateBitmapFromSource(&f_src, WICBitmapCacheOnDemand)
-                                            .and_then(|b| b.cast::<IWICBitmapSource>())
-                                            .unwrap_or_else(|_| f_src.clone());
+                                        let f_cached = Self::wrap_with_cache(factory, &f_src);
                                         let mut f_final = f_cached.clone();
                                         if self.transform_options != WICBitmapTransformOptions(0) {
                                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
@@ -619,9 +625,7 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         // JPEG/PNG decoders can be extremely slow when accessed non-linearly (e.g. during rotation).
         // Wrapping the source in a cache ensures the decoder is read linearly and the results
         // are reused, preventing O(N^2) thrashing in the Rotator.
-        let cached_bitmap = factory.CreateBitmapFromSource(&base_source, WICBitmapCacheOnDemand)
-            .map_err(|e| format!("failed to create source cache: {:?}", e))?;
-        let cached_source: IWICBitmapSource = cached_bitmap.cast().map_err(|e| format!("cast failed: {:?}", e))?;
+        let cached_source = WicTiledSource::wrap_with_cache(&factory, &base_source);
         
         let mut final_source = cached_source.clone();
 

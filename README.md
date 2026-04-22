@@ -8,7 +8,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 ## Features
 
-- **Fast image loading** — background thread pre-loads adjacent images so navigation is instant
+- **Fast image loading** — background thread pre-loads adjacent images so navigation is instant. Includes high-performance WIC pipeline optimization for large portrait (rotated) JPEG images on Windows.
 - **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB and **60+ Camera RAW formats**
 - **Professional RAW Support** — viewing-only support for 60+ RAW formats, including Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and many more.
 - **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with efficient memory management to keep VRAM usage constant
@@ -37,7 +37,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
-- **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, **Page Flip**, **Ripple (Water)**, and **Curtain**.
+- **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, **Page Flip**, **Ripple (Water)**, **Curtain**, and a **Random** mode.
 - **Customizable Duration**: Fluid animations with adjustable duration (50ms - 2000ms).
 - **Audio Integration**: Play background music during your viewing session.
 - **CJK filename rendering** — loads standard CJK fonts so Chinese, Japanese, and Korean characters in file paths display correctly

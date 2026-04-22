@@ -24,11 +24,8 @@ impl ImageViewerApp {
                     }
                     
                     let start_track_idx = if start_idx.is_some() { self.settings.last_music_cue_track } else { None };
-                    self.audio.start_at(files, start_idx, start_track_idx);
+                    self.audio.start_at(files, start_idx, start_track_idx, self.settings.music_paused);
                     self.audio.set_volume(self.settings.volume);
-                    if self.settings.music_paused {
-                        self.audio.pause();
-                    }
                 } else if self.music_scan_path.is_some() {
                     // Check if truly empty or just aborted
                     // Actually, if it's aborted, files will be empty. 

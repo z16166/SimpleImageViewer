@@ -271,6 +271,7 @@ pub struct ImageViewerApp {
     pub(crate) save_tx: Sender<Settings>,
     pub(crate) save_error_rx: Receiver<String>,
     pub(crate) last_save_error: Option<(String, Instant)>,
+    pub(crate) saver_handle: Option<std::thread::JoinHandle<()>>,
 
     // Preload byte budgets (computed at startup from system RAM)
     pub(crate) preload_budget_forward: u64,
@@ -314,8 +315,13 @@ impl eframe::App for ImageViewerApp {
         let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
         let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
         drop(old_tx);
-        // Brief yield to let the saver thread finish any in-progress I/O
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        
+        // Wait for the saver thread to finish any in-progress I/O
+        if let Some(handle) = self.saver_handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("[on_exit] Saver thread panicked: {:?}", e);
+            }
+        }
         
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);

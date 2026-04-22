@@ -59,7 +59,7 @@ unsafe fn wasapi_poll_device_lost() -> bool { false }
 
 #[allow(dead_code)]
 pub enum AudioCommand {
-    SetPlaylist(Vec<PathBuf>, Option<usize>, Option<usize>),
+    SetPlaylist(Vec<PathBuf>, Option<usize>, Option<usize>, bool), // files, start_file_idx, start_track_idx, paused
     SetVolume(f32),
     Play,
     Pause,
@@ -117,10 +117,10 @@ impl AudioPlayer {
 
 
 
-    pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>, start_track_index: Option<usize>) {
+    pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>, start_track_index: Option<usize>, paused: bool) {
         self.ensure_thread_started();
         if let Some(tx) = &self.cmd_tx {
-            let _ = tx.send(AudioCommand::SetPlaylist(files, start_index, start_track_index));
+            let _ = tx.send(AudioCommand::SetPlaylist(files, start_index, start_track_index, paused));
         }
     }
 
@@ -1343,11 +1343,19 @@ fn run_audio_loop(
                     }
                 }
             }
-            Ok(AudioCommand::SetPlaylist(new_list, start_idx, start_track_idx)) => {
+            Ok(AudioCommand::SetPlaylist(new_list, start_idx, start_track_idx, initial_paused)) => {
                 playlist = new_list;
                 current_track_idx = start_idx.unwrap_or(0);
                 pending_start_track_idx = start_track_idx;
                 stopped = false;
+                paused = initial_paused;
+                if initial_paused {
+                    paused_at = Some(Instant::now());
+                } else {
+                    paused_at = None;
+                    total_paused = Duration::ZERO;
+                }
+                
                 if ensure_backend!(current_volume, paused) {
                     dur_ms.store(0, Ordering::Relaxed); // Will be updated by FEED when loading first file
                     if let Some(ref p) = backend_player {

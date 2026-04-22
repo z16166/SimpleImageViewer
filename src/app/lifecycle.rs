@@ -61,9 +61,13 @@ impl ImageViewerApp {
                 }
             });
         
-        if saver_res.is_err() {
-            log::error!("[Core] Failed to spawn settings-saver thread. Settings will not be persisted this session.");
-        }
+        let saver_handle = match saver_res {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                log::error!("[Core] Failed to spawn settings-saver thread: {}", e);
+                None
+            }
+        };
 
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
@@ -185,6 +189,7 @@ impl ImageViewerApp {
             current_rotation: 0,
             save_error_rx,
             last_save_error: None,
+            saver_handle,
             tile_upload_quota: tile_quota,
             hardware_tier: tier,
             music_seeking_target_ms: None,
