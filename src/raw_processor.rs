@@ -17,7 +17,6 @@
 use libraw_sys_msvc as ffi;
 use std::path::Path;
 use std::ffi::CString;
-// use std::ptr;
 use image::{DynamicImage, RgbImage};
 
 pub struct RawProcessor {
@@ -88,6 +87,11 @@ impl RawProcessor {
         }
 
         unsafe {
+            // Set output parameters for better colors
+            ffi::libraw_set_output_bps(self.data, 8);
+            ffi::libraw_set_use_camera_wb(self.data, 1);
+            ffi::libraw_set_auto_bright(self.data, 1);
+            
             // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {
@@ -115,12 +119,43 @@ impl RawProcessor {
             let width = img.width as u32;
             let height = img.height as u32;
             let data_ptr = &img.data as *const u8;
-            let data_len = (width * height * crate::constants::RGB_CHANNELS as u32) as usize;
+            
+            // CRITICAL FIX: Use the actual data_size returned by LibRaw.
+            // Manually calculating (width * height * 3) can fail if LibRaw includes 
+            // padding or alignment bytes at the end of the buffer.
+            let data_len = img.data_size as usize;
+            
+            log::debug!(
+                "[RawProcessor] FFI develop: ptr={:p}, size={}, dim={}x{}, colors={}, bits={}",
+                data_ptr, data_len, width, height, img.colors, img.bits
+            );
+
+            if data_ptr.is_null() || data_len == 0 {
+                ffi::libraw_dcraw_clear_mem(processed);
+                return Err(rust_i18n::t!("error.libraw_mem_image", code = -1).to_string());
+            }
+
+            // Verify that the data size is at least enough for the expected RGB8 data.
+            // If it's smaller, we have a memory corruption risk.
+            let expected_min = (width * height * crate::constants::RGB_CHANNELS as u32) as usize;
+            if data_len < expected_min {
+                ffi::libraw_dcraw_clear_mem(processed);
+                log::error!("[RawProcessor] Buffer size mismatch: expected at least {}, got {}", expected_min, data_len);
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
+            }
+
             let data = std::slice::from_raw_parts(data_ptr, data_len).to_vec();
 
             ffi::libraw_dcraw_clear_mem(processed);
 
-            let rgb = RgbImage::from_raw(width, height, data)
+            // If LibRaw included padding, we need to truncate the Vec to what RgbImage expects,
+            // or use the stride if we were to support it. RgbImage::from_raw expects exactly W*H*3.
+            let mut final_data = data;
+            if final_data.len() > expected_min {
+                final_data.truncate(expected_min);
+            }
+
+            let rgb = RgbImage::from_raw(width, height, final_data)
                 .ok_or_else(|| rust_i18n::t!("error.rgb_image_create_failed").to_string())?;
             
             Ok(DynamicImage::ImageRgb8(rgb))
@@ -143,6 +178,12 @@ impl RawProcessor {
             let img = &*processed;
             let data_ptr = &img.data as *const u8;
             let data_size = img.data_size as usize;
+
+            if data_ptr.is_null() || data_size == 0 {
+                ffi::libraw_dcraw_clear_mem(processed);
+                return Err(rust_i18n::t!("error.libraw_mem_image", code = -2).to_string());
+            }
+
             let slice = std::slice::from_raw_parts(data_ptr, data_size);
 
             let result = if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_JPEG as u32 {
@@ -200,6 +241,10 @@ impl RawProcessor {
             ffi::libraw_dcraw_clear_mem(processed);
             result
         }
+    }
+
+    pub fn process_warnings(&self) -> u32 {
+        unsafe { ffi::libraw_get_process_warnings(self.data) }
     }
 }
 

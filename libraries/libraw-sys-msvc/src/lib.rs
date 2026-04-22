@@ -74,7 +74,11 @@ unsafe extern "C" {
     pub fn libraw_dcraw_clear_mem(image: *mut libraw_processed_image_t);
     
     // Params and state
-    pub fn libraw_set_output_params_by_dict(data: *mut libraw_data_t, key: *const c_char, value: *const c_char) -> c_int;
+    pub fn libraw_set_use_camera_wb(data: *mut libraw_data_t, value: c_int);
+    pub fn libraw_set_auto_bright(data: *mut libraw_data_t, value: c_int);
+    pub fn libraw_set_output_bps(data: *mut libraw_data_t, value: c_int);
+    pub fn libraw_set_demosaic(data: *mut libraw_data_t, value: c_int);
+    pub fn libraw_get_process_warnings(data: *mut libraw_data_t) -> c_uint;
     
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;
