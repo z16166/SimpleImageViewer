@@ -1470,11 +1470,12 @@ fn load_raw(
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
 ) -> Result<ImageData, String> {
-    // 1. Initialize Processor and try to open header
+    // 1. Initialize LibRaw Processor and attempt to open the file header.
+    // If LibRaw fails to open (e.g., unsupported format like some old Kodak KDC or damaged file),
+    // we immediately fall back to the platform-native Rule 2 (WIC/ImageIO) as a last resort.
     let mut processor = RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    
     if let Err(e) = processor.open(path) {
-        log::warn!("[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO) only.", path, e);
+        log::warn!("[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).", path, e);
         #[cfg(target_os = "windows")]
         return crate::wic::load_via_wic(path);
         #[cfg(target_os = "macos")]
@@ -1487,17 +1488,19 @@ fn load_raw(
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
 
-    // 2. Rule 1: < 64MP pictures MUST entirely pre-read TRUE RAW PIXELS natively.
-    // They completely ignore embedded JPEGs and do not use Tiled presentation at all.
-    // CRITICAL: We also check for GPU texture limits (8192px). If exceeded, we MUST tile.
+    // 2. Rule 1: High-Performance Synchronous Development for Small Images (< 64MP).
+    // If the image is small enough to fit in GPU memory and meets the area threshold,
+    // we use LibRaw's native development to get original raw pixels instantly.
     if area < threshold && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        log::info!("[Loader] RAW {}x{} ({:.1} MP) < 64MP and fits in GPU. Synchronously extracting original pixels...", 
+        log::info!("[Loader] RAW {}x{} ({:.1} MP) matches Rule 1 (Small). Synchronously extracting pixels...", 
             width, height, area as f64 / 1_000_000.0);
         
         if let Ok(full_img) = processor.develop() {
+            // Note: We ignore informational warnings like LIBRAW_WARN_FUJI_ROTATED (0x10000)
+            // as they don't represent image corruption, just technical details about sensor layout.
             let warnings = processor.process_warnings();
             if warnings != 0 {
-                log::info!("[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding anyway.", warnings, path);
+                log::info!("[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding with native pixels.", warnings, path);
             }
             
             let rgba = full_img.to_rgba8();
@@ -1508,12 +1511,13 @@ fn load_raw(
             };
             return Ok(ImageData::Static(decoded));
         } else {
-            log::error!("[Loader] Failed to synchronously extract RAW pixels. Falling back to Rule 2/Preview...");
+            log::error!("[Loader] Failed to develop Rule 1 pixels. Falling through to Rule 2.");
         }
     }
 
-    // 3. Rule 2: Giant RAWs (>= 64MP) (or fallback from errors) use the Tiled async pipeline.
-    // We fetch a preview to show instantly, while original pixels decode in background.
+    // 3. Rule 2: Asynchronous Tiled Pipeline for Large Images (>= 64MP) or fallback.
+    // For giant images, we first fetch a fast preview (via WIC/ImageIO or LibRaw thumbnail)
+    // to show something instantly, while background workers decode high-quality tiles.
     #[cfg(target_os = "windows")]
     let preview_res = crate::wic::load_via_wic(path);
     #[cfg(target_os = "macos")]
