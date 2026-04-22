@@ -73,10 +73,10 @@ unsafe extern "C" {
     pub fn libraw_dcraw_make_mem_thumb(data: *mut libraw_data_t, errc: *mut c_int) -> *mut libraw_processed_image_t;
     pub fn libraw_dcraw_clear_mem(image: *mut libraw_processed_image_t);
     pub fn libraw_set_output_bps(data: *mut libraw_data_t, value: c_int);
+    pub fn libraw_set_no_auto_bright(data: *mut libraw_data_t, value: c_int);
     
     // Custom shims (implemented in libraw_shims.cpp)
     pub fn siv_libraw_set_use_camera_wb(data: *mut libraw_data_t, value: c_int);
-    pub fn siv_libraw_set_auto_bright(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_get_process_warnings(data: *mut libraw_data_t) -> c_uint;
     
     // Size and Metadata helpers

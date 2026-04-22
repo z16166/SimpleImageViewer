@@ -11,12 +11,6 @@ extern "C" {
         ip->imgdata.params.use_camera_wb = value;
     }
 
-    void siv_libraw_set_auto_bright(libraw_data_t *lr, int value) {
-        if (!lr) return;
-        LibRaw *ip = (LibRaw *)lr->parent_class;
-        ip->imgdata.params.no_auto_bright = !value;
-    }
-
     unsigned int siv_libraw_get_process_warnings(libraw_data_t *lr) {
         if (!lr) return 0;
         return lr->process_warnings;

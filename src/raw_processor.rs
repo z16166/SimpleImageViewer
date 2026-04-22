@@ -91,7 +91,7 @@ impl RawProcessor {
             // (Using siv_ prefix to avoid symbol collisions with native LibRaw API)
             ffi::libraw_set_output_bps(self.data, 8);
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
-            ffi::siv_libraw_set_auto_bright(self.data, 1);
+            ffi::libraw_set_no_auto_bright(self.data, 0); // 0 means ENABLE auto-bright
             
             // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
