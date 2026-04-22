@@ -1487,18 +1487,18 @@ fn load_raw(
         if let Ok(full_img) = processor.develop() {
             let warnings = processor.process_warnings();
             if warnings != 0 {
-                log::warn!("[Loader] LibRaw reported warnings (0x{:x}) during development of {:?}. Falling back to Rule 2 for better resilience.", warnings, path);
-            } else {
-                let rgba = full_img.to_rgba8();
-                let decoded = DecodedImage {
-                    width: rgba.width(),
-                    height: rgba.height(),
-                    pixels: rgba.into_raw(),
-                };
-                return Ok(ImageData::Static(decoded));
+                log::info!("[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding anyway.", warnings, path);
             }
+            
+            let rgba = full_img.to_rgba8();
+            let decoded = DecodedImage {
+                width: rgba.width(),
+                height: rgba.height(),
+                pixels: rgba.into_raw(),
+            };
+            return Ok(ImageData::Static(decoded));
         } else {
-            log::error!("[Loader] Failed to synchronously extract RAW pixels. Falling back to preview...");
+            log::error!("[Loader] Failed to synchronously extract RAW pixels. Falling back to Rule 2/Preview...");
         }
     }
 
