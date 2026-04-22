@@ -1,0 +1,6 @@
+# Ignore everything in this directory
+*
+# But don't ignore the wrapper
+!monkey_wrapper.cpp
+# And don't ignore this .gitignore
+!.gitignore

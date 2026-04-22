@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "1.4.7"
+version = "1.4.8"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -27,7 +27,6 @@ image = { version = "0.25", default-features = false, features = [
 parking_lot = "0.12"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 symphonia = { version = "0.5", features = ["all"] }
-ape-decoder = "0.3.2"
 lofty = "0.23"
 encoding_rs = "0.8"
 rfd = "0.17"
@@ -58,6 +57,7 @@ mimalloc = "0.1.48"
 moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
 libraw-sys-msvc = { path = "libraries/libraw-sys-msvc" }
+monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
 
 [features]
 # Feature for Windows 7 compatibility (ANGLE bridge)

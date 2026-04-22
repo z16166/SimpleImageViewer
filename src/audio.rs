@@ -25,10 +25,14 @@ use std::time::{Duration, Instant};
 
 use lofty::prelude::*;
 use lofty::read_from_path;
-use std::io::{Read, Seek};
 use std::num::NonZero;
-use ape_decoder::ApeDecoder;
 use rodio::Source;
+use std::ffi::c_void;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+use monkey_sdk_sys::*;
 
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
@@ -531,121 +535,168 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
 }
 
 // ---------------------------------------------------------------------------
-// Custom APE Source using ape-decoder
+// Custom APE Source using official Monkey's Audio SDK (Native)
 // ---------------------------------------------------------------------------
 
-struct ApeSource<R: Read + Seek> {
-    decoder: ApeDecoder<R>,
-    current_frame: u32,
-    total_frames: u32,
+struct ApeSource {
+    decoder: *mut c_void,
     sample_rate: u32,
     channels: u16,
     bits_per_sample: u16,
+    total_blocks: i64,
+    current_block: i64,
     buffer: Vec<f32>,
     buffer_pos: usize,
     shutdown_flag: Arc<AtomicBool>,
 }
 
-impl<R: Read + Seek> ApeSource<R> {
-    pub fn new(read_seek: R, shutdown_flag: Arc<AtomicBool>) -> Option<Self> {
-        Self::new_with_offset(read_seek, shutdown_flag, Duration::ZERO)
-    }
+// Explicitly mark as Send because the raw pointer is managed carefully
+unsafe impl Send for ApeSource {}
 
-    pub fn new_with_offset(read_seek: R, shutdown_flag: Arc<AtomicBool>, offset: Duration) -> Option<Self> {
-        let decoder = ApeDecoder::new(read_seek).ok()?;
-        let info = decoder.info().clone();
-        let total_frames = info.total_frames;
-        let sample_rate = info.sample_rate;
-        let channels = info.channels;
-        let bits_per_sample = info.bits_per_sample;
-        let duration_ms = info.duration_ms;
+impl ApeSource {
+    pub fn new_with_offset(path: &Path, shutdown_flag: Arc<AtomicBool>, offset: Duration) -> Option<Self> {
+        let decoder_ptr = {
+            #[cfg(target_os = "windows")]
+            {
+                let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+                wide_path.push(0);
+                unsafe { monkey_decoder_open(wide_path.as_ptr() as *const _) }
+            }
 
-        let start_frame = if offset > Duration::ZERO && duration_ms > 0 {
-            let ratio = offset.as_millis() as f64 / duration_ms as f64;
-            let frame = (ratio * total_frames as f64) as u32;
-            frame.min(total_frames.saturating_sub(1))
-        } else {
-            0
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                // On Linux/macOS, str_utfn is wchar_t which is 32-bit (UTF-32)
+                let s = path.to_string_lossy();
+                let mut wide_path: Vec<u32> = s.chars().map(|c| c as u32).collect();
+                wide_path.push(0);
+                unsafe { monkey_decoder_open(wide_path.as_ptr() as *const _) }
+            }
+
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+            {
+                log::error!("[AUDIO] Native APE SDK is not supported on this platform.");
+                return None;
+            }
         };
-        
-        Some(Self {
-            decoder,
-            current_frame: start_frame,
-            total_frames,
-            sample_rate,
-            channels,
-            bits_per_sample,
+
+        if decoder_ptr.is_null() {
+            log::error!("[AUDIO] Native Monkey's Audio SDK failed to open: {:?}", path.file_name());
+            return None;
+        }
+
+        let mut sample_rate: i32 = 0;
+        let mut bits_per_sample: i32 = 0;
+        let mut channels: i32 = 0;
+        let mut total_blocks: i64 = 0;
+
+        if unsafe { monkey_decoder_get_info(decoder_ptr, &mut sample_rate, &mut bits_per_sample, &mut channels, &mut total_blocks) } != 0 {
+            log::error!("[AUDIO] Native Monkey's Audio SDK failed to get info: {:?}", path.file_name());
+            unsafe { monkey_decoder_close(decoder_ptr) };
+            return None;
+        }
+
+        log::info!("[AUDIO] Native APE Info: Rate={}, Bits={}, Chan={}, Blocks={}", 
+            sample_rate, bits_per_sample, channels, total_blocks);
+
+        let mut source = Self {
+            decoder: decoder_ptr,
+            sample_rate: sample_rate as u32,
+            channels: channels as u16,
+            bits_per_sample: bits_per_sample as u16,
+            total_blocks,
+            current_block: 0,
             buffer: Vec::new(),
             buffer_pos: 0,
             shutdown_flag,
-        })
+        };
+
+        if offset > Duration::ZERO {
+            let offset_blocks = (offset.as_secs_f64() * sample_rate as f64) as i64;
+            let target_block = offset_blocks.min(total_blocks.saturating_sub(1));
+            if unsafe { monkey_decoder_seek(decoder_ptr, target_block) } == 0 {
+                source.current_block = target_block;
+            } else {
+                log::warn!("[AUDIO] Native APE seek failed to block {} for {:?}", target_block, path.file_name());
+            }
+        }
+
+        Some(source)
     }
 
-    fn decode_next_frame(&mut self) -> bool {
-        if self.current_frame >= self.total_frames {
+    fn decode_next_blocks(&mut self) -> bool {
+        if self.shutdown_flag.load(Ordering::Relaxed) {
             return false;
         }
 
-        if let Ok(pcm_data) = self.decoder.decode_frame(self.current_frame) {
-            self.current_frame += 1;
-            self.buffer.clear();
-            self.buffer_pos = 0;
+        const BLOCKS_TO_DECODE: i32 = 4096;
+        let bytes_per_block = (self.channels as i32 * (self.bits_per_sample as i32 / 8)) as usize;
+        let mut raw_buffer = vec![0u8; BLOCKS_TO_DECODE as usize * bytes_per_block];
+        let mut blocks_retrieved: i32 = 0;
 
-            let bytes_per_sample = (self.bits_per_sample / 8) as usize;
-            if bytes_per_sample == 0 { return false; }
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        let ret = unsafe {
+            monkey_decoder_decode_blocks(self.decoder, raw_buffer.as_mut_ptr(), BLOCKS_TO_DECODE, &mut blocks_retrieved)
+        };
 
-            for chunk in pcm_data.chunks_exact(bytes_per_sample) {
-                let sample_f32 = match self.bits_per_sample {
-                    8 => {
-                        // 8-bit APE is typically signed? 
-                        // Actually most APE are 16 or 24.
-                        let s = chunk[0] as i8;
-                        s as f32 / 128.0
-                    }
-                    16 => {
-                        let s = i16::from_le_bytes([chunk[0], chunk[1]]);
-                        s as f32 / 32768.0
-                    }
-                    24 => {
-                        // 24-bit signed little-endian
-                        let s = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 }]) as f32;
-                        s / 8388608.0
-                    }
-                    32 => {
-                        let s = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                        s as f32 / 2147483648.0
-                    }
-                    _ => 0.0,
-                };
-                self.buffer.push(sample_f32);
-            }
-            true
-        } else {
-            false
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        let ret = { let _ = raw_buffer; -1 };
+
+        if ret != 0 || blocks_retrieved == 0 {
+            return false;
+        }
+
+        self.buffer.clear();
+        self.buffer_pos = 0;
+        self.current_block += blocks_retrieved as i64;
+
+        let bits = self.bits_per_sample;
+        let bytes_per_sample = (bits / 8) as usize;
+        
+        for chunk in raw_buffer[..blocks_retrieved as usize * bytes_per_block].chunks_exact(bytes_per_sample) {
+            let sample = match bits {
+                8 => (chunk[0] as i8 as f32) / 128.0,
+                16 => (i16::from_le_bytes([chunk[0], chunk[1]]) as f32) / 32768.0,
+                24 => {
+                    let val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 }]);
+                    val as f32 / 8388608.0
+                },
+                32 => (i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32) / 2147483648.0,
+                _ => 0.0,
+            };
+            self.buffer.push(sample);
+        }
+
+        true
+    }
+}
+
+impl Drop for ApeSource {
+    fn drop(&mut self) {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        unsafe {
+            monkey_decoder_close(self.decoder);
         }
     }
 }
 
-impl<R: Read + Seek> Iterator for ApeSource<R> {
+impl Iterator for ApeSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.shutdown_flag.load(Ordering::Relaxed) {
-            return None;
-        }
         if self.buffer_pos >= self.buffer.len() {
-            if !self.decode_next_frame() {
+            if !self.decode_next_blocks() {
                 return None;
             }
         }
-        
-        let sample = self.buffer.get(self.buffer_pos)?;
+
+        let sample = self.buffer[self.buffer_pos];
         self.buffer_pos += 1;
-        Some(*sample)
+        Some(sample)
     }
 }
 
-impl<R: Read + Seek> rodio::Source for ApeSource<R> {
+impl rodio::Source for ApeSource {
     fn current_span_len(&self) -> Option<usize> {
         None
     }
@@ -658,9 +709,12 @@ impl<R: Read + Seek> rodio::Source for ApeSource<R> {
         NonZero::new(self.sample_rate).unwrap_or(NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
     }
 
-    fn total_duration(&self) -> Option<std::time::Duration> {
-        let info = self.decoder.info();
-        Some(std::time::Duration::from_millis(info.duration_ms))
+    fn total_duration(&self) -> Option<Duration> {
+        if self.sample_rate > 0 {
+            Some(Duration::from_secs_f64(self.total_blocks as f64 / self.sample_rate as f64))
+        } else {
+            None
+        }
     }
 }
 
@@ -990,7 +1044,7 @@ fn get_file_metadata(path: &Path) -> Option<String> {
 
 fn create_source(
     path: &Path,
-    reader: std::io::BufReader<std::fs::File>,
+    _reader: std::io::BufReader<std::fs::File>,
     shutdown_flag: Arc<AtomicBool>,
     offset: Duration,
 ) -> Option<Box<dyn rodio::Source<Item = f32> + Send>> {
@@ -1000,8 +1054,11 @@ fn create_source(
         .map(|e| e.to_lowercase() == "ape")
         .unwrap_or(false);
     if is_ape {
-        ApeSource::new_with_offset(reader, Arc::clone(&shutdown_flag), offset)
-            .map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
+        let source = ApeSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset);
+        if source.is_none() {
+            log::error!("[AUDIO] Failed to create native ApeSource for {:?}", path.file_name());
+        }
+        source.map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
     } else {
         // Use our high-performance SymphoniaSource for all other formats
         SymphoniaSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset)
@@ -1126,6 +1183,7 @@ fn run_audio_loop(
                 tracks_flag.store(false, Ordering::Relaxed);
                 set_cue_markers(&cue_markers_slot, Vec::new());
                 cue_sheet = None;
+                set_cue_track(&cue_track_slot, None);
             }
             Ok(AudioCommand::Pause) => {
                 paused = true;
@@ -1242,6 +1300,7 @@ fn run_audio_loop(
                     p.clear();
                 }
                 cue_sheet = None;
+                set_cue_track(&cue_track_slot, None);
                 tracks_flag.store(false, Ordering::Relaxed);
             }
             Ok(AudioCommand::PrevFile) => {
@@ -1254,6 +1313,7 @@ fn run_audio_loop(
                     p.clear();
                 }
                 cue_sheet = None;
+                set_cue_track(&cue_track_slot, None);
                 tracks_flag.store(false, Ordering::Relaxed);
             }
             Ok(AudioCommand::NextTrack) => {
@@ -1365,6 +1425,7 @@ fn run_audio_loop(
                 }
                 set_current_path(&path_slot, None);
                 set_metadata(&meta_slot, None);
+                set_cue_track(&cue_track_slot, start_track_idx);
             }
             Ok(AudioCommand::SetVolume(v)) => {
                 current_volume = v;
@@ -1409,6 +1470,7 @@ fn run_audio_loop(
                                 if let Some(first) = cue.tracks.first() {
                                     let meta = format!("{}. {} - {}", first.number, first.title, first.performer);
                                     set_metadata(&meta_slot, Some(meta));
+                                    set_cue_track(&cue_track_slot, Some(0));
                                 }
                                 let markers: Vec<u64> = cue.tracks.iter().map(|t| t.start.as_millis() as u64).collect();
                                 set_cue_markers(&cue_markers_slot, markers);

@@ -13,6 +13,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   LIBRAW_VERSION: "0.22.1"
   LIBRAW_INSTALL_DIR: "3rdparty/LibRaw"
+  MONKEY_SDK_VERSION: "1267"
+  MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
 
 jobs:
   build:
@@ -74,6 +76,23 @@ jobs:
           if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
           Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+
+      - name: Setup Monkey's Audio SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://monkeysaudio.com/files/MAC_${{ env.MONKEY_SDK_VERSION }}_SDK.zip" -OutFile "monkey_sdk.zip"
+          Expand-Archive monkey_sdk.zip -DestinationPath "temp_monkey"
+          if (!(Test-Path "${{ env.MONKEY_SDK_DIR }}")) { New-Item -ItemType Directory -Force -Path "${{ env.MONKEY_SDK_DIR }}" }
+          Copy-Item -Path "temp_monkey/*" -Destination "${{ env.MONKEY_SDK_DIR }}/" -Recurse -Force
+
+      - name: Setup Monkey's Audio SDK (Non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L https://monkeysaudio.com/files/MAC_${{ env.MONKEY_SDK_VERSION }}_SDK.zip -o monkey_sdk.zip
+          unzip monkey_sdk.zip -d temp_monkey
+          mkdir -p ${{ env.MONKEY_SDK_DIR }}
+          cp -rn temp_monkey/* ${{ env.MONKEY_SDK_DIR }}/
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux' && !matrix.use_cross
@@ -199,6 +218,14 @@ jobs:
           if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
           Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+
+      - name: Setup Monkey's Audio SDK (Windows)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://monkeysaudio.com/files/MAC_${{ env.MONKEY_SDK_VERSION }}_SDK.zip" -OutFile "monkey_sdk.zip"
+          Expand-Archive monkey_sdk.zip -DestinationPath "temp_monkey"
+          if (!(Test-Path "${{ env.MONKEY_SDK_DIR }}")) { New-Item -ItemType Directory -Force -Path "${{ env.MONKEY_SDK_DIR }}" }
+          Copy-Item -Path "temp_monkey/*" -Destination "${{ env.MONKEY_SDK_DIR }}/" -Recurse -Force
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
