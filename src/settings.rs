@@ -158,6 +158,12 @@ pub struct Settings {
     // Theme
     #[serde(default)]
     pub theme: AppTheme,
+
+    // Debug & Logging (Manual config only)
+    #[serde(default = "default_true")]
+    pub enable_log_file: bool,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 fn default_interval() -> f32 { 5.0 }
@@ -167,6 +173,7 @@ fn default_font_family() -> String { "System Default".to_string() }
 fn default_font_size()   -> f32  { 16.0 }
 fn default_transition_style() -> TransitionStyle { TransitionStyle::None }
 fn default_transition_ms() -> u32 { 800 }
+fn default_log_level() -> String { "info".to_string() }
 
 impl Default for ScaleMode {
     fn default() -> Self { Self::FitToWindow }
@@ -200,6 +207,8 @@ impl Default for Settings {
             audio_device: None,
             language: String::new(),
             theme: AppTheme::Dark,
+            enable_log_file: true,
+            log_level: default_log_level(),
         }
     }
 }

@@ -169,18 +169,23 @@ fn load_icon() -> egui::IconData {
     }
 }
 
-fn init_logging() {
+fn init_logging(settings: &crate::settings::Settings) {
     let log_dir = crate::settings::settings_path()
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let logger = flexi_logger::Logger::try_with_env_or_str("info")
-        .expect("Failed to initialize logger")
-        .log_to_file(flexi_logger::FileSpec::default()
+    let logger = flexi_logger::Logger::try_with_env_or_str(&settings.log_level)
+        .expect("Failed to initialize logger");
+
+    let logger = if settings.enable_log_file {
+        logger.log_to_file(flexi_logger::FileSpec::default()
             .directory(log_dir)
             .basename("simple_image_viewer")
-        );
+        )
+    } else {
+        logger
+    };
 
     #[cfg(windows)]
     let logger = logger.use_windows_line_ending();
@@ -451,7 +456,8 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "windows")]
     seh_handler::install();
 
-    init_logging();
+    let mut settings = settings::Settings::load();
+    init_logging(&settings);
     let env_info = log_env_info();
 
     #[cfg(target_os = "windows")]
@@ -459,8 +465,6 @@ fn main() -> eframe::Result {
         wic::init_rayon_with_com();
         wic::spawn_wic_discovery();
     }
-
-    let mut settings = settings::Settings::load();
 
     // Initialize locale — detect from OS if not yet configured
     if settings.language.is_empty() {
