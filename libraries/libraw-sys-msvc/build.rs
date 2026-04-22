@@ -84,6 +84,7 @@ fn main() {
 
     build.file(src.join("libraw_c_api.cpp"));
     build.file(src.join("libraw_datastream.cpp"));
+    build.file(manifest_dir.join("src").join("libraw_shims.cpp"));
 
     for subdir in &subdirs {
         let dir = src.join(subdir);
@@ -112,4 +113,6 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed={}", root.display());
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("src/libraw_shims.cpp").display());
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("build.rs").display());
 }

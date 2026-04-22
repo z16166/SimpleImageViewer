@@ -87,10 +87,11 @@ impl RawProcessor {
         }
 
         unsafe {
-            // Set output parameters for better colors
+            // Set output parameters for better colors via custom shims
+            // (Using siv_ prefix to avoid symbol collisions with native LibRaw API)
             ffi::libraw_set_output_bps(self.data, 8);
-            ffi::libraw_set_use_camera_wb(self.data, 1);
-            ffi::libraw_set_auto_bright(self.data, 1);
+            ffi::siv_libraw_set_use_camera_wb(self.data, 1);
+            ffi::siv_libraw_set_auto_bright(self.data, 1);
             
             // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
@@ -244,7 +245,7 @@ impl RawProcessor {
     }
 
     pub fn process_warnings(&self) -> u32 {
-        unsafe { ffi::libraw_get_process_warnings(self.data) }
+        unsafe { ffi::siv_libraw_get_process_warnings(self.data) }
     }
 }
 
