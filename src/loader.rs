@@ -1470,9 +1470,19 @@ fn load_raw(
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
 ) -> Result<ImageData, String> {
-    // 1. Unpack header to get dimensions
+    // 1. Initialize Processor and try to open header
     let mut processor = RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    processor.open(path)?;
+    
+    if let Err(e) = processor.open(path) {
+        log::warn!("[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO) only.", path, e);
+        #[cfg(target_os = "windows")]
+        return crate::wic::load_via_wic(path);
+        #[cfg(target_os = "macos")]
+        return crate::macos_image_io::load_via_image_io(path);
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        return Err(format!("LibRaw failed and no platform fallback available: {}", e));
+    }
+
     let (width, height) = (processor.width() as u32, processor.height() as u32);
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
