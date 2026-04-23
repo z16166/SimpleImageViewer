@@ -43,11 +43,18 @@ fn main() {
     build.define("NO_LCMS", None);
     build.define("NO_JASPER", None);
     build.define("NO_JPEG", None);
+    build.define("USE_X3FTOOLS", None);
+    build.define("LIBRAW_NODLL", None);
     // build.define("LIBRAW_NOTHREADS", None); // Experts recommend NOT defining this for thread-safe parallel usage
 
     // Platform specific flags and macros
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    if target_os == "windows" {
+        build.define("WIN32", None);
+        build.define("_WIN32", None);
+    }
 
     if target_env == "msvc" {
         build.define("LIBRAW_NODLL", None);
