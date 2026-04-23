@@ -736,6 +736,10 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             return load_raw(index, generation, path, refine_tx.clone());
         }
 
+        if ext == "jpg" || ext == "jpeg" {
+            return load_jpeg(path);
+        }
+
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
             if let Ok(img) = crate::wic::load_via_wic(path) {
@@ -758,6 +762,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
             "heif" | "heic" => load_heic(path),
+            "jpg" | "jpeg" => load_jpeg(path),
             _ => load_static(path),
         };
         if result.is_err() {
@@ -908,6 +913,17 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
         result: final_result,
         preview,
     }
+}
+
+fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    let (w, h, pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+    Ok(make_image_data(DecodedImage {
+        width: w,
+        height: h,
+        pixels,
+    }))
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
@@ -1154,7 +1170,8 @@ fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<Im
             return load_static(path);
         }
         // Standard single-frame formats handled by load_static
-        image::ImageFormat::Jpeg | image::ImageFormat::Bmp | image::ImageFormat::Ico |
+        image::ImageFormat::Jpeg => load_jpeg(path),
+        image::ImageFormat::Bmp | image::ImageFormat::Ico |
         image::ImageFormat::Pnm | image::ImageFormat::Tga | image::ImageFormat::Dds |
         image::ImageFormat::Hdr | image::ImageFormat::Farbfeld | image::ImageFormat::OpenExr |
         image::ImageFormat::Avif | image::ImageFormat::Qoi => load_static(path),

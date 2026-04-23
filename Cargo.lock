@@ -2603,6 +2603,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "cmake",
+ "libc",
  "nasm-rs",
 ]
 
@@ -4863,6 +4864,7 @@ dependencies = [
  "interprocess",
  "jwalk",
  "kamadak-exif",
+ "libjpeg-turbo",
  "libloading",
  "libraw-sys",
  "lofty",

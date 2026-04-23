@@ -58,6 +58,7 @@ moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
 libraw-sys = { path = "libraries/libraw-sys" }
 monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
+libjpeg-turbo = { path = "libraries/libjpeg-turbo" }
 
 [features]
 # Feature for Windows 7 compatibility (ANGLE bridge)

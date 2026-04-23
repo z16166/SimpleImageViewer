@@ -5,6 +5,7 @@ edition = "2021"
 links = "jpeg_turbo_custom"
 
 [dependencies]
+libc = "0.2"
 
 [build-dependencies]
 cc = "1.0"

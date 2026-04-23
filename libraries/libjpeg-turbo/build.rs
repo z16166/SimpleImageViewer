@@ -43,7 +43,7 @@ fn main() {
         .define("ENABLE_SHARED", "OFF")
         .define("ENABLE_STATIC", "ON")
         .define("WITH_SIMD", "ON")
-        .define("WITH_TURBOJPEG", "OFF")
+        .define("WITH_TURBOJPEG", "ON")
         .define("WITH_TOOLS", "OFF")
         .define("WITH_TESTS", "OFF");
 
@@ -69,12 +69,13 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-search=native={}", lib_dir_64.display());
     
-    let lib_name = if target_os == "windows" {
-        "jpeg-static"
+    let (jpeg_lib, turbo_lib) = if target_os == "windows" {
+        ("jpeg-static", "turbojpeg-static")
     } else {
-        "jpeg"
+        ("jpeg", "turbojpeg")
     };
     
-    println!("cargo:rustc-link-lib=static={}", lib_name);
-    println!("cargo:lib_name={}", lib_name);
+    println!("cargo:rustc-link-lib=static={}", jpeg_lib);
+    println!("cargo:rustc-link-lib=static={}", turbo_lib);
+    println!("cargo:lib_name={}", jpeg_lib);
 }
