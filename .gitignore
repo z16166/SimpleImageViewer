@@ -16,6 +16,7 @@ desktop.ini
 test_large.bmp
 *.log
 *.txt
+!CMakeLists.txt
 scratch/
 
 # External Dependencies (fetched via CI/Scripts)

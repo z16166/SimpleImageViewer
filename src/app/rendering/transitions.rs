@@ -326,7 +326,7 @@ impl ImageViewerApp {
         screen_rect: Rect,
         texture: &egui::TextureHandle,
         final_dest: Rect,
-        alpha: f32,
+        _alpha: f32,
     ) {
         if let Some(prev) = self.prev_texture.as_ref() {
             let p_size = prev.size_vec2();

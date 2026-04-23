@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-04-23
+
+### Added
+- **Monkey Audio (APE)**: Migrated to official CMake-based build system for the SDK.
+- **SIMD Acceleration**: Enabled AVX2, AVX512, and Neon hardware acceleration for Monkey Audio decoding.
+- **LibRaw Resilience**: Enabled JPEG support within LibRaw to improve loading for certain hybrid RAW/JPEG formats.
+
+### Changed
+- Decoupled Monkey SDK build from manual source lists, improving cross-platform maintainability.
+
+### Fixed
+- Cleaned up compiler warnings in `libraw-sys` and UI transitions logic.
+
 ## [1.5.0] - 2026-04-23
 
 ### Fixed

@@ -1,6 +1,6 @@
 [package]
 name = "monkey-sdk-sys"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 links = "monkey_sdk"
 
@@ -9,3 +9,4 @@ libc = "0.2"
 
 [build-dependencies]
 cc = "1.2.60"
+cmake = "0.1"

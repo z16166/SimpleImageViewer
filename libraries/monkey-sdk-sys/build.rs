@@ -29,79 +29,59 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
+    // 1. Build Monkey's Audio SDK with CMake
+    // We use our own CMakeLists.txt in the current directory to avoid modifying 3rdparty
+    let mut config = cmake::Config::new(&manifest_dir);
+    config
+        .define("BUILD_SHARED", "OFF")
+        .define("BUILD_UTIL", "OFF")
+        .define("MONKEY_SDK_ROOT", sdk_root.to_string_lossy().replace("\\", "/"))
+        .static_crt(true);
+
+    // Help CMake find the right architecture and enable SIMD
+    let arch_macro = match target_arch.as_str() {
+        "x86_64" => "x86_64",
+        "x86" => "x86",
+        "aarch64" => "aarch64",
+        "arm" => "armhf", // Assume armhf for 32-bit arm as per CMakeLists.txt logic
+        _ => "unknown",
+    };
+    config.define("ARCHITECTURE", arch_macro);
+    
+    if target_arch == "aarch64" {
+        config.define("CMAKE_SYSTEM_PROCESSOR", "aarch64");
+    } else if target_arch == "x86_64" {
+        config.define("CMAKE_SYSTEM_PROCESSOR", "x86_64");
+    }
+
+    let dst = config.build();
+
+    // 2. Build the wrapper and link with the library
     let mut build = cc::Build::new();
     build.cpp(true)
         .include(sdk_root.join("Source/MACLib"))
         .include(sdk_root.join("Source/Shared"))
-        .file(manifest_dir.join("wrapper/monkey_wrapper.cpp"))
-        // Shared Source
-        .file(sdk_root.join("Source/Shared/BufferIO.cpp"))
-        .file(sdk_root.join("Source/Shared/CharacterHelper.cpp"))
-        .file(sdk_root.join("Source/Shared/CircleBuffer.cpp"))
-        .file(sdk_root.join("Source/Shared/CPUFeatures.cpp"))
-        .file(sdk_root.join("Source/Shared/CRC.cpp"))
-        .file(sdk_root.join("Source/Shared/GlobalFunctions.cpp"))
-        .file(sdk_root.join("Source/Shared/MemoryIO.cpp"))
-        .file(sdk_root.join("Source/Shared/Semaphore.cpp"))
-        .file(sdk_root.join("Source/Shared/Thread.cpp"))
-        .file(sdk_root.join("Source/Shared/WholeFileIO.cpp"))
-        // MACLib Source
-        .file(sdk_root.join("Source/MACLib/APECompress.cpp"))
-        .file(sdk_root.join("Source/MACLib/APECompressCore.cpp"))
-        .file(sdk_root.join("Source/MACLib/APECompressCreate.cpp"))
-        .file(sdk_root.join("Source/MACLib/APEDecompress.cpp"))
-        .file(sdk_root.join("Source/MACLib/APEDecompressCore.cpp"))
-        .file(sdk_root.join("Source/MACLib/APEHeader.cpp"))
-        .file(sdk_root.join("Source/MACLib/APEInfo.cpp"))
-        .file(sdk_root.join("Source/MACLib/APELink.cpp"))
-        .file(sdk_root.join("Source/MACLib/APETag.cpp"))
-        .file(sdk_root.join("Source/MACLib/BitArray.cpp"))
-        .file(sdk_root.join("Source/MACLib/FloatTransform.cpp"))
-        .file(sdk_root.join("Source/MACLib/MACLib.cpp"))
-        .file(sdk_root.join("Source/MACLib/MACProgressHelper.cpp"))
-        .file(sdk_root.join("Source/MACLib/MD5.cpp"))
-        .file(sdk_root.join("Source/MACLib/NewPredictor.cpp"))
-        .file(sdk_root.join("Source/MACLib/NNFilter.cpp"))
-        .file(sdk_root.join("Source/MACLib/NNFilterGeneric.cpp"))
-        .file(sdk_root.join("Source/MACLib/Prepare.cpp"))
-        .file(sdk_root.join("Source/MACLib/UnBitArray.cpp"))
-        .file(sdk_root.join("Source/MACLib/UnBitArrayBase.cpp"))
-        .file(sdk_root.join("Source/MACLib/WAVInputSource.cpp"))
-        // Old Source
-        .file(sdk_root.join("Source/MACLib/Old/AntiPredictorOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/AntiPredictorExtraHighOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/AntiPredictorFastOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/AntiPredictorHighOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/AntiPredictorNormalOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/APEDecompressCoreOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/APEDecompressOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/UnBitArrayOld.cpp"))
-        .file(sdk_root.join("Source/MACLib/Old/UnMACOld.cpp"));
+        .include(sdk_root.join("Shared"))
+        .file(manifest_dir.join("wrapper/monkey_wrapper.cpp"));
 
     if target_os == "windows" {
         build.define("PLATFORM_WINDOWS", None);
-        build.file(sdk_root.join("Source/Shared/WinFileIO.cpp"));
     } else {
         if target_os == "linux" {
             build.define("PLATFORM_LINUX", None);
         } else if target_os == "macos" {
             build.define("PLATFORM_APPLE", None);
         }
-        build.file(sdk_root.join("Source/Shared/StdLibFileIO.cpp"));
     }
 
-    // SIMD optimizations
-    if target_arch == "x86_64" || target_arch == "x86" {
-        build.file(sdk_root.join("Source/MACLib/NNFilterAVX512.cpp"))
-            .file(sdk_root.join("Source/MACLib/NNFilterAVX2.cpp"))
-            .file(sdk_root.join("Source/MACLib/NNFilterSSE2.cpp"))
-            .file(sdk_root.join("Source/MACLib/NNFilterSSE4.1.cpp"));
-    } else if target_arch == "aarch64" {
-        build.file(sdk_root.join("Source/MACLib/NNFilterNeon.cpp"));
-    }
+    build.compile("monkey_wrapper");
 
-    build.compile("monkey_sdk");
-    
+    // 3. Link with the CMake-built library
+    println!("cargo:rustc-link-search=native={}", dst.join("lib").display());
+    // Some systems might use lib64
+    println!("cargo:rustc-link-search=native={}", dst.join("lib64").display());
+    println!("cargo:rustc-link-lib=static=MAC");
+
     println!("cargo:rerun-if-changed={}", sdk_root.display());
     println!("cargo:rerun-if-changed={}", manifest_dir.join("wrapper/monkey_wrapper.cpp").display());
 }

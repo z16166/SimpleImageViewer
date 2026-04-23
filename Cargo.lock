@@ -2634,7 +2634,7 @@ dependencies = [
 
 [[package]]
 name = "libraw-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
  "libc",
@@ -2912,9 +2912,10 @@ dependencies = [
 
 [[package]]
 name = "monkey-sdk-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
+ "cmake",
  "libc",
 ]
 
@@ -4844,7 +4845,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "cc",
  "clipboard-rs",
