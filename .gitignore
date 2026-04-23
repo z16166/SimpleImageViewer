@@ -19,11 +19,7 @@ test_large.bmp
 scratch/
 
 # External Dependencies (fetched via CI/Scripts)
-3rdparty/LibRaw/
-3rdparty/monkey-sdk/
-3rdparty/*.zip
-3rdparty/*.tar.gz
-3rdparty/*.7z
+/3rdparty/
 
 # Archives and Packages
 *.zip

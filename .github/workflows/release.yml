@@ -13,8 +13,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   LIBRAW_VERSION: "0.22.1"
   LIBRAW_INSTALL_DIR: "3rdparty/LibRaw"
-  MONKEY_SDK_VERSION: "1267"
+  MONKEY_SDK_VERSION: "1270"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
+  LIBJPEG_VERSION: "3.1.4.1"
+  LIBJPEG_INSTALL_DIR: "3rdparty/libjpeg-turbo"
 
 jobs:
   build:
@@ -28,7 +30,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: SimpleImageViewer
             archive_ext: .tar.gz
-            use_cross: true
+            use_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary_name: SimpleImageViewer
@@ -59,23 +61,53 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Export NASM path for build scripts
+        shell: bash
+        run: |
+          NASM_BIN=$(which nasm || which nasm.exe || echo "")
+          if [ -n "$NASM_BIN" ]; then
+            echo "NASM=$NASM_BIN" >> $GITHUB_ENV
+            echo "NASM set to $NASM_BIN"
+            nasm -v
+          else
+            echo "ERROR: nasm not found in PATH after setup" && exit 1
+          fi
+
+      - name: Download libjpeg-turbo
+        if: steps.cache-libjpeg.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ${{ env.LIBJPEG_INSTALL_DIR }}
+          curl -L https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${{ env.LIBJPEG_VERSION }}/libjpeg-turbo-${{ env.LIBJPEG_VERSION }}.tar.gz -o libjpeg.tar.gz
+          tar -xzf libjpeg.tar.gz -C ${{ env.LIBJPEG_INSTALL_DIR }} --strip-components=1
+
+      - name: Setup libjpeg-turbo (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -L "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${{ env.LIBJPEG_VERSION }}/libjpeg-turbo-${{ env.LIBJPEG_VERSION }}.tar.gz" -o "libjpeg.tar.gz"
+          if (!(Test-Path "${{ env.LIBJPEG_INSTALL_DIR }}")) { New-Item -ItemType Directory -Force -Path "${{ env.LIBJPEG_INSTALL_DIR }}" }
+          tar.exe -xzf libjpeg.tar.gz -C ${{ env.LIBJPEG_INSTALL_DIR }} --strip-components=1
+
       - name: Setup LibRaw (Ubuntu/macOS)
         if: runner.os != 'Windows'
         run: |
           curl -L https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.tar.gz -o libraw.tar.gz
           tar -xzf libraw.tar.gz
           mkdir -p ${{ env.LIBRAW_INSTALL_DIR }}
-          cp -r LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/
+          cp -r LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/
 
       - name: Setup LibRaw (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
-          Expand-Archive libraw.zip -DestinationPath .
+          Expand-Archive libraw.zip -DestinationPath "temp_libraw"
           if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
-          Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+          Move-Item temp_libraw/LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
 
       - name: Setup Monkey's Audio SDK (Windows)
         if: runner.os == 'Windows'
@@ -210,14 +242,37 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Export NASM path for build scripts
+        shell: bash
+        run: |
+          NASM_BIN=$(which nasm.exe 2>/dev/null || which nasm 2>/dev/null || echo "")
+          if [ -n "$NASM_BIN" ]; then
+            echo "NASM=$NASM_BIN" >> $GITHUB_ENV
+            nasm -v
+          else
+            echo "ERROR: nasm not found" && exit 1
+          fi
+
+      - name: Setup libjpeg-turbo (Windows)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/${{ env.LIBJPEG_VERSION }}.zip" -OutFile "libjpeg.zip"
+          Expand-Archive libjpeg.zip -DestinationPath "temp_libjpeg"
+          if (Test-Path "${{ env.LIBJPEG_INSTALL_DIR }}") { Remove-Item "${{ env.LIBJPEG_INSTALL_DIR }}" -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path "${{ env.LIBJPEG_INSTALL_DIR }}"
+          Move-Item temp_libjpeg/libjpeg-turbo-*/* ${{ env.LIBJPEG_INSTALL_DIR }}/ -Force
+
       - name: Setup LibRaw (Windows)
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
-          Expand-Archive libraw.zip -DestinationPath .
+          Expand-Archive libraw.zip -DestinationPath "temp_libraw"
           if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
           New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
-          Move-Item LibRaw-${{ env.LIBRAW_VERSION }}/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+          Move-Item temp_libraw/LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
 
       - name: Setup Monkey's Audio SDK (Windows)
         shell: pwsh

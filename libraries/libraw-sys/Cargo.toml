@@ -1,11 +1,12 @@
 [package]
-name = "libraw-sys-msvc"
+name = "libraw-sys"
 version = "0.1.0"
 edition = "2024"
 links = "raw"
 
 [dependencies]
 libc = "0.2"
+libjpeg-turbo = { path = "../libjpeg-turbo" }
 
 [build-dependencies]
 cc = "1.0"

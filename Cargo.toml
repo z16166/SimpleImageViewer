@@ -56,7 +56,7 @@ memmap2 = "0.9"
 mimalloc = "0.1.48"
 moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
-libraw-sys-msvc = { path = "libraries/libraw-sys-msvc" }
+libraw-sys = { path = "libraries/libraw-sys" }
 monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
 
 [features]

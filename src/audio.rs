@@ -44,6 +44,12 @@ use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 use symphonia::core::conv::FromSample;
 
+// --- Audio Normalization Constants ---
+const NORM_I8: f32  = 128.0;
+const NORM_I16: f32 = 32768.0;
+const NORM_I24: f32 = 8388608.0;
+const NORM_I32: f32 = 2147483648.0;
+
 #[cfg(windows)]
 unsafe extern "C" {
     fn wasapi_monitor_init();
@@ -655,13 +661,13 @@ impl ApeSource {
         
         for chunk in raw_buffer[..blocks_retrieved as usize * bytes_per_block].chunks_exact(bytes_per_sample) {
             let sample = match bits {
-                8 => (chunk[0] as i8 as f32) / 128.0,
-                16 => (i16::from_le_bytes([chunk[0], chunk[1]]) as f32) / 32768.0,
+                8 => (chunk[0] as i8 as f32) / NORM_I8,
+                16 => (i16::from_le_bytes([chunk[0], chunk[1]]) as f32) / NORM_I16,
                 24 => {
                     let val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 }]);
-                    val as f32 / 8388608.0
+                    val as f32 / NORM_I24
                 },
-                32 => (i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32) / 2147483648.0,
+                32 => (i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32) / NORM_I32,
                 _ => 0.0,
             };
             self.buffer.push(sample);
@@ -826,10 +832,6 @@ impl SymphoniaSource {
                         AudioBufferRef::S24(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
                         AudioBufferRef::S32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
                         AudioBufferRef::F64(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        _ => {
-                           log::warn!("[AUDIO] Unsupported symphonia buffer format");
-                           continue;
-                        }
                     }
                     return true;
                 }

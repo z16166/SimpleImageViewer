@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use libraw_sys_msvc as ffi;
+use libraw_sys as ffi;
 use std::path::Path;
 use std::ffi::CString;
 use image::{DynamicImage, RgbImage};

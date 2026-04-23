@@ -11,5 +11,5 @@ pre-build = [
 pre-build = [
     "echo 'Acquire::Retries \"3\";' > /etc/apt/apt.conf.d/80-retries",
     "apt-get update",
-    "apt-get install --assume-yes --fix-missing pkg-config libasound2-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev"
+    "apt-get install --assume-yes --fix-missing pkg-config nasm libasound2-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev"
 ]

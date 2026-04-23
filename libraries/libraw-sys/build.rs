@@ -19,22 +19,18 @@ use std::path::{PathBuf};
 fn main() {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     
-    // Explicitly navigate up to workspace root: libraries/libraw-sys-msvc -> libraries -> root
-    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let root_raw = workspace_root.join("3rdparty/LibRaw");
+    // Explicitly navigate up to workspace root: libraries/libraw-sys -> libraries -> root
+    let workspace_root = manifest_dir.parent().expect("Failed to get libraries parent")
+        .parent().expect("Failed to get workspace root");
+    let root = workspace_root.join("3rdparty").join("LibRaw");
     
-    // Physical normalization: Resolves all '..', '.', and symlinks.
-    // This produces a clean, absolute path that is safer for various compilers/environments.
-    let root_canonical = std::fs::canonicalize(&root_raw)
-        .expect(&format!("Could not find LibRaw source at {:?}. Please ensure submodules are checked out.", root_raw));
-        
-    // Handle Windows UNC prefix (\\?\) which can break some toolchains
-    let root_str = root_canonical.to_string_lossy();
-    let root = if root_str.starts_with(r"\\?\") {
-        PathBuf::from(&root_str[4..])
+    println!("cargo:info=libraw-sys: Checking for LibRaw source at: {}", root.display());
+
+    if !root.exists() || !root.join("libraw/libraw.h").exists() {
+        println!("cargo:warning=libraw-sys: LibRaw source not found or incomplete at {}. Build will likely fail.", root.display());
     } else {
-        root_canonical
-    };
+        println!("cargo:info=libraw-sys: Found LibRaw source directory.");
+    }
 
     let src = root.join("src");
 
@@ -42,7 +38,7 @@ fn main() {
     build.cpp(true);
     build.define("NO_LCMS", None);
     build.define("NO_JASPER", None);
-    build.define("NO_JPEG", None);
+    build.define("USE_JPEG", None);
     build.define("USE_X3FTOOLS", None);
     build.define("LIBRAW_NODLL", None);
     // build.define("LIBRAW_NOTHREADS", None); // Experts recommend NOT defining this for thread-safe parallel usage
@@ -73,6 +69,14 @@ fn main() {
     build.include(&root);
     build.include(&src);
     build.include(root.join("libraw")); // Canonical header location
+    
+    // Get libjpeg paths from the libjpeg-turbo build script
+    if let Ok(jpeg_include) = std::env::var("DEP_JPEG_TURBO_CUSTOM_INCLUDE") {
+        build.include(jpeg_include);
+    }
+    if let Ok(jpeg_src) = std::env::var("DEP_JPEG_TURBO_CUSTOM_SRC") {
+        build.include(jpeg_src);
+    }
 
     let subdirs = [
         "decoders",
@@ -113,7 +117,22 @@ fn main() {
     }
 
     build.warnings(false);
+
     build.compile("raw");
+
+    // Link against the libjpeg-turbo static library built by the dependency crate (via CMake)
+    if let Ok(jpeg_include) = std::env::var("DEP_JPEG_TURBO_CUSTOM_INCLUDE") {
+        // include/ and lib/ are siblings under the CMake install prefix
+        let prefix = std::path::PathBuf::from(&jpeg_include)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
+        println!("cargo:rustc-link-search=native={}", prefix.join("lib64").display());
+    }
+    if let Ok(lib_name) = std::env::var("DEP_JPEG_TURBO_CUSTOM_LIB_NAME") {
+        println!("cargo:rustc-link-lib=static={}", lib_name);
+    }
 
     if target_os != "windows" {
         println!("cargo:rustc-link-lib=m");
