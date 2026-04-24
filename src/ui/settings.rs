@@ -139,6 +139,7 @@ fn draw_settings_left_col(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir:
         ui.add_space(4.0);
         let old_recursive = app.settings.recursive;
         ui.checkbox(&mut app.settings.recursive, t!("label.recursive_scan").to_string());
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         if !old_recursive && app.settings.recursive {
             let confirmed = rfd::MessageDialog::new()
                 .set_title(t!("win.confirm_recursive_title").to_string())
