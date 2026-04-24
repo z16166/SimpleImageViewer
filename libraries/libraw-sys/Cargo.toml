@@ -9,4 +9,5 @@ libc = "0.2"
 libjpeg-turbo = { path = "../libjpeg-turbo" }
 
 [build-dependencies]
+vcpkg = "0.2"
 cc = "1.0"

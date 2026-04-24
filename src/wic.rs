@@ -177,7 +177,6 @@ pub struct WicTiledSource {
     decoder: IWICBitmapDecoder, 
     frame: IWICBitmapFrameDecode,
     source: IWICBitmapSource,
-    raw_source: IWICBitmapSource,
     physical_width: u32,
     physical_height: u32,
     transform_options: WICBitmapTransformOptions,
@@ -647,7 +646,6 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
                 decoder: decoder,
                 frame: frame.clone(),
                 source: cached_source,
-                raw_source: final_source,
                 stream: stream_out,
                 _mmap: mmap_out,
             })));

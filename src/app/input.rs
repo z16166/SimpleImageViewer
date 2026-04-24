@@ -14,6 +14,7 @@ impl ImageViewerApp {
         let mut nav_first = false;
         let mut nav_last = false;
         let mut toggle_settings = false;
+        let mut toggle_osd = false;
         let mut zoom_in = false;
         let mut zoom_out = false;
         let mut zoom_reset = false;
@@ -108,6 +109,10 @@ impl ImageViewerApp {
             // G / Ctrl+G — goto image by index
             if i.key_pressed(Key::G) {
                 toggle_goto = true;
+            }
+            // Tab — toggle OSD visibility
+            if i.key_pressed(Key::Tab) {
+                toggle_osd = true;
             }
             // Rotation shortcuts: Ctrl+Left / Ctrl+Right
             if i.modifiers.command {
@@ -262,6 +267,10 @@ impl ImageViewerApp {
             self.settings.scale_mode = self.settings.scale_mode.toggled();
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
+            self.queue_save();
+        }
+        if toggle_osd {
+            self.settings.show_osd = !self.settings.show_osd;
             self.queue_save();
         }
         if toggle_auto_switch && !self.show_settings {

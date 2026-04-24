@@ -1,0 +1,28 @@
+{
+  "name": "simple-image-viewer",
+  "version-string": "1.5.1",
+  "builtin-baseline": "b781af668027bbf77f2f827f47b5c6cd8d825c08",
+  "dependencies": [
+    {
+      "name": "tiff",
+      "features": [
+        "jpeg",
+        "zip",
+        "lzma",
+        "webp",
+        "zstd",
+        "lerc",
+        "libdeflate"
+      ]
+    },
+    "libjpeg-turbo",
+    {
+      "name": "libraw",
+      "features": [
+        "dng-lossy",
+        "x3f"
+      ]
+    },
+    "zlib"
+  ]
+}

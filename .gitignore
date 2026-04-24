@@ -1,5 +1,9 @@
-# Rust build artifacts
-/target/
+# Build artifacts
+target/
+**/target/
+# Ignore sub-crate lock files but keep root lock file
+**/Cargo.lock
+!/Cargo.lock
 
 # Settings file (user-specific, not for version control)
 siv_settings.yaml
@@ -19,8 +23,10 @@ test_large.bmp
 !CMakeLists.txt
 scratch/
 
-# External Dependencies (fetched via CI/Scripts)
+# External Dependencies
 /3rdparty/
+/vcpkg_installed/
+vcpkg-manifest-install.log
 
 # Archives and Packages
 *.zip

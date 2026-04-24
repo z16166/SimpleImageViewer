@@ -40,7 +40,7 @@ pub enum TJSAMP {
     SAMP_411 = 5,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn tjInitDecompress() -> tjhandle;
     fn tjDecompressHeader3(
         handle: tjhandle,

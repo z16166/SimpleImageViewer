@@ -1,8 +1,8 @@
 [package]
-name = "libjpeg-turbo"
+name = "libtiff-viewer"
 version = "0.1.0"
-edition = "2021"
-links = "jpeg_turbo_custom"
+edition = "2024"
+links = "tiff_custom"
 
 [dependencies]
 libc = "0.2"

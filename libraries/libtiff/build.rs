@@ -32,33 +32,19 @@ fn main() {
     let mut config = vcpkg::Config::new();
     config.cargo_metadata(true);
 
-    let vcpkg_lib = config.find_package("libraw");
-
-    let mut build = cc::Build::new();
-    build.cpp(true);
-    
-    match &vcpkg_lib {
+    match config.find_package("tiff") {
         Ok(lib) => {
-            for include in &lib.include_paths {
-                build.include(include);
+            for include in lib.include_paths {
+                println!("cargo:include={}", include.display());
             }
         }
         Err(e) => {
-            let include_dir = installed_dir.join(&vcpkg_triplet).join("include");
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
-            if include_dir.exists() {
-                build.include(include_dir);
+            let include_dir = installed_dir.join(&vcpkg_triplet).join("include");
+            if lib_dir.exists() {
                 println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                println!("cargo:rustc-link-lib=static=tiff");
                 
-                // On Windows it's raw_r.lib, on Unix it's libraw_r.a or libraw.a
-                if lib_dir.join("libraw_r.a").exists() || lib_dir.join("raw_r.lib").exists() {
-                    println!("cargo:rustc-link-lib=static=raw_r");
-                } else {
-                    println!("cargo:rustc-link-lib=static=raw");
-                }
-                
-                println!("cargo:rustc-link-lib=static=jasper");
-                println!("cargo:rustc-link-lib=static=lcms2");
                 println!("cargo:rustc-link-lib=static=jpeg");
                 
                 if lib_dir.join("zlibstatic.lib").exists() {
@@ -75,20 +61,25 @@ fn main() {
                     println!("cargo:rustc-link-lib=static=lzma");
                 }
 
-                // libtiff and its transitive dependencies
-                println!("cargo:rustc-link-lib=static=tiff");
+                // libdeflate
                 if lib_dir.join("deflatestatic.lib").exists() {
                     println!("cargo:rustc-link-lib=static=deflatestatic");
                 } else if lib_dir.join("libdeflate.a").exists() || lib_dir.join("libdeflate.lib").exists() {
                     let name = if target_os == "windows" { "libdeflate" } else { "deflate" };
                     println!("cargo:rustc-link-lib=static={}", name);
                 }
+
+                // Lerc
                 if lib_dir.join("libLerc.a").exists() || lib_dir.join("Lerc.lib").exists() {
                     println!("cargo:rustc-link-lib=static=Lerc");
                 }
+
+                // Zstd
                 if lib_dir.join("libzstd.a").exists() || lib_dir.join("zstd.lib").exists() {
                     println!("cargo:rustc-link-lib=static=zstd");
                 }
+
+                // WebP
                 if lib_dir.join("libwebp.a").exists() || lib_dir.join("libwebp.lib").exists() {
                     let name = if target_os == "windows" { "libwebp" } else { "webp" };
                     println!("cargo:rustc-link-lib=static={}", name);
@@ -99,39 +90,14 @@ fn main() {
                     let name = if target_os == "windows" { "libsharpyuv" } else { "sharpyuv" };
                     println!("cargo:rustc-link-lib=static={}", name);
                 }
-                
-
+                if lib_dir.join("libwebpdecoder.a").exists() || lib_dir.join("libwebpdecoder.lib").exists() {
+                    let name = if target_os == "windows" { "libwebpdecoder" } else { "webpdecoder" };
+                    println!("cargo:rustc-link-lib=static={}", name);
+                }
+                println!("cargo:include={}", include_dir.display());
             } else {
-                 panic!("Could not find libraw via vcpkg or fallback: {:?}", e);
+                panic!("Could not find tiff via vcpkg or fallback: {:?}", e);
             }
         }
     }
-
-    build.file(manifest_dir.join("src").join("libraw_shims.cpp"));
-    build.warnings(false);
-    
-    // Explicitly set static_crt based on CARGO_CFG_TARGET_FEATURE
-    let target_features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
-    if target_os == "windows" {
-        build.static_crt(target_features.contains("crt-static"));
-    }
-    
-    build.compile("raw_shims");
-
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "windows" {
-        println!("cargo:rustc-link-lib=m");
-        
-        // Always link C++ standard library on Unix, regardless of vcpkg mode
-        if target_os == "macos" {
-            println!("cargo:rustc-link-lib=dylib=c++");
-        } else if target_os == "linux" {
-            println!("cargo:rustc-link-lib=dylib=stdc++");
-            // Explicitly dynamically link libc to assist rust-lld in resolving glibc 2.38+ symbols
-            // like __isoc23_strtol that may be referenced by statically compiled vcpkg C dependencies.
-            println!("cargo:rustc-link-lib=dylib=c");
-        }
-    }
-    
-    println!("cargo:rerun-if-changed=src/libraw_shims.cpp");
 }

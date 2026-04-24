@@ -1,81 +1,56 @@
-use std::env;
-use std::path::{PathBuf};
-use std::process::Command;
-
 fn main() {
-    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let libjpeg_dir = manifest_dir.join("../../3rdparty/libjpeg-turbo");
+    // Force static linking across all platforms
+    unsafe { std::env::set_var("VCPKG_ALL_STATIC", "1"); }
+    
+    // In Manifest Mode, vcpkg installs to vcpkg_installed/ in the workspace root
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let workspace_root = manifest_dir.parent().unwrap().parent().unwrap(); // libraries/pkg -> libraries -> root
+    let installed_dir = workspace_root.join("vcpkg_installed");
+    
 
-    // 1. NASM: mandatory for x86_64 (SIMD requires it)
-    let mut nasm_exe: Option<String> = None;
-    if target_arch == "x86_64" {
-        // Probe candidates: bare 'nasm' in PATH first, then $NASM env var, then well-known Windows path
-        let candidates = [
-            "nasm".to_string(),
-            env::var("NASM").unwrap_or_default(),
-            "C:\\Program Files\\NASM\\nasm.exe".to_string(),
-        ];
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let vcpkg_triplet = std::env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| {
+        match (target_os.as_str(), target_arch.as_str()) {
+            ("windows", "x86_64") => "x64-windows-static".to_string(),
+            ("windows", "x86") => "x86-windows-static".to_string(),
+            ("windows", "aarch64") => "arm64-windows-static".to_string(),
+            ("macos", "x86_64") => "x64-osx".to_string(),
+            ("macos", "aarch64") => "arm64-osx".to_string(),
+            ("linux", "x86_64") => "x64-linux".to_string(),
+            ("linux", "aarch64") => "arm64-linux".to_string(),
+            _ => "x64-windows-static".to_string(),
+        }
+    });
 
-        for candidate in &candidates {
-            if candidate.is_empty() { continue; }
-            if Command::new(candidate).arg("-v").output().is_ok() {
-                nasm_exe = Some(candidate.clone());
-                break;
+    if installed_dir.exists() {
+        unsafe { 
+            std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir); 
+            std::env::set_var("VCPKG_TARGET_TRIPLET", &vcpkg_triplet);
+        }
+    }
+
+    let mut config = vcpkg::Config::new();
+    config.cargo_metadata(true);
+    
+    match config.find_package("libjpeg-turbo") {
+        Ok(lib) => {
+            for include in lib.include_paths {
+                println!("cargo:include={}", include.display());
             }
         }
-
-        let nasm_path = nasm_exe.as_deref().unwrap_or_else(|| {
-            panic!(
-                "\n\n[ERROR] NASM is mandatory for x86_64 builds (SIMD acceleration).\n\
-                Install NASM and add it to PATH, or set the NASM environment variable.\n\
-                Checked: {:?}\n\n",
-                &candidates
-            )
-        });
-        println!("cargo:info=NASM found: {}", nasm_path);
+        Err(e) => {
+            // Fallback: manually set paths if we know where they are
+            let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
+            let include_dir = installed_dir.join(&vcpkg_triplet).join("include");
+            if lib_dir.exists() {
+                println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                println!("cargo:rustc-link-lib=static=jpeg");
+                println!("cargo:rustc-link-lib=static=turbojpeg");
+                println!("cargo:include={}", include_dir.display());
+            } else {
+                panic!("Could not find libjpeg-turbo and fallback failed: {:?}", e);
+            }
+        }
     }
-
-    // 2. Build with official CMake build system
-    let mut config = cmake::Config::new(&libjpeg_dir);
-    config
-        .define("ENABLE_SHARED", "OFF")
-        .define("ENABLE_STATIC", "ON")
-        .define("WITH_SIMD", "ON")
-        .define("WITH_TURBOJPEG", "ON")
-        .define("WITH_TOOLS", "OFF")
-        .define("WITH_TESTS", "OFF");
-
-    // Pass NASM path explicitly so CMake doesn't have to rely on PATH
-    if let Some(ref nasm) = nasm_exe {
-        config.define("CMAKE_ASM_NASM_COMPILER", nasm);
-    }
-
-    if target_arch == "aarch64" {
-        config.define("CMAKE_SYSTEM_PROCESSOR", "aarch64");
-    }
-
-    let dst = config.build();
-
-
-    // 3. Export paths for dependent crates (e.g. libraw-sys)
-    let include_dir = dst.join("include");
-    let lib_dir = dst.join("lib");
-    let lib_dir_64 = dst.join("lib64");
-
-    println!("cargo:include={}", include_dir.display());
-    println!("cargo:src={}", libjpeg_dir.join("src").display()); // For some internal headers if needed
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-search=native={}", lib_dir_64.display());
-    
-    let (jpeg_lib, turbo_lib) = if target_os == "windows" {
-        ("jpeg-static", "turbojpeg-static")
-    } else {
-        ("jpeg", "turbojpeg")
-    };
-    
-    println!("cargo:rustc-link-lib=static={}", jpeg_lib);
-    println!("cargo:rustc-link-lib=static={}", turbo_lib);
-    println!("cargo:lib_name={}", jpeg_lib);
 }

@@ -2601,10 +2601,8 @@ dependencies = [
 name = "libjpeg-turbo"
 version = "0.1.0"
 dependencies = [
- "cc",
- "cmake",
  "libc",
- "nasm-rs",
+ "vcpkg",
 ]
 
 [[package]]
@@ -2640,6 +2638,7 @@ dependencies = [
  "cc",
  "libc",
  "libjpeg-turbo",
+ "vcpkg",
 ]
 
 [[package]]
@@ -2652,6 +2651,14 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.7.3",
+]
+
+[[package]]
+name = "libtiff-viewer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "vcpkg",
 ]
 
 [[package]]
@@ -2918,6 +2925,7 @@ dependencies = [
  "cc",
  "cmake",
  "libc",
+ "vcpkg",
 ]
 
 [[package]]
@@ -2961,12 +2969,6 @@ dependencies = [
  "thiserror 2.0.18",
  "unicode-ident",
 ]
-
-[[package]]
-name = "nasm-rs"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32e77172a32cfd76943af0c1c62a4d2dca70754d0c3b2ba7ba968289dc9b534"
 
 [[package]]
 name = "ndk"
@@ -4846,7 +4848,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "cc",
  "clipboard-rs",
@@ -4865,8 +4867,8 @@ dependencies = [
  "jwalk",
  "kamadak-exif",
  "libjpeg-turbo",
- "libloading",
  "libraw-sys",
+ "libtiff-viewer",
  "lofty",
  "log",
  "memmap2",
@@ -5792,6 +5794,12 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vello_common"

@@ -99,9 +99,6 @@ pub const CRASH_DIALOG_FALLBACK_TITLE: &str = "Application Error";
 /// Default fallback message for the error dialog when i18n is not yet available.
 pub const CRASH_DIALOG_FALLBACK_MSG: &str = "An unexpected error occurred.\n\nDiagnostic info has been copied to the clipboard and saved to the crash report file.";
 
-/// The standard thickness for strokes (e.g. borders, lines).
-pub const STANDARD_STROKE_WIDTH: f32 = 1.0;
-
 /// Default position for the settings window.
 pub const SETTINGS_WINDOW_DEFAULT_POS: [f32; 2] = [12.0, 12.0];
 /// Minimum width for the settings window.

@@ -8,5 +8,6 @@ links = "monkey_sdk"
 libc = "0.2"
 
 [build-dependencies]
-cc = "1.2.60"
+cc = "1.0"
+vcpkg = "0.2"
 cmake = "0.1"

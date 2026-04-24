@@ -1,0 +1,9 @@
+{
+  "name": "zlib",
+  "version": "2.1.6",
+  "description": "zlib-ng compiled in compat mode to override standard zlib",
+  "dependencies": [
+    "vcpkg-cmake",
+    "vcpkg-cmake-config"
+  ]
+}

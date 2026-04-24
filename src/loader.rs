@@ -739,6 +739,9 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
         if ext == "jpg" || ext == "jpeg" {
             return load_jpeg(path);
         }
+        if ext == "tif" || ext == "tiff" {
+            return crate::libtiff_loader::load_via_libtiff(path);
+        }
 
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
@@ -748,12 +751,6 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
             #[cfg(target_os = "macos")]
             if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
                 return Ok(img);
-            }
-            #[cfg(target_os = "linux")]
-            if ext == "tif" || ext == "tiff" {
-                if let Ok(img) = crate::linux_tiff::load_via_libtiff(path) {
-                    return Ok(img);
-                }
             }
         }
 
@@ -918,12 +915,38 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
 fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
-    let (w, h, pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+    let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+
+    let orientation = get_exif_orientation(path);
+    if orientation > 1 {
+        let (out_w, out_h, out_pixels) = crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+        w = out_w;
+        h = out_h;
+        pixels = out_pixels;
+    }
+
     Ok(make_image_data(DecodedImage {
         width: w,
         height: h,
         pixels,
     }))
+}
+
+fn get_exif_orientation(path: &std::path::Path) -> u16 {
+    if let Ok(file) = std::fs::File::open(path) {
+        let mut reader = std::io::BufReader::new(file);
+        let exifreader = exif::Reader::new();
+        if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
+            if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+                if let exif::Value::Short(ref v) = field.value {
+                    if let Some(&o) = v.first() {
+                        return o;
+                    }
+                }
+            }
+        }
+    }
+    1
 }
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
@@ -1163,12 +1186,7 @@ fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<Im
         image::ImageFormat::Png => load_png(path),
         image::ImageFormat::Gif => load_gif(path),
         image::ImageFormat::WebP => load_webp(path),
-        image::ImageFormat::Tiff => {
-            #[cfg(target_os = "linux")]
-            return crate::linux_tiff::load_via_libtiff(path);
-            #[cfg(not(target_os = "linux"))]
-            return load_static(path);
-        }
+        image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(path),
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => load_jpeg(path),
         image::ImageFormat::Bmp | image::ImageFormat::Ico |

@@ -11,13 +11,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  LIBRAW_VERSION: "0.22.1"
-  LIBRAW_INSTALL_DIR: "3rdparty/LibRaw"
   MONKEY_SDK_VERSION: "1270"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
-  LIBJPEG_VERSION: "3.1.4.1"
-  LIBJPEG_INSTALL_DIR: "3rdparty/libjpeg-turbo"
-
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  # vcpkg configuration is handled via vcpkg.json and vcpkg-configuration.json
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -30,7 +27,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: SimpleImageViewer
             archive_ext: .tar.gz
-            use_cross: false
+            use_cross: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary_name: SimpleImageViewer
@@ -64,50 +61,82 @@ jobs:
       - name: Setup NASM
         uses: ilammy/setup-nasm@v1
 
-      - name: Export NASM path for build scripts
+      - name: Export vcpkg triplet
         shell: bash
         run: |
-          NASM_BIN=$(which nasm || which nasm.exe || echo "")
-          if [ -n "$NASM_BIN" ]; then
-            echo "NASM=$NASM_BIN" >> $GITHUB_ENV
-            echo "NASM set to $NASM_BIN"
-            nasm -v
-          else
-            echo "ERROR: nasm not found in PATH after setup" && exit 1
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-windows-static" >> $GITHUB_ENV;
+            elif [[ "${{ matrix.target }}" == "i686"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x86-windows-static" >> $GITHUB_ENV;
+            elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=arm64-windows-static" >> $GITHUB_ENV; fi
+          elif [[ "${{ matrix.target }}" == *"apple-darwin"* ]]; then
+            if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-osx" >> $GITHUB_ENV;
+            elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=arm64-osx" >> $GITHUB_ENV; fi
+          elif [[ "${{ matrix.target }}" == *"linux"* ]]; then
+            if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-linux" >> $GITHUB_ENV;
+            elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then 
+              echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> $GITHUB_ENV;
+              echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV;
+              echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV;
+            fi
           fi
 
-      - name: Download libjpeg-turbo
-        if: steps.cache-libjpeg.outputs.cache-hit != 'true'
+      - name: Install cross-compiler (Ubuntu ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-          mkdir -p ${{ env.LIBJPEG_INSTALL_DIR }}
-          curl -L https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${{ env.LIBJPEG_VERSION }}/libjpeg-turbo-${{ env.LIBJPEG_VERSION }}.tar.gz -o libjpeg.tar.gz
-          tar -xzf libjpeg.tar.gz -C ${{ env.LIBJPEG_INSTALL_DIR }} --strip-components=1
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          
+      - name: Configure CMake Toolchain (ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cat <<EOF > arm64-toolchain.cmake
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR aarch64)
+          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)
+          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)
+          EOF
+          echo "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/arm64-toolchain.cmake" >> $GITHUB_ENV
 
-      - name: Setup libjpeg-turbo (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          curl.exe -L "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${{ env.LIBJPEG_VERSION }}/libjpeg-turbo-${{ env.LIBJPEG_VERSION }}.tar.gz" -o "libjpeg.tar.gz"
-          if (!(Test-Path "${{ env.LIBJPEG_INSTALL_DIR }}")) { New-Item -ItemType Directory -Force -Path "${{ env.LIBJPEG_INSTALL_DIR }}" }
-          tar.exe -xzf libjpeg.tar.gz -C ${{ env.LIBJPEG_INSTALL_DIR }} --strip-components=1
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgConfigurationJsonGlob: 'vcpkg-configuration.json'
 
-      - name: Setup LibRaw (Ubuntu/macOS)
-        if: runner.os != 'Windows'
+      - name: Install vcpkg dependencies
+        shell: bash
         run: |
-          curl -L https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.tar.gz -o libraw.tar.gz
-          tar -xzf libraw.tar.gz
-          mkdir -p ${{ env.LIBRAW_INSTALL_DIR }}
-          cp -r LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            echo "Running vcpkg install inside ubuntu:20.04 container to ensure low glibc requirement..."
+            # Adjust the toolchain file path for the container
+            DOCKER_TOOLCHAIN=""
+            if [[ -n "$VCPKG_CHAINLOAD_TOOLCHAIN_FILE" ]]; then
+              DOCKER_TOOLCHAIN="/work/arm64-toolchain.cmake"
+            fi
+            
+            # Change permissions so Docker doesn't create root-owned cache files that fail later steps
+            mkdir -p vcpkg_installed
+            chmod -R 777 vcpkg_installed
+            
+            docker run --rm -v ${{ github.workspace }}:/work -v $VCPKG_ROOT:/vcpkg -w /work ubuntu:20.04 /bin/bash -c "export DEBIAN_FRONTEND=noninteractive && export TZ=Etc/UTC && apt-get update && apt-get install -y curl zip unzip tar pkg-config build-essential cmake ninja-build clang gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv && export CC=clang && export CXX=clang++ && export VCPKG_DEFAULT_TRIPLET=$VCPKG_DEFAULT_TRIPLET && export VCPKG_CHAINLOAD_TOOLCHAIN_FILE=$DOCKER_TOOLCHAIN && export VCPKG_ROOT=/vcpkg && /vcpkg/vcpkg install --triplet=$VCPKG_DEFAULT_TRIPLET --overlay-ports=/work/vcpkg-overlays && chmod -R 777 /work/vcpkg_installed"
+          else
+            echo "DEBUG: Current PWD is $(pwd)"
+            echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
+            echo "DEBUG: Checking overlay directory existence:"
+            ls -la "$(pwd)/vcpkg-overlays" || echo "Directory not found!"
+            vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays"
+          fi
 
-      - name: Setup LibRaw (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
-          Expand-Archive libraw.zip -DestinationPath "temp_libraw"
-          if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
-          Move-Item temp_libraw/LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg_installed
+            ${{ github.workspace }}/vcpkg_installed
+          key: vcpkg-${{ matrix.target }}-glibc231-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.target }}-glibc231-
 
       - name: Setup Monkey's Audio SDK (Windows)
         if: runner.os == 'Windows'
@@ -125,6 +154,18 @@ jobs:
           unzip monkey_sdk.zip -d temp_monkey
           mkdir -p ${{ env.MONKEY_SDK_DIR }}
           cp -rn temp_monkey/* ${{ env.MONKEY_SDK_DIR }}/
+
+      - name: Export NASM path for build scripts
+        shell: bash
+        run: |
+          NASM_BIN=$(which nasm || which nasm.exe || echo "")
+          if [ -n "$NASM_BIN" ]; then
+            echo "NASM=$NASM_BIN" >> $GITHUB_ENV
+            echo "NASM set to $NASM_BIN"
+            nasm -v
+          else
+            echo "ERROR: nasm not found in PATH after setup" && exit 1
+          fi
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux' && !matrix.use_cross
@@ -150,8 +191,13 @@ jobs:
           cross build --release --target ${{ matrix.target }}
 
       - name: Build Release (Native)
-        run: cargo build --release --target ${{ matrix.target }}
         if: "!matrix.use_cross"
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --target ${{ matrix.target }}
 
       - name: Run SIMD Parity Tests (Cross)
         if: matrix.use_cross
@@ -256,23 +302,32 @@ jobs:
             echo "ERROR: nasm not found" && exit 1
           fi
 
-      - name: Setup libjpeg-turbo (Windows)
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/${{ env.LIBJPEG_VERSION }}.zip" -OutFile "libjpeg.zip"
-          Expand-Archive libjpeg.zip -DestinationPath "temp_libjpeg"
-          if (Test-Path "${{ env.LIBJPEG_INSTALL_DIR }}") { Remove-Item "${{ env.LIBJPEG_INSTALL_DIR }}" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "${{ env.LIBJPEG_INSTALL_DIR }}"
-          Move-Item temp_libjpeg/libjpeg-turbo-*/* ${{ env.LIBJPEG_INSTALL_DIR }}/ -Force
 
-      - name: Setup LibRaw (Windows)
-        shell: pwsh
+      - name: Export vcpkg triplet
+        shell: bash
+        run: echo "VCPKG_DEFAULT_TRIPLET=x64-windows-static-md" >> $GITHUB_ENV
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgConfigurationJsonGlob: 'vcpkg-configuration.json'
+
+      - name: Install vcpkg dependencies
+        shell: bash
         run: |
-          Invoke-WebRequest -Uri "https://www.libraw.org/data/LibRaw-${{ env.LIBRAW_VERSION }}.zip" -OutFile "libraw.zip"
-          Expand-Archive libraw.zip -DestinationPath "temp_libraw"
-          if (Test-Path "${{ env.LIBRAW_INSTALL_DIR }}") { Remove-Item "${{ env.LIBRAW_INSTALL_DIR }}" -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path "${{ env.LIBRAW_INSTALL_DIR }}"
-          Move-Item temp_libraw/LibRaw-*/* ${{ env.LIBRAW_INSTALL_DIR }}/ -Force
+          echo "DEBUG: Current PWD is $(pwd)"
+          echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
+          echo "DEBUG: Checking overlay directory existence:"
+          ls -la "$(pwd)/vcpkg-overlays" || echo "Directory not found!"
+          vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays" --overlay-triplets="$(pwd)/vcpkg-overlays/triplets"
+
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: vcpkg-win7-legacy-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
       - name: Setup Monkey's Audio SDK (Windows)
         shell: pwsh
@@ -320,7 +375,7 @@ jobs:
           VC_LTL: ${{ env.VC_LTL }}
           YY_THUNKS: ${{ env.YY_THUNKS }}
         run: |
-          $env:RUSTFLAGS = "-C link-arg=/SUBSYSTEM:WINDOWS"
+          $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/SUBSYSTEM:WINDOWS"
           thunk --os win7 --arch x64 -- --release --features legacy_win7
 
 

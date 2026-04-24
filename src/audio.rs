@@ -571,7 +571,7 @@ impl ApeSource {
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                use std::os::unix::ffi::OsStrExt;
+
                 // On Linux/macOS, str_utfn is wchar_t which is 32-bit (UTF-32)
                 let s = path.to_string_lossy();
                 let mut wide_path: Vec<u32> = s.chars().map(|c| c as u32).collect();
@@ -930,18 +930,6 @@ impl BufferedSource {
         }
     }
 
-    /// Calculates the duration of audio currently held in the internal buffers.
-    pub fn get_buffered_duration(&self) -> Duration {
-        let samples_in_channel = self.rx.len() * AUDIO_CHUNK_SIZE;
-        let samples_in_chunk = self.current_chunk.len().saturating_sub(self.current_pos);
-        let total_samples = samples_in_channel + samples_in_chunk;
-        
-        if self.channels > 0 && self.sample_rate > 0 {
-            Duration::from_secs_f64(total_samples as f64 / (self.channels as f64 * self.sample_rate as f64))
-        } else {
-            Duration::ZERO
-        }
-    }
 }
 
 impl Iterator for BufferedSource {

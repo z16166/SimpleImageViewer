@@ -59,6 +59,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Key / Action | Effect |
 |---|---|
+| `Tab` | Toggle OSD (On-Screen Display) |
 | `→` / `↓` / `PageDown` | Next image |
 | `←` / `↑` / `PageUp` | Previous image |
 | `Home` | First image |

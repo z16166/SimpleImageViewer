@@ -45,10 +45,14 @@ fn main() {
     {
         embed_resources(&dst);
 
-        cc::Build::new()
-            .cpp(true)
-            .file("src/audio_helper.cpp")
-            .compile("audio_helper");
+        let mut b = cc::Build::new();
+        b.cpp(true);
+        b.file("src/audio_helper.cpp");
+        
+        let target_features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+        b.static_crt(target_features.contains("crt-static"));
+        
+        b.compile("audio_helper");
 
         println!("cargo:rustc-link-lib=ole32");
         println!("cargo:rustc-link-lib=uuid");

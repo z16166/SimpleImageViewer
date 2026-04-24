@@ -44,8 +44,7 @@ mod formats;
 mod wic;
 #[cfg(target_os = "windows")]
 mod seh_handler;
-#[cfg(target_os = "linux")]
-mod linux_tiff;
+mod libtiff_loader;
 mod raw_processor;
 
 #[cfg(target_os = "windows")]

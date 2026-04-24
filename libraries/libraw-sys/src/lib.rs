@@ -60,7 +60,6 @@ pub struct libraw_data_t {
     _unused: [u8; 0],
 }
 
-#[link(name = "raw", kind = "static")]
 unsafe extern "C" {
     pub fn libraw_version() -> *const c_char;
     pub fn libraw_init(flags: c_int) -> *mut libraw_data_t;
