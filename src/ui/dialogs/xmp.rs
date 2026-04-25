@@ -15,103 +15,127 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use eframe::egui::{self, Color32, Context, RichText};
-use crate::app::{ImageViewerApp, extract_xmp};
+use crate::ui::dialogs::modal_state::ModalResult;
+use crate::ui::dialogs::MovableModal;
 use crate::ui::utils::styled_button;
+use crate::theme::ThemePalette;
 use rust_i18n::t;
 
-pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
-    if !app.show_xmp_window {
-        return;
-    }
+// ── Private state ─────────────────────────────────────────────────────────────
 
-    if app.cached_xmp_data.is_none() && !app.image_files.is_empty() {
-        let path = &app.image_files[app.current_index];
-        if let Some((data, raw)) = extract_xmp(path) {
-            app.cached_xmp_data = Some(data);
-            app.cached_xmp_xml = Some(raw);
+/// Runtime state for the XMP metadata viewer dialog.
+///
+/// Both `data` and `xml` are private implementation details — the dispatch
+/// layer only needs to call [`State::from_path`] and [`show`].
+pub struct State {
+    /// Parsed XMP key-value pairs, or `None` if no XMP metadata was found.
+    data: Option<Vec<(String, String)>>,
+    /// Raw XML string, available for the "Copy XML" button.
+    xml: Option<String>,
+}
+
+impl State {
+    /// Create state by extracting XMP from `path`.
+    ///
+    /// If XMP extraction fails the state is still valid — the dialog will
+    /// show a "no XMP data" message.
+    pub fn from_path(path: &std::path::Path) -> Self {
+        match crate::app::extract_xmp(path) {
+            Some((data, xml)) => Self { data: Some(data), xml: Some(xml) },
+            None              => Self { data: None, xml: None },
         }
-    }
-
-    let mut close_xmp = false;
-    let mut close_and_copy = false;
-    egui::Window::new(t!("xmp.title").to_string())
-        .id(egui::Id::new("xmp_window"))
-        .collapsible(false)
-        .resizable(true)
-        .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(320.0, 240.0))
-        .default_size([640.0, 500.0])
-        .show(ctx, |ui| {
-            ui.set_max_width(ui.available_width());
-            if app.cached_xmp_data.is_none() {
-                ui.add_space(10.0);
-                ui.label(RichText::new(t!("xmp.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
-            }
-
-            egui::Panel::bottom("xmp_footer")
-                .resizable(false)
-                .show_inside(ui, |ui| {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if let Some(xml_str) = &app.cached_xmp_xml {
-                            if styled_button(ui, &t!("xmp.copy_text").to_string(), &app.cached_palette).clicked() {
-                                close_and_copy = true;
-                            }
-                            if styled_button(ui, &t!("xmp.copy_xml").to_string(), &app.cached_palette).clicked() {
-                                ctx.copy_text(xml_str.clone());
-                                app.show_xmp_window = false;
-                            }
-                        }
-                        if styled_button(ui, &t!("btn.close").to_string(), &app.cached_palette).clicked() {
-                            close_xmp = true;
-                        }
-                    });
-                    ui.add_space(10.0);
-                });
-
-            if let Some(data) = &app.cached_xmp_data {
-                render_xmp_table(ui, data, &app.cached_palette);
-            }
-            ui.add_space(10.0);
-        });
-
-    if close_and_copy {
-        if let Some(data) = &app.cached_xmp_data {
-            let text = data.iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("\n");
-            ctx.copy_text(text);
-        }
-        app.show_xmp_window = false;
-    }
-    if close_xmp {
-        app.show_xmp_window = false;
     }
 }
 
-fn render_xmp_table(ui: &mut egui::Ui, data: &[(String, String)], palette: &crate::theme::ThemePalette) {
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        use egui_extras::{Column, TableBuilder};
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .vscroll(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(180.0).at_least(120.0))
-                .column(Column::remainder().at_least(100.0))
-                .body(|body| {
-                    body.rows(24.0, data.len(), |mut row| {
-                        let index = row.index();
-                        let (k, v) = &data[index];
-                        row.col(|ui| {
-                            ui.label(RichText::new(k).color(palette.text_muted).monospace());
-                        });
-                        row.col(|ui| {
-                            let _ = ui.selectable_label(false, RichText::new(v).color(palette.text_normal).monospace());
-                        });
-                    });
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+/// Render the XMP metadata viewer modal for one frame.
+pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
+    let mut result = ModalResult::Pending;
+    let mut copy_text: Option<String> = None;
+    let mut copy_xml:  Option<String> = None;
+
+    const WIDTH: f32 = 640.0;
+    const HEIGHT: f32 = 500.0;
+
+    MovableModal::new("xmp_dialog", t!("xmp.title"))
+        .default_size([WIDTH, HEIGHT])
+        .min_size([400.0, 200.0])
+        .show(ctx, palette, |ui| {
+        // ── No-data notice ───────────────────────────────────────────────────
+        if state.data.is_none() {
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(t!("xmp.no_data").to_string())
+                    .color(Color32::from_rgb(255, 180, 60))
+                    .strong(),
+            );
+            ui.add_space(10.0);
+        }
+
+        // ── Fixed bottom bar: Copy + Close ────────────────────────────────
+        egui::Panel::bottom("xmp_footer")
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if state.data.is_some() {
+                        if styled_button(ui, &t!("xmp.copy_text").to_string(), palette).clicked() {
+                            copy_text = state.data.as_ref().map(|d| {
+                                d.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<_>>().join("\n")
+                            });
+                            result = ModalResult::Dismissed;
+                        }
+                        if let Some(xml) = &state.xml {
+                            if styled_button(ui, &t!("xmp.copy_xml").to_string(), palette).clicked() {
+                                copy_xml = Some(xml.clone());
+                                result = ModalResult::Dismissed;
+                            }
+                        }
+                    }
+                    if styled_button(ui, &t!("btn.close").to_string(), palette).clicked() {
+                        result = ModalResult::Dismissed;
+                    }
                 });
+                ui.add_space(6.0);
+            });
+
+        // ── Scrollable data table fills remaining space ───────────────────
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            if let Some(data) = &state.data {
+                render_table(ui, data, palette);
+            }
         });
+
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            result = ModalResult::Dismissed;
+        }
+    });
+
+    if let Some(text) = copy_text { ctx.copy_text(text); }
+    if let Some(xml)  = copy_xml  { ctx.copy_text(xml);  }
+
+    result
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+fn render_table(ui: &mut egui::Ui, data: &[(String, String)], palette: &ThemePalette) {
+    use egui_extras::{Column, TableBuilder};
+    egui::ScrollArea::horizontal().show(ui, |ui| {
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .vscroll(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::initial(180.0).at_least(120.0))
+            .column(Column::remainder().at_least(100.0))
+            .body(|body| {
+                body.rows(24.0, data.len(), |mut row| {
+                    let (k, v) = &data[row.index()];
+                    row.col(|ui| { ui.label(RichText::new(k).color(palette.text_muted).monospace()); });
+                    row.col(|ui| { let _ = ui.selectable_label(false, RichText::new(v).color(palette.text_normal).monospace()); });
+                });
+            });
     });
 }

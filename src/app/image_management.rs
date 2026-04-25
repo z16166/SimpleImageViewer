@@ -108,8 +108,10 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.is_font_error = false;
-        self.cached_exif_data = None;
-        self.cached_xmp_data = None;
+        // Close any open EXIF/XMP modal — it shows data for the previous image
+        if matches!(self.active_modal, Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_)) | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))) {
+            self.active_modal = None;
+        }
 
         // Try to pull from predictive cache if available
         if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
@@ -311,7 +313,14 @@ impl ImageViewerApp {
                     // On first batch: resolve initial position and start preloading immediately
                     if is_first_batch && count > 0 {
                         self.resolve_initial_position();
-                        self.show_settings = false;
+                        // Auto-close the settings panel only during the very first
+                        // startup scan (images_ever_loaded == false). If the user is
+                        // already browsing images and triggers a rescan from within the
+                        // settings panel (e.g. toggling recursive scan), keep it open.
+                        if !self.images_ever_loaded {
+                            self.show_settings = false;
+                        }
+                        self.images_ever_loaded = true;
                         self.schedule_preloads(true);
                     }
                 }

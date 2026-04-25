@@ -15,94 +15,122 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use eframe::egui::{self, Color32, Context, RichText};
-use crate::app::{ImageViewerApp, extract_exif};
+use crate::ui::dialogs::modal_state::ModalResult;
+use crate::ui::dialogs::MovableModal;
 use crate::ui::utils::styled_button;
+use crate::theme::ThemePalette;
 use rust_i18n::t;
 
-pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
-    if !app.show_exif_window {
-        return;
-    }
+// ── Private state ─────────────────────────────────────────────────────────────
 
-    if app.cached_exif_data.is_none() && !app.image_files.is_empty() {
-        let path = &app.image_files[app.current_index];
-        app.cached_exif_data = extract_exif(path);
-    }
+/// Runtime state for the EXIF data viewer dialog.
+pub struct State {
+    /// Parsed EXIF key-value pairs, or `None` if the image has no EXIF data.
+    data: Option<Vec<(String, String)>>,
+}
 
-    let mut close_exif = false;
-    let mut close_and_copy = false;
-    egui::Window::new(t!("exif.title"))
-        .id(egui::Id::new("exif_window"))
-        .collapsible(false)
-        .resizable(true)
-        .default_pos(ctx.input(|i| i.content_rect()).center() - egui::vec2(300.0, 200.0))
-        .default_size([600.0, 400.0])
-        .show(ctx, |ui| {
-            ui.set_max_width(ui.available_width());
-            if app.cached_exif_data.is_none() {
-                ui.add_space(10.0);
-                ui.label(RichText::new(t!("exif.no_data").to_string()).color(Color32::from_rgb(255, 180, 60)).strong());
-            }
-
-            egui::Panel::bottom("exif_footer")
-                .resizable(false)
-                .show_inside(ui, |ui| {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if styled_button(ui, &t!("exif.copy").to_string(), &app.cached_palette).clicked() {
-                            close_and_copy = true;
-                        }
-                        if styled_button(ui, &t!("btn.close").to_string(), &app.cached_palette).clicked() {
-                            close_exif = true;
-                        }
-                    });
-                    ui.add_space(10.0);
-                });
-
-            if let Some(data) = &app.cached_exif_data {
-                render_exif_table(ui, data, &app.cached_palette);
-            }
-            ui.add_space(10.0);
-        });
-
-    if close_and_copy {
-        if let Some(data) = &app.cached_exif_data {
-            let text = data.iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("\n");
-            ctx.copy_text(text);
-        }
-        app.show_exif_window = false;
-    }
-    if close_exif {
-        app.show_exif_window = false;
+impl State {
+    /// Create state by pre-loading EXIF for `path`.
+    pub fn from_path(path: &std::path::Path) -> Self {
+        Self { data: crate::app::extract_exif(path) }
     }
 }
 
-fn render_exif_table(ui: &mut egui::Ui, data: &[(String, String)], palette: &crate::theme::ThemePalette) {
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        use egui_extras::{Column, TableBuilder};
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .vscroll(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(160.0).at_least(100.0))
-                .column(Column::remainder().at_least(100.0))
-                .body(|body| {
-                    body.rows(24.0, data.len(), |mut row| {
-                        let index = row.index();
-                        let (k, v) = &data[index];
-                        row.col(|ui| {
-                            ui.label(RichText::new(k).color(palette.text_muted).monospace());
-                        });
-                        row.col(|ui| {
-                            let _ = ui.selectable_label(false, RichText::new(v).color(palette.text_normal).monospace());
-                        });
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
+    let mut result = ModalResult::Pending;
+    let mut copy_text: Option<String> = None;
+
+    const WIDTH: f32 = 600.0;
+    const HEIGHT: f32 = 400.0;
+
+    MovableModal::new("exif_dialog", t!("exif.title"))
+        .default_size([WIDTH, HEIGHT])
+        .min_size([400.0, 200.0])
+        .show(ctx, palette, |ui| {
+            // ── No-data notice ───────────────────────────────────────────────
+            if state.data.is_none() {
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(t!("exif.no_data").to_string())
+                        .color(Color32::from_rgb(255, 180, 60))
+                        .strong(),
+                );
+                ui.add_space(10.0);
+            }
+
+            // ── Fixed bottom bar: Copy + Close ────────────────────────────────
+            egui::Panel::bottom("exif_footer")
+                .resizable(false)
+                .show_inside(ui, |ui| {
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if state.data.is_some() {
+                            if styled_button(ui, &t!("exif.copy").to_string(), palette).clicked() {
+                                copy_text = state.data.as_ref().map(|d| {
+                                    d.iter()
+                                        .map(|(k, v)| format!("{}: {}", k, v))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                });
+                                result = ModalResult::Dismissed;
+                            }
+                        }
+                        if styled_button(ui, &t!("btn.close").to_string(), palette).clicked() {
+                            result = ModalResult::Dismissed;
+                        }
+                    });
+                    ui.add_space(6.0);
+                });
+
+            // ── Scrollable data table fills remaining space ───────────────
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                if let Some(data) = &state.data {
+                    render_table(ui, data, palette);
+                }
+            });
+
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                result = ModalResult::Dismissed;
+            }
+        });
+
+    if let Some(text) = copy_text {
+        ctx.copy_text(text);
+    }
+
+    result
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/// Render the EXIF key-value table with horizontal + vertical scrolling.
+/// `vscroll(true)` on the TableBuilder means the table handles its own
+/// vertical scroll, so the window height is fixed and rows are never clipped.
+fn render_table(ui: &mut egui::Ui, data: &[(String, String)], palette: &ThemePalette) {
+    use egui_extras::{Column, TableBuilder};
+    egui::ScrollArea::horizontal().show(ui, |ui| {
+        TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .vscroll(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::initial(160.0).at_least(100.0))
+            .column(Column::remainder().at_least(100.0))
+            .body(|body| {
+                body.rows(24.0, data.len(), |mut row| {
+                    let (k, v) = &data[row.index()];
+                    row.col(|ui| {
+                        ui.label(RichText::new(k).color(palette.text_muted).monospace());
+                    });
+                    row.col(|ui| {
+                        let _ = ui.selectable_label(
+                            false,
+                            RichText::new(v).color(palette.text_normal).monospace(),
+                        );
                     });
                 });
-        });
+            });
     });
 }

@@ -77,10 +77,14 @@ pub struct ThemePalette {
     pub text_muted: Color32,
 
     // ── Accent ───────────────────────────────────────────────────────────────
-    /// Primary action colour (buttons, selection, active widgets).
+    /// Primary action colour used as accent text / headings / selection highlight.
     pub accent: Color32,
     /// Secondary accent used for section headings.
     pub accent2: Color32,
+    /// Fill colour for primary action buttons ("Apply", "Confirm", etc.).
+    /// Separate from `accent` because in light mode the text-oriented accent
+    /// (dark ink) looks too dark as a button background.
+    pub button_primary: Color32,
 
     // ── Empty-state hint ─────────────────────────────────────────────────────
     pub hint_icon: Color32,
@@ -114,8 +118,9 @@ impl ThemePalette {
             text_normal: Color32::from_rgb(240, 240, 240),
             text_muted: Color32::from_gray(210), // Significantly lightened for small-text legibility
 
-            accent: Color32::from_rgb(74, 144, 226), // Steel Blue
-            accent2: Color32::from_rgb(0, 212, 180), // Cool Silver
+            accent:  Color32::from_rgb(74, 144, 226), // Steel Blue
+            accent2: Color32::from_rgb(0, 212, 180),  // Cool Teal
+            button_primary: Color32::from_rgb(74, 144, 226), // same as accent in dark mode
 
             hint_icon: Color32::from_gray(60),
             hint_text: Color32::from_gray(100),
@@ -147,8 +152,11 @@ impl ThemePalette {
             text_normal: Color32::from_rgb(27, 38, 59), // Midnight Blue Ink
             text_muted: Color32::from_rgb(95, 99, 104),
 
-            accent: Color32::from_rgb(27, 38, 59), // Midnight Blue
-            accent2: Color32::from_rgb(74, 93, 78), // Deep Sage
+            accent:  Color32::from_rgb(27, 38, 59),  // Midnight Blue Ink (text/heading use)
+            accent2: Color32::from_rgb(74, 93, 78),  // Deep Sage
+            // Button fill uses a proper mid-blue so primary buttons look like
+            // call-to-action elements, not near-black blocks.
+            button_primary: Color32::from_rgb(37, 99, 235), // Indigo Blue
 
             hint_icon: Color32::from_rgb(218, 220, 224),
             hint_text: Color32::from_rgb(128, 134, 139),

@@ -117,8 +117,8 @@ impl ImageViewerApp {
             self.animation = None;
             self.prev_texture = None;
             self.transition_start = None;
-            self.cached_exif_data = None;
-            self.cached_xmp_data = None;
+            // Close any open EXIF/XMP modal since the image is gone
+            self.active_modal = None;
         } else {
             // Adjust current_index if we were at the last element
             if self.current_index >= self.image_files.len() {
@@ -132,8 +132,10 @@ impl ImageViewerApp {
             self.current_rotation = 0;
             self.zoom_factor = 1.0;
             self.pan_offset = Vec2::ZERO;
-            self.cached_exif_data = None;
-            self.cached_xmp_data = None;
+            // Close any open EXIF/XMP modal since we've moved to a new image
+            if matches!(self.active_modal, Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_)) | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))) {
+                self.active_modal = None;
+            }
             self.error_message = None;
             self.is_font_error = false;
 

@@ -139,19 +139,19 @@ fn draw_settings_left_col(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir:
         ui.add_space(4.0);
         let old_recursive = app.settings.recursive;
         ui.checkbox(&mut app.settings.recursive, t!("label.recursive_scan").to_string());
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
         if !old_recursive && app.settings.recursive {
-            let confirmed = rfd::MessageDialog::new()
-                .set_title(t!("win.confirm_recursive_title").to_string())
-                .set_description(t!("win.confirm_recursive_msg").to_string())
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show() == rfd::MessageDialogResult::Ok;
-            if !confirmed {
-                app.settings.recursive = false;
-            }
+            // Revert immediately — open a confirm modal; handle_modal_action will
+            // apply the change and trigger a rescan only if the user confirms.
+            app.settings.recursive = false;
+            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                crate::ui::dialogs::confirm::State::recursive_scan(
+                    t!("win.confirm_recursive_title").to_string(),
+                    t!("win.confirm_recursive_msg").to_string(),
+                )
+            ));
         }
-        if old_recursive != app.settings.recursive {
+        // If recursive was turned OFF (old=true → new=false), apply immediately.
+        if old_recursive && !app.settings.recursive {
             if let Some(dir) = app.settings.last_image_dir.clone() {
                 app.load_directory(dir);
             }
@@ -624,11 +624,11 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if styled_button(ui, t!("win.assoc_formats"), &app.cached_palette).clicked() {
-            // Capture snapshot from registry
             if let Ok(reg) = crate::formats::get_registry().read() {
-                app.file_assoc_formats = reg.formats.clone();
-                app.file_assoc_selections = vec![true; app.file_assoc_formats.len()];
-                app.show_file_assoc_dialog = true;
+                let formats = reg.formats.clone();
+                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::FileAssoc(
+                    crate::ui::dialogs::file_assoc::State::new(formats)
+                ));
             }
         }
         ui.add_space(8.0);

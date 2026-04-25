@@ -11,13 +11,10 @@ use rust_i18n::t;
 
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
-        // Collect modal flags to block mouse interaction
-        let any_modal_open = self.show_wallpaper_dialog
-            || self.show_goto
-            || self.show_exif_window
-            || self.show_xmp_window;
-        #[cfg(target_os = "windows")]
-        let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
+        // Block canvas mouse interaction when a modal dialog is open.
+        // egui::Modal renders its own dimming overlay, so we do not need to
+        // draw one manually here any more.
+        let any_modal_open = self.active_modal.is_some();
 
         // Fill the area with dark background
         egui::Frame::NONE.fill(self.cached_palette.canvas_bg).show(ui, |ui| {
@@ -80,10 +77,6 @@ impl ImageViewerApp {
                 }
             }
 
-            // Draw a dimmer rect if a modal is open
-            if any_modal_open {
-                ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(150));
-            }
 
             if self.show_settings && canvas_resp.clicked_by(egui::PointerButton::Primary) {
                 self.show_settings = false;

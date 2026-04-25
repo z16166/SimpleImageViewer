@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Context, Key, Vec2};
 use rust_i18n::t;
 use crate::app::ImageViewerApp;
-use crate::ui::{settings as ui_settings, hud as ui_hud, dialogs as ui_dialogs};
+use crate::ui::{settings as ui_settings, hud as ui_hud};
+use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
-use crate::app::extract_exif;
 
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard(&mut self, ctx: &Context) {
@@ -36,15 +36,8 @@ impl ImageViewerApp {
         let mut rotate_ccw = false;
         let mut rotate_cw = false;
 
-        // Collect all modal flags to prevent deletion when a dialog is active
-        // Collect all modal flags to prevent interaction when a dialog is active
-        let any_modal_open = self.show_wallpaper_dialog 
-            || self.show_goto 
-            || self.show_exif_window
-            || self.show_xmp_window;
-
-        #[cfg(target_os = "windows")]
-        let any_modal_open = any_modal_open || self.show_file_assoc_dialog;
+        // Block keyboard shortcuts when a modal dialog is active
+        let any_modal_open = self.active_modal.is_some();
 
         ctx.input(|i| {
             if i.key_pressed(Key::F5) {
@@ -110,8 +103,9 @@ impl ImageViewerApp {
             if i.key_pressed(Key::G) {
                 toggle_goto = true;
             }
-            // Tab — toggle OSD visibility
-            if i.key_pressed(Key::Tab) {
+            // Tab — toggle OSD visibility (only when settings panel is closed;
+            // when open, Tab should cycle widget focus as egui normally does)
+            if i.key_pressed(Key::Tab) && !self.show_settings {
                 toggle_osd = true;
             }
             // Rotation shortcuts: Ctrl+Left / Ctrl+Right
@@ -183,33 +177,11 @@ impl ImageViewerApp {
             }
         }
         if toggle_settings {
-            #[cfg(target_os = "windows")]
-            if self.show_file_assoc_dialog {
-                self.show_file_assoc_dialog = false;
-            } else if self.show_exif_window {
-                self.show_exif_window = false;
-            } else if self.show_xmp_window {
-                self.show_xmp_window = false;
-            } else if self.show_wallpaper_dialog {
-                self.show_wallpaper_dialog = false;
-            } else if self.show_goto {
-                self.show_goto = false;
+            if self.active_modal.is_some() {
+                // Escape / F1 always closes the current modal first
+                self.active_modal = None;
             } else {
                 self.show_settings = !self.show_settings;
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                if self.show_exif_window {
-                    self.show_exif_window = false;
-                } else if self.show_xmp_window {
-                    self.show_xmp_window = false;
-                } else if self.show_wallpaper_dialog {
-                    self.show_wallpaper_dialog = false;
-                } else if self.show_goto {
-                    self.show_goto = false;
-                } else {
-                    self.show_settings = !self.show_settings;
-                }
             }
         }
 
@@ -283,10 +255,12 @@ impl ImageViewerApp {
             // If auto_switch is OFF, space does nothing — user must enable it via settings.
         }
         if toggle_goto && !self.image_files.is_empty() {
-            self.show_goto = !self.show_goto;
-            if self.show_goto {
-                self.goto_input.clear();
-                self.goto_needs_focus = true;
+            if self.active_modal.is_none() {
+                self.active_modal = Some(ActiveModal::Goto(
+                    crate::ui::dialogs::goto::State::new(self.image_files.len(), self.current_index)
+                ));
+            } else {
+                self.active_modal = None;
             }
         }
         if do_quit {
@@ -326,17 +300,101 @@ impl ImageViewerApp {
         ui_settings::draw(self, ctx);
     }
 
-    pub(crate) fn draw_wallpaper_dialog(&mut self, ctx: &egui::Context) {
-        ui_dialogs::wallpaper::draw(self, ctx);
+    /// Dispatch rendering for the currently active modal dialog, and process
+    /// any [`ModalResult`] it returns to mutate app state accordingly.
+    pub(crate) fn dispatch_active_modal(&mut self, ctx: &egui::Context) {
+        // Store the current generation so MovableModal can build a unique Window Id.
+        let modal_gen = self.modal_generation;
+        ctx.data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new(crate::ui::dialogs::modal_state::ID_MODAL_GENERATION),
+                modal_gen,
+            )
+        });
+
+        let result = match &mut self.active_modal {
+            None => return,
+            Some(ActiveModal::Confirm(state)) => {
+                crate::ui::dialogs::confirm::show(state, ctx, &self.cached_palette)
+            }
+            Some(ActiveModal::Goto(state)) => {
+                crate::ui::dialogs::goto::show(state, ctx, &self.cached_palette)
+            }
+            Some(ActiveModal::Wallpaper(state)) => {
+                let path = if !self.image_files.is_empty() {
+                    self.image_files[self.current_index].to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                };
+                crate::ui::dialogs::wallpaper::show(
+                    state,
+                    &path,
+                    self.current_image_res,
+                    ctx,
+                    &self.cached_palette,
+                )
+            }
+            Some(ActiveModal::Exif(state)) => {
+                crate::ui::dialogs::exif::show(state, ctx, &self.cached_palette)
+            }
+            Some(ActiveModal::Xmp(state)) => {
+                crate::ui::dialogs::xmp::show(state, ctx, &self.cached_palette)
+            }
+            #[cfg(target_os = "windows")]
+            Some(ActiveModal::FileAssoc(state)) => {
+                crate::ui::dialogs::file_assoc::show(state, ctx, &self.cached_palette)
+            }
+        };
+
+        match result {
+            ModalResult::Pending => { /* keep open */ }
+            ModalResult::Dismissed => {
+                self.active_modal = None;
+            }
+            ModalResult::Confirmed(action) => {
+                self.handle_modal_action(action, ctx);
+                self.active_modal = None;
+            }
+        }
     }
 
-    pub(crate) fn draw_goto_dialog(&mut self, ctx: &egui::Context) {
-        ui_dialogs::goto::draw(self, ctx);
-    }
-
-    #[cfg(target_os = "windows")]
-    pub(crate) fn draw_file_assoc_dialog(&mut self, ctx: &egui::Context) {
-        ui_dialogs::file_assoc::draw(self, ctx);
+    /// Execute the confirmed action from a modal dialog.
+    fn handle_modal_action(&mut self, action: crate::ui::dialogs::modal_state::ModalAction, _ctx: &egui::Context) {
+        use crate::ui::dialogs::modal_state::ModalAction;
+        use crate::ui::dialogs::confirm::ConfirmTag;
+        match action {
+            ModalAction::GotoIndex(idx) => {
+                self.navigate_to(idx);
+            }
+            ModalAction::SetWallpaper(mode_str) => {
+                if !self.image_files.is_empty() {
+                    let path = self.image_files[self.current_index].clone();
+                    crate::ui::dialogs::wallpaper::apply(path, &mode_str);
+                }
+            }
+            ModalAction::ConfirmTagged(tag) => match tag {
+                ConfirmTag::EnableRecursiveScan => {
+                    self.settings.recursive = true;
+                    if let Some(dir) = self.settings.last_image_dir.clone() {
+                        self.load_directory(dir);
+                    }
+                    self.queue_save();
+                }
+            }
+            #[cfg(target_os = "windows")]
+            ModalAction::ApplyFileAssoc => {
+                if let Some(ActiveModal::FileAssoc(state)) = &self.active_modal {
+                    let selected = state.selected_extensions();
+                    crate::windows_utils::register_file_associations(&selected);
+                }
+                rfd::MessageDialog::new()
+                    .set_title(t!("win.assoc_done_title").to_string())
+                    .set_description(t!("win.assoc_done_msg").to_string())
+                    .set_buttons(rfd::MessageButtons::Ok)
+                    .set_level(rfd::MessageLevel::Info)
+                    .show();
+            }
+        }
     }
 
     pub(crate) fn draw_music_hud_foreground(&mut self, ctx: &egui::Context) {
@@ -366,13 +424,18 @@ impl ImageViewerApp {
         ui.separator();
 
         if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-            self.cached_exif_data = extract_exif(path);
-            self.show_exif_window = true;
+            // EXIF loading is fully encapsulated in exif::State::from_path
+            self.active_modal = Some(ActiveModal::Exif(
+                crate::ui::dialogs::exif::State::from_path(path)
+            ));
             self.context_menu_pos = None;
         }
 
         if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-            self.show_xmp_window = true;
+            // XMP loading is fully encapsulated in xmp::State::from_path
+            self.active_modal = Some(ActiveModal::Xmp(
+                crate::ui::dialogs::xmp::State::from_path(path)
+            ));
             self.context_menu_pos = None;
         }
 
@@ -413,16 +476,11 @@ impl ImageViewerApp {
         }
 
         ui.separator();
-        if ui
-            .button(t!("ctx.set_wallpaper").to_string())
-            .clicked()
-        {
-            self.show_wallpaper_dialog = true;
-            if let Ok(p) = wallpaper::get() {
-                self.current_system_wallpaper = Some(p);
-            } else {
-                self.current_system_wallpaper = Some("Unknown".to_string());
-            }
+        if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
+            let current_wallpaper = wallpaper::get().ok();
+            self.active_modal = Some(ActiveModal::Wallpaper(
+                crate::ui::dialogs::wallpaper::State::new(current_wallpaper)
+            ));
             self.context_menu_pos = None;
         }
 

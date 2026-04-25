@@ -14,87 +14,87 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Align2, Color32, Context, Key, RichText};
-use crate::app::ImageViewerApp;
+use eframe::egui::{self, Context, Key, RichText};
+use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
+use crate::ui::dialogs::MovableModal;
 use crate::ui::utils::styled_button;
+use crate::theme::ThemePalette;
 use rust_i18n::t;
 
-pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
-    if !app.show_goto {
-        return;
+// ── Private state ────────────────────────────────────────────────────────────
+
+/// Runtime state for the "Go to image #N" dialog.
+pub struct State {
+    input: String,
+    needs_focus: bool,
+    total: usize,
+    current_index: usize,
+}
+
+impl State {
+    pub fn new(total: usize, current_index: usize) -> Self {
+        Self { input: String::new(), needs_focus: true, total, current_index }
     }
+}
 
-    let total = app.image_files.len();
-    if total == 0 {
-        app.show_goto = false;
-        return;
-    }
+// ── Rendering ────────────────────────────────────────────────────────────────
 
-    let mut do_close = false;
-    let mut do_jump = false;
+pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
+    let mut result = ModalResult::Pending;
 
-    egui::Window::new(t!("goto.title"))
-        .id(egui::Id::new("goto_window"))
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+    const WIDTH: f32 = 320.0;
+    const HEIGHT: f32 = 120.0;
+
+    MovableModal::new("goto_dialog", t!("goto.title"))
         .resizable(false)
-        .collapsible(false)
-        .frame(
-            egui::Frame::window(&ctx.global_style())
-                .fill(app.cached_palette.panel_bg)
-                .shadow(egui::epaint::Shadow::NONE),
-        )
-        .fixed_size([320.0, 120.0])
-        .show(ctx, |ui| {
-            ui.visuals_mut().override_text_color = Some(Color32::WHITE);
-            ui.add_space(6.0);
+        .default_size([WIDTH, HEIGHT])
+        .show(ctx, palette, |ui| {
             ui.label(
-                RichText::new(t!("goto.hint", total = total.to_string()))
-                    .color(app.cached_palette.text_muted)
+                RichText::new(t!("goto.hint", total = state.total.to_string()))
+                    .color(palette.text_muted)
                     .small(),
             );
             ui.add_space(6.0);
 
             let resp = ui.add(
-                egui::TextEdit::singleline(&mut app.goto_input)
+                egui::TextEdit::singleline(&mut state.input)
                     .desired_width(f32::INFINITY)
-                    .hint_text(format!("{}", app.current_index + 1)),
+                    .hint_text(format!("{}", state.current_index + 1)),
             );
 
-            // Auto-focus the text field when the dialog first opens
-            if app.goto_needs_focus {
+            if state.needs_focus {
                 resp.request_focus();
-                app.goto_needs_focus = false;
+                state.needs_focus = false;
             }
 
-            // Enter key confirms; Escape closes
             if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                do_jump = true;
+                result = try_confirm(&state.input, state.total);
             }
             if ui.input(|i| i.key_pressed(Key::Escape)) {
-                do_close = true;
+                result = ModalResult::Dismissed;
             }
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if styled_button(ui, t!("btn.go"), &app.cached_palette).clicked() {
-                    do_jump = true;
+                if styled_button(ui, t!("btn.go"), palette).clicked() {
+                    result = try_confirm(&state.input, state.total);
                 }
-                if styled_button(ui, &t!("btn.cancel").to_string(), &app.cached_palette).clicked() {
-                    do_close = true;
+                if styled_button(ui, &t!("btn.cancel").to_string(), palette).clicked() {
+                    result = ModalResult::Dismissed;
                 }
             });
         });
 
-    if do_jump {
-        let raw: usize = app.goto_input.trim().parse().unwrap_or(0);
-        // Input is 1-based; clamp to valid range
-        if raw >= 1 {
-            let idx = (raw - 1).min(total - 1);
-            app.show_goto = false;
-            app.navigate_to(idx);
-        }
-    }
-    if do_close {
-        app.show_goto = false;
+    result
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+fn try_confirm(input: &str, total: usize) -> ModalResult {
+    let raw: usize = input.trim().parse().unwrap_or(0);
+    if raw >= 1 && total > 0 {
+        ModalResult::Confirmed(ModalAction::GotoIndex((raw - 1).min(total - 1)))
+    } else {
+        ModalResult::Pending
     }
 }

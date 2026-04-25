@@ -40,7 +40,7 @@ pub(crate) use crate::settings::{ScaleMode, Settings, TransitionStyle};
 pub(crate) use crate::theme::AppTheme;
 use crate::tile_cache::TileManager;
 use crate::theme::{SystemThemeCache, ThemePalette};
-use crate::ui::dialogs as ui_dialogs;
+use crate::ui::dialogs::modal_state::ActiveModal;
 use crate::ui::utils::setup_visuals;
 use rust_i18n::t;
 
@@ -178,9 +178,15 @@ pub struct ImageViewerApp {
     // UI state
     pub(crate) show_settings: bool,
     pub(crate) last_show_settings: bool,
+    /// True once the very first directory scan has produced at least one image.
+    pub(crate) images_ever_loaded: bool,
     pub(crate) status_message: String,
     pub(crate) error_message: Option<String>,
     pub(crate) is_font_error: bool,
+    /// Incremented each time a modal dialog is opened.
+    /// Included in each dialog's egui Window Id so that egui has no position
+    /// memory from a previous opening — the dialog always starts centered.
+    pub(crate) modal_generation: u32,
 
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
@@ -194,18 +200,10 @@ pub struct ImageViewerApp {
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,
 
-    // EXIF dialog state
-    pub(crate) show_exif_window: bool,
-    pub(crate) cached_exif_data: Option<Vec<(String, String)>>,
-    // XMP dialog state
-    pub(crate) show_xmp_window: bool,
-    pub(crate) cached_xmp_data: Option<Vec<(String, String)>>,
-    pub(crate) cached_xmp_xml: Option<String>,
-
-    // Goto dialog state
-    pub(crate) show_goto: bool,
-    pub(crate) goto_input: String,
-    pub(crate) goto_needs_focus: bool,
+    // Active modal dialog — only one can be open at a time.
+    // All per-dialog state lives inside the enum variant; setting this to None
+    // automatically drops and cleans up the dialog's temporary data.
+    pub(crate) active_modal: Option<ActiveModal>,
 
     // Async music scanning
     pub(crate) music_scan_rx: Option<Receiver<Vec<PathBuf>>>,
@@ -214,19 +212,8 @@ pub struct ImageViewerApp {
     pub(crate) music_scan_path: Option<PathBuf>,
     pub(crate) scan_rx: Option<Receiver<scanner::ScanMessage>>,
 
-    // Wallpaper dialog state
-    pub(crate) show_wallpaper_dialog: bool,
-    pub(crate) selected_wallpaper_mode: String,
+    // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
-    pub(crate) current_system_wallpaper: Option<String>,
-
-    // File association dialog state (Windows only)
-    #[cfg(target_os = "windows")]
-    pub(crate) show_file_assoc_dialog: bool,
-    #[cfg(target_os = "windows")]
-    pub(crate) file_assoc_formats: Vec<crate::formats::ImageFormat>,
-    #[cfg(target_os = "windows")]
-    pub(crate) file_assoc_selections: Vec<bool>,
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
@@ -545,11 +532,12 @@ impl eframe::App for ImageViewerApp {
                     self.settings.last_music_file = Some(current_path);
                     changed = true;
                 }
-            }
-            let cue_idx = self.audio.get_current_cue_track();
-            if self.settings.last_music_cue_track != cue_idx {
-                self.settings.last_music_cue_track = cue_idx;
-                changed = true;
+                
+                let cue_idx = self.audio.get_current_cue_track();
+                if self.settings.last_music_cue_track != cue_idx {
+                    self.settings.last_music_cue_track = cue_idx;
+                    changed = true;
+                }
             }
             
             if changed {
@@ -609,24 +597,35 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        // Settings panel overlay (hidden when file assoc dialog is modal)
-        #[cfg(target_os = "windows")]
-        let skip_settings = self.show_file_assoc_dialog;
-        #[cfg(not(target_os = "windows"))]
-        let skip_settings = false;
-
-        // Settings panel & Dialogs
-        if self.show_settings && !skip_settings {
+        // Settings panel overlay.
+        // Suppressed while a modal dialog is open: the modal dialog's backdrop
+        // only dims visually (Order::Background); to achieve true modality we
+        // must prevent the settings panel from being rendered (and thus from
+        // receiving input) while a dialog is on screen.
+        let modal_open = self.active_modal.is_some();
+        if self.show_settings && !modal_open {
             self.draw_settings_panel(&ctx);
-        } else {
+        } else if !self.show_settings {
             self.last_show_settings = false;
         }
-        self.draw_wallpaper_dialog(&ctx);
-        #[cfg(target_os = "windows")]
-        self.draw_file_assoc_dialog(&ctx);
-        self.draw_goto_dialog(&ctx);
-        ui_dialogs::exif::draw(self, &ctx);
-        ui_dialogs::xmp::draw(self, &ctx);
+
+        // Detect modal transitions: None → Some means a new dialog just opened.
+        // Incrementing modal_generation makes the egui::Window Id unique for this
+        // opening — egui has no position memory from previous openings, so the
+        // dialog always appears at the calculated center position.
+        {
+            let id = egui::Id::new(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
+            let had_modal = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+            let has_modal = self.active_modal.is_some();
+            if has_modal && !had_modal {
+                self.modal_generation = self.modal_generation.wrapping_add(1);
+            }
+            ctx.data_mut(|d| d.insert_temp(id, has_modal));
+        }
+
+        // Dispatch the single active modal dialog (MovableModal handles the overlay)
+        self.dispatch_active_modal(&ctx);
+
 
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);

@@ -1439,7 +1439,7 @@ fn run_audio_loop(
             }
         }
 
-        if !stopped && !paused && !playlist.is_empty() {
+        if !stopped && !playlist.is_empty() {
             let player_exists = backend_player.is_some();
             let player_empty = backend_player.as_ref().map_or(false, |p| p.empty());
 
@@ -1457,10 +1457,13 @@ fn run_audio_loop(
                             tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
 
                             if let Some(ref cue) = cue_sheet {
-                                if let Some(first) = cue.tracks.first() {
-                                    let meta = format!("{}. {} - {}", first.number, first.title, first.performer);
+                                // If we have a pending start track, use it for metadata immediately.
+                                // Otherwise default to the first track.
+                                let initial_track_idx = pending_start_track_idx.unwrap_or(0);
+                                if let Some(t) = cue.tracks.get(initial_track_idx) {
+                                    let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
                                     set_metadata(&meta_slot, Some(meta));
-                                    set_cue_track(&cue_track_slot, Some(0));
+                                    set_cue_track(&cue_track_slot, Some(initial_track_idx));
                                 }
                                 let markers: Vec<u64> = cue.tracks.iter().map(|t| t.start.as_millis() as u64).collect();
                                 set_cue_markers(&cue_markers_slot, markers);
@@ -1482,6 +1485,11 @@ fn run_audio_loop(
                                     current_track_idx += 1;
                                     last_seek_offset = Duration::ZERO;
                                     last_hw_pos = Duration::ZERO;
+                                    current_file_start = Instant::now();
+                                    total_paused = Duration::ZERO;
+                                    if paused {
+                                        paused_at = Some(Instant::now());
+                                    }
                                 }
                             } else {
                                 continue;
@@ -1490,6 +1498,9 @@ fn run_audio_loop(
                             if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
                                 if track_idx < cue.tracks.len() {
                                     let t = &cue.tracks[track_idx];
+                                    // Even if t.start is 0, we still want to go through the seek logic
+                                    // if it's not the first load (though here it IS the first load).
+                                    // The important part is that we already set the metadata above.
                                     if t.start > Duration::ZERO {
                                     if let Ok(f2) = std::fs::File::open(&path) {
                                         let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
@@ -1514,7 +1525,7 @@ fn run_audio_loop(
 
                             if let Some(ref p) = backend_player {
                                 p.set_volume(current_volume);
-                                p.play();
+                                if paused { p.pause(); } else { p.play(); }
                             }
                         }
                     }

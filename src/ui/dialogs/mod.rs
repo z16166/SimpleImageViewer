@@ -14,10 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod modal_state;
+pub mod confirm;
 pub mod wallpaper;
 pub mod goto;
 pub mod exif;
 pub mod xmp;
+pub mod movable_modal;
 
 #[cfg(target_os = "windows")]
 pub mod file_assoc;
+
+pub(crate) use movable_modal::MovableModal;
