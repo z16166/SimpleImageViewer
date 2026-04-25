@@ -434,20 +434,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate Changelog
-        uses: orhun/git-cliff-action@v4
-        id: git-cliff
-        with:
-          config: cliff.toml
-          args: --latest
-        env:
-          OUTPUT: CHANGELOG.md
-
-      - name: Debug Changelog
+      - name: Extract Release Notes
+        shell: bash
         run: |
-          echo "=== CHANGELOG CONTENT START ==="
-          cat CHANGELOG.md
-          echo "=== CHANGELOG CONTENT END ==="
+          # Get version without 'v' prefix
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Extracting notes for version [$VERSION]"
+          
+          # Extract section between the current version header and the next ## header
+          # We use sed to find the range, then sed '$d' to remove the last line (the next header)
+          # If it's the first entry in CHANGELOG, it will go to the end of file.
+          sed -n "/^## \[$VERSION\]/,/^## /p" CHANGELOG.md | sed '$d' > RELEASE_NOTES.md
+          
+          echo "=== RELEASE NOTES CONTENT ==="
+          cat RELEASE_NOTES.md
+          echo "============================="
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -461,6 +462,6 @@ jobs:
         run: |
           gh release create ${{ github.ref_name }} release-artifacts/* \
             --title "${{ github.ref_name }}" \
-            --notes-file CHANGELOG.md || \
-          (gh release edit ${{ github.ref_name }} --notes-file CHANGELOG.md && \
+            --notes-file RELEASE_NOTES.md || \
+          (gh release edit ${{ github.ref_name }} --notes-file RELEASE_NOTES.md && \
            gh release upload ${{ github.ref_name }} release-artifacts/* --clobber)
