@@ -168,6 +168,11 @@ win.assoc_done_title: "File Association Registered"
 win.assoc_done_msg: "File associations have been registered successfully!\n\nTo set Simple Image Viewer as the default image viewer:\n1. Double-click any image file in Explorer\n2. Select \"Simple Image Viewer\" from the list\n3. Check \"Always use this app\"\n\nUsually you only need to do this once, and Windows will automatically apply it to all associated image types."
 win.confirm_recursive_title: "Enable Recursive Scan?"
 win.confirm_recursive_msg: "Recursive scan will search all subdirectories.\nThis can take a very long time on large directory trees\n(e.g. a disk root). Are you sure?"
+win.group_standard: "Standard Formats"
+win.group_pro: "Professional (PS/TIFF/HEIF)"
+win.group_wic_system: "Windows System (WIC)"
+win.group_wic_raw: "Camera RAW (WIC)"
+win.group_others: "Other Formats"
 
 # Language names (for the selector)
 lang.en: "English (en-US)"

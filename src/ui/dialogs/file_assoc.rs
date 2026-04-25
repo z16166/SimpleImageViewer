@@ -91,14 +91,14 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
             .show(ui, |ui| {
                 ui.set_max_width(ui.available_width() - 16.0);
                 use crate::formats::FormatGroup;
-                for (group, name) in [
-                    (FormatGroup::Standard,  "Standard Formats"),
-                    (FormatGroup::Pro,       "Professional (PS/TIFF/HEIF)"),
-                    (FormatGroup::WicSystem, "Windows System (WIC)"),
-                    (FormatGroup::WicRaw,    "Camera RAW (WIC)"),
-                    (FormatGroup::Others,    "Other Formats"),
+                for (group, key) in [
+                    (FormatGroup::Standard,  "win.group_standard"),
+                    (FormatGroup::Pro,       "win.group_pro"),
+                    (FormatGroup::WicSystem, "win.group_wic_system"),
+                    (FormatGroup::WicRaw,    "win.group_wic_raw"),
+                    (FormatGroup::Others,    "win.group_others"),
                 ] {
-                    render_format_group(ui, state, group, name, palette);
+                    render_format_group(ui, state, group, t!(key), palette);
                 }
             });
 

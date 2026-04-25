@@ -168,6 +168,11 @@ win.assoc_done_title: "文件关联已注册"
 win.assoc_done_msg: "文件关联注册成功！\n\n若要将简易图片查看器设为默认图片查看器：\n1. 在资源管理器中双击任意图片文件\n2. 从列表中选择「Simple Image Viewer」\n3. 勾选「始终使用此应用」\n\n通常只需操作一次，Windows 将自动应用到所有已关联的图片类型。"
 win.confirm_recursive_title: "启用递归扫描？"
 win.confirm_recursive_msg: "递归扫描将搜索所有子目录。\n在大型目录树（如磁盘根目录）下可能耗时很长。\n确定要启用吗？"
+win.group_standard: "标准格式"
+win.group_pro: "专业格式 (PS/TIFF/HEIF)"
+win.group_wic_system: "Windows 系统格式 (WIC)"
+win.group_wic_raw: "相机 RAW 格式 (WIC)"
+win.group_others: "其他格式"
 
 # Language names (for the selector)
 lang.en: "English (en-US)"

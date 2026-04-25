@@ -167,7 +167,12 @@ win.btn_cancel: "✕  取消"
 win.assoc_done_title: "檔案關聯已註冊"
 win.assoc_done_msg: "檔案關聯註冊成功！\n\n若要將簡易圖片查看器設為預設圖片查看器：\n1. 在檔案總管中雙擊任意圖片檔案\n2. 從清單中選擇「Simple Image Viewer」\n3. 勾選「一律使用此應用程式」\n\n通常只需操作一次，Windows 會自動套用至所有已關聯的圖片類型。"
 win.confirm_recursive_title: "啟用遞迴掃描？"
-win.confirm_recursive_msg: "遞迴掃描將搜尋所有子目錄。\n在大型目錄樹（如磁碟根目錄）下可能耗時甚長。\n確定要啟用嗎？"
+win.confirm_recursive_msg: "遞迴掃描將搜尋所有子目錄。\n在大型目錄樹（如磁碟根目錄）下可能耗時很长。\n確定要啟用嗎？"
+win.group_standard: "標準格式"
+win.group_pro: "專業格式 (PS/TIFF/HEIF)"
+win.group_wic_system: "Windows 系統格式 (WIC)"
+win.group_wic_raw: "相機 RAW 格式 (WIC)"
+win.group_others: "其他格式"
 
 # Language names (for the selector)
 lang.en: "English (en-US)"
