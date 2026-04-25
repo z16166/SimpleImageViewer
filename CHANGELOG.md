@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.3] - 2026-04-25
+
+### Added
+- **UI Architecture**: Introduced unified `MovableModal` system for all pop-up dialogs (EXIF, XMP, File Association, Go-to, etc.), featuring improved centering and modal backdrop logic.
+- **Music Persistence**: Added support for resuming music playback across application restarts, including track selection and CUE sheet position.
+- **File Association**: Refined the Windows file association dialog with localized format group names and a more professional, platform-agnostic terminology.
+
+### Fixed
+- **UI**: Fixed inconsistent button colors in light theme and resolved checkbox interaction issues in modal dialogs.
+- **Egui 0.34.1**: Resolved all remaining deprecation warnings from the egui 0.34.1 update.
+
 ## [1.5.2] - 2026-04-24
 
 ### Added

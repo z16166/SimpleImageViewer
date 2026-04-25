@@ -98,7 +98,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                     (FormatGroup::WicRaw,    "win.group_wic_raw"),
                     (FormatGroup::Others,    "win.group_others"),
                 ] {
-                    render_format_group(ui, state, group, t!(key), palette);
+                    render_format_group(ui, state, group, &t!(key), palette);
                 }
             });
 
