@@ -15,20 +15,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use eframe::egui;
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use std::sync::LazyLock;
 use crate::constants::{
-    MAX_QUALITY_PREVIEW_SIZE, RGBA_CHANNELS, BYTES_PER_MB, 
-    BYTES_PER_GB, DEFAULT_PREVIEW_SIZE, DEFAULT_ANIMATION_DELAY_MS,
-    MIN_ANIMATION_DELAY_THRESHOLD_MS
+    BYTES_PER_GB, BYTES_PER_MB, DEFAULT_ANIMATION_DELAY_MS, DEFAULT_PREVIEW_SIZE,
+    MAX_QUALITY_PREVIEW_SIZE, MIN_ANIMATION_DELAY_THRESHOLD_MS, RGBA_CHANNELS,
 };
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
+pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
 
 /// Dedicated pool for heavy high-quality preview generation (refinement).
 /// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
@@ -36,18 +36,25 @@ static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     match rayon::ThreadPoolBuilder::new()
         .num_threads(2)
         .thread_name(|i| format!("refinement-worker-{}", i))
-        .build() {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("[Loader] Failed to create refinement pool: {}. Falling back to default pool.", e);
-                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
-            }
+        .build()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!(
+                "[Loader] Failed to create refinement pool: {}. Falling back to default pool.",
+                e
+            );
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .unwrap()
         }
+    }
 });
 
 use crate::raw_processor::RawProcessor;
-use parking_lot::RwLock as PLRwLock;
 use image::{DynamicImage, GenericImageView};
+use parking_lot::RwLock as PLRwLock;
 
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -183,7 +190,8 @@ pub struct ImageLoader {
 impl ImageLoader {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) = crossbeam_channel::unbounded();
+        let (refine_tx, refine_rx): (Sender<RefinementRequest>, Receiver<RefinementRequest>) =
+            crossbeam_channel::unbounded();
         let pool_builder =
             rayon::ThreadPoolBuilder::new().thread_name(|i| format!("img-loader-{i}"));
 
@@ -213,8 +221,14 @@ impl ImageLoader {
         let pool = match pool_builder.build() {
             Ok(p) => p,
             Err(e) => {
-                log::error!("[Loader] Failed to create image loader thread pool: {}. Falling back to minimal pool.", e);
-                rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap()
+                log::error!(
+                    "[Loader] Failed to create image loader thread pool: {}. Falling back to minimal pool.",
+                    e
+                );
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(1)
+                    .build()
+                    .unwrap()
             }
         };
 
@@ -405,14 +419,14 @@ impl ImageLoader {
                             let rgba = full_img.to_rgba8();
                             let (w, h) = rgba.dimensions();
                             let pixels = rgba.into_raw();
-                            
+
                             let dynamic = if let Some(buf) = image::ImageBuffer::from_raw(w, h, pixels) {
                                 DynamicImage::ImageRgba8(buf)
                             } else {
                                 log::error!("[Refinement] Failed to create image buffer from raw bits ({}x{})", w, h);
                                 continue;
                             };
-                            
+
                             // Generate a high-quality preview for the UI so the user gets
                             // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
                             let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
@@ -423,7 +437,7 @@ impl ImageLoader {
                                 height: prev_rgba.height(),
                                 pixels: prev_rgba.into_raw(),
                             };
-                            
+
                             let mut dev_lock = req.developed_image.write();
                             *dev_lock = Some(dynamic);
                             drop(dev_lock);
@@ -706,7 +720,13 @@ impl ImageLoader {
     }
 }
 
-fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<LoaderOutput>, refine_tx: Sender<RefinementRequest>) -> LoadResult {
+fn load_image_file(
+    generation: u64,
+    index: usize,
+    path: &PathBuf,
+    _tx: Sender<LoaderOutput>,
+    refine_tx: Sender<RefinementRequest>,
+) -> LoadResult {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -774,7 +794,10 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
 
             // Last resort: Detect format by content (magic bytes)
             if let Ok(retry_img) = load_via_content_detection(path) {
-                log::info!("[{}] Successfully recovered via content-based detection", file_name);
+                log::info!(
+                    "[{}] Successfully recovered via content-based detection",
+                    file_name
+                );
                 return Ok(retry_img);
             }
         }
@@ -858,9 +881,7 @@ fn load_image_file(generation: u64, index: usize, path: &PathBuf, _tx: Sender<Lo
 
             Ok(ImageData::Tiled(source))
         }
-        Ok(ImageData::Static(decoded)) => {
-            Ok(make_image_data(decoded))
-        }
+        Ok(ImageData::Static(decoded)) => Ok(make_image_data(decoded)),
         Ok(ImageData::Animated(frames)) => {
             if let Some(first) = frames.first() {
                 let width = first.width;
@@ -919,7 +940,8 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
 
     let orientation = get_exif_orientation(path);
     if orientation > 1 {
-        let (out_w, out_h, out_pixels) = crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+        let (out_w, out_h, out_pixels) =
+            crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
         w = out_w;
         h = out_h;
         pixels = out_pixels;
@@ -984,9 +1006,17 @@ fn process_animation_frames(
         .into_iter()
         .map(|frame| {
             let (numer, denom) = frame.delay().numer_denom_ms();
-            let delay_ms = if denom == 0 { DEFAULT_ANIMATION_DELAY_MS } else { numer / denom };
+            let delay_ms = if denom == 0 {
+                DEFAULT_ANIMATION_DELAY_MS
+            } else {
+                numer / denom
+            };
             // Standard browser behavior: delays <= 10ms are treated as 100ms
-            let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS { DEFAULT_ANIMATION_DELAY_MS } else { delay_ms };
+            let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS {
+                DEFAULT_ANIMATION_DELAY_MS
+            } else {
+                delay_ms
+            };
             let buffer = frame.into_buffer();
             let (width, height) = buffer.dimensions();
             let pixels = buffer.into_raw();
@@ -1171,9 +1201,15 @@ fn make_image_data(img: DecodedImage) -> ImageData {
     if pixel_count >= tiled_limit || max_side > limit {
         log::info!(
             "[Loader] Image {}x{} ({:.1} MP) exceeds GPU limit ({}) or threshold ({:.1} MP). Using forced tiling.",
-            img.width, img.height, pixel_count as f64 / 1_000_000.0, limit, tiled_limit as f64 / 1_000_000.0
+            img.width,
+            img.height,
+            pixel_count as f64 / 1_000_000.0,
+            limit,
+            tiled_limit as f64 / 1_000_000.0
         );
-        ImageData::Tiled(Arc::new(MemoryImageSource::new(img.width, img.height, img.pixels)))
+        ImageData::Tiled(Arc::new(MemoryImageSource::new(
+            img.width, img.height, img.pixels,
+        )))
     } else {
         ImageData::Static(img)
     }
@@ -1189,22 +1225,32 @@ fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<Im
         image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(path),
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => load_jpeg(path),
-        image::ImageFormat::Bmp | image::ImageFormat::Ico |
-        image::ImageFormat::Pnm | image::ImageFormat::Tga | image::ImageFormat::Dds |
-        image::ImageFormat::Hdr | image::ImageFormat::Farbfeld | image::ImageFormat::OpenExr |
-        image::ImageFormat::Avif | image::ImageFormat::Qoi => load_static(path),
-        _ => Err(rust_i18n::t!("error.unsupported_detected_format", format = format!("{:?}", format)).to_string()),
+        image::ImageFormat::Bmp
+        | image::ImageFormat::Ico
+        | image::ImageFormat::Pnm
+        | image::ImageFormat::Tga
+        | image::ImageFormat::Dds
+        | image::ImageFormat::Hdr
+        | image::ImageFormat::Farbfeld
+        | image::ImageFormat::OpenExr
+        | image::ImageFormat::Avif
+        | image::ImageFormat::Qoi => load_static(path),
+        _ => Err(rust_i18n::t!(
+            "error.unsupported_detected_format",
+            format = format!("{:?}", format)
+        )
+        .to_string()),
     }
 }
 
 fn load_via_content_detection(path: &PathBuf) -> Result<ImageData, String> {
-    use std::io::{Read};
+    use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    
+
     // Use constant for buffer size
     let mut header = [0u8; DETECTION_BUFFER_SIZE];
     let n = file.read(&mut header).unwrap_or(0);
-    
+
     // 1. Try standard image-rs detection
     if let Ok(guessed) = image::guess_format(&header[..n]) {
         return load_by_image_format(guessed, path);
@@ -1214,7 +1260,13 @@ fn load_via_content_detection(path: &PathBuf) -> Result<ImageData, String> {
     // HEIF/HEIC signature: "ftyp" (at offset 4) followed by various brands.
     if n >= 12 && &header[4..8] == b"ftyp" {
         let sub = &header[8..12];
-        if sub == b"heic" || sub == b"heix" || sub == b"hevc" || sub == b"hevx" || sub == b"mif1" || sub == b"msf1" {
+        if sub == b"heic"
+            || sub == b"heix"
+            || sub == b"hevc"
+            || sub == b"hevx"
+            || sub == b"mif1"
+            || sub == b"msf1"
+        {
             return load_heic(path);
         }
     }
@@ -1402,10 +1454,17 @@ impl RawImageSource {
         // ALSO: We do NOT send a refinement request here. Refinement is deferred until
         // the image becomes the actively-viewed one (via request_refinement()). This
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
-        let rgba = if let Some(buf) = image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels) {
+        let rgba = if let Some(buf) =
+            image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels)
+        {
             buf
         } else {
-            log::error!("[Loader] Failed to create preview RGBA image buffer ({}x{}) for {:?}", preview.width, preview.height, path);
+            log::error!(
+                "[Loader] Failed to create preview RGBA image buffer ({}x{}) for {:?}",
+                preview.width,
+                preview.height,
+                path
+            );
             image::RgbaImage::new(1, 1)
         };
         let preview_dyn = DynamicImage::ImageRgba8(rgba);
@@ -1449,8 +1508,12 @@ impl TiledImageSource for RawImageSource {
                 let scale_y = ih as f64 / self.height as f64;
                 let px = (x as f64 * scale_x) as u32;
                 let py = (y as f64 * scale_y) as u32;
-                let pw = ((w as f64 * scale_x).ceil() as u32).min(iw.saturating_sub(px)).max(1);
-                let ph = ((h as f64 * scale_y).ceil() as u32).min(ih.saturating_sub(py)).max(1);
+                let pw = ((w as f64 * scale_x).ceil() as u32)
+                    .min(iw.saturating_sub(px))
+                    .max(1);
+                let ph = ((h as f64 * scale_y).ceil() as u32)
+                    .min(ih.saturating_sub(py))
+                    .max(1);
                 let crop = img.crop_imm(px, py, pw, ph);
                 let resized = crop.resize_exact(w, h, image::imageops::FilterType::Triangle);
                 resized.to_rgba8().into_raw()
@@ -1489,7 +1552,11 @@ impl TiledImageSource for RawImageSource {
     }
 
     fn request_refinement(&self, index: usize, generation: u64) {
-        log::info!("[RawImageSource] Triggering refinement for index={}, gen={}", index, generation);
+        log::info!(
+            "[RawImageSource] Triggering refinement for index={}, gen={}",
+            index,
+            generation
+        );
         let _ = self.refine_tx.send(RefinementRequest {
             path: self.path.clone(),
             index,
@@ -1508,15 +1575,23 @@ fn load_raw(
     // 1. Initialize LibRaw Processor and attempt to open the file header.
     // If LibRaw fails to open (e.g., unsupported format like some old Kodak KDC or damaged file),
     // we immediately fall back to the platform-native Rule 2 (WIC/ImageIO) as a last resort.
-    let mut processor = RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+    let mut processor =
+        RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
     if let Err(e) = processor.open(path) {
-        log::warn!("[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).", path, e);
+        log::warn!(
+            "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
+            path,
+            e
+        );
         #[cfg(target_os = "windows")]
         return crate::wic::load_via_wic(path);
         #[cfg(target_os = "macos")]
         return crate::macos_image_io::load_via_image_io(path);
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        return Err(format!("LibRaw failed and no platform fallback available: {}", e));
+        return Err(format!(
+            "LibRaw failed and no platform fallback available: {}",
+            e
+        ));
     }
 
     let (width, height) = (processor.width() as u32, processor.height() as u32);
@@ -1526,18 +1601,29 @@ fn load_raw(
     // 2. Rule 1: High-Performance Synchronous Development for Small Images (< 64MP).
     // If the image is small enough to fit in GPU memory and meets the area threshold,
     // we use LibRaw's native development to get original raw pixels instantly.
-    if area < threshold && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        log::info!("[Loader] RAW {}x{} ({:.1} MP) matches Rule 1 (Small). Synchronously extracting pixels...", 
-            width, height, area as f64 / 1_000_000.0);
-        
+    if area < threshold
+        && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
+        && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
+    {
+        log::info!(
+            "[Loader] RAW {}x{} ({:.1} MP) matches Rule 1 (Small). Synchronously extracting pixels...",
+            width,
+            height,
+            area as f64 / 1_000_000.0
+        );
+
         if let Ok(full_img) = processor.develop() {
             // Note: We ignore informational warnings like LIBRAW_WARN_FUJI_ROTATED (0x10000)
             // as they don't represent image corruption, just technical details about sensor layout.
             let warnings = processor.process_warnings();
             if warnings != 0 {
-                log::info!("[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding with native pixels.", warnings, path);
+                log::info!(
+                    "[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding with native pixels.",
+                    warnings,
+                    path
+                );
             }
-            
+
             let rgba = full_img.to_rgba8();
             let decoded = DecodedImage {
                 width: rgba.width(),
@@ -1563,18 +1649,25 @@ fn load_raw(
     let preview = match preview_res {
         Ok(ImageData::Static(img)) => img,
         Ok(ImageData::Tiled(source)) => {
-            let (pw, ph, p) = source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
-            DecodedImage { width: pw, height: ph, pixels: p }
-        }
-        _ => {
-            match processor.unpack_thumb() {
-                Ok(thumb) => thumb,
-                Err(e) => {
-                    log::warn!("[Loader] LibRaw fast thumbnail failed for {:?}: {}. Falling back to low-quality develop...", path, e);
-                    processor.develop()?.to_rgba8().into()
-                }
+            let (pw, ph, p) =
+                source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
+            DecodedImage {
+                width: pw,
+                height: ph,
+                pixels: p,
             }
         }
+        _ => match processor.unpack_thumb() {
+            Ok(thumb) => thumb,
+            Err(e) => {
+                log::warn!(
+                    "[Loader] LibRaw fast thumbnail failed for {:?}: {}. Falling back to low-quality develop...",
+                    path,
+                    e
+                );
+                processor.develop()?.to_rgba8().into()
+            }
+        },
     };
 
     let source = Arc::new(RawImageSource::new(
@@ -1585,8 +1678,12 @@ fn load_raw(
         refine_tx,
     ));
 
-    log::info!("[Loader] RAW {}x{} ({:.1} MP) >= 64MP - Falling back to Async Tiled preview refinement.", 
-        width, height, area as f64 / 1_000_000.0);
+    log::info!(
+        "[Loader] RAW {}x{} ({:.1} MP) >= 64MP - Falling back to Async Tiled preview refinement.",
+        width,
+        height,
+        area as f64 / 1_000_000.0
+    );
     Ok(ImageData::Tiled(source))
 }
 
@@ -1620,7 +1717,7 @@ impl TiledImageSource for MemoryImageSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
         let stride = self.width as usize * 4;
-        
+
         for row in y..(y + h) {
             let start = (row as usize * stride) + (x as usize * 4);
             let end = start + (w as usize * 4);
@@ -1638,7 +1735,11 @@ impl TiledImageSource for MemoryImageSource {
         // Since we already have the full image in memory, we can use the image crate
         // to generate a high-quality downscaled preview.
         // OPTIMIZATION: Use ImageBuffer with reference (slice) to avoid cloning giant pixel buffer.
-        if let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(self.width, self.height, &self.pixels) {
+        if let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
+            self.width,
+            self.height,
+            &self.pixels,
+        ) {
             let img = image::imageops::thumbnail(&buf, max_w, max_h);
             (img.width(), img.height(), img.into_raw())
         } else {

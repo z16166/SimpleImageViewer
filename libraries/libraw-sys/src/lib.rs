@@ -21,7 +21,7 @@ use libc::{c_char, c_int, c_uchar, c_uint, c_ushort};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum LibRaw_image_formats {
-    LIBRAW_IMAGE_JPEG   = 1,
+    LIBRAW_IMAGE_JPEG = 1,
     LIBRAW_IMAGE_BITMAP = 2,
 }
 
@@ -52,8 +52,8 @@ pub struct libraw_image_sizes_t {
     pub flip: c_int,
 }
 
-// libraw_data_t is treated as an opaque structure to ensure binary stability 
-// across different versions of LibRaw. All data access should be performed 
+// libraw_data_t is treated as an opaque structure to ensure binary stability
+// across different versions of LibRaw. All data access should be performed
 // using the public C API functions (getters).
 #[repr(C)]
 pub struct libraw_data_t {
@@ -68,16 +68,22 @@ unsafe extern "C" {
     pub fn libraw_unpack(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_unpack_thumb(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_dcraw_process(data: *mut libraw_data_t) -> c_int;
-    pub fn libraw_dcraw_make_mem_image(data: *mut libraw_data_t, errc: *mut c_int) -> *mut libraw_processed_image_t;
-    pub fn libraw_dcraw_make_mem_thumb(data: *mut libraw_data_t, errc: *mut c_int) -> *mut libraw_processed_image_t;
+    pub fn libraw_dcraw_make_mem_image(
+        data: *mut libraw_data_t,
+        errc: *mut c_int,
+    ) -> *mut libraw_processed_image_t;
+    pub fn libraw_dcraw_make_mem_thumb(
+        data: *mut libraw_data_t,
+        errc: *mut c_int,
+    ) -> *mut libraw_processed_image_t;
     pub fn libraw_dcraw_clear_mem(image: *mut libraw_processed_image_t);
     pub fn libraw_set_output_bps(data: *mut libraw_data_t, value: c_int);
     pub fn libraw_set_no_auto_bright(data: *mut libraw_data_t, value: c_int);
-    
+
     // Custom shims (implemented in libraw_shims.cpp)
     pub fn siv_libraw_set_use_camera_wb(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_get_process_warnings(data: *mut libraw_data_t) -> c_uint;
-    
+
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_raw_width(data: *mut libraw_data_t) -> c_int;

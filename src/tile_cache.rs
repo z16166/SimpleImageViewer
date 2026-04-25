@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, VecDeque, HashSet};
-use std::sync::Arc;
 use eframe::egui::{self, TextureHandle};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, LazyLock};
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 /// Tile size in pixels (each tile is tile_size x tile_size).
@@ -49,13 +49,12 @@ pub static TILED_THRESHOLD: AtomicU64 = AtomicU64::new(64_000_000);
 /// Maximum texture side length supported by most GPUs (conservative limit).
 /// Large images exceeding this will be rendered using tiles.
 /// This value is updated dynamically at startup based on GPU hardware limits.
-pub static MAX_TEXTURE_SIDE: AtomicU32 = AtomicU32::new(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
+pub static MAX_TEXTURE_SIDE: AtomicU32 =
+    AtomicU32::new(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
 
 pub fn get_max_texture_side() -> u32 {
     MAX_TEXTURE_SIDE.load(Ordering::Relaxed)
 }
-
-
 
 /// Base maximum number of tile textures kept in GPU memory.
 /// 1024 tiles * 512x512 * 4 bytes = 1GB VRAM.
@@ -96,7 +95,10 @@ impl TilePixelCache {
 
     #[cfg(feature = "tile-debug")]
     pub fn count_for_image(&self, index: usize) -> usize {
-        self.entries.keys().filter(|(idx, _, _)| *idx == index).count()
+        self.entries
+            .keys()
+            .filter(|(idx, _, _)| *idx == index)
+            .count()
     }
 
     pub fn get(&mut self, index: usize, coord: TileCoord) -> Option<Arc<Vec<u8>>> {
@@ -137,11 +139,13 @@ impl TilePixelCache {
 
     /// Remove all tiles belonging to a specific image index.
     pub fn remove_image(&mut self, index: usize) {
-        let keys_to_remove: Vec<_> = self.entries.keys()
+        let keys_to_remove: Vec<_> = self
+            .entries
+            .keys()
             .filter(|(idx, _, _)| *idx == index)
             .copied()
             .collect();
-        
+
         for key in keys_to_remove {
             if let Some(pixels) = self.entries.remove(&key) {
                 self.current_bytes -= pixels.len();
@@ -195,7 +199,11 @@ pub enum TileStatus {
 
 impl TileManager {
     /// Create a new TileManager from an arbitrary tiled image source.
-    pub fn with_source(index: usize, generation: u64, source: Arc<dyn crate::loader::TiledImageSource>) -> Self {
+    pub fn with_source(
+        index: usize,
+        generation: u64,
+        source: Arc<dyn crate::loader::TiledImageSource>,
+    ) -> Self {
         Self {
             image_index: index,
             full_width: source.width(),
@@ -225,12 +233,15 @@ impl TileManager {
         let mut gpu = 0;
         let mut cpu = 0;
         let mut pending = 0;
-        
+
         if let Ok(cache) = PIXEL_CACHE.try_lock() {
             for coord in visible {
                 if self.tiles.contains_key(coord) {
                     gpu += 1;
-                } else if cache.entries.contains_key(&(self.image_index, coord.col, coord.row)) {
+                } else if cache
+                    .entries
+                    .contains_key(&(self.image_index, coord.col, coord.row))
+                {
                     cpu += 1;
                 } else {
                     pending += 1;
@@ -257,10 +268,13 @@ impl TileManager {
             Ok(c) => c,
             Err(_) => return false,
         };
-        
+
         for coord in visible {
             if !self.tiles.contains_key(coord) {
-                if cache.entries.contains_key(&(self.image_index, coord.col, coord.row)) {
+                if cache
+                    .entries
+                    .contains_key(&(self.image_index, coord.col, coord.row))
+                {
                     return true;
                 }
             }
@@ -274,7 +288,8 @@ impl TileManager {
             [preview.width as usize, preview.height as usize],
             &preview.pixels,
         );
-        self.preview_texture = Some(ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR));
+        self.preview_texture =
+            Some(ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR));
     }
 
     /// Number of tile columns in the grid.
@@ -288,7 +303,6 @@ impl TileManager {
         let ts = get_tile_size();
         (self.full_height + ts - 1) / ts
     }
-
 
     /// Get or create a tile texture for the given coordinate.
     /// Returns (TileStatus, newly_uploaded).
@@ -340,7 +354,7 @@ impl TileManager {
                         }
                     }
                     if !found_non_visible {
-                        // All cached tiles are currently visible! 
+                        // All cached tiles are currently visible!
                         // We must temporarily exceed the limit to maintain visual integrity.
                         break;
                     }
@@ -350,20 +364,18 @@ impl TileManager {
                 let tw = ts.min(self.full_width - coord.col * ts);
                 let th = ts.min(self.full_height - coord.row * ts);
 
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                    [tw as usize, th as usize],
-                    &**pixels,
-                );
+                let color_image =
+                    egui::ColorImage::from_rgba_unmultiplied([tw as usize, th as usize], &**pixels);
                 let name = format!("tile_{}_{}_{}", self.image_index, coord.col, coord.row);
                 let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                 self.tiles.insert(coord, handle.clone());
-                
+
                 let now = Instant::now();
                 self.ready_times.insert(coord, now);
-                
+
                 // Remove from pending if it was there
                 self.pending_tiles.remove(&coord);
-                
+
                 return (TileStatus::Ready(handle, Some(now)), true);
             }
 
@@ -400,13 +412,13 @@ impl TileManager {
         // Look-ahead padding: Inflate the visible area to trigger background requests
         // for neighbor tiles BEFORE they actually enter the screen.
         let visible_area = viewport.intersect(screen_clip.expand(padding));
-        
+
         if visible_area.width() <= 0.0 || visible_area.height() <= 0.0 {
             return Vec::new();
         }
 
         let mut result = Vec::new();
-        
+
         // Compute UV bounds of the visible area relative to the full image viewport
         let uv_min_x = ((visible_area.min.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
         let uv_max_x = ((visible_area.max.x - viewport.min.x) / viewport.width()).clamp(0.0, 1.0);
@@ -445,15 +457,17 @@ impl TileManager {
                 let tile_h = ts.min(self.full_height - tile_y0);
 
                 // Map tile pixel bounds to screen coordinates
-                let sx0 = viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
-                let sy0 = viewport.min.y + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
-                let sx1 = viewport.min.x + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
-                let sy1 = viewport.min.y + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
+                let sx0 =
+                    viewport.min.x + (tile_x0 as f32 / self.full_width as f32) * viewport.width();
+                let sy0 =
+                    viewport.min.y + (tile_y0 as f32 / self.full_height as f32) * viewport.height();
+                let sx1 = viewport.min.x
+                    + ((tile_x0 + tile_w) as f32 / self.full_width as f32) * viewport.width();
+                let sy1 = viewport.min.y
+                    + ((tile_y0 + tile_h) as f32 / self.full_height as f32) * viewport.height();
 
-                let tile_screen_rect = egui::Rect::from_min_max(
-                    egui::Pos2::new(sx0, sy0),
-                    egui::Pos2::new(sx1, sy1),
-                );
+                let tile_screen_rect =
+                    egui::Rect::from_min_max(egui::Pos2::new(sx0, sy0), egui::Pos2::new(sx1, sy1));
 
                 let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
                 result.push((TileCoord { col: c, row: r }, tile_screen_rect, uv));
@@ -463,8 +477,8 @@ impl TileManager {
         // Sort by distance from screen center (Center-Out Priority)
         let screen_center = screen_clip.center();
         result.sort_by_key(|(_, rect, _)| {
-            let dist_sq = (rect.center().x - screen_center.x).powi(2) + 
-                          (rect.center().y - screen_center.y).powi(2);
+            let dist_sq = (rect.center().x - screen_center.x).powi(2)
+                + (rect.center().y - screen_center.y).powi(2);
             (dist_sq * 10.0) as i32
         });
 

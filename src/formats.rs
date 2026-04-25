@@ -14,10 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::{Arc, RwLock, OnceLock};
 use std::collections::HashSet;
+use std::sync::{Arc, OnceLock, RwLock};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum FormatGroup {
     Standard,
     Pro,
@@ -32,7 +34,7 @@ pub struct ImageFormat {
     pub group: FormatGroup,
     pub description: String,
     // CLSID is Windows specific, but we keep it as raw bytes for cross-platform data safety
-    pub wic_clsid: Option<[u8; 16]>, 
+    pub wic_clsid: Option<[u8; 16]>,
 }
 
 pub struct FormatRegistry {
@@ -76,7 +78,6 @@ impl FormatRegistry {
             ("heic", "HEIC Image"),
         ];
 
-
         for (ext, desc) in builtin_standard {
             formats.push(ImageFormat {
                 extension: ext.to_string(),
@@ -112,7 +113,10 @@ impl FormatRegistry {
                 extensions.insert(ext);
             }
         }
-        log::info!("LibRaw dynamic discovery: successfully registered {} camera formats.", libraw_count);
+        log::info!(
+            "LibRaw dynamic discovery: successfully registered {} camera formats.",
+            libraw_count
+        );
 
         #[allow(unused_mut)]
         let mut registry = Self {
@@ -133,8 +137,11 @@ impl FormatRegistry {
                     wic_clsid: None,
                 });
             }
-            log::info!("macOS ImageIO discovery: found {} system formats. Total registry size: {} extensions.", 
-                discovered_count, registry.extensions.len());
+            log::info!(
+                "macOS ImageIO discovery: found {} system formats. Total registry size: {} extensions.",
+                discovered_count,
+                registry.extensions.len()
+            );
         }
 
         registry

@@ -15,9 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub use crate::formats::{FormatGroup, ImageFormat, get_registry};
-use std::thread;
-use std::sync::atomic::Ordering;
 use std::cell::RefCell;
+use std::sync::atomic::Ordering;
+use std::thread;
 
 thread_local! {
     static WIC_FACTORY: RefCell<Option<IWICImagingFactory>> = RefCell::new(None);
@@ -27,16 +27,20 @@ fn get_wic_factory() -> windows::core::Result<IWICImagingFactory> {
     WIC_FACTORY.with(|f| {
         let mut factory = f.borrow_mut();
         if factory.is_none() {
-            let instance = unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
+            let instance =
+                unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
             *factory = Some(instance);
         }
-        factory.as_ref().cloned().ok_or_else(|| windows::core::Error::from_win32())
+        factory
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| windows::core::Error::from_win32())
     })
 }
 
+use windows::Win32::Foundation::GENERIC_READ;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
-use windows::Win32::Foundation::GENERIC_READ;
 use windows::core::*;
 
 pub struct ComGuard;
@@ -91,9 +95,12 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
     let _com = ComGuard::new()?;
     unsafe {
         let factory = get_wic_factory()?;
-        
-        let enumerator = factory.CreateComponentEnumerator(WICDecoder.0 as u32, WICComponentEnumerateDefault.0 as u32)?;
-        
+
+        let enumerator = factory.CreateComponentEnumerator(
+            WICDecoder.0 as u32,
+            WICComponentEnumerateDefault.0 as u32,
+        )?;
+
         let mut components = [None; 1];
         let mut _fetched = 0;
         let mut new_codecs = 0;
@@ -105,20 +112,33 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
                     if let Ok(codec_info) = unknown.cast::<IWICBitmapCodecInfo>() {
                         let mut ext_buf = [0u16; 512];
                         let mut ext_len = 0;
-                        if codec_info.GetFileExtensions(&mut ext_buf, &mut ext_len).is_ok() && ext_len > 1 {
-                            let extensions_str = String::from_utf16_lossy(&ext_buf[..ext_len as usize - 1]);
+                        if codec_info
+                            .GetFileExtensions(&mut ext_buf, &mut ext_len)
+                            .is_ok()
+                            && ext_len > 1
+                        {
+                            let extensions_str =
+                                String::from_utf16_lossy(&ext_buf[..ext_len as usize - 1]);
 
                             let mut name_buf = [0u16; 512];
                             let mut name_len = 0;
-                            let friendly_name = if codec_info.GetFriendlyName(&mut name_buf, &mut name_len).is_ok() && name_len > 1 {
+                            let friendly_name = if codec_info
+                                .GetFriendlyName(&mut name_buf, &mut name_len)
+                                .is_ok()
+                                && name_len > 1
+                            {
                                 String::from_utf16_lossy(&name_buf[..name_len as usize - 1])
                             } else {
                                 "Unknown WIC Codec".to_string()
                             };
 
-                            let group = if friendly_name.contains("RAW") || friendly_name.contains("Camera") {
+                            let group = if friendly_name.contains("RAW")
+                                || friendly_name.contains("Camera")
+                            {
                                 FormatGroup::WicRaw
-                            } else if friendly_name.contains("Microsoft") || friendly_name.contains("Windows") {
+                            } else if friendly_name.contains("Microsoft")
+                                || friendly_name.contains("Windows")
+                            {
                                 FormatGroup::WicSystem
                             } else {
                                 FormatGroup::Others
@@ -126,12 +146,17 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
 
                             let clsid = codec_info.GetCLSID()?;
                             let mut clsid_bytes = [0u8; 16];
-                            std::ptr::copy_nonoverlapping(&clsid as *const GUID as *const u8, clsid_bytes.as_mut_ptr(), 16);
+                            std::ptr::copy_nonoverlapping(
+                                &clsid as *const GUID as *const u8,
+                                clsid_bytes.as_mut_ptr(),
+                                16,
+                            );
 
                             if let Ok(mut reg) = get_registry().write() {
                                 let mut added_for_codec = false;
                                 for ext in extensions_str.split(|c| c == ',' || c == ';') {
-                                    let normalized_ext = ext.trim()
+                                    let normalized_ext = ext
+                                        .trim()
                                         .trim_start_matches('*')
                                         .trim_start_matches('.')
                                         .to_lowercase();
@@ -158,9 +183,12 @@ fn discover_wic_codecs() -> windows::core::Result<()> {
                 break;
             }
         }
-        log::info!("WIC discovery finished: identified {} additional system codecs.", new_codecs);
+        log::info!(
+            "WIC discovery finished: identified {} additional system codecs.",
+            new_codecs
+        );
     }
-    
+
     if let Ok(mut reg) = get_registry().write() {
         reg.discovery_finished = true;
     }
@@ -174,7 +202,7 @@ pub struct WicTiledSource {
     width: u32,
     height: u32,
     factory: IWICImagingFactory,
-    decoder: IWICBitmapDecoder, 
+    decoder: IWICBitmapDecoder,
     frame: IWICBitmapFrameDecode,
     source: IWICBitmapSource,
     physical_width: u32,
@@ -194,10 +222,15 @@ impl WicTiledSource {
     // extract_tile handles its own converter initialization to avoid deadlocks.
 
     /// Wraps a source in a WICBitmapCacheOnDemand to prevent decoder thrashing during transforms.
-    fn wrap_with_cache(factory: &IWICImagingFactory, source: &IWICBitmapSource) -> IWICBitmapSource {
+    fn wrap_with_cache(
+        factory: &IWICImagingFactory,
+        source: &IWICBitmapSource,
+    ) -> IWICBitmapSource {
         unsafe {
             match factory.CreateBitmapFromSource(source, WICBitmapCacheOnDemand) {
-                Ok(bitmap) => bitmap.cast::<IWICBitmapSource>().unwrap_or_else(|_| source.clone()),
+                Ok(bitmap) => bitmap
+                    .cast::<IWICBitmapSource>()
+                    .unwrap_or_else(|_| source.clone()),
                 Err(_) => source.clone(),
             }
         }
@@ -209,29 +242,36 @@ unsafe impl Send for WicTiledSource {}
 unsafe impl Sync for WicTiledSource {}
 
 impl crate::loader::TiledImageSource for WicTiledSource {
-    fn width(&self) -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         let stride = w * 4;
-        
+
         // Ensure COM is initialized on the current worker thread
         let _com = ComGuard::new();
 
         unsafe {
             // Create a local converter for this thread to allow parallel decoding.
-            // While initialization has a cost, it's dwarfed by the benefit of 
+            // While initialization has a cost, it's dwarfed by the benefit of
             // utilizing all available CPU cores without lock contention.
             if let Ok(converter) = self.factory.CreateFormatConverter() {
-                if converter.Initialize(
-                    &self.source,
-                    &GUID_WICPixelFormat32bppRGBA,
-                    WICBitmapDitherTypeNone,
-                    None,
-                    0.0,
-                    WICBitmapPaletteTypeCustom,
-                ).is_ok() {
+                if converter
+                    .Initialize(
+                        &self.source,
+                        &GUID_WICPixelFormat32bppRGBA,
+                        WICBitmapDitherTypeNone,
+                        None,
+                        0.0,
+                        WICBitmapPaletteTypeCustom,
+                    )
+                    .is_ok()
+                {
                     let rect = WICRect {
                         X: x as i32,
                         Y: y as i32,
@@ -242,8 +282,8 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 }
             }
         }
-        
-    pixels
+
+        pixels
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -261,7 +301,12 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 let mut fw = 0;
                 let mut fh = 0;
                 if thumbnail.GetSize(&mut fw, &mut fh).is_ok() && fw >= out_w && fh >= out_h {
-                    log::info!("WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})", self.path.display(), fw, fh);
+                    log::info!(
+                        "WIC [Idx={}]: Using embedded thumbnail as preview ({}x{})",
+                        self.path.display(),
+                        fw,
+                        fh
+                    );
 
                     if let Ok(thumb_src) = thumbnail.cast::<IWICBitmapSource>() {
                         // Cache the thumbnail before rotation to prevent JPEG decoder
@@ -271,7 +316,10 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                         let mut thumb_final = thumb_cached.clone();
                         if self.transform_options != WICBitmapTransformOptions(0) {
                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                if rotator.Initialize(&thumb_cached, self.transform_options).is_ok() {
+                                if rotator
+                                    .Initialize(&thumb_cached, self.transform_options)
+                                    .is_ok()
+                                {
                                     if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
                                         thumb_final = src;
                                     }
@@ -279,15 +327,28 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             }
                         }
                         if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
-                            log::info!("WIC [Idx={}]: Successfully rendered embedded thumbnail", self.path.display());
+                            log::info!(
+                                "WIC [Idx={}]: Successfully rendered embedded thumbnail",
+                                self.path.display()
+                            );
                             return res;
                         }
                     }
                 } else {
-                    log::debug!("WIC [Idx={}]: Embedded thumbnail is too small ({}x{}) for requested {}x{}", self.path.display(), fw, fh, out_w, out_h);
+                    log::debug!(
+                        "WIC [Idx={}]: Embedded thumbnail is too small ({}x{}) for requested {}x{}",
+                        self.path.display(),
+                        fw,
+                        fh,
+                        out_w,
+                        out_h
+                    );
                 }
             } else {
-                log::debug!("WIC [Idx={}]: No embedded thumbnail found", self.path.display());
+                log::debug!(
+                    "WIC [Idx={}]: No embedded thumbnail found",
+                    self.path.display()
+                );
             }
 
             // Path 2: Check for secondary downscaled frames (e.g. Pyramid TIFFs)
@@ -300,20 +361,32 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                             if f.GetSize(&mut fw, &mut fh).is_ok() {
                                 // If it's a good intermediate size, use it
                                 if fw > 512 && fw < self.physical_width / 2 {
-                                    log::info!("WIC: Using secondary frame {} as preview ({}x{})", i, fw, fh);
+                                    log::info!(
+                                        "WIC: Using secondary frame {} as preview ({}x{})",
+                                        i,
+                                        fw,
+                                        fh
+                                    );
                                     if let Ok(f_src) = f.cast::<IWICBitmapSource>() {
                                         let f_cached = Self::wrap_with_cache(factory, &f_src);
                                         let mut f_final = f_cached.clone();
                                         if self.transform_options != WICBitmapTransformOptions(0) {
                                             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                                if rotator.Initialize(&f_cached, self.transform_options).is_ok() {
-                                                    if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
+                                                if rotator
+                                                    .Initialize(&f_cached, self.transform_options)
+                                                    .is_ok()
+                                                {
+                                                    if let Ok(src) =
+                                                        rotator.cast::<IWICBitmapSource>()
+                                                    {
                                                         f_final = src;
                                                     }
                                                 }
                                             }
                                         }
-                                        if let Some(res) = render_source_to_pixels(&f_final, &factory) {
+                                        if let Some(res) =
+                                            render_source_to_pixels(&f_final, &factory)
+                                        {
                                             return res;
                                         }
                                     }
@@ -329,40 +402,72 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 let swap = self.width != self.physical_width;
                 let mut closest_phys_w = if swap { out_h } else { out_w };
                 let mut closest_phys_h = if swap { out_w } else { out_h };
-                if transform.GetClosestSize(&mut closest_phys_w, &mut closest_phys_h).is_ok() {
+                if transform
+                    .GetClosestSize(&mut closest_phys_w, &mut closest_phys_h)
+                    .is_ok()
+                {
                     // Significant speedup if we are scaling down by at least 2x
-                    if closest_phys_w < self.physical_width / 2 || closest_phys_h < self.physical_height / 2 {
+                    if closest_phys_w < self.physical_width / 2
+                        || closest_phys_h < self.physical_height / 2
+                    {
                         let log_final_w = if swap { closest_phys_h } else { closest_phys_w };
                         let log_final_h = if swap { closest_phys_w } else { closest_phys_h };
-                        log::info!("WIC [Idx={}]: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})", self.path.display(), closest_phys_w, closest_phys_h, log_final_w, log_final_h);
+                        log::info!(
+                            "WIC [Idx={}]: Using Native Source Transform to decode directly to {}x{} (logical: {}x{})",
+                            self.path.display(),
+                            closest_phys_w,
+                            closest_phys_h,
+                            log_final_w,
+                            log_final_h
+                        );
                         let stride = log_final_w * 4;
                         let mut out = vec![0u8; (stride * log_final_h) as usize];
-                        let rect = WICRect { X: 0, Y: 0, Width: closest_phys_w as i32, Height: closest_phys_h as i32 };
-                        
-                        if transform.CopyPixels(
-                            &rect, 
-                            closest_phys_w, 
-                            closest_phys_h, 
-                            &GUID_WICPixelFormat32bppRGBA as *const _, 
-                            self.transform_options, 
-                            stride, 
-                            &mut out
-                        ).is_ok() {
+                        let rect = WICRect {
+                            X: 0,
+                            Y: 0,
+                            Width: closest_phys_w as i32,
+                            Height: closest_phys_h as i32,
+                        };
+
+                        if transform
+                            .CopyPixels(
+                                &rect,
+                                closest_phys_w,
+                                closest_phys_h,
+                                &GUID_WICPixelFormat32bppRGBA as *const _,
+                                self.transform_options,
+                                stride,
+                                &mut out,
+                            )
+                            .is_ok()
+                        {
                             return (log_final_w, log_final_h, out);
                         } else {
-                            log::warn!("WIC [Idx={}]: Native Source Transform CopyPixels FAILED", self.path.display());
+                            log::warn!(
+                                "WIC [Idx={}]: Native Source Transform CopyPixels FAILED",
+                                self.path.display()
+                            );
                         }
                     }
                 }
             }
 
             // Path 4: Sub-sampling scaler (High-speed fallback)
-            log::info!("WIC [Idx={}]: No specialized preview source available, using standard Scaler (Target {}x{})", self.path.display(), out_w, out_h);
+            log::info!(
+                "WIC [Idx={}]: No specialized preview source available, using standard Scaler (Target {}x{})",
+                self.path.display(),
+                out_w,
+                out_h
+            );
 
             let scaler: IWICBitmapScaler = match factory.CreateBitmapScaler() {
                 Ok(s) => s,
                 Err(e) => {
-                    log::error!("WIC [Idx={}]: CreateBitmapScaler failed: {:?}", self.path.display(), e);
+                    log::error!(
+                        "WIC [Idx={}]: CreateBitmapScaler failed: {:?}",
+                        self.path.display(),
+                        e
+                    );
                     return (0, 0, Vec::new());
                 }
             };
@@ -377,7 +482,11 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 out_h,
                 WICBitmapInterpolationModeNearestNeighbor,
             ) {
-                log::error!("WIC [Idx={}]: Scaler.Initialize FAILED: {:?}", self.path.display(), e);
+                log::error!(
+                    "WIC [Idx={}]: Scaler.Initialize FAILED: {:?}",
+                    self.path.display(),
+                    e
+                );
                 return (0, 0, Vec::new());
             }
 
@@ -386,21 +495,29 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 Err(_) => return (0, 0, Vec::new()),
             };
 
-            if sc_converter.Initialize(
-                &scaler,
-                &GUID_WICPixelFormat32bppRGBA,
-                WICBitmapDitherTypeNone,
-                None,
-                0.0,
-                WICBitmapPaletteTypeCustom,
-            ).is_err() {
+            if sc_converter
+                .Initialize(
+                    &scaler,
+                    &GUID_WICPixelFormat32bppRGBA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )
+                .is_err()
+            {
                 return (0, 0, Vec::new());
             }
 
             let stride = out_w * 4;
             let mut out = vec![0u8; (stride * out_h) as usize];
-            let rect = WICRect { X: 0, Y: 0, Width: out_w as i32, Height: out_h as i32 };
-            
+            let rect = WICRect {
+                X: 0,
+                Y: 0,
+                Width: out_w as i32,
+                Height: out_h as i32,
+            };
+
             if sc_converter.CopyPixels(&rect, stride, &mut out).is_ok() {
                 (out_w, out_h, out)
             } else {
@@ -414,7 +531,10 @@ impl crate::loader::TiledImageSource for WicTiledSource {
     }
 }
 
-fn render_source_to_pixels(source: &impl Interface, factory: &IWICImagingFactory) -> Option<(u32, u32, Vec<u8>)> {
+fn render_source_to_pixels(
+    source: &impl Interface,
+    factory: &IWICImagingFactory,
+) -> Option<(u32, u32, Vec<u8>)> {
     unsafe {
         let mut w = 0;
         let mut h = 0;
@@ -423,18 +543,25 @@ fn render_source_to_pixels(source: &impl Interface, factory: &IWICImagingFactory
         b_source.GetSize(&mut w, &mut h).ok()?;
 
         let sc_converter: IWICFormatConverter = factory.CreateFormatConverter().ok()?;
-        sc_converter.Initialize(
-            &b_source,
-            &GUID_WICPixelFormat32bppRGBA,
-            WICBitmapDitherTypeNone,
-            None,
-            0.0,
-            WICBitmapPaletteTypeCustom,
-        ).ok()?;
+        sc_converter
+            .Initialize(
+                &b_source,
+                &GUID_WICPixelFormat32bppRGBA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
 
         let stride = w * 4;
         let mut out = vec![0u8; (stride * h) as usize];
-        let rect = WICRect { X: 0, Y: 0, Width: w as i32, Height: h as i32 };
+        let rect = WICRect {
+            X: 0,
+            Y: 0,
+            Width: w as i32,
+            Height: h as i32,
+        };
         if sc_converter.CopyPixels(&rect, stride, &mut out).is_ok() {
             Some((w, h, out))
         } else {
@@ -460,7 +587,9 @@ fn get_exif_orientation(path: &std::path::Path) -> u32 {
     1
 }
 
-pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader::ImageData, String> {
+pub fn load_via_wic(
+    path: &std::path::Path,
+) -> std::result::Result<crate::loader::ImageData, String> {
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
 
@@ -472,15 +601,20 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         path_wide.push(0);
         let path_ptr = PCWSTR(path_wide.as_ptr());
 
-        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
-        
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+
         let mut decoder_res: Result<IWICBitmapDecoder> = Err(windows::core::Error::from_win32());
         let mut stream_out: Option<IWICStream> = None;
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 
         // --- Fast Path: Generic direct instantiation via registry CLSID (No sniffing) ---
         let clsid_opt = if let Ok(reg) = get_registry().read() {
-            reg.formats.iter()
+            reg.formats
+                .iter()
                 .find(|f| f.extension == ext)
                 .and_then(|f| f.wic_clsid)
         } else {
@@ -489,17 +623,26 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
 
         if let Some(clsid_bytes) = clsid_opt {
             let mut clsid = GUID::default();
-            std::ptr::copy_nonoverlapping(clsid_bytes.as_ptr(), &mut clsid as *mut GUID as *mut u8, 16);
+            std::ptr::copy_nonoverlapping(
+                clsid_bytes.as_ptr(),
+                &mut clsid as *mut GUID as *mut u8,
+                16,
+            );
 
-            let specific_decoder: Result<IWICBitmapDecoder> = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
+            let specific_decoder: Result<IWICBitmapDecoder> =
+                CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
             if let Ok(sd) = specific_decoder {
                 if let Ok(stream) = factory.CreateStream() {
                     // --- Mmap Path ---
-                    let file = std::fs::File::open(path).map_err(|e| format!("File open failed: {:?}", e))?;
+                    let file = std::fs::File::open(path)
+                        .map_err(|e| format!("File open failed: {:?}", e))?;
                     if let Ok(mmap) = memmap2::Mmap::map(&file) {
                         let m_arc = std::sync::Arc::new(mmap);
                         if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                            if sd.Initialize(&stream, WICDecodeMetadataCacheOnDemand).is_ok() {
+                            if sd
+                                .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
+                                .is_ok()
+                            {
                                 decoder_res = Ok(sd);
                                 stream_out = Some(stream);
                                 mmap_out = Some(m_arc);
@@ -523,9 +666,14 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         // Attempt 2: Explicit decoder creation
         if let Err(ref e) = decoder_res {
             if e.code() == windows::core::HRESULT(0x88982F50u32 as i32) {
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()) {
+                if let Some(ext) = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                {
                     let clsid_bytes_opt = if let Ok(reg) = get_registry().read() {
-                        reg.formats.iter()
+                        reg.formats
+                            .iter()
                             .find(|f| f.extension == ext)
                             .and_then(|f| f.wic_clsid.clone())
                     } else {
@@ -534,15 +682,30 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
 
                     if let Some(clsid_bytes) = clsid_bytes_opt {
                         let mut clsid = GUID::default();
-                        std::ptr::copy_nonoverlapping(clsid_bytes.as_ptr(), &mut clsid as *mut GUID as *mut u8, 16);
+                        std::ptr::copy_nonoverlapping(
+                            clsid_bytes.as_ptr(),
+                            &mut clsid as *mut GUID as *mut u8,
+                            16,
+                        );
 
-                        log::info!("WIC Sniffer failed for {:?} (COMPONENTNOTFOUND), trying explicit decoder instantiation for CLSID {:?}", path, clsid);
+                        log::info!(
+                            "WIC Sniffer failed for {:?} (COMPONENTNOTFOUND), trying explicit decoder instantiation for CLSID {:?}",
+                            path,
+                            clsid
+                        );
 
-                        let specific_decoder: windows::core::Result<IWICBitmapDecoder> = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
+                        let specific_decoder: windows::core::Result<IWICBitmapDecoder> =
+                            CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
                         if let Ok(sd) = specific_decoder {
                             if let Ok(stream) = factory.CreateStream() {
-                                if stream.InitializeFromFilename(path_ptr, GENERIC_READ.0).is_ok() {
-                                    if sd.Initialize(&stream, WICDecodeMetadataCacheOnDemand).is_ok() {
+                                if stream
+                                    .InitializeFromFilename(path_ptr, GENERIC_READ.0)
+                                    .is_ok()
+                                {
+                                    if sd
+                                        .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
+                                        .is_ok()
+                                    {
                                         decoder_res = Ok(sd);
                                         stream_out = Some(stream);
                                     }
@@ -555,7 +718,7 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         }
 
         let decoder = decoder_res.map_err(|e| format!("WIC decoder creation failed: {:?}", e))?;
-        
+
         let frame_count = decoder.GetFrameCount().unwrap_or(1);
         let mut best_frame_idx = 0;
         let mut max_p = 0;
@@ -578,37 +741,43 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
             }
         }
 
-        let frame = decoder.GetFrame(best_frame_idx).map_err(|e| format!("failed to get frame: {:?}", e))?;
+        let frame = decoder
+            .GetFrame(best_frame_idx)
+            .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
         let orientation = get_exif_orientation(path);
         let transform_options = match orientation {
-            2 => WICBitmapTransformOptions(8), // Flip Horizontal
-            3 => WICBitmapTransformOptions(2), // Rotate180
-            4 => WICBitmapTransformOptions(16),// Flip Vertical
+            2 => WICBitmapTransformOptions(8),     // Flip Horizontal
+            3 => WICBitmapTransformOptions(2),     // Rotate180
+            4 => WICBitmapTransformOptions(16),    // Flip Vertical
             5 => WICBitmapTransformOptions(3 | 8), // Rotate270 | Flip Horizontal
-            6 => WICBitmapTransformOptions(1), // Rotate90
+            6 => WICBitmapTransformOptions(1),     // Rotate90
             7 => WICBitmapTransformOptions(1 | 8), // Rotate90 | Flip Horizontal
-            8 => WICBitmapTransformOptions(3), // Rotate270
+            8 => WICBitmapTransformOptions(3),     // Rotate270
             _ => WICBitmapTransformOptions(0),
         };
-        
+
         let swap_wh = matches!(orientation, 5 | 6 | 7 | 8);
         let logical_width = if swap_wh { height } else { width };
         let logical_height = if swap_wh { width } else { height };
 
-        let base_source: IWICBitmapSource = frame.cast().map_err(|e| format!("cast failed: {:?}", e))?;
-        
+        let base_source: IWICBitmapSource =
+            frame.cast().map_err(|e| format!("cast failed: {:?}", e))?;
+
         // --- PERFORMANCE FIX: Decoder Caching ---
         // JPEG/PNG decoders can be extremely slow when accessed non-linearly (e.g. during rotation).
         // Wrapping the source in a cache ensures the decoder is read linearly and the results
         // are reused, preventing O(N^2) thrashing in the Rotator.
         let cached_source = WicTiledSource::wrap_with_cache(&factory, &base_source);
-        
+
         let mut final_source = cached_source.clone();
 
         if transform_options != WICBitmapTransformOptions(0) {
             if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                if rotator.Initialize(&cached_source, transform_options).is_ok() {
+                if rotator
+                    .Initialize(&cached_source, transform_options)
+                    .is_ok()
+                {
                     if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
                         final_source = src;
                     }
@@ -625,53 +794,71 @@ pub fn load_via_wic(path: &std::path::Path) -> std::result::Result<crate::loader
         // The GPU's real limit is used in make_image_data() for non-WIC images
         // that are already fully decoded in memory.
         let limit = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
-        
+
         // If it's a RAW file, we ALWAYS want a fast preview path for the initial placeholder,
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
         if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit || is_raw {
             // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
             // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.
-            let cached_bitmap = factory.CreateBitmapFromSource(&final_source, WICBitmapCacheOnDemand)
+            let cached_bitmap = factory
+                .CreateBitmapFromSource(&final_source, WICBitmapCacheOnDemand)
                 .map_err(|e| format!("failed to create cached bitmap: {:?}", e))?;
-            let cached_source: IWICBitmapSource = cached_bitmap.cast().map_err(|e| format!("cast failed: {:?}", e))?;
+            let cached_source: IWICBitmapSource = cached_bitmap
+                .cast()
+                .map_err(|e| format!("cast failed: {:?}", e))?;
 
-            return Ok(crate::loader::ImageData::Tiled(std::sync::Arc::new(WicTiledSource {
-                path: path.to_path_buf(),
-                width: logical_width,
-                height: logical_height,
-                physical_width: width,
-                physical_height: height,
-                transform_options,
-                factory: factory.clone(),
-                decoder: decoder,
-                frame: frame.clone(),
-                source: cached_source,
-                stream: stream_out,
-                _mmap: mmap_out,
-            })));
+            return Ok(crate::loader::ImageData::Tiled(std::sync::Arc::new(
+                WicTiledSource {
+                    path: path.to_path_buf(),
+                    width: logical_width,
+                    height: logical_height,
+                    physical_width: width,
+                    physical_height: height,
+                    transform_options,
+                    factory: factory.clone(),
+                    decoder: decoder,
+                    frame: frame.clone(),
+                    source: cached_source,
+                    stream: stream_out,
+                    _mmap: mmap_out,
+                },
+            )));
         }
 
         // --- Fallback for regular small images (Direct decode remains unchanged) ---
-        let sc_converter = factory.CreateFormatConverter().map_err(|e| format!("converter creation failed: {:?}", e))?;
-        sc_converter.Initialize(
-            &final_source,
-            &GUID_WICPixelFormat32bppRGBA,
-            WICBitmapDitherTypeNone,
-            None,
-            0.0,
-            WICBitmapPaletteTypeCustom,
-        ).map_err(|e| format!("converter init failed: {:?}", e))?;
+        let sc_converter = factory
+            .CreateFormatConverter()
+            .map_err(|e| format!("converter creation failed: {:?}", e))?;
+        sc_converter
+            .Initialize(
+                &final_source,
+                &GUID_WICPixelFormat32bppRGBA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .map_err(|e| format!("converter init failed: {:?}", e))?;
 
         let stride = logical_width * 4;
         let mut out = vec![0u8; (stride * logical_height) as usize];
-        let rect = WICRect { X: 0, Y: 0, Width: logical_width as i32, Height: logical_height as i32 };
-        
-        sc_converter.CopyPixels(&rect, stride, &mut out).map_err(|e| format!("Pixel copy failed: {:?}", e))?;
-        
-        Ok(crate::loader::ImageData::Static(crate::loader::DecodedImage {
-            width: logical_width,
-            height: logical_height,
-            pixels: out,
-        }))
+        let rect = WICRect {
+            X: 0,
+            Y: 0,
+            Width: logical_width as i32,
+            Height: logical_height as i32,
+        };
+
+        sc_converter
+            .CopyPixels(&rect, stride, &mut out)
+            .map_err(|e| format!("Pixel copy failed: {:?}", e))?;
+
+        Ok(crate::loader::ImageData::Static(
+            crate::loader::DecodedImage {
+                width: logical_width,
+                height: logical_height,
+                pixels: out,
+            },
+        ))
     }
 }

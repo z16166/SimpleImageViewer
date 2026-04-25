@@ -15,22 +15,20 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
-pub(crate) mod lifecycle;
 pub(crate) mod image_management;
-pub(crate) mod media;
 pub(crate) mod input;
+pub(crate) mod lifecycle;
+pub(crate) mod media;
 pub(crate) mod rendering;
 
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{
-    self, Context, Pos2, Vec2,
-};
+use eframe::egui::{self, Context, Pos2, Vec2};
 
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
@@ -38,8 +36,8 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::scanner;
 pub(crate) use crate::settings::{ScaleMode, Settings, TransitionStyle};
 pub(crate) use crate::theme::AppTheme;
-use crate::tile_cache::TileManager;
 use crate::theme::{SystemThemeCache, ThemePalette};
+use crate::tile_cache::TileManager;
 use crate::ui::dialogs::modal_state::ActiveModal;
 use crate::ui::utils::setup_visuals;
 use rust_i18n::t;
@@ -59,7 +57,7 @@ pub(crate) fn compute_preload_budgets() -> (u64, u64) {
     sys.refresh_memory();
     let total = sys.total_memory(); // bytes
 
-    let forward  = (total / 32).clamp(64 * 1024 * 1024, 512 * 1024 * 1024);
+    let forward = (total / 32).clamp(64 * 1024 * 1024, 512 * 1024 * 1024);
     let backward = (total / 64).clamp(32 * 1024 * 1024, 256 * 1024 * 1024);
 
     log::info!(
@@ -87,8 +85,6 @@ pub(crate) struct AnimationPlayback {
     frame_start: Instant,
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
     Low,
@@ -115,9 +111,9 @@ impl HardwareTier {
 
     pub fn gpu_cache_tiles(&self) -> usize {
         match self {
-            Self::Low => 256,     // Basic coverage
-            Self::Medium => 448,   // Retina/4K coverage
-            Self::High => 1024,    // Performance/Gigapixel coverage
+            Self::Low => 256,    // Basic coverage
+            Self::Medium => 448, // Retina/4K coverage
+            Self::High => 1024,  // Performance/Gigapixel coverage
         }
     }
 
@@ -230,16 +226,16 @@ pub struct ImageViewerApp {
 
     // IPC receiver
     pub(crate) ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
-    
+
     // Predictive animation cache (decoded and uploaded to GPU)
     pub(crate) animation_cache: HashMap<usize, AnimationPlayback>,
 
     // Tiled rendering for large images
     pub(crate) tile_manager: Option<TileManager>,
-    
+
     // Tiled rendering instances decoded during prefetch
     pub(crate) prefetched_tiles: HashMap<usize, TileManager>,
-    
+
     // Theme state
     pub(crate) theme_cache: SystemThemeCache,
     pub(crate) cached_palette: ThemePalette,
@@ -266,12 +262,12 @@ pub struct ImageViewerApp {
 
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
-    pub (crate) context_menu_pos: Option<Pos2>,
+    pub(crate) context_menu_pos: Option<Pos2>,
     /// Current view rotation in steps of 90 degrees clockwise (0-3).
-    pub (crate) current_rotation: i32,
-    
+    pub(crate) current_rotation: i32,
+
     // Adaptive tile upload quota based on hardware and current frame performance
-    pub (crate) tile_upload_quota: usize,
+    pub(crate) tile_upload_quota: usize,
 
     // Audio device caching
     pub(crate) cached_audio_devices: Vec<String>,
@@ -289,7 +285,6 @@ pub(crate) struct PendingAnimUpload {
     next_frame: usize,
 }
 
-
 impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self) {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
@@ -302,14 +297,14 @@ impl eframe::App for ImageViewerApp {
         let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
         let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
         drop(old_tx);
-        
+
         // Wait for the saver thread to finish any in-progress I/O
         if let Some(handle) = self.saver_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[on_exit] Saver thread panicked: {:?}", e);
             }
         }
-        
+
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
         }
@@ -332,14 +327,15 @@ impl eframe::App for ImageViewerApp {
             self.music_hud_last_activity = Instant::now();
         }
 
-
         // Process IPC messages
         while let Ok(msg) = self.ipc_rx.try_recv() {
             match msg {
                 IpcMessage::OpenImage(path) => {
                     log::info!("IPC: open image {:?}", path);
                     if let Some(parent) = path.parent() {
-                        let same_dir = self.settings.last_image_dir
+                        let same_dir = self
+                            .settings
+                            .last_image_dir
                             .as_ref()
                             .map(|d| d == &parent.to_path_buf())
                             .unwrap_or(false);
@@ -376,7 +372,9 @@ impl eframe::App for ImageViewerApp {
                 IpcMessage::OpenImageNoRecursive(path) => {
                     log::info!("IPC: open image (no-recursive) {:?}", path);
                     if let Some(parent) = path.parent() {
-                        let same_dir = self.settings.last_image_dir
+                        let same_dir = self
+                            .settings
+                            .last_image_dir
                             .as_ref()
                             .map(|d| d == &parent.to_path_buf())
                             .unwrap_or(false);
@@ -434,7 +432,8 @@ impl eframe::App for ImageViewerApp {
                         self.queue_save();
                     } else if path.is_file() {
                         // Dropped a single file — check if it's a supported format
-                        let is_supported = path.extension()
+                        let is_supported = path
+                            .extension()
                             .map(|ext| crate::scanner::is_supported_extension(ext))
                             .unwrap_or(false);
 
@@ -466,10 +465,10 @@ impl eframe::App for ImageViewerApp {
             if self.settings.auto_switch {
                 self.last_switch_time += dt;
             }
-            
+
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
-            
+
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
             return;
@@ -484,7 +483,11 @@ impl eframe::App for ImageViewerApp {
 
         // Automatic theme refresh (for System theme trailing detection)
         // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
-        if let Some(new_palette) = self.settings.theme.resolve_if_changed(&mut self.theme_cache) {
+        if let Some(new_palette) = self
+            .settings
+            .theme
+            .resolve_if_changed(&mut self.theme_cache)
+        {
             self.cached_palette = new_palette;
             // Always refresh visuals if resolve_if_changed returns Some, to ensure
             // all style properties (including those not in is_dark) are synchronized.
@@ -532,14 +535,14 @@ impl eframe::App for ImageViewerApp {
                     self.settings.last_music_file = Some(current_path);
                     changed = true;
                 }
-                
+
                 let cue_idx = self.audio.get_current_cue_track();
                 if self.settings.last_music_cue_track != cue_idx {
                     self.settings.last_music_cue_track = cue_idx;
                     changed = true;
                 }
             }
-            
+
             if changed {
                 self.queue_save();
             }
@@ -571,17 +574,21 @@ impl eframe::App for ImageViewerApp {
         self.draw_image_canvas_ui(ui);
 
         if self.is_printing.load(std::sync::atomic::Ordering::Relaxed) {
-            egui::Window::new(if cfg!(not(target_os = "windows")) { t!("print.title_pdf").to_string() } else { t!("print.title").to_string() })
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(&ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("print.processing").to_string());
-                    });
+            egui::Window::new(if cfg!(not(target_os = "windows")) {
+                t!("print.title_pdf").to_string()
+            } else {
+                t!("print.title").to_string()
+            })
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(&ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("print.processing").to_string());
                 });
-            
+            });
+
             if let Some(rx) = &self.print_status_rx {
                 while let Ok(msg) = rx.try_recv() {
                     if let Some(m) = msg {
@@ -626,7 +633,6 @@ impl eframe::App for ImageViewerApp {
         // Dispatch the single active modal dialog (MovableModal handles the overlay)
         self.dispatch_active_modal(&ctx);
 
-
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
     }
@@ -635,7 +641,7 @@ impl eframe::App for ImageViewerApp {
 pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String)>> {
     use std::fs::File;
     use std::io::BufReader;
-    
+
     let file = File::open(path).ok()?;
     let mut reader = BufReader::new(&file);
     let exifreader = exif::Reader::new();
@@ -647,7 +653,7 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
         let val = format!("{}", f.display_value().with_unit(&exif));
         result.push((tag, val));
     }
-    
+
     if result.is_empty() {
         None
     } else {
@@ -656,40 +662,40 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
 }
 
 pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String)>, String)> {
-    use xmpkit::XmpFile;
-    use quick_xml::reader::Reader;
     use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
     use std::collections::BTreeMap;
-    
+    use xmpkit::XmpFile;
+
     let mut file = XmpFile::new();
     if file.open(path.to_string_lossy().as_ref()).is_err() {
         return None;
     }
-    
+
     let meta = file.get_xmp()?;
     let xml_str = match meta.serialize() {
         Ok(s) => s,
         Err(_) => return None,
     };
-    
+
     let mut reader = Reader::from_str(&xml_str);
     reader.config_mut().trim_text(true);
-    
+
     let mut result_map = BTreeMap::new();
     let mut buf = Vec::new();
     let mut stack = Vec::new();
-    
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                
+
                 // Skip structural RDF tags to keep paths clean
                 let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
                 if !is_structural {
                     stack.push(name.clone());
                 }
-                
+
                 // Process attributes (e.g., x:xmptk or compact RDF properties)
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
@@ -698,7 +704,11 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
                     }
                     let val = attr.unescape_value().unwrap_or_default().to_string();
                     if !val.is_empty() {
-                        let path = if stack.is_empty() { key } else { format!("{}.{}", stack.join("."), key) };
+                        let path = if stack.is_empty() {
+                            key
+                        } else {
+                            format!("{}.{}", stack.join("."), key)
+                        };
                         result_map.insert(path, val);
                     }
                 }
@@ -707,7 +717,7 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
                 // Self-closing tag: process attributes but don't stay on stack
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let is_structural = name.starts_with("rdf:") || name == "x:xmpmeta";
-                
+
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
                     if key.starts_with("xmlns:") || key == "rdf:about" {
@@ -715,13 +725,21 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
                     }
                     let val = attr.unescape_value().unwrap_or_default().to_string();
                     if !val.is_empty() {
-                        let path = if is_structural { key } else { format!("{}.{}", name, key) };
+                        let path = if is_structural {
+                            key
+                        } else {
+                            format!("{}.{}", name, key)
+                        };
                         result_map.insert(path, val);
                     }
                 }
             }
             Ok(Event::Text(e)) => {
-                let val = reader.decoder().decode(e.as_ref()).unwrap_or_default().to_string();
+                let val = reader
+                    .decoder()
+                    .decode(e.as_ref())
+                    .unwrap_or_default()
+                    .to_string();
                 if !val.is_empty() && !stack.is_empty() {
                     let path = stack.join(".");
                     result_map.insert(path, val);
@@ -738,7 +756,7 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
         }
         buf.clear();
     }
-    
+
     let mut final_data = Vec::new();
     for (k, v) in result_map {
         // Final cleanup of common prefixes to look like exiftool
@@ -755,4 +773,3 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
         Some((final_data, xml_str))
     }
 }
-

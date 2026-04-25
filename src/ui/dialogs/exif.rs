@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Color32, Context, RichText};
-use crate::ui::dialogs::modal_state::ModalResult;
-use crate::ui::dialogs::MovableModal;
-use crate::ui::utils::styled_button;
 use crate::theme::ThemePalette;
+use crate::ui::dialogs::MovableModal;
+use crate::ui::dialogs::modal_state::ModalResult;
+use crate::ui::utils::styled_button;
+use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
 // ── Private state ─────────────────────────────────────────────────────────────
@@ -32,7 +32,9 @@ pub struct State {
 impl State {
     /// Create state by pre-loading EXIF for `path`.
     pub fn from_path(path: &std::path::Path) -> Self {
-        Self { data: crate::app::extract_exif(path) }
+        Self {
+            data: crate::app::extract_exif(path),
+        }
     }
 }
 

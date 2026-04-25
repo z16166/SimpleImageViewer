@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::time::{Duration, Instant};
-use eframe::egui::{self, Context, Rect, Sense, Vec2};
 use crate::app::ImageViewerApp;
+use eframe::egui::{self, Context, Rect, Sense, Vec2};
+use std::time::{Duration, Instant};
 
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     if !app.settings.play_music || !app.settings.show_music_osd {
@@ -29,7 +29,9 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     // Smart seek locking logic for HUD (match target or 30s timeout)
     if let Some(target_ms) = app.music_seeking_target_ms {
         let diff = (cur_ms as i64 - target_ms as i64).abs();
-        let timed_out = app.music_seek_timeout.map_or(false, |t| t.elapsed().as_secs() >= 30);
+        let timed_out = app
+            .music_seek_timeout
+            .map_or(false, |t| t.elapsed().as_secs() >= 30);
         if diff < 2000 || timed_out {
             app.music_seeking_target_ms = None;
             app.music_seek_timeout = None;
@@ -38,16 +40,22 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         }
     }
 
-    let is_active = app.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
+    let is_active =
+        app.music_hud_last_activity.elapsed().as_secs() < crate::constants::MUSIC_HUD_IDLE_SECONDS;
 
     // Wake-up: mouse proximity to bottom center hotzone
     {
         let hud_width = crate::constants::MUSIC_HUD_WIDTH;
-        let hud_pos = screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
-        let hud_rect = Rect::from_center_size(hud_pos, Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT));
+        let hud_pos =
+            screen_rect.center_bottom() + Vec2::new(0.0, crate::constants::MUSIC_HUD_BOTTOM_OFFSET);
+        let hud_rect = Rect::from_center_size(
+            hud_pos,
+            Vec2::new(hud_width, crate::constants::MUSIC_HUD_HEIGHT),
+        );
 
         if let Some(ptr) = ctx.input(|i| i.pointer.hover_pos()) {
-            let in_hotzone = ptr.y > screen_rect.bottom() - 140.0 && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
+            let in_hotzone = ptr.y > screen_rect.bottom() - 140.0
+                && (ptr.x - screen_rect.center().x).abs() < (hud_width / 2.0);
             if hud_rect.contains(ptr) || in_hotzone {
                 app.music_hud_last_activity = Instant::now();
             }
@@ -74,10 +82,11 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     };
 
     // HUD position
-    let hud_base_pos = screen_rect.center_bottom() + Vec2::new(
-        -(crate::constants::MUSIC_HUD_WIDTH / 2.0),
-        crate::constants::MUSIC_HUD_BOTTOM_OFFSET - (crate::constants::MUSIC_HUD_HEIGHT / 2.0),
-    );
+    let hud_base_pos = screen_rect.center_bottom()
+        + Vec2::new(
+            -(crate::constants::MUSIC_HUD_WIDTH / 2.0),
+            crate::constants::MUSIC_HUD_BOTTOM_OFFSET - (crate::constants::MUSIC_HUD_HEIGHT / 2.0),
+        );
     let hud_pos = hud_base_pos + app.music_hud_drag_offset;
 
     let _area_resp = egui::Area::new(egui::Id::new("music_hud_foreground"))
@@ -86,7 +95,10 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         .interactable(true)
         .show(ctx, |ui| {
             let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(crate::constants::MUSIC_HUD_WIDTH, crate::constants::MUSIC_HUD_HEIGHT),
+                Vec2::new(
+                    crate::constants::MUSIC_HUD_WIDTH,
+                    crate::constants::MUSIC_HUD_HEIGHT,
+                ),
                 Sense::click_and_drag(),
             );
             if resp.hovered() {
@@ -101,11 +113,19 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
                 app.music_hud_last_activity = Instant::now();
             }
             let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-            app.osd.render_music_hud(&mut child_ui, screen_rect, &music_state, &app.cached_palette);
+            app.osd.render_music_hud(
+                &mut child_ui,
+                screen_rect,
+                &music_state,
+                &app.cached_palette,
+            );
         });
 
     // Handle seek
-    if let Some(target_s) = ctx.memory_mut(|mem| mem.data.remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))) {
+    if let Some(target_s) = ctx.memory_mut(|mem| {
+        mem.data
+            .remove_temp::<f32>(egui::Id::new(crate::constants::ID_PENDING_SEEK))
+    }) {
         app.audio.seek(Duration::from_secs_f32(target_s));
         app.music_seeking_target_ms = Some((target_s * 1000.0) as u64);
         app.music_seek_timeout = Some(Instant::now());

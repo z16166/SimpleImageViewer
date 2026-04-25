@@ -1,14 +1,14 @@
-use std::path::PathBuf;
-use std::time::Instant;
-use std::sync::Arc;
-use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
-use crate::app::{ImageViewerApp, AnimationPlayback, PendingAnimUpload, TransitionStyle};
-use crate::app::{MAX_PRELOAD_FORWARD, MAX_PRELOAD_BACKWARD};
-use crate::loader::{LoadResult, TileResult, ImageData, DecodedImage, PreviewResult, LoaderOutput};
+use crate::app::{AnimationPlayback, ImageViewerApp, PendingAnimUpload, TransitionStyle};
+use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
+use crate::loader::{DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TileResult};
 use crate::scanner::{self, ScanMessage};
-use crate::tile_cache::{TileManager, TileCoord};
-use rust_i18n::t;
+use crate::tile_cache::{TileCoord, TileManager};
+use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
 use rand::seq::SliceRandom;
+use rust_i18n::t;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 impl ImageViewerApp {
     // ------------------------------------------------------------------
@@ -41,7 +41,11 @@ impl ImageViewerApp {
         self.error_message = None;
         self.is_font_error = false;
         self.scanning = true;
-        let dir_name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let dir_name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -57,7 +61,7 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
-        
+
         let target_index = new_index % self.image_files.len();
         if target_index == self.current_index {
             return;
@@ -68,7 +72,9 @@ impl ImageViewerApp {
             if self.settings.transition_style == TransitionStyle::Random {
                 // Pick a random style from the pool using rand for uniform distribution
                 let pool = TransitionStyle::RANDOM_POOL;
-                self.active_transition = *pool.choose(&mut rand::thread_rng()).unwrap_or(&TransitionStyle::Fade);
+                self.active_transition = *pool
+                    .choose(&mut rand::thread_rng())
+                    .unwrap_or(&TransitionStyle::Fade);
             } else {
                 self.active_transition = self.settings.transition_style;
             }
@@ -77,7 +83,8 @@ impl ImageViewerApp {
                 self.prev_texture = Some(tex.clone());
                 self.transition_start = Some(Instant::now());
                 // Handle wrap-around logic for direction
-                self.is_next = target_index > self.current_index || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+                self.is_next = target_index > self.current_index
+                    || (target_index == 0 && self.current_index == self.image_files.len() - 1);
             }
         } else {
             self.active_transition = TransitionStyle::None;
@@ -109,7 +116,11 @@ impl ImageViewerApp {
         self.error_message = None;
         self.is_font_error = false;
         // Close any open EXIF/XMP modal — it shows data for the previous image
-        if matches!(self.active_modal, Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_)) | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))) {
+        if matches!(
+            self.active_modal,
+            Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_))
+                | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))
+        ) {
             self.active_modal = None;
         }
 
@@ -132,21 +143,25 @@ impl ImageViewerApp {
             // otherwise its internal tile queue matching will fail.
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
-            
+
             tm.generation = self.generation;
             self.current_image_res = Some((tm.full_width, tm.full_height));
 
             // Trigger deferred refinement now that this image is actively viewed.
             // Prefetched RAW images defer refinement to avoid ~400MB develop allocations
             // for images the user might never actually look at.
-            tm.get_source().request_refinement(self.current_index, self.generation);
+            tm.get_source()
+                .request_refinement(self.current_index, self.generation);
 
             self.tile_manager = Some(tm);
-            
-            log::info!("[App] Cache Hit: Restored prefetched TileManager for index {}", self.current_index);
+
+            log::info!(
+                "[App] Cache Hit: Restored prefetched TileManager for index {}",
+                self.current_index
+            );
         } else {
             // ALWAYS increment generation on every navigation and request a fresh load.
-            // This ensures TileManager is re-initialized for large images and 
+            // This ensures TileManager is re-initialized for large images and
             // low-res thumbnails are upgraded to full resolution.
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
@@ -166,14 +181,13 @@ impl ImageViewerApp {
             let dist_forward = (idx + len - self.current_index % len) % len;
             let dist_backward = (self.current_index + len - idx % len) % len;
             let circular_distance = dist_forward.min(dist_backward);
-            
+
             // Keep tiles only within distance 2
             circular_distance <= 2
         });
 
         self.schedule_preloads(true);
     }
-
 
     pub(crate) fn navigate_next(&mut self) {
         if self.image_files.is_empty() {
@@ -230,20 +244,40 @@ impl ImageViewerApp {
         // Determine the "primary" and "secondary" directions.
         // Primary gets the larger budget; secondary gets the smaller one.
         let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
-            (MAX_PRELOAD_FORWARD, self.preload_budget_forward,
-             MAX_PRELOAD_BACKWARD, self.preload_budget_backward)
+            (
+                MAX_PRELOAD_FORWARD,
+                self.preload_budget_forward,
+                MAX_PRELOAD_BACKWARD,
+                self.preload_budget_backward,
+            )
         } else {
-            (MAX_PRELOAD_BACKWARD, self.preload_budget_backward,
-             MAX_PRELOAD_FORWARD, self.preload_budget_forward)
+            (
+                MAX_PRELOAD_BACKWARD,
+                self.preload_budget_backward,
+                MAX_PRELOAD_FORWARD,
+                self.preload_budget_forward,
+            )
         };
 
         // Collect indices for each direction
         let primary_indices: Vec<usize> = (1..=n.min(primary_max + 10)) // +10 headroom to skip tiled images
-            .map(|i| if forward { (cur + i) % n } else { (cur + n - i) % n })
+            .map(|i| {
+                if forward {
+                    (cur + i) % n
+                } else {
+                    (cur + n - i) % n
+                }
+            })
             .collect();
 
         let secondary_indices: Vec<usize> = (1..=n.min(secondary_max + 10))
-            .map(|i| if forward { (cur + n - i) % n } else { (cur + i) % n })
+            .map(|i| {
+                if forward {
+                    (cur + n - i) % n
+                } else {
+                    (cur + i) % n
+                }
+            })
             .collect();
 
         self.preload_direction(primary_indices, primary_max, primary_budget);
@@ -256,7 +290,12 @@ impl ImageViewerApp {
     /// Tiled-candidate images are skipped entirely (they use on-demand tile loading).
     /// Already-cached images occupy a count slot (preventing over-reach) but
     /// do NOT consume byte budget (no new memory allocation occurs).
-    pub(crate) fn preload_direction(&mut self, candidates: Vec<usize>, max_count: usize, budget: u64) {
+    pub(crate) fn preload_direction(
+        &mut self,
+        candidates: Vec<usize>,
+        max_count: usize,
+        budget: u64,
+    ) {
         let mut count = 0usize;
         let mut new_bytes = 0u64;
 
@@ -273,9 +312,7 @@ impl ImageViewerApp {
 
             let path = &self.image_files[idx];
 
-            let file_size = std::fs::metadata(path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
             // After the guaranteed first image, enforce the byte budget
             if count > 0 && new_bytes + file_size > budget {
@@ -340,7 +377,8 @@ impl ImageViewerApp {
                         self.resolve_initial_position();
 
                         let count = self.image_files.len();
-                        self.status_message = t!("status.found", count = count.to_string()).to_string();
+                        self.status_message =
+                            t!("status.found", count = count.to_string()).to_string();
                         self.schedule_preloads(true);
                     }
                     break;
@@ -365,7 +403,8 @@ impl ImageViewerApp {
                 // with case-insensitive file names to handle path variations
                 // without calling canonicalize() on every file in the list.
                 let target = path.canonicalize().unwrap_or_else(|_| path.clone());
-                let target_name = target.file_name()
+                let target_name = target
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_lowercase());
                 self.image_files.iter().position(|p| {
                     if let Some(ref tn) = target_name {
@@ -477,8 +516,12 @@ impl ImageViewerApp {
                 }
                 LoaderOutput::Refined(idx, gen_id) => {
                     if idx == self.current_index && gen_id == self.generation {
-                        log::info!("[App] Refined image notification for {}, index={}", idx, idx);
-                        
+                        log::info!(
+                            "[App] Refined image notification for {}, index={}",
+                            idx,
+                            idx
+                        );
+
                         // 1. Clear the pixel cache for this image
                         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
                             cache.remove_image(idx);
@@ -488,15 +531,19 @@ impl ImageViewerApp {
                         // from the newly developed high-resolution buffer, discarding any blurred thumbnail tiles.
                         self.generation = self.generation.wrapping_add(1);
                         self.loader.set_generation(self.generation);
-                        
+
                         if let Some(tm) = &mut self.tile_manager {
-                            log::info!("[App] Refined: Tiled mode - forcing tile upgrade to high definition");
+                            log::info!(
+                                "[App] Refined: Tiled mode - forcing tile upgrade to high definition"
+                            );
                             tm.generation = self.generation;
                             tm.pending_tiles.clear();
                             // Also evict the fallback preview texture
                             self.texture_cache.remove(idx);
                         } else {
-                            log::warn!("[App] Refined: Static mode encountered unexpectedly. Attempting to reload.");
+                            log::warn!(
+                                "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
+                            );
                             self.texture_cache.remove(idx);
                             self.loader.request_load(
                                 self.current_index,
@@ -504,14 +551,17 @@ impl ImageViewerApp {
                                 self.image_files[self.current_index].clone(),
                             );
                         }
-                        
+
                         self.loader.flush_tile_queue();
                         ctx.request_repaint();
                     } else {
                         // Refinement completed for a non-current image (e.g. prefetched).
                         // Invalidate stale caches so tiles are re-extracted from the updated
                         // high-resolution buffer when the user navigates to this image.
-                        log::info!("[App] Refined: background update for index {} (not current). Invalidating caches.", idx);
+                        log::info!(
+                            "[App] Refined: background update for index {} (not current). Invalidating caches.",
+                            idx
+                        );
                         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
                             cache.remove_image(idx);
                         }
@@ -523,7 +573,11 @@ impl ImageViewerApp {
         }
     }
 
-    pub(crate) fn handle_image_load_result(&mut self, load_result: LoadResult, ctx: &egui::Context) {
+    pub(crate) fn handle_image_load_result(
+        &mut self,
+        load_result: LoadResult,
+        ctx: &egui::Context,
+    ) {
         let idx = load_result.index;
         match load_result.result.as_ref() {
             Ok(ImageData::Static(decoded)) => {
@@ -533,12 +587,24 @@ impl ImageViewerApp {
                 );
                 let name = format!("img_{}", idx);
                 let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, decoded.width, decoded.height, false, self.current_index, self.image_files.len()) {
+                if let Some(evicted_idx) = self.texture_cache.insert(
+                    idx,
+                    handle,
+                    decoded.width,
+                    decoded.height,
+                    false,
+                    self.current_index,
+                    self.image_files.len(),
+                ) {
                     self.animation_cache.remove(&evicted_idx);
                 }
                 if idx == self.current_index {
                     self.current_image_res = Some((decoded.width, decoded.height));
-                    if self.animation.as_ref().is_some_and(|a| a.image_index == idx) {
+                    if self
+                        .animation
+                        .as_ref()
+                        .is_some_and(|a| a.image_index == idx)
+                    {
                         self.animation = None;
                     }
                 }
@@ -549,14 +615,24 @@ impl ImageViewerApp {
                 if let Some(preview) = load_result.preview.as_ref() {
                     // Update texture cache if it's empty OR if it currently holds a low-res preview.
                     // This ensures we can upgrade an EXIF thumbnail to an HQ preview while protecting full static images.
-                    if !self.texture_cache.contains(idx) || self.texture_cache.is_preview_placeholder(idx) {
+                    if !self.texture_cache.contains(idx)
+                        || self.texture_cache.is_preview_placeholder(idx)
+                    {
                         let color_image = ColorImage::from_rgba_unmultiplied(
                             [preview.width as usize, preview.height as usize],
                             &preview.pixels,
                         );
                         let name = format!("img_preview_{}", idx);
                         let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                        if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, source.width(), source.height(), true, self.current_index, self.image_files.len()) {
+                        if let Some(evicted_idx) = self.texture_cache.insert(
+                            idx,
+                            handle,
+                            source.width(),
+                            source.height(),
+                            true,
+                            self.current_index,
+                            self.image_files.len(),
+                        ) {
                             self.animation_cache.remove(&evicted_idx);
                         }
                     }
@@ -565,32 +641,37 @@ impl ImageViewerApp {
                 if idx == self.current_index {
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(&source));
-                    
+                    let mut tm =
+                        TileManager::with_source(idx, load_result.generation, Arc::clone(&source));
+
                     // Prefer existing cached texture (might be HQ) over the initial low-res preview
                     if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
                         tm.preview_texture = Some(cached_handle);
                     } else if let Some(preview) = load_result.preview.as_ref() {
                         self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
                     }
-                    
+
                     self.tile_manager = Some(tm);
                     self.animation = None;
-                if let Some(res) = self.current_image_res {
-                    self.log_large_image(idx, res.0, res.1);
-                } else {
-                    log::warn!("[UI] Attempted to log large image resolution, but res was None for index {}", idx);
-                }
+                    if let Some(res) = self.current_image_res {
+                        self.log_large_image(idx, res.0, res.1);
+                    } else {
+                        log::warn!(
+                            "[UI] Attempted to log large image resolution, but res was None for index {}",
+                            idx
+                        );
+                    }
 
                     // Trigger refinement ONLY for the actively-viewed image.
                     // Prefetched images stay at preview quality until navigated to.
                     source.request_refinement(idx, self.generation);
                 } else {
                     // Preloading: create the TileManager and store it in prefetched_tiles
-                    // so that when the user switches to this image, the source (and its 
+                    // so that when the user switches to this image, the source (and its
                     // background refined RAW data) is immediately available!
-                    let mut tm = TileManager::with_source(idx, load_result.generation, Arc::clone(source));
-                    
+                    let mut tm =
+                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+
                     // Prefer existing cached texture (might be HQ) over the initial low-res preview
                     if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
                         tm.preview_texture = Some(cached_handle);
@@ -609,7 +690,15 @@ impl ImageViewerApp {
                     );
                     let name = format!("img_{}", idx);
                     let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    if let Some(evicted_idx) = self.texture_cache.insert(idx, handle, first.width, first.height, false, self.current_index, self.image_files.len()) {
+                    if let Some(evicted_idx) = self.texture_cache.insert(
+                        idx,
+                        handle,
+                        first.width,
+                        first.height,
+                        false,
+                        self.current_index,
+                        self.image_files.len(),
+                    ) {
                         self.animation_cache.remove(&evicted_idx);
                     }
                     if idx == self.current_index {
@@ -621,8 +710,13 @@ impl ImageViewerApp {
                 let cur = self.current_index;
                 let n = self.image_files.len();
                 let is_in_range = if n > 0 {
-                    idx == cur || idx == (cur + 1) % n || (cur > 0 && idx == cur - 1) || (cur == 0 && idx == n - 1)
-                } else { false };
+                    idx == cur
+                        || idx == (cur + 1) % n
+                        || (cur > 0 && idx == cur - 1)
+                        || (cur == 0 && idx == n - 1)
+                } else {
+                    false
+                };
 
                 if is_in_range {
                     self.pending_anim_frames = Some(PendingAnimUpload {
@@ -639,15 +733,24 @@ impl ImageViewerApp {
                 let path_str = self.image_files[idx].display().to_string();
                 log::error!("Failed to load image at index {} ({}): {e}", idx, path_str);
                 if idx == self.current_index {
-                    self.error_message = Some(t!("status.load_failed", path = path_str, err = e.to_string()).to_string());
+                    self.error_message = Some(
+                        t!("status.load_failed", path = path_str, err = e.to_string()).to_string(),
+                    );
                 }
             }
         }
     }
 
-    pub(crate) fn handle_tile_load_result(&mut self, tile_result: TileResult, _ctx: &egui::Context) {
-        let coord = TileCoord { col: tile_result.col, row: tile_result.row };
-        
+    pub(crate) fn handle_tile_load_result(
+        &mut self,
+        tile_result: TileResult,
+        _ctx: &egui::Context,
+    ) {
+        let coord = TileCoord {
+            col: tile_result.col,
+            row: tile_result.row,
+        };
+
         // Pixels are already in PIXEL_CACHE (inserted by the worker thread).
         // We only need to mark as no longer pending and trigger repaint for GPU upload.
         if let Some(ref mut tm) = self.tile_manager {
@@ -659,7 +762,6 @@ impl ImageViewerApp {
         }
     }
 
-
     pub(crate) fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
         // Apply HQ preview if it matches the currently displayed tile manager.
         // Also check prefetched tiles and update the texture cache for future navigations.
@@ -668,8 +770,12 @@ impl ImageViewerApp {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index {
-                        log::info!("[App] HQ preview applied for current index {} ({}x{})", 
-                            update.index, preview.width, preview.height);
+                        log::info!(
+                            "[App] HQ preview applied for current index {} ({}x{})",
+                            update.index,
+                            preview.width,
+                            preview.height
+                        );
                         tm.set_preview(preview.clone(), ctx);
                         ctx.request_repaint();
                     }
@@ -677,18 +783,26 @@ impl ImageViewerApp {
 
                 // 2. Update prefetched TileManagers
                 if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                    log::info!("[App] HQ preview applied for prefetched index {} ({}x{})", 
-                        update.index, preview.width, preview.height);
+                    log::info!(
+                        "[App] HQ preview applied for prefetched index {} ({}x{})",
+                        update.index,
+                        preview.width,
+                        preview.height
+                    );
                     tm.set_preview(preview.clone(), ctx);
                 }
 
                 // 3. Update global texture cache (so instant-flips also get HQ texture).
                 // Only update if it's empty or currently holds a preview (don't downgrade full static images).
-                if !self.texture_cache.contains(update.index) || self.texture_cache.is_preview_placeholder(update.index) {
+                if !self.texture_cache.contains(update.index)
+                    || self.texture_cache.is_preview_placeholder(update.index)
+                {
                     // Preserve the TRUE image dimensions (e.g. 11648×8736) when updating the preview texture.
                     // Without this, a small preview (e.g. 160×120 EXIF thumbnail) would overwrite
                     // original_res, causing the OSD to display wildly wrong zoom percentages (e.g. 16000%).
-                    let (orig_w, orig_h) = self.texture_cache.get_original_res(update.index)
+                    let (orig_w, orig_h) = self
+                        .texture_cache
+                        .get_original_res(update.index)
                         .unwrap_or((preview.width, preview.height));
 
                     let name = format!("img_hq_preview_{}", update.index);
@@ -715,17 +829,26 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn log_large_image(&self, idx: usize, w: u32, h: u32) {
-        let file_name = self.image_files[idx].file_name()
+        let file_name = self.image_files[idx]
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
         log::info!(
             "[{}] Large image detected: {}x{} ({:.1} MP) — tiled mode active",
-            file_name, w, h,
+            file_name,
+            w,
+            h,
             (w as f64 * h as f64) / 1_000_000.0
         );
     }
 
-    pub(crate) fn setup_tile_manager(&self, ctx: &egui::Context, idx: usize, tm: &mut TileManager, preview: DecodedImage) {
+    pub(crate) fn setup_tile_manager(
+        &self,
+        ctx: &egui::Context,
+        idx: usize,
+        tm: &mut TileManager,
+        preview: DecodedImage,
+    ) {
         let preview_img = egui::ColorImage::from_rgba_unmultiplied(
             [preview.width as usize, preview.height as usize],
             &preview.pixels,
@@ -737,5 +860,4 @@ impl ImageViewerApp {
         );
         tm.preview_texture = Some(preview_handle);
     }
-
 }

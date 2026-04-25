@@ -1,7 +1,9 @@
 fn main() {
     // Force static linking
-    unsafe { std::env::set_var("VCPKG_ALL_STATIC", "1"); }
-    
+    unsafe {
+        std::env::set_var("VCPKG_ALL_STATIC", "1");
+    }
+
     // In Manifest Mode, vcpkg installs to vcpkg_installed/ in the workspace root
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap(); // libraries/pkg -> libraries -> root
@@ -20,8 +22,8 @@ fn main() {
     };
 
     if installed_dir.exists() {
-        unsafe { 
-            std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir); 
+        unsafe {
+            std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir);
             std::env::set_var("VCPKG_TARGET_TRIPLET", vcpkg_triplet);
         }
     }
@@ -35,10 +37,10 @@ fn main() {
         include_paths = lib.include_paths;
     } else {
         let sdk_root = workspace_root.join("3rdparty").join("monkey-sdk");
-        
+
         let mut build = cc::Build::new();
         build.cpp(true);
-        
+
         // Add include paths
         let maclib_inc = sdk_root.join("Source").join("MACLib");
         let shared_inc = sdk_root.join("Source").join("Shared");
@@ -60,11 +62,11 @@ fn main() {
         let target_features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
         if target_os == "windows" {
             build.static_crt(target_features.contains("crt-static"));
-        }// Add all necessary source files from Monkey Audio
+        } // Add all necessary source files from Monkey Audio
         // This is based on the CMakeLists.txt findings
         let shared_src = sdk_root.join("Source").join("Shared");
         let maclib_src = sdk_root.join("Source").join("MACLib");
-        
+
         let files = [
             shared_src.join("BufferIO.cpp"),
             shared_src.join("CharacterHelper.cpp"),
@@ -76,8 +78,11 @@ fn main() {
             shared_src.join("Semaphore.cpp"),
             shared_src.join("Thread.cpp"),
             shared_src.join("WholeFileIO.cpp"),
-            shared_src.join(if target_os == "windows" { "WinFileIO.cpp" } else { "StdLibFileIO.cpp" }),
-            
+            shared_src.join(if target_os == "windows" {
+                "WinFileIO.cpp"
+            } else {
+                "StdLibFileIO.cpp"
+            }),
             maclib_src.join("APECompress.cpp"),
             maclib_src.join("APECompressCore.cpp"),
             maclib_src.join("APECompressCreate.cpp"),
@@ -99,7 +104,6 @@ fn main() {
             maclib_src.join("UnBitArray.cpp"),
             maclib_src.join("UnBitArrayBase.cpp"),
             maclib_src.join("WAVInputSource.cpp"),
-            
             maclib_src.join("Old").join("AntiPredictorOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorExtraHighOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorFastOld.cpp"),
@@ -114,7 +118,7 @@ fn main() {
         for file in &files {
             build.file(file);
         }
-        
+
         // SIMD files
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
         if target_arch == "x86" || target_arch == "x86_64" {
@@ -122,7 +126,7 @@ fn main() {
             build.file(maclib_src.join("NNFilterAVX512.cpp"));
             build.file(maclib_src.join("NNFilterSSE2.cpp"));
             build.file(maclib_src.join("NNFilterSSE4.1.cpp"));
-            
+
             if build.get_compiler().is_like_msvc() {
                 // MSVC doesn't need special flags for SSE2/SSE4 but needs for AVX
                 // Wait! cc crate's build.file doesn't allow per-file flags easily.
@@ -138,7 +142,7 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.cpp(true);
-    
+
     for include in &include_paths {
         build.include(include);
     }
@@ -157,6 +161,6 @@ fn main() {
     }
 
     build.compile("monkey_wrapper");
-    
+
     println!("cargo:rerun-if-changed=wrapper/monkey_wrapper.cpp");
 }

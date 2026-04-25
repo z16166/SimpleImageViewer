@@ -48,10 +48,10 @@ fn main() {
         let mut b = cc::Build::new();
         b.cpp(true);
         b.file("src/audio_helper.cpp");
-        
+
         let target_features = std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
         b.static_crt(target_features.contains("crt-static"));
-        
+
         b.compile("audio_helper");
 
         println!("cargo:rustc-link-lib=ole32");
@@ -61,9 +61,12 @@ fn main() {
 }
 
 /// Convert a PNG to a multi-resolution ICO (16, 32, 48, 64, 128, 256 px).
-fn png_to_ico(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use image::imageops::FilterType;
+fn png_to_ico(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     use image::ImageFormat;
+    use image::imageops::FilterType;
     use std::fs::File;
     use std::io::{BufWriter, Write};
 
@@ -81,7 +84,7 @@ fn png_to_ico(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dy
 
     let count = sizes.len() as u16;
     let header_sz = 6u32;
-    let entry_sz  = 16u32 * count as u32;
+    let entry_sz = 16u32 * count as u32;
     let mut data_offset = header_sz + entry_sz;
 
     let mut offsets: Vec<u32> = Vec::with_capacity(blobs.len());
@@ -93,8 +96,8 @@ fn png_to_ico(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Box<dy
     let mut out = BufWriter::new(File::create(dst)?);
 
     // ICONDIR
-    out.write_all(&0u16.to_le_bytes())?;  // reserved
-    out.write_all(&1u16.to_le_bytes())?;  // type = ICON
+    out.write_all(&0u16.to_le_bytes())?; // reserved
+    out.write_all(&1u16.to_le_bytes())?; // type = ICON
     out.write_all(&count.to_le_bytes())?;
 
     // ICONDIRENTRY array
@@ -124,7 +127,7 @@ fn embed_resources(ico_path: &std::path::Path) {
 
     // 1. Get version from Cargo.toml
     let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
-    
+
     // 2. Attempt to get Git Commit ID (short hash)
     let git_hash = std::process::Command::new("git")
         .args(&["rev-parse", "--short", "HEAD"])
@@ -154,27 +157,26 @@ fn embed_resources(ico_path: &std::path::Path) {
     let minor = *parts.get(1).unwrap_or(&0);
     let patch = *parts.get(2).unwrap_or(&0);
     let build = *parts.get(3).unwrap_or(&0);
-    
+
     // Construct u64: AAAA BBBB CCCC DDDD in hex
     let version_u64: u64 = (major << 48) | (minor << 32) | (patch << 16) | build;
 
-    res.set_version_info(winresource::VersionInfo::FILEVERSION,    version_u64);
+    res.set_version_info(winresource::VersionInfo::FILEVERSION, version_u64);
     res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, version_u64);
 
-    res.set("ProductName",      "Simple Image Viewer");
-    res.set("FileDescription",  "Simple Image Viewer");
-    res.set("InternalName",     "SimpleImageViewer.exe");
+    res.set("ProductName", "Simple Image Viewer");
+    res.set("FileDescription", "Simple Image Viewer");
+    res.set("InternalName", "SimpleImageViewer.exe");
     res.set("OriginalFilename", "SimpleImageViewer.exe");
-    
+
     // Set String Versions (visible in Windows properties)
-    res.set("FileVersion",     &display_version);
-    res.set("ProductVersion",  &display_version);
-    
-    res.set("LegalCopyright",  "\u{a9} 2026");
-    res.set("Comments",        "https://github.com/z16166/SimpleImageViewer/");
+    res.set("FileVersion", &display_version);
+    res.set("ProductVersion", &display_version);
+
+    res.set("LegalCopyright", "\u{a9} 2026");
+    res.set("Comments", "https://github.com/z16166/SimpleImageViewer/");
 
     if let Err(e) = res.compile() {
         eprintln!("build.rs: winresource error: {e}");
     }
 }
- 

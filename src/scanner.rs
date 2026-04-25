@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::{Path, PathBuf};
 use crossbeam_channel::Sender;
-use std::fs::Metadata;
 use std::ffi::OsStr;
+use std::fs::Metadata;
+use std::path::{Path, PathBuf};
 
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
@@ -42,8 +42,8 @@ fn is_offline_meta(metadata: &Metadata) -> bool {
     const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x40000;
     const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x400000;
 
-    const OFFLINE_MASK: u32 = FILE_ATTRIBUTE_OFFLINE 
-        | FILE_ATTRIBUTE_RECALL_ON_OPEN 
+    const OFFLINE_MASK: u32 = FILE_ATTRIBUTE_OFFLINE
+        | FILE_ATTRIBUTE_RECALL_ON_OPEN
         | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
 
     let attr = metadata.file_attributes();
@@ -90,7 +90,8 @@ pub fn scan_directory(dir: PathBuf, recursive: bool, tx: Sender<ScanMessage>) {
                 // 1. [Cheapest] Check file_type from directory entry (no syscall on most OSs)
                 if entry.file_type().is_file() {
                     // 2. [Cheap] Check extension without constructing full PathBuf
-                    let is_img = Path::new(entry.file_name()).extension()
+                    let is_img = Path::new(entry.file_name())
+                        .extension()
                         .map(|ext| is_supported_extension(ext))
                         .unwrap_or(false);
 
@@ -118,7 +119,10 @@ pub fn scan_directory(dir: PathBuf, recursive: bool, tx: Sender<ScanMessage>) {
                 .flatten()
                 .filter(|e| {
                     // Use the same tiered filtering pattern
-                    Path::new(&e.file_name()).extension().map(|ext| is_supported_extension(ext)).unwrap_or(false) 
+                    Path::new(&e.file_name())
+                        .extension()
+                        .map(|ext| is_supported_extension(ext))
+                        .unwrap_or(false)
                         && is_valid_file(&e.path())
                 })
                 .map(|e| e.path())

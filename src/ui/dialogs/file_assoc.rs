@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Context, Color32, RichText};
-use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
-use crate::ui::dialogs::MovableModal;
-use crate::ui::utils::styled_button;
 use crate::theme::ThemePalette;
+use crate::ui::dialogs::MovableModal;
+use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
+use crate::ui::utils::styled_button;
+use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
 // ── Private state ─────────────────────────────────────────────────────────────
@@ -40,7 +40,10 @@ impl State {
     /// Snapshot the global format registry and pre-select every format.
     pub fn new(formats: Vec<crate::formats::ImageFormat>) -> Self {
         let len = formats.len();
-        Self { formats, selections: vec![true; len] }
+        Self {
+            formats,
+            selections: vec![true; len],
+        }
     }
 
     /// Collect the extensions that are currently selected.
@@ -48,7 +51,8 @@ impl State {
     /// Called by the dispatch layer after the user confirms, before the state
     /// is dropped.  This is the only way external code can read the selection.
     pub fn selected_extensions(&self) -> Vec<&str> {
-        self.formats.iter()
+        self.formats
+            .iter()
             .zip(self.selections.iter())
             .filter(|(_, sel)| **sel)
             .map(|(fmt, _)| fmt.extension.as_str())
@@ -72,63 +76,71 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
         .default_size([WIDTH, HEIGHT_ESTIMATE])
         .min_size([320.0, 300.0])
         .show(ctx, palette, |ui| {
-        ui.label(RichText::new(t!("win.assoc_dialog_msg").to_string()).color(palette.text_muted));
-        ui.add_space(8.0);
+            ui.label(
+                RichText::new(t!("win.assoc_dialog_msg").to_string()).color(palette.text_muted),
+            );
+            ui.add_space(8.0);
 
-        ui.horizontal(|ui| {
-            if styled_button(ui, t!("btn.select_all"), palette).clicked() {
-                state.selections.iter_mut().for_each(|s| *s = true);
-            }
-            if styled_button(ui, t!("btn.deselect_all"), palette).clicked() {
-                state.selections.iter_mut().for_each(|s| *s = false);
-            }
-        });
-        ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if styled_button(ui, t!("btn.select_all"), palette).clicked() {
+                    state.selections.iter_mut().for_each(|s| *s = true);
+                }
+                if styled_button(ui, t!("btn.deselect_all"), palette).clicked() {
+                    state.selections.iter_mut().for_each(|s| *s = false);
+                }
+            });
+            ui.add_space(4.0);
 
-        egui::ScrollArea::vertical()
-            .max_height(400.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.set_max_width(ui.available_width() - 16.0);
-                use crate::formats::FormatGroup;
-                for (group, key) in [
-                    (FormatGroup::Standard,  "win.group_standard"),
-                    (FormatGroup::Pro,       "win.group_pro"),
-                    (FormatGroup::WicSystem, "win.group_wic_system"),
-                    (FormatGroup::WicRaw,    "win.group_wic_raw"),
-                    (FormatGroup::Others,    "win.group_others"),
-                ] {
-                    render_format_group(ui, state, group, &t!(key), palette);
+            egui::ScrollArea::vertical()
+                .max_height(400.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width() - 16.0);
+                    use crate::formats::FormatGroup;
+                    for (group, key) in [
+                        (FormatGroup::Standard, "win.group_standard"),
+                        (FormatGroup::Pro, "win.group_pro"),
+                        (FormatGroup::WicSystem, "win.group_wic_system"),
+                        (FormatGroup::WicRaw, "win.group_wic_raw"),
+                        (FormatGroup::Others, "win.group_others"),
+                    ] {
+                        render_format_group(ui, state, group, &t!(key), palette);
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            let selected_count = state.selections.iter().filter(|&&s| s).count();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        selected_count > 0,
+                        egui::Button::new(
+                            RichText::new(t!(
+                                "win.apply_formats",
+                                count = selected_count.to_string()
+                            ))
+                            .color(Color32::WHITE),
+                        )
+                        .fill(palette.button_primary)
+                        .corner_radius(egui::CornerRadius::same(4)),
+                    )
+                    .clicked()
+                {
+                    result = ModalResult::Confirmed(ModalAction::ApplyFileAssoc);
+                }
+                ui.add_space(8.0);
+                if styled_button(ui, t!("win.btn_cancel"), palette).clicked() {
+                    result = ModalResult::Dismissed;
                 }
             });
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        let selected_count = state.selections.iter().filter(|&&s| s).count();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(
-                selected_count > 0,
-                egui::Button::new(
-                    RichText::new(t!("win.apply_formats", count = selected_count.to_string()))
-                        .color(Color32::WHITE)
-                )
-                .fill(palette.button_primary)
-                .corner_radius(egui::CornerRadius::same(4)),
-            ).clicked() {
-                result = ModalResult::Confirmed(ModalAction::ApplyFileAssoc);
-            }
-            ui.add_space(8.0);
-            if styled_button(ui, t!("win.btn_cancel"), palette).clicked() {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = ModalResult::Dismissed;
             }
         });
-
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            result = ModalResult::Dismissed;
-        }
-    });
 
     result
 }
@@ -142,12 +154,16 @@ fn render_format_group(
     group_name: &str,
     palette: &ThemePalette,
 ) {
-    let indices: Vec<usize> = state.formats.iter()
+    let indices: Vec<usize> = state
+        .formats
+        .iter()
         .enumerate()
         .filter(|(_, f)| f.group == group)
         .map(|(i, _)| i)
         .collect();
-    if indices.is_empty() { return; }
+    if indices.is_empty() {
+        return;
+    }
 
     ui.add_space(8.0);
     ui.label(RichText::new(group_name).strong().color(palette.accent2));
@@ -166,8 +182,9 @@ fn render_format_group(
                     if gi < indices.len() {
                         let fi = indices[gi];
                         let label = format!(".{}", state.formats[fi].extension);
-                        let desc  = state.formats[fi].description.clone();
-                        ui.checkbox(&mut state.selections[fi], label).on_hover_text(&desc);
+                        let desc = state.formats[fi].description.clone();
+                        ui.checkbox(&mut state.selections[fi], label)
+                            .on_hover_text(&desc);
                     }
                 }
                 ui.end_row();

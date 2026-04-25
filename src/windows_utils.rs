@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use winreg::enums::*;
 use winreg::RegKey;
+use winreg::enums::*;
 
 const APP_ID: &str = "SimpleImageViewer.Viewer";
 const FRIENDLY_NAME: &str = "Simple Image Viewer";
@@ -38,20 +38,35 @@ pub fn register_file_associations(extensions: &[&str]) {
     if let Ok((prog_key, _)) = hkcu.create_subkey(&prog_id_path) {
         let _: () = prog_key.set_value("", &FRIENDLY_NAME).unwrap_or(());
         if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
-            let _: () = icon_key.set_value("", &format!("\"{}\",0", exe_path)).unwrap_or(());
+            let _: () = icon_key
+                .set_value("", &format!("\"{}\",0", exe_path))
+                .unwrap_or(());
         }
         if let Ok((cmd_key, _)) = prog_key.create_subkey(r"shell\open\command") {
-            let _: () = cmd_key.set_value("", &format!("\"{}\" \"%1\"", exe_path)).unwrap_or(());
+            let _: () = cmd_key
+                .set_value("", &format!("\"{}\" \"%1\"", exe_path))
+                .unwrap_or(());
         }
     }
 
     // 2. Application Capabilities
     if let Ok((cap_key, _)) = hkcu.create_subkey(CAP_PATH) {
-        let _: () = cap_key.set_value("ApplicationName", &FRIENDLY_NAME).unwrap_or(());
-        let _: () = cap_key.set_value("ApplicationDescription", &"A high-performance image viewer.").unwrap_or(());
+        let _: () = cap_key
+            .set_value("ApplicationName", &FRIENDLY_NAME)
+            .unwrap_or(());
+        let _: () = cap_key
+            .set_value(
+                "ApplicationDescription",
+                &"A high-performance image viewer.",
+            )
+            .unwrap_or(());
         if let Ok((assoc_key, _)) = cap_key.create_subkey("FileAssociations") {
             for ext in extensions {
-                let dot_ext = if ext.starts_with('.') { ext.to_string() } else { format!(".{}", ext) };
+                let dot_ext = if ext.starts_with('.') {
+                    ext.to_string()
+                } else {
+                    format!(".{}", ext)
+                };
                 let _: () = assoc_key.set_value(&dot_ext, &APP_ID).unwrap_or(());
             }
         }
@@ -73,9 +88,13 @@ pub fn register_file_associations(extensions: &[&str]) {
 
     // 5. Legacy Applications key
     if let Ok((leg_key, _)) = hkcu.create_subkey(LEGACY_PATH) {
-        let _: () = leg_key.set_value("FriendlyAppName", &FRIENDLY_NAME).unwrap_or(());
+        let _: () = leg_key
+            .set_value("FriendlyAppName", &FRIENDLY_NAME)
+            .unwrap_or(());
         if let Ok((cmd_key, _)) = leg_key.create_subkey(r"shell\open\command") {
-            let _: () = cmd_key.set_value("", &format!("\"{}\" \"%1\"", exe_path)).unwrap_or(());
+            let _: () = cmd_key
+                .set_value("", &format!("\"{}\" \"%1\"", exe_path))
+                .unwrap_or(());
         }
     }
 }
@@ -92,7 +111,8 @@ pub fn unregister_file_associations() {
     let _ = hkcu.delete_subkey_all(r"Software\SimpleImageViewer");
 
     // 3. Remove from RegisteredApplications
-    if let Ok(reg_apps) = hkcu.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_WRITE) {
+    if let Ok(reg_apps) = hkcu.open_subkey_with_flags(r"Software\RegisteredApplications", KEY_WRITE)
+    {
         let _ = reg_apps.delete_value(FRIENDLY_NAME);
     }
 

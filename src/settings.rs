@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 use crate::theme::AppTheme;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // ScaleMode
@@ -166,17 +166,35 @@ pub struct Settings {
     pub log_level: String,
 }
 
-fn default_interval() -> f32 { 5.0 }
-fn default_true()     -> bool { true }
-fn default_volume()   -> f32  { 1.0 }
-fn default_font_family() -> String { "System Default".to_string() }
-fn default_font_size()   -> f32  { 16.0 }
-fn default_transition_style() -> TransitionStyle { TransitionStyle::None }
-fn default_transition_ms() -> u32 { 800 }
-fn default_log_level() -> String { "info".to_string() }
+fn default_interval() -> f32 {
+    5.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_volume() -> f32 {
+    1.0
+}
+fn default_font_family() -> String {
+    "System Default".to_string()
+}
+fn default_font_size() -> f32 {
+    16.0
+}
+fn default_transition_style() -> TransitionStyle {
+    TransitionStyle::None
+}
+fn default_transition_ms() -> u32 {
+    800
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
 
 impl Default for ScaleMode {
-    fn default() -> Self { Self::FitToWindow }
+    fn default() -> Self {
+        Self::FitToWindow
+    }
 }
 
 impl Default for Settings {
@@ -305,9 +323,7 @@ impl Settings {
     pub fn save(&self) -> Result<(), String> {
         let path = settings_path();
         match serde_yaml::to_string(self) {
-            Ok(text) => {
-                std::fs::write(&path, text).map_err(|e| e.to_string())
-            }
+            Ok(text) => std::fs::write(&path, text).map_err(|e| e.to_string()),
             Err(e) => Err(format!("[settings] serialize error: {e}")),
         }
     }

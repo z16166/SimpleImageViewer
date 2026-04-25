@@ -14,10 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Align2, Color32, FontId, Vec2, CornerRadius, Stroke, RichText, StrokeKind};
-use std::time::Instant;
 use crate::theme::ThemePalette;
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, RichText, Stroke, StrokeKind, Vec2,
+};
 use rust_i18n::t;
+use std::time::Instant;
 
 /// Parameters that affect the OSD status text.
 #[derive(PartialEq, Clone)]
@@ -78,7 +80,8 @@ impl OsdRenderer {
         }
 
         if let Some(hud) = &self.cached_hud {
-            let hud_pos = screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
+            let hud_pos = screen_rect.left_bottom()
+                + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
             ui.painter().text(
                 hud_pos,
                 Align2::LEFT_BOTTOM,
@@ -90,7 +93,11 @@ impl OsdRenderer {
 
         // Display persistence error if active
         if let Some((err, _)) = save_error {
-            let err_pos = screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_ERROR_OFFSET);
+            let err_pos = screen_rect.left_bottom()
+                + Vec2::new(
+                    crate::constants::OSD_MARGIN,
+                    -crate::constants::OSD_ERROR_OFFSET,
+                );
             ui.painter().text(
                 err_pos,
                 Align2::LEFT_BOTTOM,
@@ -116,7 +123,7 @@ impl OsdRenderer {
         // Use the rect provided by the parent Area/UI, NOT a hard-coded screen position.
         // This allows the HUD to be repositioned by dragging the Area.
         let hud_rect = ui.max_rect();
-        
+
         // Premium glassmorphism background
         ui.painter().add(egui::Shape::rect_filled(
             hud_rect,
@@ -135,50 +142,67 @@ impl OsdRenderer {
             ui.vertical(|ui| {
                 let display_text = state.metadata.as_deref().or(state.current_track.as_deref());
                 if let Some(text) = display_text {
-                    let short_text = if text.chars().count() > crate::constants::MUSIC_HUD_MAX_CHARS {
-                        format!("{}...", text.chars().take(crate::constants::MUSIC_HUD_TRUNCATE_LEN).collect::<String>())
+                    let short_text = if text.chars().count() > crate::constants::MUSIC_HUD_MAX_CHARS
+                    {
+                        format!(
+                            "{}...",
+                            text.chars()
+                                .take(crate::constants::MUSIC_HUD_TRUNCATE_LEN)
+                                .collect::<String>()
+                        )
                     } else {
                         text.to_string()
                     };
-                    
+
                     // Force high contrast: use accent2 but ensure it's readable against the dark hud background.
                     // In light themes, accent2 might be dark, so we brighten it or use white.
-                    ui.label(RichText::new(format!("♪ {}", short_text))
-                        .color(palette.accent2.linear_multiply(crate::constants::MUSIC_HUD_CONTRAST_BOOST).to_opaque()) // Boost contrast for dark HUD
-                        .small()
-                        .strong());
+                    ui.label(
+                        RichText::new(format!("♪ {}", short_text))
+                            .color(
+                                palette
+                                    .accent2
+                                    .linear_multiply(crate::constants::MUSIC_HUD_CONTRAST_BOOST)
+                                    .to_opaque(),
+                            ) // Boost contrast for dark HUD
+                            .small()
+                            .strong(),
+                    );
                 }
-                
+
                 ui.add_space(2.0);
 
                 // Progress Slider row
                 ui.horizontal(|ui| {
                     let mut pos = state.current_pos_ms as f32 / 1000.0;
                     let total = state.total_duration_ms as f32 / 1000.0;
-                    
-                    let cur_str = format!("{:02}:{:02}", (pos as u32)/60, (pos as u32)%60);
-                    let tot_str = format!("{:02}:{:02}", (total as u32)/60, (total as u32)%60);
-                    
+
+                    let cur_str = format!("{:02}:{:02}", (pos as u32) / 60, (pos as u32) % 60);
+                    let tot_str = format!("{:02}:{:02}", (total as u32) / 60, (total as u32) % 60);
+
                     ui.label(RichText::new(cur_str).small().color(palette.text_muted));
-                    
-                    ui.spacing_mut().slider_width = ui.available_width() - crate::constants::SLIDER_WIDTH_LABEL_OFFSET;
+
+                    ui.spacing_mut().slider_width =
+                        ui.available_width() - crate::constants::SLIDER_WIDTH_LABEL_OFFSET;
                     let resp = ui.add(
                         egui::Slider::new(&mut pos, 0.0..=total)
                             .show_value(false)
-                            .trailing_fill(true)
+                            .trailing_fill(true),
                     );
 
                     // Draw CUE Markers on the slider track
                     if state.total_duration_ms > 0 && !state.cue_markers.is_empty() {
                         let painter = ui.painter();
                         let slider_rect = resp.rect;
-                        
+
                         for (idx, &marker_ms) in state.cue_markers.iter().enumerate() {
-                            if marker_ms >= state.total_duration_ms { continue; }
-                            let ratio = (marker_ms as f32 / state.total_duration_ms as f32).clamp(0.0, 1.0);
+                            if marker_ms >= state.total_duration_ms {
+                                continue;
+                            }
+                            let ratio =
+                                (marker_ms as f32 / state.total_duration_ms as f32).clamp(0.0, 1.0);
                             let x = slider_rect.left() + ratio * slider_rect.width();
                             let center = egui::pos2(x, slider_rect.center().y);
-                            
+
                             let is_current = state.current_cue_track == Some(idx);
                             let color = if is_current {
                                 palette.accent2
@@ -186,15 +210,18 @@ impl OsdRenderer {
                                 palette.text_muted.gamma_multiply(0.6)
                             };
                             let radius = if is_current { 2.5 } else { 1.5 };
-                            
+
                             painter.circle_filled(center, radius, color);
                         }
                     }
-                    
+
                     ui.label(RichText::new(tot_str).small().color(palette.text_muted));
 
                     if resp.drag_stopped() {
-                        ui.memory_mut(|mem| mem.data.insert_temp(egui::Id::new(crate::constants::ID_PENDING_SEEK), pos));
+                        ui.memory_mut(|mem| {
+                            mem.data
+                                .insert_temp(egui::Id::new(crate::constants::ID_PENDING_SEEK), pos)
+                        });
                     }
                 });
             });
@@ -203,7 +230,12 @@ impl OsdRenderer {
         hud_rect
     }
 
-    pub fn render_loading_hint(&self, ui: &egui::Ui, screen_rect: egui::Rect, palette: &ThemePalette) {
+    pub fn render_loading_hint(
+        &self,
+        ui: &egui::Ui,
+        screen_rect: egui::Rect,
+        palette: &ThemePalette,
+    ) {
         ui.painter().text(
             screen_rect.center() - Vec2::new(0.0, 20.0),
             Align2::CENTER_BOTTOM,

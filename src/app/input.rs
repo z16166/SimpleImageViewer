@@ -1,10 +1,10 @@
-use std::time::{Duration, Instant};
-use eframe::egui::{self, Context, Key, Vec2};
-use rust_i18n::t;
 use crate::app::ImageViewerApp;
-use crate::ui::{settings as ui_settings, hud as ui_hud};
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
+use crate::ui::{hud as ui_hud, settings as ui_settings};
+use eframe::egui::{self, Context, Key, Vec2};
+use rust_i18n::t;
+use std::time::{Duration, Instant};
 
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard(&mut self, ctx: &Context) {
@@ -46,10 +46,16 @@ impl ImageViewerApp {
             if i.key_pressed(Key::Space) {
                 toggle_auto_switch = true;
             }
-            if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowDown) || i.key_pressed(Key::PageDown) {
+            if i.key_pressed(Key::ArrowRight)
+                || i.key_pressed(Key::ArrowDown)
+                || i.key_pressed(Key::PageDown)
+            {
                 nav_next = true;
             }
-            if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowUp) || i.key_pressed(Key::PageUp) {
+            if i.key_pressed(Key::ArrowLeft)
+                || i.key_pressed(Key::ArrowUp)
+                || i.key_pressed(Key::PageUp)
+            {
                 nav_prev = true;
             }
             if i.key_pressed(Key::Home) {
@@ -65,7 +71,7 @@ impl ImageViewerApp {
             // Escape: close modals or currently open settings. NEVER opens settings from main view.
             if i.key_pressed(Key::Escape) {
                 if any_modal_open || self.show_settings {
-                    toggle_settings = true; 
+                    toggle_settings = true;
                 } else if self.settings.fullscreen {
                     toggle_fullscreen = true;
                 }
@@ -142,29 +148,51 @@ impl ImageViewerApp {
             }
         });
 
-        if do_delete { self.delete_current_image(false); }
-        if do_permanent_delete { self.delete_current_image(true); }
-        if do_print_full { self.print_image(ctx, crate::print::PrintMode::FullImage); }
+        if do_delete {
+            self.delete_current_image(false);
+        }
+        if do_permanent_delete {
+            self.delete_current_image(true);
+        }
+        if do_print_full {
+            self.print_image(ctx, crate::print::PrintMode::FullImage);
+        }
 
         if !any_modal_open {
-            if do_refresh { self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default()); }
-            if nav_next { self.navigate_next(); }
-            if nav_prev { self.navigate_prev(); }
-            if nav_first { self.navigate_first(); }
-            if nav_last { self.navigate_last(); }
+            if do_refresh {
+                self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default());
+            }
+            if nav_next {
+                self.navigate_next();
+            }
+            if nav_prev {
+                self.navigate_prev();
+            }
+            if nav_first {
+                self.navigate_first();
+            }
+            if nav_last {
+                self.navigate_last();
+            }
 
             if zoom_in {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                if let Some(tm) = &mut self.tile_manager {
+                    tm.generation = self.generation;
+                    tm.pending_tiles.clear();
+                }
                 self.loader.flush_tile_queue();
             }
             if zoom_out {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                if let Some(tm) = &mut self.tile_manager {
+                    tm.generation = self.generation;
+                    tm.pending_tiles.clear();
+                }
                 self.loader.flush_tile_queue();
             }
             if zoom_reset {
@@ -172,7 +200,10 @@ impl ImageViewerApp {
                 self.pan_offset = Vec2::ZERO;
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                if let Some(tm) = &mut self.tile_manager {
+                    tm.generation = self.generation;
+                    tm.pending_tiles.clear();
+                }
                 self.loader.flush_tile_queue();
             }
         }
@@ -185,12 +216,14 @@ impl ImageViewerApp {
             }
         }
 
-        let ui_consuming_scroll = any_modal_open || self.show_settings || ctx.egui_wants_pointer_input();
+        let ui_consuming_scroll =
+            any_modal_open || self.show_settings || ctx.egui_wants_pointer_input();
         if !ui_consuming_scroll {
             if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
                 // Rotation with Alt + Mouse Wheel (steps of 90 degrees)
                 let now = ctx.input(|i| i.time);
-                if now - self.last_mouse_wheel_nav > 0.2 { // Reuse cooldown to prevent spinning
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    // Reuse cooldown to prevent spinning
                     if scroll_delta.y > 0.0 {
                         rotate_ccw = true;
                     } else if scroll_delta.y < 0.0 {
@@ -211,16 +244,20 @@ impl ImageViewerApp {
                         // d * (1 - ratio) compensates for the scale change around the cursor
                         self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
                     }
-                    
+
                     self.generation = self.generation.wrapping_add(1);
                     self.loader.set_generation(self.generation);
-                    if let Some(tm) = &mut self.tile_manager { tm.generation = self.generation; tm.pending_tiles.clear(); }
+                    if let Some(tm) = &mut self.tile_manager {
+                        tm.generation = self.generation;
+                        tm.pending_tiles.clear();
+                    }
                     self.loader.flush_tile_queue();
                 }
             } else if scroll_delta.y.abs() > 0.0 {
                 // Navigation with debounce (cooldown) to prevent rapid flipping
                 let now = ctx.input(|i| i.time);
-                if now - self.last_mouse_wheel_nav > 0.2 { // 200ms cooldown
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    // 200ms cooldown
                     if scroll_delta.y > 0.0 {
                         self.navigate_prev();
                     } else {
@@ -256,9 +293,10 @@ impl ImageViewerApp {
         }
         if toggle_goto && !self.image_files.is_empty() {
             if self.active_modal.is_none() {
-                self.active_modal = Some(ActiveModal::Goto(
-                    crate::ui::dialogs::goto::State::new(self.image_files.len(), self.current_index)
-                ));
+                self.active_modal = Some(ActiveModal::Goto(crate::ui::dialogs::goto::State::new(
+                    self.image_files.len(),
+                    self.current_index,
+                )));
             } else {
                 self.active_modal = None;
             }
@@ -268,8 +306,12 @@ impl ImageViewerApp {
         }
 
         // Apply rotation if requested (by keys OR mouse wheel)
-        if rotate_ccw { self.apply_rotation_with_tracking(false, ctx); }
-        if rotate_cw { self.apply_rotation_with_tracking(true, ctx); }
+        if rotate_ccw {
+            self.apply_rotation_with_tracking(false, ctx);
+        }
+        if rotate_cw {
+            self.apply_rotation_with_tracking(true, ctx);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -290,7 +332,6 @@ impl ImageViewerApp {
             self.navigate_next();
         }
     }
-
 
     // ------------------------------------------------------------------
     // UI: Settings panel
@@ -322,7 +363,9 @@ impl ImageViewerApp {
             }
             Some(ActiveModal::Wallpaper(state)) => {
                 let path = if !self.image_files.is_empty() {
-                    self.image_files[self.current_index].to_string_lossy().into_owned()
+                    self.image_files[self.current_index]
+                        .to_string_lossy()
+                        .into_owned()
                 } else {
                     String::new()
                 };
@@ -359,9 +402,13 @@ impl ImageViewerApp {
     }
 
     /// Execute the confirmed action from a modal dialog.
-    fn handle_modal_action(&mut self, action: crate::ui::dialogs::modal_state::ModalAction, _ctx: &egui::Context) {
-        use crate::ui::dialogs::modal_state::ModalAction;
+    fn handle_modal_action(
+        &mut self,
+        action: crate::ui::dialogs::modal_state::ModalAction,
+        _ctx: &egui::Context,
+    ) {
         use crate::ui::dialogs::confirm::ConfirmTag;
+        use crate::ui::dialogs::modal_state::ModalAction;
         match action {
             ModalAction::GotoIndex(idx) => {
                 self.navigate_to(idx);
@@ -380,7 +427,7 @@ impl ImageViewerApp {
                     }
                     self.queue_save();
                 }
-            }
+            },
             #[cfg(target_os = "windows")]
             ModalAction::ApplyFileAssoc => {
                 if let Some(ActiveModal::FileAssoc(state)) = &self.active_modal {
@@ -426,16 +473,16 @@ impl ImageViewerApp {
         if ui.button(t!("ctx.view_exif").to_string()).clicked() {
             // EXIF loading is fully encapsulated in exif::State::from_path
             self.active_modal = Some(ActiveModal::Exif(
-                crate::ui::dialogs::exif::State::from_path(path)
+                crate::ui::dialogs::exif::State::from_path(path),
             ));
             self.context_menu_pos = None;
         }
 
         if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
             // XMP loading is fully encapsulated in xmp::State::from_path
-            self.active_modal = Some(ActiveModal::Xmp(
-                crate::ui::dialogs::xmp::State::from_path(path)
-            ));
+            self.active_modal = Some(ActiveModal::Xmp(crate::ui::dialogs::xmp::State::from_path(
+                path,
+            )));
             self.context_menu_pos = None;
         }
 
@@ -445,7 +492,7 @@ impl ImageViewerApp {
             self.apply_rotation_with_tracking(false, ui.ctx());
             self.context_menu_pos = None;
         }
-        
+
         if ui.button(t!("ctx.rotate_cw").to_string()).clicked() {
             self.apply_rotation_with_tracking(true, ui.ctx());
             self.context_menu_pos = None;
@@ -479,7 +526,7 @@ impl ImageViewerApp {
         if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
             let current_wallpaper = wallpaper::get().ok();
             self.active_modal = Some(ActiveModal::Wallpaper(
-                crate::ui::dialogs::wallpaper::State::new(current_wallpaper)
+                crate::ui::dialogs::wallpaper::State::new(current_wallpaper),
             ));
             self.context_menu_pos = None;
         }
@@ -497,5 +544,4 @@ impl ImageViewerApp {
             self.context_menu_pos = None;
         }
     }
-
 }

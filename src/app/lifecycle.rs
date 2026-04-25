@@ -1,16 +1,16 @@
-use std::path::PathBuf;
-use std::time::Instant;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use eframe::egui::{self, Vec2};
 use crate::app::ImageViewerApp;
-use crate::app::{HardwareTier, compute_preload_budgets, CACHE_SIZE};
-use crate::theme::SystemThemeCache;
-use crate::ui::utils::{setup_visuals, setup_fonts, get_system_font_families};
-use crate::loader::{ImageLoader, TextureCache};
+use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
+use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
+use crate::theme::SystemThemeCache;
+use crate::ui::utils::{get_system_font_families, setup_fonts, setup_visuals};
+use eframe::egui::{self, Vec2};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 impl ImageViewerApp {
     pub fn refresh_audio_devices(&mut self) {
@@ -34,7 +34,10 @@ impl ImageViewerApp {
 
         setup_visuals(&cc.egui_ctx, &settings, &cached_palette);
         if !setup_fonts(&cc.egui_ctx, &settings) {
-            log::error!("[Core] Persisted font '{}' failed validation. Reverting for safety.", settings.font_family);
+            log::error!(
+                "[Core] Persisted font '{}' failed validation. Reverting for safety.",
+                settings.font_family
+            );
             // We don't have self yet, but we can't easily change settings.
             // However, setup_fonts will have at least loaded CJK as fallback.
         }
@@ -54,13 +57,13 @@ impl ImageViewerApp {
                     if let Err(e) = settings.save() {
                         let _ = save_error_tx.send(e);
                     }
-                    
+
                     // Throttling: give the OS and filesystem time to settle between writes.
                     // This prevents file locking conflicts on certain Windows/AV configurations.
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             });
-        
+
         let saver_handle = match saver_res {
             Ok(handle) => Some(handle),
             Err(e) => {
@@ -72,49 +75,84 @@ impl ImageViewerApp {
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
         // ── GPU Limits ───────────────────────────────────────────────────────
-        let max_texture_side_hw = cc.wgpu_render_state.as_ref()
+        let max_texture_side_hw = cc
+            .wgpu_render_state
+            .as_ref()
             .map(|s| s.adapter.limits().max_texture_dimension_2d)
             .unwrap_or(crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
-        
+
         // Use the hardware-reported limit directly. The wgpu device was already
         // created with this same adapter limit, so it is safe to upload textures
         // up to this size. No additional capping needed.
         let max_texture_side = max_texture_side_hw;
-        log::info!("Using max_texture_side: {} (hw reported: {})", max_texture_side, max_texture_side_hw);
-        
-        crate::tile_cache::MAX_TEXTURE_SIDE.store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
-        
+        log::info!(
+            "Using max_texture_side: {} (hw reported: {})",
+            max_texture_side,
+            max_texture_side_hw
+        );
+
+        crate::tile_cache::MAX_TEXTURE_SIDE
+            .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
+
         // --- Hardware Tier Detection ---
         use sysinfo::System;
         let mut sys = System::new();
         sys.refresh_memory();
         let total_ram_gb = sys.total_memory() / (1024 * 1024 * 1024);
-        
+
         let mut tier = HardwareTier::Low;
         if let Some(state) = cc.wgpu_render_state.as_ref() {
             let info = state.adapter.get_info();
             match info.device_type {
                 wgpu::DeviceType::DiscreteGpu => {
-                    tier = if total_ram_gb >= 16 { HardwareTier::High } else { HardwareTier::Medium };
+                    tier = if total_ram_gb >= 16 {
+                        HardwareTier::High
+                    } else {
+                        HardwareTier::Medium
+                    };
                 }
                 wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::VirtualGpu => {
-                    tier = if total_ram_gb >= 16 { HardwareTier::Medium } else { HardwareTier::Low };
+                    tier = if total_ram_gb >= 16 {
+                        HardwareTier::Medium
+                    } else {
+                        HardwareTier::Low
+                    };
                 }
                 _ => {}
             }
-            log::info!("Hardware Detection: Tier={:?}, GPU={:?}, RAM={}GB, Adapter={}", 
-                tier, info.device_type, total_ram_gb, info.name);
+            log::info!(
+                "Hardware Detection: Tier={:?}, GPU={:?}, RAM={}GB, Adapter={}",
+                tier,
+                info.device_type,
+                total_ram_gb,
+                info.name
+            );
         } else {
-            tier = if total_ram_gb >= 16 { HardwareTier::Medium } else { HardwareTier::Low };
-            log::info!("Hardware Detection: Tier={:?} (No WGPU), RAM={}GB", tier, total_ram_gb);
+            tier = if total_ram_gb >= 16 {
+                HardwareTier::Medium
+            } else {
+                HardwareTier::Low
+            };
+            log::info!(
+                "Hardware Detection: Tier={:?} (No WGPU), RAM={}GB",
+                tier,
+                total_ram_gb
+            );
         }
 
         let tile_quota = tier.max_tile_quota();
 
         // Apply hardware budgets to global caches
-        crate::tile_cache::MAX_TILES_BASE.store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Relaxed);
-        crate::tile_cache::TILED_THRESHOLD.store(tier.tiled_threshold_pixels(), std::sync::atomic::Ordering::Relaxed);
-        crate::loader::PREVIEW_LIMIT.store(tier.max_preview_size(), std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::MAX_TILES_BASE
+            .store(tier.gpu_cache_tiles(), std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::TILED_THRESHOLD.store(
+            tier.tiled_threshold_pixels(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::loader::PREVIEW_LIMIT.store(
+            tier.max_preview_size(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
             cache.set_max_mb(tier.cpu_cache_mb());
         }
@@ -186,7 +224,10 @@ impl ImageViewerApp {
             music_hud_drag_offset: Vec2::ZERO,
             settings,
         };
-        log::info!("[Core] RAW engine initialized: {}", crate::raw_processor::version());
+        log::info!(
+            "[Core] RAW engine initialized: {}",
+            crate::raw_processor::version()
+        );
 
         app.refresh_audio_devices();
 
@@ -209,5 +250,4 @@ impl ImageViewerApp {
     pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
     }
-
 }

@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod osd;
-pub mod utils;
-pub mod settings;
-pub mod hud;
 pub mod dialogs;
+pub mod hud;
+pub mod osd;
+pub mod settings;
+pub mod utils;

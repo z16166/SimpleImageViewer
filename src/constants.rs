@@ -41,12 +41,12 @@ pub const DEFAULT_PREVIEW_SIZE: u32 = 512;
 
 /// Standard fallback delay for animation frames (100ms).
 pub const DEFAULT_ANIMATION_DELAY_MS: u32 = 100;
-/// Minimum threshold for animation delays; values below this are often considered 
+/// Minimum threshold for animation delays; values below this are often considered
 /// broken and should use the default fallback (standard browser behavior).
 pub const MIN_ANIMATION_DELAY_THRESHOLD_MS: u32 = 10;
 
 /// Default capacity for audio file read buffers (8 MB).
-/// High capacity helps prevent stuttering on slow HDDs (like WD Green) 
+/// High capacity helps prevent stuttering on slow HDDs (like WD Green)
 /// when images are being loaded in parallel, as it reduces disk seek frequency.
 pub const AUDIO_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
@@ -78,7 +78,7 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 pub const DEFAULT_CHANNELS: u16 = 2;
 
 /// The number of samples per decoding chunk for the background audio buffer.
-/// A value of 4096 provides a good balance between memory overhead and 
+/// A value of 4096 provides a good balance between memory overhead and
 /// synchronization granularity (approx. 46ms at 44.1kHz stereo).
 pub const AUDIO_CHUNK_SIZE: usize = 4096;
 
@@ -126,4 +126,3 @@ pub const LOADING_HINT_TEXT_SIZE: f32 = 16.0;
 /// Common spacing between items in vertical layouts (e.g. dialogs).
 pub const UI_ITEM_SPACING_X: f32 = 8.0;
 pub const UI_ITEM_SPACING_Y: f32 = 6.0;
-

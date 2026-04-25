@@ -17,14 +17,14 @@
 use crate::loader::{DecodedImage, ImageData};
 use memmap2::Mmap;
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use tiff::decoder::{Decoder, DecodingResult};
-use std::collections::{HashSet, HashMap};
 use tiff::tags::Tag;
-use std::sync::Mutex;
 
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFTypeRef, TCFType};
@@ -342,7 +342,8 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
             // ========================================================
             // Path 2 (Fast): The 'Ultima' Path - Parallel Rust Stride-Reading
             // ========================================================
-            let is_giant = self.physical_width >= crate::constants::MAX_QUALITY_PREVIEW_SIZE || self.physical_height >= crate::constants::MAX_QUALITY_PREVIEW_SIZE;
+            let is_giant = self.physical_width >= crate::constants::MAX_QUALITY_PREVIEW_SIZE
+                || self.physical_height >= crate::constants::MAX_QUALITY_PREVIEW_SIZE;
             if is_giant && best_index == 0 {
                 log::info!(
                     "MacOS ImageIO: Giant single-layer detected. Prioritizing Path 2 (Rayon Stride-Reader)..."
@@ -460,7 +461,7 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
 
         // 1. Group processing by chunk to minimize Mutex locking overhead (CRITICAL PERF FIX)
         let tiles_across = (self.physical_width + self.chunk_w - 1) / self.chunk_w;
-        
+
         // Find which chunks intersect with this tile
         let start_chunk_row = y / self.chunk_h;
         let end_chunk_row = (y + h - 1) / self.chunk_h;
@@ -470,37 +471,51 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
         for crow in start_chunk_row..=end_chunk_row {
             for ccol in start_chunk_col..=end_chunk_col {
                 let chunk_idx = crow * tiles_across + ccol;
-                
+
                 // Get or decode the strip/tile (one lock per chunk instead of per pixel!)
                 if let Some(data) = self.get_or_decode_chunk(chunk_idx) {
                     let chunk_y_start = crow * self.chunk_h;
                     let chunk_x_start = ccol * self.chunk_w;
-                    
+
                     // Calculate intersection between tile and this chunk
                     let intersect_y_start = y.max(chunk_y_start);
-                    let intersect_y_end = (y + h).min(chunk_y_start + self.chunk_h).min(self.logical_height);
+                    let intersect_y_end = (y + h)
+                        .min(chunk_y_start + self.chunk_h)
+                        .min(self.logical_height);
                     let intersect_x_start = x.max(chunk_x_start);
-                    let intersect_x_end = (x + w).min(chunk_x_start + self.chunk_w).min(self.logical_width);
+                    let intersect_x_end = (x + w)
+                        .min(chunk_x_start + self.chunk_w)
+                        .min(self.logical_width);
 
-                    if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end {
+                    if intersect_y_start >= intersect_y_end || intersect_x_start >= intersect_x_end
+                    {
                         continue;
                     }
 
                     for py in intersect_y_start..intersect_y_end {
                         let y_in_chunk = py - chunk_y_start;
                         let ty = py - y;
-                        
-                        let src_row_start = (y_in_chunk * self.chunk_w + (intersect_x_start - chunk_x_start)) as usize * 4;
+
+                        let src_row_start = (y_in_chunk * self.chunk_w
+                            + (intersect_x_start - chunk_x_start))
+                            as usize
+                            * 4;
                         let dst_row_start = (ty * w + (intersect_x_start - x)) as usize * 4;
                         let copy_px_count = intersect_x_end - intersect_x_start;
                         let copy_bytes = copy_px_count as usize * 4;
 
-                        if src_row_start + copy_bytes <= data.len() && dst_row_start + copy_bytes <= rgba.len() {
-                            rgba[dst_row_start..dst_row_start + copy_bytes].copy_from_slice(&data[src_row_start..src_row_start + copy_bytes]);
+                        if src_row_start + copy_bytes <= data.len()
+                            && dst_row_start + copy_bytes <= rgba.len()
+                        {
+                            rgba[dst_row_start..dst_row_start + copy_bytes]
+                                .copy_from_slice(&data[src_row_start..src_row_start + copy_bytes]);
                         }
                     }
                 } else {
-                    log::warn!("TiffStripCachingSource: Failed to decode chunk {}. Returning partial white tile.", chunk_idx);
+                    log::warn!(
+                        "TiffStripCachingSource: Failed to decode chunk {}. Returning partial white tile.",
+                        chunk_idx
+                    );
                 }
             }
         }
@@ -561,10 +576,12 @@ impl TiffStripCachingSource {
         let pw = self.physical_width;
         let ph = self.physical_height;
         let start_y = chunk_idx * self.chunk_h;
-        if start_y >= ph { return None; }
-        
+        if start_y >= ph {
+            return None;
+        }
+
         let h = self.chunk_h.min(ph - start_y);
-        
+
         // Render the strip by drawing the full CGImage into a small bitmap context
         // with a translation offset. This is the same proven approach used by
         // ImageIoTiledSource::extract_tile, which correctly handles CoreGraphics'
@@ -949,7 +966,8 @@ unsafe fn render_cgimage_to_rgba_sync(
 }
 
 pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
@@ -1055,12 +1073,19 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
         let is_tiff = ext == "tif" || ext == "tiff";
         let mut is_stripped = false;
         if is_tiff {
-            let props_ref = CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
+            let props_ref = CGImageSourceCopyPropertiesAtIndex(
+                source.as_concrete_TypeRef(),
+                0,
+                std::ptr::null(),
+            );
             if !props_ref.is_null() {
-                let props = CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
+                let props =
+                    CFDictionary::<CFString, CFTypeRef>::wrap_under_create_rule(props_ref as _);
                 let tiff_key = CFString::from_static_string("{TIFF}");
                 if let Some(tiff_props_ref) = props.find(&tiff_key) {
-                    let tiff_props = CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(*tiff_props_ref as _);
+                    let tiff_props = CFDictionary::<CFString, CFTypeRef>::wrap_under_get_rule(
+                        *tiff_props_ref as _,
+                    );
                     let tw_key = CFString::from_static_string("TileWidth");
                     let th_key = CFString::from_static_string("TileHeight");
                     if !tiff_props.contains_key(&tw_key) || !tiff_props.contains_key(&th_key) {
@@ -1071,13 +1096,20 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
         }
 
         if is_tiff && is_stripped && orientation == 1 {
-            log::info!("MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}). Using TiffStripCachingSource.", physical_width, physical_height);
-            
+            log::info!(
+                "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}). Using TiffStripCachingSource.",
+                physical_width,
+                physical_height
+            );
+
             // Get RowsPerStrip or fallback to a reasonable chunk size (e.g., 256 for optimal scrolling)
             let mut chunk_h = 256;
             let cursor = Cursor::new(&mmap[..]);
             if let Ok(mut decoder) = Decoder::new(cursor) {
-                chunk_h = decoder.get_tag_u32(Tag::RowsPerStrip).unwrap_or(256).min(physical_height);
+                chunk_h = decoder
+                    .get_tag_u32(Tag::RowsPerStrip)
+                    .unwrap_or(256)
+                    .min(physical_height);
             }
 
             let options_decode = CFDictionary::from_CFType_pairs(&[(

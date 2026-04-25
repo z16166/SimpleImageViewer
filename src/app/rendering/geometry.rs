@@ -1,6 +1,6 @@
-use eframe::egui::{Context, Rect, Vec2};
 use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
+use eframe::egui::{Context, Rect, Vec2};
 
 impl ImageViewerApp {
     /// Calculate current absolute display scale relative to image pixels (logical scale).
@@ -8,8 +8,7 @@ impl ImageViewerApp {
         match self.settings.scale_mode {
             ScaleMode::FitToWindow => {
                 if img_size.x > 0.1 && img_size.y > 0.1 {
-                    (screen_rect.width() / img_size.x)
-                        .min(screen_rect.height() / img_size.y)
+                    (screen_rect.width() / img_size.x).min(screen_rect.height() / img_size.y)
                         * self.zoom_factor
                 } else {
                     self.zoom_factor
@@ -26,10 +25,7 @@ impl ImageViewerApp {
             ScaleMode::FitToWindow => {
                 let disp = img_size * scale;
                 let off = (screen_rect.size() - disp) * 0.5;
-                Rect::from_min_size(
-                    screen_rect.min + off + self.pan_offset,
-                    disp,
-                )
+                Rect::from_min_size(screen_rect.min + off + self.pan_offset, disp)
             }
             ScaleMode::OriginalSize => {
                 // Divide by pixels_per_point so 1 image pixel = 1 physical screen pixel
@@ -44,17 +40,27 @@ impl ImageViewerApp {
 
     /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.
     pub(crate) fn apply_rotation_with_tracking(&mut self, clockwise: bool, ctx: &Context) {
-        if self.image_files.is_empty() { return; }
+        if self.image_files.is_empty() {
+            return;
+        }
 
         // 1. Get original image resolution
-        let res = if let Some(r) = self.current_image_res { r } else { return; };
+        let res = if let Some(r) = self.current_image_res {
+            r
+        } else {
+            return;
+        };
         let img_size = Vec2::new(res.0 as f32, res.1 as f32);
         let screen_rect = ctx.input(|i| i.content_rect());
 
         // 2. Calculate current scale
         let old_rotation = self.current_rotation;
         let old_needs_swap = old_rotation % 2 != 0;
-        let old_rotated_size = if old_needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+        let old_rotated_size = if old_needs_swap {
+            Vec2::new(img_size.y, img_size.x)
+        } else {
+            img_size
+        };
         let old_scale = self.calculate_effective_scale(old_rotated_size, screen_rect);
 
         // 3. Update rotation state
@@ -67,7 +73,11 @@ impl ImageViewerApp {
         // 4. Calculate new scale (FitToWindow scale might change due to aspect ratio swap)
         let new_rotation = self.current_rotation;
         let new_needs_swap = new_rotation % 2 != 0;
-        let new_rotated_size = if new_needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+        let new_rotated_size = if new_needs_swap {
+            Vec2::new(img_size.y, img_size.x)
+        } else {
+            img_size
+        };
         let new_scale = self.calculate_effective_scale(new_rotated_size, screen_rect);
 
         // 5. Transform pan_offset to maintain center alignment.

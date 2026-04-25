@@ -14,8 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::constants::{
+    AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, AUDIO_RECOVERY_COOLDOWN,
+    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE,
+};
 use crate::scanner::is_offline;
-use crate::constants::{AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, AUDIO_RECOVERY_COOLDOWN, DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE};
 use crossbeam_channel::Sender;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,9 +28,9 @@ use std::time::{Duration, Instant};
 
 use lofty::prelude::*;
 use lofty::read_from_path;
-use std::num::NonZero;
 use rodio::Source;
 use std::ffi::c_void;
+use std::num::NonZero;
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 
@@ -36,16 +39,16 @@ use monkey_sdk_sys::*;
 
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::conv::FromSample;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
-use symphonia::core::conv::FromSample;
 
 // --- Audio Normalization Constants ---
-const NORM_I8: f32  = 128.0;
+const NORM_I8: f32 = 128.0;
 const NORM_I16: f32 = 32768.0;
 const NORM_I24: f32 = 8388608.0;
 const NORM_I32: f32 = 2147483648.0;
@@ -63,9 +66,13 @@ unsafe fn wasapi_monitor_init() {}
 #[cfg(not(windows))]
 unsafe fn wasapi_monitor_uninit() {}
 #[cfg(not(windows))]
-unsafe fn wasapi_is_device_available() -> bool { true }
+unsafe fn wasapi_is_device_available() -> bool {
+    true
+}
 #[cfg(not(windows))]
-unsafe fn wasapi_poll_device_lost() -> bool { false }
+unsafe fn wasapi_poll_device_lost() -> bool {
+    false
+}
 
 #[allow(dead_code)]
 pub enum AudioCommand {
@@ -77,7 +84,7 @@ pub enum AudioCommand {
     PrevFile,
     NextTrack,
     PrevTrack,
-    Stop,     // Clears playlist and stops playback, but keeps thread alive
+    Stop, // Clears playlist and stops playback, but keeps thread alive
     Seek(Duration),
     SetDevice(Option<String>),
     Shutdown, // Terminates the thread
@@ -125,12 +132,21 @@ impl AudioPlayer {
         }
     }
 
-
-
-    pub fn start_at(&mut self, files: Vec<PathBuf>, start_index: Option<usize>, start_track_index: Option<usize>, paused: bool) {
+    pub fn start_at(
+        &mut self,
+        files: Vec<PathBuf>,
+        start_index: Option<usize>,
+        start_track_index: Option<usize>,
+        paused: bool,
+    ) {
         self.ensure_thread_started();
         if let Some(tx) = &self.cmd_tx {
-            let _ = tx.send(AudioCommand::SetPlaylist(files, start_index, start_track_index, paused));
+            let _ = tx.send(AudioCommand::SetPlaylist(
+                files,
+                start_index,
+                start_track_index,
+                paused,
+            ));
         }
     }
 
@@ -225,11 +241,29 @@ impl AudioPlayer {
             let res = std::thread::Builder::new()
                 .name("audio-player".to_string())
                 .spawn(move || {
-                    run_audio_loop(rx, shutdown_flag, err_slot, track_slot, path_slot, meta_slot, tracks_flag, cue_track_slot, needs_restart, cue_markers_slot, pos_ms, dur_ms, dev_slot)
+                    run_audio_loop(
+                        rx,
+                        shutdown_flag,
+                        err_slot,
+                        track_slot,
+                        path_slot,
+                        meta_slot,
+                        tracks_flag,
+                        cue_track_slot,
+                        needs_restart,
+                        cue_markers_slot,
+                        pos_ms,
+                        dur_ms,
+                        dev_slot,
+                    )
                 });
             match res {
-                Ok(handle) => { self.thread_handle = Some(handle); }
-                Err(e) => { log::error!("[Audio] Failed to spawn audio thread: {}", e); }
+                Ok(handle) => {
+                    self.thread_handle = Some(handle);
+                }
+                Err(e) => {
+                    log::error!("[Audio] Failed to spawn audio thread: {}", e);
+                }
             }
         }
     }
@@ -237,7 +271,6 @@ impl AudioPlayer {
     pub fn take_needs_restart(&self) -> bool {
         self.needs_restart.swap(false, Ordering::Relaxed)
     }
-
 
     pub fn get_pos_ms(&self) -> u64 {
         self.pos_ms.load(Ordering::Relaxed)
@@ -254,7 +287,6 @@ impl AudioPlayer {
     pub fn get_cue_markers(&self) -> Vec<u64> {
         self.cue_markers.lock().unwrap().clone()
     }
-
 
     pub fn seek(&self, pos: Duration) {
         if let Some(tx) = &self.cmd_tx {
@@ -308,7 +340,12 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
     fn is_music(p: &Path) -> bool {
         p.extension()
             .and_then(|e| e.to_str())
-            .map(|e| matches!(e.to_lowercase().as_str(), "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape"))
+            .map(|e| {
+                matches!(
+                    e.to_lowercase().as_str(),
+                    "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape"
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -440,13 +477,21 @@ fn parse_cue_file(cue_path: &Path) -> Option<CueSheet> {
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with("PERFORMER") && current_track.is_none() {
-            album_performer = line.trim_start_matches("PERFORMER").trim().trim_matches('"').to_string();
+            album_performer = line
+                .trim_start_matches("PERFORMER")
+                .trim()
+                .trim_matches('"')
+                .to_string();
         } else if line.starts_with("TRACK") {
             if let Some(t) = current_track.take() {
                 tracks.push(t);
             }
-            let Some(num_str) = line.split_whitespace().nth(1) else { continue };
-            let Ok(num) = num_str.parse::<u32>() else { continue };
+            let Some(num_str) = line.split_whitespace().nth(1) else {
+                continue;
+            };
+            let Ok(num) = num_str.parse::<u32>() else {
+                continue;
+            };
             current_track = Some(CueTrack {
                 number: num,
                 title: format!("Track {num}"),
@@ -455,9 +500,17 @@ fn parse_cue_file(cue_path: &Path) -> Option<CueSheet> {
             });
         } else if let Some(ref mut t) = current_track {
             if line.starts_with("TITLE") {
-                t.title = line.trim_start_matches("TITLE").trim().trim_matches('"').to_string();
+                t.title = line
+                    .trim_start_matches("TITLE")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
             } else if line.starts_with("PERFORMER") {
-                t.performer = line.trim_start_matches("PERFORMER").trim().trim_matches('"').to_string();
+                t.performer = line
+                    .trim_start_matches("PERFORMER")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
             } else if line.starts_with("INDEX 01") {
                 let time_str = line.trim_start_matches("INDEX 01").trim();
                 if let Some(d) = parse_cue_time(time_str) {
@@ -484,13 +537,17 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
         return parse_cue_file(&cue_path);
     }
 
-    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+    if shutdown_flag.load(Ordering::Relaxed) {
+        return None;
+    }
 
     // 2. Pattern replacement (e.g. (APE).ape -> (CUE).cue)
     if let Some(filename) = audio_path.file_name().and_then(|n| n.to_str()) {
         if filename.contains("(APE)") {
             let new_filename = filename.replace("(APE)", "(CUE)");
-            let alt_cue_path = audio_path.with_file_name(new_filename).with_extension("cue");
+            let alt_cue_path = audio_path
+                .with_file_name(new_filename)
+                .with_extension("cue");
             if alt_cue_path.exists() {
                 log::debug!("Found CUE by pattern replacement: {:?}", alt_cue_path);
                 return parse_cue_file(&alt_cue_path);
@@ -498,16 +555,24 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
         }
     }
 
-    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+    if shutdown_flag.load(Ordering::Relaxed) {
+        return None;
+    }
 
     // 3. Directory scan and fuzzy matching
     if let Some(parent) = audio_path.parent() {
         if let Ok(entries) = fs::read_dir(parent) {
             let mut cue_files = Vec::new();
             for entry in entries.flatten() {
-                if shutdown_flag.load(Ordering::Relaxed) { return None; }
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    return None;
+                }
                 let p = entry.path();
-                if p.is_file() && p.extension().map(|e| e.to_string_lossy().to_lowercase() == "cue").unwrap_or(false) {
+                if p.is_file()
+                    && p.extension()
+                        .map(|e| e.to_string_lossy().to_lowercase() == "cue")
+                        .unwrap_or(false)
+                {
                     cue_files.push(p);
                 }
             }
@@ -516,19 +581,41 @@ fn load_cue(audio_path: &Path, shutdown_flag: &AtomicBool) -> Option<CueSheet> {
                 log::debug!("Using the only CUE file in directory: {:?}", cue_files[0]);
                 return parse_cue_file(&cue_files[0]);
             }
-            
+
             if !cue_files.is_empty() {
-                let audio_stem = audio_path.file_stem().and_then(|s| s.to_str())?.to_lowercase();
+                let audio_stem = audio_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())?
+                    .to_lowercase();
                 // Remove common suffixes to increase matching success rate
-                let clean_audio = audio_stem.replace("(ape)", "").replace("(cue)", "").replace(" ", "").replace(".", "").replace("-", "");
-                
+                let clean_audio = audio_stem
+                    .replace("(ape)", "")
+                    .replace("(cue)", "")
+                    .replace(" ", "")
+                    .replace(".", "")
+                    .replace("-", "");
+
                 for cue_p in cue_files {
-                    if shutdown_flag.load(Ordering::Relaxed) { return None; }
+                    if shutdown_flag.load(Ordering::Relaxed) {
+                        return None;
+                    }
                     if let Some(cue_stem) = cue_p.file_stem().and_then(|s| s.to_str()) {
                         let cue_stem_lower = cue_stem.to_lowercase();
-                        let clean_cue = cue_stem_lower.replace("(ape)", "").replace("(cue)", "").replace(" ", "").replace(".", "").replace("-", "");
-                        if clean_audio == clean_cue || clean_audio.contains(&clean_cue) || clean_cue.contains(&clean_audio) {
-                            log::debug!("Found CUE by fuzzy match: {:?} -> {:?}", audio_path.file_name(), cue_p.file_name());
+                        let clean_cue = cue_stem_lower
+                            .replace("(ape)", "")
+                            .replace("(cue)", "")
+                            .replace(" ", "")
+                            .replace(".", "")
+                            .replace("-", "");
+                        if clean_audio == clean_cue
+                            || clean_audio.contains(&clean_cue)
+                            || clean_cue.contains(&clean_audio)
+                        {
+                            log::debug!(
+                                "Found CUE by fuzzy match: {:?} -> {:?}",
+                                audio_path.file_name(),
+                                cue_p.file_name()
+                            );
                             return parse_cue_file(&cue_p);
                         }
                     }
@@ -560,7 +647,11 @@ struct ApeSource {
 unsafe impl Send for ApeSource {}
 
 impl ApeSource {
-    pub fn new_with_offset(path: &Path, shutdown_flag: Arc<AtomicBool>, offset: Duration) -> Option<Self> {
+    pub fn new_with_offset(
+        path: &Path,
+        shutdown_flag: Arc<AtomicBool>,
+        offset: Duration,
+    ) -> Option<Self> {
         let decoder_ptr = {
             #[cfg(target_os = "windows")]
             {
@@ -571,7 +662,6 @@ impl ApeSource {
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-
                 // On Linux/macOS, str_utfn is wchar_t which is 32-bit (UTF-32)
                 let s = path.to_string_lossy();
                 let mut wide_path: Vec<u32> = s.chars().map(|c| c as u32).collect();
@@ -587,7 +677,10 @@ impl ApeSource {
         };
 
         if decoder_ptr.is_null() {
-            log::error!("[AUDIO] Native Monkey's Audio SDK failed to open: {:?}", path.file_name());
+            log::error!(
+                "[AUDIO] Native Monkey's Audio SDK failed to open: {:?}",
+                path.file_name()
+            );
             return None;
         }
 
@@ -596,14 +689,31 @@ impl ApeSource {
         let mut channels: i32 = 0;
         let mut total_blocks: i64 = 0;
 
-        if unsafe { monkey_decoder_get_info(decoder_ptr, &mut sample_rate, &mut bits_per_sample, &mut channels, &mut total_blocks) } != 0 {
-            log::error!("[AUDIO] Native Monkey's Audio SDK failed to get info: {:?}", path.file_name());
+        if unsafe {
+            monkey_decoder_get_info(
+                decoder_ptr,
+                &mut sample_rate,
+                &mut bits_per_sample,
+                &mut channels,
+                &mut total_blocks,
+            )
+        } != 0
+        {
+            log::error!(
+                "[AUDIO] Native Monkey's Audio SDK failed to get info: {:?}",
+                path.file_name()
+            );
             unsafe { monkey_decoder_close(decoder_ptr) };
             return None;
         }
 
-        log::info!("[AUDIO] Native APE Info: Rate={}, Bits={}, Chan={}, Blocks={}", 
-            sample_rate, bits_per_sample, channels, total_blocks);
+        log::info!(
+            "[AUDIO] Native APE Info: Rate={}, Bits={}, Chan={}, Blocks={}",
+            sample_rate,
+            bits_per_sample,
+            channels,
+            total_blocks
+        );
 
         let mut source = Self {
             decoder: decoder_ptr,
@@ -623,7 +733,11 @@ impl ApeSource {
             if unsafe { monkey_decoder_seek(decoder_ptr, target_block) } == 0 {
                 source.current_block = target_block;
             } else {
-                log::warn!("[AUDIO] Native APE seek failed to block {} for {:?}", target_block, path.file_name());
+                log::warn!(
+                    "[AUDIO] Native APE seek failed to block {} for {:?}",
+                    target_block,
+                    path.file_name()
+                );
             }
         }
 
@@ -642,11 +756,19 @@ impl ApeSource {
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         let ret = unsafe {
-            monkey_decoder_decode_blocks(self.decoder, raw_buffer.as_mut_ptr(), BLOCKS_TO_DECODE, &mut blocks_retrieved)
+            monkey_decoder_decode_blocks(
+                self.decoder,
+                raw_buffer.as_mut_ptr(),
+                BLOCKS_TO_DECODE,
+                &mut blocks_retrieved,
+            )
         };
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-        let ret = { let _ = raw_buffer; -1 };
+        let ret = {
+            let _ = raw_buffer;
+            -1
+        };
 
         if ret != 0 || blocks_retrieved == 0 {
             return false;
@@ -658,16 +780,25 @@ impl ApeSource {
 
         let bits = self.bits_per_sample;
         let bytes_per_sample = (bits / 8) as usize;
-        
-        for chunk in raw_buffer[..blocks_retrieved as usize * bytes_per_block].chunks_exact(bytes_per_sample) {
+
+        for chunk in
+            raw_buffer[..blocks_retrieved as usize * bytes_per_block].chunks_exact(bytes_per_sample)
+        {
             let sample = match bits {
                 8 => (chunk[0] as i8 as f32) / NORM_I8,
                 16 => (i16::from_le_bytes([chunk[0], chunk[1]]) as f32) / NORM_I16,
                 24 => {
-                    let val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 }]);
+                    let val = i32::from_le_bytes([
+                        chunk[0],
+                        chunk[1],
+                        chunk[2],
+                        if chunk[2] & 0x80 != 0 { 0xFF } else { 0x00 },
+                    ]);
                     val as f32 / NORM_I24
-                },
-                32 => (i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32) / NORM_I32,
+                }
+                32 => {
+                    (i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f32) / NORM_I32
+                }
                 _ => 0.0,
             };
             self.buffer.push(sample);
@@ -717,7 +848,9 @@ impl rodio::Source for ApeSource {
 
     fn total_duration(&self) -> Option<Duration> {
         if self.sample_rate > 0 {
-            Some(Duration::from_secs_f64(self.total_blocks as f64 / self.sample_rate as f64))
+            Some(Duration::from_secs_f64(
+                self.total_blocks as f64 / self.sample_rate as f64,
+            ))
         } else {
             None
         }
@@ -756,18 +889,25 @@ impl SymphoniaSource {
         let probed = symphonia::default::get_probe()
             .format(&hint, mss, &format_opts, &metadata_opts)
             .ok()?;
-            
+
         let mut reader = probed.format;
 
         let track = reader
             .tracks()
             .iter()
             .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)?;
-            
+
         let track_id = track.id;
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE);
-        let channels = track.codec_params.channels.map(|c| c.count() as u16).unwrap_or(DEFAULT_CHANNELS);
-        
+        let sample_rate = track
+            .codec_params
+            .sample_rate
+            .unwrap_or(DEFAULT_SAMPLE_RATE);
+        let channels = track
+            .codec_params
+            .channels
+            .map(|c| c.count() as u16)
+            .unwrap_or(DEFAULT_CHANNELS);
+
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &decoder_opts)
             .ok()?;
@@ -820,18 +960,38 @@ impl SymphoniaSource {
                 Ok(decoded) => {
                     self.buffer.clear();
                     self.buffer_pos = 0;
-                    
+
                     match decoded {
-                        AudioBufferRef::F32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::U8(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::U16(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::U24(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::U32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::S8(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::S16(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::S24(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::S32(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
-                        AudioBufferRef::F64(ref buf) => Self::push_interleaved_to_vec(&mut self.buffer, buf),
+                        AudioBufferRef::F32(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::U8(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::U16(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::U24(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::U32(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::S8(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::S16(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::S24(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::S32(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
+                        AudioBufferRef::F64(ref buf) => {
+                            Self::push_interleaved_to_vec(&mut self.buffer, buf)
+                        }
                     }
                     return true;
                 }
@@ -842,12 +1002,16 @@ impl SymphoniaSource {
         }
     }
 
-    fn push_interleaved_to_vec<S: symphonia::core::sample::Sample>(target: &mut Vec<f32>, buf: &AudioBuffer<S>) 
-    where f32: symphonia::core::conv::FromSample<S> {
+    fn push_interleaved_to_vec<S: symphonia::core::sample::Sample>(
+        target: &mut Vec<f32>,
+        buf: &AudioBuffer<S>,
+    ) where
+        f32: symphonia::core::conv::FromSample<S>,
+    {
         let channels = buf.spec().channels.count();
         let frames = buf.frames();
         target.reserve(frames * channels);
-        
+
         for i in 0..frames {
             for c in 0..channels {
                 let sample = buf.chan(c)[i];
@@ -869,8 +1033,9 @@ struct BufferedSource {
 }
 
 impl BufferedSource {
-    pub fn new<S>(source: S, global_shutdown: Arc<AtomicBool>) -> Self 
-    where S: rodio::Source<Item = f32> + Send + 'static 
+    pub fn new<S>(source: S, global_shutdown: Arc<AtomicBool>) -> Self
+    where
+        S: rodio::Source<Item = f32> + Send + 'static,
     {
         let sample_rate = source.sample_rate().get();
         let channels = source.channels().get();
@@ -886,10 +1051,12 @@ impl BufferedSource {
             .spawn(move || {
                 let mut source = source;
                 let mut chunk = Vec::with_capacity(AUDIO_CHUNK_SIZE);
-                
+
                 loop {
                     // Stop if either local source is dropped OR global app is shutting down
-                    if thread_local_shutdown.load(Ordering::Relaxed) || thread_global_shutdown.load(Ordering::Relaxed) {
+                    if thread_local_shutdown.load(Ordering::Relaxed)
+                        || thread_global_shutdown.load(Ordering::Relaxed)
+                    {
                         break;
                     }
 
@@ -929,7 +1096,6 @@ impl BufferedSource {
             local_shutdown,
         }
     }
-
 }
 
 impl Iterator for BufferedSource {
@@ -952,7 +1118,7 @@ impl Iterator for BufferedSource {
                 }
             }
         }
-        
+
         let sample = *self.current_chunk.get(self.current_pos).unwrap_or(&0.0);
         self.current_pos += 1;
         Some(sample)
@@ -965,11 +1131,13 @@ impl rodio::Source for BufferedSource {
     }
 
     fn channels(&self) -> std::num::NonZero<u16> {
-        std::num::NonZero::new(self.channels).unwrap_or(std::num::NonZero::new(DEFAULT_CHANNELS).unwrap())
+        std::num::NonZero::new(self.channels)
+            .unwrap_or(std::num::NonZero::new(DEFAULT_CHANNELS).unwrap())
     }
 
     fn sample_rate(&self) -> std::num::NonZero<u32> {
-        std::num::NonZero::new(self.sample_rate).unwrap_or(std::num::NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
+        std::num::NonZero::new(self.sample_rate)
+            .unwrap_or(std::num::NonZero::new(DEFAULT_SAMPLE_RATE).unwrap())
     }
 
     fn total_duration(&self) -> Option<Duration> {
@@ -1019,7 +1187,9 @@ impl rodio::Source for SymphoniaSource {
 
 fn get_file_metadata(path: &Path) -> Option<String> {
     let tagged_file = read_from_path(path).ok()?;
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())?;
 
     let title = tag.title()?;
     let artist = tag.artist()?;
@@ -1046,13 +1216,21 @@ fn create_source(
     if is_ape {
         let source = ApeSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset);
         if source.is_none() {
-            log::error!("[AUDIO] Failed to create native ApeSource for {:?}", path.file_name());
+            log::error!(
+                "[AUDIO] Failed to create native ApeSource for {:?}",
+                path.file_name()
+            );
         }
-        source.map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
+        source.map(|s| {
+            Box::new(BufferedSource::new(s, shutdown_flag))
+                as Box<dyn rodio::Source<Item = f32> + Send>
+        })
     } else {
         // Use our high-performance SymphoniaSource for all other formats
-        SymphoniaSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset)
-            .map(|s| Box::new(BufferedSource::new(s, shutdown_flag)) as Box<dyn rodio::Source<Item = f32> + Send>)
+        SymphoniaSource::new_with_offset(path, Arc::clone(&shutdown_flag), offset).map(|s| {
+            Box::new(BufferedSource::new(s, shutdown_flag))
+                as Box<dyn rodio::Source<Item = f32> + Send>
+        })
     }
 }
 
@@ -1076,36 +1254,55 @@ fn run_audio_loop(
     let mut last_backend_attempt: Option<Instant> = None;
 
     // Initialize the WASAPI session listener (Windows only)
-    unsafe { wasapi_monitor_init(); }
+    unsafe {
+        wasapi_monitor_init();
+    }
 
     macro_rules! ensure_backend {
         ($v:expr, $p:expr) => {{
             let mut res = true;
             if backend_sink.is_none() || backend_player.is_none() {
-                let can_retry = last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
+                let can_retry =
+                    last_backend_attempt.map_or(true, |l| l.elapsed() >= AUDIO_RECOVERY_COOLDOWN);
                 if can_retry {
                     last_backend_attempt = Some(Instant::now());
 
                     if !unsafe { wasapi_is_device_available() } {
-                        log::debug!("[RECOVERY] ensure_backend: Hardware is busy, skipping attempt");
+                        log::debug!(
+                            "[RECOVERY] ensure_backend: Hardware is busy, skipping attempt"
+                        );
                         res = false;
                     } else {
                         // Support custom device selection
                         let selected_device = device_slot.lock().unwrap().clone();
                         let sink_result = if let Some(ref name) = selected_device {
-                             use ::rodio::cpal::traits::{HostTrait, DeviceTrait};
-                             ::rodio::cpal::default_host().output_devices()
+                            use ::rodio::cpal::traits::{DeviceTrait, HostTrait};
+                            ::rodio::cpal::default_host()
+                                .output_devices()
                                 .ok()
-                                .and_then(|mut ds| ds.find(|d| d.description().ok().map(|desc| {
-                                     let n = desc.name();
-                                     if let Some(drv) = desc.driver() {
-                                         format!("{} ({})", n, drv)
-                                     } else {
-                                         n.to_string()
-                                     }
-                                 }).as_ref() == Some(name)))
-                                .map(|d| rodio::DeviceSinkBuilder::from_device(d).and_then(|b| b.open_stream()))
-                                .unwrap_or_else(|| Ok(rodio::DeviceSinkBuilder::open_default_sink()?))
+                                .and_then(|mut ds| {
+                                    ds.find(|d| {
+                                        d.description()
+                                            .ok()
+                                            .map(|desc| {
+                                                let n = desc.name();
+                                                if let Some(drv) = desc.driver() {
+                                                    format!("{} ({})", n, drv)
+                                                } else {
+                                                    n.to_string()
+                                                }
+                                            })
+                                            .as_ref()
+                                            == Some(name)
+                                    })
+                                })
+                                .map(|d| {
+                                    rodio::DeviceSinkBuilder::from_device(d)
+                                        .and_then(|b| b.open_stream())
+                                })
+                                .unwrap_or_else(|| {
+                                    Ok(rodio::DeviceSinkBuilder::open_default_sink()?)
+                                })
                         } else {
                             rodio::DeviceSinkBuilder::open_default_sink()
                         };
@@ -1114,10 +1311,16 @@ fn run_audio_loop(
                             Ok(sink) => {
                                 let p = rodio::Player::connect_new(sink.mixer());
                                 p.set_volume($v);
-                                if $p { p.pause(); } else { p.play(); }
+                                if $p {
+                                    p.pause();
+                                } else {
+                                    p.play();
+                                }
                                 backend_sink = Some(sink);
                                 backend_player = Some(p);
-                                log::debug!("[RECOVERY] ensure_backend: device opened successfully");
+                                log::debug!(
+                                    "[RECOVERY] ensure_backend: device opened successfully"
+                                );
                                 res = true;
                             }
                             Err(e) => {
@@ -1151,7 +1354,11 @@ fn run_audio_loop(
     let mut pending_start_track_idx: Option<usize> = None;
 
     loop {
-        let timeout = if !stopped && !paused { Duration::from_millis(100) } else { Duration::from_secs(1) };
+        let timeout = if !stopped && !paused {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(1)
+        };
         let cmd = rx.recv_timeout(timeout);
 
         match cmd {
@@ -1160,7 +1367,9 @@ fn run_audio_loop(
                 backend_sink.take();
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
-                unsafe { wasapi_monitor_uninit(); }
+                unsafe {
+                    wasapi_monitor_uninit();
+                }
                 return;
             }
             Ok(AudioCommand::Stop) => {
@@ -1194,14 +1403,24 @@ fn run_audio_loop(
                     let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
                     backend_player = None;
                     backend_sink = None;
-                    if current_track_idx > 0 { current_track_idx -= 1; }
+                    if current_track_idx > 0 {
+                        current_track_idx -= 1;
+                    }
                     let path = playlist[current_track_idx % playlist.len()].clone();
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                        if let Some(source) =
+                            create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos)
+                        {
                             if ensure_backend!(current_volume, paused) {
                                 if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
-                                    dur_ms.store(source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0), Ordering::Relaxed);
+                                    dur_ms.store(
+                                        source
+                                            .total_duration()
+                                            .map(|d| d.as_millis() as u64)
+                                            .unwrap_or(0),
+                                        Ordering::Relaxed,
+                                    );
                                 }
                                 if let Some(ref p) = backend_player {
                                     p.append(source);
@@ -1225,7 +1444,9 @@ fn run_audio_loop(
                     let path = playlist[path_idx].clone();
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), pos) {
+                        if let Some(source) =
+                            create_source(&path, reader, Arc::clone(&shutdown_flag), pos)
+                        {
                             // Ensure backend exists but DON'T let it restart the sink if unnecessary
                             if ensure_backend!(current_volume, paused) {
                                 if let Some(ref p) = backend_player {
@@ -1233,7 +1454,10 @@ fn run_audio_loop(
                                     // This prevents the player from being momentarily empty,
                                     // which would trigger false "end of playlist" detection.
                                     p.clear();
-                                    let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                                    let total_dur = source
+                                        .total_duration()
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0);
                                     p.append(source);
                                     if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
                                         dur_ms.store(total_dur, Ordering::Relaxed);
@@ -1242,8 +1466,13 @@ fn run_audio_loop(
                                     last_hw_pos = Duration::ZERO;
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
-                                    if !paused { p.play(); }
-                                    log::debug!("[AUDIO] Seek to {} ms successful", pos.as_millis());
+                                    if !paused {
+                                        p.play();
+                                    }
+                                    log::debug!(
+                                        "[AUDIO] Seek to {} ms successful",
+                                        pos.as_millis()
+                                    );
                                 }
                             }
                         }
@@ -1269,7 +1498,9 @@ fn run_audio_loop(
                     let path = playlist[path_idx].clone();
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                        if let Some(source) =
+                            create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos)
+                        {
                             if ensure_backend!(current_volume, paused) {
                                 if let Some(ref p) = backend_player {
                                     p.append(source);
@@ -1277,8 +1508,13 @@ fn run_audio_loop(
                                     last_hw_pos = Duration::ZERO;
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
-                                    if !paused { p.play(); }
-                                    log::info!("[AUDIO] Device switched, playback resumed at {}ms", resume_pos.as_millis());
+                                    if !paused {
+                                        p.play();
+                                    }
+                                    log::info!(
+                                        "[AUDIO] Device switched, playback resumed at {}ms",
+                                        resume_pos.as_millis()
+                                    );
                                 }
                             }
                         }
@@ -1308,33 +1544,58 @@ fn run_audio_loop(
             }
             Ok(AudioCommand::NextTrack) => {
                 if let Some(ref cue) = cue_sheet {
-                    let elapsed = current_file_start.elapsed()
+                    let elapsed = current_file_start
+                        .elapsed()
                         .saturating_sub(total_paused)
                         .saturating_add(last_seek_offset);
-                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    let current_idx = cue
+                        .tracks
+                        .iter()
+                        .position(|t| t.start > elapsed)
+                        .unwrap_or(cue.tracks.len())
+                        .saturating_sub(1);
                     if current_idx + 1 < cue.tracks.len() {
                         let next_t = &cue.tracks[current_idx + 1];
-                                if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
-                                    if let Ok(file) = std::fs::File::open(path) {
-                                        let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                                        if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag), next_t.start) {
-                                            if ensure_backend!(current_volume, paused) {
-                                                if let Some(ref p) = backend_player {
-                                                    p.clear();
-                                                    let total_dur = source.total_duration();
-                                                    p.append(source);
-                                                    p.play();
-                                                    if cue_sheet.is_none() {
-                                                        let dur = cue.tracks.get(current_idx + 2).map(|t| t.start).unwrap_or_else(|| total_dur.unwrap_or(Duration::ZERO)).saturating_sub(next_t.start);
-                                                        dur_ms.store(dur.as_millis() as u64, Ordering::Relaxed);
-                                                    }
-                                                }
+                        if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
+                            if let Ok(file) = std::fs::File::open(path) {
+                                let reader =
+                                    std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                                if let Some(source) = create_source(
+                                    path,
+                                    reader,
+                                    Arc::clone(&shutdown_flag),
+                                    next_t.start,
+                                ) {
+                                    if ensure_backend!(current_volume, paused) {
+                                        if let Some(ref p) = backend_player {
+                                            p.clear();
+                                            let total_dur = source.total_duration();
+                                            p.append(source);
+                                            p.play();
+                                            if cue_sheet.is_none() {
+                                                let dur = cue
+                                                    .tracks
+                                                    .get(current_idx + 2)
+                                                    .map(|t| t.start)
+                                                    .unwrap_or_else(|| {
+                                                        total_dur.unwrap_or(Duration::ZERO)
+                                                    })
+                                                    .saturating_sub(next_t.start);
+                                                dur_ms.store(
+                                                    dur.as_millis() as u64,
+                                                    Ordering::Relaxed,
+                                                );
                                             }
+                                        }
+                                    }
                                     last_seek_offset = next_t.start;
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
                                     paused_at = None;
-                                    let meta = format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
+                                    let meta = format!(
+                                        "{}. {} - {}",
+                                        next_t.number, next_t.title, next_t.performer
+                                    );
                                     set_metadata(&meta_slot, Some(meta));
                                     set_cue_track(&cue_track_slot, Some(current_idx + 1));
                                 }
@@ -1347,11 +1608,17 @@ fn run_audio_loop(
             }
             Ok(AudioCommand::PrevTrack) => {
                 if let Some(ref cue) = cue_sheet {
-                    let elapsed = current_file_start.elapsed()
+                    let elapsed = current_file_start
+                        .elapsed()
                         .saturating_sub(total_paused)
                         .saturating_add(last_seek_offset);
                     // Determine which CUE track is currently playing
-                    let current_idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    let current_idx = cue
+                        .tracks
+                        .iter()
+                        .position(|t| t.start > elapsed)
+                        .unwrap_or(cue.tracks.len())
+                        .saturating_sub(1);
                     let current_t = &cue.tracks[current_idx];
 
                     // Car-audio style: compute time elapsed within the current CUE track.
@@ -1367,8 +1634,14 @@ fn run_audio_loop(
 
                     if let Some(path) = playlist.get(current_track_idx.saturating_sub(1)) {
                         if let Ok(file) = std::fs::File::open(path) {
-                            let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                            if let Some(source) = create_source(path, reader, Arc::clone(&shutdown_flag), target_t.start) {
+                            let reader =
+                                std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
+                            if let Some(source) = create_source(
+                                path,
+                                reader,
+                                Arc::clone(&shutdown_flag),
+                                target_t.start,
+                            ) {
                                 if ensure_backend!(current_volume, paused) {
                                     if let Some(ref p) = backend_player {
                                         p.clear(); // Must clear before appending to jump immediately
@@ -1376,7 +1649,14 @@ fn run_audio_loop(
                                         p.append(source);
                                         p.play();
                                         if cue_sheet.is_none() {
-                                            let dur = cue.tracks.get(target_idx + 1).map(|t| t.start).unwrap_or_else(|| total_dur.unwrap_or(Duration::ZERO)).saturating_sub(target_t.start);
+                                            let dur = cue
+                                                .tracks
+                                                .get(target_idx + 1)
+                                                .map(|t| t.start)
+                                                .unwrap_or_else(|| {
+                                                    total_dur.unwrap_or(Duration::ZERO)
+                                                })
+                                                .saturating_sub(target_t.start);
                                             dur_ms.store(dur.as_millis() as u64, Ordering::Relaxed);
                                         }
                                     }
@@ -1385,7 +1665,10 @@ fn run_audio_loop(
                                 current_file_start = Instant::now();
                                 total_paused = Duration::ZERO;
                                 paused_at = None;
-                                let meta = format!("{}. {} - {}", target_t.number, target_t.title, target_t.performer);
+                                let meta = format!(
+                                    "{}. {} - {}",
+                                    target_t.number, target_t.title, target_t.performer
+                                );
                                 set_metadata(&meta_slot, Some(meta));
                                 set_cue_track(&cue_track_slot, Some(target_idx));
                             }
@@ -1405,12 +1688,16 @@ fn run_audio_loop(
                     paused_at = None;
                     total_paused = Duration::ZERO;
                 }
-                
+
                 if ensure_backend!(current_volume, paused) {
                     dur_ms.store(0, Ordering::Relaxed); // Will be updated by FEED when loading first file
                     if let Some(ref p) = backend_player {
                         p.clear();
-                        if paused { p.pause(); } else { p.play(); }
+                        if paused {
+                            p.pause();
+                        } else {
+                            p.play();
+                        }
                     }
                 }
                 set_current_path(&path_slot, None);
@@ -1429,7 +1716,9 @@ fn run_audio_loop(
         #[cfg(windows)]
         {
             if unsafe { wasapi_poll_device_lost() } {
-                log::warn!("[WATCHDOG] Audio device lost (native event). Dropping backend for orphan recovery.");
+                log::warn!(
+                    "[WATCHDOG] Audio device lost (native event). Dropping backend for orphan recovery."
+                );
                 // Do NOT set stopped=true — that would clear pos/dur and trigger a full restart.
                 // Instead, just drop the backend. The "ORPHANED STATE" branch (below) will
                 // automatically rebuild the backend at the last known position once the device
@@ -1447,10 +1736,16 @@ fn run_audio_loop(
                 // Natural end of track - proceed to next
                 if current_track_idx < playlist.len() {
                     let path = playlist[current_track_idx].clone();
-                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let filename = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
-                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), Duration::ZERO) {
+                        if let Some(source) =
+                            create_source(&path, reader, Arc::clone(&shutdown_flag), Duration::ZERO)
+                        {
                             set_current_track(&track_slot, Some(filename));
                             set_current_path(&path_slot, Some(path.clone()));
                             cue_sheet = load_cue(&path, &shutdown_flag);
@@ -1461,11 +1756,16 @@ fn run_audio_loop(
                                 // Otherwise default to the first track.
                                 let initial_track_idx = pending_start_track_idx.unwrap_or(0);
                                 if let Some(t) = cue.tracks.get(initial_track_idx) {
-                                    let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
+                                    let meta =
+                                        format!("{}. {} - {}", t.number, t.title, t.performer);
                                     set_metadata(&meta_slot, Some(meta));
                                     set_cue_track(&cue_track_slot, Some(initial_track_idx));
                                 }
-                                let markers: Vec<u64> = cue.tracks.iter().map(|t| t.start.as_millis() as u64).collect();
+                                let markers: Vec<u64> = cue
+                                    .tracks
+                                    .iter()
+                                    .map(|t| t.start.as_millis() as u64)
+                                    .collect();
                                 set_cue_markers(&cue_markers_slot, markers);
                             } else if let Some(meta) = get_file_metadata(&path) {
                                 set_metadata(&meta_slot, Some(meta));
@@ -1477,7 +1777,10 @@ fn run_audio_loop(
 
                             if ensure_backend!(current_volume, paused) {
                                 if let Some(ref p) = backend_player {
-                                    let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                                    let total_dur = source
+                                        .total_duration()
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0);
                                     p.append(source);
                                     if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
                                         dur_ms.store(total_dur, Ordering::Relaxed);
@@ -1495,37 +1798,57 @@ fn run_audio_loop(
                                 continue;
                             }
 
-                            if let (Some(track_idx), Some(cue)) = (pending_start_track_idx.take(), &cue_sheet) {
+                            if let (Some(track_idx), Some(cue)) =
+                                (pending_start_track_idx.take(), &cue_sheet)
+                            {
                                 if track_idx < cue.tracks.len() {
                                     let t = &cue.tracks[track_idx];
                                     // Even if t.start is 0, we still want to go through the seek logic
                                     // if it's not the first load (though here it IS the first load).
                                     // The important part is that we already set the metadata above.
                                     if t.start > Duration::ZERO {
-                                    if let Ok(f2) = std::fs::File::open(&path) {
-                                        let r2 = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, f2);
-                                        if let Some(s2) = create_source(&path, r2, Arc::clone(&shutdown_flag), t.start) {
-                                            if ensure_backend!(current_volume, paused) {
-                                                if let Some(ref p) = backend_player {
-                                                    p.clear();
-                                                    let _total_dur = s2.total_duration();
-                                                    p.append(s2);
-                                                    last_seek_offset = t.start;
-                                                    current_file_start = Instant::now();
-                                                    let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
-                                                    set_metadata(&meta_slot, Some(meta));
-                                                    set_cue_track(&cue_track_slot, Some(track_idx));
+                                        if let Ok(f2) = std::fs::File::open(&path) {
+                                            let r2 = std::io::BufReader::with_capacity(
+                                                AUDIO_BUFFER_CAPACITY,
+                                                f2,
+                                            );
+                                            if let Some(s2) = create_source(
+                                                &path,
+                                                r2,
+                                                Arc::clone(&shutdown_flag),
+                                                t.start,
+                                            ) {
+                                                if ensure_backend!(current_volume, paused) {
+                                                    if let Some(ref p) = backend_player {
+                                                        p.clear();
+                                                        let _total_dur = s2.total_duration();
+                                                        p.append(s2);
+                                                        last_seek_offset = t.start;
+                                                        current_file_start = Instant::now();
+                                                        let meta = format!(
+                                                            "{}. {} - {}",
+                                                            t.number, t.title, t.performer
+                                                        );
+                                                        set_metadata(&meta_slot, Some(meta));
+                                                        set_cue_track(
+                                                            &cue_track_slot,
+                                                            Some(track_idx),
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
                                     }
                                 }
                             }
 
                             if let Some(ref p) = backend_player {
                                 p.set_volume(current_volume);
-                                if paused { p.pause(); } else { p.play(); }
+                                if paused {
+                                    p.pause();
+                                } else {
+                                    p.play();
+                                }
                             }
                         }
                     }
@@ -1547,15 +1870,22 @@ fn run_audio_loop(
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                         let resume_pos = last_hw_pos.saturating_add(last_seek_offset);
-                        if let Some(source) = create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos) {
+                        if let Some(source) =
+                            create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos)
+                        {
                             if let Some(ref p) = backend_player {
                                 p.append(source);
                                 last_seek_offset = resume_pos;
                                 last_hw_pos = Duration::ZERO;
                                 current_file_start = Instant::now();
                                 total_paused = Duration::ZERO;
-                                if !paused { p.play(); }
-                                log::info!("[AUDIO] Auto-recovered playback at {}ms", resume_pos.as_millis());
+                                if !paused {
+                                    p.play();
+                                }
+                                log::info!(
+                                    "[AUDIO] Auto-recovered playback at {}ms",
+                                    resume_pos.as_millis()
+                                );
                             }
                         }
                     }
@@ -1564,13 +1894,23 @@ fn run_audio_loop(
         }
 
         if !stopped && !paused && backend_player.as_ref().map_or(false, |p| !p.empty()) {
-            if shutdown_flag.load(Ordering::Relaxed) { return; }
+            if shutdown_flag.load(Ordering::Relaxed) {
+                return;
+            }
             if let Some(ref cue) = cue_sheet {
                 if let Some(ref p) = backend_player {
                     let elapsed = p.get_pos().saturating_add(last_seek_offset);
-                    let idx = cue.tracks.iter().position(|t| t.start > elapsed).unwrap_or(cue.tracks.len()).saturating_sub(1);
+                    let idx = cue
+                        .tracks
+                        .iter()
+                        .position(|t| t.start > elapsed)
+                        .unwrap_or(cue.tracks.len())
+                        .saturating_sub(1);
                     let current_t = &cue.tracks[idx];
-                    let meta = format!("{}. {} - {}", current_t.number, current_t.title, current_t.performer);
+                    let meta = format!(
+                        "{}. {} - {}",
+                        current_t.number, current_t.title, current_t.performer
+                    );
                     if let Ok(mut g) = meta_slot.try_lock() {
                         if g.as_ref() != Some(&meta) {
                             *g = Some(meta);
@@ -1589,15 +1929,15 @@ fn run_audio_loop(
         } else if let Some(ref p) = backend_player {
             let hw_pos = p.get_pos();
             last_hw_pos = hw_pos;
-            
+
             // 1. Calculate the raw mixer position in the file
             let raw_abs_pos = hw_pos.saturating_add(last_seek_offset);
-            
+
             // 2. COMPENSATE for the decoding buffer latency (approx 0.7s - 1.5s).
             // Since we can't easily poll the Boxed source, and the mixer is ahead,
             // we use the stored buffer info if available or a consistent approach.
             // For now, we report the mixer position, but ensure it's absolute so it matches ticks.
-            
+
             // 3. Update the global position for the UI
             // In CD mode (as seen in screenshot), the slider needs to be absolute
             // to align with the blue CUE track tick.

@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Context, Key, RichText};
-use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
-use crate::ui::dialogs::MovableModal;
-use crate::ui::utils::styled_button;
 use crate::theme::ThemePalette;
+use crate::ui::dialogs::MovableModal;
+use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
+use crate::ui::utils::styled_button;
+use eframe::egui::{self, Context, Key, RichText};
 use rust_i18n::t;
 
 // ── Private state ────────────────────────────────────────────────────────────
@@ -33,7 +33,12 @@ pub struct State {
 
 impl State {
     pub fn new(total: usize, current_index: usize) -> Self {
-        Self { input: String::new(), needs_focus: true, total, current_index }
+        Self {
+            input: String::new(),
+            needs_focus: true,
+            total,
+            current_index,
+        }
     }
 }
 

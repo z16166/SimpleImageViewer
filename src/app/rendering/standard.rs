@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::time::Instant;
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use crate::app::{ImageViewerApp, TransitionStyle};
+use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use std::time::Instant;
 
 impl ImageViewerApp {
     /// Draw the standard (non-tiled) image rendering path, including transition animations.
@@ -37,8 +37,8 @@ impl ImageViewerApp {
                     anim.current_frame = (anim.current_frame + 1) % anim.textures.len();
                     anim.frame_start = Instant::now();
                 }
-                let remaining = anim.delays[anim.current_frame]
-                    .saturating_sub(anim.frame_start.elapsed());
+                let remaining =
+                    anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed());
                 ui.ctx().request_repaint_after(remaining);
                 anim.textures[anim.current_frame].clone()
             } else {
@@ -49,7 +49,8 @@ impl ImageViewerApp {
         };
 
         // Use original image dimensions if known (Tiled previews are smaller than the real image)
-        let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+        let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index)
+        {
             Vec2::new(w as f32, h as f32)
         } else {
             texture.size_vec2()
@@ -66,24 +67,28 @@ impl ImageViewerApp {
         // --- Transition parameter computation ---
         // Slide and Push use normalised offsets; multiply by screen width here.
         let mut tp = self.compute_transition_params();
-        if matches!(self.active_transition, TransitionStyle::Slide | TransitionStyle::Push) {
-            tp.offset.x     *= screen_rect.width();
+        if matches!(
+            self.active_transition,
+            TransitionStyle::Slide | TransitionStyle::Push
+        ) {
+            tp.offset.x *= screen_rect.width();
             tp.prev_offset.x *= screen_rect.width();
         }
 
         // --- Rotation setup ---
-        let rotation   = self.current_rotation;
+        let rotation = self.current_rotation;
         let needs_swap = rotation % 2 != 0;
-        let angle      = rotation as f32 * (std::f32::consts::PI / 2.0);
+        let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
 
         // Compute current display rect, swapping dimensions for 90°/270° rotations
-        let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+        let rotated_img_size = if needs_swap {
+            Vec2::new(img_size.y, img_size.x)
+        } else {
+            img_size
+        };
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
 
-        let final_dest = Rect::from_center_size(
-            dest.center() + tp.offset,
-            dest.size() * tp.scale,
-        );
+        let final_dest = Rect::from_center_size(dest.center() + tp.offset, dest.size() * tp.scale);
 
         // The painter transform handles visual rotation; draw un-rotated texture into un-rotated rect.
         let unrotated_final_size = if needs_swap {
@@ -91,18 +96,26 @@ impl ImageViewerApp {
         } else {
             final_dest.size()
         };
-        let unrotated_final_dest = Rect::from_center_size(final_dest.center(), unrotated_final_size);
+        let unrotated_final_dest =
+            Rect::from_center_size(final_dest.center(), unrotated_final_size);
 
         // --- Draw sequence ---
-        if tp.is_animating && matches!(
-            self.active_transition,
-            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
-        ) {
+        if tp.is_animating
+            && matches!(
+                self.active_transition,
+                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+            )
+        {
             // Complex per-pixel transitions handled in transitions.rs
             self.draw_complex_transition(
-                ui, screen_rect, &texture,
-                final_dest, unrotated_final_dest,
-                rotation, angle, tp.alpha,
+                ui,
+                screen_rect,
+                &texture,
+                final_dest,
+                unrotated_final_dest,
+                rotation,
+                angle,
+                tp.alpha,
             );
         } else {
             // Standard Fade / ZoomFade / Slide / Push (and no-transition static draw):
@@ -134,7 +147,7 @@ impl ImageViewerApp {
                 Color32::WHITE.linear_multiply(tp.alpha),
             );
             if rotation != 0 {
-                let rot   = egui::emath::Rot2::from_angle(angle);
+                let rot = egui::emath::Rot2::from_angle(angle);
                 let pivot = final_dest.center();
                 for v in &mut mesh.vertices {
                     v.pos = pivot + rot * (v.pos - pivot);

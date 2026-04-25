@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use crate::app::{ImageViewerApp, TransitionStyle};
+use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 /// Parameters computed per-frame for the current transition animation.
 pub(crate) struct TransitionParams {
@@ -58,7 +58,7 @@ impl ImageViewerApp {
                 let t = (elapsed / duration).clamp(0.0, 1.0);
                 // Easing: Cubic Out
                 let ease_out = 1.0 - (1.0 - t).powi(3);
-                
+
                 match self.active_transition {
                     TransitionStyle::Fade => {
                         p.alpha = ease_out;
@@ -81,13 +81,17 @@ impl ImageViewerApp {
                     TransitionStyle::Push => {
                         let dir = if self.is_next { 1.0 } else { -1.0 };
                         p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
-                        p.prev_offset = Vec2::new(-dir * ease_out, 0.0);   // normalised
+                        p.prev_offset = Vec2::new(-dir * ease_out, 0.0); // normalised
                         p.prev_alpha = 1.0;
                     }
-                    TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain => {
+                    TransitionStyle::PageFlip
+                    | TransitionStyle::Ripple
+                    | TransitionStyle::Curtain => {
                         // Custom rendering; keep is_animating true, no standard params needed.
                     }
-                    _ => { p.is_animating = false; }
+                    _ => {
+                        p.is_animating = false;
+                    }
                 }
             } else {
                 self.transition_start = None;
@@ -113,7 +117,16 @@ impl ImageViewerApp {
     ) {
         match self.active_transition {
             TransitionStyle::PageFlip => {
-                self.draw_page_flip(ui, screen_rect, texture, final_dest, unrotated_final_dest, rotation, angle, alpha);
+                self.draw_page_flip(
+                    ui,
+                    screen_rect,
+                    texture,
+                    final_dest,
+                    unrotated_final_dest,
+                    rotation,
+                    angle,
+                    alpha,
+                );
             }
             TransitionStyle::Ripple => {
                 self.draw_ripple(ui, screen_rect, texture, final_dest, rotation, angle);
@@ -122,9 +135,16 @@ impl ImageViewerApp {
                 self.draw_curtain(ui, screen_rect, texture, final_dest, alpha);
             }
 
-            TransitionStyle::None | TransitionStyle::Fade | TransitionStyle::ZoomFade |
-            TransitionStyle::Slide | TransitionStyle::Push | TransitionStyle::Random => {
-                unreachable!("draw_complex_transition called with non-complex style: {:?}", self.active_transition);
+            TransitionStyle::None
+            | TransitionStyle::Fade
+            | TransitionStyle::ZoomFade
+            | TransitionStyle::Slide
+            | TransitionStyle::Push
+            | TransitionStyle::Random => {
+                unreachable!(
+                    "draw_complex_transition called with non-complex style: {:?}",
+                    self.active_transition
+                );
             }
         }
 
@@ -147,7 +167,10 @@ impl ImageViewerApp {
             let p_dest = self.compute_display_rect(p_size, screen_rect);
             let union_rect = p_dest.union(final_dest);
 
-            let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+            let elapsed = self
+                .transition_start
+                .map(|s| s.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
             let duration = self.settings.transition_ms as f32 / 1000.0;
             let t = (elapsed / duration).clamp(0.0, 1.0);
             let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
@@ -179,7 +202,9 @@ impl ImageViewerApp {
                     v.pos = pivot + rot * (v.pos - pivot);
                 }
             }
-            ui.painter().with_clip_rect(new_clip).add(egui::Shape::mesh(mesh));
+            ui.painter()
+                .with_clip_rect(new_clip)
+                .add(egui::Shape::mesh(mesh));
 
             // 2. Draw OLD image (unrevealed part, clipped)
             let mut old_clip = union_rect;
@@ -210,7 +235,7 @@ impl ImageViewerApp {
                 )
             };
 
-            let color_shadow   = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
+            let color_shadow = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
             let color_transparent = Color32::TRANSPARENT;
             let mut shadow_mesh = egui::Mesh::default();
             let (c_left, c_right) = if self.is_next {
@@ -218,10 +243,10 @@ impl ImageViewerApp {
             } else {
                 (color_shadow, color_transparent)
             };
-            shadow_mesh.colored_vertex(shadow_rect.left_top(),     c_left);
-            shadow_mesh.colored_vertex(shadow_rect.right_top(),    c_right);
+            shadow_mesh.colored_vertex(shadow_rect.left_top(), c_left);
+            shadow_mesh.colored_vertex(shadow_rect.right_top(), c_right);
             shadow_mesh.colored_vertex(shadow_rect.right_bottom(), c_right);
-            shadow_mesh.colored_vertex(shadow_rect.left_bottom(),  c_left);
+            shadow_mesh.colored_vertex(shadow_rect.left_bottom(), c_left);
             shadow_mesh.add_triangle(0, 1, 2);
             shadow_mesh.add_triangle(0, 2, 3);
             ui.painter().add(egui::Shape::mesh(shadow_mesh));
@@ -250,17 +275,23 @@ impl ImageViewerApp {
         }
 
         // 2. Compute ripple state
-        let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+        let elapsed = self
+            .transition_start
+            .map(|s| s.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
         let duration = self.settings.transition_ms as f32 / 1000.0;
         let t = (elapsed / duration).clamp(0.0, 1.0);
         let ease = 3.0 * t * t - 2.0 * t * t * t; // smoothstep
 
         let center = final_dest.center();
         let corners = [
-            screen_rect.left_top(), screen_rect.right_top(),
-            screen_rect.left_bottom(), screen_rect.right_bottom(),
+            screen_rect.left_top(),
+            screen_rect.right_top(),
+            screen_rect.left_bottom(),
+            screen_rect.right_bottom(),
         ];
-        let max_radius = corners.iter()
+        let max_radius = corners
+            .iter()
             .map(|c| center.distance(*c))
             .fold(0.0f32, f32::max);
         let current_radius = max_radius * ease;
@@ -274,16 +305,27 @@ impl ImageViewerApp {
             (center.x - final_dest.min.x) / final_dest.width(),
             (center.y - final_dest.min.y) / final_dest.height(),
         );
-        mesh.vertices.push(egui::epaint::Vertex { pos: center, uv: center_uv, color: Color32::WHITE });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: center,
+            uv: center_uv,
+            color: Color32::WHITE,
+        });
 
         for i in 0..=segments {
             let a = (i as f32 / segments as f32) * std::f32::consts::TAU;
-            let pos = Pos2::new(center.x + current_radius * a.cos(), center.y + current_radius * a.sin());
-            let uv  = Pos2::new(
+            let pos = Pos2::new(
+                center.x + current_radius * a.cos(),
+                center.y + current_radius * a.sin(),
+            );
+            let uv = Pos2::new(
                 (pos.x - final_dest.min.x) / final_dest.width(),
                 (pos.y - final_dest.min.y) / final_dest.height(),
             );
-            mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: Color32::WHITE });
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos,
+                uv,
+                color: Color32::WHITE,
+            });
         }
         for i in 0..segments {
             mesh.indices.push(0);
@@ -298,25 +340,33 @@ impl ImageViewerApp {
                 v.pos = pivot + rot * (v.pos - pivot);
             }
         }
-        ui.painter().with_clip_rect(final_dest).add(egui::Shape::mesh(mesh));
+        ui.painter()
+            .with_clip_rect(final_dest)
+            .add(egui::Shape::mesh(mesh));
 
         // 4. Water ripple rings at the expanding edge
         for ring in 0..4u32 {
             let ring_radius = current_radius - ring as f32 * 14.0;
-            if ring_radius <= 2.0 { continue; }
+            if ring_radius <= 2.0 {
+                continue;
+            }
             let ring_alpha = (0.35 - ring as f32 * 0.09).max(0.0);
-            let ring_color = Color32::from_rgba_unmultiplied(
-                180, 215, 255,
-                (ring_alpha * 255.0) as u8,
-            );
+            let ring_color =
+                Color32::from_rgba_unmultiplied(180, 215, 255, (ring_alpha * 255.0) as u8);
             let ring_width = 2.5 - ring as f32 * 0.5;
             let points: Vec<Pos2> = (0..=segments)
                 .map(|i| {
                     let a = (i as f32 / segments as f32) * std::f32::consts::TAU;
-                    Pos2::new(center.x + ring_radius * a.cos(), center.y + ring_radius * a.sin())
+                    Pos2::new(
+                        center.x + ring_radius * a.cos(),
+                        center.y + ring_radius * a.sin(),
+                    )
                 })
                 .collect();
-            ui.painter().add(egui::Shape::line(points, egui::Stroke::new(ring_width, ring_color)));
+            ui.painter().add(egui::Shape::line(
+                points,
+                egui::Stroke::new(ring_width, ring_color),
+            ));
         }
     }
 
@@ -333,7 +383,10 @@ impl ImageViewerApp {
             let p_dest = self.compute_display_rect(p_size, screen_rect);
             let union_rect = p_dest.union(final_dest);
 
-            let elapsed = self.transition_start.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+            let elapsed = self
+                .transition_start
+                .map(|s| s.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
             let duration = self.settings.transition_ms as f32 / 1000.0;
             let t = (elapsed / duration).clamp(0.0, 1.0);
             let ease = 1.0 - (1.0 - t).powi(3); // Cubic Out
@@ -348,7 +401,8 @@ impl ImageViewerApp {
                 Pos2::new(center_x + shift, union_rect.max.y),
             );
             ui.painter().with_clip_rect(new_clip).image(
-                texture.id(), final_dest,
+                texture.id(),
+                final_dest,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -359,7 +413,8 @@ impl ImageViewerApp {
                 Pos2::new(center_x - shift, union_rect.max.y),
             );
             ui.painter().with_clip_rect(left_clip).image(
-                prev.id(), p_dest.translate(Vec2::new(-shift, 0.0)),
+                prev.id(),
+                p_dest.translate(Vec2::new(-shift, 0.0)),
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -370,26 +425,27 @@ impl ImageViewerApp {
                 union_rect.right_bottom(),
             );
             ui.painter().with_clip_rect(right_clip).image(
-                prev.id(), p_dest.translate(Vec2::new(shift, 0.0)),
+                prev.id(),
+                p_dest.translate(Vec2::new(shift, 0.0)),
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
 
             // Gradient shadows at split edges
-            let shadow_w     = 30.0;
+            let shadow_w = 30.0;
             let shadow_alpha = (1.0 - ease) * 0.45;
             let shadow_color = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
-            let transparent  = Color32::TRANSPARENT;
+            let transparent = Color32::TRANSPARENT;
 
             let mut lm = egui::Mesh::default();
             let ls_rect = Rect::from_min_max(
                 Pos2::new(center_x - shift - shadow_w, union_rect.min.y),
                 Pos2::new(center_x - shift, union_rect.max.y),
             );
-            lm.colored_vertex(ls_rect.left_top(),     transparent);
-            lm.colored_vertex(ls_rect.right_top(),    shadow_color);
+            lm.colored_vertex(ls_rect.left_top(), transparent);
+            lm.colored_vertex(ls_rect.right_top(), shadow_color);
             lm.colored_vertex(ls_rect.right_bottom(), shadow_color);
-            lm.colored_vertex(ls_rect.left_bottom(),  transparent);
+            lm.colored_vertex(ls_rect.left_bottom(), transparent);
             lm.add_triangle(0, 1, 2);
             lm.add_triangle(0, 2, 3);
             ui.painter().add(egui::Shape::mesh(lm));
@@ -399,10 +455,10 @@ impl ImageViewerApp {
                 Pos2::new(center_x + shift, union_rect.min.y),
                 Pos2::new(center_x + shift + shadow_w, union_rect.max.y),
             );
-            rm.colored_vertex(rs_rect.left_top(),     shadow_color);
-            rm.colored_vertex(rs_rect.right_top(),    transparent);
+            rm.colored_vertex(rs_rect.left_top(), shadow_color);
+            rm.colored_vertex(rs_rect.right_top(), transparent);
             rm.colored_vertex(rs_rect.right_bottom(), transparent);
-            rm.colored_vertex(rs_rect.left_bottom(),  shadow_color);
+            rm.colored_vertex(rs_rect.left_bottom(), shadow_color);
             rm.add_triangle(0, 1, 2);
             rm.add_triangle(0, 2, 3);
             ui.painter().add(egui::Shape::mesh(rm));

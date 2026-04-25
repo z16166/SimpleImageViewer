@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -71,7 +71,9 @@ pub fn setup_or_forward_args(
             unsafe extern "system" {
                 fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
             }
-            unsafe { AllowSetForegroundWindow(ASFW_ANY); }
+            unsafe {
+                AllowSetForegroundWindow(ASFW_ANY);
+            }
         }
 
         log::info!("Another instance is running. Forwarding arguments and exiting.");
@@ -98,7 +100,10 @@ pub fn setup_or_forward_args(
         Err(e) => {
             // On macOS/Linux with filesystem sockets, a stale socket file from a
             // previous crash can cause bind to fail. Attempt cleanup and retry.
-            log::warn!("Failed to bind IPC socket ({}), attempting stale cleanup...", e);
+            log::warn!(
+                "Failed to bind IPC socket ({}), attempting stale cleanup...",
+                e
+            );
             cleanup_stale_socket();
             let sock_name_retry = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
             match ListenerOptions::new().name(sock_name_retry).create_sync() {
@@ -114,7 +119,10 @@ pub fn setup_or_forward_args(
                     }
                 }
                 Err(e2) => {
-                    log::warn!("Failed to bind IPC socket after retry, single-instance mode disabled: {}", e2);
+                    log::warn!(
+                        "Failed to bind IPC socket after retry, single-instance mode disabled: {}",
+                        e2
+                    );
                 }
             }
         }
@@ -219,7 +227,7 @@ pub fn force_foreground() {
             .chain(Some(0))
             .collect();
         let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
-        
+
         if hwnd == 0 {
             log::warn!("force_foreground: could not find window by class name");
             return;

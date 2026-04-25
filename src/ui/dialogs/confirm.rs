@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Context, RichText};
-use crate::ui::dialogs::modal_state::ModalResult;
-use crate::ui::dialogs::MovableModal;
-use crate::ui::utils::styled_button;
 use crate::theme::ThemePalette;
+use crate::ui::dialogs::MovableModal;
+use crate::ui::dialogs::modal_state::ModalResult;
+use crate::ui::utils::styled_button;
+use eframe::egui::{self, Context, RichText};
 use rust_i18n::t;
 
 // ── Private state ─────────────────────────────────────────────────────────────
@@ -85,39 +85,45 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
         .resizable(false)
         .default_size([WIDTH, HEIGHT])
         .show(ctx, palette, |ui| {
-        // Warning icon + message
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("⚠").size(18.0).color(egui::Color32::from_rgb(255, 180, 60)));
-            ui.add_space(4.0);
-            ui.label(RichText::new(&state.message).color(palette.text_normal));
-        });
-        ui.add_space(16.0);
-
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new(&state.confirm_label).color(egui::Color32::WHITE)
-                    )
-                    .fill(palette.button_primary)
-                    .corner_radius(egui::CornerRadius::same(4)),
-                )
-                .clicked()
-            {
-                result = ModalResult::Confirmed(
-                    crate::ui::dialogs::modal_state::ModalAction::ConfirmTagged(state.tag.clone())
+            // Warning icon + message
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("⚠")
+                        .size(18.0)
+                        .color(egui::Color32::from_rgb(255, 180, 60)),
                 );
-            }
-            ui.add_space(8.0);
-            if styled_button(ui, &state.cancel_label, palette).clicked() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(&state.message).color(palette.text_normal));
+            });
+            ui.add_space(16.0);
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(&state.confirm_label).color(egui::Color32::WHITE),
+                        )
+                        .fill(palette.button_primary)
+                        .corner_radius(egui::CornerRadius::same(4)),
+                    )
+                    .clicked()
+                {
+                    result = ModalResult::Confirmed(
+                        crate::ui::dialogs::modal_state::ModalAction::ConfirmTagged(
+                            state.tag.clone(),
+                        ),
+                    );
+                }
+                ui.add_space(8.0);
+                if styled_button(ui, &state.cancel_label, palette).clicked() {
+                    result = ModalResult::Dismissed;
+                }
+            });
+
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = ModalResult::Dismissed;
             }
         });
-
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            result = ModalResult::Dismissed;
-        }
-    });
 
     result
 }

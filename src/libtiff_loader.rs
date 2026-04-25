@@ -1364,7 +1364,8 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
         // Try RGBA interface first ONLY if not forced static
         if !force_static {
             let mut raster: Vec<lib::uint32> = vec![0; total_pixels];
-            if lib::TIFFReadRGBAImageOriented(handle.ptr, width, height, raster.as_mut_ptr(), 1, 0) != 0
+            if lib::TIFFReadRGBAImageOriented(handle.ptr, width, height, raster.as_mut_ptr(), 1, 0)
+                != 0
             {
                 pixels = vec![0u8; total_pixels * 4];
                 std::ptr::copy_nonoverlapping(
@@ -1382,7 +1383,8 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
         }
 
         if orientation > 1 {
-            let (out_w, out_h, out_pixels) = apply_orientation_buffer(pixels, width, height, orientation);
+            let (out_w, out_h, out_pixels) =
+                apply_orientation_buffer(pixels, width, height, orientation);
             width = out_w;
             height = out_h;
             pixels = out_pixels;
@@ -1450,7 +1452,9 @@ mod tests {
         let module = if module.is_null() {
             "Unknown"
         } else {
-            unsafe { CStr::from_ptr(module) }.to_str().unwrap_or("Unknown")
+            unsafe { CStr::from_ptr(module) }
+                .to_str()
+                .unwrap_or("Unknown")
         };
         let fmt = if fmt.is_null() {
             ""
@@ -1468,7 +1472,9 @@ mod tests {
         let module = if module.is_null() {
             "Unknown"
         } else {
-            unsafe { CStr::from_ptr(module) }.to_str().unwrap_or("Unknown")
+            unsafe { CStr::from_ptr(module) }
+                .to_str()
+                .unwrap_or("Unknown")
         };
         let fmt = if fmt.is_null() {
             ""
@@ -1519,7 +1525,10 @@ mod tests {
                             unsafe {
                                 let c_path =
                                     std::ffi::CString::new(path.to_str().unwrap()).unwrap();
-                                let tif = lib::TIFFOpen(c_path.as_ptr(), b"r\0".as_ptr() as *const std::ffi::c_char);
+                                let tif = lib::TIFFOpen(
+                                    c_path.as_ptr(),
+                                    b"r\0".as_ptr() as *const std::ffi::c_char,
+                                );
                                 if !tif.is_null() {
                                     let mut w: u32 = 0;
                                     let mut h: u32 = 0;

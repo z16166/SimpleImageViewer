@@ -26,26 +26,26 @@ rust_i18n::i18n!("locales");
 
 mod app;
 use eframe::egui;
-mod constants;
 mod audio;
+mod constants;
+mod formats;
 mod ipc;
+mod libtiff_loader;
 mod loader;
-mod psb_reader;
-mod scanner;
-mod settings;
-pub mod theme;
-mod ui;
-pub mod print;
-mod tile_cache;
 #[cfg(target_os = "macos")]
 mod macos_image_io;
-mod formats;
-#[cfg(target_os = "windows")]
-mod wic;
+pub mod print;
+mod psb_reader;
+mod raw_processor;
+mod scanner;
 #[cfg(target_os = "windows")]
 mod seh_handler;
-mod libtiff_loader;
-mod raw_processor;
+mod settings;
+pub mod theme;
+mod tile_cache;
+mod ui;
+#[cfg(target_os = "windows")]
+mod wic;
 
 #[cfg(target_os = "windows")]
 mod windows_utils;
@@ -55,8 +55,8 @@ fn load_icon() -> egui::IconData {
     let bytes = include_bytes!("../assets/icon.png");
     match image::load_from_memory(bytes) {
         Ok(img) => {
-            use image::imageops::FilterType;
             use image::GenericImageView;
+            use image::imageops::FilterType;
             let img = img.resize_exact(256, 256, FilterType::Lanczos3);
             let (w, h) = img.dimensions();
             egui::IconData {
@@ -82,9 +82,10 @@ fn init_logging(settings: &crate::settings::Settings) {
         .expect("Failed to initialize logger");
 
     let logger = if settings.enable_log_file {
-        logger.log_to_file(flexi_logger::FileSpec::default()
-            .directory(log_dir)
-            .basename("simple_image_viewer")
+        logger.log_to_file(
+            flexi_logger::FileSpec::default()
+                .directory(log_dir)
+                .basename("simple_image_viewer"),
         )
     } else {
         logger
@@ -112,15 +113,15 @@ fn init_logging(settings: &crate::settings::Settings) {
 fn log_env_info() -> String {
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
-    
+
     let total_memory = sys.total_memory();
     let memory_gb = total_memory as f64 / 1024.0 / 1024.0 / 1024.0;
-    
+
     #[cfg(windows)]
     let env_desc = {
         use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
         use windows::core::PCSTR;
-        
+
         #[repr(C)]
         #[allow(non_snake_case)]
         struct OSVERSIONINFOEXW {
@@ -140,42 +141,78 @@ fn log_env_info() -> String {
         unsafe fn get_win_env(memory_gb: f64) -> Option<String> {
             let h_ntdll = unsafe { GetModuleHandleW(windows::core::w!("ntdll.dll")).ok()? };
             let proc = unsafe { GetProcAddress(h_ntdll, PCSTR(b"RtlGetVersion\0".as_ptr()))? };
-            let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 = unsafe { std::mem::transmute(proc) };
-            
+            let rtl_get_version: extern "system" fn(*mut OSVERSIONINFOEXW) -> i32 =
+                unsafe { std::mem::transmute(proc) };
+
             let mut osi: OSVERSIONINFOEXW = unsafe { std::mem::zeroed() };
             osi.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
-            
+
             if rtl_get_version(&mut osi) == 0 {
                 let major = osi.dwMajorVersion;
                 let minor = osi.dwMinorVersion;
                 let build = osi.dwBuildNumber;
                 let is_server = osi.wProductType != 1;
-                
+
                 let service_pack = String::from_utf16_lossy(&osi.szCSDVersion);
                 let service_pack = service_pack.trim_matches('\0').trim().to_string();
 
-                use winreg::enums::HKEY_LOCAL_MACHINE;
                 use winreg::RegKey;
+                use winreg::enums::HKEY_LOCAL_MACHINE;
                 let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-                
+
                 let marketing_name = match (major, minor) {
                     (10, 0) => {
                         if is_server {
-                            if build >= 26100 { "Server 2025" }
-                            else if build >= 20348 { "Server 2022" }
-                            else if build >= 17763 { "Server 2019" }
-                            else if build >= 14393 { "Server 2016" }
-                            else { "Server" }
+                            if build >= 26100 {
+                                "Server 2025"
+                            } else if build >= 20348 {
+                                "Server 2022"
+                            } else if build >= 17763 {
+                                "Server 2019"
+                            } else if build >= 14393 {
+                                "Server 2016"
+                            } else {
+                                "Server"
+                            }
                         } else {
-                            if build >= 22000 { "11" }
-                            else { "10" }
+                            if build >= 22000 { "11" } else { "10" }
                         }
                     }
-                    (6, 3) => if is_server { "Server 2012 R2" } else { "8.1" },
-                    (6, 2) => if is_server { "Server 2012" } else { "8" },
-                    (6, 1) => if is_server { "Server 2008 R2" } else { "7" },
-                    (6, 0) => if is_server { "Server 2008" } else { "Vista" },
-                    (5, 2) => if is_server { "Server 2003" } else { "XP" },
+                    (6, 3) => {
+                        if is_server {
+                            "Server 2012 R2"
+                        } else {
+                            "8.1"
+                        }
+                    }
+                    (6, 2) => {
+                        if is_server {
+                            "Server 2012"
+                        } else {
+                            "8"
+                        }
+                    }
+                    (6, 1) => {
+                        if is_server {
+                            "Server 2008 R2"
+                        } else {
+                            "7"
+                        }
+                    }
+                    (6, 0) => {
+                        if is_server {
+                            "Server 2008"
+                        } else {
+                            "Vista"
+                        }
+                    }
+                    (5, 2) => {
+                        if is_server {
+                            "Server 2003"
+                        } else {
+                            "XP"
+                        }
+                    }
                     (5, 1) => "XP",
                     _ => "Unknown",
                 };
@@ -186,7 +223,8 @@ fn log_env_info() -> String {
                 let mut ubr: u32 = 0;
 
                 if let Ok(key) = hklm.open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") {
-                    display_version = key.get_value("DisplayVersion")
+                    display_version = key
+                        .get_value("DisplayVersion")
                         .or_else(|_| key.get_value("ReleaseId"))
                         .unwrap_or_default();
                     edition_id = key.get_value("EditionID").unwrap_or_default();
@@ -212,7 +250,10 @@ fn log_env_info() -> String {
                     format!("{}.{}.{}", major, minor, build)
                 };
 
-                return Some(format!("{} [{}] (RAM: {:.2} GB)", display_name, full_version, memory_gb));
+                return Some(format!(
+                    "{} [{}] (RAM: {:.2} GB)",
+                    display_name, full_version, memory_gb
+                ));
             }
             None
         }
@@ -244,7 +285,10 @@ fn log_env_info() -> String {
 /// Set up a global panic hook to capture and report crashes across all threads.
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown location".to_string());
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
         let payload = panic_info.payload();
         let message = if let Some(s) = payload.downcast_ref::<&str>() {
             s.to_string()
@@ -255,14 +299,14 @@ fn setup_panic_hook() {
         };
 
         let app_ver = env!("CARGO_PKG_VERSION");
-        
+
         // Capture a full backtrace
         let backtrace = std::backtrace::Backtrace::force_capture();
-        
+
         // Re-detect basic env info for the report
         let os_name = sysinfo::System::name().unwrap_or_else(|| "Unknown OS".to_string());
         let os_ver = sysinfo::System::os_version().unwrap_or_else(|| "Unknown Version".to_string());
-        
+
         let report = format!(
             "--- Simple Image Viewer Crash Report ---\n\
             Version: v{}\n\
@@ -278,8 +322,9 @@ fn setup_panic_hook() {
         // 1. Log to stderr (for console users) and file system
         eprintln!("{}", report);
         log::error!("{}", report);
-        
-        let log_path = crate::settings::settings_path().with_file_name(crate::constants::CRASH_REPORT_FILENAME);
+
+        let log_path = crate::settings::settings_path()
+            .with_file_name(crate::constants::CRASH_REPORT_FILENAME);
         let _ = std::fs::write(&log_path, &report);
 
         // 2. Try to copy to clipboard
@@ -293,14 +338,16 @@ fn setup_panic_hook() {
         if title.contains("dialog.crash_title") {
             title = crate::constants::CRASH_DIALOG_FALLBACK_TITLE.to_string();
         }
-        
-        let mut msg = format!("{}\n\n{}\n\n{}", 
+
+        let mut msg = format!(
+            "{}\n\n{}\n\n{}",
             rust_i18n::t!("dialog.crash_msg"),
             format!("Location: {}", location),
             format!("Error: {}", message)
         );
         if msg.contains("dialog.crash_msg") {
-            msg = format!("{}\n\nLocation: {}\nError: {}\n\nDiagnostic info copied to clipboard.", 
+            msg = format!(
+                "{}\n\nLocation: {}\nError: {}\n\nDiagnostic info copied to clipboard.",
                 crate::constants::CRASH_DIALOG_FALLBACK_MSG,
                 location,
                 message
@@ -374,7 +421,7 @@ fn main() -> eframe::Result {
         settings.language = settings::detect_system_language();
     }
     rust_i18n::set_locale(&settings.language);
-    
+
     // NOW setup the panic hook - with logging AND correct language ready
     setup_panic_hook();
 
@@ -386,7 +433,6 @@ fn main() -> eframe::Result {
         settings.auto_switch = false;
         settings.recursive = false;
     }
-
 
     let fullscreen = settings.fullscreen;
 
@@ -405,7 +451,7 @@ fn main() -> eframe::Result {
         if info.backend == eframe::wgpu::Backend::Gl {
             log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
         }
-        
+
         let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
             eframe::wgpu::Limits::downlevel_webgl2_defaults()
         } else {
@@ -434,21 +480,31 @@ fn main() -> eframe::Result {
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     {
         // Use a temporary instance to probe adapter capabilities
-        let instance = eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapters = pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
-        
+        let instance = eframe::wgpu::Instance::new(
+            eframe::wgpu::InstanceDescriptor::new_without_display_handle(),
+        );
+        let adapters =
+            pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
+
         let has_real_dx12 = adapters.iter().any(|a| {
             let info = a.get_info();
-            info.backend == eframe::wgpu::Backend::Dx12 && 
-            matches!(info.device_type, eframe::wgpu::DeviceType::DiscreteGpu | eframe::wgpu::DeviceType::IntegratedGpu)
+            info.backend == eframe::wgpu::Backend::Dx12
+                && matches!(
+                    info.device_type,
+                    eframe::wgpu::DeviceType::DiscreteGpu | eframe::wgpu::DeviceType::IntegratedGpu
+                )
         });
 
         if has_real_dx12 {
-            log::info!("Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend.");
+            log::info!(
+                "Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend."
+            );
             wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
             wgpu_setup.power_preference = eframe::wgpu::PowerPreference::HighPerformance;
         } else {
-            log::info!("No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection.");
+            log::info!(
+                "No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection."
+            );
         }
     }
 
@@ -466,7 +522,14 @@ fn main() -> eframe::Result {
     let result = eframe::run_native(
         "Simple Image Viewer",
         native_options,
-        Box::new(move |cc| Ok(Box::new(app::ImageViewerApp::new(cc, settings, initial_image, ipc_rx)) as Box<dyn eframe::App>)),
+        Box::new(move |cc| {
+            Ok(Box::new(app::ImageViewerApp::new(
+                cc,
+                settings,
+                initial_image,
+                ipc_rx,
+            )) as Box<dyn eframe::App>)
+        }),
     );
 
     // Force exit: the audio thread may hold CPAL/WASAPI resources whose
@@ -480,16 +543,20 @@ fn main() -> eframe::Result {
         let app_ver = env!("CARGO_PKG_VERSION");
         let error_msg = format!(
             "Simple Image Viewer v{}\nEnvironment: {}\n\n{}: {}",
-            app_ver, env_info, rust_i18n::t!("error.startup_failed"), e
+            app_ver,
+            env_info,
+            rust_i18n::t!("error.startup_failed"),
+            e
         );
-        
+
         log::error!("Application startup failed: {}", e);
-        
+
         let help_hint = {
             #[cfg(target_os = "windows")]
             {
                 let os_version = sysinfo::System::os_version().unwrap_or_default();
-                if os_version.starts_with("6.1") { // Windows 7
+                if os_version.starts_with("6.1") {
+                    // Windows 7
                     rust_i18n::t!("error.win7_graphics_hint").to_string()
                 } else {
                     String::new()
@@ -506,9 +573,18 @@ fn main() -> eframe::Result {
         }
 
         let dialog_msg = if help_hint.is_empty() {
-            format!("{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"))
+            format!(
+                "{}\n\n{}",
+                error_msg,
+                rust_i18n::t!("error.copied_to_clipboard")
+            )
         } else {
-            format!("{}\n\n{}\n\n{}", error_msg, rust_i18n::t!("error.copied_to_clipboard"), help_hint)
+            format!(
+                "{}\n\n{}\n\n{}",
+                error_msg,
+                rust_i18n::t!("error.copied_to_clipboard"),
+                help_hint
+            )
         };
 
         rfd::MessageDialog::new()
@@ -516,7 +592,7 @@ fn main() -> eframe::Result {
             .set_description(&dialog_msg)
             .set_level(rfd::MessageLevel::Error)
             .show();
-        
+
         return Err(e);
     }
 

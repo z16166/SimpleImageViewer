@@ -29,8 +29,8 @@
 //!     });
 //! ```
 
-use eframe::egui;
 use crate::theme::ThemePalette;
+use eframe::egui;
 
 /// Builder for a moveable, resizable modal dialog.
 ///
@@ -102,7 +102,8 @@ impl MovableModal {
         // Use window-local size (starting at Pos2::ZERO) so that default_pos
         // is expressed in egui's coordinate system, not monitor screen coords.
         let win_size = ctx.input(|i| {
-            i.viewport().inner_rect
+            i.viewport()
+                .inner_rect
                 .map(|r| r.size())
                 .unwrap_or(FALLBACK_WIN_SIZE)
         });
@@ -120,9 +121,9 @@ impl MovableModal {
         let title_bar_h = ctx.global_style().spacing.interact_size.y
             + ctx.global_style().spacing.item_spacing.y * 2.0;
         let total_h = if measured_h > 0.0 {
-            measured_h          // actual height from previous open (includes title bar)
+            measured_h // actual height from previous open (includes title bar)
         } else {
-            self.default_size.y + title_bar_h   // first-open estimate
+            self.default_size.y + title_bar_h // first-open estimate
         };
 
         let default_pos = egui::pos2(
@@ -132,7 +133,10 @@ impl MovableModal {
 
         // Unique Id per modal opening so egui has no position memory from
         // previous openings → dialog always appears at the freshly-computed center.
-        let modal_gen: u32 = ctx.data(|d| d.get_temp(egui::Id::new(super::modal_state::ID_MODAL_GENERATION)).unwrap_or(0));
+        let modal_gen: u32 = ctx.data(|d| {
+            d.get_temp(egui::Id::new(super::modal_state::ID_MODAL_GENERATION))
+                .unwrap_or(0)
+        });
         let unique_id = self.id.with(modal_gen);
 
         let resp = egui::Window::new(self.title.as_str())
@@ -166,7 +170,8 @@ impl MovableModal {
     fn draw_backdrop(&self, ctx: &egui::Context, palette: &ThemePalette) {
         // Same normalization: use window-local size, not monitor-absolute coords.
         let win_size = ctx.input(|i| {
-            i.viewport().inner_rect
+            i.viewport()
+                .inner_rect
                 .map(|r| r.size())
                 .unwrap_or(FALLBACK_WIN_SIZE)
         });

@@ -11,7 +11,18 @@ use std::ffi::c_void;
 unsafe extern "C" {
     pub fn monkey_decoder_open(filename: *const c_void) -> *mut c_void;
     pub fn monkey_decoder_close(decoder: *mut c_void);
-    pub fn monkey_decoder_get_info(decoder: *mut c_void, sample_rate: *mut i32, bits_per_sample: *mut i32, channels: *mut i32, total_blocks: *mut i64) -> i32;
-    pub fn monkey_decoder_decode_blocks(decoder: *mut c_void, buffer: *mut u8, blocks_to_decode: i32, blocks_decoded: *mut i32) -> i32;
+    pub fn monkey_decoder_get_info(
+        decoder: *mut c_void,
+        sample_rate: *mut i32,
+        bits_per_sample: *mut i32,
+        channels: *mut i32,
+        total_blocks: *mut i64,
+    ) -> i32;
+    pub fn monkey_decoder_decode_blocks(
+        decoder: *mut c_void,
+        buffer: *mut u8,
+        blocks_to_decode: i32,
+        blocks_decoded: *mut i32,
+    ) -> i32;
     pub fn monkey_decoder_seek(decoder: *mut c_void, block_offset: i64) -> i32;
 }

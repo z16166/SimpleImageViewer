@@ -27,10 +27,10 @@
 //!
 //! Reference: Adobe Photoshop File Formats Specification (March 2013)
 
+use memmap2::Mmap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use memmap2::Mmap;
 
 // SIMD architecture-specific imports are handled within submodules
 
@@ -48,18 +48,28 @@ mod simd_swizzle {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { interleave_rgba_avx2(r, g, b, a, dst, &mut i, len); }
+                unsafe {
+                    interleave_rgba_avx2(r, g, b, a, dst, &mut i, len);
+                }
             } else if is_x86_feature_detected!("sse4.1") {
-                unsafe { interleave_rgba_sse41(r, g, b, a, dst, &mut i, len); }
+                unsafe {
+                    interleave_rgba_sse41(r, g, b, a, dst, &mut i, len);
+                }
             }
-            if i >= len { return; }
+            if i >= len {
+                return;
+            }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
             // NEON is always available on aarch64
-            unsafe { interleave_rgba_neon(r, g, b, a, dst, &mut i, len); }
-            if i >= len { return; }
+            unsafe {
+                interleave_rgba_neon(r, g, b, a, dst, &mut i, len);
+            }
+            if i >= len {
+                return;
+            }
         }
 
         while i < len {
@@ -74,7 +84,15 @@ mod simd_swizzle {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    unsafe fn interleave_rgba_avx2(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+    unsafe fn interleave_rgba_avx2(
+        r: &[u8],
+        g: &[u8],
+        b: &[u8],
+        a: &[u8],
+        dst: &mut [u8],
+        i: &mut usize,
+        len: usize,
+    ) {
         while *i + 32 <= len {
             unsafe {
                 let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
@@ -94,13 +112,34 @@ mod simd_swizzle {
 
                 let p_dst = dst.as_mut_ptr().add(*i * 4);
                 _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
-                _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
-                _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
-                _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
-                _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
-                _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
-                _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
-                _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
+                _mm_storeu_si128(
+                    p_dst.add(16) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba1, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(32) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba2, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(48) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba3, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(64) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba0, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(80) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba1, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(96) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba2, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(112) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba3, 1),
+                );
             }
             *i += 32;
         }
@@ -108,7 +147,15 @@ mod simd_swizzle {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interleave_rgba_sse41(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+    unsafe fn interleave_rgba_sse41(
+        r: &[u8],
+        g: &[u8],
+        b: &[u8],
+        a: &[u8],
+        dst: &mut [u8],
+        i: &mut usize,
+        len: usize,
+    ) {
         while *i + 16 <= len {
             unsafe {
                 let vr = _mm_loadu_si128(r.as_ptr().add(*i) as *const __m128i);
@@ -143,15 +190,23 @@ mod simd_swizzle {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
-                unsafe { interleave_rgb_avx2(r, g, b, alpha, dst, &mut i, len); }
+                unsafe {
+                    interleave_rgb_avx2(r, g, b, alpha, dst, &mut i, len);
+                }
             }
-            if i >= len { return; }
+            if i >= len {
+                return;
+            }
         }
 
         #[cfg(target_arch = "aarch64")]
         {
-            unsafe { interleave_rgb_neon(r, g, b, alpha, dst, &mut i, len); }
-            if i >= len { return; }
+            unsafe {
+                interleave_rgb_neon(r, g, b, alpha, dst, &mut i, len);
+            }
+            if i >= len {
+                return;
+            }
         }
 
         while i < len {
@@ -166,7 +221,15 @@ mod simd_swizzle {
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
-    unsafe fn interleave_rgb_avx2(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8], i: &mut usize, len: usize) {
+    unsafe fn interleave_rgb_avx2(
+        r: &[u8],
+        g: &[u8],
+        b: &[u8],
+        alpha: u8,
+        dst: &mut [u8],
+        i: &mut usize,
+        len: usize,
+    ) {
         unsafe {
             let va = _mm256_set1_epi8(alpha as i8);
             while *i + 32 <= len {
@@ -186,20 +249,49 @@ mod simd_swizzle {
 
                 let p_dst = dst.as_mut_ptr().add(*i * 4);
                 _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
-                _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
-                _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
-                _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
-                _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
-                _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
-                _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
-                _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
+                _mm_storeu_si128(
+                    p_dst.add(16) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba1, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(32) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba2, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(48) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba3, 0),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(64) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba0, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(80) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba1, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(96) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba2, 1),
+                );
+                _mm_storeu_si128(
+                    p_dst.add(112) as *mut __m128i,
+                    _mm256_extracti128_si256(rgba3, 1),
+                );
                 *i += 32;
             }
         }
     }
 
     #[cfg(target_arch = "aarch64")]
-    unsafe fn interleave_rgba_neon(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8], i: &mut usize, len: usize) {
+    unsafe fn interleave_rgba_neon(
+        r: &[u8],
+        g: &[u8],
+        b: &[u8],
+        a: &[u8],
+        dst: &mut [u8],
+        i: &mut usize,
+        len: usize,
+    ) {
         while *i + 16 <= len {
             unsafe {
                 let vr = vld1q_u8(r.as_ptr().add(*i));
@@ -213,7 +305,15 @@ mod simd_swizzle {
     }
 
     #[cfg(target_arch = "aarch64")]
-    unsafe fn interleave_rgb_neon(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8], i: &mut usize, len: usize) {
+    unsafe fn interleave_rgb_neon(
+        r: &[u8],
+        g: &[u8],
+        b: &[u8],
+        alpha: u8,
+        dst: &mut [u8],
+        i: &mut usize,
+        len: usize,
+    ) {
         unsafe {
             let va = vdupq_n_u8(alpha);
             while *i + 16 <= len {
@@ -238,12 +338,12 @@ mod simd_swizzle {
                 let g: Vec<u8> = (0..len).map(|i| ((i + 1) % 256) as u8).collect();
                 let b: Vec<u8> = (0..len).map(|i| ((i + 2) % 256) as u8).collect();
                 let a: Vec<u8> = (0..len).map(|i| ((i + 3) % 256) as u8).collect();
-                
+
                 let mut dst_simd = vec![0u8; len * 4];
                 let mut dst_ref = vec![0u8; len * 4];
-                
+
                 interleave_rgba(&r, &g, &b, &a, &mut dst_simd);
-                
+
                 // Naive reference (manually verifiable, 100% safe)
                 for i in 0..len {
                     dst_ref[i * 4 + 0] = r[i];
@@ -251,7 +351,7 @@ mod simd_swizzle {
                     dst_ref[i * 4 + 2] = b[i];
                     dst_ref[i * 4 + 3] = a[i];
                 }
-                
+
                 assert_eq!(dst_simd, dst_ref, "RGBA mismatch at len {}", len);
             }
         }
@@ -263,26 +363,24 @@ mod simd_swizzle {
                 let g: Vec<u8> = (0..len).map(|i| ((i + 1) % 256) as u8).collect();
                 let b: Vec<u8> = (0..len).map(|i| ((i + 2) % 256) as u8).collect();
                 let alpha = 255u8;
-                
+
                 let mut dst_simd = vec![0u8; len * 4];
                 let mut dst_ref = vec![0u8; len * 4];
-                
+
                 interleave_rgb(&r, &g, &b, alpha, &mut dst_simd);
-                
+
                 for i in 0..len {
                     dst_ref[i * 4 + 0] = r[i];
                     dst_ref[i * 4 + 1] = g[i];
                     dst_ref[i * 4 + 2] = b[i];
                     dst_ref[i * 4 + 3] = alpha;
                 }
-                
+
                 assert_eq!(dst_simd, dst_ref, "RGB mismatch at len {}", len);
             }
         }
     }
 }
-
-
 
 /// Decoded PSB composite image (Full in-memory).
 #[allow(dead_code)]
@@ -343,7 +441,10 @@ impl PsbTiledSource {
                 } else {
                     self.mmap.len()
                 };
-                if offset < self.mmap.len() && next_offset <= self.mmap.len() && next_offset > offset {
+                if offset < self.mmap.len()
+                    && next_offset <= self.mmap.len()
+                    && next_offset > offset
+                {
                     let compressed = &self.mmap[offset..next_offset];
                     let mut decompressed = unpack_bits(compressed, self.width as usize);
                     decompressed.resize(self.width as usize, 0);
@@ -391,7 +492,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
 
     // ── Section 1: File Header ─────────────────────────────────────
     let mut sig = [0u8; 4];
-    r.read_exact(&mut sig).map_err(|e| format!("Read error: {e}"))?;
+    r.read_exact(&mut sig)
+        .map_err(|e| format!("Read error: {e}"))?;
     if &sig != b"8BPS" {
         return Err("Not a PSD/PSB file (invalid signature)".into());
     }
@@ -403,7 +505,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     let is_psb = version == 2;
 
     // 6 bytes reserved
-    r.seek(SeekFrom::Current(6)).map_err(|e| format!("Seek error: {e}"))?;
+    r.seek(SeekFrom::Current(6))
+        .map_err(|e| format!("Seek error: {e}"))?;
 
     let channels = read_u16(&mut r)? as u32;
     let height = read_u32(&mut r)?;
@@ -420,16 +523,23 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
 
     log::info!(
         "PSB header: {}x{}, {} channels, {}-bit, color_mode={}, version={}",
-        width, height, channels, depth, color_mode, version
+        width,
+        height,
+        channels,
+        depth,
+        color_mode,
+        version
     );
 
     // ── Section 2: Color Mode Data ─────────────────────────────────
     let cm_len = read_u32(&mut r)?;
-    r.seek(SeekFrom::Current(cm_len as i64)).map_err(|e| format!("Seek error: {e}"))?;
+    r.seek(SeekFrom::Current(cm_len as i64))
+        .map_err(|e| format!("Seek error: {e}"))?;
 
     // ── Section 3: Image Resources ─────────────────────────────────
     let ir_len = read_u32(&mut r)?;
-    r.seek(SeekFrom::Current(ir_len as i64)).map_err(|e| format!("Seek error: {e}"))?;
+    r.seek(SeekFrom::Current(ir_len as i64))
+        .map_err(|e| format!("Seek error: {e}"))?;
 
     // ── Section 4: Layer and Mask Information ───────────────────────
     // PSD uses u32 length, PSB uses u64 length
@@ -438,7 +548,8 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
     } else {
         read_u32(&mut r)? as u64
     };
-    r.seek(SeekFrom::Current(lm_len as i64)).map_err(|e| format!("Seek error: {e}"))?;
+    r.seek(SeekFrom::Current(lm_len as i64))
+        .map_err(|e| format!("Seek error: {e}"))?;
 
     // ── Section 5: Image Data (the flattened composite) ────────────
     let compression = read_u16(&mut r)?;
@@ -475,18 +586,23 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
             let mut ch_data = vec![0u8; pixel_count];
             match compression {
                 0 => {
-                    r.read_exact(&mut ch_data).map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
+                    r.read_exact(&mut ch_data)
+                        .map_err(|e| format!("Read raw channel {ch_idx}: {e}"))?;
                 }
                 1 => {
                     for row in 0..height as usize {
                         let idx = ch_idx as usize * height as usize + row;
-                        let compressed_len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                        let compressed_len = *row_counts
+                            .get(idx)
+                            .ok_or_else(|| format!("Row count index {idx} out of range"))?;
                         let mut compressed = vec![0u8; compressed_len];
-                        r.read_exact(&mut compressed).map_err(|e| format!("Read RLE: {e}"))?;
+                        r.read_exact(&mut compressed)
+                            .map_err(|e| format!("Read RLE: {e}"))?;
                         let decompressed = unpack_bits(&compressed, width as usize);
                         let dst_start = row * width as usize;
                         let copy_len = decompressed.len().min(width as usize);
-                        ch_data[dst_start..dst_start + copy_len].copy_from_slice(&decompressed[..copy_len]);
+                        ch_data[dst_start..dst_start + copy_len]
+                            .copy_from_slice(&decompressed[..copy_len]);
                     }
                 }
                 _ => return Err(format!("Unsupported compression: {compression}")),
@@ -495,12 +611,18 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
         } else {
             // Skip unused channel
             match compression {
-                0 => { r.seek(SeekFrom::Current(pixel_count as i64)).map_err(|e| format!("Skip raw: {e}"))?; }
+                0 => {
+                    r.seek(SeekFrom::Current(pixel_count as i64))
+                        .map_err(|e| format!("Skip raw: {e}"))?;
+                }
                 1 => {
                     for row in 0..height {
                         let idx = ch_idx as usize * height as usize + row as usize;
-                        let len = *row_counts.get(idx).ok_or_else(|| format!("Row count index {idx} out of range"))?;
-                        r.seek(SeekFrom::Current(len as i64)).map_err(|e| format!("Skip RLE: {e}"))?;
+                        let len = *row_counts
+                            .get(idx)
+                            .ok_or_else(|| format!("Row count index {idx} out of range"))?;
+                        r.seek(SeekFrom::Current(len as i64))
+                            .map_err(|e| format!("Skip RLE: {e}"))?;
                     }
                 }
                 _ => {}
@@ -532,7 +654,14 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
             (1, 1) | (1, 2) => {
                 if let Some(gray) = &planar_channels[0] {
                     let g_row = &gray[start..end];
-                    let a_row = if channels >= 2 { planar_channels.get(1).and_then(|c| c.as_ref()).map(|d| &d[start..end]) } else { None };
+                    let a_row = if channels >= 2 {
+                        planar_channels
+                            .get(1)
+                            .and_then(|c| c.as_ref())
+                            .map(|d| &d[start..end])
+                    } else {
+                        None
+                    };
                     for (col, &v) in g_row.iter().enumerate() {
                         let base = col * 4;
                         dst_row[base] = v;
@@ -550,7 +679,11 @@ pub fn read_composite(path: &Path) -> Result<PsbComposite, String> {
         }
     }
 
-    Ok(PsbComposite { width, height, pixels: rgba })
+    Ok(PsbComposite {
+        width,
+        height,
+        pixels: rgba,
+    })
 }
 
 /// Initialize a tiled source for a PSB file.
@@ -568,7 +701,8 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             const FILE_FLAG_RANDOM_ACCESS: u32 = 0x10000000;
             opts.custom_flags(FILE_FLAG_RANDOM_ACCESS);
         }
-        opts.open(path).map_err(|e| format!("Cannot open file: {e}"))?
+        opts.open(path)
+            .map_err(|e| format!("Cannot open file: {e}"))?
     };
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
     let mut cursor = std::io::Cursor::new(&mmap[..]);
@@ -578,7 +712,9 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     cursor.read_exact(&mut sig).map_err(|e| e.to_string())?;
     let version = read_u16(&mut cursor)?;
     let is_psb = version == 2;
-    cursor.seek(SeekFrom::Current(6)).map_err(|e| e.to_string())?;
+    cursor
+        .seek(SeekFrom::Current(6))
+        .map_err(|e| e.to_string())?;
     let channels = read_u16(&mut cursor)? as u32;
     let height = read_u32(&mut cursor)?;
     let width = read_u32(&mut cursor)?;
@@ -591,11 +727,21 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
 
     // Skip Sections 2, 3, 4
     let cm_len = read_u32(&mut cursor)?;
-    cursor.seek(SeekFrom::Current(cm_len as i64)).map_err(|e| e.to_string())?;
+    cursor
+        .seek(SeekFrom::Current(cm_len as i64))
+        .map_err(|e| e.to_string())?;
     let ir_len = read_u32(&mut cursor)?;
-    cursor.seek(SeekFrom::Current(ir_len as i64)).map_err(|e| e.to_string())?;
-    let lm_len = if is_psb { read_u64(&mut cursor)? } else { read_u32(&mut cursor)? as u64 };
-    cursor.seek(SeekFrom::Current(lm_len as i64)).map_err(|e| e.to_string())?;
+    cursor
+        .seek(SeekFrom::Current(ir_len as i64))
+        .map_err(|e| e.to_string())?;
+    let lm_len = if is_psb {
+        read_u64(&mut cursor)?
+    } else {
+        read_u32(&mut cursor)? as u64
+    };
+    cursor
+        .seek(SeekFrom::Current(lm_len as i64))
+        .map_err(|e| e.to_string())?;
 
     // Image Data Section start
     let compression = read_u16(&mut cursor)?;
@@ -609,7 +755,9 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             let pixel_count = width as u64 * height as u64;
             for ch in 0..channels {
                 for row in 0..height {
-                    row_offsets.push(row_counts_start + (ch as u64 * pixel_count) + (row as u64 * width as u64));
+                    row_offsets.push(
+                        row_counts_start + (ch as u64 * pixel_count) + (row as u64 * width as u64),
+                    );
                 }
             }
         }
@@ -618,7 +766,11 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             let total_rows = channels as usize * height as usize;
             let mut counts = Vec::with_capacity(total_rows);
             for _ in 0..total_rows {
-                let cnt = if is_psb { read_u32(&mut cursor)? as u64 } else { read_u16(&mut cursor)? as u64 };
+                let cnt = if is_psb {
+                    read_u32(&mut cursor)? as u64
+                } else {
+                    read_u16(&mut cursor)? as u64
+                };
                 counts.push(cnt);
             }
             let data_start = cursor.position();
@@ -629,7 +781,11 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
             }
         }
         _ => {
-            log::error!("[{}] PSB: Unsupported compression method {}", path.display(), compression);
+            log::error!(
+                "[{}] PSB: Unsupported compression method {}",
+                path.display(),
+                compression
+            );
             return Err(format!("Unsupported compression: {compression}"));
         }
     }
@@ -652,20 +808,28 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
     Ok(PsbTiledSource {
         path: path.to_path_buf(),
         mmap: Arc::new(mmap),
-        width, height, channels, color_mode, is_psb, compression,
+        width,
+        height,
+        channels,
+        color_mode,
+        is_psb,
+        compression,
         row_offsets,
         row_cache,
     })
 }
 
-
 impl crate::loader::TiledImageSource for PsbTiledSource {
-    fn width(&self) -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let mut rgba = vec![255u8; (w * h * 4) as usize];
-        
+
         // 1. Group rows by tile-relative Y for all channels
         // This allows us to process all channels for a single row together (SIMD-friendly)
         let mut row_grid = vec![vec![None; self.channels as usize]; h as usize];
@@ -677,7 +841,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 }
             }
         }
-        
+
         let start = x as usize;
         let end = (x + w) as usize;
 
@@ -697,21 +861,30 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
 
         // 2. Swizzle row-by-row
         for rel_y in 0..h as usize {
-            let dst_row = &mut rgba[rel_y * w as usize * 4 .. (rel_y + 1) * w as usize * 4];
+            let dst_row = &mut rgba[rel_y * w as usize * 4..(rel_y + 1) * w as usize * 4];
             let src_channels = &row_grid[rel_y];
-            
+
             // Optimized fast-paths for common color modes
             let mut processed = false;
             match (self.color_mode, self.channels) {
                 (3, 3) | (3, 4) => {
                     // RGB or RGBA (Mode 3)
-                    let r = src_channels[0].as_ref().map(|d| &d[start..end.min(d.len())]);
-                    let g = src_channels[1].as_ref().map(|d| &d[start..end.min(d.len())]);
-                    let b = src_channels[2].as_ref().map(|d| &d[start..end.min(d.len())]);
-                    
+                    let r = src_channels[0]
+                        .as_ref()
+                        .map(|d| &d[start..end.min(d.len())]);
+                    let g = src_channels[1]
+                        .as_ref()
+                        .map(|d| &d[start..end.min(d.len())]);
+                    let b = src_channels[2]
+                        .as_ref()
+                        .map(|d| &d[start..end.min(d.len())]);
+
                     if let (Some(r), Some(g), Some(b)) = (r, g, b) {
                         if self.channels == 4 {
-                            if let Some(a) = src_channels[3].as_ref().map(|d| &d[start..end.min(d.len())]) {
+                            if let Some(a) = src_channels[3]
+                                .as_ref()
+                                .map(|d| &d[start..end.min(d.len())])
+                            {
                                 simd_swizzle::interleave_rgba(r, g, b, a, dst_row);
                                 processed = true;
                             }
@@ -723,10 +896,17 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 }
                 (1, 1) | (1, 2) => {
                     // Grayscale (Mode 1)
-                    if let Some(gray) = src_channels[0].as_ref().map(|d| &d[start..end.min(d.len())]) {
+                    if let Some(gray) = src_channels[0]
+                        .as_ref()
+                        .map(|d| &d[start..end.min(d.len())])
+                    {
                         let alpha = if self.channels == 2 {
-                             src_channels[1].as_ref().map(|d| &d[start..end.min(d.len())])
-                        } else { None };
+                            src_channels[1]
+                                .as_ref()
+                                .map(|d| &d[start..end.min(d.len())])
+                        } else {
+                            None
+                        };
 
                         for (col, &v) in gray.iter().enumerate() {
                             let base = col * 4;
@@ -749,8 +929,10 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 // Scalar fallback for complex channel mappings
                 for ch_idx in 0..self.channels {
                     let ch_target = &channel_mappings[ch_idx as usize];
-                    if ch_target.is_empty() { continue; }
-                    
+                    if ch_target.is_empty() {
+                        continue;
+                    }
+
                     if let Some(row_data) = &src_channels[ch_idx as usize] {
                         let row_len = row_data.len();
                         if start < row_len {
@@ -771,10 +953,12 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f64 / self.width as f64).min(max_h as f64 / self.height as f64).min(1.0);
+        let scale = (max_w as f64 / self.width as f64)
+            .min(max_h as f64 / self.height as f64)
+            .min(1.0);
         let out_w = (self.width as f64 * scale).round().max(1.0) as u32;
         let out_h = (self.height as f64 * scale).round().max(1.0) as u32;
-        
+
         let mut pixels = vec![255u8; (out_w * out_h * 4) as usize];
 
         // 1. Pre-calculate channel mappings to avoid hot-loop allocations
@@ -795,19 +979,21 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         let x_map: Vec<usize> = (0..out_w)
             .map(|out_x| ((out_x as f64 / scale) as usize).min(self.width as usize - 1))
             .collect();
-        
+
         // For each sampled row, decode once per channel and pick pixels
         for out_y in 0..out_h {
             let src_y = ((out_y as f64 / scale) as u32).min(self.height - 1);
             let row_start_idx = out_y as usize * out_w as usize;
-            
+
             for ch_idx in 0..self.channels {
                 let ch_target = &channel_mappings[ch_idx as usize];
-                if ch_target.is_empty() { continue; }
-                
+                if ch_target.is_empty() {
+                    continue;
+                }
+
                 let row_data = self.get_row(ch_idx, src_y);
                 let row_len = row_data.len();
-                
+
                 for out_x in 0..out_w as usize {
                     let src_x = x_map[out_x];
                     if src_x < row_len {
@@ -820,7 +1006,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 }
             }
         }
-        
+
         (out_w, out_h, pixels)
     }
 
@@ -864,19 +1050,22 @@ fn unpack_bits(data: &[u8], expected_len: usize) -> Vec<u8> {
 
 fn read_u16(r: &mut impl Read) -> Result<u16, String> {
     let mut buf = [0u8; 2];
-    r.read_exact(&mut buf).map_err(|e| format!("Read u16: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("Read u16: {e}"))?;
     Ok(u16::from_be_bytes(buf))
 }
 
 fn read_u32(r: &mut impl Read) -> Result<u32, String> {
     let mut buf = [0u8; 4];
-    r.read_exact(&mut buf).map_err(|e| format!("Read u32: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("Read u32: {e}"))?;
     Ok(u32::from_be_bytes(buf))
 }
 
 fn read_u64(r: &mut impl Read) -> Result<u64, String> {
     let mut buf = [0u8; 8];
-    r.read_exact(&mut buf).map_err(|e| format!("Read u64: {e}"))?;
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("Read u64: {e}"))?;
     Ok(u64::from_be_bytes(buf))
 }
 
@@ -887,12 +1076,14 @@ pub fn estimate_memory(path: &Path) -> Result<(u32, u32, u32, u64), String> {
     let mut r = BufReader::new(file);
 
     let mut sig = [0u8; 4];
-    r.read_exact(&mut sig).map_err(|e| format!("Read error: {e}"))?;
+    r.read_exact(&mut sig)
+        .map_err(|e| format!("Read error: {e}"))?;
     if &sig != b"8BPS" {
         return Err("Not a PSD/PSB file".into());
     }
     let _version = read_u16(&mut r)?;
-    r.seek(SeekFrom::Current(6)).map_err(|e| format!("Seek error: {e}"))?;
+    r.seek(SeekFrom::Current(6))
+        .map_err(|e| format!("Seek error: {e}"))?;
     let channels = read_u16(&mut r)? as u32;
     let height = read_u32(&mut r)?;
     let width = read_u32(&mut r)?;

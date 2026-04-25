@@ -118,8 +118,8 @@ impl ThemePalette {
             text_normal: Color32::from_rgb(240, 240, 240),
             text_muted: Color32::from_gray(210), // Significantly lightened for small-text legibility
 
-            accent:  Color32::from_rgb(74, 144, 226), // Steel Blue
-            accent2: Color32::from_rgb(0, 212, 180),  // Cool Teal
+            accent: Color32::from_rgb(74, 144, 226), // Steel Blue
+            accent2: Color32::from_rgb(0, 212, 180), // Cool Teal
             button_primary: Color32::from_rgb(74, 144, 226), // same as accent in dark mode
 
             hint_icon: Color32::from_gray(60),
@@ -152,8 +152,8 @@ impl ThemePalette {
             text_normal: Color32::from_rgb(27, 38, 59), // Midnight Blue Ink
             text_muted: Color32::from_rgb(95, 99, 104),
 
-            accent:  Color32::from_rgb(27, 38, 59),  // Midnight Blue Ink (text/heading use)
-            accent2: Color32::from_rgb(74, 93, 78),  // Deep Sage
+            accent: Color32::from_rgb(27, 38, 59), // Midnight Blue Ink (text/heading use)
+            accent2: Color32::from_rgb(74, 93, 78), // Deep Sage
             // Button fill uses a proper mid-blue so primary buttons look like
             // call-to-action elements, not near-black blocks.
             button_primary: Color32::from_rgb(37, 99, 235), // Indigo Blue
@@ -306,13 +306,18 @@ fn linux_is_dark_mode() -> bool {
     // Values: 0 = no preference, 1 = prefer-dark, 2 = prefer-light
     if let Ok(output) = Command::new("gdbus")
         .args(&[
-            "call", "--session", 
-            "--dest", "org.freedesktop.portal.Desktop", 
-            "--object-path", "/org/freedesktop/portal/desktop", 
-            "--method", "org.freedesktop.portal.Settings.Read", 
-            "org.freedesktop.appearance", "color-scheme"
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.portal.Desktop",
+            "--object-path",
+            "/org/freedesktop/portal/desktop",
+            "--method",
+            "org.freedesktop.portal.Settings.Read",
+            "org.freedesktop.appearance",
+            "color-scheme",
         ])
-        .output() 
+        .output()
     {
         let s = String::from_utf8_lossy(&output.stdout);
         if s.contains("uint32 1") {
@@ -325,7 +330,7 @@ fn linux_is_dark_mode() -> bool {
     // 2. Try GNOME-specific setting (gsettings)
     if let Ok(output) = Command::new("gsettings")
         .args(&["get", "org.gnome.desktop.interface", "color-scheme"])
-        .output() 
+        .output()
     {
         let s = String::from_utf8_lossy(&output.stdout);
         if s.contains("prefer-dark") {
@@ -340,7 +345,7 @@ fn linux_is_dark_mode() -> bool {
     for cmd in &["kreadconfig6", "kreadconfig5"] {
         if let Ok(output) = Command::new(cmd)
             .args(&["--group", "General", "--key", "ColorScheme"])
-            .output() 
+            .output()
         {
             let s = String::from_utf8_lossy(&output.stdout).to_lowercase();
             if !s.is_empty() {
@@ -360,7 +365,7 @@ fn macos_is_dark_mode() -> bool {
     // If it's not set, the command fails with exit code 1, which means Light mode.
     if let Ok(output) = Command::new("defaults")
         .args(&["read", "-g", "AppleInterfaceStyle"])
-        .output() 
+        .output()
     {
         let s = String::from_utf8_lossy(&output.stdout);
         return s.trim() == "Dark";

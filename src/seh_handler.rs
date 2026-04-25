@@ -32,21 +32,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{
     BOOL, CloseHandle, EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ARRAY_BOUNDS_EXCEEDED,
     EXCEPTION_BREAKPOINT, EXCEPTION_DATATYPE_MISALIGNMENT, EXCEPTION_FLT_DENORMAL_OPERAND,
-    EXCEPTION_FLT_DIVIDE_BY_ZERO, EXCEPTION_FLT_INEXACT_RESULT,
-    EXCEPTION_FLT_INVALID_OPERATION, EXCEPTION_FLT_OVERFLOW, EXCEPTION_FLT_STACK_CHECK,
-    EXCEPTION_FLT_UNDERFLOW, EXCEPTION_GUARD_PAGE, EXCEPTION_ILLEGAL_INSTRUCTION,
-    EXCEPTION_IN_PAGE_ERROR, EXCEPTION_INT_DIVIDE_BY_ZERO, EXCEPTION_INT_OVERFLOW,
-    EXCEPTION_INVALID_DISPOSITION, EXCEPTION_INVALID_HANDLE, EXCEPTION_NONCONTINUABLE_EXCEPTION,
-    EXCEPTION_PRIV_INSTRUCTION, EXCEPTION_SINGLE_STEP, EXCEPTION_STACK_OVERFLOW, HANDLE, NTSTATUS,
+    EXCEPTION_FLT_DIVIDE_BY_ZERO, EXCEPTION_FLT_INEXACT_RESULT, EXCEPTION_FLT_INVALID_OPERATION,
+    EXCEPTION_FLT_OVERFLOW, EXCEPTION_FLT_STACK_CHECK, EXCEPTION_FLT_UNDERFLOW,
+    EXCEPTION_GUARD_PAGE, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_IN_PAGE_ERROR,
+    EXCEPTION_INT_DIVIDE_BY_ZERO, EXCEPTION_INT_OVERFLOW, EXCEPTION_INVALID_DISPOSITION,
+    EXCEPTION_INVALID_HANDLE, EXCEPTION_NONCONTINUABLE_EXCEPTION, EXCEPTION_PRIV_INSTRUCTION,
+    EXCEPTION_SINGLE_STEP, EXCEPTION_STACK_OVERFLOW, HANDLE, NTSTATUS,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, CREATE_ALWAYS,
+    CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, WriteFile,
 };
 use windows::Win32::System::Diagnostics::Debug::{
-    EXCEPTION_POINTERS, EXCEPTION_RECORD, MiniDumpWriteDump, SetUnhandledExceptionFilter,
-    MINIDUMP_EXCEPTION_INFORMATION, MINIDUMP_TYPE,
+    EXCEPTION_POINTERS, EXCEPTION_RECORD, MINIDUMP_EXCEPTION_INFORMATION, MINIDUMP_TYPE,
+    MiniDumpWriteDump, SetUnhandledExceptionFilter,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows::core::PCWSTR;
 
 /// Guard to prevent reentrant invocations of the exception handler.
@@ -83,11 +85,15 @@ unsafe extern "system" fn unhandled_exception_filter(
 
     // --- 1. Write the text crash report ---
     let report_path = base_dir.join(crate::constants::CRASH_REPORT_FILENAME);
-    unsafe { write_text_report(&report_path, exception_info); }
+    unsafe {
+        write_text_report(&report_path, exception_info);
+    }
 
     // --- 2. Write the minidump ---
     let dump_path = base_dir.join(crate::constants::CRASH_DUMP_FILENAME);
-    unsafe { write_minidump(&dump_path, exception_info); }
+    unsafe {
+        write_minidump(&dump_path, exception_info);
+    }
 
     EXCEPTION_EXECUTE_HANDLER
 }
@@ -98,10 +104,7 @@ unsafe extern "system" fn unhandled_exception_filter(
 
 /// Write a human-readable crash report using only Win32 `WriteFile`.
 /// On failure this is best-effort; we silently continue.
-unsafe fn write_text_report(
-    path: &std::path::Path,
-    exception_info: *const EXCEPTION_POINTERS,
-) {
+unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEPTION_POINTERS) {
     // Convert path to wide string on the stack (max ~512 chars is plenty).
     let mut wide_buf = [0u16; 512];
     let wide_len = path_to_wide(path, &mut wide_buf);
@@ -129,7 +132,11 @@ unsafe fn write_text_report(
     let mut buf = [0u8; 4096];
     let mut pos = 0usize;
 
-    pos = append_str(&mut buf, pos, "--- Simple Image Viewer SEH Crash Report ---\r\n");
+    pos = append_str(
+        &mut buf,
+        pos,
+        "--- Simple Image Viewer SEH Crash Report ---\r\n",
+    );
     pos = append_str(&mut buf, pos, "Version: v");
     pos = append_str(&mut buf, pos, env!("CARGO_PKG_VERSION"));
     pos = append_str(&mut buf, pos, "\r\n");
@@ -155,7 +162,17 @@ unsafe fn write_text_report(
                 let rw = rec.ExceptionInformation[0];
                 let addr = rec.ExceptionInformation[1];
                 pos = append_str(&mut buf, pos, "Access Type: ");
-                pos = append_str(&mut buf, pos, if rw == 0 { "READ" } else if rw == 1 { "WRITE" } else { "EXECUTE" });
+                pos = append_str(
+                    &mut buf,
+                    pos,
+                    if rw == 0 {
+                        "READ"
+                    } else if rw == 1 {
+                        "WRITE"
+                    } else {
+                        "EXECUTE"
+                    },
+                );
                 pos = append_str(&mut buf, pos, "\r\nFaulting Address: 0x");
                 pos = append_hex64(&mut buf, pos, addr as u64);
                 pos = append_str(&mut buf, pos, "\r\n");
@@ -198,7 +215,9 @@ unsafe fn write_text_report(
             for i in 0..8u32 {
                 let mut name = [b'X', b'0', b' '];
                 name[1] = b'0' + i as u8;
-                pos = append_str(&mut buf, pos, unsafe { core::str::from_utf8_unchecked(&name) });
+                pos = append_str(&mut buf, pos, unsafe {
+                    core::str::from_utf8_unchecked(&name)
+                });
                 pos = append_str(&mut buf, pos, " = 0x");
                 pos = append_hex64(&mut buf, pos, ctx.Anonymous.X[i as usize]);
                 pos = append_str(&mut buf, pos, "\r\n");
@@ -206,9 +225,21 @@ unsafe fn write_text_report(
         }
     }
 
-    pos = append_str(&mut buf, pos, "\r\nA minidump (.dmp) file has also been generated in the same directory.\r\n");
-    pos = append_str(&mut buf, pos, "Please send both files to the developer for analysis.\r\n");
-    pos = append_str(&mut buf, pos, "--------------------------------------------\r\n");
+    pos = append_str(
+        &mut buf,
+        pos,
+        "\r\nA minidump (.dmp) file has also been generated in the same directory.\r\n",
+    );
+    pos = append_str(
+        &mut buf,
+        pos,
+        "Please send both files to the developer for analysis.\r\n",
+    );
+    pos = append_str(
+        &mut buf,
+        pos,
+        "--------------------------------------------\r\n",
+    );
 
     // Flush to disk
     let mut written = 0u32;
@@ -224,10 +255,7 @@ unsafe fn write_text_report(
 
 /// Write a minidump using `MiniDumpWriteDump`.  This API is designed by
 /// Microsoft to be safe to call from within an exception filter.
-unsafe fn write_minidump(
-    path: &std::path::Path,
-    exception_info: *const EXCEPTION_POINTERS,
-) {
+unsafe fn write_minidump(path: &std::path::Path, exception_info: *const EXCEPTION_POINTERS) {
     let mut wide_buf = [0u16; 512];
     let wide_len = path_to_wide(path, &mut wide_buf);
     if wide_len == 0 {
@@ -260,7 +288,7 @@ unsafe fn write_minidump(
     let dump_type = MINIDUMP_TYPE(
         0x00000001 | // MiniDumpWithDataSegs
         0x00000004 | // MiniDumpWithHandleData
-        0x00001000   // MiniDumpWithThreadInfo
+        0x00001000, // MiniDumpWithThreadInfo
     );
 
     let exception_param = MINIDUMP_EXCEPTION_INFORMATION {

@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use crate::app::ImageViewerApp;
 use crate::tile_cache::{TileCoord, TileStatus};
+use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
@@ -55,12 +55,20 @@ impl ImageViewerApp {
         let tm_ref = self.tile_manager.as_ref().unwrap();
         let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
 
-        let rotated_img_size = if needs_swap { Vec2::new(img_size.y, img_size.x) } else { img_size };
+        let rotated_img_size = if needs_swap {
+            Vec2::new(img_size.y, img_size.x)
+        } else {
+            img_size
+        };
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
 
         // The painter transform will handle the actual rotation.
         // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
-        let unrotated_size = if needs_swap { Vec2::new(dest.height(), dest.width()) } else { dest.size() };
+        let unrotated_size = if needs_swap {
+            Vec2::new(dest.height(), dest.width())
+        } else {
+            dest.size()
+        };
         let unrotated_dest = Rect::from_center_size(dest.center(), unrotated_size);
 
         // 1. Draw preview texture as blurry background
@@ -77,7 +85,9 @@ impl ImageViewerApp {
                     v.pos = pivot + rot * (v.pos - pivot);
                 }
             }
-            ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
+            ui.painter()
+                .with_clip_rect(screen_rect)
+                .add(egui::Shape::mesh(mesh));
         }
 
         // 2. Render high-res tiles.
@@ -125,10 +135,20 @@ impl ImageViewerApp {
             if scale_bits != prev {
                 LAST_LOGGED_SCALE.store(scale_bits, Ordering::Relaxed);
                 if effective_scale >= threshold * 0.9 && effective_scale <= threshold * 1.1 {
-                    let fname = self.image_files[self.current_index].file_name()
-                        .and_then(|n| n.to_str()).unwrap_or("?");
-                    log::info!("[Tiling] [{}] preview_scale={:.4}, fit_scale={:.4}, threshold={:.4}, effective={:.4}, img_w={}, tiled={}",
-                        fname, preview_scale, fit_scale, threshold, effective_scale, rotated_img_size.x as u32, effective_scale >= threshold);
+                    let fname = self.image_files[self.current_index]
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?");
+                    log::info!(
+                        "[Tiling] [{}] preview_scale={:.4}, fit_scale={:.4}, threshold={:.4}, effective={:.4}, img_w={}, tiled={}",
+                        fname,
+                        preview_scale,
+                        fit_scale,
+                        threshold,
+                        effective_scale,
+                        rotated_img_size.x as u32,
+                        effective_scale >= threshold
+                    );
                 }
             }
         }
@@ -148,17 +168,28 @@ impl ImageViewerApp {
                     screen_rect.right_top(),
                     screen_rect.right_bottom(),
                     screen_rect.left_bottom(),
-                ].map(|p| pivot + inv_rot * (p - pivot));
+                ]
+                .map(|p| pivot + inv_rot * (p - pivot));
                 // Compute the axis-aligned bounding box of the rotated corners
                 let min_x = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-                let max_x = corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+                let max_x = corners
+                    .iter()
+                    .map(|p| p.x)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let min_y = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-                let max_y = corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                let max_y = corners
+                    .iter()
+                    .map(|p| p.y)
+                    .fold(f32::NEG_INFINITY, f32::max);
                 Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
             } else {
                 screen_rect
             };
-            let visible = self.tile_manager.as_ref().unwrap().visible_tiles(unrotated_dest, tile_clip, padding);
+            let visible = self.tile_manager.as_ref().unwrap().visible_tiles(
+                unrotated_dest,
+                tile_clip,
+                padding,
+            );
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
 
             // ANTI-THRASHING: We no longer truncate 'visible' here.
@@ -183,11 +214,16 @@ impl ImageViewerApp {
             {
                 let tm = self.tile_manager.as_mut().unwrap();
                 let pivot = dest.center();
-                let rot = if rotation != 0 { Some(egui::emath::Rot2::from_angle(angle)) } else { None };
+                let rot = if rotation != 0 {
+                    Some(egui::emath::Rot2::from_angle(angle))
+                } else {
+                    None
+                };
 
                 for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
                     let allow_upload = newly_uploaded < tile_upload_quota;
-                    let (status, just_uploaded) = tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
+                    let (status, just_uploaded) =
+                        tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
 
                     if just_uploaded {
                         newly_uploaded += 1;
@@ -213,7 +249,9 @@ impl ImageViewerApp {
                                     v.pos = pivot + r * (v.pos - pivot);
                                 }
                             }
-                            ui.painter().with_clip_rect(screen_rect).add(egui::Shape::mesh(mesh));
+                            ui.painter()
+                                .with_clip_rect(screen_rect)
+                                .add(egui::Shape::mesh(mesh));
 
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
@@ -225,12 +263,30 @@ impl ImageViewerApp {
                                     let p2 = pivot + r * (debug_rect.right_top() - pivot);
                                     let p3 = pivot + r * (debug_rect.right_bottom() - pivot);
                                     let p4 = pivot + r * (debug_rect.left_bottom() - pivot);
-                                    ui.painter().line_segment([p1, p2], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
-                                    ui.painter().line_segment([p2, p3], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
-                                    ui.painter().line_segment([p3, p4], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
-                                    ui.painter().line_segment([p4, p1], egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)));
+                                    ui.painter().line_segment(
+                                        [p1, p2],
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                    );
+                                    ui.painter().line_segment(
+                                        [p2, p3],
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                    );
+                                    ui.painter().line_segment(
+                                        [p3, p4],
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                    );
+                                    ui.painter().line_segment(
+                                        [p4, p1],
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                    );
                                 } else {
-                                    ui.painter().rect(debug_rect, 0.0, Color32::TRANSPARENT, egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)), egui::StrokeKind::Inside);
+                                    ui.painter().rect(
+                                        debug_rect,
+                                        0.0,
+                                        Color32::TRANSPARENT,
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                        egui::StrokeKind::Inside,
+                                    );
                                 }
                             }
                         }
@@ -259,7 +315,14 @@ impl ImageViewerApp {
                                 let generation = tm.generation;
                                 // visible list is already sorted by distance to center
                                 let priority = (visible.len() - idx) as f32;
-                                self.loader.request_tile(self.current_index, generation, priority, source, coord.col, coord.row);
+                                self.loader.request_tile(
+                                    self.current_index,
+                                    generation,
+                                    priority,
+                                    source,
+                                    coord.col,
+                                    coord.row,
+                                );
                                 tm.pending_tiles.insert(*coord);
                             }
                         }
@@ -270,12 +333,23 @@ impl ImageViewerApp {
             // DEBUG HUD: real-time tiled rendering diagnostics
             #[cfg(feature = "tile-debug")]
             if self.settings.show_osd {
-                let (vis_gpu, vis_ready, vis_pending) = self.tile_manager.as_ref().unwrap().stats_for_visible(&visible_coords);
-                let (total_gpu, total_mem, _total_pnd) = self.tile_manager.as_ref().unwrap().tiles_and_pending();
+                let (vis_gpu, vis_ready, vis_pending) = self
+                    .tile_manager
+                    .as_ref()
+                    .unwrap()
+                    .stats_for_visible(&visible_coords);
+                let (total_gpu, total_mem, _total_pnd) =
+                    self.tile_manager.as_ref().unwrap().tiles_and_pending();
 
                 let debug_text = format!(
                     "VIS: {} (GPU:{} RDY:{} PND:{}) | ALL: (GPU:{} MEM:{}) | SCALE: {:.3}",
-                    visible.len(), vis_gpu, vis_ready, vis_pending, total_gpu, total_mem, effective_scale
+                    visible.len(),
+                    vis_gpu,
+                    vis_ready,
+                    vis_pending,
+                    total_gpu,
+                    total_mem,
+                    effective_scale
                 );
                 ui.painter().text(
                     screen_rect.right_bottom() - egui::vec2(10.0, 10.0),
@@ -289,7 +363,11 @@ impl ImageViewerApp {
             // ANTI-STALL LOGIC:
             // If we uploaded tiles this frame, OR if there are more ready to upload in CPU cache,
             // request another repaint immediately to keep the pipeline moving.
-            let has_more_ready = self.tile_manager.as_ref().unwrap().has_ready_to_upload(&visible_coords);
+            let has_more_ready = self
+                .tile_manager
+                .as_ref()
+                .unwrap()
+                .has_ready_to_upload(&visible_coords);
             if newly_uploaded > 0 || has_more_ready {
                 ui.ctx().request_repaint();
             }

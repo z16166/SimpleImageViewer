@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use eframe::egui::{self, Context, RichText};
-use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
-use crate::ui::dialogs::MovableModal;
-use crate::ui::utils::styled_button;
 use crate::theme::ThemePalette;
+use crate::ui::dialogs::MovableModal;
+use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
+use crate::ui::utils::styled_button;
+use eframe::egui::{self, Context, RichText};
 use rust_i18n::t;
 
 // ── Private state ─────────────────────────────────────────────────────────────
@@ -66,69 +66,119 @@ pub fn show(
         .default_size([WIDTH, HEIGHT])
         .min_size([400.0, 240.0])
         .show(ctx, palette, |ui| {
-        if let Some(ref current) = state.current_system_wallpaper {
-            ui.label(RichText::new(t!("wallpaper.current")).color(palette.text_muted).small());
+            if let Some(ref current) = state.current_system_wallpaper {
+                ui.label(
+                    RichText::new(t!("wallpaper.current"))
+                        .color(palette.text_muted)
+                        .small(),
+                );
+                egui::ScrollArea::horizontal()
+                    .id_salt("curr_wp_scroll")
+                    .min_scrolled_height(24.0)
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.add_space(2.0);
+                            ui.add(
+                                egui::Label::new(current)
+                                    .selectable(true)
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                            ui.add_space(4.0);
+                        });
+                    });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+            }
+
+            ui.label(
+                RichText::new(t!("wallpaper.new_path"))
+                    .color(palette.text_muted)
+                    .small(),
+            );
             egui::ScrollArea::horizontal()
-                .id_salt("curr_wp_scroll")
+                .id_salt("new_wp_scroll")
                 .min_scrolled_height(24.0)
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.add_space(2.0);
-                        ui.add(egui::Label::new(current).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+                        ui.add(
+                            egui::Label::new(current_image_path)
+                                .selectable(true)
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        );
                         ui.add_space(4.0);
                     });
                 });
-            ui.add_space(8.0);
+
+            if let Some((w, h)) = current_image_res {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(t!("wallpaper.resolution"))
+                        .color(palette.text_muted)
+                        .small(),
+                );
+                ui.label(format!("{} × {}", w, h));
+            }
+
+            ui.add_space(12.0);
             ui.separator();
             ui.add_space(8.0);
-        }
+            ui.label(
+                RichText::new(t!("wallpaper.mode"))
+                    .color(palette.accent2)
+                    .strong(),
+            );
 
-        ui.label(RichText::new(t!("wallpaper.new_path")).color(palette.text_muted).small());
-        egui::ScrollArea::horizontal()
-            .id_salt("new_wp_scroll")
-            .min_scrolled_height(24.0)
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(2.0);
-                    ui.add(egui::Label::new(current_image_path).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
-                    ui.add_space(4.0);
-                });
+            ui.vertical(|ui| {
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Crop".to_string(),
+                    t!("wallpaper.crop").to_string(),
+                );
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Fit".to_string(),
+                    t!("wallpaper.fit").to_string(),
+                );
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Stretch".to_string(),
+                    t!("wallpaper.stretch").to_string(),
+                );
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Tile".to_string(),
+                    t!("wallpaper.tile").to_string(),
+                );
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Center".to_string(),
+                    t!("wallpaper.center").to_string(),
+                );
+                ui.radio_value(
+                    &mut state.selected_mode,
+                    "Span".to_string(),
+                    t!("wallpaper.span").to_string(),
+                );
             });
 
-        if let Some((w, h)) = current_image_res {
-            ui.add_space(4.0);
-            ui.label(RichText::new(t!("wallpaper.resolution")).color(palette.text_muted).small());
-            ui.label(format!("{} × {}", w, h));
-        }
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                if styled_button(ui, &t!("btn.set_wallpaper").to_string(), palette).clicked() {
+                    result = ModalResult::Confirmed(ModalAction::SetWallpaper(
+                        state.selected_mode.clone(),
+                    ));
+                }
+                if styled_button(ui, &t!("btn.cancel").to_string(), palette).clicked() {
+                    result = ModalResult::Dismissed;
+                }
+            });
 
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-        ui.label(RichText::new(t!("wallpaper.mode")).color(palette.accent2).strong());
-
-        ui.vertical(|ui| {
-            ui.radio_value(&mut state.selected_mode, "Crop".to_string(),    t!("wallpaper.crop").to_string());
-            ui.radio_value(&mut state.selected_mode, "Fit".to_string(),     t!("wallpaper.fit").to_string());
-            ui.radio_value(&mut state.selected_mode, "Stretch".to_string(), t!("wallpaper.stretch").to_string());
-            ui.radio_value(&mut state.selected_mode, "Tile".to_string(),    t!("wallpaper.tile").to_string());
-            ui.radio_value(&mut state.selected_mode, "Center".to_string(),  t!("wallpaper.center").to_string());
-            ui.radio_value(&mut state.selected_mode, "Span".to_string(),    t!("wallpaper.span").to_string());
-        });
-
-        ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            if styled_button(ui, &t!("btn.set_wallpaper").to_string(), palette).clicked() {
-                result = ModalResult::Confirmed(ModalAction::SetWallpaper(state.selected_mode.clone()));
-            }
-            if styled_button(ui, &t!("btn.cancel").to_string(), palette).clicked() {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = ModalResult::Dismissed;
             }
         });
-
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            result = ModalResult::Dismissed;
-        }
-    });
 
     result
 }
@@ -151,12 +201,12 @@ pub fn apply(path: std::path::PathBuf, mode_str: &str) {
 
 fn str_to_mode(s: &str) -> wallpaper::Mode {
     match s {
-        "Center"  => wallpaper::Mode::Center,
-        "Crop"    => wallpaper::Mode::Crop,
-        "Fit"     => wallpaper::Mode::Fit,
-        "Span"    => wallpaper::Mode::Span,
+        "Center" => wallpaper::Mode::Center,
+        "Crop" => wallpaper::Mode::Crop,
+        "Fit" => wallpaper::Mode::Fit,
+        "Span" => wallpaper::Mode::Span,
         "Stretch" => wallpaper::Mode::Stretch,
-        "Tile"    => wallpaper::Mode::Tile,
-        _         => wallpaper::Mode::Crop,
+        "Tile" => wallpaper::Mode::Tile,
+        _ => wallpaper::Mode::Crop,
     }
 }

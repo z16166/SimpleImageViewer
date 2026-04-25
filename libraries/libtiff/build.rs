@@ -1,12 +1,14 @@
 fn main() {
     // Force static linking
-    unsafe { std::env::set_var("VCPKG_ALL_STATIC", "1"); }
-    
+    unsafe {
+        std::env::set_var("VCPKG_ALL_STATIC", "1");
+    }
+
     // In Manifest Mode, vcpkg installs to vcpkg_installed/ in the workspace root
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_root = manifest_dir.parent().unwrap().parent().unwrap(); // libraries/pkg -> libraries -> root
     let installed_dir = workspace_root.join("vcpkg_installed");
-    
+
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let vcpkg_triplet = std::env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| {
@@ -23,8 +25,8 @@ fn main() {
     });
 
     if installed_dir.exists() {
-        unsafe { 
-            std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir); 
+        unsafe {
+            std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir);
             std::env::set_var("VCPKG_TARGET_TRIPLET", &vcpkg_triplet);
         }
     }
@@ -44,9 +46,9 @@ fn main() {
             if lib_dir.exists() {
                 println!("cargo:rustc-link-search=native={}", lib_dir.display());
                 println!("cargo:rustc-link-lib=static=tiff");
-                
+
                 println!("cargo:rustc-link-lib=static=jpeg");
-                
+
                 if lib_dir.join("zlibstatic.lib").exists() {
                     println!("cargo:rustc-link-lib=static=zlibstatic");
                 } else if lib_dir.join("zlib.lib").exists() {
@@ -56,7 +58,7 @@ fn main() {
                 } else {
                     println!("cargo:rustc-link-lib=static=z"); // libz.a
                 }
-                
+
                 if lib_dir.join("liblzma.a").exists() || lib_dir.join("lzma.lib").exists() {
                     println!("cargo:rustc-link-lib=static=lzma");
                 }
@@ -64,8 +66,14 @@ fn main() {
                 // libdeflate
                 if lib_dir.join("deflatestatic.lib").exists() {
                     println!("cargo:rustc-link-lib=static=deflatestatic");
-                } else if lib_dir.join("libdeflate.a").exists() || lib_dir.join("libdeflate.lib").exists() {
-                    let name = if target_os == "windows" { "libdeflate" } else { "deflate" };
+                } else if lib_dir.join("libdeflate.a").exists()
+                    || lib_dir.join("libdeflate.lib").exists()
+                {
+                    let name = if target_os == "windows" {
+                        "libdeflate"
+                    } else {
+                        "deflate"
+                    };
                     println!("cargo:rustc-link-lib=static={}", name);
                 }
 
@@ -81,17 +89,33 @@ fn main() {
 
                 // WebP
                 if lib_dir.join("libwebp.a").exists() || lib_dir.join("libwebp.lib").exists() {
-                    let name = if target_os == "windows" { "libwebp" } else { "webp" };
+                    let name = if target_os == "windows" {
+                        "libwebp"
+                    } else {
+                        "webp"
+                    };
                     println!("cargo:rustc-link-lib=static={}", name);
                 } else if lib_dir.join("webp.lib").exists() {
                     println!("cargo:rustc-link-lib=static=webp");
                 }
-                if lib_dir.join("libsharpyuv.a").exists() || lib_dir.join("libsharpyuv.lib").exists() {
-                    let name = if target_os == "windows" { "libsharpyuv" } else { "sharpyuv" };
+                if lib_dir.join("libsharpyuv.a").exists()
+                    || lib_dir.join("libsharpyuv.lib").exists()
+                {
+                    let name = if target_os == "windows" {
+                        "libsharpyuv"
+                    } else {
+                        "sharpyuv"
+                    };
                     println!("cargo:rustc-link-lib=static={}", name);
                 }
-                if lib_dir.join("libwebpdecoder.a").exists() || lib_dir.join("libwebpdecoder.lib").exists() {
-                    let name = if target_os == "windows" { "libwebpdecoder" } else { "webpdecoder" };
+                if lib_dir.join("libwebpdecoder.a").exists()
+                    || lib_dir.join("libwebpdecoder.lib").exists()
+                {
+                    let name = if target_os == "windows" {
+                        "libwebpdecoder"
+                    } else {
+                        "webpdecoder"
+                    };
                     println!("cargo:rustc-link-lib=static={}", name);
                 }
                 println!("cargo:include={}", include_dir.display());
