@@ -436,7 +436,14 @@ fn draw_settings_right_col(
 
         let old_play_music = app.settings.play_music;
         let old_show_music_osd = app.settings.show_music_osd;
-        ui.checkbox(&mut app.settings.play_music, t!("label.play_music"));
+        
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.settings.play_music, t!("label.play_music"));
+            if app.settings.play_music {
+                ui.checkbox(&mut app.settings.show_music_osd, t!("label.show_music_osd"));
+            }
+        });
+
         if old_play_music != app.settings.play_music
             || old_show_music_osd != app.settings.show_music_osd
         {
@@ -444,10 +451,10 @@ fn draw_settings_right_col(
                 *music_enabled_changed = true;
             }
             app.music_hud_last_activity = Instant::now();
+            app.queue_save();
         }
 
         if app.settings.play_music {
-            ui.checkbox(&mut app.settings.show_music_osd, t!("label.show_music_osd"));
             ui.add_space(2.0);
             let music_full = app
                 .settings

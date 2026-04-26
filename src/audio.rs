@@ -1342,6 +1342,7 @@ fn run_audio_loop(
     let mut playlist: Vec<PathBuf> = Vec::new();
     let mut current_track_idx: usize = 0;
     let mut stopped = true;
+    let mut sink_base_pos: Duration = Duration::ZERO;
     let mut last_hw_pos: Duration = Duration::ZERO;
     let mut paused = false;
     let mut current_volume: f32 = 1.0;
@@ -1377,6 +1378,7 @@ fn run_audio_loop(
                 playlist.clear();
                 backend_player = None;
                 backend_sink = None;
+                sink_base_pos = Duration::ZERO;
                 set_current_track(&track_slot, None);
                 set_metadata(&meta_slot, None);
                 tracks_flag.store(false, Ordering::Relaxed);
@@ -1422,6 +1424,7 @@ fn run_audio_loop(
                                 );
                                 if let Some(ref p) = backend_player {
                                     p.append(source);
+                                    sink_base_pos = p.get_pos();
                                     last_seek_offset = resume_pos;
                                     p.play();
                                     current_track_idx += 1;
@@ -1452,12 +1455,14 @@ fn run_audio_loop(
                                     // This prevents the player from being momentarily empty,
                                     // which would trigger false "end of playlist" detection.
                                     p.clear();
+                                    sink_base_pos = p.get_pos();
                                     let total_dur = source
                                         .total_duration()
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
                                     p.append(source);
                                     dur_ms.store(total_dur, Ordering::Relaxed);
+                                    pos_ms.store(pos.as_millis() as u64, Ordering::Relaxed);
                                     last_seek_offset = pos;
                                     last_hw_pos = Duration::ZERO;
                                     current_file_start = Instant::now();
@@ -1487,6 +1492,7 @@ fn run_audio_loop(
 
                 backend_sink = None;
                 backend_player = None;
+                sink_base_pos = Duration::ZERO;
 
                 // If we were playing, immediately trigger a restart on the new device
                 if !playlist.is_empty() && !stopped {
@@ -1500,6 +1506,7 @@ fn run_audio_loop(
                             if ensure_backend!(current_volume, paused) {
                                 if let Some(ref p) = backend_player {
                                     p.append(source);
+                                    sink_base_pos = p.get_pos();
                                     last_seek_offset = resume_pos;
                                     last_hw_pos = Duration::ZERO;
                                     current_file_start = Instant::now();
@@ -1565,6 +1572,7 @@ fn run_audio_loop(
                                     if ensure_backend!(current_volume, paused) {
                                         if let Some(ref p) = backend_player {
                                             p.clear();
+                                            sink_base_pos = p.get_pos();
                                             let total_dur = source.total_duration();
                                             p.append(source);
                                             p.play();
@@ -1574,6 +1582,7 @@ fn run_audio_loop(
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
                                     paused_at = None;
+                                    pos_ms.store(next_t.start.as_millis() as u64, Ordering::Relaxed);
                                     let meta = format!(
                                         "{}. {} - {}",
                                         next_t.number, next_t.title, next_t.performer
@@ -1716,13 +1725,14 @@ fn run_audio_loop(
 
             if player_empty {
                 // Natural end of track - proceed to next
-                if current_track_idx < playlist.len() {
-                    let path = playlist[current_track_idx].clone();
-                    let filename = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
+                if current_track_idx >= playlist.len() {
+                    current_track_idx = 0;
+                    log::info!("[AUDIO] Playlist finished, wrapping around to start.");
+                }
+
+                let path = playlist[current_track_idx].clone();
+                if let Some(filename) = path.file_name() {
+                    let filename = filename.to_string_lossy().to_string();
                     if let Ok(file) = fs::File::open(&path) {
                         let reader = std::io::BufReader::with_capacity(AUDIO_BUFFER_CAPACITY, file);
                         if let Some(source) =
@@ -1730,6 +1740,11 @@ fn run_audio_loop(
                         {
                             set_current_track(&track_slot, Some(filename));
                             set_current_path(&path_slot, Some(path.clone()));
+                            
+                            // Update duration and position IMMEDIATELY to stay in sync with metadata
+                            let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                            dur_ms.store(total_dur, Ordering::Relaxed);
+                            pos_ms.store(0, Ordering::Relaxed);
                             cue_sheet = load_cue(&path, &shutdown_flag);
                             tracks_flag.store(cue_sheet.is_some(), Ordering::Relaxed);
 
@@ -1759,15 +1774,13 @@ fn run_audio_loop(
 
                             if ensure_backend!(current_volume, paused) {
                                 if let Some(ref p) = backend_player {
-                                    let total_dur = source
-                                        .total_duration()
-                                        .map(|d| d.as_millis() as u64)
-                                        .unwrap_or(0);
                                     p.append(source);
-                                    dur_ms.store(total_dur, Ordering::Relaxed);
+                                    sink_base_pos = p.get_pos();
+                                    // dur_ms and pos_ms already updated above
                                     current_track_idx += 1;
                                     last_seek_offset = Duration::ZERO;
                                     last_hw_pos = Duration::ZERO;
+                                    // pos_ms.store(0, ...) already done above
                                     current_file_start = Instant::now();
                                     total_paused = Duration::ZERO;
                                     if paused {
@@ -1783,9 +1796,6 @@ fn run_audio_loop(
                             {
                                 if track_idx < cue.tracks.len() {
                                     let t = &cue.tracks[track_idx];
-                                    // Even if t.start is 0, we still want to go through the seek logic
-                                    // if it's not the first load (though here it IS the first load).
-                                    // The important part is that we already set the metadata above.
                                     if t.start > Duration::ZERO {
                                         if let Ok(f2) = std::fs::File::open(&path) {
                                             let r2 = std::io::BufReader::with_capacity(
@@ -1832,13 +1842,6 @@ fn run_audio_loop(
                             }
                         }
                     }
-                } else {
-                    stopped = true;
-                    set_current_track(&track_slot, None);
-                    set_current_path(&path_slot, None);
-                    set_metadata(&meta_slot, None);
-                    tracks_flag.store(false, Ordering::Relaxed);
-                    set_cue_markers(&cue_markers_slot, Vec::new());
                 }
             } else if !player_exists {
                 // ORPHANED STATE: !stopped but no backend_player.
@@ -1855,6 +1858,7 @@ fn run_audio_loop(
                         {
                             if let Some(ref p) = backend_player {
                                 p.append(source);
+                                sink_base_pos = p.get_pos();
                                 last_seek_offset = resume_pos;
                                 last_hw_pos = Duration::ZERO;
                                 current_file_start = Instant::now();
@@ -1879,7 +1883,7 @@ fn run_audio_loop(
             }
             if let Some(ref cue) = cue_sheet {
                 if let Some(ref p) = backend_player {
-                    let elapsed = p.get_pos().saturating_add(last_seek_offset);
+                    let elapsed = p.get_pos().saturating_sub(sink_base_pos).saturating_add(last_seek_offset);
                     let idx = cue
                         .tracks
                         .iter()
@@ -1907,7 +1911,7 @@ fn run_audio_loop(
             pos_ms.store(0, Ordering::Relaxed);
             dur_ms.store(0, Ordering::Relaxed);
         } else if let Some(ref p) = backend_player {
-            let hw_pos = p.get_pos();
+            let hw_pos = p.get_pos().saturating_sub(sink_base_pos);
             last_hw_pos = hw_pos;
 
             // 1. Calculate the raw mixer position in the file
