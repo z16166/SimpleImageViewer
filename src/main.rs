@@ -438,7 +438,7 @@ fn main() -> eframe::Result {
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("app.title").to_string())
-        .with_inner_size([1280.0, 800.0])
+        .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([400.0, 300.0])
         .with_decorations(true)
         .with_fullscreen(fullscreen)
