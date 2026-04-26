@@ -143,8 +143,9 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     .range(0.5..=3600.0)
                     .speed(0.5),
             );
+            ui.add_space(12.0);
+            ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
         });
-        ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
     }
     if old_auto_switch != app.settings.auto_switch {
         app.queue_save();
