@@ -176,39 +176,40 @@ fn draw_settings_left_col(
         });
 
         ui.add_space(4.0);
-        let old_recursive = app.settings.recursive;
-        ui.checkbox(
-            &mut app.settings.recursive,
-            t!("label.recursive_scan").to_string(),
-        );
-        if !old_recursive && app.settings.recursive {
-            // Revert immediately — open a confirm modal; handle_modal_action will
-            // apply the change and trigger a rescan only if the user confirms.
-            app.settings.recursive = false;
-            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
-                crate::ui::dialogs::confirm::State::recursive_scan(
-                    t!("win.confirm_recursive_title").to_string(),
-                    t!("win.confirm_recursive_msg").to_string(),
-                ),
-            ));
-        }
-        // If recursive was turned OFF (old=true → new=false), apply immediately.
-        if old_recursive && !app.settings.recursive {
-            if let Some(dir) = app.settings.last_image_dir.clone() {
-                app.load_directory(dir);
+        ui.horizontal(|ui| {
+            let old_recursive = app.settings.recursive;
+            ui.checkbox(
+                &mut app.settings.recursive,
+                t!("label.recursive_scan").to_string(),
+            );
+            if !old_recursive && app.settings.recursive {
+                app.settings.recursive = false;
+                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                    crate::ui::dialogs::confirm::State::recursive_scan(
+                        t!("win.confirm_recursive_title").to_string(),
+                        t!("win.confirm_recursive_msg").to_string(),
+                    ),
+                ));
             }
-            app.queue_save();
-        }
+            if old_recursive && !app.settings.recursive {
+                if let Some(dir) = app.settings.last_image_dir.clone() {
+                    app.load_directory(dir);
+                }
+                app.queue_save();
+            }
 
-        if ui
-            .checkbox(
-                &mut app.settings.preload,
-                t!("label.enable_preload").to_string(),
-            )
-            .changed()
-        {
-            app.queue_save();
-        }
+            ui.add_space(12.0);
+
+            if ui
+                .checkbox(
+                    &mut app.settings.preload,
+                    t!("label.enable_preload").to_string(),
+                )
+                .changed()
+            {
+                app.queue_save();
+            }
+        });
 
         if ui
             .checkbox(
