@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.4] - 2026-04-26
+
+### Added
+- **Audio Engine Refactoring**: Major structural overhaul of the audio thread. Extracted state into `AudioLoopState` and shared objects into `AudioSlots`, reducing the monolithic `run_audio_loop` from 700+ lines to a lean event loop for better maintainability.
+
+### Fixed
+- **APE+CUE Playback**: Resolved high-precision synchronization issues where the UI slider would lag behind track changes.
+- **Playlist Looping**: Implemented seamless automatic looping of the music playlist (APE+CUE and standard files).
+- **Audio Reliability**: Fixed potential deadlocks and UI flickering during file transitions by implementing synchronous state updates.
+- **UI Settings**: Compacted music settings by grouping checkboxes horizontally to conserve vertical space.
+
+
 ## [1.5.3] - 2026-04-25
 
 ### Added
