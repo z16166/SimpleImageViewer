@@ -119,6 +119,38 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
     }
 }
 
+fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    // ── Slideshow ────────────────────────────────────────────
+    ui.label(
+        RichText::new(t!("section.slideshow"))
+            .color(app.cached_palette.accent2)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    let old_auto_switch = app.settings.auto_switch;
+    if ui
+        .checkbox(&mut app.settings.auto_switch, t!("label.auto_advance"))
+        .changed()
+    {
+        app.slideshow_paused = false;
+    }
+    if app.settings.auto_switch {
+        ui.horizontal(|ui| {
+            ui.label(t!("label.interval_sec"));
+            ui.add(
+                egui::DragValue::new(&mut app.settings.auto_switch_interval)
+                    .range(0.5..=3600.0)
+                    .speed(0.5),
+            );
+        });
+        ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
+    }
+    if old_auto_switch != app.settings.auto_switch {
+        app.queue_save();
+    }
+}
+
 fn draw_settings_left_col(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
@@ -371,6 +403,11 @@ fn draw_settings_left_col(
                 }
             });
         }
+
+        if app.settings.play_music {
+            ui.add_space(8.0);
+            draw_slideshow_section(app, ui);
+        }
     });
 }
 
@@ -383,37 +420,10 @@ fn draw_settings_right_col(
     music_enabled_changed: &mut bool,
 ) {
     ui.vertical(|ui| {
-        // ── Slideshow ────────────────────────────────────────────
-        ui.label(
-            RichText::new(t!("section.slideshow"))
-                .color(app.cached_palette.accent2)
-                .strong(),
-        );
-        ui.add_space(2.0);
-
-        let old_auto_switch = app.settings.auto_switch;
-        if ui
-            .checkbox(&mut app.settings.auto_switch, t!("label.auto_advance"))
-            .changed()
-        {
-            app.slideshow_paused = false;
+        if !app.settings.play_music {
+            draw_slideshow_section(app, ui);
+            ui.add_space(8.0);
         }
-        if app.settings.auto_switch {
-            ui.horizontal(|ui| {
-                ui.label(t!("label.interval_sec"));
-                ui.add(
-                    egui::DragValue::new(&mut app.settings.auto_switch_interval)
-                        .range(0.5..=3600.0)
-                        .speed(0.5),
-                );
-            });
-            ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
-        }
-        if old_auto_switch != app.settings.auto_switch {
-            app.queue_save();
-        }
-
-        ui.add_space(8.0);
 
         // ── Music ──────────────────────────────────────────────────
         ui.label(
