@@ -1573,7 +1573,6 @@ fn run_audio_loop(
                                         if let Some(ref p) = backend_player {
                                             p.clear();
                                             sink_base_pos = p.get_pos();
-                                            let total_dur = source.total_duration();
                                             p.append(source);
                                             p.play();
                                         }
