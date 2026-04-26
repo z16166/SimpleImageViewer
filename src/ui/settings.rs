@@ -687,7 +687,7 @@ fn draw_settings_right_col(
                                         let slider_rect = resp.rect;
 
                                         for (idx, &marker_ms) in markers.iter().enumerate() {
-                                            if marker_ms >= tot_ms {
+                                            if marker_ms > tot_ms {
                                                 continue;
                                             }
                                             let ratio =

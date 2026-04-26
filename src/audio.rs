@@ -1413,15 +1413,13 @@ fn run_audio_loop(
                             create_source(&path, reader, Arc::clone(&shutdown_flag), resume_pos)
                         {
                             if ensure_backend!(current_volume, paused) {
-                                if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
-                                    dur_ms.store(
-                                        source
-                                            .total_duration()
-                                            .map(|d| d.as_millis() as u64)
-                                            .unwrap_or(0),
-                                        Ordering::Relaxed,
-                                    );
-                                }
+                                dur_ms.store(
+                                    source
+                                        .total_duration()
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0),
+                                    Ordering::Relaxed,
+                                );
                                 if let Some(ref p) = backend_player {
                                     p.append(source);
                                     last_seek_offset = resume_pos;
@@ -1459,9 +1457,7 @@ fn run_audio_loop(
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
                                     p.append(source);
-                                    if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
-                                        dur_ms.store(total_dur, Ordering::Relaxed);
-                                    }
+                                    dur_ms.store(total_dur, Ordering::Relaxed);
                                     last_seek_offset = pos;
                                     last_hw_pos = Duration::ZERO;
                                     current_file_start = Instant::now();
@@ -1572,20 +1568,6 @@ fn run_audio_loop(
                                             let total_dur = source.total_duration();
                                             p.append(source);
                                             p.play();
-                                            if cue_sheet.is_none() {
-                                                let dur = cue
-                                                    .tracks
-                                                    .get(current_idx + 2)
-                                                    .map(|t| t.start)
-                                                    .unwrap_or_else(|| {
-                                                        total_dur.unwrap_or(Duration::ZERO)
-                                                    })
-                                                    .saturating_sub(next_t.start);
-                                                dur_ms.store(
-                                                    dur.as_millis() as u64,
-                                                    Ordering::Relaxed,
-                                                );
-                                            }
                                         }
                                     }
                                     last_seek_offset = next_t.start;
@@ -1782,9 +1764,7 @@ fn run_audio_loop(
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
                                     p.append(source);
-                                    if cue_sheet.is_none() || dur_ms.load(Ordering::Relaxed) == 0 {
-                                        dur_ms.store(total_dur, Ordering::Relaxed);
-                                    }
+                                    dur_ms.store(total_dur, Ordering::Relaxed);
                                     current_track_idx += 1;
                                     last_seek_offset = Duration::ZERO;
                                     last_hw_pos = Duration::ZERO;
