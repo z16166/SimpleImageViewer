@@ -8,309 +8,307 @@ use std::time::{Duration, Instant};
 
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard(&mut self, ctx: &Context) {
-        // Collect flags to avoid borrow issues
-        let mut nav_next = false;
-        let mut nav_prev = false;
-        let mut nav_first = false;
-        let mut nav_last = false;
-        let mut toggle_settings = false;
-        let mut toggle_osd = false;
-        let mut zoom_in = false;
-        let mut zoom_out = false;
-        let mut zoom_reset = false;
-        let mut toggle_fullscreen = false;
-        let mut toggle_scale_mode = false;
+        // High-level layer detection
+        if self.active_modal.is_some() {
+            self.handle_modal_input(ctx);
+        } else if self.show_settings {
+            self.handle_settings_input(ctx);
+        } else {
+            self.handle_main_window_input(ctx);
+        }
+    }
+
+    /// Layer 3: Input handling when a modal dialog is active.
+    fn handle_modal_input(&mut self, ctx: &Context) {
+        ctx.input(|i| {
+            // Escape always dismisses any modal
+            if i.key_pressed(Key::Escape) {
+                self.active_modal = None;
+                return;
+            }
+        });
+    }
+
+    /// Layer 2: Input handling when the non-modal settings panel is open.
+    fn handle_settings_input(&mut self, ctx: &Context) {
+        ctx.input(|i| {
+            // Escape closes settings
+            if i.key_pressed(Key::Escape) {
+                self.show_settings = false;
+            }
+        });
+    }
+
+    /// Layer 1: Input handling for the main window (normal operation).
+    fn handle_main_window_input(&mut self, ctx: &Context) {
+        let wants_ptr = ctx.egui_is_using_pointer() || ctx.is_pointer_over_egui();
+
+        // 1. Collect flags and inputs
+        let mut action: Option<AppAction> = None;
         let mut scroll_delta = egui::Vec2::ZERO;
         let mut zoom_delta = 1.0_f32;
         let mut is_ctrl_pressed = false;
         let mut is_alt_pressed = false;
         let mut mouse_pos: Option<egui::Pos2> = None;
-        let mut toggle_auto_switch = false;
-        let mut toggle_goto = false;
-        let mut do_refresh = false;
-        #[allow(unused_mut)]
-        let mut do_quit = false;
-        let mut do_delete = false;
-        let mut do_permanent_delete = false;
-        let mut do_print_full = false;
-        let mut rotate_ccw = false;
-        let mut rotate_cw = false;
-
-        // Block keyboard shortcuts when a modal dialog is active
-        let any_modal_open = self.active_modal.is_some();
 
         ctx.input(|i| {
-            if i.key_pressed(Key::F5) {
-                do_refresh = true;
-            }
-            if i.key_pressed(Key::Space) {
-                toggle_auto_switch = true;
-            }
-            if i.key_pressed(Key::ArrowRight)
-                || i.key_pressed(Key::ArrowDown)
-                || i.key_pressed(Key::PageDown)
-            {
-                nav_next = true;
-            }
-            if i.key_pressed(Key::ArrowLeft)
-                || i.key_pressed(Key::ArrowUp)
-                || i.key_pressed(Key::PageUp)
-            {
-                nav_prev = true;
-            }
-            if i.key_pressed(Key::Home) {
-                nav_first = true;
-            }
-            if i.key_pressed(Key::End) {
-                nav_last = true;
-            }
-            // F1 is the ONLY key to toggle settings/options.
-            if i.key_pressed(Key::F1) {
-                toggle_settings = true;
-            }
-            // Escape: close modals or currently open settings. NEVER opens settings from main view.
-            if i.key_pressed(Key::Escape) {
-                if any_modal_open || self.show_settings {
-                    toggle_settings = true;
-                } else if self.settings.fullscreen {
-                    toggle_fullscreen = true;
-                }
-            }
-            // Zoom keyboard: + / -
-            if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
-                zoom_in = true;
-            }
-            if i.key_pressed(Key::Minus) {
-                zoom_out = true;
-            }
-            // '*' reset zoom: catches Shift+8 (main keyboard) AND Numpad*
-            for ev in &i.events {
-                if let egui::Event::Text(text) = ev {
-                    if text == "*" {
-                        zoom_reset = true;
-                    }
-                }
-            }
-            // Mouse wheel collected here, guarded before application below
             scroll_delta = i.smooth_scroll_delta;
             zoom_delta = i.zoom_delta();
             is_ctrl_pressed = i.modifiers.command;
             is_alt_pressed = i.modifiers.alt;
             mouse_pos = i.pointer.latest_pos();
-            // F11 / F — toggle fullscreen
-            if i.key_pressed(Key::F11) || i.key_pressed(Key::F) {
-                toggle_fullscreen = true;
-            }
-            // Z — toggle scale mode (Fit ↔ Original)
-            if i.key_pressed(Key::Z) {
-                toggle_scale_mode = true;
-            }
-            // G / Ctrl+G — goto image by index
-            if i.key_pressed(Key::G) {
-                toggle_goto = true;
-            }
-            // Tab — toggle OSD visibility (only when settings panel is closed;
-            // when open, Tab should cycle widget focus as egui normally does)
-            if i.key_pressed(Key::Tab) && !self.show_settings {
-                toggle_osd = true;
-            }
-            // Rotation shortcuts: Ctrl+Left / Ctrl+Right
-            if i.modifiers.command {
-                if i.key_pressed(Key::ArrowLeft) {
-                    rotate_ccw = true;
-                    nav_prev = false; // Override navigation
-                }
-                if i.key_pressed(Key::ArrowRight) {
-                    rotate_cw = true;
-                    nav_next = false; // Override navigation
-                }
-            }
-            if !any_modal_open {
-                if i.modifiers.command && i.key_pressed(Key::P) {
-                    do_print_full = true;
-                }
-            }
-            // Delete / Shift+Delete (Main window only)
-            if !any_modal_open {
-                if i.key_pressed(Key::Delete) {
-                    if i.modifiers.shift {
-                        do_permanent_delete = true;
-                    } else {
-                        do_delete = true;
-                    }
-                }
-            }
-            // Quit shortcut: Cmd+Q on macOS, Ctrl+Q on Linux.
-            // On Windows, Alt+F4 is standard and is handled by the OS — no code needed.
-            #[cfg(not(target_os = "windows"))]
-            if i.modifiers.command && i.key_pressed(Key::Q) {
-                do_quit = true;
-            }
+
+            action = self.map_key_to_action(i);
         });
 
-        if do_delete {
-            self.delete_current_image(false);
-        }
-        if do_permanent_delete {
-            self.delete_current_image(true);
-        }
-        if do_print_full {
-            self.print_image(ctx, crate::print::PrintMode::FullImage);
+        // If OSD was toggled via Tab, we also clear focus to prevent egui focus-trapping.
+        if action == Some(AppAction::ToggleOSD) {
+            ctx.memory_mut(|mem| mem.request_focus(egui::Id::NULL));
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         }
 
-        if !any_modal_open {
-            if do_refresh {
-                self.load_directory(self.settings.last_image_dir.clone().unwrap_or_default());
-            }
-            if nav_next {
-                self.navigate_next();
-            }
-            if nav_prev {
-                self.navigate_prev();
-            }
-            if nav_first {
-                self.navigate_first();
-            }
-            if nav_last {
-                self.navigate_last();
-            }
+        // 2. Dispatch Keyboard Actions
+        if let Some(act) = action {
+            self.dispatch_action(act, ctx);
+        }
 
-            if zoom_in {
+        // 3. Dispatch Mouse Actions (Scroll/Zoom)
+        if !wants_ptr {
+            self.handle_mouse_input(
+                ctx,
+                scroll_delta,
+                zoom_delta,
+                is_ctrl_pressed,
+                is_alt_pressed,
+                mouse_pos,
+            );
+        }
+    }
+
+    /// Future-proofing: Map a key press to a logical application action.
+    /// This is where we will eventually plug in user-configurable hotkeys.
+    fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
+        // 1. High-priority overrides (Keys that should work regardless of simple matches)
+
+        // Tab for OSD - handle early
+        if i.key_pressed(Key::Tab) {
+            return Some(AppAction::ToggleOSD);
+        }
+
+        // Rotation and modified shortcuts
+        if i.modifiers.command {
+            if i.key_pressed(Key::ArrowLeft) {
+                return Some(AppAction::RotateCCW);
+            }
+            if i.key_pressed(Key::ArrowRight) {
+                return Some(AppAction::RotateCW);
+            }
+            if i.key_pressed(Key::P) {
+                return Some(AppAction::Print);
+            }
+        }
+
+        if i.key_pressed(Key::Delete) {
+            return if i.modifiers.shift {
+                Some(AppAction::PermanentDelete)
+            } else {
+                Some(AppAction::Delete)
+            };
+        }
+
+        // 2. Navigation (Only if Command/Ctrl is NOT pressed)
+        if !i.modifiers.command {
+            if i.key_pressed(Key::ArrowRight)
+                || i.key_pressed(Key::ArrowDown)
+                || i.key_pressed(Key::PageDown)
+            {
+                return Some(AppAction::Next);
+            }
+            if i.key_pressed(Key::ArrowLeft)
+                || i.key_pressed(Key::ArrowUp)
+                || i.key_pressed(Key::PageUp)
+            {
+                return Some(AppAction::Prev);
+            }
+        }
+
+        if i.key_pressed(Key::Home) {
+            return Some(AppAction::First);
+        }
+        if i.key_pressed(Key::End) {
+            return Some(AppAction::Last);
+        }
+
+        // 3. Simple Keys
+        // Zoom
+        if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
+            return Some(AppAction::ZoomIn);
+        }
+        if i.key_pressed(Key::Minus) {
+            return Some(AppAction::ZoomOut);
+        }
+        for ev in &i.events {
+            if let egui::Event::Text(text) = ev {
+                if text == "*" {
+                    return Some(AppAction::ZoomReset);
+                }
+            }
+        }
+
+        // Display / UI
+        if i.key_pressed(Key::F1) {
+            return Some(AppAction::ToggleSettings);
+        }
+        if i.key_pressed(Key::F11) || i.key_pressed(Key::F) {
+            return Some(AppAction::ToggleFullscreen);
+        }
+        if i.key_pressed(Key::Z) {
+            return Some(AppAction::ToggleScaleMode);
+        }
+        if i.key_pressed(Key::G) {
+            return Some(AppAction::ToggleGoto);
+        }
+
+        // Music / Slideshow
+        if i.key_pressed(Key::Space) {
+            return Some(AppAction::ToggleAutoSwitch);
+        }
+
+        // App
+        #[cfg(not(target_os = "windows"))]
+        if i.modifiers.command && i.key_pressed(Key::Q) {
+            return Some(AppAction::Quit);
+        }
+
+        if i.key_pressed(Key::Escape) {
+            return Some(AppAction::ExitFullscreen);
+        }
+
+        None
+    }
+
+    fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
+        match action {
+            AppAction::Next => self.navigate_next(),
+            AppAction::Prev => self.navigate_prev(),
+            AppAction::First => self.navigate_first(),
+            AppAction::Last => self.navigate_last(),
+            AppAction::ZoomIn => {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager {
-                    tm.generation = self.generation;
-                    tm.pending_tiles.clear();
-                }
-                self.loader.flush_tile_queue();
+                self.update_loader_generation();
             }
-            if zoom_out {
+            AppAction::ZoomOut => {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager {
-                    tm.generation = self.generation;
-                    tm.pending_tiles.clear();
-                }
-                self.loader.flush_tile_queue();
+                self.update_loader_generation();
             }
-            if zoom_reset {
+            AppAction::ZoomReset => {
                 self.zoom_factor = 1.0;
                 self.pan_offset = Vec2::ZERO;
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager {
-                    tm.generation = self.generation;
-                    tm.pending_tiles.clear();
+                self.update_loader_generation();
+            }
+            AppAction::ToggleSettings => self.show_settings = !self.show_settings,
+            AppAction::ToggleFullscreen => {
+                self.settings.fullscreen = !self.settings.fullscreen;
+                self.pending_fullscreen = Some(self.settings.fullscreen);
+                self.queue_save();
+            }
+            AppAction::ToggleScaleMode => {
+                self.settings.scale_mode = self.settings.scale_mode.toggled();
+                self.zoom_factor = 1.0;
+                self.pan_offset = Vec2::ZERO;
+                self.queue_save();
+            }
+            AppAction::ToggleOSD => {
+                self.settings.show_osd = !self.settings.show_osd;
+                self.queue_save();
+            }
+            AppAction::RotateCCW => self.apply_rotation_with_tracking(false, ctx),
+            AppAction::RotateCW => self.apply_rotation_with_tracking(true, ctx),
+            AppAction::Delete => self.delete_current_image(false),
+            AppAction::PermanentDelete => self.delete_current_image(true),
+            AppAction::Print => self.print_image(ctx, crate::print::PrintMode::FullImage),
+            AppAction::ToggleGoto => {
+                if !self.image_files.is_empty() {
+                    self.active_modal =
+                        Some(ActiveModal::Goto(crate::ui::dialogs::goto::State::new(
+                            self.image_files.len(),
+                            self.current_index,
+                        )));
                 }
-                self.loader.flush_tile_queue();
             }
-        }
-        if toggle_settings {
-            if self.active_modal.is_some() {
-                // Escape / F1 always closes the current modal first
-                self.active_modal = None;
-            } else {
-                self.show_settings = !self.show_settings;
-            }
-        }
-
-        let ui_consuming_scroll =
-            any_modal_open || self.show_settings || ctx.egui_wants_pointer_input();
-        if !ui_consuming_scroll {
-            if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
-                // Rotation with Alt + Mouse Wheel (steps of 90 degrees)
-                let now = ctx.input(|i| i.time);
-                if now - self.last_mouse_wheel_nav > 0.2 {
-                    // Reuse cooldown to prevent spinning
-                    if scroll_delta.y > 0.0 {
-                        rotate_ccw = true;
-                    } else if scroll_delta.y < 0.0 {
-                        rotate_cw = true;
+            AppAction::ToggleAutoSwitch => {
+                if self.settings.auto_switch {
+                    self.slideshow_paused = !self.slideshow_paused;
+                    if !self.slideshow_paused {
+                        self.last_switch_time = Instant::now();
                     }
-                    self.last_mouse_wheel_nav = now;
                 }
-            } else if is_ctrl_pressed {
-                // Zoom-to-cursor...
-                if zoom_delta != 1.0 {
-                    let old_zoom = self.zoom_factor;
-                    self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
-                    let ratio = self.zoom_factor / old_zoom;
-
-                    if let Some(mouse) = mouse_pos {
-                        let screen_center = ctx.input(|i| i.content_rect()).center();
-                        let d = mouse - screen_center;
-                        // d * (1 - ratio) compensates for the scale change around the cursor
-                        self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
-                    }
-
-                    self.generation = self.generation.wrapping_add(1);
-                    self.loader.set_generation(self.generation);
-                    if let Some(tm) = &mut self.tile_manager {
-                        tm.generation = self.generation;
-                        tm.pending_tiles.clear();
-                    }
-                    self.loader.flush_tile_queue();
-                }
-            } else if scroll_delta.y.abs() > 0.0 {
-                // Navigation with debounce (cooldown) to prevent rapid flipping
-                let now = ctx.input(|i| i.time);
-                if now - self.last_mouse_wheel_nav > 0.2 {
-                    // 200ms cooldown
-                    if scroll_delta.y > 0.0 {
-                        self.navigate_prev();
-                    } else {
-                        self.navigate_next();
-                    }
-                    self.last_mouse_wheel_nav = now;
+            }
+            #[cfg(not(target_os = "windows"))]
+            AppAction::Quit => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            AppAction::ExitFullscreen => {
+                if self.settings.fullscreen {
+                    self.settings.fullscreen = false;
+                    self.pending_fullscreen = Some(false);
+                    self.queue_save();
                 }
             }
         }
-        if toggle_fullscreen {
-            self.settings.fullscreen = !self.settings.fullscreen;
-            self.pending_fullscreen = Some(self.settings.fullscreen);
-            self.queue_save();
-        }
-        if toggle_scale_mode {
-            self.settings.scale_mode = self.settings.scale_mode.toggled();
-            self.zoom_factor = 1.0;
-            self.pan_offset = Vec2::ZERO;
-            self.queue_save();
-        }
-        if toggle_osd {
-            self.settings.show_osd = !self.settings.show_osd;
-            self.queue_save();
-        }
-        if toggle_auto_switch && !self.show_settings {
-            if self.settings.auto_switch {
-                self.slideshow_paused = !self.slideshow_paused;
-                if !self.slideshow_paused {
-                    self.last_switch_time = Instant::now();
-                }
-            }
-            // If auto_switch is OFF, space does nothing — user must enable it via settings.
-        }
-        if toggle_goto && !self.image_files.is_empty() {
-            if self.active_modal.is_none() {
-                self.active_modal = Some(ActiveModal::Goto(crate::ui::dialogs::goto::State::new(
-                    self.image_files.len(),
-                    self.current_index,
-                )));
-            } else {
-                self.active_modal = None;
-            }
-        }
-        if do_quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+    }
 
-        // Apply rotation if requested (by keys OR mouse wheel)
-        if rotate_ccw {
-            self.apply_rotation_with_tracking(false, ctx);
+    fn update_loader_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        if let Some(tm) = &mut self.tile_manager {
+            tm.generation = self.generation;
+            tm.pending_tiles.clear();
         }
-        if rotate_cw {
-            self.apply_rotation_with_tracking(true, ctx);
+        self.loader.flush_tile_queue();
+    }
+
+    fn handle_mouse_input(
+        &mut self,
+        ctx: &Context,
+        scroll_delta: Vec2,
+        zoom_delta: f32,
+        is_ctrl_pressed: bool,
+        is_alt_pressed: bool,
+        mouse_pos: Option<egui::Pos2>,
+    ) {
+        if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
+            // Rotation with Alt + Mouse Wheel
+            let now = ctx.input(|i| i.time);
+            if now - self.last_mouse_wheel_nav > 0.2 {
+                self.apply_rotation_with_tracking(scroll_delta.y < 0.0, ctx);
+                self.last_mouse_wheel_nav = now;
+            }
+        } else if is_ctrl_pressed {
+            // Zoom-to-cursor
+            if zoom_delta != 1.0 {
+                let old_zoom = self.zoom_factor;
+                self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
+                let ratio = self.zoom_factor / old_zoom;
+
+                if let Some(mouse) = mouse_pos {
+                    let screen_center = ctx.input(|i| i.content_rect()).center();
+                    let d = mouse - screen_center;
+                    self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
+                }
+                self.update_loader_generation();
+            }
+        } else if scroll_delta.y.abs() > 0.0 {
+            // Navigation with mouse wheel
+            let now = ctx.input(|i| i.time);
+            if now - self.last_mouse_wheel_nav > 0.2 {
+                if scroll_delta.y > 0.0 {
+                    self.navigate_prev();
+                } else {
+                    self.navigate_next();
+                }
+                self.last_mouse_wheel_nav = now;
+            }
         }
     }
 
@@ -544,4 +542,29 @@ impl ImageViewerApp {
             self.context_menu_pos = None;
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum AppAction {
+    Next,
+    Prev,
+    First,
+    Last,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    ToggleSettings,
+    ToggleFullscreen,
+    ToggleScaleMode,
+    ToggleOSD,
+    RotateCW,
+    RotateCCW,
+    Delete,
+    PermanentDelete,
+    Print,
+    ToggleGoto,
+    ToggleAutoSwitch,
+    #[cfg(not(target_os = "windows"))]
+    Quit,
+    ExitFullscreen,
 }

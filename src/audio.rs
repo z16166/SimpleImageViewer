@@ -1349,10 +1349,7 @@ impl AudioLoopState {
                             == Some(name)
                     })
                 })
-                .map(|d| {
-                    rodio::DeviceSinkBuilder::from_device(d)
-                        .and_then(|b| b.open_stream())
-                })
+                .map(|d| rodio::DeviceSinkBuilder::from_device(d).and_then(|b| b.open_stream()))
                 .unwrap_or_else(|| Ok(rodio::DeviceSinkBuilder::open_default_sink()?))
         } else {
             rodio::DeviceSinkBuilder::open_default_sink()
@@ -1362,7 +1359,11 @@ impl AudioLoopState {
             Ok(sink) => {
                 let p = rodio::Player::connect_new(sink.mixer());
                 p.set_volume(self.current_volume);
-                if self.paused { p.pause(); } else { p.play(); }
+                if self.paused {
+                    p.pause();
+                } else {
+                    p.play();
+                }
                 self.backend_sink = Some(sink);
                 self.backend_player = Some(p);
                 log::debug!("[RECOVERY] ensure_backend: device opened successfully");
@@ -1419,7 +1420,10 @@ impl AudioLoopState {
                 if self.ensure_backend(slots) {
                     if let Some(ref p) = self.backend_player {
                         slots.dur_ms.store(
-                            source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0),
+                            source
+                                .total_duration()
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0),
                             Ordering::Relaxed,
                         );
                         p.append(source);
@@ -1449,15 +1453,22 @@ impl AudioLoopState {
                 if let Some(ref p) = self.backend_player {
                     p.clear();
                     self.sink_base_pos = p.get_pos();
-                    let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+                    let total_dur = source
+                        .total_duration()
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
                     p.append(source);
                     slots.dur_ms.store(total_dur, Ordering::Relaxed);
-                    slots.pos_ms.store(pos.as_millis() as u64, Ordering::Relaxed);
+                    slots
+                        .pos_ms
+                        .store(pos.as_millis() as u64, Ordering::Relaxed);
                     self.last_seek_offset = pos;
                     self.last_hw_pos = Duration::ZERO;
                     self.current_file_start = Instant::now();
                     self.total_paused = Duration::ZERO;
-                    if !self.paused { p.play(); }
+                    if !self.paused {
+                        p.play();
+                    }
                     log::debug!("[AUDIO] Seek to {} ms successful", pos.as_millis());
                 }
             }
@@ -1489,15 +1500,22 @@ impl AudioLoopState {
                     self.last_hw_pos = Duration::ZERO;
                     self.current_file_start = Instant::now();
                     self.total_paused = Duration::ZERO;
-                    if !self.paused { p.play(); }
-                    log::info!("[AUDIO] Device switched, playback resumed at {}ms", resume_pos.as_millis());
+                    if !self.paused {
+                        p.play();
+                    }
+                    log::info!(
+                        "[AUDIO] Device switched, playback resumed at {}ms",
+                        resume_pos.as_millis()
+                    );
                 }
             }
         }
     }
 
     fn handle_next_file(&mut self, slots: &AudioSlots) {
-        if let Some(ref p) = self.backend_player { p.clear(); }
+        if let Some(ref p) = self.backend_player {
+            p.clear();
+        }
         self.cue_sheet = None;
         set_cue_track(&slots.cue_track_slot, None);
         slots.tracks_flag.store(false, Ordering::Relaxed);
@@ -1509,7 +1527,9 @@ impl AudioLoopState {
         } else {
             self.current_track_idx = self.playlist.len().saturating_sub(1);
         }
-        if let Some(ref p) = self.backend_player { p.clear(); }
+        if let Some(ref p) = self.backend_player {
+            p.clear();
+        }
         self.cue_sheet = None;
         set_cue_track(&slots.cue_track_slot, None);
         slots.tracks_flag.store(false, Ordering::Relaxed);
@@ -1520,15 +1540,21 @@ impl AudioLoopState {
             Some(c) => c,
             None => return,
         };
-        let elapsed = self.current_file_start.elapsed()
+        let elapsed = self
+            .current_file_start
+            .elapsed()
             .saturating_sub(self.total_paused)
             .saturating_add(self.last_seek_offset);
-        let current_idx = cue.tracks.iter()
+        let current_idx = cue
+            .tracks
+            .iter()
             .position(|t| t.start > elapsed)
             .unwrap_or(cue.tracks.len())
             .saturating_sub(1);
         if current_idx + 1 >= cue.tracks.len() {
-            if let Some(ref p) = self.backend_player { p.clear(); }
+            if let Some(ref p) = self.backend_player {
+                p.clear();
+            }
             return;
         }
         let next_t = cue.tracks[current_idx + 1].clone();
@@ -1549,7 +1575,9 @@ impl AudioLoopState {
             self.current_file_start = Instant::now();
             self.total_paused = Duration::ZERO;
             self.paused_at = None;
-            slots.pos_ms.store(next_t.start.as_millis() as u64, Ordering::Relaxed);
+            slots
+                .pos_ms
+                .store(next_t.start.as_millis() as u64, Ordering::Relaxed);
             let meta = format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
             set_metadata(&slots.meta_slot, Some(meta));
             set_cue_track(&slots.cue_track_slot, Some(current_idx + 1));
@@ -1561,10 +1589,14 @@ impl AudioLoopState {
             Some(c) => c,
             None => return,
         };
-        let elapsed = self.current_file_start.elapsed()
+        let elapsed = self
+            .current_file_start
+            .elapsed()
             .saturating_sub(self.total_paused)
             .saturating_add(self.last_seek_offset);
-        let current_idx = cue.tracks.iter()
+        let current_idx = cue
+            .tracks
+            .iter()
             .position(|t| t.start > elapsed)
             .unwrap_or(cue.tracks.len())
             .saturating_sub(1);
@@ -1591,7 +1623,10 @@ impl AudioLoopState {
             self.current_file_start = Instant::now();
             self.total_paused = Duration::ZERO;
             self.paused_at = None;
-            let meta = format!("{}. {} - {}", target_t.number, target_t.title, target_t.performer);
+            let meta = format!(
+                "{}. {} - {}",
+                target_t.number, target_t.title, target_t.performer
+            );
             set_metadata(&slots.meta_slot, Some(meta));
             set_cue_track(&slots.cue_track_slot, Some(target_idx));
         }
@@ -1620,7 +1655,11 @@ impl AudioLoopState {
             slots.dur_ms.store(0, Ordering::Relaxed);
             if let Some(ref p) = self.backend_player {
                 p.clear();
-                if self.paused { p.pause(); } else { p.play(); }
+                if self.paused {
+                    p.pause();
+                } else {
+                    p.play();
+                }
             }
         }
         set_current_path(&slots.path_slot, None);
@@ -1648,12 +1687,17 @@ impl AudioLoopState {
         // Update UI immediately before any device operations.
         set_current_track(&slots.track_slot, Some(filename));
         set_current_path(&slots.path_slot, Some(path.clone()));
-        let total_dur = source.total_duration().map(|d| d.as_millis() as u64).unwrap_or(0);
+        let total_dur = source
+            .total_duration()
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         slots.dur_ms.store(total_dur, Ordering::Relaxed);
         slots.pos_ms.store(0, Ordering::Relaxed);
 
         self.cue_sheet = load_cue(&path, &self.shutdown_flag);
-        slots.tracks_flag.store(self.cue_sheet.is_some(), Ordering::Relaxed);
+        slots
+            .tracks_flag
+            .store(self.cue_sheet.is_some(), Ordering::Relaxed);
         self.update_metadata_for_new_file(slots, &path);
 
         if !self.ensure_backend(slots) {
@@ -1667,11 +1711,14 @@ impl AudioLoopState {
             self.last_hw_pos = Duration::ZERO;
             self.current_file_start = Instant::now();
             self.total_paused = Duration::ZERO;
-            if self.paused { self.paused_at = Some(Instant::now()); }
+            if self.paused {
+                self.paused_at = Some(Instant::now());
+            }
         }
 
         // Seek to a saved CUE track if resuming from saved state.
-        if let (Some(track_idx), Some(cue)) = (self.pending_start_track_idx.take(), &self.cue_sheet) {
+        if let (Some(track_idx), Some(cue)) = (self.pending_start_track_idx.take(), &self.cue_sheet)
+        {
             if track_idx < cue.tracks.len() {
                 let t = cue.tracks[track_idx].clone();
                 if t.start > Duration::ZERO {
@@ -1694,7 +1741,11 @@ impl AudioLoopState {
 
         if let Some(ref p) = self.backend_player {
             p.set_volume(self.current_volume);
-            if self.paused { p.pause(); } else { p.play(); }
+            if self.paused {
+                p.pause();
+            } else {
+                p.play();
+            }
         }
         true
     }
@@ -1707,7 +1758,9 @@ impl AudioLoopState {
                 set_metadata(&slots.meta_slot, Some(meta));
                 set_cue_track(&slots.cue_track_slot, Some(initial_idx));
             }
-            let markers: Vec<u64> = cue.tracks.iter()
+            let markers: Vec<u64> = cue
+                .tracks
+                .iter()
                 .map(|t| t.start.as_millis() as u64)
                 .collect();
             set_cue_markers(&slots.cue_markers_slot, markers);
@@ -1721,7 +1774,9 @@ impl AudioLoopState {
     }
 
     fn recover_orphaned_backend(&mut self, slots: &AudioSlots) {
-        if !self.ensure_backend(slots) { return; }
+        if !self.ensure_backend(slots) {
+            return;
+        }
         let path_idx = self.current_track_idx.saturating_sub(1) % self.playlist.len();
         let path = self.playlist[path_idx].clone();
         let resume_pos = self.last_hw_pos.saturating_add(self.last_seek_offset);
@@ -1733,8 +1788,13 @@ impl AudioLoopState {
                 self.last_hw_pos = Duration::ZERO;
                 self.current_file_start = Instant::now();
                 self.total_paused = Duration::ZERO;
-                if !self.paused { p.play(); }
-                log::info!("[AUDIO] Auto-recovered playback at {}ms", resume_pos.as_millis());
+                if !self.paused {
+                    p.play();
+                }
+                log::info!(
+                    "[AUDIO] Auto-recovered playback at {}ms",
+                    resume_pos.as_millis()
+                );
             }
         }
     }
@@ -1742,15 +1802,21 @@ impl AudioLoopState {
     fn update_cue_track_highlight(&self, slots: &AudioSlots) {
         if let Some(ref cue) = self.cue_sheet {
             if let Some(ref p) = self.backend_player {
-                let elapsed = p.get_pos()
+                let elapsed = p
+                    .get_pos()
                     .saturating_sub(self.sink_base_pos)
                     .saturating_add(self.last_seek_offset);
-                let idx = cue.tracks.iter()
+                let idx = cue
+                    .tracks
+                    .iter()
                     .position(|t| t.start > elapsed)
                     .unwrap_or(cue.tracks.len())
                     .saturating_sub(1);
                 let current_t = &cue.tracks[idx];
-                let meta = format!("{}. {} - {}", current_t.number, current_t.title, current_t.performer);
+                let meta = format!(
+                    "{}. {} - {}",
+                    current_t.number, current_t.title, current_t.performer
+                );
                 if let Ok(mut g) = slots.meta_slot.try_lock() {
                     if g.as_ref() != Some(&meta) {
                         *g = Some(meta);
@@ -1771,7 +1837,9 @@ impl AudioLoopState {
             let hw_pos = p.get_pos().saturating_sub(self.sink_base_pos);
             self.last_hw_pos = hw_pos;
             let raw_abs_pos = hw_pos.saturating_add(self.last_seek_offset);
-            slots.pos_ms.store(raw_abs_pos.as_millis() as u64, Ordering::Relaxed);
+            slots
+                .pos_ms
+                .store(raw_abs_pos.as_millis() as u64, Ordering::Relaxed);
         }
     }
 }
@@ -1791,7 +1859,9 @@ fn run_audio_loop(
     dur_ms: Arc<std::sync::atomic::AtomicU64>,
     device_slot: Arc<Mutex<Option<String>>>,
 ) {
-    unsafe { wasapi_monitor_init(); }
+    unsafe {
+        wasapi_monitor_init();
+    }
 
     let slots = AudioSlots {
         err_slot,
@@ -1820,21 +1890,25 @@ fn run_audio_loop(
                 st.backend_sink.take();
                 set_current_track(&slots.track_slot, None);
                 set_metadata(&slots.meta_slot, None);
-                unsafe { wasapi_monitor_uninit(); }
+                unsafe {
+                    wasapi_monitor_uninit();
+                }
                 return;
             }
-            Ok(AudioCommand::Stop)                      => st.handle_stop(&slots),
-            Ok(AudioCommand::Pause)                     => st.handle_pause(),
-            Ok(AudioCommand::Play)                      => st.handle_play(&slots),
-            Ok(AudioCommand::Seek(pos))                 => st.handle_seek(pos, &slots),
-            Ok(AudioCommand::SetDevice(_))              => st.handle_set_device(&slots),
-            Ok(AudioCommand::NextFile)                  => st.handle_next_file(&slots),
-            Ok(AudioCommand::PrevFile)                  => st.handle_prev_file(&slots),
-            Ok(AudioCommand::NextTrack)                 => st.handle_next_track(&slots),
-            Ok(AudioCommand::PrevTrack)                 => st.handle_prev_track(&slots),
+            Ok(AudioCommand::Stop) => st.handle_stop(&slots),
+            Ok(AudioCommand::Pause) => st.handle_pause(),
+            Ok(AudioCommand::Play) => st.handle_play(&slots),
+            Ok(AudioCommand::Seek(pos)) => st.handle_seek(pos, &slots),
+            Ok(AudioCommand::SetDevice(_)) => st.handle_set_device(&slots),
+            Ok(AudioCommand::NextFile) => st.handle_next_file(&slots),
+            Ok(AudioCommand::PrevFile) => st.handle_prev_file(&slots),
+            Ok(AudioCommand::NextTrack) => st.handle_next_track(&slots),
+            Ok(AudioCommand::PrevTrack) => st.handle_prev_track(&slots),
             Ok(AudioCommand::SetVolume(v)) => {
                 st.current_volume = v;
-                if let Some(ref p) = st.backend_player { p.set_volume(v); }
+                if let Some(ref p) = st.backend_player {
+                    p.set_volume(v);
+                }
             }
             Ok(AudioCommand::SetPlaylist(list, si, ti, paused)) => {
                 st.handle_set_playlist(list, si, ti, paused, &slots);
@@ -1867,7 +1941,9 @@ fn run_audio_loop(
 
         // CUE track highlight update
         if !st.stopped && !st.paused {
-            if shutdown_flag.load(Ordering::Relaxed) { return; }
+            if shutdown_flag.load(Ordering::Relaxed) {
+                return;
+            }
             if st.backend_player.as_ref().map_or(false, |p| !p.empty()) {
                 st.update_cue_track_highlight(&slots);
             }

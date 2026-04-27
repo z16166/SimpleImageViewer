@@ -436,7 +436,7 @@ fn draw_settings_right_col(
 
         let old_play_music = app.settings.play_music;
         let old_show_music_osd = app.settings.show_music_osd;
-        
+
         ui.horizontal(|ui| {
             ui.checkbox(&mut app.settings.play_music, t!("label.play_music"));
             if app.settings.play_music {

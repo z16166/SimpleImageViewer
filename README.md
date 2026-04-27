@@ -64,7 +64,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `←` / `↑` / `PageUp` | Previous image |
 | `Home` | First image |
 | `End` | Last image |
-| `+` / `-` | Zoom in / out |
+| `+` / `=` / `-` | Zoom in / out |
 | `*` (or `Numpad *`) | Reset zoom & pan |
 | `Ctrl + Mouse wheel` | Zoom |
 | `Mouse wheel` | Next / Previous image |
@@ -72,7 +72,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Z` | Toggle Fit ↔ Original size |
 | `G` | Open *Go to image…* dialog (jump to index) |
 | `F` / `F11` | Toggle full-screen |
-| `F1` | Open / close Settings panel |
+| `F1` | Open Settings panel |
 | `Esc` | Exit full-screen / Close dialogs |
 | `Left-Click (bg)` | Close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |
