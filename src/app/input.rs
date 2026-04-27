@@ -321,8 +321,10 @@ impl ImageViewerApp {
                 self.active_modal = None;
             }
             ModalResult::Confirmed(action) => {
-                self.handle_modal_action(action, ctx);
+                // Clear current modal BEFORE executing action, allowing the action
+                // to trigger a new modal (e.g. success/info dialogs).
                 self.active_modal = None;
+                self.handle_modal_action(action, ctx);
             }
         }
     }
@@ -353,19 +355,27 @@ impl ImageViewerApp {
                     }
                     self.queue_save();
                 }
+                ConfirmTag::RemoveFileAssoc => {
+                    crate::windows_utils::unregister_file_associations();
+                    // Optional: show a success message? User didn't ask but it's consistent.
+                }
+                ConfirmTag::InfoOnly => {
+                    // Do nothing, the modal is already dismissed.
+                }
             },
             #[cfg(target_os = "windows")]
-            ModalAction::ApplyFileAssoc => {
-                if let Some(ActiveModal::FileAssoc(state)) = &self.active_modal {
-                    let selected = state.selected_extensions();
-                    crate::windows_utils::register_file_associations(&selected);
-                }
-                rfd::MessageDialog::new()
-                    .set_title(t!("win.assoc_done_title").to_string())
-                    .set_description(t!("win.assoc_done_msg").to_string())
-                    .set_buttons(rfd::MessageButtons::Ok)
-                    .set_level(rfd::MessageLevel::Info)
-                    .show();
+            ModalAction::ApplyFileAssoc(selected) => {
+                // Extensions are now passed as a payload, avoiding dependency on active_modal state.
+                let selected_refs: Vec<&str> = selected.iter().map(|s| s.as_str()).collect();
+                crate::windows_utils::register_file_associations(&selected_refs);
+
+                // Show custom "Success" info dialog instead of system rfd message.
+                self.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                    crate::ui::dialogs::confirm::State::info(
+                        t!("win.assoc_done_title"),
+                        t!("win.assoc_done_msg"),
+                    ),
+                ));
             }
         }
     }

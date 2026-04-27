@@ -41,6 +41,8 @@ pub struct State {
     /// The dispatch layer (handle_modal_action) uses this to decide what to
     /// do when the user confirms.
     pub(crate) tag: ConfirmTag,
+    /// If false, only the confirm button is shown (useful for info/success alerts).
+    show_cancel: bool,
 }
 
 /// Identifies the operation being confirmed so the dispatch layer knows what
@@ -52,6 +54,10 @@ pub struct State {
 pub enum ConfirmTag {
     /// User is enabling recursive directory scan.
     EnableRecursiveScan,
+    /// User is removing file associations.
+    RemoveFileAssoc,
+    /// Just a message, no action needed on confirm.
+    InfoOnly,
 }
 
 impl State {
@@ -63,6 +69,31 @@ impl State {
             confirm_label: t!("btn.ok").to_string(),
             cancel_label: t!("btn.cancel").to_string(),
             tag: ConfirmTag::EnableRecursiveScan,
+            show_cancel: true,
+        }
+    }
+
+    /// Build state for the "remove file associations" confirmation.
+    pub fn remove_file_assoc(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            confirm_label: t!("btn.ok").to_string(),
+            cancel_label: t!("btn.cancel").to_string(),
+            tag: ConfirmTag::RemoveFileAssoc,
+            show_cancel: true,
+        }
+    }
+
+    /// Build state for a simple info/success dialog (single button).
+    pub fn info(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            confirm_label: t!("btn.ok").to_string(),
+            cancel_label: String::new(),
+            tag: ConfirmTag::InfoOnly,
+            show_cancel: false,
         }
     }
 }
@@ -114,9 +145,12 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                         ),
                     );
                 }
-                ui.add_space(8.0);
-                if styled_button(ui, &state.cancel_label, palette).clicked() {
-                    result = ModalResult::Dismissed;
+
+                if state.show_cancel {
+                    ui.add_space(8.0);
+                    if styled_button(ui, &state.cancel_label, palette).clicked() {
+                        result = ModalResult::Dismissed;
+                    }
                 }
             });
 

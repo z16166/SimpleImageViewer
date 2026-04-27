@@ -61,7 +61,7 @@ pub enum ModalAction {
     ConfirmTagged(crate::ui::dialogs::confirm::ConfirmTag),
     /// Apply the selected file associations (Windows only).
     #[cfg(target_os = "windows")]
-    ApplyFileAssoc,
+    ApplyFileAssoc(Vec<String>),
 }
 
 /// The single active modal dialog. Only one can be open at a time.

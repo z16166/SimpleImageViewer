@@ -969,16 +969,12 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         }
         ui.add_space(8.0);
         if styled_button(ui, t!("win.remove_assoc"), &app.cached_palette).clicked() {
-            let confirmed = rfd::MessageDialog::new()
-                .set_title(t!("win.confirm_remove_title").to_string())
-                .set_description(t!("win.confirm_remove_msg").to_string())
-                .set_buttons(rfd::MessageButtons::OkCancel)
-                .set_level(rfd::MessageLevel::Warning)
-                .show()
-                == rfd::MessageDialogResult::Ok;
-            if confirmed {
-                crate::windows_utils::unregister_file_associations();
-            }
+            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                crate::ui::dialogs::confirm::State::remove_file_assoc(
+                    t!("win.confirm_remove_title"),
+                    t!("win.confirm_remove_msg"),
+                ),
+            ));
         }
     });
 }

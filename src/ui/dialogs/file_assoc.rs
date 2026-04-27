@@ -50,12 +50,12 @@ impl State {
     ///
     /// Called by the dispatch layer after the user confirms, before the state
     /// is dropped.  This is the only way external code can read the selection.
-    pub fn selected_extensions(&self) -> Vec<&str> {
+    pub fn selected_extensions(&self) -> Vec<String> {
         self.formats
             .iter()
             .zip(self.selections.iter())
             .filter(|(_, sel)| **sel)
-            .map(|(fmt, _)| fmt.extension.as_str())
+            .map(|(fmt, _)| fmt.extension.clone())
             .collect()
     }
 }
@@ -129,7 +129,9 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                     )
                     .clicked()
                 {
-                    result = ModalResult::Confirmed(ModalAction::ApplyFileAssoc);
+                    result = ModalResult::Confirmed(ModalAction::ApplyFileAssoc(
+                        state.selected_extensions(),
+                    ));
                 }
                 ui.add_space(8.0);
                 if styled_button(ui, t!("win.btn_cancel"), palette).clicked() {
