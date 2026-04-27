@@ -87,101 +87,29 @@ impl ImageViewerApp {
 
     /// Future-proofing: Map a key press to a logical application action.
     /// This is where we will eventually plug in user-configurable hotkeys.
+    /// Map a key press to a logical application action using a prioritized static lookup table.
+    ///
+    /// [Design Choice: Flat Sorted Array]
+    /// For a small number of hotkeys (~30-50), a linear scan of a pre-sorted array is faster
+    /// than a HashMap due to CPU cache locality and zero hashing overhead. The array is sorted
+    /// by modifier complexity (more modifiers first) to ensure exact matches take priority
+    /// over simple ones (e.g., Ctrl+Left overrides Left).
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
-        // 1. High-priority overrides (Keys that should work regardless of simple matches)
+        let current_mods = get_modifiers_mask(i.modifiers);
 
-        // Tab for OSD - handle early
-        if i.key_pressed(Key::Tab) {
-            return Some(AppAction::ToggleOSD);
-        }
-
-        // Rotation and modified shortcuts
-        if i.modifiers.command {
-            if i.key_pressed(Key::ArrowLeft) {
-                return Some(AppAction::RotateCCW);
-            }
-            if i.key_pressed(Key::ArrowRight) {
-                return Some(AppAction::RotateCW);
-            }
-            if i.key_pressed(Key::P) {
-                return Some(AppAction::Print);
+        for binding in HOTKEY_MAP {
+            if i.key_pressed(binding.key) && current_mods == binding.modifiers {
+                return Some(binding.action);
             }
         }
 
-        if i.key_pressed(Key::Delete) {
-            return if i.modifiers.shift {
-                Some(AppAction::PermanentDelete)
-            } else {
-                Some(AppAction::Delete)
-            };
-        }
-
-        // 2. Navigation (Only if Command/Ctrl is NOT pressed)
-        if !i.modifiers.command {
-            if i.key_pressed(Key::ArrowRight)
-                || i.key_pressed(Key::ArrowDown)
-                || i.key_pressed(Key::PageDown)
-            {
-                return Some(AppAction::Next);
-            }
-            if i.key_pressed(Key::ArrowLeft)
-                || i.key_pressed(Key::ArrowUp)
-                || i.key_pressed(Key::PageUp)
-            {
-                return Some(AppAction::Prev);
-            }
-        }
-
-        if i.key_pressed(Key::Home) {
-            return Some(AppAction::First);
-        }
-        if i.key_pressed(Key::End) {
-            return Some(AppAction::Last);
-        }
-
-        // 3. Simple Keys
-        // Zoom
-        if i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals) {
-            return Some(AppAction::ZoomIn);
-        }
-        if i.key_pressed(Key::Minus) {
-            return Some(AppAction::ZoomOut);
-        }
+        // Special case for asterisk which comes via Text event in some egui versions
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
                 if text == "*" {
                     return Some(AppAction::ZoomReset);
                 }
             }
-        }
-
-        // Display / UI
-        if i.key_pressed(Key::F1) {
-            return Some(AppAction::ToggleSettings);
-        }
-        if i.key_pressed(Key::F11) || i.key_pressed(Key::F) {
-            return Some(AppAction::ToggleFullscreen);
-        }
-        if i.key_pressed(Key::Z) {
-            return Some(AppAction::ToggleScaleMode);
-        }
-        if i.key_pressed(Key::G) {
-            return Some(AppAction::ToggleGoto);
-        }
-
-        // Music / Slideshow
-        if i.key_pressed(Key::Space) {
-            return Some(AppAction::ToggleAutoSwitch);
-        }
-
-        // App
-        #[cfg(not(target_os = "windows"))]
-        if i.modifiers.command && i.key_pressed(Key::Q) {
-            return Some(AppAction::Quit);
-        }
-
-        if i.key_pressed(Key::Escape) {
-            return Some(AppAction::ExitFullscreen);
         }
 
         None
@@ -568,3 +496,164 @@ pub(crate) enum AppAction {
     Quit,
     ExitFullscreen,
 }
+
+struct HotkeyBinding {
+    modifiers: u8, // Bitmask: Bit 0=Ctrl/Cmd, 1=Shift, 2=Alt
+    key: egui::Key,
+    action: AppAction,
+}
+
+// Modifier bitmask constants
+const M_NONE: u8 = 0;
+const M_CTRL: u8 = 1;
+const M_SHIFT: u8 = 2;
+const M_ALT: u8 = 4;
+
+/// Helper to convert egui's complex Modifiers struct into a simple bitmask.
+/// This normalizes "command" and "ctrl" to a single bit for reliable matching.
+fn get_modifiers_mask(m: egui::Modifiers) -> u8 {
+    let mut mask = 0;
+    if m.ctrl || m.command {
+        mask |= M_CTRL;
+    }
+    if m.shift {
+        mask |= M_SHIFT;
+    }
+    if m.alt {
+        mask |= M_ALT;
+    }
+    mask
+}
+
+const HOTKEY_MAP: &[HotkeyBinding] = &[
+    // --- Group 1: High Priority (Complex Modifiers) ---
+    HotkeyBinding {
+        modifiers: M_SHIFT,
+        key: egui::Key::Delete,
+        action: AppAction::PermanentDelete,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowLeft,
+        action: AppAction::RotateCCW,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowRight,
+        action: AppAction::RotateCW,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::P,
+        action: AppAction::Print,
+    },
+    #[cfg(not(target_os = "windows"))]
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::Q,
+        action: AppAction::Quit,
+    },
+    // --- Group 2: Simple Navigation / Control ---
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowRight,
+        action: AppAction::Next,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowDown,
+        action: AppAction::Next,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::PageDown,
+        action: AppAction::Next,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowLeft,
+        action: AppAction::Prev,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowUp,
+        action: AppAction::Prev,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::PageUp,
+        action: AppAction::Prev,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Home,
+        action: AppAction::First,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::End,
+        action: AppAction::Last,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Space,
+        action: AppAction::ToggleAutoSwitch,
+    },
+    // --- Group 3: Functional Keys ---
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Tab,
+        action: AppAction::ToggleOSD,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F1,
+        action: AppAction::ToggleSettings,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F11,
+        action: AppAction::ToggleFullscreen,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F,
+        action: AppAction::ToggleFullscreen,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Z,
+        action: AppAction::ToggleScaleMode,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::G,
+        action: AppAction::ToggleGoto,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Delete,
+        action: AppAction::Delete,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Escape,
+        action: AppAction::ExitFullscreen,
+    },
+    // Zoom
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Plus,
+        action: AppAction::ZoomIn,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Equals,
+        action: AppAction::ZoomIn,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Minus,
+        action: AppAction::ZoomOut,
+    },
+];
