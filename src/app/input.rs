@@ -355,6 +355,7 @@ impl ImageViewerApp {
                     }
                     self.queue_save();
                 }
+                #[cfg(target_os = "windows")]
                 ConfirmTag::RemoveFileAssoc => {
                     crate::windows_utils::unregister_file_associations();
                     // Optional: show a success message? User didn't ask but it's consistent.
