@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.5] - 2026-04-27
+
+### Added
+- **Input System Refactoring**: Replaced the hardcoded input logic with a prioritized, bitmask-based lookup table. This ensures consistent modifier matching (Ctrl/Cmd, Shift, Alt) across platforms and provides a foundation for future user-configurable hotkeys.
+- **Unified Dialogs**: Replaced native system dialogs for Windows file association management with custom, theme-aware modal dialogs, achieving a more consistent and professional UI experience.
+- **Modal Sequencing**: Improved the modal dispatching system to support sequential dialog flows, enabling "Success" or "Confirm" prompts to appear immediately after a primary operation is completed.
+
+### Fixed
+- **Hotkey Conflicts**: Resolved an issue where modified shortcuts (e.g., Ctrl+Arrow keys for rotation) were sometimes intercepted by simple navigation keys.
+- **UI Focus**: Fixed a bug where the Tab key (used for OSD toggle) could cause egui to trap focus, leading to non-responsive keyboard input.
+- **Accessibility**: Added the `=` key as a secondary shortcut for zooming in to improve accessibility for laptop keyboards without numeric pads.
+
 ## [1.5.4] - 2026-04-26
 
 ### Added

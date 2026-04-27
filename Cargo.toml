@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "1.5.4"
+version = "1.5.5"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
