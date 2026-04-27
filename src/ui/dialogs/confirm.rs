@@ -55,6 +55,7 @@ pub enum ConfirmTag {
     /// User is enabling recursive directory scan.
     EnableRecursiveScan,
     /// User is removing file associations.
+    #[cfg(target_os = "windows")]
     RemoveFileAssoc,
     /// Just a message, no action needed on confirm.
     InfoOnly,
@@ -74,6 +75,7 @@ impl State {
     }
 
     /// Build state for the "remove file associations" confirmation.
+    #[cfg(target_os = "windows")]
     pub fn remove_file_assoc(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             title: title.into(),
