@@ -393,11 +393,19 @@ impl ImageViewerApp {
     pub(crate) fn process_file_op_results(&mut self) {
         while let Ok(res) = self.file_op_rx.try_recv() {
             match res {
-                FileOpResult::Delete(path, res) => {
+                FileOpResult::Delete(path, original_idx, res) => {
                     if let Err(e) = res {
                         log::error!("Failed to delete {:?}: {}", path, e);
                         self.error_message =
                             Some(t!("status.delete_failed", err = e.to_string()).to_string());
+
+                        // ROLLBACK: Restore the file to the in-memory list if it failed to delete.
+                        // We use the original index to maintain order.
+                        if original_idx <= self.image_files.len() {
+                            self.image_files.insert(original_idx, path);
+                        } else {
+                            self.image_files.push(path);
+                        }
                     } else {
                         log::info!("Successfully deleted {:?}", path);
                     }

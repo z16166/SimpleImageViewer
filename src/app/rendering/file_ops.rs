@@ -78,7 +78,8 @@ impl ImageViewerApp {
             return;
         }
 
-        let path_to_delete = self.image_files[self.current_index].clone();
+        let original_index = self.current_index;
+        let path_to_delete = self.image_files[original_index].clone();
 
         // Final sanity check: make sure file still exists
         if !path_to_delete.exists() {
@@ -107,10 +108,14 @@ impl ImageViewerApp {
                     trash::delete(&path_to_delete).map_err(|e| e.to_string())
                 };
 
-                let _ = tx.send(crate::app::FileOpResult::Delete(path_to_delete, result));
+                let _ = tx.send(crate::app::FileOpResult::Delete(
+                    path_to_delete,
+                    original_index,
+                    result,
+                ));
             });
 
-            self.image_files.remove(self.current_index);
+            self.image_files.remove(original_index);
         }
 
         if self.image_files.is_empty() {
