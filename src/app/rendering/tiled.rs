@@ -22,8 +22,9 @@ const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
 const FIT_SCALE_BUFFER: f32 = 1.05;
 const BURST_UPLOAD_MULT: usize = 4;
-const BURST_UPLOAD_MAX: usize = 48;
-const TILE_FADE_DURATION: f32 = 0.2;
+/// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
+/// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
+const BURST_UPLOAD_MAX_512: usize = 16;
 
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
@@ -202,11 +203,21 @@ impl ImageViewerApp {
             // BURST POLICY:
             // If we are NOT dragging and NOT scrolling (stable view), boost upload quota
             // to fill the screen quickly. Otherwise, keep it low to maintain 60FPS.
+            //
+            // VRAM safety: burst_upload_max keeps per-frame GPU upload bounded in BYTES,
+            // not just tile count. tile_size_scale = tile_px / 512.
+            //   512px tile  = 512×512×4 =  1 MB → burst_upload_max = 16/1 = 16 tiles = 16 MB/frame
+            //   1024px tile = 1024×1024×4 = 4 MB → burst_upload_max = 16/2 =  8 tiles = 32 MB/frame
+            //
+            // 32 MB/frame at 60 FPS ≈ 2 GB/s, well within PCIe 4.0 x16 bandwidth (32 GB/s).
+            // This prevents Windows TDR (GPU timeout reset → black screen) on any hardware.
+            let tile_size_scale = (crate::tile_cache::get_tile_size() / 512) as usize;
+            let burst_upload_max = (BURST_UPLOAD_MAX_512 / tile_size_scale).max(1);
             let is_interacting = canvas_resp.dragged() || self.last_mouse_wheel_nav.abs() > 0.01;
             let tile_upload_quota = if !is_interacting {
-                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(BURST_UPLOAD_MAX) // Burst mode
+                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(burst_upload_max) // Burst mode
             } else {
-                self.tile_upload_quota // Stable mode
+                self.tile_upload_quota.min(burst_upload_max) // Stable mode also capped
             };
 
             let mut newly_uploaded = 0;
@@ -230,20 +241,13 @@ impl ImageViewerApp {
                     }
 
                     match status {
-                        TileStatus::Ready(handle, ready_at) => {
-                            let mut alpha = 1.0;
-                            if let Some(at) = ready_at {
-                                let elapsed = at.elapsed().as_secs_f32();
-                                let duration = TILE_FADE_DURATION; // 200ms smooth fade
-                                if elapsed < duration {
-                                    alpha = (elapsed / duration).clamp(0.0, 1.0);
-                                    ui.ctx().request_repaint(); // Smooth transition
-                                }
-                            }
-
-                            let color = Color32::WHITE.linear_multiply(alpha);
+                        TileStatus::Ready(handle, _ready_at) => {
+                            // Draw tile at full opacity immediately.
+                            // No fade-in: the preview texture is always rendered underneath,
+                            // so tile pop-in is not jarring. Fade caused continuous repaints
+                            // that wasted CPU/GPU cycles even when the user was not interacting.
                             let mut mesh = egui::Mesh::with_texture(handle.id());
-                            mesh.add_rect_with_uv(*tile_screen_rect, *uv, color);
+                            mesh.add_rect_with_uv(*tile_screen_rect, *uv, Color32::WHITE);
                             if let Some(r) = rot {
                                 for v in &mut mesh.vertices {
                                     v.pos = pivot + r * (v.pos - pivot);

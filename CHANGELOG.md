@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.6] - 2026-04-28
+
+### Changed
+- **Tiled Rendering Optimization**: Removed tile fade-in animations to eliminate redundant UI repaints, significantly reducing CPU/GPU usage during idle periods. Tiles now pop-in instantly at full opacity.
+- **GPU Upload Quota**: Refined the per-frame GPU upload quota system. Background preloading is now strictly limited to prevent GPU command queue saturation, while the active image and high-quality previews bypass the quota for maximum responsiveness.
+
+### Fixed
+- **IPC Robustness**: Improved IPC message handling with strict size limits and non-blocking operation on Windows to prevent potential application freezes.
+
 ## [1.5.5] - 2026-04-27
 
 ### Added

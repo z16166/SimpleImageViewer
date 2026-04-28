@@ -430,6 +430,7 @@ impl ImageViewerApp {
             }
         }
     }
+
     /// Process results from the background ImageLoader.
     pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
@@ -482,8 +483,17 @@ impl ImageViewerApp {
         }
 
         // ── 2. Process results from the background ImageLoader ──
-        const STATIC_UPLOAD_QUOTA: usize = 2;
-        let mut uploads_this_frame = 0;
+        //
+        // QUOTA DESIGN:
+        //   - We count each ctx.load_texture() call as one "upload slot".
+        //   - Tile results and Refined notifications do NOT consume slots
+        //     (they don't call load_texture on the main thread path).
+        //   - The current image is always allowed through, regardless of quota,
+        //     so switching images is never blocked by background preload traffic.
+        //   - When quota is reached, the polled-but-unprocessed item is pushed
+        //     back via repush() so it is the first thing processed next frame.
+        const GLOBAL_UPLOAD_QUOTA: usize = 3;
+        let mut uploads_this_frame: usize = 0;
 
         while let Some(output) = self.loader.poll() {
             match output {
@@ -492,84 +502,122 @@ impl ImageViewerApp {
                     let is_current = idx == self.current_index;
                     let gen_match = load_result.generation == self.generation;
 
-                    // Leniency: if this is the currently viewed image, accept it even if slightly "stale"
+                    // Drop stale background preloads — never drop the current image.
                     if !is_current && !gen_match {
                         continue;
                     }
+
+                    // DESIGN: The current image ALWAYS bypasses the upload quota.
+                    //
+                    // Rationale: when the user switches images, they have an immediate
+                    // expectation to see the new image. If background preloads have already
+                    // consumed the frame budget, deferring the current image would show a
+                    // blank/stale frame — a hard visible stutter. Preloaded images, by
+                    // contrast, are invisible to the user until they navigate to them, so
+                    // a one-frame delay is imperceptible.
+                    //
+                    // Trade-off: in the worst case (current image arrives the same frame as
+                    // N preload results), the current image causes one extra load_texture
+                    // beyond the quota. This is acceptable: it happens at most once per
+                    // navigation event, not on every frame.
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
                     self.handle_image_load_result(load_result, ctx);
-                    // Force repaint for the current image so it shows up immediately
+                    uploads_this_frame += 1;
+
                     if is_current {
                         ctx.request_repaint();
-                    } else {
-                        uploads_this_frame += 1;
-                        if uploads_this_frame >= STATIC_UPLOAD_QUOTA {
-                            ctx.request_repaint();
-                            break;
-                        }
                     }
                 }
+
+                LoaderOutput::Preview(preview_update) => {
+                    let preview_is_current = preview_update.index == self.current_index;
+
+                    // DESIGN: Mirror the Image bypass — the current image's HQ preview
+                    // also skips the quota.
+                    //
+                    // Rationale: the Preview message carries the refined high-quality
+                    // thumbnail that replaces the initial blurry EXIF preview (the
+                    // "blurry→sharp" transition the user can see). Deferring it even
+                    // one frame makes the refinement visually slower with no benefit,
+                    // because the pixel data is already in memory at this point.
+                    // Only background-prefetched previews should be quota-limited.
+                    if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader.repush(LoaderOutput::Preview(preview_update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    self.handle_preview_update(preview_update, ctx);
+                    uploads_this_frame += 1;
+                }
+
                 LoaderOutput::Tile(tile_result) => {
+                    // Tile signals are free: pixels live in PIXEL_CACHE; GPU upload
+                    // happens lazily in the tile rendering pass, not here.
                     self.handle_tile_load_result(tile_result, ctx);
                 }
-                LoaderOutput::Preview(preview_update) => {
-                    self.handle_preview_update(preview_update, ctx);
-                }
+
                 LoaderOutput::Refined(idx, gen_id) => {
-                    if idx == self.current_index && gen_id == self.generation {
-                        log::info!(
-                            "[App] Refined image notification for {}, index={}",
-                            idx,
-                            idx
-                        );
-
-                        // 1. Clear the pixel cache for this image
-                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                            cache.remove_image(idx);
-                        }
-
-                        // 2. Bump generation and clear tile queue to force TileManager to re-pull tiles
-                        // from the newly developed high-resolution buffer, discarding any blurred thumbnail tiles.
-                        self.generation = self.generation.wrapping_add(1);
-                        self.loader.set_generation(self.generation);
-
-                        if let Some(tm) = &mut self.tile_manager {
-                            log::info!(
-                                "[App] Refined: Tiled mode - forcing tile upgrade to high definition"
-                            );
-                            tm.generation = self.generation;
-                            tm.pending_tiles.clear();
-                            // Also evict the fallback preview texture
-                            self.texture_cache.remove(idx);
-                        } else {
-                            log::warn!(
-                                "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
-                            );
-                            self.texture_cache.remove(idx);
-                            self.loader.request_load(
-                                self.current_index,
-                                self.generation,
-                                self.image_files[self.current_index].clone(),
-                            );
-                        }
-
-                        self.loader.flush_tile_queue();
-                        ctx.request_repaint();
-                    } else {
-                        // Refinement completed for a non-current image (e.g. prefetched).
-                        // Invalidate stale caches so tiles are re-extracted from the updated
-                        // high-resolution buffer when the user navigates to this image.
-                        log::info!(
-                            "[App] Refined: background update for index {} (not current). Invalidating caches.",
-                            idx
-                        );
-                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                            cache.remove_image(idx);
-                        }
-                        self.prefetched_tiles.remove(&idx);
-                        self.texture_cache.remove(idx);
-                    }
+                    // Metadata-only notification — no load_texture call here.
+                    self.handle_refined_notification(idx, gen_id, ctx);
                 }
             }
+
+            // Secondary quota check after each processed item.
+            if uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                ctx.request_repaint();
+                break;
+            }
+        }
+    }
+
+    /// Handles a Refined notification: bumps generation so TileManager
+    /// re-fetches tiles from the newly developed high-resolution buffer.
+    fn handle_refined_notification(&mut self, idx: usize, gen_id: u64, ctx: &egui::Context) {
+        if idx == self.current_index && gen_id == self.generation {
+            log::info!("[App] Refined image notification for index={}", idx);
+
+            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                cache.remove_image(idx);
+            }
+
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+
+            if let Some(tm) = &mut self.tile_manager {
+                log::info!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
+                tm.generation = self.generation;
+                tm.pending_tiles.clear();
+                self.texture_cache.remove(idx);
+            } else {
+                log::warn!(
+                    "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
+                );
+                self.texture_cache.remove(idx);
+                self.loader.request_load(
+                    self.current_index,
+                    self.generation,
+                    self.image_files[self.current_index].clone(),
+                );
+            }
+
+            self.loader.flush_tile_queue();
+            ctx.request_repaint();
+        } else {
+            // Non-current image refined in background — invalidate stale caches.
+            log::info!(
+                "[App] Refined: background update for index {} (not current). Invalidating caches.",
+                idx
+            );
+            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                cache.remove_image(idx);
+            }
+            self.prefetched_tiles.remove(&idx);
+            self.texture_cache.remove(idx);
         }
     }
 

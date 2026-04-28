@@ -15,8 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::constants::*;
-use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*, ConnectOptions};
 use interprocess::ConnectWaitMode;
+use interprocess::local_socket::{
+    ConnectOptions, GenericNamespaced, ListenerOptions, Stream, prelude::*,
+};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -57,8 +59,8 @@ pub fn setup_or_forward_args(
     };
 
     // Try to connect as a client first.
-    // To guarantee absolute responsiveness and avoid ANY potential OS-level blocking 
-    // during connect or write (especially on Windows), we isolate the entire 
+    // To guarantee absolute responsiveness and avoid ANY potential OS-level blocking
+    // during connect or write (especially on Windows), we isolate the entire
     // client-side logic in a separate thread.
     enum ClientOp {
         Success,
@@ -86,13 +88,21 @@ pub fn setup_or_forward_args(
         #[cfg(windows)]
         {
             const ASFW_ANY: u32 = u32::MAX;
-            unsafe extern "system" { fn AllowSetForegroundWindow(dwProcessId: u32) -> i32; }
-            unsafe { let _ = AllowSetForegroundWindow(ASFW_ANY); }
+            unsafe extern "system" {
+                fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
+            }
+            unsafe {
+                let _ = AllowSetForegroundWindow(ASFW_ANY);
+            }
         }
 
         match conn.write_all(payload_clone.as_bytes()) {
-            Ok(_) => { let _ = done_tx.send(ClientOp::Success); }
-            Err(e) => { let _ = done_tx.send(ClientOp::WriteFailed(e)); }
+            Ok(_) => {
+                let _ = done_tx.send(ClientOp::Success);
+            }
+            Err(e) => {
+                let _ = done_tx.send(ClientOp::WriteFailed(e));
+            }
         }
     });
 
@@ -103,22 +113,34 @@ pub fn setup_or_forward_args(
             return true;
         }
         Ok(ClientOp::WriteFailed(e)) => {
-            log::error!("IPC primary detected but write failed: {}. Possible zombie.", e);
+            log::error!(
+                "IPC primary detected but write failed: {}. Possible zombie.",
+                e
+            );
             return true;
         }
         Ok(ClientOp::ConnectFailed(e)) => {
             use std::io::ErrorKind;
             let kind = e.kind();
             if kind == ErrorKind::NotFound || kind == ErrorKind::ConnectionRefused {
-                log::info!("No existing instance detected ({}). Becoming primary server.", e);
+                log::info!(
+                    "No existing instance detected ({}). Becoming primary server.",
+                    e
+                );
             } else {
-                log::error!("IPC primary appears to exist but is unreachable ({}). Exiting to avoid conflicts.", e);
+                log::error!(
+                    "IPC primary appears to exist but is unreachable ({}). Exiting to avoid conflicts.",
+                    e
+                );
                 return true;
             }
         }
         Err(_) => {
-            log::error!("IPC client operation timed out ({:?}). Primary instance is likely frozen.", IPC_CLIENT_TIMEOUT);
-            return true; 
+            log::error!(
+                "IPC client operation timed out ({:?}). Primary instance is likely frozen.",
+                IPC_CLIENT_TIMEOUT
+            );
+            return true;
         }
     }
 
@@ -181,9 +203,13 @@ fn ipc_server_loop(
 
         let mut s = String::new();
         let mut conn = conn;
-        
+
         // Use .take() to enforce a hard limit on read size
-        if std::io::Read::by_ref(&mut conn).take(MAX_IPC_PAYLOAD_SIZE).read_to_string(&mut s).is_ok() {
+        if std::io::Read::by_ref(&mut conn)
+            .take(MAX_IPC_PAYLOAD_SIZE)
+            .read_to_string(&mut s)
+            .is_ok()
+        {
             // Trim whitespace and validate minimal length
             let s = s.trim();
             if s.is_empty() || s.len() > (MAX_IPC_PAYLOAD_SIZE as usize) {
@@ -308,4 +334,3 @@ pub fn force_foreground() {
 pub fn force_foreground() {
     // On non-Windows, egui's ViewportCommand::Focus is sufficient.
 }
-
