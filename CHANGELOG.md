@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **RAW Refinement Race**: Fixed a race condition where stale background refinement results (from previous navigations) could overwrite the current image or cause flickering by prematurely evicting texture caches. Re-enabled strict generation (gen_id) validation for all asynchronous RAW updates.
+- **Deletion Race Safety**: Fixed a bug where deleting an image could cause the next image at the same index to briefly display data from the deleted file due to stale loader results being accepted.
 
 ## [1.5.6] - 2026-04-28
 

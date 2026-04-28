@@ -553,8 +553,11 @@ impl ImageViewerApp {
                     let is_current = idx == self.current_index;
                     let gen_match = load_result.generation == self.generation;
 
-                    // Drop stale background preloads — never drop the current image.
-                    if !is_current && !gen_match {
+                    // CRITICAL: Drop any stale results, even for the current index.
+                    // This prevents a race where deleting an image reuses the index
+                    // but a late decode from the deleted file arrives and overwrites
+                    // the new current image state.
+                    if !gen_match {
                         continue;
                     }
 
