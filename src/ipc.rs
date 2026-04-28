@@ -178,16 +178,30 @@ fn ipc_server_loop(
             log::warn!("Failed to set read timeout on IPC connection: {}", e);
         }
 
+        // Security: Limit the read size to prevent memory exhaustion attacks.
+        // A path + command shouldn't exceed a few KB. 8KB is plenty for any valid OS path.
+        const MAX_PAYLOAD: u64 = 8 * 1024;
         let mut s = String::new();
-        // read_to_string will return at EOF when client drops the connection
         let mut conn = conn;
-        if conn.read_to_string(&mut s).is_ok() {
+        
+        // Use .take() to enforce a hard limit on read size
+        if std::io::Read::by_ref(&mut conn).take(MAX_PAYLOAD).read_to_string(&mut s).is_ok() {
+            // Trim whitespace and validate minimal length
+            let s = s.trim();
+            if s.is_empty() || s.len() > (MAX_PAYLOAD as usize) {
+                continue;
+            }
+
             if s.starts_with("OPEN_NR:") {
-                let path_str = s.trim_start_matches("OPEN_NR:");
-                let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
+                let path_str = s.trim_start_matches("OPEN_NR:").trim();
+                if !path_str.is_empty() {
+                    let _ = tx.send(IpcMessage::OpenImageNoRecursive(PathBuf::from(path_str)));
+                }
             } else if s.starts_with("OPEN:") {
-                let path_str = s.trim_start_matches("OPEN:");
-                let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
+                let path_str = s.trim_start_matches("OPEN:").trim();
+                if !path_str.is_empty() {
+                    let _ = tx.send(IpcMessage::OpenImage(PathBuf::from(path_str)));
+                }
             } else if s == "FOCUS" {
                 let _ = tx.send(IpcMessage::Focus);
             }
