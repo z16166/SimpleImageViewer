@@ -2,12 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.5.7] - 2026-04-28
+## [1.5.7] - 2026-04-29
 
 ### Fixed
 - **RAW Refinement Race**: Fixed a race condition where stale background refinement results (from previous navigations) could overwrite the current image or cause flickering by prematurely evicting texture caches. Re-enabled strict generation (gen_id) validation for all asynchronous RAW updates.
-- **Deletion Race Safety**: Fixed a bug where deleting an image could cause the next image at the same index to briefly display data from the deleted file due to stale loader results being accepted.
-- **Scan Consistency**: Fixed a consistency issue where preloading during a directory scan could result in displaying wrong images if the file indices shifted during the final global sort.
+- **Deletion Race Safety**: Fixed a bug where deleting an image could cause the next image at the same index to briefly display data from the deleted file due to stale loader results being accepted. File removal now runs off the UI thread with optimistic delete and rollback on failure; rollback restores viewer state and re-queues the image load when appropriate.
+- **Scan Consistency**: Fixed a consistency issue where preloading during a directory scan could result in displaying wrong images if the file indices shifted during the final global sort. Cancelling in-flight scans prevents background work from piling up; index-dependent live state is cleared after the final sort.
+- **Loader stale decode**: Corrected an inverted guard in the image decode pool (and the coalescing delayed fallback worker): tasks whose navigation `generation` no longer matches the current global counter exit before decoding, instead of continuing when the load slot still held the old generation. Added a matching early check in `do_load`. Rapid paging no longer stacks full decodes for obsolete generations.
+- **Post-scan “infinite loading”**: `ImageLoader::is_loading` is now generation-aware so a superseded load for an index does not block later `request_load` calls (e.g. after a directory scan completes).
+- **Stale preview delivery**: `PreviewResult` handling and prefetched tiled-image preview upgrades validate generation so background previews cannot repoint the wrong entry in the texture cache.
+- **Async metadata races**: EXIF/XMP and wallpaper queries validate the file path against the current scan generation before applying results, avoiding cross-talk when the directory list changes mid-flight.
+
+### Changed
+- **RGBA buffer sharing**: `DecodedImage` and `AnimationFrame` keep decoded RGBA8 in `Arc` buffers through decode, channels, and tiled memory sources where applicable, avoiding redundant full-buffer clones; tiled HQ preview work reuses `Arc::clone` on the source instead of cloning an entire `LoadResult` for the channel send.
+- **Loader queue hygiene**: On navigation, stale entries are discarded from the unbounded loader receive path; a single delayed-fallback worker replaces per-request OS threads for the slow decode path. Arrow-key navigation is throttled to reduce load storms.
+- **Async housekeeping**: Metadata extraction and wallpaper queries are deferred off the UI thread; a shared `FileOp` channel ensures delete/rename results are not dropped under load. Added i18n strings for async loading states.
 
 ## [1.5.6] - 2026-04-28
 
