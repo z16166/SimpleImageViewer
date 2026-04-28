@@ -24,7 +24,6 @@ btn.close: "关闭"
 btn.cancel: "取消"
 btn.ok: "确定"
 btn.go: "跳转"
-btn.exit: "✕  退出程序"
 btn.pick_dir: "📂 文件夹"
 btn.pick_file: "🎵 文件"
 btn.set_wallpaper: " 设为壁纸 "
@@ -100,9 +99,6 @@ status.invalid_font: "所选字体文件不可靠，已恢复至系统默认。"
 # Hints (on canvas)
 hint.no_images: "未加载图片\n按 F1 打开设置并选择文件夹"
 hint.keyboard: "F1 — 设置  │  +/- 或滚轮 — 缩放  │  * 重置  │  Z — 适应/原始  │  G — 跳转  │  F11 — 全屏"
-hint.quit_macos: "F1 切换设置面板  │  Cmd+Q 退出"
-hint.quit_linux: "F1 切换设置面板  │  Ctrl+Q 退出"
-hint.quit_windows: "F1 切换设置面板  │  Alt+F4 退出"
 
 # Context menu
 ctx.copy_path: "📋 复制完整路径"

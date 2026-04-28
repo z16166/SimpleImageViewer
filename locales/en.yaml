@@ -24,7 +24,6 @@ btn.close: "Close"
 btn.cancel: "Cancel"
 btn.ok: "OK"
 btn.go: "Go"
-btn.exit: "✕  Exit Application"
 btn.pick_dir: "📂 Dir"
 btn.pick_file: "🎵 File"
 btn.set_wallpaper: " Set Wallpaper "
@@ -100,9 +99,6 @@ status.invalid_font: "The chosen font file is unreliable and has been reverted t
 # Hints (on canvas)
 hint.no_images: "No images loaded\nPress F1 to open settings and pick a folder"
 hint.keyboard: "F1 — settings  │  +/- or scroll — zoom  │  * reset  │  Z — fit/original  │  G — goto  │  F11 — fullscreen"
-hint.quit_macos: "F1 to toggle this panel  │  Cmd+Q to quit"
-hint.quit_linux: "F1 to toggle this panel  │  Ctrl+Q to quit"
-hint.quit_windows: "F1 to toggle this panel  │  Alt+F4 to quit"
 
 # Context menu
 ctx.copy_path: "📋 Copy Full Path"

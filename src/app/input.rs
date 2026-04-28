@@ -31,12 +31,20 @@ impl ImageViewerApp {
 
     /// Layer 2: Input handling when the non-modal settings panel is open.
     fn handle_settings_input(&mut self, ctx: &Context) {
+        let mut action: Option<AppAction> = None;
         ctx.input(|i| {
+            action = self.map_key_to_action(i);
             // Escape closes settings
             if i.key_pressed(Key::Escape) {
                 self.show_settings = false;
             }
         });
+
+        if let Some(act) = action {
+            if act == AppAction::ToggleSettings {
+                self.dispatch_action(act, ctx);
+            }
+        }
     }
 
     /// Layer 1: Input handling for the main window (normal operation).

@@ -89,7 +89,6 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
             #[cfg(target_os = "windows")]
             draw_windows_section(app, ui);
 
-            draw_footer(app, ui, ctx);
         });
 
     if open_dir {
@@ -979,27 +978,3 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     });
 }
 
-fn draw_footer(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) {
-    ui.add_space(12.0);
-    ui.separator();
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if styled_button(ui, t!("btn.exit"), &app.cached_palette).clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-
-        ui.add_space(12.0);
-        let hint = if cfg!(target_os = "macos") {
-            t!("hint.quit_macos")
-        } else if cfg!(target_os = "linux") {
-            t!("hint.quit_linux")
-        } else {
-            t!("hint.quit_windows")
-        };
-        ui.label(
-            RichText::new(hint)
-                .color(app.cached_palette.text_muted)
-                .small(),
-        );
-    });
-}
