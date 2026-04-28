@@ -185,6 +185,8 @@ pub struct ImageLoader {
     tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)>,
     /// Channel for background refinement tasks (LibRaw).
     refine_tx: Sender<RefinementRequest>,
+    /// Local buffer for messages polled but deferred due to UI thread quotas.
+    local_queue: std::collections::VecDeque<LoaderOutput>,
 }
 
 impl ImageLoader {
@@ -468,6 +470,7 @@ impl ImageLoader {
             pool: Arc::new(pool),
             tile_queue,
             refine_tx,
+            local_queue: std::collections::VecDeque::new(),
         }
     }
 
@@ -687,6 +690,12 @@ impl ImageLoader {
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {
+        // 1. Try local queue first (results deferred from previous frame)
+        if let Some(output) = self.local_queue.pop_front() {
+            return Some(output);
+        }
+
+        // 2. Try the crossbeam channel
         match self.rx.try_recv() {
             Ok(output) => {
                 if let LoaderOutput::Image(ref result) = output {
@@ -701,6 +710,12 @@ impl ImageLoader {
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
         }
+    }
+
+    /// Re-insert a result back into the head of the local queue.
+    /// Used when the UI thread hits its frame upload quota.
+    pub fn repush(&mut self, output: LoaderOutput) {
+        self.local_queue.push_front(output);
     }
 
     /// Clear all pending tile requests from the queue.
