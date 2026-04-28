@@ -29,20 +29,19 @@ use rust_i18n::t;
 /// [`State::new`] and cannot inspect or mutate the internals directly.
 pub struct State {
     /// The wallpaper fitting mode chosen by the radio buttons.
-    selected_mode: String,
+    pub selected_mode: String,
     /// Path of the currently active desktop wallpaper (display only).
-    current_system_wallpaper: Option<String>,
+    pub current_system_wallpaper: Option<String>,
+    pub loading: bool,
 }
 
 impl State {
-    /// Create state for a freshly-opened wallpaper dialog.
-    ///
-    /// `current_system_wallpaper` is read from the OS at open time and shown
-    /// as an informational label; it is never mutated by the dialog itself.
-    pub fn new(current_system_wallpaper: Option<String>) -> Self {
+    /// Create state in loading mode.
+    pub fn new_loading() -> Self {
         Self {
             selected_mode: "Crop".to_string(),
-            current_system_wallpaper,
+            current_system_wallpaper: None,
+            loading: true,
         }
     }
 }
@@ -66,7 +65,14 @@ pub fn show(
         .default_size([WIDTH, HEIGHT])
         .min_size([400.0, 240.0])
         .show(ctx, palette, |ui| {
-            if let Some(ref current) = state.current_system_wallpaper {
+            if state.loading {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("wallpaper.loading").to_string());
+                });
+                ui.add_space(20.0);
+            } else if let Some(ref current) = state.current_system_wallpaper {
                 ui.label(
                     RichText::new(t!("wallpaper.current"))
                         .color(palette.text_muted)

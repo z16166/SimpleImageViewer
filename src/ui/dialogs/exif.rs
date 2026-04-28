@@ -26,14 +26,16 @@ use rust_i18n::t;
 /// Runtime state for the EXIF data viewer dialog.
 pub struct State {
     /// Parsed EXIF key-value pairs, or `None` if the image has no EXIF data.
-    data: Option<Vec<(String, String)>>,
+    pub data: Option<Vec<(String, String)>>,
+    pub loading: bool,
 }
 
 impl State {
-    /// Create state by pre-loading EXIF for `path`.
-    pub fn from_path(path: &std::path::Path) -> Self {
+    /// Create state in loading mode.
+    pub fn new_loading() -> Self {
         Self {
-            data: crate::app::extract_exif(path),
+            data: None,
+            loading: true,
         }
     }
 }
@@ -52,7 +54,16 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
         .min_size([400.0, 200.0])
         .show(ctx, palette, |ui| {
             // ── No-data notice ───────────────────────────────────────────────
-            if state.data.is_none() {
+            // ── Loading state ───────────────────────────────────────────────
+            if state.loading {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("exif.loading").to_string());
+                });
+                ui.add_space(20.0);
+            } else if state.data.is_none() {
+                // ── No-data notice ───────────────────────────────────────────────
                 ui.add_space(10.0);
                 ui.label(
                     RichText::new(t!("exif.no_data").to_string())

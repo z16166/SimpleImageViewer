@@ -140,6 +140,9 @@ impl HardwareTier {
 
 pub enum FileOpResult {
     Delete(PathBuf, Result<(), String>),
+    Exif(PathBuf, Option<Vec<(String, String)>>),
+    Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
+    Wallpaper(Option<String>),
 }
 
 pub struct ImageViewerApp {

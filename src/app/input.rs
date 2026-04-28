@@ -416,18 +416,30 @@ impl ImageViewerApp {
         ui.separator();
 
         if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-            // EXIF loading is fully encapsulated in exif::State::from_path
-            self.active_modal = Some(ActiveModal::Exif(
-                crate::ui::dialogs::exif::State::from_path(path),
-            ));
+            self.active_modal = Some(ActiveModal::Exif(crate::ui::dialogs::exif::State::new_loading()));
+
+            // Actually, I'll just use the same pattern as delete: create a channel and store the rx.
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.file_op_rx = Some(rx);
+            let path_clone = path.clone();
+            std::thread::spawn(move || {
+                let data = crate::app::extract_exif(&path_clone);
+                let _ = tx.send(crate::app::FileOpResult::Exif(path_clone, data));
+            });
+
             self.context_menu_pos = None;
         }
 
         if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-            // XMP loading is fully encapsulated in xmp::State::from_path
-            self.active_modal = Some(ActiveModal::Xmp(crate::ui::dialogs::xmp::State::from_path(
-                path,
-            )));
+            self.active_modal = Some(ActiveModal::Xmp(crate::ui::dialogs::xmp::State::new_loading()));
+            
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.file_op_rx = Some(rx);
+            let path_clone = path.clone();
+            std::thread::spawn(move || {
+                let data = crate::app::extract_xmp(&path_clone);
+                let _ = tx.send(crate::app::FileOpResult::Xmp(path_clone, data));
+            });
             self.context_menu_pos = None;
         }
 
@@ -469,10 +481,16 @@ impl ImageViewerApp {
 
         ui.separator();
         if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
-            let current_wallpaper = wallpaper::get().ok();
             self.active_modal = Some(ActiveModal::Wallpaper(
-                crate::ui::dialogs::wallpaper::State::new(current_wallpaper),
+                crate::ui::dialogs::wallpaper::State::new_loading(),
             ));
+
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.file_op_rx = Some(rx);
+            std::thread::spawn(move || {
+                let current_wallpaper = wallpaper::get().ok();
+                let _ = tx.send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
+            });
             self.context_menu_pos = None;
         }
 

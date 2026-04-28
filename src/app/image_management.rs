@@ -403,6 +403,37 @@ impl ImageViewerApp {
                             log::info!("Successfully deleted {:?}", path);
                         }
                     }
+                    FileOpResult::Exif(_path, data) => {
+                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(ref mut state)) =
+                            self.active_modal
+                        {
+                            state.data = data;
+                            state.loading = false;
+                        }
+                    }
+                    FileOpResult::Xmp(_path, data) => {
+                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(ref mut state)) =
+                            self.active_modal
+                        {
+                            if let Some((d, x)) = data {
+                                state.data = Some(d);
+                                state.xml = Some(x);
+                            } else {
+                                state.data = None;
+                                state.xml = None;
+                            }
+                            state.loading = false;
+                        }
+                    }
+                    FileOpResult::Wallpaper(current) => {
+                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Wallpaper(
+                            ref mut state,
+                        )) = self.active_modal
+                        {
+                            state.current_system_wallpaper = current;
+                            state.loading = false;
+                        }
+                    }
                 }
             }
         }

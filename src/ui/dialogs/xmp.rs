@@ -29,26 +29,19 @@ use rust_i18n::t;
 /// layer only needs to call [`State::from_path`] and [`show`].
 pub struct State {
     /// Parsed XMP key-value pairs, or `None` if no XMP metadata was found.
-    data: Option<Vec<(String, String)>>,
+    pub data: Option<Vec<(String, String)>>,
     /// Raw XML string, available for the "Copy XML" button.
-    xml: Option<String>,
+    pub xml: Option<String>,
+    pub loading: bool,
 }
 
 impl State {
-    /// Create state by extracting XMP from `path`.
-    ///
-    /// If XMP extraction fails the state is still valid — the dialog will
-    /// show a "no XMP data" message.
-    pub fn from_path(path: &std::path::Path) -> Self {
-        match crate::app::extract_xmp(path) {
-            Some((data, xml)) => Self {
-                data: Some(data),
-                xml: Some(xml),
-            },
-            None => Self {
-                data: None,
-                xml: None,
-            },
+    /// Create state in loading mode.
+    pub fn new_loading() -> Self {
+        Self {
+            data: None,
+            xml: None,
+            loading: true,
         }
     }
 }
@@ -68,8 +61,16 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
         .default_size([WIDTH, HEIGHT])
         .min_size([400.0, 200.0])
         .show(ctx, palette, |ui| {
-            // ── No-data notice ───────────────────────────────────────────────────
-            if state.data.is_none() {
+            // ── Loading state ───────────────────────────────────────────────────
+            if state.loading {
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(t!("xmp.loading").to_string());
+                });
+                ui.add_space(20.0);
+            } else if state.data.is_none() {
+                // ── No-data notice ───────────────────────────────────────────────────
                 ui.add_space(10.0);
                 ui.label(
                     RichText::new(t!("xmp.no_data").to_string())
