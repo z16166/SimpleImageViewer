@@ -204,15 +204,22 @@ fn ipc_server_loop(
         let mut s = String::new();
         let mut conn = conn;
 
-        // Use .take() to enforce a hard limit on read size
+        // Use .take(MAX + 1) to detect overflow. If we read more than MAX, the payload is invalid.
         if std::io::Read::by_ref(&mut conn)
-            .take(MAX_IPC_PAYLOAD_SIZE)
+            .take(MAX_IPC_PAYLOAD_SIZE + 1)
             .read_to_string(&mut s)
             .is_ok()
         {
-            // Trim whitespace and validate minimal length
+            if s.len() > MAX_IPC_PAYLOAD_SIZE as usize {
+                log::warn!(
+                    "IPC: Rejected oversized payload (limit: {} bytes)",
+                    MAX_IPC_PAYLOAD_SIZE
+                );
+                continue;
+            }
+
             let s = s.trim();
-            if s.is_empty() || s.len() > (MAX_IPC_PAYLOAD_SIZE as usize) {
+            if s.is_empty() {
                 continue;
             }
 

@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **WGPU Stability**: Fixed a critical "Dimension X is zero" panic in the rendering pipeline by adding dimension sanitization for corrupted or malformed images.
 - **Process Lifecycle**: Ensured the application terminates cleanly after a fatal crash by adding an explicit exit call to the emergency error dialog.
-- **IPC Robustness**: Improved IPC message handling with strict size limits and non-blocking operation on Windows to prevent potential application freezes.
+- **IPC Robustness**: Fixed a critical bug where oversized IPC messages were silently truncated and accepted. The system now explicitly detects and rejects payloads exceeding the 8KB safety limit, preventing malformed command execution. Improved handling with non-blocking operation on Windows to prevent application freezes.
 - **IPC Consistency**: Unified Unix socket paths in `cleanup_stale_socket` to use the `IPC_SOCKET_NAME` constant.
 - **Input System**: Enabled `F1` as a global toggle to both show and hide the settings panel.
 
