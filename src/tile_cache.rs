@@ -292,7 +292,7 @@ impl TileManager {
         let name = format!("preview_{}", self.image_index);
         let color_image = egui::ColorImage::from_rgba_unmultiplied(
             [preview.width as usize, preview.height as usize],
-            &preview.pixels,
+            preview.rgba(),
         );
         self.preview_texture =
             Some(ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR));

@@ -210,6 +210,7 @@ impl ImageViewerApp {
             print_status_rx: None,
             pending_anim_frames: None,
             last_mouse_wheel_nav: 0.0,
+            last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
             file_op_rx,

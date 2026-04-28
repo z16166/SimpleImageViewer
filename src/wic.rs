@@ -816,11 +816,7 @@ pub fn load_via_wic(
                     path
                 );
                 return Ok(crate::loader::ImageData::Static(
-                    crate::loader::DecodedImage {
-                        width: pw,
-                        height: ph,
-                        pixels: p,
-                    },
+                    crate::loader::DecodedImage::new(pw, ph, p),
                 ));
             }
         }
@@ -882,11 +878,7 @@ pub fn load_via_wic(
             .map_err(|e| format!("Pixel copy failed: {:?}", e))?;
 
         Ok(crate::loader::ImageData::Static(
-            crate::loader::DecodedImage {
-                width: logical_width,
-                height: logical_height,
-                pixels: out,
-            },
+            crate::loader::DecodedImage::new(logical_width, logical_height, out),
         ))
     }
 }

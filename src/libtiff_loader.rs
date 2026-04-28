@@ -1390,11 +1390,7 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
             pixels = out_pixels;
         }
 
-        Ok(ImageData::Static(DecodedImage {
-            width,
-            height,
-            pixels,
-        }))
+        Ok(ImageData::Static(DecodedImage::new(width, height, pixels)))
     }
 }
 

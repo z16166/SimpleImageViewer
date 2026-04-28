@@ -243,6 +243,7 @@ impl ImageViewerApp {
         });
 
         self.schedule_preloads(true);
+        self.loader.discard_pending_stale_outputs(self.generation);
     }
 
     pub(crate) fn navigate_next(&mut self) {
@@ -600,7 +601,7 @@ impl ImageViewerApp {
                 let frame = &pending.frames[i];
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [frame.width as usize, frame.height as usize],
-                    &frame.pixels,
+                    frame.rgba(),
                 );
                 let name = format!("anim_{}_{}", pending.image_index, i);
                 let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
@@ -807,7 +808,7 @@ impl ImageViewerApp {
             Ok(ImageData::Static(decoded)) => {
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [decoded.width as usize, decoded.height as usize],
-                    &decoded.pixels,
+                    decoded.rgba(),
                 );
                 let name = format!("img_{}", idx);
                 let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
@@ -844,7 +845,7 @@ impl ImageViewerApp {
                     {
                         let color_image = ColorImage::from_rgba_unmultiplied(
                             [preview.width as usize, preview.height as usize],
-                            &preview.pixels,
+                            preview.rgba(),
                         );
                         let name = format!("img_preview_{}", idx);
                         let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
@@ -910,7 +911,7 @@ impl ImageViewerApp {
                 if let Some(first) = frames.first() {
                     let color_image = ColorImage::from_rgba_unmultiplied(
                         [first.width as usize, first.height as usize],
-                        &first.pixels,
+                        first.rgba(),
                     );
                     let name = format!("img_{}", idx);
                     let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
@@ -1041,7 +1042,7 @@ impl ImageViewerApp {
                     let name = format!("img_hq_preview_{}", update.index);
                     let color_image = egui::ColorImage::from_rgba_unmultiplied(
                         [preview.width as usize, preview.height as usize],
-                        &preview.pixels,
+                        preview.rgba(),
                     );
                     let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
                     self.texture_cache.insert(
@@ -1084,7 +1085,7 @@ impl ImageViewerApp {
     ) {
         let preview_img = egui::ColorImage::from_rgba_unmultiplied(
             [preview.width as usize, preview.height as usize],
-            &preview.pixels,
+            preview.rgba(),
         );
         let preview_handle = ctx.load_texture(
             format!("preview_{}", idx),

@@ -56,21 +56,78 @@ use crate::raw_processor::RawProcessor;
 use image::{DynamicImage, GenericImageView, RgbaImage};
 use parking_lot::RwLock as PLRwLock;
 
-#[derive(Debug, Clone)]
+/// RGBA8 in a shared [`Arc`] so decode → channel → UI can reuse one allocation (cheap `Clone`).
+/// `egui::ColorImage::from_rgba_unmultiplied` still converts RGBA8 → `Color32` once at upload time.
+#[derive(Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<u8>, // RGBA8
+    pixels: Arc<Vec<u8>>,
+}
+
+impl std::fmt::Debug for DecodedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("rgba_bytes", &self.pixels.len())
+            .finish()
+    }
+}
+
+impl DecodedImage {
+    #[inline]
+    pub fn rgba(&self) -> &[u8] {
+        self.pixels.as_slice()
+    }
+
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+        }
+    }
+
+    /// Wrap an existing RGBA8 buffer without copying.
+    pub fn from_arc(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    pub fn into_arc_pixels(self) -> Arc<Vec<u8>> {
+        self.pixels
+    }
+
+    /// Build `RgbaImage`; avoids copying the buffer when this is the only [`Arc`] handle.
+    pub fn into_rgba8_image(self) -> RgbaImage {
+        let w = self.width;
+        let h = self.height;
+        let vec = Arc::try_unwrap(self.pixels).unwrap_or_else(|a| (*a).clone());
+        RgbaImage::from_raw(w, h, vec).expect("DecodedImage dimensions must match RGBA buffer")
+    }
+
+    pub fn set_rgba_buffer(&mut self, width: u32, height: u32, pixels: Vec<u8>) {
+        self.width = width;
+        self.height = height;
+        self.pixels = Arc::new(pixels);
+    }
+
+    /// Take ownership of the RGBA buffer for in-place transforms.
+    /// If shared, clones the bytes; leaves `self` with an empty buffer until reassigned.
+    pub fn take_rgba_owned(&mut self) -> Vec<u8> {
+        let arc = std::mem::replace(&mut self.pixels, Arc::new(Vec::new()));
+        Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone())
+    }
 }
 
 impl From<image::RgbaImage> for DecodedImage {
     fn from(img: image::RgbaImage) -> Self {
         let (width, height) = img.dimensions();
-        Self {
-            width,
-            height,
-            pixels: img.into_raw(),
-        }
+        Self::new(width, height, img.into_raw())
     }
 }
 
@@ -89,13 +146,46 @@ pub trait TiledImageSource: Send + Sync {
     fn request_refinement(&self, _index: usize, _generation: u64) {}
 }
 
-/// A single frame of an animated image.
-#[derive(Debug, Clone)]
+/// A single frame of an animated image. RGBA8 lives in a shared [`Arc`] so frame lists and
+/// deferred GPU uploads clone handles instead of duplicating megabytes per frame.
+#[derive(Clone)]
 pub struct AnimationFrame {
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<u8>, // RGBA8
+    pixels: Arc<Vec<u8>>,
     pub delay: Duration,
+}
+
+impl std::fmt::Debug for AnimationFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnimationFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("rgba_bytes", &self.pixels.len())
+            .field("delay", &self.delay)
+            .finish()
+    }
+}
+
+impl AnimationFrame {
+    #[inline]
+    pub fn rgba(&self) -> &[u8] {
+        self.pixels.as_slice()
+    }
+
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>, delay: Duration) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+            delay,
+        }
+    }
+
+    #[inline]
+    pub fn arc_pixels(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.pixels)
+    }
 }
 
 /// Decoded image data — either a static image, a large image (for tiled rendering), or an animated sequence.
@@ -173,6 +263,20 @@ impl Ord for TileRequest {
     }
 }
 
+/// Single-slot delayed fallback: replaces any pending job so rapid `request_load`
+/// cannot spawn one OS thread per request (see `ImageLoader::request_load`).
+struct DelayedFallbackJob {
+    index: usize,
+    generation: u64,
+    path: PathBuf,
+    high_quality: bool,
+    claimed: Arc<std::sync::atomic::AtomicBool>,
+    loading: Arc<Mutex<HashMap<usize, u64>>>,
+    current_gen: Arc<std::sync::atomic::AtomicU64>,
+    tx: Sender<LoaderOutput>,
+    refine_tx: Sender<RefinementRequest>,
+}
+
 pub struct ImageLoader {
     tx: Sender<LoaderOutput>,
     pub rx: Receiver<LoaderOutput>,
@@ -189,6 +293,8 @@ pub struct ImageLoader {
     /// Local deque for results that were polled but deferred due to per-frame
     /// upload quota. Drained before the crossbeam channel on the next frame.
     local_queue: std::collections::VecDeque<LoaderOutput>,
+    /// Mutex holds at most one pending delayed fallback job; Condvar wakes the worker.
+    delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
 }
 
 impl ImageLoader {
@@ -237,6 +343,76 @@ impl ImageLoader {
         };
 
         let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
+        {
+            let state = Arc::clone(&delayed_fallback);
+            let _ = std::thread::Builder::new()
+                .name("loader-fallback".to_string())
+                .spawn(move || {
+                    let (lock, cvar) = &*state;
+                    loop {
+                        let mut job = {
+                            let mut g = lock.lock().unwrap();
+                            loop {
+                                while g.is_none() {
+                                    g = cvar.wait(g).unwrap();
+                                }
+                                if let Some(j) = g.take() {
+                                    break j;
+                                }
+                            }
+                        };
+                        loop {
+                            std::thread::sleep(Duration::from_millis(50));
+                            let mut g = lock.lock().unwrap();
+                            if let Some(newer) = g.take() {
+                                job = newer;
+                                drop(g);
+                                continue;
+                            }
+                            drop(g);
+                            break;
+                        }
+
+                        let global_gen = job.current_gen.load(std::sync::atomic::Ordering::Relaxed);
+                        if job.generation != global_gen {
+                            let mut loading = job.loading.lock().unwrap();
+                            if loading.get(&job.index) == Some(&job.generation) {
+                                loading.remove(&job.index);
+                            }
+                            continue;
+                        }
+                        if job
+                            .claimed
+                            .compare_exchange(
+                                false,
+                                true,
+                                std::sync::atomic::Ordering::AcqRel,
+                                std::sync::atomic::Ordering::Relaxed,
+                            )
+                            .is_err()
+                        {
+                            continue;
+                        }
+
+                        #[cfg(target_os = "windows")]
+                        let _com = crate::wic::ComGuard::new();
+
+                        Self::do_load(
+                            job.index,
+                            job.generation,
+                            &job.path,
+                            job.tx.clone(),
+                            job.refine_tx.clone(),
+                            job.loading.clone(),
+                            job.current_gen.clone(),
+                            job.high_quality,
+                        );
+                    }
+                });
+        }
+
         let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
             Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
         // Shared set of tiles currently being decoded — prevents duplicate work across workers
@@ -440,11 +616,11 @@ impl ImageLoader {
                             let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
                             let scaled = dynamic.thumbnail(limit, limit);
                             let prev_rgba = scaled.to_rgba8();
-                            let preview = DecodedImage {
-                                width: prev_rgba.width(),
-                                height: prev_rgba.height(),
-                                pixels: prev_rgba.into_raw(),
-                            };
+                            let preview = DecodedImage::new(
+                                prev_rgba.width(),
+                                prev_rgba.height(),
+                                prev_rgba.into_raw(),
+                            );
 
                             let mut dev_lock = req.developed_image.write();
                             *dev_lock = Some(dynamic);
@@ -477,6 +653,7 @@ impl ImageLoader {
             tile_queue,
             refine_tx,
             local_queue: std::collections::VecDeque::new(),
+            delayed_fallback,
         }
     }
 
@@ -533,11 +710,12 @@ impl ImageLoader {
 
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
-            if generation < global_gen {
-                let loading = loading1.lock().unwrap();
-                if loading.get(&index) != Some(&generation) {
-                    return;
+            if generation != global_gen {
+                let mut loading = loading1.lock().unwrap();
+                if loading.get(&index) == Some(&generation) {
+                    loading.remove(&index);
                 }
+                return;
             }
             if claimed1
                 .compare_exchange(
@@ -562,47 +740,25 @@ impl ImageLoader {
             );
         });
 
-        // Fallback loader: If the primary thread pool is congested or stalls,
-        // we spawn a delayed task to ensure the image eventually loads.
-        // NOTE: We use std::thread::spawn here instead of self.pool.spawn to ensure
-        // this fallback runs independently of the worker pool's current congestion state.
-        std::thread::Builder::new()
-            .name(format!("loader-fallback-{}", index))
-            .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let global_gen = current_gen2.load(std::sync::atomic::Ordering::Relaxed);
-                if generation < global_gen {
-                    if let Some(g) = loading2.lock().unwrap().get(&index) {
-                        if *g != generation {
-                            return;
-                        }
-                    }
-                }
-                if claimed2
-                    .compare_exchange(
-                        false,
-                        true,
-                        std::sync::atomic::Ordering::AcqRel,
-                        std::sync::atomic::Ordering::Relaxed,
-                    )
-                    .is_err()
-                {
-                    return;
-                }
-                #[cfg(target_os = "windows")]
-                let _com = crate::wic::ComGuard::new();
-                Self::do_load(
-                    index,
-                    generation,
-                    &path2,
-                    tx2,
-                    rtx2,
-                    loading2,
-                    current_gen2,
-                    high_quality,
-                );
-            })
-            .ok();
+        // Fallback: one shared worker sleeps 50ms then tries `do_load` if the pool task
+        // did not claim first. Pending jobs are coalesced to a single slot (no per-request OS thread).
+        let delayed_job = DelayedFallbackJob {
+            index,
+            generation,
+            path: path2,
+            high_quality,
+            claimed: claimed2,
+            loading: loading2,
+            current_gen: current_gen2,
+            tx: tx2,
+            refine_tx: rtx2,
+        };
+        {
+            let (lock, cvar) = &*self.delayed_fallback;
+            let mut slot = lock.lock().unwrap();
+            *slot = Some(delayed_job);
+            cvar.notify_one();
+        }
     }
 
     fn do_load(
@@ -611,10 +767,19 @@ impl ImageLoader {
         path: &PathBuf,
         tx: Sender<LoaderOutput>,
         refine_tx: Sender<RefinementRequest>,
-        _loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
+        loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         current_gen: Arc<std::sync::atomic::AtomicU64>,
         high_quality: bool,
     ) {
+        let global_gen = current_gen.load(std::sync::atomic::Ordering::Relaxed);
+        if generation != global_gen {
+            let mut loading = loading_ref.lock().unwrap();
+            if loading.get(&index) == Some(&generation) {
+                loading.remove(&index);
+            }
+            return;
+        }
+
         let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             load_image_file(
                 generation,
@@ -650,14 +815,20 @@ impl ImageLoader {
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
 
-        let _ = tx.send(LoaderOutput::Image(load_result.clone()));
+        // Drop stale results before sending into the channel (rapid navigation).
+        {
+            let map = loading_ref.lock().unwrap();
+            if map.get(&index) != Some(&generation) {
+                return;
+            }
+        }
 
-        if let Ok(ImageData::Tiled(source)) = load_result.result {
+        // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
+        // (avoids cloning full Static/Animated pixel buffers).
+        if let Ok(ImageData::Tiled(ref source)) = load_result.result {
+            let source = Arc::clone(source);
             let tx_cloned = tx.clone();
-            let index = index;
-            let generation = generation;
             let gen_ref = Arc::clone(&current_gen);
-
             REFINEMENT_POOL.spawn(move || {
                 // Staleness check: Abort if the user has navigated to a new image
                 if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
@@ -689,11 +860,7 @@ impl ImageLoader {
                         let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                             index,
                             generation,
-                            result: Ok(DecodedImage {
-                                width: pw,
-                                height: ph,
-                                pixels: p_pixels,
-                            }),
+                            result: Ok(DecodedImage::new(pw, ph, p_pixels)),
                         }));
                     }
                     Err(e) => {
@@ -703,6 +870,8 @@ impl ImageLoader {
                 }
             });
         }
+
+        let _ = tx.send(LoaderOutput::Image(load_result));
     }
 
     pub fn request_tile(
@@ -725,6 +894,52 @@ impl ImageLoader {
             source,
         });
         cvar.notify_one();
+    }
+
+    /// Drop queued decode results from a previous `generation` so rapid navigation
+    /// cannot retain hundreds of megabytes in the unbounded channel / defer queue.
+    pub fn discard_pending_stale_outputs(&mut self, keep_generation: u64) {
+        let keep = |output: &LoaderOutput| -> bool {
+            match output {
+                LoaderOutput::Image(r) => r.generation == keep_generation,
+                LoaderOutput::Preview(p) => p.generation == keep_generation,
+                LoaderOutput::Refined(_, g) => *g == keep_generation,
+                // Tile notifications carry no generation; keep to avoid breaking in-flight uploads.
+                LoaderOutput::Tile(_) => true,
+            }
+        };
+
+        let mut retained = std::collections::VecDeque::new();
+        for output in self.local_queue.drain(..) {
+            if keep(&output) {
+                retained.push_back(output);
+            } else if let LoaderOutput::Image(ref r) = output {
+                let mut loading = self.loading.lock().unwrap();
+                if loading.get(&r.index) == Some(&r.generation) {
+                    loading.remove(&r.index);
+                }
+            }
+        }
+        self.local_queue = retained;
+
+        while let Ok(output) = self.rx.try_recv() {
+            if keep(&output) {
+                if let LoaderOutput::Image(ref r) = output {
+                    let mut loading = self.loading.lock().unwrap();
+                    if let Some(&g) = loading.get(&r.index) {
+                        if g <= r.generation {
+                            loading.remove(&r.index);
+                        }
+                    }
+                }
+                self.local_queue.push_back(output);
+            } else if let LoaderOutput::Image(ref r) = output {
+                let mut loading = self.loading.lock().unwrap();
+                if loading.get(&r.index) == Some(&r.generation) {
+                    loading.remove(&r.index);
+                }
+            }
+        }
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {
@@ -766,6 +981,12 @@ impl ImageLoader {
     pub fn cancel_all(&mut self) {
         self.loading.lock().unwrap().clear();
         self.local_queue.clear();
+        {
+            let (lock, cvar) = &*self.delayed_fallback;
+            let mut slot = lock.lock().unwrap();
+            *slot = None;
+            cvar.notify_one();
+        }
         {
             let (lock, _) = &*self.tile_queue;
             lock.lock().unwrap().clear();
@@ -906,11 +1127,7 @@ fn load_image_file(
                                 ph,
                                 t1.elapsed()
                             );
-                            preview = Some(DecodedImage {
-                                width: pw,
-                                height: ph,
-                                pixels: p_pixels,
-                            });
+                            preview = Some(DecodedImage::new(pw, ph, p_pixels));
                         }
                         Ok(_) => {
                             log::warn!(
@@ -944,7 +1161,7 @@ fn load_image_file(
                 let max_side = width.max(height);
                 let limit = crate::tile_cache::get_max_texture_side();
 
-                let total_bytes: usize = frames.iter().map(|f| f.pixels.len()).sum();
+                let total_bytes: usize = frames.iter().map(|f| f.rgba().len()).sum();
                 let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
 
                 if max_side > limit {
@@ -954,11 +1171,11 @@ fn load_image_file(
                         width,
                         height
                     );
-                    Ok(make_image_data(DecodedImage {
+                    Ok(make_image_data(DecodedImage::from_arc(
                         width,
                         height,
-                        pixels: first.pixels.clone(),
-                    }))
+                        first.arc_pixels(),
+                    )))
                 } else {
                     log::info!(
                         "[{}] Decoded {}x{} ({} frames, {:.1} MB) - Animated Mode",
@@ -1002,11 +1219,7 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
         pixels = out_pixels;
     }
 
-    Ok(make_image_data(DecodedImage {
-        width: w,
-        height: h,
-        pixels,
-    }))
+    Ok(make_image_data(DecodedImage::new(w, h, pixels)))
 }
 
 // Centralized in metadata_utils.rs
@@ -1027,11 +1240,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
-    Ok(make_image_data(DecodedImage {
-        width,
-        height,
-        pixels,
-    }))
+    Ok(make_image_data(DecodedImage::new(width, height, pixels)))
 }
 
 fn process_animation_frames(
@@ -1059,13 +1268,12 @@ fn process_animation_frames(
             };
             let buffer = frame.into_buffer();
             let (width, height) = buffer.dimensions();
-            let pixels = buffer.into_raw();
-            AnimationFrame {
+            AnimationFrame::new(
                 width,
                 height,
-                pixels,
-                delay: Duration::from_millis(delay_ms as u64),
-            }
+                buffer.into_raw(),
+                Duration::from_millis(delay_ms as u64),
+            )
         })
         .collect();
 
@@ -1185,11 +1393,7 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         let h = psd_file.height();
         let pixels = psd_file.rgba();
 
-        let img = DecodedImage {
-            width: w,
-            height: h,
-            pixels,
-        };
+        let img = DecodedImage::new(w, h, pixels);
         Ok(make_image_data(img))
     }
 }
@@ -1216,11 +1420,7 @@ fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
     let height = output.height;
     let rgba = output.data;
 
-    Ok(make_image_data(DecodedImage {
-        width,
-        height,
-        pixels: rgba,
-    }))
+    Ok(make_image_data(DecodedImage::new(width, height, rgba)))
 }
 
 /// Helper to create ImageData that respects GPU texture limits.
@@ -1248,7 +1448,9 @@ fn make_image_data(img: DecodedImage) -> ImageData {
             tiled_limit as f64 / 1_000_000.0
         );
         ImageData::Tiled(Arc::new(MemoryImageSource::new(
-            img.width, img.height, img.pixels,
+            img.width,
+            img.height,
+            img.into_arc_pixels(),
         )))
     } else {
         ImageData::Static(img)
@@ -1350,11 +1552,11 @@ fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
                         rgba.height(),
                         off
                     );
-                    return Some(DecodedImage {
-                        width: rgba.width(),
-                        height: rgba.height(),
-                        pixels: rgba.into_raw(),
-                    });
+                    return Some(DecodedImage::new(
+                        rgba.width(),
+                        rgba.height(),
+                        rgba.into_raw(),
+                    ));
                 }
             }
         }
@@ -1497,16 +1699,9 @@ impl RawImageSource {
         // the image becomes the actively-viewed one (via request_refinement()). This
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
 
-        let developed_image = if let Some(rgba) =
-            RgbaImage::from_raw(preview.width, preview.height, preview.pixels)
-        {
-            Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))))
-        } else {
-            log::error!(
-                "[RawImageSource] Failed to create RgbaImage from preview buffer. Using empty image."
-            );
-            Arc::new(PLRwLock::new(None))
-        };
+        let rgba = preview.into_rgba8_image();
+        let developed_image =
+            Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
 
         let refine_tx = refine_tx.clone();
 
@@ -1685,18 +1880,14 @@ fn load_raw(
             Ok(ImageData::Tiled(source)) => {
                 let (pw, ph, p) =
                     source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
-                Some(DecodedImage {
-                    width: pw,
-                    height: ph,
-                    pixels: p,
-                })
+                Some(DecodedImage::new(pw, ph, p))
             }
             _ => {
                 // Step 2: Fallback to LibRaw's native thumbnail extraction if platform loader failed.
                 // We use the same final_orientation to ensure perfect consistency.
                 if let Ok(mut p) = processor.unpack_thumb() {
                     if final_orientation > 1 {
-                        let pixels = std::mem::take(&mut p.pixels);
+                        let pixels = p.take_rgba_owned();
                         if let Some(rgba) = image::RgbaImage::from_raw(p.width, p.height, pixels) {
                             let mut img = image::DynamicImage::ImageRgba8(rgba);
                             match final_orientation {
@@ -1710,9 +1901,11 @@ fn load_raw(
                                 _ => {}
                             }
                             let rgba_rotated = img.to_rgba8();
-                            p.width = rgba_rotated.width();
-                            p.height = rgba_rotated.height();
-                            p.pixels = rgba_rotated.into_raw();
+                            p.set_rgba_buffer(
+                                rgba_rotated.width(),
+                                rgba_rotated.height(),
+                                rgba_rotated.into_raw(),
+                            );
                         }
                     }
                     Some(p)
@@ -1780,11 +1973,8 @@ fn load_raw(
                     path
                 );
             } else {
-                let decoded = DecodedImage {
-                    width: rgba.width(),
-                    height: rgba.height(),
-                    pixels: rgba.into_raw(),
-                };
+                let decoded =
+                    DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
                 return Ok(ImageData::Static(decoded));
             }
         } else {
@@ -1830,11 +2020,11 @@ pub struct MemoryImageSource {
 }
 
 impl MemoryImageSource {
-    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+    pub fn new(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
         Self {
             width,
             height,
-            pixels: Arc::new(pixels),
+            pixels,
         }
     }
 }

@@ -262,6 +262,9 @@ pub struct ImageViewerApp {
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,
 
+    /// Last egui time when keyboard Next/Prev was applied (throttles key repeat).
+    pub(crate) last_keyboard_nav: Option<f64>,
+
     // Settings persistence channel
     pub(crate) save_tx: Sender<Settings>,
     pub(crate) save_error_rx: Receiver<String>,

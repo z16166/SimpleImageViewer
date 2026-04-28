@@ -956,11 +956,7 @@ unsafe fn render_cgimage_to_rgba_sync(
         );
         context.draw_image(rect, &cg_image);
 
-        DecodedImage {
-            width: lw,
-            height: lh,
-            pixels: context.data().to_vec(),
-        }
+        DecodedImage::new(lw, lh, context.data().to_vec())
     }
 }
 
@@ -1199,11 +1195,7 @@ pub fn load_via_image_io(
                     "ImageIO [Performance Mode]: Using static preview for RAW {:?}",
                     path
                 );
-                return Ok(ImageData::Static(DecodedImage {
-                    width: pw,
-                    height: ph,
-                    pixels: p,
-                }));
+                return Ok(ImageData::Static(DecodedImage::new(pw, ph, p)));
             }
         }
 

@@ -236,11 +236,11 @@ impl RawProcessor {
                 match image::load_from_memory(slice) {
                     Ok(decoded) => {
                         let rgba = decoded.to_rgba8();
-                        Ok(crate::loader::DecodedImage {
-                            width: rgba.width(),
-                            height: rgba.height(),
-                            pixels: rgba.into_raw(),
-                        })
+                        Ok(crate::loader::DecodedImage::new(
+                            rgba.width(),
+                            rgba.height(),
+                            rgba.into_raw(),
+                        ))
                     }
                     Err(e) => Err(rust_i18n::t!("error.decode_thumb_failed", err = e).to_string()),
                 }
@@ -258,11 +258,11 @@ impl RawProcessor {
                         rgba.push(slice[i * crate::constants::RGB_CHANNELS + 2]);
                         rgba.push(crate::constants::MAX_CHANNEL_VALUE);
                     }
-                    Ok(crate::loader::DecodedImage {
-                        width: img.width as u32,
-                        height: img.height as u32,
-                        pixels: rgba,
-                    })
+                    Ok(crate::loader::DecodedImage::new(
+                        img.width as u32,
+                        img.height as u32,
+                        rgba,
+                    ))
                 } else {
                     // Heuristic fallback: Some cameras (like Fuji) might report a thumbnail as
                     // a bitmap type but actually embed a JPEG, or report bits/colors as 0.
@@ -275,11 +275,11 @@ impl RawProcessor {
                         match image::load_from_memory(slice) {
                             Ok(decoded) => {
                                 let rgba = decoded.to_rgba8();
-                                Ok(crate::loader::DecodedImage {
-                                    width: rgba.width(),
-                                    height: rgba.height(),
-                                    pixels: rgba.into_raw(),
-                                })
+                                Ok(crate::loader::DecodedImage::new(
+                                    rgba.width(),
+                                    rgba.height(),
+                                    rgba.into_raw(),
+                                ))
                             }
                             Err(e) => {
                                 Err(rust_i18n::t!("error.heuristic_jpeg_failed", err = e)

@@ -1,4 +1,5 @@
 use crate::app::ImageViewerApp;
+use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
 use crate::ui::{hud as ui_hud, settings as ui_settings};
@@ -125,8 +126,28 @@ impl ImageViewerApp {
 
     fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         match action {
-            AppAction::Next => self.navigate_next(),
-            AppAction::Prev => self.navigate_prev(),
+            AppAction::Next => {
+                let now = ctx.input(|i| i.time);
+                let allow = match self.last_keyboard_nav {
+                    None => true,
+                    Some(t) => now - t >= KEYBOARD_NAV_MIN_INTERVAL_SECS,
+                };
+                if allow {
+                    self.last_keyboard_nav = Some(now);
+                    self.navigate_next();
+                }
+            }
+            AppAction::Prev => {
+                let now = ctx.input(|i| i.time);
+                let allow = match self.last_keyboard_nav {
+                    None => true,
+                    Some(t) => now - t >= KEYBOARD_NAV_MIN_INTERVAL_SECS,
+                };
+                if allow {
+                    self.last_keyboard_nav = Some(now);
+                    self.navigate_prev();
+                }
+            }
             AppAction::First => self.navigate_first(),
             AppAction::Last => self.navigate_last(),
             AppAction::ZoomIn => {

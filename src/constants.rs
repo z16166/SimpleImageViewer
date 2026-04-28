@@ -62,6 +62,11 @@ pub const MUSIC_HUD_BOTTOM_OFFSET: f32 = -100.0;
 /// Number of idle seconds before the Music HUD auto-hides.
 pub const MUSIC_HUD_IDLE_SECONDS: u64 = 5;
 
+/// Minimum seconds between Next/Prev from arrow hotkeys. Key auto-repeat otherwise
+/// enqueues unbounded decode work and large `LoaderOutput` payloads in the channel.
+/// ~5 navigations per second is already extreme for manual input; matches wheel debounce.
+pub const KEYBOARD_NAV_MIN_INTERVAL_SECS: f64 = 0.2;
+
 /// Color brightness multiplier for HUD text to ensure contrast in light themes.
 pub const MUSIC_HUD_CONTRAST_BOOST: f32 = 2.5;
 
