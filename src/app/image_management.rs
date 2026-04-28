@@ -660,7 +660,16 @@ impl ImageViewerApp {
             self.loader.flush_tile_queue();
             ctx.request_repaint();
         } else {
-            // Non-current image refined in background — invalidate stale caches.
+            // Non-current image refined in background OR stale refinement result.
+            
+            // CRITICAL: If it's the current index but the generation doesn't match, 
+            // it's a stale result from a previous visit. We MUST NOT evict the 
+            // CURRENT texture cache, otherwise the screen will flicker or go blank.
+            if idx == self.current_index {
+                log::info!("[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})", idx, gen_id, self.generation);
+                return;
+            }
+
             log::info!(
                 "[App] Refined: background update for index {} (not current). Invalidating caches.",
                 idx
@@ -869,7 +878,7 @@ impl ImageViewerApp {
             Ok(preview) => {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
-                    if tm.image_index == update.index {
+                    if tm.image_index == update.index && update.generation == tm.generation {
                         log::info!(
                             "[App] HQ preview applied for current index {} ({}x{})",
                             update.index,

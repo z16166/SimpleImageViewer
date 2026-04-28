@@ -123,7 +123,7 @@ pub struct TileResult {
 
 pub struct PreviewResult {
     pub index: usize,
-    pub _generation: u64,
+    pub generation: u64,
     pub result: Result<DecodedImage, String>,
 }
 
@@ -452,7 +452,7 @@ impl ImageLoader {
 
                             let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
                                 index: req.index,
-                                _generation: req.generation,
+                                generation: req.generation,
                                 result: Ok(preview),
                             }));
 
@@ -688,7 +688,7 @@ impl ImageLoader {
                         );
                         let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                             index,
-                            _generation: generation,
+                            generation,
                             result: Ok(DecodedImage {
                                 width: pw,
                                 height: ph,
