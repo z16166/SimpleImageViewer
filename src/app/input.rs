@@ -416,7 +416,9 @@ impl ImageViewerApp {
         ui.separator();
 
         if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-            self.active_modal = Some(ActiveModal::Exif(crate::ui::dialogs::exif::State::new_loading()));
+            self.active_modal = Some(ActiveModal::Exif(
+                crate::ui::dialogs::exif::State::new_loading(),
+            ));
 
             // Actually, I'll just use the same pattern as delete: create a channel and store the rx.
             let (tx, rx) = crossbeam_channel::unbounded();
@@ -431,8 +433,10 @@ impl ImageViewerApp {
         }
 
         if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-            self.active_modal = Some(ActiveModal::Xmp(crate::ui::dialogs::xmp::State::new_loading()));
-            
+            self.active_modal = Some(ActiveModal::Xmp(
+                crate::ui::dialogs::xmp::State::new_loading(),
+            ));
+
             let (tx, rx) = crossbeam_channel::unbounded();
             self.file_op_rx = Some(rx);
             let path_clone = path.clone();
