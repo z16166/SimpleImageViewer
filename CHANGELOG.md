@@ -8,8 +8,13 @@ All notable changes to this project will be documented in this file.
 - **Tiled Rendering Optimization**: Removed tile fade-in animations to eliminate redundant UI repaints, significantly reducing CPU/GPU usage during idle periods. Tiles now pop-in instantly at full opacity.
 - **GPU Upload Quota**: Refined the per-frame GPU upload quota system. Background preloading is now strictly limited to prevent GPU command queue saturation, while the active image and high-quality previews bypass the quota for maximum responsiveness.
 - **UI Refinement**: Streamlined the settings panel by removing the redundant "Exit Application" button and OS-specific quit hints.
+- **Unified RAW Pipeline**: Standardized the RAW image loading sequence across all paths (preview, full development, and background refinement). Orientation is now determined by a centralized "source of truth" (LibRaw metadata with EXIF fallback), ensuring perfect visual parity between Windows and macOS.
+- **Metadata Consistency**: Migrated EXIF orientation detection to a unified utility (`metadata_utils`), eliminating platform-specific metadata disparities between WIC, ImageIO, and native decoders.
+- **RAW Compatibility Boost**: Enhanced support for high-end digital backs (e.g., Leaf MOS) by enabling hardware color matrices and optimizing auto-brightness normalization.
 
 ### Fixed
+- **WGPU Stability**: Fixed a critical "Dimension X is zero" panic in the rendering pipeline by adding dimension sanitization for corrupted or malformed images.
+- **Process Lifecycle**: Ensured the application terminates cleanly after a fatal crash by adding an explicit exit call to the emergency error dialog.
 - **IPC Robustness**: Improved IPC message handling with strict size limits and non-blocking operation on Windows to prevent potential application freezes.
 - **IPC Consistency**: Unified Unix socket paths in `cleanup_stale_socket` to use the `IPC_SOCKET_NAME` constant.
 - **Input System**: Enabled `F1` as a global toggle to both show and hide the settings panel.

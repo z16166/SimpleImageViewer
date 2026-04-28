@@ -151,6 +151,10 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub show_music_osd: bool,
 
+    // RAW Processing
+    #[serde(default)]
+    pub raw_high_quality: bool,
+
     // Language (locale code: "en", "zh-CN", "zh-HK")
     #[serde(default)]
     pub language: String,
@@ -223,6 +227,7 @@ impl Default for Settings {
             last_music_file: None,
             last_music_cue_track: None,
             audio_device: None,
+            raw_high_quality: false,
             language: String::new(),
             theme: AppTheme::Dark,
             enable_log_file: true,

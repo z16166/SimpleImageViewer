@@ -31,4 +31,27 @@ extern "C" {
         if (!lr) return 0;
         return lr->process_warnings;
     }
+
+    int siv_libraw_get_flip(libraw_data_t *lr) {
+        if (!lr) return 0;
+        return lr->sizes.flip;
+    }
+
+    void siv_libraw_set_user_flip(libraw_data_t *lr, int flip) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.user_flip = flip;
+    }
+
+    void siv_libraw_set_use_camera_matrix(libraw_data_t *lr, int value) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.use_camera_matrix = value;
+    }
+
+    void siv_libraw_set_auto_bright_thr(libraw_data_t *lr, float value) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.auto_bright_thr = value;
+    }
 }

@@ -34,6 +34,7 @@ mod libtiff_loader;
 mod loader;
 #[cfg(target_os = "macos")]
 mod macos_image_io;
+mod metadata_utils;
 pub mod print;
 mod psb_reader;
 mod raw_processor;
@@ -360,6 +361,10 @@ fn setup_panic_hook() {
             .set_description(&msg)
             .set_level(rfd::MessageLevel::Error)
             .show();
+
+        // Critical: After showing the crash dialog, the application must terminate.
+        // Otherwise, the window may hang or enter an unstable state.
+        std::process::exit(1);
     }));
 }
 

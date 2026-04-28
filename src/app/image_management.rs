@@ -57,6 +57,50 @@ impl ImageViewerApp {
     // Navigation
     // ------------------------------------------------------------------
 
+    pub(crate) fn reload_current(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        // Only trigger reload if the current file is a RAW format, as the setting only affects RAW.
+        let is_raw = self
+            .image_files
+            .get(self.current_index)
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|ext| crate::raw_processor::is_raw_extension(ext))
+            .unwrap_or(false);
+
+        if !is_raw {
+            return;
+        }
+
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+
+        // Cancel all ongoing background tasks (like heavy RAW development)
+        // to immediately free up resources for the new loading request.
+        self.loader.cancel_all();
+
+        // Clear current image from all relevant caches to force a fresh reload from disk
+        self.texture_cache.remove(self.current_index);
+        self.prefetched_tiles.remove(&self.current_index);
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.animation = None;
+
+        let path = self.image_files[self.current_index].clone();
+        self.loader.request_load(
+            self.current_index,
+            self.generation,
+            path,
+            self.settings.raw_high_quality,
+        );
+
+        // Re-schedule preloads to update nearby images with the new setting as well
+        self.schedule_preloads(true);
+    }
+
     pub(crate) fn navigate_to(&mut self, new_index: usize) {
         if self.image_files.is_empty() {
             return;
@@ -169,6 +213,7 @@ impl ImageViewerApp {
                 self.current_index,
                 self.generation,
                 self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
             );
         }
 
@@ -234,7 +279,8 @@ impl ImageViewerApp {
         // Always load the current image
         if !self.texture_cache.contains(cur) && !self.loader.is_loading(cur) {
             let path = self.image_files[cur].clone();
-            self.loader.request_load(cur, self.generation, path);
+            self.loader
+                .request_load(cur, self.generation, path, self.settings.raw_high_quality);
         }
 
         if !self.settings.preload {
@@ -319,7 +365,12 @@ impl ImageViewerApp {
                 break;
             }
 
-            self.loader.request_load(idx, self.generation, path.clone());
+            self.loader.request_load(
+                idx,
+                self.generation,
+                path.clone(),
+                self.settings.raw_high_quality,
+            );
             count += 1;
             new_bytes += file_size;
         }
@@ -602,6 +653,7 @@ impl ImageViewerApp {
                     self.current_index,
                     self.generation,
                     self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
                 );
             }
 

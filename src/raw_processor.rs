@@ -63,6 +63,14 @@ impl RawProcessor {
         unsafe { ffi::libraw_get_iheight(self.data) as u32 }
     }
 
+    pub fn flip(&self) -> i32 {
+        unsafe { ffi::siv_libraw_get_flip(self.data) }
+    }
+
+    pub fn set_user_flip(&mut self, flip: i32) {
+        unsafe { ffi::siv_libraw_set_user_flip(self.data, flip) }
+    }
+
     #[allow(dead_code)]
     pub fn raw_width(&self) -> u32 {
         unsafe { ffi::libraw_get_raw_width(self.data) as u32 }
@@ -84,6 +92,16 @@ impl RawProcessor {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    pub fn set_use_camera_matrix(&mut self, value: i32) {
+        unsafe { ffi::siv_libraw_set_use_camera_matrix(self.data, value) }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_auto_bright_thr(&mut self, value: f32) {
+        unsafe { ffi::siv_libraw_set_auto_bright_thr(self.data, value) }
+    }
+
     pub fn develop(&mut self) -> Result<DynamicImage, String> {
         if !self.is_unpacked {
             self.unpack()?;
@@ -94,7 +112,9 @@ impl RawProcessor {
             // (Using siv_ prefix to avoid symbol collisions with native LibRaw API)
             ffi::libraw_set_output_bps(self.data, 8);
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1); // Use hardware color matrix if available
             ffi::libraw_set_no_auto_bright(self.data, 0); // 0 means ENABLE auto-bright
+            ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
 
             // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);

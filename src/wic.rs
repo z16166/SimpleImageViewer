@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub use crate::formats::{FormatGroup, ImageFormat, get_registry};
+use crate::loader::TiledImageSource;
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -570,25 +571,12 @@ fn render_source_to_pixels(
     }
 }
 
-fn get_exif_orientation(path: &std::path::Path) -> u32 {
-    if let Ok(file) = std::fs::File::open(path) {
-        let mut reader = std::io::BufReader::new(file);
-        let exifreader = exif::Reader::new();
-        if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
-            if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-                if let exif::Value::Short(ref v) = field.value {
-                    if let Some(&o) = v.first() {
-                        return o as u32;
-                    }
-                }
-            }
-        }
-    }
-    1
-}
+// Centralized in metadata_utils.rs
 
 pub fn load_via_wic(
     path: &std::path::Path,
+    high_quality: bool,
+    orientation_override: Option<u16>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
@@ -745,7 +733,8 @@ pub fn load_via_wic(
             .GetFrame(best_frame_idx)
             .map_err(|e| format!("failed to get frame: {:?}", e))?;
 
-        let orientation = get_exif_orientation(path);
+        let orientation = orientation_override
+            .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path));
         let transform_options = match orientation {
             2 => WICBitmapTransformOptions(8),     // Flip Horizontal
             3 => WICBitmapTransformOptions(2),     // Rotate180
@@ -797,6 +786,45 @@ pub fn load_via_wic(
 
         // If it's a RAW file, we ALWAYS want a fast preview path for the initial placeholder,
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
+
+        // PERFORMANCE OPTIMIZATION: If we are in performance mode (!high_quality)
+        // for a RAW file, we prioritize returning a static preview immediately
+        // to avoid all background tiling and refinement overhead.
+        if is_raw && !high_quality {
+            // Re-use the generate_preview logic but return it as ImageData::Static
+            let temp_source = WicTiledSource {
+                path: path.to_path_buf(),
+                width: logical_width,
+                height: logical_height,
+                physical_width: width,
+                physical_height: height,
+                transform_options,
+                factory: factory.clone(),
+                decoder: decoder.clone(),
+                frame: frame.clone(),
+                source: final_source.clone(),
+                stream: stream_out.clone(),
+                _mmap: mmap_out.clone(),
+            };
+            let (pw, ph, p) = temp_source.generate_preview(
+                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
+                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
+            );
+            if pw > 0 && ph > 0 {
+                log::debug!(
+                    "WIC [Performance Mode]: Using static preview for RAW {:?}",
+                    path
+                );
+                return Ok(crate::loader::ImageData::Static(
+                    crate::loader::DecodedImage {
+                        width: pw,
+                        height: ph,
+                        pixels: p,
+                    },
+                ));
+            }
+        }
+
         if pixel_count >= tiled_limit || logical_width > limit || logical_height > limit || is_raw {
             // Virtualized path: Create a cached WIC bitmap source to avoid redundant O(N^2) decoding.
             // WICBitmapCacheOnDemand will keep decoded scanlines in memory as we request tiles.

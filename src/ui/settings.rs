@@ -323,8 +323,29 @@ fn draw_settings_left_col(
                 .small(),
         );
 
-        ui.add_space(6.0);
-        ui.checkbox(&mut app.settings.show_osd, t!("label.show_osd"));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut app.settings.show_osd, t!("label.show_osd"))
+                .changed()
+            {
+                app.queue_save();
+            }
+
+            ui.add_space(12.0);
+
+            if ui
+                .checkbox(
+                    &mut app.settings.raw_high_quality,
+                    t!("label.raw_high_quality"),
+                )
+                .on_hover_text(t!("hint.raw_high_quality"))
+                .changed()
+            {
+                app.reload_current();
+                app.queue_save();
+            }
+        });
 
         // ── Transitions ──────────────────────────────────────────
         ui.add_space(8.0);

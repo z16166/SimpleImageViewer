@@ -141,3 +141,8 @@ pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 
 /// Maximum size for the log file (10MB) before rotation.
 pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// The clipping threshold for LibRaw's auto-brightness adjustment.
+/// A value of 0.01 (1%) provides robust normalization for high-dynamic range images
+/// that would otherwise be rendered as all-black due to high sensor black levels.
+pub const RAW_AUTO_BRIGHT_THR: f32 = 0.01;

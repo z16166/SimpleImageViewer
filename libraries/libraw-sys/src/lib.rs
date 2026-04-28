@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use libc::{c_char, c_int, c_uchar, c_uint, c_ushort};
+use libc::{c_char, c_float, c_int, c_uchar, c_uint, c_ushort};
 
 /// Matches LibRaw's `enum LibRaw_image_formats` from `libraw_const.h`.
 #[repr(u32)]
@@ -83,6 +83,10 @@ unsafe extern "C" {
     // Custom shims (implemented in libraw_shims.cpp)
     pub fn siv_libraw_set_use_camera_wb(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_get_process_warnings(data: *mut libraw_data_t) -> c_uint;
+    pub fn siv_libraw_get_flip(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_set_user_flip(data: *mut libraw_data_t, flip: c_int);
+    pub fn siv_libraw_set_use_camera_matrix(data: *mut libraw_data_t, value: c_int);
+    pub fn siv_libraw_set_auto_bright_thr(data: *mut libraw_data_t, value: c_float);
 
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;

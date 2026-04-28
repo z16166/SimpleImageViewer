@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::loader::{DecodedImage, ImageData};
+use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -87,7 +87,6 @@ unsafe extern "C" {
 
     // Property Keys
     static kCGImageSourceShouldCache: core_foundation::string::CFStringRef;
-    static kCGImagePropertyOrientation: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelWidth: core_foundation::string::CFStringRef;
     static kCGImagePropertyPixelHeight: core_foundation::string::CFStringRef;
 
@@ -965,7 +964,11 @@ unsafe fn render_cgimage_to_rgba_sync(
     }
 }
 
-pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
+pub fn load_via_image_io(
+    path: &Path,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> Result<ImageData, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -1030,8 +1033,11 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
                 get_cf_number_u32(&props, kCGImagePropertyPixelWidth as _).unwrap_or(0);
             physical_height =
                 get_cf_number_u32(&props, kCGImagePropertyPixelHeight as _).unwrap_or(0);
-            orientation = get_cf_number_u32(&props, kCGImagePropertyOrientation as _).unwrap_or(1);
         }
+
+        orientation = orientation_override
+            .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path))
+            as u32;
 
         if physical_width == 0 || physical_height == 0 {
             return Err(
@@ -1166,6 +1172,40 @@ pub fn load_via_image_io(path: &Path) -> Result<ImageData, String> {
             CFString::wrap_under_get_rule(kCGColorSpaceSRGB).as_concrete_TypeRef(),
         )
         .unwrap_or_else(|| CGColorSpace::create_device_rgb());
+
+        let is_raw = crate::raw_processor::is_raw_extension(&ext);
+
+        // PERFORMANCE OPTIMIZATION: If we are in performance mode (!high_quality)
+        // for a RAW file, we prioritize returning a static preview immediately.
+        if is_raw && !high_quality {
+            let temp_source = ImageIoTiledSource {
+                _path: path.to_path_buf(),
+                physical_width,
+                physical_height,
+                logical_width,
+                logical_height,
+                orientation,
+                source: source.clone(),
+                cached_image: cached_image.clone(),
+                color_space: color_space.clone(),
+                _mmap: mmap.clone(),
+            };
+            let (pw, ph, p) = temp_source.generate_preview(
+                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
+                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
+            );
+            if pw > 0 && ph > 0 {
+                log::debug!(
+                    "ImageIO [Performance Mode]: Using static preview for RAW {:?}",
+                    path
+                );
+                return Ok(ImageData::Static(DecodedImage {
+                    width: pw,
+                    height: ph,
+                    pixels: p,
+                }));
+            }
+        }
 
         Ok(ImageData::Tiled(Arc::new(ImageIoTiledSource {
             _path: path.to_path_buf(),

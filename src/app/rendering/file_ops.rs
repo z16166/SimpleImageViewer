@@ -152,6 +152,7 @@ impl ImageViewerApp {
                 self.current_index,
                 self.generation,
                 self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
             );
             self.schedule_preloads(true);
         }

@@ -53,7 +53,7 @@ static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
 });
 
 use crate::raw_processor::RawProcessor;
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, RgbaImage};
 use parking_lot::RwLock as PLRwLock;
 
 #[derive(Debug, Clone)]
@@ -139,6 +139,7 @@ pub struct RefinementRequest {
     pub path: PathBuf,
     pub index: usize,
     pub generation: u64,
+    pub orientation_override: Option<i32>,
     pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
 }
 
@@ -404,6 +405,10 @@ impl ImageLoader {
                         }
                     }
 
+                    if let Some(flip) = req.orientation_override {
+                        processor.set_user_flip(flip);
+                    }
+
                     match processor.develop() {
                         Ok(full_img) => {
                             let elapsed = t0.elapsed();
@@ -495,7 +500,13 @@ impl ImageLoader {
             .store(generation, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn request_load(&mut self, index: usize, generation: u64, path: PathBuf) {
+    pub fn request_load(
+        &mut self,
+        index: usize,
+        generation: u64,
+        path: PathBuf,
+        high_quality: bool,
+    ) {
         {
             let mut loading = self.loading.lock().unwrap();
             if loading.get(&index) == Some(&generation) {
@@ -539,7 +550,16 @@ impl ImageLoader {
             {
                 return;
             }
-            Self::do_load(index, generation, &path1, tx1, rtx1, loading1, current_gen1);
+            Self::do_load(
+                index,
+                generation,
+                &path1,
+                tx1,
+                rtx1,
+                loading1,
+                current_gen1,
+                high_quality,
+            );
         });
 
         // Fallback loader: If the primary thread pool is congested or stalls,
@@ -571,7 +591,16 @@ impl ImageLoader {
                 }
                 #[cfg(target_os = "windows")]
                 let _com = crate::wic::ComGuard::new();
-                Self::do_load(index, generation, &path2, tx2, rtx2, loading2, current_gen2);
+                Self::do_load(
+                    index,
+                    generation,
+                    &path2,
+                    tx2,
+                    rtx2,
+                    loading2,
+                    current_gen2,
+                    high_quality,
+                );
             })
             .ok();
     }
@@ -584,9 +613,17 @@ impl ImageLoader {
         refine_tx: Sender<RefinementRequest>,
         _loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         current_gen: Arc<std::sync::atomic::AtomicU64>,
+        high_quality: bool,
     ) {
         let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            load_image_file(generation, index, path, tx.clone(), refine_tx.clone())
+            load_image_file(
+                generation,
+                index,
+                path,
+                tx.clone(),
+                refine_tx.clone(),
+                high_quality,
+            )
         }))
         .unwrap_or_else(|e| {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
@@ -743,6 +780,7 @@ fn load_image_file(
     path: &PathBuf,
     _tx: Sender<LoaderOutput>,
     refine_tx: Sender<RefinementRequest>,
+    high_quality: bool,
 ) -> LoadResult {
     let file_name = path
         .file_name()
@@ -770,7 +808,7 @@ fn load_image_file(
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
 
         if is_raw {
-            return load_raw(index, generation, path, refine_tx.clone());
+            return load_raw(index, generation, path, refine_tx.clone(), high_quality);
         }
 
         if ext == "jpg" || ext == "jpeg" {
@@ -782,11 +820,11 @@ fn load_image_file(
 
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
-            if let Ok(img) = crate::wic::load_via_wic(path) {
+            if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
                 return Ok(img);
             }
             #[cfg(target_os = "macos")]
-            if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
+            if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
                 return Ok(img);
             }
         }
@@ -801,11 +839,11 @@ fn load_image_file(
         };
         if result.is_err() {
             #[cfg(target_os = "windows")]
-            if let Ok(img) = crate::wic::load_via_wic(path) {
+            if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
                 return Ok(img);
             }
             #[cfg(target_os = "macos")]
-            if let Ok(img) = crate::macos_image_io::load_via_image_io(path) {
+            if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
                 return Ok(img);
             }
 
@@ -955,7 +993,7 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
 
-    let orientation = get_exif_orientation(path);
+    let orientation = crate::metadata_utils::get_exif_orientation(path);
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =
             crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
@@ -971,22 +1009,7 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
     }))
 }
 
-fn get_exif_orientation(path: &std::path::Path) -> u16 {
-    if let Ok(file) = std::fs::File::open(path) {
-        let mut reader = std::io::BufReader::new(file);
-        let exifreader = exif::Reader::new();
-        if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
-            if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-                if let exif::Value::Short(ref v) = field.value {
-                    if let Some(&o) = v.first() {
-                        return o;
-                    }
-                }
-            }
-        }
-    }
-    1
-}
+// Centralized in metadata_utils.rs
 
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     use image::ImageReader;
@@ -1452,6 +1475,7 @@ pub struct RawImageSource {
     /// be called later (only when the image becomes active) instead of eagerly in the
     /// constructor, preventing prefetched images from spawning ~400MB develop tasks.
     refine_tx: Sender<RefinementRequest>,
+    orientation_override: i32,
 }
 
 impl RawImageSource {
@@ -1461,6 +1485,7 @@ impl RawImageSource {
         raw_width: u32,
         raw_height: u32,
         refine_tx: Sender<RefinementRequest>,
+        orientation_override: i32,
     ) -> Self {
         // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
         // Previously this called resize_exact(raw_width, raw_height) which allocated
@@ -1471,22 +1496,19 @@ impl RawImageSource {
         // ALSO: We do NOT send a refinement request here. Refinement is deferred until
         // the image becomes the actively-viewed one (via request_refinement()). This
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
-        let rgba = if let Some(buf) =
-            image::RgbaImage::from_raw(preview.width, preview.height, preview.pixels)
+
+        let developed_image = if let Some(rgba) =
+            RgbaImage::from_raw(preview.width, preview.height, preview.pixels)
         {
-            buf
+            Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))))
         } else {
             log::error!(
-                "[Loader] Failed to create preview RGBA image buffer ({}x{}) for {:?}",
-                preview.width,
-                preview.height,
-                path
+                "[RawImageSource] Failed to create RgbaImage from preview buffer. Using empty image."
             );
-            image::RgbaImage::new(1, 1)
+            Arc::new(PLRwLock::new(None))
         };
-        let preview_dyn = DynamicImage::ImageRgba8(rgba);
 
-        let developed_image = Arc::new(PLRwLock::new(Some(preview_dyn)));
+        let refine_tx = refine_tx.clone();
 
         Self {
             path,
@@ -1494,6 +1516,7 @@ impl RawImageSource {
             height: raw_height,
             developed_image,
             refine_tx,
+            orientation_override,
         }
     }
 }
@@ -1578,6 +1601,7 @@ impl TiledImageSource for RawImageSource {
             path: self.path.clone(),
             index,
             generation,
+            orientation_override: Some(self.orientation_override),
             developed_image: self.developed_image.clone(),
         });
     }
@@ -1588,10 +1612,9 @@ fn load_raw(
     _generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
+    high_quality: bool,
 ) -> Result<ImageData, String> {
     // 1. Initialize LibRaw Processor and attempt to open the file header.
-    // If LibRaw fails to open (e.g., unsupported format like some old Kodak KDC or damaged file),
-    // we immediately fall back to the platform-native Rule 2 (WIC/ImageIO) as a last resort.
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
     if let Err(e) = processor.open(path) {
@@ -1601,9 +1624,9 @@ fn load_raw(
             e
         );
         #[cfg(target_os = "windows")]
-        return crate::wic::load_via_wic(path);
+        return crate::wic::load_via_wic(path, high_quality, None);
         #[cfg(target_os = "macos")]
-        return crate::macos_image_io::load_via_image_io(path);
+        return crate::macos_image_io::load_via_image_io(path, high_quality, None);
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         return Err(format!(
             "LibRaw failed and no platform fallback available: {}",
@@ -1615,9 +1638,120 @@ fn load_raw(
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
 
+    // 1. Determine the authoritative orientation once and for all.
+    // We prioritize LibRaw's flip metadata, falling back to the exif crate only if LibRaw's value is unknown.
+    let lr_flip = processor.flip();
+    let final_orientation = match lr_flip {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 3,
+        4 => 5,
+        5 => 8,
+        6 => 6,
+        7 => 7,
+        _ => crate::metadata_utils::get_exif_orientation(path),
+    };
+
+    // Ensure LibRaw's develop() pipeline uses the SAME orientation as our preview logic.
+    // We explicitly set user_flip based on our authoritative decision.
+    let final_lr_flip = match final_orientation {
+        1 => 0,
+        2 => 1,
+        3 => 3,
+        4 => 2,
+        5 => 4,
+        6 => 6,
+        7 => 7,
+        8 => 5,
+        _ => 0,
+    };
+    processor.set_user_flip(final_lr_flip);
+
+    // --- Performance Optimization: Try to use embedded preview to avoid expensive demosaicing ---
+    let mut preview_opt = {
+        // Step 1: Try platform-native loaders (WIC/ImageIO).
+        // We pass Some(final_orientation) to force the system loader to respect our authoritative choice.
+        #[cfg(target_os = "windows")]
+        let res = crate::wic::load_via_wic(path, high_quality, Some(final_orientation));
+        #[cfg(target_os = "macos")]
+        let res =
+            crate::macos_image_io::load_via_image_io(path, high_quality, Some(final_orientation));
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let res: Result<ImageData, String> = Err("Unsupported".to_string());
+
+        match res {
+            Ok(ImageData::Static(img)) => Some(img),
+            Ok(ImageData::Tiled(source)) => {
+                let (pw, ph, p) =
+                    source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
+                Some(DecodedImage {
+                    width: pw,
+                    height: ph,
+                    pixels: p,
+                })
+            }
+            _ => {
+                // Step 2: Fallback to LibRaw's native thumbnail extraction if platform loader failed.
+                // We use the same final_orientation to ensure perfect consistency.
+                if let Ok(mut p) = processor.unpack_thumb() {
+                    if final_orientation > 1 {
+                        let pixels = std::mem::take(&mut p.pixels);
+                        if let Some(rgba) = image::RgbaImage::from_raw(p.width, p.height, pixels) {
+                            let mut img = image::DynamicImage::ImageRgba8(rgba);
+                            match final_orientation {
+                                2 => img = img.fliph(),
+                                3 => img = img.rotate180(),
+                                4 => img = img.flipv(),
+                                5 => img = img.fliph().rotate270(),
+                                6 => img = img.rotate90(),
+                                7 => img = img.fliph().rotate90(),
+                                8 => img = img.rotate270(),
+                                _ => {}
+                            }
+                            let rgba_rotated = img.to_rgba8();
+                            p.width = rgba_rotated.width();
+                            p.height = rgba_rotated.height();
+                            p.pixels = rgba_rotated.into_raw();
+                        }
+                    }
+                    Some(p)
+                } else {
+                    None
+                }
+            }
+        }
+    };
+
+    // Sanitize: A zero-dimension image will cause a validation error in wgpu (Dimension X is zero).
+    if let Some(ref p) = preview_opt {
+        if p.width == 0 || p.height == 0 {
+            log::warn!(
+                "[Loader] Preview path returned a zero-dimension image for {:?}. Invalidate and fallback.",
+                path.file_name().unwrap_or_default()
+            );
+            preview_opt = None;
+        }
+    }
+
+    if let Some(p) = preview_opt.clone() {
+        let is_hq = p.width >= MAX_QUALITY_PREVIEW_SIZE || p.height >= MAX_QUALITY_PREVIEW_SIZE;
+        // If !high_quality (performance mode), we use any preview to save energy/fans.
+        // If high_quality is true, we only use it if it's large enough (HQ).
+        if !high_quality || is_hq {
+            log::debug!(
+                "[Loader] Using embedded preview for {:?} ({}x{}, HQ={})",
+                path,
+                p.width,
+                p.height,
+                is_hq
+            );
+            return Ok(make_image_data(p));
+        }
+        // If we reach here, high_quality is true but preview is not HQ, so we fall through to develop.
+    }
+
     // 2. Rule 1: High-Performance Synchronous Development for Small Images (< 64MP).
-    // If the image is small enough to fit in GPU memory and meets the area threshold,
-    // we use LibRaw's native development to get original raw pixels instantly.
     if area < threshold
         && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
         && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
@@ -1630,8 +1764,6 @@ fn load_raw(
         );
 
         if let Ok(full_img) = processor.develop() {
-            // Note: We ignore informational warnings like LIBRAW_WARN_FUJI_ROTATED (0x10000)
-            // as they don't represent image corruption, just technical details about sensor layout.
             let warnings = processor.process_warnings();
             if warnings != 0 {
                 log::info!(
@@ -1642,49 +1774,33 @@ fn load_raw(
             }
 
             let rgba = full_img.to_rgba8();
-            let decoded = DecodedImage {
-                width: rgba.width(),
-                height: rgba.height(),
-                pixels: rgba.into_raw(),
-            };
-            return Ok(ImageData::Static(decoded));
+            if rgba.width() == 0 || rgba.height() == 0 {
+                log::error!(
+                    "[Loader] LibRaw developed a zero-dimension image for {:?}. Falling through to Rule 2.",
+                    path
+                );
+            } else {
+                let decoded = DecodedImage {
+                    width: rgba.width(),
+                    height: rgba.height(),
+                    pixels: rgba.into_raw(),
+                };
+                return Ok(ImageData::Static(decoded));
+            }
         } else {
             log::error!("[Loader] Failed to develop Rule 1 pixels. Falling through to Rule 2.");
         }
     }
 
     // 3. Rule 2: Asynchronous Tiled Pipeline for Large Images (>= 64MP) or fallback.
-    // For giant images, we first fetch a fast preview (via WIC/ImageIO or LibRaw thumbnail)
-    // to show something instantly, while background workers decode high-quality tiles.
-    #[cfg(target_os = "windows")]
-    let preview_res = crate::wic::load_via_wic(path);
-    #[cfg(target_os = "macos")]
-    let preview_res = crate::macos_image_io::load_via_image_io(path);
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let preview_res: Result<ImageData, String> = Err("Unsupported".to_string());
-
-    let preview = match preview_res {
-        Ok(ImageData::Static(img)) => img,
-        Ok(ImageData::Tiled(source)) => {
-            let (pw, ph, p) =
-                source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
-            DecodedImage {
-                width: pw,
-                height: ph,
-                pixels: p,
-            }
-        }
-        _ => match processor.unpack_thumb() {
-            Ok(thumb) => thumb,
-            Err(e) => {
-                log::warn!(
-                    "[Loader] LibRaw fast thumbnail failed for {:?}: {}. Falling back to low-quality develop...",
-                    path,
-                    e
-                );
-                processor.develop()?.to_rgba8().into()
-            }
-        },
+    let preview = if let Some(p) = preview_opt {
+        p
+    } else {
+        log::warn!(
+            "[Loader] All fast RAW thumbnail paths failed for {:?}. Falling back to slow development...",
+            path.file_name().unwrap_or_default()
+        );
+        processor.develop()?.to_rgba8().into()
     };
 
     let source = Arc::new(RawImageSource::new(
@@ -1693,6 +1809,7 @@ fn load_raw(
         width,
         height,
         refine_tx,
+        final_lr_flip,
     ));
 
     log::info!(
