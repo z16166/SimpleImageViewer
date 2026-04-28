@@ -256,7 +256,8 @@ pub struct ImageViewerApp {
     pub(crate) pending_anim_frames: Option<PendingAnimUpload>,
 
     // Async file operations (deletion, etc.)
-    pub(crate) file_op_rx: Option<Receiver<FileOpResult>>,
+    pub(crate) file_op_rx: Receiver<FileOpResult>,
+    pub(crate) file_op_tx: Sender<FileOpResult>,
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,

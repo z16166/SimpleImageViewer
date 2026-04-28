@@ -391,50 +391,46 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     pub(crate) fn process_file_op_results(&mut self) {
-        if let Some(rx) = &self.file_op_rx {
-            while let Ok(res) = rx.try_recv() {
-                match res {
-                    FileOpResult::Delete(path, res) => {
-                        if let Err(e) = res {
-                            log::error!("Failed to delete {:?}: {}", path, e);
-                            self.error_message =
-                                Some(t!("status.delete_failed", err = e.to_string()).to_string());
+        while let Ok(res) = self.file_op_rx.try_recv() {
+            match res {
+                FileOpResult::Delete(path, res) => {
+                    if let Err(e) = res {
+                        log::error!("Failed to delete {:?}: {}", path, e);
+                        self.error_message =
+                            Some(t!("status.delete_failed", err = e.to_string()).to_string());
+                    } else {
+                        log::info!("Successfully deleted {:?}", path);
+                    }
+                }
+                FileOpResult::Exif(_path, data) => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(ref mut state)) =
+                        self.active_modal
+                    {
+                        state.data = data;
+                        state.loading = false;
+                    }
+                }
+                FileOpResult::Xmp(_path, data) => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(ref mut state)) =
+                        self.active_modal
+                    {
+                        if let Some((d, x)) = data {
+                            state.data = Some(d);
+                            state.xml = Some(x);
                         } else {
-                            log::info!("Successfully deleted {:?}", path);
+                            state.data = None;
+                            state.xml = None;
                         }
+                        state.loading = false;
                     }
-                    FileOpResult::Exif(_path, data) => {
-                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(
-                            ref mut state,
-                        )) = self.active_modal
-                        {
-                            state.data = data;
-                            state.loading = false;
-                        }
-                    }
-                    FileOpResult::Xmp(_path, data) => {
-                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(
-                            ref mut state,
-                        )) = self.active_modal
-                        {
-                            if let Some((d, x)) = data {
-                                state.data = Some(d);
-                                state.xml = Some(x);
-                            } else {
-                                state.data = None;
-                                state.xml = None;
-                            }
-                            state.loading = false;
-                        }
-                    }
-                    FileOpResult::Wallpaper(current) => {
-                        if let Some(crate::ui::dialogs::modal_state::ActiveModal::Wallpaper(
-                            ref mut state,
-                        )) = self.active_modal
-                        {
-                            state.current_system_wallpaper = current;
-                            state.loading = false;
-                        }
+                }
+                FileOpResult::Wallpaper(current) => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Wallpaper(
+                        ref mut state,
+                    )) = self.active_modal
+                    {
+                        state.current_system_wallpaper = current;
+                        state.loading = false;
                     }
                 }
             }

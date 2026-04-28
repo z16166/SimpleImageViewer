@@ -157,6 +157,8 @@ impl ImageViewerApp {
             cache.set_max_mb(tier.cpu_cache_mb());
         }
 
+        let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
+
         let mut app = Self {
             save_tx,
             initial_image,
@@ -210,7 +212,8 @@ impl ImageViewerApp {
             last_mouse_wheel_nav: 0.0,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
-            file_op_rx: None,
+            file_op_rx,
+            file_op_tx,
             context_menu_pos: None,
             current_rotation: 0,
             save_error_rx,

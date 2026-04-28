@@ -95,8 +95,7 @@ impl ImageViewerApp {
             self.prev_texture = None;
 
             // Successfully unlinked from UI, now delete in background
-            let (tx, rx) = crossbeam_channel::unbounded();
-            self.file_op_rx = Some(rx);
+            let tx = self.file_op_tx.clone();
 
             std::thread::spawn(move || {
                 // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)

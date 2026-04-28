@@ -420,9 +420,7 @@ impl ImageViewerApp {
                 crate::ui::dialogs::exif::State::new_loading(),
             ));
 
-            // Actually, I'll just use the same pattern as delete: create a channel and store the rx.
-            let (tx, rx) = crossbeam_channel::unbounded();
-            self.file_op_rx = Some(rx);
+            let tx = self.file_op_tx.clone();
             let path_clone = path.clone();
             std::thread::spawn(move || {
                 let data = crate::app::extract_exif(&path_clone);
@@ -437,8 +435,7 @@ impl ImageViewerApp {
                 crate::ui::dialogs::xmp::State::new_loading(),
             ));
 
-            let (tx, rx) = crossbeam_channel::unbounded();
-            self.file_op_rx = Some(rx);
+            let tx = self.file_op_tx.clone();
             let path_clone = path.clone();
             std::thread::spawn(move || {
                 let data = crate::app::extract_xmp(&path_clone);
@@ -489,8 +486,7 @@ impl ImageViewerApp {
                 crate::ui::dialogs::wallpaper::State::new_loading(),
             ));
 
-            let (tx, rx) = crossbeam_channel::unbounded();
-            self.file_op_rx = Some(rx);
+            let tx = self.file_op_tx.clone();
             std::thread::spawn(move || {
                 let current_wallpaper = wallpaper::get().ok();
                 let _ = tx.send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
