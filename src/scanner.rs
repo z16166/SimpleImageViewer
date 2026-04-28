@@ -18,6 +18,8 @@ use crossbeam_channel::Sender;
 use std::ffi::OsStr;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
@@ -77,7 +79,12 @@ pub enum ScanMessage {
 /// Number of files to accumulate before sending a batch to the UI.
 const BATCH_SIZE: usize = 200;
 
-pub fn scan_directory(dir: PathBuf, recursive: bool, tx: Sender<ScanMessage>) {
+pub fn scan_directory(
+    dir: PathBuf,
+    recursive: bool,
+    tx: Sender<ScanMessage>,
+    cancel: Arc<AtomicBool>,
+) {
     std::thread::spawn(move || {
         if recursive {
             let mut batch = Vec::with_capacity(BATCH_SIZE);
@@ -87,6 +94,11 @@ pub fn scan_directory(dir: PathBuf, recursive: bool, tx: Sender<ScanMessage>) {
                 .into_iter()
                 .flatten()
             {
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!("[Scanner] Scan cancelled for {:?}", dir);
+                    return;
+                }
+
                 // 1. [Cheapest] Check file_type from directory entry (no syscall on most OSs)
                 if entry.file_type().is_file() {
                     // 2. [Cheap] Check extension without constructing full PathBuf
@@ -115,18 +127,23 @@ pub fn scan_directory(dir: PathBuf, recursive: bool, tx: Sender<ScanMessage>) {
                 let _ = tx.send(ScanMessage::Batch(batch));
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut files: Vec<PathBuf> = entries
-                .flatten()
-                .filter(|e| {
-                    // Use the same tiered filtering pattern
-                    Path::new(&e.file_name())
-                        .extension()
-                        .map(|ext| is_supported_extension(ext))
-                        .unwrap_or(false)
-                        && is_valid_file(&e.path())
-                })
-                .map(|e| e.path())
-                .collect();
+            let mut files: Vec<PathBuf> = Vec::new();
+            for e in entries.flatten() {
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
+                    return;
+                }
+
+                // Use the same tiered filtering pattern
+                let is_supported = Path::new(&e.file_name())
+                    .extension()
+                    .map(|ext| is_supported_extension(ext))
+                    .unwrap_or(false);
+
+                if is_supported && is_valid_file(&e.path()) {
+                    files.push(e.path());
+                }
+            }
             files.sort();
             if !files.is_empty() {
                 let _ = tx.send(ScanMessage::Batch(files));

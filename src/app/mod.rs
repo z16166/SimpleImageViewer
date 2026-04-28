@@ -207,6 +207,7 @@ pub struct ImageViewerApp {
     pub(crate) music_scan_cancel: Option<Arc<AtomicBool>>,
     pub(crate) music_scan_path: Option<PathBuf>,
     pub(crate) scan_rx: Option<Receiver<scanner::ScanMessage>>,
+    pub(crate) scan_cancel: Option<Arc<AtomicBool>>,
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,

@@ -48,9 +48,17 @@ impl ImageViewerApp {
             .to_string();
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
+        // Cancel previous scan if any
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.scan_cancel = Some(Arc::clone(&cancel));
+
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
-        scanner::scan_directory(dir, self.settings.recursive, tx);
+        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
     }
 
     // ------------------------------------------------------------------

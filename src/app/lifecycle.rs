@@ -163,6 +163,7 @@ impl ImageViewerApp {
             image_files: Vec::new(),
             current_index: 0,
             scan_rx: None,
+            scan_cancel: None,
             scanning: false,
             loader: ImageLoader::new(),
             texture_cache: TextureCache::new(CACHE_SIZE),
