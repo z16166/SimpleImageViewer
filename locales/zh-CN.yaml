@@ -130,6 +130,7 @@ wallpaper.current: "当前系统壁纸："
 wallpaper.new_path: "新图片路径："
 wallpaper.resolution: "原始分辨率："
 wallpaper.mode: "壁纸模式："
+wallpaper.loading: "⏳ 正在获取系统壁纸..."
 wallpaper.crop: "裁剪填充"
 wallpaper.fit: "适应"
 wallpaper.stretch: "拉伸"
@@ -145,12 +146,14 @@ goto.hint: "输入图片编号（1 – %{total}）"
 exif.title: "ℹ EXIF 信息"
 exif.no_data: "⚠ 该图片中未找到 EXIF 数据。"
 exif.copy: "📋 复制 EXIF"
+exif.loading: "⏳ 正在加载 EXIF..."
 
 # XMP window
 xmp.title: "XMP 信息"
 xmp.no_data: "⚠ 该图片中未找到 XMP 数据。"
 xmp.copy_text: "📋 复制 XMP 文本"
 xmp.copy_xml: "📄 复制 XMP XML"
+xmp.loading: "⏳ 正在加载 XMP..."
 
 # Windows system integration
 win.register_hint: "为图片文件在 Windows「打开方式」菜单中注册此应用。"
