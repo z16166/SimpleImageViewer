@@ -250,8 +250,8 @@ fn cleanup_stale_socket() {
     #[cfg(unix)]
     {
         let candidates = [
-            format!("/tmp/siv_ipc_sock_v1"),
-            format!("/tmp/siv_ipc_sock_v1.sock"),
+            format!("/tmp/{}", IPC_SOCKET_NAME),
+            format!("/tmp/{}.sock", IPC_SOCKET_NAME),
         ];
         for path in &candidates {
             if std::path::Path::new(path).exists() {

@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **IPC Robustness**: Improved IPC message handling with strict size limits and non-blocking operation on Windows to prevent potential application freezes.
+- **IPC Consistency**: Unified Unix socket paths in `cleanup_stale_socket` to use the `IPC_SOCKET_NAME` constant.
 - **Input System**: Enabled `F1` as a global toggle to both show and hide the settings panel.
 
 ## [1.5.5] - 2026-04-27

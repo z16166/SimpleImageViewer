@@ -88,7 +88,6 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
 
             #[cfg(target_os = "windows")]
             draw_windows_section(app, ui);
-
         });
 
     if open_dir {
@@ -977,4 +976,3 @@ fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         }
     });
 }
-
