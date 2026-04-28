@@ -950,6 +950,13 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
+        // CRITICAL: Drop any stale preview results.
+        // This prevents out-of-date HQ previews from repopulating the cache after
+        // a directory rescan (which shifts indices) or file deletion.
+        if update.generation != self.generation {
+            return;
+        }
+
         // Apply HQ preview if it matches the currently displayed tile manager.
         // Also check prefetched tiles and update the texture cache for future navigations.
         match update.result {
