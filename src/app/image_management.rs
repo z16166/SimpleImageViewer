@@ -499,9 +499,13 @@ impl ImageViewerApp {
                         self.generation = self.generation.wrapping_add(1);
                         self.loader.set_generation(self.generation);
 
-                        // Clear caches that depend on stable indices
+                        // Clear all state that depends on stable indices
                         self.texture_cache.clear_all();
                         self.prefetched_tiles.clear();
+                        self.animation = None;
+                        self.animation_cache.clear();
+                        self.pending_anim_frames = None;
+                        self.tile_manager = None;
                         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
                             cache.clear();
                         }
