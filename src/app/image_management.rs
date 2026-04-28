@@ -416,6 +416,7 @@ impl ImageViewerApp {
                             t!("status.found", count = self.image_files.len().to_string())
                                 .to_string();
                         self.images_ever_loaded = true;
+                        self.schedule_preloads(true);
                     } else {
                         log::info!("Successfully deleted {:?}", path);
                     }
