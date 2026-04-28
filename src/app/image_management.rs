@@ -406,6 +406,16 @@ impl ImageViewerApp {
                         } else {
                             self.image_files.push(path);
                         }
+
+                        // Restore viewer state to ensure consistency.
+                        // We jump back to the file that failed to delete to ensure the index is valid.
+                        self.current_index = original_idx;
+                        self.generation = self.generation.wrapping_add(1);
+                        self.loader.set_generation(self.generation);
+                        self.status_message =
+                            t!("status.found", count = self.image_files.len().to_string())
+                                .to_string();
+                        self.images_ever_loaded = true;
                     } else {
                         log::info!("Successfully deleted {:?}", path);
                     }
