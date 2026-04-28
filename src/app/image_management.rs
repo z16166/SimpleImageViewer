@@ -410,26 +410,30 @@ impl ImageViewerApp {
                         log::info!("Successfully deleted {:?}", path);
                     }
                 }
-                FileOpResult::Exif(_path, data) => {
+                FileOpResult::Exif(path, data) => {
                     if let Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(ref mut state)) =
                         self.active_modal
                     {
-                        state.data = data;
-                        state.loading = false;
+                        if state.path == path {
+                            state.data = data;
+                            state.loading = false;
+                        }
                     }
                 }
-                FileOpResult::Xmp(_path, data) => {
+                FileOpResult::Xmp(path, data) => {
                     if let Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(ref mut state)) =
                         self.active_modal
                     {
-                        if let Some((d, x)) = data {
-                            state.data = Some(d);
-                            state.xml = Some(x);
-                        } else {
-                            state.data = None;
-                            state.xml = None;
+                        if state.path == path {
+                            if let Some((d, x)) = data {
+                                state.data = Some(d);
+                                state.xml = Some(x);
+                            } else {
+                                state.data = None;
+                                state.xml = None;
+                            }
+                            state.loading = false;
                         }
-                        state.loading = false;
                     }
                 }
                 FileOpResult::Wallpaper(current) => {

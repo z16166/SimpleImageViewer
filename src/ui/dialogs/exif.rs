@@ -25,6 +25,7 @@ use rust_i18n::t;
 
 /// Runtime state for the EXIF data viewer dialog.
 pub struct State {
+    pub path: std::path::PathBuf,
     /// Parsed EXIF key-value pairs, or `None` if the image has no EXIF data.
     pub data: Option<Vec<(String, String)>>,
     pub loading: bool,
@@ -32,8 +33,9 @@ pub struct State {
 
 impl State {
     /// Create state in loading mode.
-    pub fn new_loading() -> Self {
+    pub fn new_loading(path: std::path::PathBuf) -> Self {
         Self {
+            path,
             data: None,
             loading: true,
         }

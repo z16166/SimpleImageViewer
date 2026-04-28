@@ -28,6 +28,7 @@ use rust_i18n::t;
 /// Both `data` and `xml` are private implementation details — the dispatch
 /// layer only needs to call [`State::from_path`] and [`show`].
 pub struct State {
+    pub path: std::path::PathBuf,
     /// Parsed XMP key-value pairs, or `None` if no XMP metadata was found.
     pub data: Option<Vec<(String, String)>>,
     /// Raw XML string, available for the "Copy XML" button.
@@ -37,8 +38,9 @@ pub struct State {
 
 impl State {
     /// Create state in loading mode.
-    pub fn new_loading() -> Self {
+    pub fn new_loading(path: std::path::PathBuf) -> Self {
         Self {
+            path,
             data: None,
             xml: None,
             loading: true,

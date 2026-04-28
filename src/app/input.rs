@@ -417,7 +417,7 @@ impl ImageViewerApp {
 
         if ui.button(t!("ctx.view_exif").to_string()).clicked() {
             self.active_modal = Some(ActiveModal::Exif(
-                crate::ui::dialogs::exif::State::new_loading(),
+                crate::ui::dialogs::exif::State::new_loading(path.clone()),
             ));
 
             let tx = self.file_op_tx.clone();
@@ -432,7 +432,7 @@ impl ImageViewerApp {
 
         if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
             self.active_modal = Some(ActiveModal::Xmp(
-                crate::ui::dialogs::xmp::State::new_loading(),
+                crate::ui::dialogs::xmp::State::new_loading(path.clone()),
             ));
 
             let tx = self.file_op_tx.clone();
