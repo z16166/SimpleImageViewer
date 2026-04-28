@@ -14,7 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*, ConnectOptions};
+use interprocess::ConnectWaitMode;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -55,36 +56,70 @@ pub fn setup_or_forward_args(
     };
 
     // Try to connect as a client first.
-    // Use a short timeout to avoid blocking forever if the server is dead/stuck.
-    if let Ok(mut conn) = Stream::connect(sock_name.clone()) {
-        // Set a write timeout so we don't hang if the pipe buffer is full
-        if let Err(e) = set_stream_timeouts(&conn, Some(Duration::from_millis(500))) {
-            log::warn!("Failed to set stream timeout: {}", e);
-        }
-
-        // On Windows, this client process was just launched by Explorer and owns the
-        // foreground right. Transfer it to ANY process (i.e. the server) so the server
-        // can call SetForegroundWindow successfully.
-        #[cfg(windows)]
-        {
-            const ASFW_ANY: u32 = u32::MAX; // -1 as DWORD
-            unsafe extern "system" {
-                fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
-            }
-            unsafe {
-                AllowSetForegroundWindow(ASFW_ANY);
-            }
-        }
-
-        log::info!("Another instance is running. Forwarding arguments and exiting.");
-        let _ = conn.write_all(payload.as_bytes());
-        // Dropping `conn` here closes the connection and signals EOF to the server
-        drop(conn);
-        return true; // We are the client, exit the process
+    // To guarantee absolute responsiveness and avoid ANY potential OS-level blocking 
+    // during connect or write (especially on Windows), we isolate the entire 
+    // client-side logic in a separate thread.
+    enum ClientOp {
+        Success,
+        ConnectFailed(std::io::Error),
+        WriteFailed(std::io::Error),
     }
 
-    // Connect failed, meaning we are the primary instance.
-    log::info!("No existing instance detected. Becoming the primary IPC server.");
+    let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+    let payload_clone = payload.clone();
+    let sock_name_clone = sock_name.clone();
+
+    std::thread::spawn(move || {
+        let options = ConnectOptions::new()
+            .name(sock_name_clone)
+            .wait_mode(ConnectWaitMode::Timeout(Duration::from_secs(1)));
+
+        let mut conn = match options.connect_sync() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = done_tx.send(ClientOp::ConnectFailed(e));
+                return;
+            }
+        };
+
+        #[cfg(windows)]
+        {
+            const ASFW_ANY: u32 = u32::MAX;
+            unsafe extern "system" { fn AllowSetForegroundWindow(dwProcessId: u32) -> i32; }
+            unsafe { let _ = AllowSetForegroundWindow(ASFW_ANY); }
+        }
+
+        match conn.write_all(payload_clone.as_bytes()) {
+            Ok(_) => { let _ = done_tx.send(ClientOp::Success); }
+            Err(e) => { let _ = done_tx.send(ClientOp::WriteFailed(e)); }
+        }
+    });
+
+    // Handle the flattened result
+    match done_rx.recv_timeout(Duration::from_millis(1500)) {
+        Ok(ClientOp::Success) => {
+            log::info!("Message forwarded successfully. Exiting secondary instance.");
+            return true;
+        }
+        Ok(ClientOp::WriteFailed(e)) => {
+            log::error!("IPC primary detected but write failed: {}. Possible zombie.", e);
+            return true;
+        }
+        Ok(ClientOp::ConnectFailed(e)) => {
+            use std::io::ErrorKind;
+            let kind = e.kind();
+            if kind == ErrorKind::NotFound || kind == ErrorKind::ConnectionRefused {
+                log::info!("No existing instance detected ({}). Becoming primary server.", e);
+            } else {
+                log::error!("IPC primary appears to exist but is unreachable ({}). Exiting to avoid conflicts.", e);
+                return true;
+            }
+        }
+        Err(_) => {
+            log::error!("IPC client operation timed out (1.5s). Primary instance is likely frozen.");
+            return true; 
+        }
+    }
 
     match ListenerOptions::new().name(sock_name).create_sync() {
         Ok(listener) => {
@@ -261,3 +296,4 @@ pub fn force_foreground() {
 pub fn force_foreground() {
     // On non-Windows, egui's ViewportCommand::Focus is sufficient.
 }
+

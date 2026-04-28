@@ -365,6 +365,7 @@ impl eframe::App for ImageViewerApp {
                             }
                             self.load_directory(parent.to_path_buf());
                         }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         crate::ipc::force_foreground();
                     }
@@ -406,12 +407,14 @@ impl eframe::App for ImageViewerApp {
                             }
                             self.load_directory(parent.to_path_buf());
                         }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                         crate::ipc::force_foreground();
                     }
                 }
                 IpcMessage::Focus => {
                     log::info!("IPC received empty ping, requesting window focus");
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     crate::ipc::force_foreground();
                 }
