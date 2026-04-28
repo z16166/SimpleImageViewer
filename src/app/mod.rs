@@ -138,6 +138,10 @@ impl HardwareTier {
     }
 }
 
+pub enum FileOpResult {
+    Delete(PathBuf, Result<(), String>),
+}
+
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -247,6 +251,9 @@ pub struct ImageViewerApp {
 
     // Deferred animation frame uploads (throttled to avoid GPU stalls)
     pub(crate) pending_anim_frames: Option<PendingAnimUpload>,
+
+    // Async file operations (deletion, etc.)
+    pub(crate) file_op_rx: Option<Receiver<FileOpResult>>,
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,
@@ -520,6 +527,7 @@ impl eframe::App for ImageViewerApp {
         self.process_scan_results();
         self.process_music_scan_results();
         self.process_loaded_images(ctx);
+        self.process_file_op_results();
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
         // mode preemption) and needs a full restart — same path as toggling the checkbox.

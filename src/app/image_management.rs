@@ -1,4 +1,6 @@
-use crate::app::{AnimationPlayback, ImageViewerApp, PendingAnimUpload, TransitionStyle};
+use crate::app::{
+    AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
+};
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
 use crate::loader::{DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TileResult};
 use crate::scanner::{self, ScanMessage};
@@ -388,6 +390,24 @@ impl ImageViewerApp {
     // Background result processing
     // ------------------------------------------------------------------
 
+    pub(crate) fn process_file_op_results(&mut self) {
+        if let Some(rx) = &self.file_op_rx {
+            while let Ok(res) = rx.try_recv() {
+                match res {
+                    FileOpResult::Delete(path, res) => {
+                        if let Err(e) = res {
+                            log::error!("Failed to delete {:?}: {}", path, e);
+                            self.error_message =
+                                Some(t!("status.delete_failed", err = e.to_string()).to_string());
+                        } else {
+                            log::info!("Successfully deleted {:?}", path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn process_scan_results(&mut self) {
         let rx = match self.scan_rx.take() {
             Some(rx) => rx,
@@ -432,12 +452,12 @@ impl ImageViewerApp {
                         // parallel workers means the combined list may not be sorted.
                         self.image_files.sort();
 
-                        // CRITICAL: Global sort finished - all previous index-based caches 
+                        // CRITICAL: Global sort finished - all previous index-based caches
                         // and pending loads are now potentially stale/incorrect.
                         // We must bump generation and clear index-keyed state.
                         self.generation = self.generation.wrapping_add(1);
                         self.loader.set_generation(self.generation);
-                        
+
                         // Clear caches that depend on stable indices
                         self.texture_cache.clear_all();
                         self.prefetched_tiles.clear();
@@ -685,12 +705,17 @@ impl ImageViewerApp {
             ctx.request_repaint();
         } else {
             // Non-current image refined in background OR stale refinement result.
-            
-            // CRITICAL: If it's the current index but the generation doesn't match, 
-            // it's a stale result from a previous visit. We MUST NOT evict the 
+
+            // CRITICAL: If it's the current index but the generation doesn't match,
+            // it's a stale result from a previous visit. We MUST NOT evict the
             // CURRENT texture cache, otherwise the screen will flicker or go blank.
             if idx == self.current_index {
-                log::info!("[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})", idx, gen_id, self.generation);
+                log::info!(
+                    "[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})",
+                    idx,
+                    gen_id,
+                    self.generation
+                );
                 return;
             }
 

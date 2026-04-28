@@ -94,22 +94,23 @@ impl ImageViewerApp {
             self.animation_cache.clear();
             self.prev_texture = None;
 
-            // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Successfully unlinked from UI, now delete in background
+            let (tx, rx) = crossbeam_channel::unbounded();
+            self.file_op_rx = Some(rx);
 
-            let result = if permanent {
-                std::fs::remove_file(&path_to_delete).map_err(|e| e.to_string())
-            } else {
-                trash::delete(&path_to_delete).map_err(|e| e.to_string())
-            };
+            std::thread::spawn(move || {
+                // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
+                std::thread::sleep(std::time::Duration::from_millis(20));
 
-            if let Err(e) = result {
-                self.error_message =
-                    Some(t!("status.delete_failed", err = e.to_string()).to_string());
-                return;
-            }
+                let result = if permanent {
+                    std::fs::remove_file(&path_to_delete).map_err(|e| e.to_string())
+                } else {
+                    trash::delete(&path_to_delete).map_err(|e| e.to_string())
+                };
 
-            // Successfully deleted
+                let _ = tx.send(crate::app::FileOpResult::Delete(path_to_delete, result));
+            });
+
             self.image_files.remove(self.current_index);
         }
 
