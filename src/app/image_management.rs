@@ -30,7 +30,7 @@ impl ImageViewerApp {
         self.settings.last_image_dir = Some(dir.clone());
         self.image_files.clear();
         self.current_index = 0;
-        self.texture_cache.clear();
+        self.texture_cache.clear_all();
         self.animation_cache.clear();
         self.animation = None;
         self.prev_texture = None;
@@ -423,6 +423,19 @@ impl ImageViewerApp {
                         // Each batch was individually sorted, but interleaving from
                         // parallel workers means the combined list may not be sorted.
                         self.image_files.sort();
+
+                        // CRITICAL: Global sort finished - all previous index-based caches 
+                        // and pending loads are now potentially stale/incorrect.
+                        // We must bump generation and clear index-keyed state.
+                        self.generation = self.generation.wrapping_add(1);
+                        self.loader.set_generation(self.generation);
+                        
+                        // Clear caches that depend on stable indices
+                        self.texture_cache.clear_all();
+                        self.prefetched_tiles.clear();
+                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                            cache.clear();
+                        }
 
                         // Re-resolve position after global sort (indices may have shifted)
                         self.resolve_initial_position();

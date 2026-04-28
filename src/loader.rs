@@ -1425,7 +1425,7 @@ impl TextureCache {
         self.is_tiled.get(&index).copied().unwrap_or(false)
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear_all(&mut self) {
         self.textures.clear();
         self.original_res.clear();
         self.is_tiled.clear();

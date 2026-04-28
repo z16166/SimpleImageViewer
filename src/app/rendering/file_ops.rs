@@ -90,7 +90,7 @@ impl ImageViewerApp {
             self.current_image_res = None;
             self.tile_manager = None;
             self.animation = None;
-            self.texture_cache.clear();
+            self.texture_cache.clear_all();
             self.animation_cache.clear();
             self.prev_texture = None;
 

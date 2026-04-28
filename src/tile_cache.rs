@@ -155,6 +155,12 @@ impl TilePixelCache {
             }
         }
     }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.lru.clear();
+        self.current_bytes = 0;
+    }
 }
 
 /// The global tile pixel cache instance.
