@@ -97,7 +97,7 @@ fn init_logging(settings: &crate::settings::Settings) {
     let logger = logger
         .write_mode(flexi_logger::WriteMode::BufferAndFlush)
         .rotate(
-            flexi_logger::Criterion::Size(10 * 1024 * 1024), // 10 MB
+            flexi_logger::Criterion::Size(crate::constants::LOG_FILE_SIZE_LIMIT),
             flexi_logger::Naming::Numbers,
             flexi_logger::Cleanup::KeepLogFiles(3),
         );

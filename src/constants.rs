@@ -126,3 +126,18 @@ pub const LOADING_HINT_TEXT_SIZE: f32 = 16.0;
 /// Common spacing between items in vertical layouts (e.g. dialogs).
 pub const UI_ITEM_SPACING_X: f32 = 8.0;
 pub const UI_ITEM_SPACING_Y: f32 = 6.0;
+
+/// The name used for the Local Socket (IPC) channel.
+pub const IPC_SOCKET_NAME: &str = "siv_ipc_sock_v1";
+
+/// Maximum allowed size for an IPC payload (8KB) to prevent DoS.
+pub const MAX_IPC_PAYLOAD_SIZE: u64 = 8 * 1024;
+
+/// Total deadline for the client instance to connect and forward arguments.
+pub const IPC_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Deadline for the underlying connection attempt.
+pub const IPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Maximum size for the log file (10MB) before rotation.
+pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;

@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::constants::*;
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, prelude::*, ConnectOptions};
 use interprocess::ConnectWaitMode;
 use std::io::{Read, Write};
@@ -38,7 +39,7 @@ pub fn setup_or_forward_args(
     initial_image: Option<&PathBuf>,
     no_recursive: bool,
 ) -> bool {
-    let sock_name = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
+    let sock_name = IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>().unwrap();
 
     let payload = if let Some(path) = initial_image {
         if let Some(p) = path.to_str() {
@@ -72,7 +73,7 @@ pub fn setup_or_forward_args(
     std::thread::spawn(move || {
         let options = ConnectOptions::new()
             .name(sock_name_clone)
-            .wait_mode(ConnectWaitMode::Timeout(Duration::from_secs(1)));
+            .wait_mode(ConnectWaitMode::Timeout(IPC_CONNECT_TIMEOUT));
 
         let mut conn = match options.connect_sync() {
             Ok(c) => c,
@@ -96,7 +97,7 @@ pub fn setup_or_forward_args(
     });
 
     // Handle the flattened result
-    match done_rx.recv_timeout(Duration::from_millis(1500)) {
+    match done_rx.recv_timeout(IPC_CLIENT_TIMEOUT) {
         Ok(ClientOp::Success) => {
             log::info!("Message forwarded successfully. Exiting secondary instance.");
             return true;
@@ -116,7 +117,7 @@ pub fn setup_or_forward_args(
             }
         }
         Err(_) => {
-            log::error!("IPC client operation timed out (1.5s). Primary instance is likely frozen.");
+            log::error!("IPC client operation timed out ({:?}). Primary instance is likely frozen.", IPC_CLIENT_TIMEOUT);
             return true; 
         }
     }
@@ -140,7 +141,7 @@ pub fn setup_or_forward_args(
                 e
             );
             cleanup_stale_socket();
-            let sock_name_retry = "siv_ipc_sock_v1".to_ns_name::<GenericNamespaced>().unwrap();
+            let sock_name_retry = IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>().unwrap();
             match ListenerOptions::new().name(sock_name_retry).create_sync() {
                 Ok(listener) => {
                     log::info!("Successfully bound IPC socket after stale cleanup.");
@@ -178,17 +179,14 @@ fn ipc_server_loop(
             log::warn!("Failed to set read timeout on IPC connection: {}", e);
         }
 
-        // Security: Limit the read size to prevent memory exhaustion attacks.
-        // A path + command shouldn't exceed a few KB. 8KB is plenty for any valid OS path.
-        const MAX_PAYLOAD: u64 = 8 * 1024;
         let mut s = String::new();
         let mut conn = conn;
         
         // Use .take() to enforce a hard limit on read size
-        if std::io::Read::by_ref(&mut conn).take(MAX_PAYLOAD).read_to_string(&mut s).is_ok() {
+        if std::io::Read::by_ref(&mut conn).take(MAX_IPC_PAYLOAD_SIZE).read_to_string(&mut s).is_ok() {
             // Trim whitespace and validate minimal length
             let s = s.trim();
-            if s.is_empty() || s.len() > (MAX_PAYLOAD as usize) {
+            if s.is_empty() || s.len() > (MAX_IPC_PAYLOAD_SIZE as usize) {
                 continue;
             }
 
