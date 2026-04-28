@@ -1004,13 +1004,15 @@ impl ImageViewerApp {
 
                 // 2. Update prefetched TileManagers
                 if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                    log::info!(
-                        "[App] HQ preview applied for prefetched index {} ({}x{})",
-                        update.index,
-                        preview.width,
-                        preview.height
-                    );
-                    tm.set_preview(preview.clone(), ctx);
+                    if update.generation == tm.generation {
+                        log::info!(
+                            "[App] HQ preview applied for prefetched index {} ({}x{})",
+                            update.index,
+                            preview.width,
+                            preview.height
+                        );
+                        tm.set_preview(preview.clone(), ctx);
+                    }
                 }
 
                 // 3. Update global texture cache (so instant-flips also get HQ texture).
