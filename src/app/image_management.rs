@@ -38,6 +38,7 @@ impl ImageViewerApp {
         self.prev_texture = None;
         self.transition_start = None;
         self.tile_manager = None;
+        self.current_image_res = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
@@ -287,7 +288,7 @@ impl ImageViewerApp {
         let cur = self.current_index;
 
         // Always load the current image
-        if !self.texture_cache.contains(cur) && !self.loader.is_loading(cur) {
+        if !self.texture_cache.contains(cur) && !self.loader.is_loading(cur, self.generation) {
             let path = self.image_files[cur].clone();
             self.loader
                 .request_load(cur, self.generation, path, self.settings.raw_high_quality);
@@ -361,7 +362,7 @@ impl ImageViewerApp {
             }
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
-            if self.texture_cache.contains(idx) || self.loader.is_loading(idx) {
+            if self.texture_cache.contains(idx) || self.loader.is_loading(idx, self.generation) {
                 count += 1;
                 continue;
             }
@@ -471,72 +472,81 @@ impl ImageViewerApp {
         // Drain all available messages this frame (non-blocking)
         loop {
             match rx.try_recv() {
-                Ok(ScanMessage::Batch(mut batch)) => {
-                    let is_first_batch = self.image_files.is_empty();
-                    self.image_files.append(&mut batch);
+                Ok(msg) => {
+                    match msg {
+                        ScanMessage::Batch(mut batch) => {
+                            let is_first_batch = self.image_files.is_empty();
+                            self.image_files.append(&mut batch);
 
-                    let count = self.image_files.len();
-                    self.status_message = t!("status.found", count = count.to_string()).to_string();
+                            let count = self.image_files.len();
+                            self.status_message =
+                                t!("status.found", count = count.to_string()).to_string();
 
-                    // On first batch: resolve initial position and start preloading immediately
-                    if is_first_batch && count > 0 {
-                        self.resolve_initial_position();
-                        // Auto-close the settings panel only during the very first
-                        // startup scan (images_ever_loaded == false). If the user is
-                        // already browsing images and triggers a rescan from within the
-                        // settings panel (e.g. toggling recursive scan), keep it open.
-                        if !self.images_ever_loaded {
-                            self.show_settings = false;
+                            // On first batch: resolve initial position and start preloading immediately
+                            if is_first_batch && count > 0 {
+                                self.resolve_initial_position();
+                                // Auto-close the settings panel only during the very first
+                                // startup scan (images_ever_loaded == false).
+                                if !self.images_ever_loaded {
+                                    self.show_settings = false;
+                                }
+                                self.images_ever_loaded = true;
+                                self.schedule_preloads(true);
+                            }
                         }
-                        self.images_ever_loaded = true;
-                        self.schedule_preloads(true);
+                        ScanMessage::Done => {
+                            done = true;
+                            self.scanning = false;
+
+                            if self.image_files.is_empty() {
+                                self.status_message = t!("status.not_found").to_string();
+                            } else {
+                                // Re-sort the full list now that all batches have arrived.
+                                self.image_files.sort();
+
+                                // CRITICAL: Global sort finished - all previous index-based caches
+                                // and pending loads are now potentially stale/incorrect.
+                                // We must bump generation and clear index-keyed state.
+                                self.generation = self.generation.wrapping_add(1);
+                                self.loader.set_generation(self.generation);
+
+                                // Clear all state that depends on stable indices
+                                self.texture_cache.clear_all();
+                                self.prefetched_tiles.clear();
+                                self.animation = None;
+                                self.animation_cache.clear();
+                                self.pending_anim_frames = None;
+                                self.tile_manager = None;
+                                if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                                    cache.clear();
+                                }
+
+                                // Re-resolve position after global sort (indices may have shifted)
+                                self.resolve_initial_position();
+
+                                let count = self.image_files.len();
+                                self.status_message =
+                                    t!("status.found", count = count.to_string()).to_string();
+                                self.schedule_preloads(true);
+                            }
+                            break;
+                        }
                     }
                 }
-                Ok(ScanMessage::Done) => {
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     done = true;
                     self.scanning = false;
-
                     if self.image_files.is_empty() {
                         self.status_message = t!("status.not_found").to_string();
-                    } else {
-                        // Re-sort the full list now that all batches have arrived.
-                        // Each batch was individually sorted, but interleaving from
-                        // parallel workers means the combined list may not be sorted.
-                        self.image_files.sort();
-
-                        // CRITICAL: Global sort finished - all previous index-based caches
-                        // and pending loads are now potentially stale/incorrect.
-                        // We must bump generation and clear index-keyed state.
-                        self.generation = self.generation.wrapping_add(1);
-                        self.loader.set_generation(self.generation);
-
-                        // Clear all state that depends on stable indices
-                        self.texture_cache.clear_all();
-                        self.prefetched_tiles.clear();
-                        self.animation = None;
-                        self.animation_cache.clear();
-                        self.pending_anim_frames = None;
-                        self.tile_manager = None;
-                        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                            cache.clear();
-                        }
-
-                        // Re-resolve position after global sort (indices may have shifted)
-                        self.resolve_initial_position();
-
-                        let count = self.image_files.len();
-                        self.status_message =
-                            t!("status.found", count = count.to_string()).to_string();
-                        self.schedule_preloads(true);
                     }
                     break;
                 }
-                Err(_) => break,
             }
         }
 
-        // Put the receiver back if scanning is still in progress
         if !done {
+            // Put the receiver back if scanning is still in progress
             self.scan_rx = Some(rx);
         }
     }

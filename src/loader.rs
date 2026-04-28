@@ -480,8 +480,8 @@ impl ImageLoader {
         }
     }
 
-    pub fn is_loading(&self, index: usize) -> bool {
-        self.loading.lock().unwrap().contains_key(&index)
+    pub fn is_loading(&self, index: usize, generation: u64) -> bool {
+        self.loading.lock().unwrap().get(&index) == Some(&generation)
     }
 
     #[allow(dead_code)]
