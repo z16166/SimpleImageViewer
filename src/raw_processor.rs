@@ -186,13 +186,13 @@ impl RawProcessor {
                 return Err(rust_i18n::t!("error.libraw_mem_image", code = -1).to_string());
             }
 
-            let expected_min = (width * height * 3) as usize;
+            let expected_min = width as usize * height as usize * crate::constants::RGB_CHANNELS;
             if data_len < expected_min {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
             // SINGLE-PASS PACKING OPTIMIZATION:
-            let mut rgba = vec![255u8; (width * height * 4) as usize];
+            let mut rgba = vec![255u8; width as usize * height as usize * crate::constants::RGBA_CHANNELS];
             let slice = std::slice::from_raw_parts(data_ptr, data_len);
 
             crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
@@ -247,7 +247,7 @@ impl RawProcessor {
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
                     let count = img.width as usize * img.height as usize;
-                    let mut rgba = vec![255u8; count * 4];
+                    let mut rgba = vec![255u8; count * crate::constants::RGBA_CHANNELS];
 
                     if let Some(rgb) = image::RgbImage::from_raw(
                         img.width as u32,
@@ -263,9 +263,9 @@ impl RawProcessor {
                     } else {
                         // Fallback to manual if RgbImage::from_raw fails (shouldn't happen)
                         for i in 0..count {
-                            rgba[i * 4] = slice[i * 3];
-                            rgba[i * 4 + 1] = slice[i * 3 + 1];
-                            rgba[i * 4 + 2] = slice[i * 3 + 2];
+                            rgba[i * crate::constants::RGBA_CHANNELS] = slice[i * crate::constants::RGB_CHANNELS];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 1] = slice[i * crate::constants::RGB_CHANNELS + 1];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 2] = slice[i * crate::constants::RGB_CHANNELS + 2];
                         }
                         Ok(crate::loader::DecodedImage::new(
                             img.width as u32,

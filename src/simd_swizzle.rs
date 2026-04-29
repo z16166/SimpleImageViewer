@@ -1,4 +1,20 @@
-// Simple Image Viewer - SIMD Interleaving Utilities
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+// SIMD Interleaving Utilities
 // Moved from psb_reader.rs to support zero-copy optimizations across loaders.
 
 #[cfg(target_arch = "x86_64")]
@@ -6,6 +22,8 @@ use core::arch::x86_64::*;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
+
+use crate::constants::{RGBA_CHANNELS, RGB_CHANNELS};
 
 /// Interleaves planar R, G, B, A channels into a packed RGBA buffer.
 pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
@@ -35,8 +53,8 @@ pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
 
     // Scalar fallback
     while i < len {
-        let base = i * 4;
-        if base + 3 < dst.len() {
+        let base = i * RGBA_CHANNELS;
+        if base + (RGBA_CHANNELS - 1) < dst.len() {
             dst[base] = r[i];
             dst[base + 1] = g[i];
             dst[base + 2] = b[i];
@@ -62,8 +80,8 @@ pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &
 
     // Scalar fallback
     while i < len {
-        let base = i * 4;
-        if base + 3 < dst.len() {
+        let base = i * RGBA_CHANNELS;
+        if base + (RGBA_CHANNELS - 1) < dst.len() {
             dst[base] = r[i];
             dst[base + 1] = g[i];
             dst[base + 2] = b[i];
@@ -277,9 +295,9 @@ pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
 
     // Scalar fallback
     while i < count {
-        let s = i * 3;
-        let d = i * 4;
-        if s + 2 < src.len() && d + 3 < dst.len() {
+        let s = i * RGB_CHANNELS;
+        let d = i * RGBA_CHANNELS;
+        if s + (RGB_CHANNELS - 1) < src.len() && d + (RGBA_CHANNELS - 1) < dst.len() {
             dst[d] = src[s];
             dst[d + 1] = src[s + 1];
             dst[d + 2] = src[s + 2];
