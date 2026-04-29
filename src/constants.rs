@@ -18,6 +18,10 @@
 /// Used for cross-fading and providing sharp visuals before tiling completes.
 pub const MAX_QUALITY_PREVIEW_SIZE: u32 = 4096;
 
+/// Headroom on the containing monitor’s **physical** long edge when capping HQ preview / refine
+/// (`ceil(max(phys_w, phys_h) * k_zoom)` vs tier and `hq_preview_max_side` in the loader module).
+pub const HQ_PREVIEW_MONITOR_HEADROOM: f32 = 1.1;
+
 /// The absolute fallback limit for GPU texture dimensions (usually 8192 or 16384).
 /// We cap it at 8192 to be safe across different frameworks and platforms.
 pub const ABSOLUTE_MAX_TEXTURE_SIDE: u32 = 8192;

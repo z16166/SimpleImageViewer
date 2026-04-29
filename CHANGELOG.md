@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - **RGBA buffer sharing**: `DecodedImage` and `AnimationFrame` keep decoded RGBA8 in `Arc` buffers through decode, channels, and tiled memory sources where applicable, avoiding redundant full-buffer clones; tiled HQ preview work reuses `Arc::clone` on the source instead of cloning an entire `LoadResult` for the channel send.
 - **Loader queue hygiene**: On navigation, stale entries are discarded from the unbounded loader receive path; a single delayed-fallback worker replaces per-request OS threads for the slow decode path. Arrow-key navigation is throttled to reduce load storms.
 - **Async housekeeping**: Metadata extraction and wallpaper queries are deferred off the UI thread; a shared `FileOp` channel ensures delete/rename results are not dropped under load. Added i18n strings for async loading states.
+- **HQ preview / refine resolution cap**: RAW refine, tiled HQ preview generation, and WIC/ImageIO “performance mode” RAW previews cap the longest side with `min(hardware tier, monitor cap, 4096)`. Tier limits (`HardwareTier::max_preview_size`: 1024 / 2048 / 4096) apply via `PREVIEW_LIMIT`. The monitor cap uses each visible frame’s egui viewport `monitor_size` (UI points) × `native_pixels_per_point` for physical pixels, then `ceil(max(width,height) × HQ_PREVIEW_MONITOR_HEADROOM)` (1.1), clamped to `[256, 4096]`; eframe supplies the monitor for the current window. `refresh_hq_preview_monitor_cap` runs on the UI thread while the window is not minimized.
 
 ## [1.5.6] - 2026-04-28
 

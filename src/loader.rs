@@ -27,8 +27,65 @@ use std::sync::LazyLock;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+/// Hardware-tier cap for HQ preview / refine (written at startup from
+/// [`crate::app::HardwareTier::max_preview_size`]).
+///
+/// **Display cap:** do not use the window’s **client size**; the user may fullscreen at any time.
+/// **Multi-monitor (policy):** use the monitor for the **current** root viewport (eframe/winit:
+/// the monitor that contains the window, aligned with centering/fullscreen on that display).
+///
+/// **`k_zoom`:** [`crate::constants::HQ_PREVIEW_MONITOR_HEADROOM`] (**1.1**).
 pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
+
+/// Max preview side derived from the current monitor’s **physical** long edge × headroom
+/// (see [`refresh_hq_preview_monitor_cap`]). Capped at [`MAX_QUALITY_PREVIEW_SIZE`]; combined with
+/// [`PREVIEW_LIMIT`] in [`hq_preview_max_side`].
+pub static MONITOR_PREVIEW_CAP: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE);
+
+/// Recompute [`MONITOR_PREVIEW_CAP`] from egui viewport info (physical pixels). Call each frame
+/// from the UI thread (cheap). If monitor size is unknown, the atomic is left unchanged.
+pub fn refresh_hq_preview_monitor_cap(ctx: &egui::Context) {
+    let cap = ctx.input(|i| {
+        let vp = i.viewport();
+        let (Some(ms), Some(npp)) = (vp.monitor_size, vp.native_pixels_per_point) else {
+            return None;
+        };
+        if ms.x < 1.0 || ms.y < 1.0 || !npp.is_finite() || npp <= 0.0 {
+            return None;
+        }
+        // `monitor_size` is in UI points; scale by OS native pixels-per-point → physical pixels.
+        let phys_w = (ms.x * npp).round().clamp(1.0, u32::MAX as f32) as u32;
+        let phys_h = (ms.y * npp).round().clamp(1.0, u32::MAX as f32) as u32;
+        let long = phys_w.max(phys_h);
+        let scaled = (long as f32) * crate::constants::HQ_PREVIEW_MONITOR_HEADROOM;
+        let cap = scaled.ceil().max(256.0) as u32;
+        Some(cap.min(MAX_QUALITY_PREVIEW_SIZE))
+    });
+    if let Some(c) = cap {
+        MONITOR_PREVIEW_CAP.store(c, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// HQ preview / refine max side: `min` of hardware tier ([`PREVIEW_LIMIT`]), monitor-based cap
+/// ([`MONITOR_PREVIEW_CAP`]), and [`MAX_QUALITY_PREVIEW_SIZE`].
+#[inline]
+pub fn hq_preview_max_side() -> u32 {
+    let tier = PREVIEW_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
+    let tier_v = if tier == 0 {
+        MAX_QUALITY_PREVIEW_SIZE
+    } else {
+        tier.min(MAX_QUALITY_PREVIEW_SIZE)
+    };
+    let mon = MONITOR_PREVIEW_CAP.load(std::sync::atomic::Ordering::Relaxed);
+    let mon_v = if mon == 0 {
+        MAX_QUALITY_PREVIEW_SIZE
+    } else {
+        mon.min(MAX_QUALITY_PREVIEW_SIZE)
+    };
+    tier_v.min(mon_v)
+}
 
 /// Dedicated pool for heavy high-quality preview generation (refinement).
 /// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
@@ -613,7 +670,7 @@ impl ImageLoader {
 
                             // Generate a high-quality preview for the UI so the user gets
                             // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
-                            let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
+                            let limit = hq_preview_max_side();
                             let scaled = dynamic.thumbnail(limit, limit);
                             let prev_rgba = scaled.to_rgba8();
                             let preview = DecodedImage::new(
@@ -838,7 +895,7 @@ impl ImageLoader {
                 #[cfg(target_os = "windows")]
                 let _com = crate::wic::ComGuard::new();
 
-                let limit = crate::constants::MAX_QUALITY_PREVIEW_SIZE;
+                let limit = hq_preview_max_side();
                 let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     source.generate_preview(limit, limit)
                 }));
@@ -1878,8 +1935,8 @@ fn load_raw(
         match res {
             Ok(ImageData::Static(img)) => Some(img),
             Ok(ImageData::Tiled(source)) => {
-                let (pw, ph, p) =
-                    source.generate_preview(MAX_QUALITY_PREVIEW_SIZE, MAX_QUALITY_PREVIEW_SIZE);
+                let lim = hq_preview_max_side();
+                let (pw, ph, p) = source.generate_preview(lim, lim);
                 Some(DecodedImage::new(pw, ph, p))
             }
             _ => {
@@ -1928,7 +1985,8 @@ fn load_raw(
     }
 
     if let Some(p) = preview_opt.clone() {
-        let is_hq = p.width >= MAX_QUALITY_PREVIEW_SIZE || p.height >= MAX_QUALITY_PREVIEW_SIZE;
+        let hq_lim = hq_preview_max_side();
+        let is_hq = p.width >= hq_lim || p.height >= hq_lim;
         // If !high_quality (performance mode), we use any preview to save energy/fans.
         // If high_quality is true, we only use it if it's large enough (HQ).
         if !high_quality || is_hq {

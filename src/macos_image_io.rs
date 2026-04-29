@@ -1186,10 +1186,8 @@ pub fn load_via_image_io(
                 color_space: color_space.clone(),
                 _mmap: mmap.clone(),
             };
-            let (pw, ph, p) = temp_source.generate_preview(
-                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
-                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
-            );
+            let lim = crate::loader::hq_preview_max_side();
+            let (pw, ph, p) = temp_source.generate_preview(lim, lim);
             if pw > 0 && ph > 0 {
                 log::debug!(
                     "ImageIO [Performance Mode]: Using static preview for RAW {:?}",

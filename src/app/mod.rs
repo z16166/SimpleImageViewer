@@ -499,6 +499,8 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
+        crate::loader::refresh_hq_preview_monitor_cap(ctx);
+
         // Automatic theme refresh (for System theme trailing detection)
         // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
         if let Some(new_palette) = self

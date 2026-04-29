@@ -806,10 +806,8 @@ pub fn load_via_wic(
                 stream: stream_out.clone(),
                 _mmap: mmap_out.clone(),
             };
-            let (pw, ph, p) = temp_source.generate_preview(
-                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
-                crate::constants::MAX_QUALITY_PREVIEW_SIZE,
-            );
+            let lim = crate::loader::hq_preview_max_side();
+            let (pw, ph, p) = temp_source.generate_preview(lim, lim);
             if pw > 0 && ph > 0 {
                 log::debug!(
                     "WIC [Performance Mode]: Using static preview for RAW {:?}",
