@@ -521,6 +521,7 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
 
         // If orientation is not 1, we need to transform the whole tile
         if self.orientation > 1 {
+            let (_ow, _oh, opixels) = apply_orientation_buffer(rgba, w, h, self.orientation);
             // Note: apply_orientation_buffer might change dimensions if 90deg rotation is involved.
             // But here extract_tile expects w, h. This needs careful handling.
             // For now, if orientation > 1, we might just want to use ImageIO which handles it via CTM.
