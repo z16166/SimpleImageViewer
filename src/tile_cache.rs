@@ -117,6 +117,13 @@ impl TilePixelCache {
 
     pub fn insert(&mut self, index: usize, coord: TileCoord, pixels: Arc<Vec<u8>>) {
         let key = (index, coord.col, coord.row);
+
+        // Handle duplicate insertions: remove old entry first to update memory accounting and LRU
+        if let Some(old_pixels) = self.entries.remove(&key) {
+            self.current_bytes -= old_pixels.len();
+            self.lru.retain(|&k| k != key);
+        }
+
         let bytes = pixels.len();
         let max_bytes = self.max_mb * 1024 * 1024;
 
