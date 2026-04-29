@@ -16,6 +16,7 @@
 
 use image::DynamicImage;
 use libraw_sys as ffi;
+#[cfg(not(target_os = "windows"))]
 use std::ffi::CString;
 use std::path::Path;
 
@@ -70,13 +71,27 @@ impl RawProcessor {
     }
 
     pub fn open<P: AsRef<Path>>(&mut self, path: P) -> Result<(), String> {
-        let path_str = path.as_ref().to_string_lossy();
-        let c_path = CString::new(path_str.as_ref()).map_err(|_| "Invalid path")?;
-
-        unsafe {
-            let ret = ffi::libraw_open_file(self.data, c_path.as_ptr());
-            if ret != 0 {
-                return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let mut wide_path: Vec<u16> = path.as_ref().as_os_str().encode_wide().collect();
+            wide_path.push(0);
+            unsafe {
+                let ret = ffi::libraw_open_wfile(self.data, wide_path.as_ptr());
+                if ret != 0 {
+                    return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let path_str = path.as_ref().to_string_lossy();
+            let c_path = CString::new(path_str.as_ref()).map_err(|_| "Invalid path")?;
+            unsafe {
+                let ret = ffi::libraw_open_file(self.data, c_path.as_ptr());
+                if ret != 0 {
+                    return Err(rust_i18n::t!("error.libraw_open", code = ret).to_string());
+                }
             }
         }
         Ok(())

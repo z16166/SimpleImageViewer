@@ -65,6 +65,8 @@ unsafe extern "C" {
     pub fn libraw_init(flags: c_int) -> *mut libraw_data_t;
     pub fn libraw_close(data: *mut libraw_data_t);
     pub fn libraw_open_file(data: *mut libraw_data_t, file: *const c_char) -> c_int;
+    #[cfg(target_os = "windows")]
+    pub fn libraw_open_wfile(data: *mut libraw_data_t, file: *const u16) -> c_int;
     pub fn libraw_unpack(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_unpack_thumb(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_dcraw_process(data: *mut libraw_data_t) -> c_int;
