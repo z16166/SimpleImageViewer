@@ -13,6 +13,27 @@ use std::sync::Arc;
 use std::time::Instant;
 
 impl ImageViewerApp {
+    pub(crate) fn clear_hdr_image_state(&mut self) {
+        self.hdr_image_cache.clear();
+        self.current_hdr_image = None;
+    }
+
+    pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
+        self.hdr_image_cache.remove(&index);
+        if self
+            .current_hdr_image
+            .as_ref()
+            .is_some_and(|current| current.image_for_index(index).is_some())
+        {
+            self.current_hdr_image = None;
+        }
+    }
+
+    fn handle_texture_cache_eviction(&mut self, evicted_idx: usize) {
+        self.animation_cache.remove(&evicted_idx);
+        self.remove_hdr_image_index(evicted_idx);
+    }
+
     // ------------------------------------------------------------------
     // Directory loading
     // ------------------------------------------------------------------
@@ -33,8 +54,7 @@ impl ImageViewerApp {
         self.image_files.clear();
         self.current_index = 0;
         self.texture_cache.clear_all();
-        self.hdr_image_cache.clear();
-        self.current_hdr_image = None;
+        self.clear_hdr_image_state();
         self.animation_cache.clear();
         self.animation = None;
         self.prev_texture = None;
@@ -97,8 +117,7 @@ impl ImageViewerApp {
 
         // Clear current image from all relevant caches to force a fresh reload from disk
         self.texture_cache.remove(self.current_index);
-        self.hdr_image_cache.remove(&self.current_index);
-        self.current_hdr_image = None;
+        self.remove_hdr_image_index(self.current_index);
         self.prefetched_tiles.remove(&self.current_index);
         self.tile_manager = None;
         self.current_image_res = None;
@@ -154,7 +173,11 @@ impl ImageViewerApp {
             self.tile_manager = None;
         }
         self.current_index = target_index;
-        self.current_hdr_image = self.hdr_image_cache.get(&self.current_index).cloned();
+        self.current_hdr_image = self
+            .hdr_image_cache
+            .get(&self.current_index)
+            .cloned()
+            .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
         self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
@@ -518,6 +541,7 @@ impl ImageViewerApp {
 
                                 // Clear all state that depends on stable indices
                                 self.texture_cache.clear_all();
+                                self.clear_hdr_image_state();
                                 self.prefetched_tiles.clear();
                                 self.animation = None;
                                 self.animation_cache.clear();
@@ -760,11 +784,13 @@ impl ImageViewerApp {
                 tm.generation = self.generation;
                 tm.pending_tiles.clear();
                 self.texture_cache.remove(idx);
+                self.remove_hdr_image_index(idx);
             } else {
                 log::warn!(
                     "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
                 );
                 self.texture_cache.remove(idx);
+                self.remove_hdr_image_index(idx);
                 self.loader.request_load(
                     self.current_index,
                     self.generation,
@@ -800,6 +826,7 @@ impl ImageViewerApp {
             }
             self.prefetched_tiles.remove(&idx);
             self.texture_cache.remove(idx);
+            self.remove_hdr_image_index(idx);
         }
     }
 
@@ -811,10 +838,7 @@ impl ImageViewerApp {
         let idx = load_result.index;
         match load_result.result.as_ref() {
             Ok(ImageData::Static(decoded)) => {
-                self.hdr_image_cache.remove(&idx);
-                if idx == self.current_index {
-                    self.current_hdr_image = None;
-                }
+                self.remove_hdr_image_index(idx);
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [decoded.width as usize, decoded.height as usize],
                     decoded.rgba(),
@@ -830,7 +854,7 @@ impl ImageViewerApp {
                     self.current_index,
                     self.image_files.len(),
                 ) {
-                    self.animation_cache.remove(&evicted_idx);
+                    self.handle_texture_cache_eviction(evicted_idx);
                 }
                 if idx == self.current_index {
                     self.current_image_res = Some((decoded.width, decoded.height));
@@ -862,13 +886,13 @@ impl ImageViewerApp {
                     self.current_index,
                     self.image_files.len(),
                 ) {
-                    self.animation_cache.remove(&evicted_idx);
-                    self.hdr_image_cache.remove(&evicted_idx);
+                    self.handle_texture_cache_eviction(evicted_idx);
                 }
 
                 if idx == self.current_index {
                     self.current_image_res = Some((hdr.width, hdr.height));
-                    self.current_hdr_image = Some(hdr);
+                    self.current_hdr_image =
+                        Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
                     self.tile_manager = None;
                     if self
                         .animation
@@ -880,10 +904,7 @@ impl ImageViewerApp {
                 }
             }
             Ok(ImageData::Tiled(source)) => {
-                self.hdr_image_cache.remove(&idx);
-                if idx == self.current_index {
-                    self.current_hdr_image = None;
-                }
+                self.remove_hdr_image_index(idx);
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
                 if let Some(preview) = load_result.preview.as_ref() {
@@ -913,7 +934,7 @@ impl ImageViewerApp {
                             self.current_index,
                             self.image_files.len(),
                         ) {
-                            self.animation_cache.remove(&evicted_idx);
+                            self.handle_texture_cache_eviction(evicted_idx);
                         }
                     }
                 }
@@ -962,10 +983,7 @@ impl ImageViewerApp {
                 }
             }
             Ok(ImageData::Animated(frames)) => {
-                self.hdr_image_cache.remove(&idx);
-                if idx == self.current_index {
-                    self.current_hdr_image = None;
-                }
+                self.remove_hdr_image_index(idx);
                 // Upload first frame immediately
                 if let Some(first) = frames.first() {
                     let color_image = ColorImage::from_rgba_unmultiplied(
@@ -983,7 +1001,7 @@ impl ImageViewerApp {
                         self.current_index,
                         self.image_files.len(),
                     ) {
-                        self.animation_cache.remove(&evicted_idx);
+                        self.handle_texture_cache_eviction(evicted_idx);
                     }
                     if idx == self.current_index {
                         self.current_image_res = Some((first.width, first.height));
@@ -1104,7 +1122,7 @@ impl ImageViewerApp {
                         preview.rgba(),
                     );
                     let handle = ctx.load_texture(name, color_image, egui::TextureOptions::LINEAR);
-                    self.texture_cache.insert(
+                    if let Some(evicted_idx) = self.texture_cache.insert(
                         update.index,
                         handle,
                         orig_w,
@@ -1112,7 +1130,9 @@ impl ImageViewerApp {
                         true, // is_tiled
                         self.current_index,
                         self.image_files.len(),
-                    );
+                    ) {
+                        self.handle_texture_cache_eviction(evicted_idx);
+                    }
                 }
             }
             Err(e) => {

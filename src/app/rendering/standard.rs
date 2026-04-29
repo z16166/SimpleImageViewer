@@ -99,9 +99,13 @@ impl ImageViewerApp {
         let unrotated_final_dest =
             Rect::from_center_size(final_dest.center(), unrotated_final_size);
 
-        if let (Some(hdr_image), Some(target_format)) =
-            (self.current_hdr_image.clone(), self.hdr_target_format)
-        {
+        if let (Some(hdr_image), Some(target_format)) = (
+            self.current_hdr_image
+                .as_ref()
+                .and_then(|current| current.image_for_index(self.current_index))
+                .cloned(),
+            self.hdr_target_format,
+        ) {
             if tp.is_animating {
                 if let Some(prev) = &self.prev_texture.clone() {
                     let p_size = prev.size_vec2();
@@ -129,6 +133,7 @@ impl ImageViewerApp {
                     self.hdr_renderer.tone_map,
                     target_format,
                     rotation as u32,
+                    tp.alpha,
                 ));
             return;
         }

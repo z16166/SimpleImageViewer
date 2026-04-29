@@ -92,6 +92,7 @@ impl ImageViewerApp {
             self.tile_manager = None;
             self.animation = None;
             self.texture_cache.clear_all();
+            self.clear_hdr_image_state();
             self.animation_cache.clear();
             self.prev_texture = None;
 
@@ -118,11 +119,18 @@ impl ImageViewerApp {
             self.image_files.remove(original_index);
         }
 
+        // Deletion shifts indices, so every index-keyed cache must be rebuilt.
+        self.texture_cache.clear_all();
+        self.clear_hdr_image_state();
+        self.animation_cache.clear();
+        self.prefetched_tiles.clear();
+
         if self.image_files.is_empty() {
             self.current_index = 0;
             self.status_message = t!("status.no_images_left").to_string();
             self.current_image_res = None;
             self.animation = None;
+            self.current_hdr_image = None;
             self.prev_texture = None;
             self.transition_start = None;
             // Close any open EXIF/XMP modal since the image is gone

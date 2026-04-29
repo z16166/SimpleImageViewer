@@ -38,6 +38,10 @@ struct ToneMapSettings {
     sdr_white_nits: f32,
     max_display_nits: f32,
     rotation_steps: u32,
+    alpha: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
 
 struct VertexOutput {
@@ -108,7 +112,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
-    return vec4<f32>(encode_sdr(hdr.rgb, tone_map), clamp(hdr.a, 0.0, 1.0));
+    return vec4<f32>(
+        encode_sdr(hdr.rgb, tone_map) * tone_map.alpha,
+        clamp(hdr.a, 0.0, 1.0) * tone_map.alpha,
+    );
 }
 "#;
 
@@ -210,6 +217,7 @@ pub fn hdr_image_plane_callback(
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
     rotation_steps: u32,
+    alpha: f32,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -218,6 +226,7 @@ pub fn hdr_image_plane_callback(
             tone_map,
             target_format,
             rotation_steps: rotation_steps % 4,
+            alpha,
         },
     ))
 }
@@ -227,6 +236,7 @@ struct HdrImagePlaneCallback {
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
     rotation_steps: u32,
+    alpha: f32,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -251,12 +261,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
 
-        let uniform = ToneMapUniform {
-            exposure_ev: self.tone_map.exposure_ev,
-            sdr_white_nits: self.tone_map.sdr_white_nits,
-            max_display_nits: self.tone_map.max_display_nits,
-            rotation_steps: self.rotation_steps,
-        };
+        let uniform = ToneMapUniform::from_settings(self.tone_map, self.rotation_steps, self.alpha);
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let image_key = HdrImageKey::from_image(&self.image);
@@ -299,7 +304,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
 
     fn paint(
         &self,
-        _info: egui::PaintCallbackInfo,
+        info: egui::PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &CallbackResources,
     ) {
@@ -310,6 +315,24 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return;
         };
 
+        // egui-wgpu already sets this viewport before invoking callbacks; repeat it
+        // here so the fullscreen triangle is explicitly scoped to the image rect.
+        let viewport = info.viewport_in_pixels();
+        render_pass.set_viewport(
+            viewport.left_px as f32,
+            viewport.top_px as f32,
+            viewport.width_px as f32,
+            viewport.height_px as f32,
+            0.0,
+            1.0,
+        );
+        let scissor = info.clip_rect_in_pixels();
+        render_pass.set_scissor_rect(
+            scissor.left_px.max(0) as u32,
+            scissor.top_px.max(0) as u32,
+            scissor.width_px.max(0) as u32,
+            scissor.height_px.max(0) as u32,
+        );
         render_pass.set_pipeline(&resources.pipeline);
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.draw(0..3, 0..1);
@@ -323,10 +346,29 @@ struct ToneMapUniform {
     sdr_white_nits: f32,
     max_display_nits: f32,
     rotation_steps: u32,
+    alpha: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
 unsafe impl bytemuck::Pod for ToneMapUniform {}
+
+impl ToneMapUniform {
+    fn from_settings(settings: HdrToneMapSettings, rotation_steps: u32, alpha: f32) -> Self {
+        Self {
+            exposure_ev: settings.exposure_ev,
+            sdr_white_nits: settings.sdr_white_nits,
+            max_display_nits: settings.max_display_nits,
+            rotation_steps: rotation_steps % 4,
+            alpha: alpha.clamp(0.0, 1.0),
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HdrImageKey {
@@ -438,12 +480,11 @@ fn create_callback_resources(
     });
     let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
-        contents: bytemuck::bytes_of(&ToneMapUniform {
-            exposure_ev: 0.0,
-            sdr_white_nits: super::types::DEFAULT_SDR_WHITE_NITS,
-            max_display_nits: super::types::DEFAULT_MAX_DISPLAY_NITS,
-            rotation_steps: 0,
-        }),
+        contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
+            HdrToneMapSettings::default(),
+            0,
+            1.0,
+        )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -677,6 +718,14 @@ mod tests {
         assert_eq!(bytes.len(), values.len() * std::mem::size_of::<f32>());
         assert_eq!(bytes.as_ptr(), values.as_ptr().cast::<u8>());
         assert_eq!(&bytes[0..4], &1.0_f32.to_ne_bytes());
+    }
+
+    #[test]
+    fn tone_map_uniform_carries_rotation_and_alpha() {
+        let uniform = ToneMapUniform::from_settings(HdrToneMapSettings::default(), 5, 0.25);
+
+        assert_eq!(uniform.rotation_steps, 1);
+        assert_eq!(uniform.alpha, 0.25);
     }
 
     fn hdr_image(

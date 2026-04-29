@@ -145,6 +145,25 @@ pub enum FileOpResult {
     Wallpaper(Option<String>),
 }
 
+#[derive(Clone)]
+pub(crate) struct CurrentHdrImage {
+    index: usize,
+    image: Arc<crate::hdr::types::HdrImageBuffer>,
+}
+
+impl CurrentHdrImage {
+    pub(crate) fn new(index: usize, image: Arc<crate::hdr::types::HdrImageBuffer>) -> Self {
+        Self { index, image }
+    }
+
+    pub(crate) fn image_for_index(
+        &self,
+        index: usize,
+    ) -> Option<&Arc<crate::hdr::types::HdrImageBuffer>> {
+        (self.index == index).then_some(&self.image)
+    }
+}
+
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -162,7 +181,7 @@ pub struct ImageViewerApp {
     pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
-    pub(crate) current_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
@@ -797,5 +816,26 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
         None
     } else {
         Some((final_data, xml_str))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+    #[test]
+    fn current_hdr_image_only_matches_its_source_index() {
+        let image = Arc::new(HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        });
+        let current = CurrentHdrImage::new(7, Arc::clone(&image));
+
+        assert!(current.image_for_index(6).is_none());
+        assert!(Arc::ptr_eq(current.image_for_index(7).unwrap(), &image));
     }
 }
