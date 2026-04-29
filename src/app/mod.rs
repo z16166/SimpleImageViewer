@@ -159,6 +159,10 @@ pub struct ImageViewerApp {
     // Image loading
     pub(crate) loader: ImageLoader,
     pub(crate) texture_cache: TextureCache,
+    #[allow(dead_code)]
+    pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
+    #[allow(dead_code)]
+    pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
 

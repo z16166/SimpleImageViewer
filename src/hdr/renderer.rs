@@ -14,23 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod capabilities;
-pub mod decode;
-pub mod renderer;
-pub mod types;
+use super::types::{HdrImageBuffer, HdrToneMapSettings};
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn renderer_starts_with_default_tone_map_settings() {
-        let renderer = crate::hdr::renderer::HdrImageRenderer::new();
-        let defaults = crate::hdr::types::HdrToneMapSettings::default();
+pub struct HdrImageRenderer {
+    #[allow(dead_code)]
+    pub tone_map: HdrToneMapSettings,
+}
 
-        assert_eq!(renderer.tone_map.exposure_ev, defaults.exposure_ev);
-        assert_eq!(renderer.tone_map.sdr_white_nits, defaults.sdr_white_nits);
-        assert_eq!(
-            renderer.tone_map.max_display_nits,
-            defaults.max_display_nits
-        );
+impl HdrImageRenderer {
+    pub fn new() -> Self {
+        Self {
+            tone_map: HdrToneMapSettings::default(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn upload_image(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _image: &HdrImageBuffer,
+    ) {
+        // First implementation keeps existing SDR path; Task 4 owns GPU texture upload.
     }
 }
