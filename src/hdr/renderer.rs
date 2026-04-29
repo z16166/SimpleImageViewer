@@ -39,10 +39,15 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
     return rgb / (vec3<f32>(1.0) + rgb);
 }
 
+fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
+    return min(positive, vec3<f32>(65504.0));
+}
+
 fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let exposure_scale = exp2(settings.exposure_ev);
     let display_scale = settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
-    let exposed = max(rgb, vec3<f32>(0.0)) * exposure_scale * display_scale;
+    let exposed = sanitize_hdr_rgb(rgb * exposure_scale * display_scale);
     let mapped = reinhard_tone_map(exposed);
     return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
 }
@@ -115,7 +120,7 @@ impl HdrImageRenderer {
         queue: &wgpu::Queue,
         image: &HdrImageBuffer,
     ) -> Result<(), String> {
-        let layout = validate_upload_layout(image)?;
+        let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane"),
             size: layout.size,
@@ -126,7 +131,7 @@ impl HdrImageRenderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let bytes = rgba32f_to_ne_bytes(image.rgba_f32.as_slice());
+        let bytes = rgba32f_as_bytes(image.rgba_f32.as_slice());
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -175,7 +180,10 @@ struct HdrUploadLayout {
     format: wgpu::TextureFormat,
 }
 
-fn validate_upload_layout(image: &HdrImageBuffer) -> Result<HdrUploadLayout, String> {
+fn validate_upload_layout(
+    image: &HdrImageBuffer,
+    max_texture_dimension_2d: u32,
+) -> Result<HdrUploadLayout, String> {
     if image.width == 0 || image.height == 0 {
         return Err(format!(
             "HDR upload requires non-zero dimensions, got {}x{}",
@@ -187,6 +195,13 @@ fn validate_upload_layout(image: &HdrImageBuffer) -> Result<HdrUploadLayout, Str
         return Err(format!(
             "HDR upload currently supports only Rgba32Float buffers, got {:?}",
             image.format
+        ));
+    }
+
+    if image.width > max_texture_dimension_2d || image.height > max_texture_dimension_2d {
+        return Err(format!(
+            "HDR upload dimensions {}x{} exceed device max_texture_dimension_2d {}",
+            image.width, image.height, max_texture_dimension_2d
         ));
     }
 
@@ -234,12 +249,8 @@ fn validate_upload_layout(image: &HdrImageBuffer) -> Result<HdrUploadLayout, Str
     })
 }
 
-fn rgba32f_to_ne_bytes(values: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
-    for value in values {
-        bytes.extend_from_slice(&value.to_ne_bytes());
-    }
-    bytes
+fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
+    bytemuck::cast_slice(values)
 }
 
 #[cfg(test)]
@@ -263,7 +274,7 @@ mod tests {
     fn upload_layout_matches_rgba32f_rows() {
         let image = hdr_image(3, 2, HdrPixelFormat::Rgba32Float, vec![0.0; 3 * 2 * 4]);
 
-        let layout = validate_upload_layout(&image).expect("valid upload layout");
+        let layout = validate_upload_layout(&image, 4096).expect("valid upload layout");
 
         assert_eq!(layout.size.width, 3);
         assert_eq!(layout.size.height, 2);
@@ -278,7 +289,7 @@ mod tests {
     fn upload_layout_rejects_zero_dimensions() {
         let image = hdr_image(0, 1, HdrPixelFormat::Rgba32Float, Vec::new());
 
-        let err = validate_upload_layout(&image).expect_err("reject zero-width upload");
+        let err = validate_upload_layout(&image, 4096).expect_err("reject zero-width upload");
 
         assert!(err.contains("non-zero"));
     }
@@ -287,7 +298,7 @@ mod tests {
     fn upload_layout_rejects_malformed_buffer_length() {
         let image = hdr_image(2, 1, HdrPixelFormat::Rgba32Float, vec![0.0; 7]);
 
-        let err = validate_upload_layout(&image).expect_err("reject malformed upload");
+        let err = validate_upload_layout(&image, 4096).expect_err("reject malformed upload");
 
         assert!(err.contains("expected 8 floats"));
         assert!(err.contains("got 7"));
@@ -297,20 +308,42 @@ mod tests {
     fn upload_layout_rejects_unsupported_cpu_format() {
         let image = hdr_image(1, 1, HdrPixelFormat::Rgba16Float, vec![0.0; 4]);
 
-        let err = validate_upload_layout(&image).expect_err("reject unsupported format");
+        let err = validate_upload_layout(&image, 4096).expect_err("reject unsupported format");
 
         assert!(err.contains("Rgba32Float"));
     }
 
     #[test]
-    fn rgba32f_bytes_preserve_float_values() {
-        let bytes = rgba32f_to_ne_bytes(&[1.0, -2.5, 0.25, f32::INFINITY]);
+    fn upload_layout_rejects_device_texture_limit_overflow() {
+        let image = hdr_image(
+            2049,
+            1024,
+            HdrPixelFormat::Rgba32Float,
+            vec![0.0; 2049 * 1024 * 4],
+        );
 
-        assert_eq!(bytes.len(), 4 * std::mem::size_of::<f32>());
+        let err = validate_upload_layout(&image, 2048).expect_err("reject texture limit overflow");
+
+        assert!(err.contains("exceed"));
+        assert!(err.contains("2048"));
+    }
+
+    #[test]
+    fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("min(positive"));
+    }
+
+    #[test]
+    fn rgba32f_byte_view_does_not_allocate_or_copy() {
+        let values = [1.0, -2.5, 0.25, f32::INFINITY];
+
+        let bytes = rgba32f_as_bytes(&values);
+
+        assert_eq!(bytes.len(), values.len() * std::mem::size_of::<f32>());
+        assert_eq!(bytes.as_ptr(), values.as_ptr().cast::<u8>());
         assert_eq!(&bytes[0..4], &1.0_f32.to_ne_bytes());
-        assert_eq!(&bytes[4..8], &(-2.5_f32).to_ne_bytes());
-        assert_eq!(&bytes[8..12], &0.25_f32.to_ne_bytes());
-        assert_eq!(&bytes[12..16], &f32::INFINITY.to_ne_bytes());
     }
 
     fn hdr_image(

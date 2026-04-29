@@ -4850,6 +4850,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 name = "simple-image-viewer"
 version = "1.5.8"
 dependencies = [
+ "bytemuck",
  "cc",
  "clipboard-rs",
  "core-foundation 0.10.1",
