@@ -23,7 +23,7 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
-use crate::constants::{RGB_CHANNELS, RGBA_CHANNELS};
+use crate::constants::{MAX_CHANNEL_VALUE, RGB_CHANNELS, RGBA_CHANNELS};
 
 /// Interleaves planar R, G, B, A channels into a packed RGBA buffer.
 pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
@@ -368,7 +368,7 @@ pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
             dst[d] = src[s];
             dst[d + 1] = src[s + 1];
             dst[d + 2] = src[s + 2];
-            dst[d + 3] = 255;
+            dst[d + 3] = MAX_CHANNEL_VALUE;
         }
         i += 1;
     }
@@ -416,7 +416,7 @@ unsafe fn interleave_rgb_packed_to_rgba_avx2(
             dst[d] = src[s];
             dst[d + 1] = src[s + 1];
             dst[d + 2] = src[s + 2];
-            dst[d + 3] = 255;
+            dst[d + 3] = MAX_CHANNEL_VALUE;
             *i += 1;
         }
     }
@@ -430,7 +430,7 @@ unsafe fn interleave_rgb_packed_to_rgba_neon(
     count: usize,
 ) {
     unsafe {
-        let va = vmovq_n_u8(255);
+        let va = vmovq_n_u8(MAX_CHANNEL_VALUE);
         while *i + 16 <= count {
             let p_src = src.as_ptr().add(*i * 3);
             let res_rgb = vld3q_u8(p_src);

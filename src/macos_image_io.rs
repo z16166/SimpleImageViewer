@@ -66,6 +66,7 @@ unsafe extern "C" {
         key: *const std::ffi::c_void,
     ) -> *const std::ffi::c_void;
     fn CGImageSourceGetCount(source: *const std::ffi::c_void) -> usize;
+    #[allow(dead_code)]
     fn CGImageCreateWithImageInRect(
         image: core_graphics::sys::CGImageRef,
         rect: core_graphics::geometry::CGRect,
@@ -1000,7 +1001,6 @@ pub fn load_via_image_io(
         let source = CGImageSource::wrap_under_create_rule(source_ref as _);
         let mut physical_width = 0u32;
         let mut physical_height = 0u32;
-        let mut orientation = 1u32;
 
         let props_ref =
             CGImageSourceCopyPropertiesAtIndex(source.as_concrete_TypeRef(), 0, std::ptr::null());
@@ -1031,7 +1031,7 @@ pub fn load_via_image_io(
                 get_cf_number_u32(&props, kCGImagePropertyPixelHeight as _).unwrap_or(0);
         }
 
-        orientation = orientation_override
+        let orientation = orientation_override
             .unwrap_or_else(|| crate::metadata_utils::get_exif_orientation(path))
             as u32;
 
