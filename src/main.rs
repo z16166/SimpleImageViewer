@@ -29,6 +29,7 @@ use eframe::egui;
 mod audio;
 mod constants;
 mod formats;
+mod hdr;
 mod ipc;
 mod libtiff_loader;
 mod loader;
