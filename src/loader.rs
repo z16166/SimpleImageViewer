@@ -1079,7 +1079,16 @@ fn load_image_file(
         };
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-            return load_hdr(path);
+            match load_hdr(path) {
+                Ok(img) => return Ok(img),
+                Err(e) => {
+                    log::debug!(
+                        "[{}] HDR float decode failed, continuing with standard fallback chain: {}",
+                        file_name,
+                        e
+                    );
+                }
+            }
         }
 
         if ext == "psd" || ext == "psb" {
@@ -1307,7 +1316,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
 
 fn load_hdr(path: &PathBuf) -> Result<ImageData, String> {
     let hdr = crate::hdr::decode::decode_hdr_image(path)?;
-    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0);
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
 
     Ok(ImageData::Static(DecodedImage::new(
         hdr.width, hdr.height, pixels,
