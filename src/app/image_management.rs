@@ -838,11 +838,17 @@ impl ImageViewerApp {
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
                 if let Some(preview) = load_result.preview.as_ref() {
-                    // Update texture cache if it's empty OR if it currently holds a low-res preview.
-                    // This ensures we can upgrade an EXIF thumbnail to an HQ preview while protecting full static images.
-                    if !self.texture_cache.contains(idx)
-                        || self.texture_cache.is_preview_placeholder(idx)
-                    {
+                    // Stage-1 bootstrap (EXIF or small generate_preview): only upload if there is no
+                    // cache entry, or this bootstrap is strictly larger than the cached preview texture.
+                    // Never replace a stage-2 HQ preview (larger uploaded texture) with a smaller LQ one.
+                    let bootstrap_max = preview.width.max(preview.height);
+                    let allow_sync_preview = !self.texture_cache.contains(idx)
+                        || self
+                            .texture_cache
+                            .cached_preview_max_side(idx)
+                            .map_or(true, |cached_max| bootstrap_max > cached_max);
+
+                    if allow_sync_preview {
                         let color_image = ColorImage::from_rgba_unmultiplied(
                             [preview.width as usize, preview.height as usize],
                             preview.rgba(),

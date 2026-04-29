@@ -1685,6 +1685,15 @@ impl TextureCache {
         self.is_tiled.get(&index).copied().unwrap_or(false)
     }
 
+    /// Longer side of the **uploaded** preview texture in pixels (not the full-image logical size).
+    /// Used to avoid replacing a stage-2 HQ preview with a stage-1 bootstrap when re-opening a file.
+    pub fn cached_preview_max_side(&self, index: usize) -> Option<u32> {
+        self.textures.get(&index).map(|h| {
+            let s = h.size();
+            s[0].max(s[1]) as u32
+        })
+    }
+
     pub fn clear_all(&mut self) {
         self.textures.clear();
         self.original_res.clear();

@@ -476,13 +476,9 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
             for tx in 0..w {
                 let lx = x.saturating_add(tx);
                 let ly = y.saturating_add(ty);
-                let Some((px, py)) = exif_display_to_physical_pixel(
-                    lx,
-                    ly,
-                    self.orientation,
-                    pw,
-                    ph,
-                ) else {
+                let Some((px, py)) =
+                    exif_display_to_physical_pixel(lx, ly, self.orientation, pw, ph)
+                else {
                     continue;
                 };
                 let dst_off = ((ty * w + tx) as usize) * 4;
