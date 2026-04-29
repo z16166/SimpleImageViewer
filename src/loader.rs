@@ -1314,7 +1314,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     Ok(make_image_data(DecodedImage::new(width, height, pixels)))
 }
 
-fn load_hdr(path: &PathBuf) -> Result<ImageData, String> {
+fn load_hdr(path: &Path) -> Result<ImageData, String> {
     let hdr = crate::hdr::decode::decode_hdr_image(path)?;
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
 
