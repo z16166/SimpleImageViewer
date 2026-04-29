@@ -75,6 +75,10 @@ pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &
             unsafe {
                 interleave_rgb_avx2(r, g, b, alpha, dst, &mut i, len);
             }
+        } else if is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                interleave_rgb_sse41(r, g, b, alpha, dst, &mut i, len);
+            }
         }
     }
 
@@ -221,6 +225,44 @@ unsafe fn interleave_rgb_avx2(
                 _mm256_extracti128_si256(rgba3, 1),
             );
             *i += 32;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn interleave_rgb_sse41(
+    r: &[u8],
+    g: &[u8],
+    b: &[u8],
+    alpha: u8,
+    dst: &mut [u8],
+    i: &mut usize,
+    len: usize,
+) {
+    unsafe {
+        let va = _mm_set1_epi8(alpha as i8);
+        while *i + 16 <= len {
+            let vr = _mm_loadu_si128(r.as_ptr().add(*i) as *const __m128i);
+            let vg = _mm_loadu_si128(g.as_ptr().add(*i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.as_ptr().add(*i) as *const __m128i);
+
+            let rg_lo = _mm_unpacklo_epi8(vr, vg);
+            let rg_hi = _mm_unpackhi_epi8(vr, vg);
+            let ba_lo = _mm_unpacklo_epi8(vb, va);
+            let ba_hi = _mm_unpackhi_epi8(vb, va);
+
+            let rgba0 = _mm_unpacklo_epi16(rg_lo, ba_lo);
+            let rgba1 = _mm_unpackhi_epi16(rg_lo, ba_lo);
+            let rgba2 = _mm_unpacklo_epi16(rg_hi, ba_hi);
+            let rgba3 = _mm_unpackhi_epi16(rg_hi, ba_hi);
+
+            let p_dst = dst.as_mut_ptr().add(*i * 4);
+            _mm_storeu_si128(p_dst as *mut __m128i, rgba0);
+            _mm_storeu_si128(p_dst.add(16) as *mut __m128i, rgba1);
+            _mm_storeu_si128(p_dst.add(32) as *mut __m128i, rgba2);
+            _mm_storeu_si128(p_dst.add(48) as *mut __m128i, rgba3);
+            *i += 16;
         }
     }
 }
