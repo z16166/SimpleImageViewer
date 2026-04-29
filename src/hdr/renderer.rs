@@ -15,6 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::{HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use eframe::{
+    egui,
+    egui_wgpu::{self, CallbackResources, CallbackTrait},
+};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
@@ -31,7 +37,7 @@ struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
     max_display_nits: f32,
-    _pad: f32,
+    rotation_steps: u32,
 };
 
 struct VertexOutput {
@@ -49,6 +55,23 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
 fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
     let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
     return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
+}
+
+fn rotate_uv_for_display(uv: vec2<f32>, rotation_steps: u32) -> vec2<f32> {
+    switch rotation_steps % 4u {
+        case 1u: {
+            return vec2<f32>(uv.y, 1.0 - uv.x);
+        }
+        case 2u: {
+            return vec2<f32>(1.0 - uv.x, 1.0 - uv.y);
+        }
+        case 3u: {
+            return vec2<f32>(1.0 - uv.y, uv.x);
+        }
+        default: {
+            return uv;
+        }
+    }
 }
 
 fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
@@ -81,7 +104,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let texture_size = vec2<f32>(textureDimensions(hdr_texture));
-    let clamped_uv = clamp(input.uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
+    let rotated_uv = rotate_uv_for_display(input.uv, tone_map.rotation_steps);
+    let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
     return vec4<f32>(encode_sdr(hdr.rgb, tone_map), clamp(hdr.a, 0.0, 1.0));
@@ -178,6 +202,299 @@ impl HdrImageRenderer {
 
         Ok(())
     }
+}
+
+pub fn hdr_image_plane_callback(
+    rect: egui::Rect,
+    image: Arc<HdrImageBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    rotation_steps: u32,
+) -> egui::Shape {
+    egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        HdrImagePlaneCallback {
+            image,
+            tone_map,
+            target_format,
+            rotation_steps: rotation_steps % 4,
+        },
+    ))
+}
+
+struct HdrImagePlaneCallback {
+    image: Arc<HdrImageBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    rotation_steps: u32,
+}
+
+impl CallbackTrait for HdrImagePlaneCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        callback_resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let needs_resources = callback_resources
+            .get::<HdrCallbackResources>()
+            .map_or(true, |resources| {
+                resources.target_format != self.target_format
+            });
+        if needs_resources {
+            callback_resources.insert(create_callback_resources(device, self.target_format));
+        }
+
+        let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {
+            return Vec::new();
+        };
+
+        let uniform = ToneMapUniform {
+            exposure_ev: self.tone_map.exposure_ev,
+            sdr_white_nits: self.tone_map.sdr_white_nits,
+            max_display_nits: self.tone_map.max_display_nits,
+            rotation_steps: self.rotation_steps,
+        };
+        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        let image_key = HdrImageKey::from_image(&self.image);
+        if resources.uploaded_image_key != Some(image_key) {
+            match upload_callback_image(device, queue, &self.image, &resources.bind_group_layout) {
+                Ok(uploaded) => {
+                    resources.uploaded_image_key = Some(image_key);
+                    resources.uploaded_texture = Some(uploaded.texture);
+                    resources.uploaded_view = Some(uploaded.view);
+                    resources.bind_group =
+                        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("simple-image-viewer-hdr-image-plane-bind-group"),
+                            layout: &resources.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        resources.uploaded_view.as_ref().unwrap(),
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: resources.tone_map_buffer.as_entire_binding(),
+                                },
+                            ],
+                        }));
+                }
+                Err(err) => {
+                    log::warn!("[HDR] Skipping HDR image plane upload: {err}");
+                    resources.uploaded_image_key = None;
+                    resources.uploaded_texture = None;
+                    resources.uploaded_view = None;
+                    resources.bind_group = None;
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &CallbackResources,
+    ) {
+        let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
+            return;
+        };
+        let Some(bind_group) = resources.bind_group.as_ref() else {
+            return;
+        };
+
+        render_pass.set_pipeline(&resources.pipeline);
+        render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ToneMapUniform {
+    exposure_ev: f32,
+    sdr_white_nits: f32,
+    max_display_nits: f32,
+    rotation_steps: u32,
+}
+
+unsafe impl bytemuck::Zeroable for ToneMapUniform {}
+unsafe impl bytemuck::Pod for ToneMapUniform {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HdrImageKey {
+    width: u32,
+    height: u32,
+    format: HdrPixelFormat,
+    rgba_ptr: usize,
+    rgba_len: usize,
+}
+
+impl HdrImageKey {
+    fn from_image(image: &HdrImageBuffer) -> Self {
+        Self {
+            width: image.width,
+            height: image.height,
+            format: image.format,
+            rgba_ptr: Arc::as_ptr(&image.rgba_f32) as usize,
+            rgba_len: image.rgba_f32.len(),
+        }
+    }
+}
+
+struct HdrCallbackResources {
+    target_format: wgpu::TextureFormat,
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    tone_map_buffer: wgpu::Buffer,
+    uploaded_image_key: Option<HdrImageKey>,
+    uploaded_texture: Option<wgpu::Texture>,
+    uploaded_view: Option<wgpu::TextureView>,
+    bind_group: Option<wgpu::BindGroup>,
+}
+
+struct CallbackUpload {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+fn create_callback_resources(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+) -> HdrCallbackResources {
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-bind-group-layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-pipeline-layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-shader"),
+        source: wgpu::ShaderSource::Wgsl(HDR_IMAGE_PLANE_SHADER.into()),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
+        contents: bytemuck::bytes_of(&ToneMapUniform {
+            exposure_ev: 0.0,
+            sdr_white_nits: super::types::DEFAULT_SDR_WHITE_NITS,
+            max_display_nits: super::types::DEFAULT_MAX_DISPLAY_NITS,
+            rotation_steps: 0,
+        }),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    HdrCallbackResources {
+        target_format,
+        bind_group_layout,
+        pipeline,
+        tone_map_buffer,
+        uploaded_image_key: None,
+        uploaded_texture: None,
+        uploaded_view: None,
+        bind_group: None,
+    }
+}
+
+fn upload_callback_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &HdrImageBuffer,
+    _bind_group_layout: &wgpu::BindGroupLayout,
+) -> Result<CallbackUpload, String> {
+    let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
+        size: layout.size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: layout.format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba32f_as_bytes(image.rgba_f32.as_slice()),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(layout.bytes_per_row),
+            rows_per_image: Some(layout.size.height),
+        },
+        layout.size,
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(CallbackUpload { texture, view })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

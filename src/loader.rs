@@ -249,6 +249,11 @@ impl AnimationFrame {
 #[derive(Clone)]
 pub enum ImageData {
     Static(DecodedImage),
+    /// HDR image with its original float buffer plus an SDR fallback texture for compatibility.
+    Hdr {
+        hdr: crate::hdr::types::HdrImageBuffer,
+        fallback: DecodedImage,
+    },
     /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
     Tiled(std::sync::Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
@@ -1225,6 +1230,7 @@ fn load_image_file(
             Ok(ImageData::Tiled(source))
         }
         Ok(ImageData::Static(decoded)) => Ok(make_image_data(decoded)),
+        Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(hdr, fallback)),
         Ok(ImageData::Animated(frames)) => {
             if let Some(first) = frames.first() {
                 let width = first.width;
@@ -1317,10 +1323,9 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
 fn load_hdr(path: &Path) -> Result<ImageData, String> {
     let hdr = crate::hdr::decode::decode_hdr_image(path)?;
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
 
-    Ok(ImageData::Static(DecodedImage::new(
-        hdr.width, hdr.height, pixels,
-    )))
+    Ok(ImageData::Hdr { hdr, fallback })
 }
 
 fn process_animation_frames(
@@ -1534,6 +1539,90 @@ fn make_image_data(img: DecodedImage) -> ImageData {
         )))
     } else {
         ImageData::Static(img)
+    }
+}
+
+fn make_hdr_image_data(
+    hdr: crate::hdr::types::HdrImageBuffer,
+    fallback: DecodedImage,
+) -> ImageData {
+    make_hdr_image_data_for_limit(hdr, fallback, crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE)
+}
+
+fn make_hdr_image_data_for_limit(
+    hdr: crate::hdr::types::HdrImageBuffer,
+    fallback: DecodedImage,
+    max_texture_side: u32,
+) -> ImageData {
+    let pixel_count = hdr.width as u64 * hdr.height as u64;
+    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let max_side = hdr.width.max(hdr.height);
+
+    if pixel_count >= tiled_limit || max_side > max_texture_side {
+        log::info!(
+            "[Loader] HDR image {}x{} exceeds callback texture limit ({}) or threshold ({:.1} MP). Using SDR tiled fallback.",
+            hdr.width,
+            hdr.height,
+            max_texture_side,
+            tiled_limit as f64 / 1_000_000.0
+        );
+        ImageData::Tiled(Arc::new(MemoryImageSource::new(
+            fallback.width,
+            fallback.height,
+            fallback.into_arc_pixels(),
+        )))
+    } else {
+        ImageData::Hdr { hdr, fallback }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+    #[test]
+    fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {
+        let hdr = HdrImageBuffer {
+            width: 2,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0; 2 * 4]),
+        };
+        let fallback = DecodedImage::new(2, 1, vec![255; 2 * 4]);
+
+        let image_data = make_hdr_image_data_for_limit(hdr.clone(), fallback, 4096);
+
+        match image_data {
+            ImageData::Hdr {
+                hdr: kept,
+                fallback,
+            } => {
+                assert_eq!(kept.width, hdr.width);
+                assert_eq!(kept.height, hdr.height);
+                assert!(Arc::ptr_eq(&kept.rgba_f32, &hdr.rgba_f32));
+                assert_eq!(fallback.width, hdr.width);
+                assert_eq!(fallback.height, hdr.height);
+            }
+            _ => panic!("expected HDR image data"),
+        }
+    }
+
+    #[test]
+    fn oversized_hdr_uses_existing_sdr_fallback_routing() {
+        let hdr = HdrImageBuffer {
+            width: 4097,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0; 4097 * 4]),
+        };
+        let fallback = DecodedImage::new(4097, 1, vec![255; 4097 * 4]);
+
+        let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
+
+        assert!(matches!(image_data, ImageData::Tiled(_)));
     }
 }
 

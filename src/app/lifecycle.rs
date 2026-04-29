@@ -94,6 +94,7 @@ impl ImageViewerApp {
         let hdr_capabilities =
             crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
         let hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
+        let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
 
         crate::tile_cache::MAX_TEXTURE_SIDE
             .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
@@ -175,6 +176,9 @@ impl ImageViewerApp {
             texture_cache: TextureCache::new(CACHE_SIZE),
             hdr_capabilities,
             hdr_renderer,
+            hdr_target_format,
+            current_hdr_image: None,
+            hdr_image_cache: std::collections::HashMap::new(),
             animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,

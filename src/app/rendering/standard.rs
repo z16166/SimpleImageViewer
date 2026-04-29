@@ -99,6 +99,40 @@ impl ImageViewerApp {
         let unrotated_final_dest =
             Rect::from_center_size(final_dest.center(), unrotated_final_size);
 
+        if let (Some(hdr_image), Some(target_format)) =
+            (self.current_hdr_image.clone(), self.hdr_target_format)
+        {
+            if tp.is_animating {
+                if let Some(prev) = &self.prev_texture.clone() {
+                    let p_size = prev.size_vec2();
+                    let p_dest = self.compute_display_rect(p_size, screen_rect);
+                    let p_final_dest = Rect::from_center_size(
+                        p_dest.center() + tp.prev_offset,
+                        p_dest.size() * tp.prev_scale,
+                    );
+                    ui.painter().image(
+                        prev.id(),
+                        p_final_dest,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE.linear_multiply(tp.prev_alpha),
+                    );
+                }
+                ui.ctx().request_repaint();
+            }
+
+            // HDR images draw through egui-wgpu so the float buffer reaches the shader.
+            // The SDR fallback texture stays cached for non-wgpu paths and transitions.
+            ui.painter()
+                .add(crate::hdr::renderer::hdr_image_plane_callback(
+                    final_dest,
+                    hdr_image,
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    rotation as u32,
+                ));
+            return;
+        }
+
         // --- Draw sequence ---
         if tp.is_animating
             && matches!(

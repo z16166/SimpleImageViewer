@@ -161,6 +161,9 @@ pub struct ImageViewerApp {
     pub(crate) texture_cache: TextureCache,
     pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
+    pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
+    pub(crate) current_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
 

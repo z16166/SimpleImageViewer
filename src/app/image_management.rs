@@ -33,6 +33,8 @@ impl ImageViewerApp {
         self.image_files.clear();
         self.current_index = 0;
         self.texture_cache.clear_all();
+        self.hdr_image_cache.clear();
+        self.current_hdr_image = None;
         self.animation_cache.clear();
         self.animation = None;
         self.prev_texture = None;
@@ -95,6 +97,8 @@ impl ImageViewerApp {
 
         // Clear current image from all relevant caches to force a fresh reload from disk
         self.texture_cache.remove(self.current_index);
+        self.hdr_image_cache.remove(&self.current_index);
+        self.current_hdr_image = None;
         self.prefetched_tiles.remove(&self.current_index);
         self.tile_manager = None;
         self.current_image_res = None;
@@ -150,6 +154,7 @@ impl ImageViewerApp {
             self.tile_manager = None;
         }
         self.current_index = target_index;
+        self.current_hdr_image = self.hdr_image_cache.get(&self.current_index).cloned();
         self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
@@ -806,6 +811,10 @@ impl ImageViewerApp {
         let idx = load_result.index;
         match load_result.result.as_ref() {
             Ok(ImageData::Static(decoded)) => {
+                self.hdr_image_cache.remove(&idx);
+                if idx == self.current_index {
+                    self.current_hdr_image = None;
+                }
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [decoded.width as usize, decoded.height as usize],
                     decoded.rgba(),
@@ -834,7 +843,47 @@ impl ImageViewerApp {
                     }
                 }
             }
+            Ok(ImageData::Hdr { hdr, fallback }) => {
+                let hdr = Arc::new(hdr.clone());
+                self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+
+                let color_image = ColorImage::from_rgba_unmultiplied(
+                    [fallback.width as usize, fallback.height as usize],
+                    fallback.rgba(),
+                );
+                let name = format!("img_hdr_fallback_{}", idx);
+                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                if let Some(evicted_idx) = self.texture_cache.insert(
+                    idx,
+                    handle,
+                    fallback.width,
+                    fallback.height,
+                    false,
+                    self.current_index,
+                    self.image_files.len(),
+                ) {
+                    self.animation_cache.remove(&evicted_idx);
+                    self.hdr_image_cache.remove(&evicted_idx);
+                }
+
+                if idx == self.current_index {
+                    self.current_image_res = Some((hdr.width, hdr.height));
+                    self.current_hdr_image = Some(hdr);
+                    self.tile_manager = None;
+                    if self
+                        .animation
+                        .as_ref()
+                        .is_some_and(|a| a.image_index == idx)
+                    {
+                        self.animation = None;
+                    }
+                }
+            }
             Ok(ImageData::Tiled(source)) => {
+                self.hdr_image_cache.remove(&idx);
+                if idx == self.current_index {
+                    self.current_hdr_image = None;
+                }
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
                 if let Some(preview) = load_result.preview.as_ref() {
@@ -913,6 +962,10 @@ impl ImageViewerApp {
                 }
             }
             Ok(ImageData::Animated(frames)) => {
+                self.hdr_image_cache.remove(&idx);
+                if idx == self.current_index {
+                    self.current_hdr_image = None;
+                }
                 // Upload first frame immediately
                 if let Some(first) = frames.first() {
                     let color_image = ColorImage::from_rgba_unmultiplied(
