@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use image::{DynamicImage, RgbImage};
+use image::DynamicImage;
 use libraw_sys as ffi;
 use std::ffi::CString;
 use std::path::Path;
