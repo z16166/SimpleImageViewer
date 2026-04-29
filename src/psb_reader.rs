@@ -34,8 +34,6 @@ use std::sync::Arc;
 
 // SIMD architecture-specific imports are handled within submodules
 
-
-
 use crate::simd_swizzle;
 
 /// Decoded PSB composite image (Full in-memory).
@@ -483,7 +481,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
         let mut rgba = vec![255u8; (w * h * 4) as usize];
 
         // 1. Group rows by tile-relative Y for all channels
@@ -605,7 +603,7 @@ impl crate::loader::TiledImageSource for PsbTiledSource {
                 }
             }
         }
-        rgba
+        std::sync::Arc::new(rgba)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {

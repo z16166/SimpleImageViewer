@@ -225,7 +225,7 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
         self.logical_height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         let mut context = CGContext::create_bitmap_context(
             None,
             w as usize,
@@ -252,7 +252,7 @@ impl crate::loader::TiledImageSource for ImageIoTiledSource {
             ),
         );
         context.draw_image(rect, &self.cached_image);
-        context.data().to_vec()
+        std::sync::Arc::new(context.data().to_vec())
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -455,7 +455,7 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
         self.logical_height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         let mut rgba = vec![255u8; (w * h * 4) as usize];
 
         // 1. Group processing by chunk to minimize Mutex locking overhead (CRITICAL PERF FIX)
@@ -521,14 +521,13 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
 
         // If orientation is not 1, we need to transform the whole tile
         if self.orientation > 1 {
-            let (_ow, _oh, opixels) = apply_orientation_buffer(rgba, w, h, self.orientation);
             // Note: apply_orientation_buffer might change dimensions if 90deg rotation is involved.
             // But here extract_tile expects w, h. This needs careful handling.
             // For now, if orientation > 1, we might just want to use ImageIO which handles it via CTM.
-            return opixels;
+            return std::sync::Arc::new(opixels);
         }
 
-        rgba
+        std::sync::Arc::new(rgba)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {

@@ -291,7 +291,7 @@ impl TiledImageSource for LibTiffTiledSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
         let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
         let handle = match self.acquire_handle() {
             Ok(h) => h,
@@ -301,7 +301,7 @@ impl TiledImageSource for LibTiffTiledSource {
                     self.path.display(),
                     e
                 );
-                return result;
+                return std::sync::Arc::new(result);
             }
         };
 
@@ -345,7 +345,7 @@ impl TiledImageSource for LibTiffTiledSource {
         }
 
         self.release_handle(handle);
-        result
+        std::sync::Arc::new(result)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
@@ -550,7 +550,7 @@ impl TiledImageSource for LibTiffScanlineSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
         let mut result = vec![0u8; (w as usize) * (h as usize) * 4];
         let handle = match self.acquire_handle() {
             Ok(h) => h,
@@ -560,7 +560,7 @@ impl TiledImageSource for LibTiffScanlineSource {
                     self.path.display(),
                     e
                 );
-                return result;
+                return std::sync::Arc::new(result);
             }
         };
 
@@ -609,7 +609,7 @@ impl TiledImageSource for LibTiffScanlineSource {
         }
 
         self.release_handle(handle);
-        result
+        std::sync::Arc::new(result)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {

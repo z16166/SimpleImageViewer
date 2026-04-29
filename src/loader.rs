@@ -193,7 +193,7 @@ pub trait TiledImageSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     /// Extract a rectangular region of the image as RGBA8.
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8>;
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>>;
     /// Generate a downscaled preview of the full image.
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
     /// Optionally provide the full pixel buffer if already in memory.
@@ -1758,8 +1758,7 @@ impl RawImageSource {
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
 
         let rgba = preview.into_rgba8_image();
-        let developed_image =
-            Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
+        let developed_image = Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
 
         let refine_tx = refine_tx.clone();
 
@@ -1783,7 +1782,7 @@ impl TiledImageSource for RawImageSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         let img_lock = self.developed_image.read();
         if let Some(ref img) = *img_lock {
             let (iw, ih) = img.dimensions();
@@ -1795,22 +1794,20 @@ impl TiledImageSource for RawImageSource {
                         let src_y = y + row;
                         let src_offset = (src_y * iw + x) as usize * 4;
                         let dst_offset = (row * w) as usize * 4;
-                        let len = (w as usize * 4).min(rgba.as_raw().len().saturating_sub(src_offset));
+                        let len =
+                            (w as usize * 4).min(rgba.as_raw().len().saturating_sub(src_offset));
                         if len > 0 {
-                            result[dst_offset..dst_offset + len].copy_from_slice(&rgba.as_raw()[src_offset..src_offset + len]);
+                            result[dst_offset..dst_offset + len]
+                                .copy_from_slice(&rgba.as_raw()[src_offset..src_offset + len]);
                         }
                     }
-                    result
+                    Arc::new(result)
                 } else {
                     let crop = img.crop_imm(x, y, w, h);
-                    crop.into_rgba8().into_raw()
+                    Arc::new(crop.into_rgba8().into_raw())
                 }
             } else {
                 // Preview image (smaller than RAW dimensions).
-                // Map tile coordinates from RAW sensor space → preview space,
-                // extract the corresponding small region, then scale it up to
-                // the requested tile size. This only allocates ~1MB per tile
-                // (e.g. 512×512×4) instead of ~400MB for the whole image.
                 let scale_x = iw as f64 / self.width as f64;
                 let scale_y = ih as f64 / self.height as f64;
                 let px = (x as f64 * scale_x) as u32;
@@ -1823,10 +1820,10 @@ impl TiledImageSource for RawImageSource {
                     .max(1);
                 let crop = img.crop_imm(px, py, pw, ph);
                 let resized = crop.resize_exact(w, h, image::imageops::FilterType::Triangle);
-                resized.to_rgba8().into_raw()
+                Arc::new(resized.into_rgba8().into_raw())
             }
         } else {
-            vec![0; (w * h * RGBA_CHANNELS as u32) as usize]
+            Arc::new(vec![0; (w * h * RGBA_CHANNELS as u32) as usize])
         }
     }
 
@@ -2046,8 +2043,7 @@ fn load_raw(
                     path
                 );
             } else {
-                let decoded =
-                    DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
+                let decoded = DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
                 return Ok(ImageData::Static(decoded));
             }
         } else {
@@ -2111,7 +2107,7 @@ impl TiledImageSource for MemoryImageSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
         let stride = self.width as usize * 4;
 
@@ -2125,7 +2121,7 @@ impl TiledImageSource for MemoryImageSource {
                 tile_pixels.resize(tile_pixels.len() + (w * 4) as usize, 0);
             }
         }
-        tile_pixels
+        Arc::new(tile_pixels)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {

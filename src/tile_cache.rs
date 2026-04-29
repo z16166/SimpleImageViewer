@@ -115,10 +115,9 @@ impl TilePixelCache {
         }
     }
 
-    pub fn insert(&mut self, index: usize, coord: TileCoord, pixels: Vec<u8>) {
+    pub fn insert(&mut self, index: usize, coord: TileCoord, pixels: Arc<Vec<u8>>) {
         let key = (index, coord.col, coord.row);
         let bytes = pixels.len();
-        let pixels = Arc::new(pixels);
         let max_bytes = self.max_mb * 1024 * 1024;
 
         // Evict if needed

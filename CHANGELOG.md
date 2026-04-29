@@ -2,7 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.5.7] - 2026-04-29
+
+## [1.5.8] - 2026-04-29
+
+### Changed
+- **Zero-Copy Pixel Pipeline**: Major optimization of the image decoding and rendering path to minimize memory allocations and redundant data copies.
+    - **LibRaw RAII & Single-Pass Packing**: Implemented `LibRawMemory` RAII wrapper for automatic FFI memory management. RAW development now uses a SIMD-accelerated "single-pass" conversion from LibRaw's internal RGB buffers directly to Rust RGBA buffers, eliminating a redundant intermediate 400MB copy.
+    - **Zero-Copy Tile Management**: Updated `TiledImageSource` trait and `TilePixelCache` to use `Arc<Vec<u8>>`. Decoded tiles are now passed by reference (Arc) from decoders to the cache, avoiding megabytes of buffer moves per frame during gigapixel image exploration.
+    - **Buffer Reuse**: Replaced `to_rgba8()` with `into_rgba8()` in hot paths (refinement worker, preview generation) to move existing buffers instead of cloning them.
+- **SIMD Interleaving Utility**: Centralized high-performance pixel swizzling logic in a new `simd_swizzle` module with AVX2, SSE4.1, and Neon support, ensuring consistent performance across RAW, PSB, and TIFF loaders.
+
+### Fixed
+- **LibRaw Memory Leak**: Fixed a critical bug where `libraw_dcraw_make_mem_image` was called twice per image, causing massive heap memory leaks and redundant buffer allocations.
+- **SIMD Unsafe Warnings**: Resolved compiler warnings related to unsafe intrinsic calls in the new SIMD module.
 
 ### Fixed
 - **RAW Refinement Race**: Fixed a race condition where stale background refinement results (from previous navigations) could overwrite the current image or cause flickering by prematurely evicting texture caches. Re-enabled strict generation (gen_id) validation for all asynchronous RAW updates.

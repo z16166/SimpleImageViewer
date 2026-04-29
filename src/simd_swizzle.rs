@@ -84,32 +84,55 @@ unsafe fn interleave_rgba_avx2(
     i: &mut usize,
     len: usize,
 ) {
-    while *i + 32 <= len {
-        let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
-        let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
-        let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
-        let va = _mm256_loadu_si256(a.as_ptr().add(*i) as *const __m256i);
+    unsafe {
+        while *i + 32 <= len {
+            let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
+            let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
+            let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
+            let va = _mm256_loadu_si256(a.as_ptr().add(*i) as *const __m256i);
 
-        let rg_lo = _mm256_unpacklo_epi8(vr, vg);
-        let rg_hi = _mm256_unpackhi_epi8(vr, vg);
-        let ba_lo = _mm256_unpacklo_epi8(vb, va);
-        let ba_hi = _mm256_unpackhi_epi8(vb, va);
+            let rg_lo = _mm256_unpacklo_epi8(vr, vg);
+            let rg_hi = _mm256_unpackhi_epi8(vr, vg);
+            let ba_lo = _mm256_unpacklo_epi8(vb, va);
+            let ba_hi = _mm256_unpackhi_epi8(vb, va);
 
-        let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
-        let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
-        let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
-        let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
+            let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
+            let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
+            let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
+            let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
 
-        let p_dst = dst.as_mut_ptr().add(*i * 4);
-        _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
-        _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
-        _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
-        _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
-        _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
-        _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
-        _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
-        _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
-        *i += 32;
+            let p_dst = dst.as_mut_ptr().add(*i * 4);
+            _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
+            _mm_storeu_si128(
+                p_dst.add(16) as *mut __m128i,
+                _mm256_extracti128_si256(rgba1, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(32) as *mut __m128i,
+                _mm256_extracti128_si256(rgba2, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(48) as *mut __m128i,
+                _mm256_extracti128_si256(rgba3, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(64) as *mut __m128i,
+                _mm256_extracti128_si256(rgba0, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(80) as *mut __m128i,
+                _mm256_extracti128_si256(rgba1, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(96) as *mut __m128i,
+                _mm256_extracti128_si256(rgba2, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(112) as *mut __m128i,
+                _mm256_extracti128_si256(rgba3, 1),
+            );
+            *i += 32;
+        }
     }
 }
 
@@ -124,32 +147,55 @@ unsafe fn interleave_rgb_avx2(
     i: &mut usize,
     len: usize,
 ) {
-    let va = _mm256_set1_epi8(alpha as i8);
-    while *i + 32 <= len {
-        let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
-        let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
-        let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
+    unsafe {
+        let va = _mm256_set1_epi8(alpha as i8);
+        while *i + 32 <= len {
+            let vr = _mm256_loadu_si256(r.as_ptr().add(*i) as *const __m256i);
+            let vg = _mm256_loadu_si256(g.as_ptr().add(*i) as *const __m256i);
+            let vb = _mm256_loadu_si256(b.as_ptr().add(*i) as *const __m256i);
 
-        let rg_lo = _mm256_unpacklo_epi8(vr, vg);
-        let rg_hi = _mm256_unpackhi_epi8(vr, vg);
-        let ba_lo = _mm256_unpacklo_epi8(vb, va);
-        let ba_hi = _mm256_unpackhi_epi8(vb, va);
+            let rg_lo = _mm256_unpacklo_epi8(vr, vg);
+            let rg_hi = _mm256_unpackhi_epi8(vr, vg);
+            let ba_lo = _mm256_unpacklo_epi8(vb, va);
+            let ba_hi = _mm256_unpackhi_epi8(vb, va);
 
-        let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
-        let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
-        let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
-        let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
+            let rgba0 = _mm256_unpacklo_epi16(rg_lo, ba_lo);
+            let rgba1 = _mm256_unpackhi_epi16(rg_lo, ba_lo);
+            let rgba2 = _mm256_unpacklo_epi16(rg_hi, ba_hi);
+            let rgba3 = _mm256_unpackhi_epi16(rg_hi, ba_hi);
 
-        let p_dst = dst.as_mut_ptr().add(*i * 4);
-        _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
-        _mm_storeu_si128(p_dst.add(16) as *mut __m128i, _mm256_extracti128_si256(rgba1, 0));
-        _mm_storeu_si128(p_dst.add(32) as *mut __m128i, _mm256_extracti128_si256(rgba2, 0));
-        _mm_storeu_si128(p_dst.add(48) as *mut __m128i, _mm256_extracti128_si256(rgba3, 0));
-        _mm_storeu_si128(p_dst.add(64) as *mut __m128i, _mm256_extracti128_si256(rgba0, 1));
-        _mm_storeu_si128(p_dst.add(80) as *mut __m128i, _mm256_extracti128_si256(rgba1, 1));
-        _mm_storeu_si128(p_dst.add(96) as *mut __m128i, _mm256_extracti128_si256(rgba2, 1));
-        _mm_storeu_si128(p_dst.add(112) as *mut __m128i, _mm256_extracti128_si256(rgba3, 1));
-        *i += 32;
+            let p_dst = dst.as_mut_ptr().add(*i * 4);
+            _mm_storeu_si128(p_dst as *mut __m128i, _mm256_extracti128_si256(rgba0, 0));
+            _mm_storeu_si128(
+                p_dst.add(16) as *mut __m128i,
+                _mm256_extracti128_si256(rgba1, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(32) as *mut __m128i,
+                _mm256_extracti128_si256(rgba2, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(48) as *mut __m128i,
+                _mm256_extracti128_si256(rgba3, 0),
+            );
+            _mm_storeu_si128(
+                p_dst.add(64) as *mut __m128i,
+                _mm256_extracti128_si256(rgba0, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(80) as *mut __m128i,
+                _mm256_extracti128_si256(rgba1, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(96) as *mut __m128i,
+                _mm256_extracti128_si256(rgba2, 1),
+            );
+            _mm_storeu_si128(
+                p_dst.add(112) as *mut __m128i,
+                _mm256_extracti128_si256(rgba3, 1),
+            );
+            *i += 32;
+        }
     }
 }
 
@@ -164,28 +210,30 @@ unsafe fn interleave_rgba_sse41(
     i: &mut usize,
     len: usize,
 ) {
-    while *i + 16 <= len {
-        let vr = _mm_loadu_si128(r.as_ptr().add(*i) as *const __m128i);
-        let vg = _mm_loadu_si128(g.as_ptr().add(*i) as *const __m128i);
-        let vb = _mm_loadu_si128(b.as_ptr().add(*i) as *const __m128i);
-        let va = _mm_loadu_si128(a.as_ptr().add(*i) as *const __m128i);
+    unsafe {
+        while *i + 16 <= len {
+            let vr = _mm_loadu_si128(r.as_ptr().add(*i) as *const __m128i);
+            let vg = _mm_loadu_si128(g.as_ptr().add(*i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.as_ptr().add(*i) as *const __m128i);
+            let va = _mm_loadu_si128(a.as_ptr().add(*i) as *const __m128i);
 
-        let rg_lo = _mm_unpacklo_epi8(vr, vg);
-        let rg_hi = _mm_unpackhi_epi8(vr, vg);
-        let ba_lo = _mm_unpacklo_epi8(vb, va);
-        let ba_hi = _mm_unpackhi_epi8(vb, va);
+            let rg_lo = _mm_unpacklo_epi8(vr, vg);
+            let rg_hi = _mm_unpackhi_epi8(vr, vg);
+            let ba_lo = _mm_unpacklo_epi8(vb, va);
+            let ba_hi = _mm_unpackhi_epi8(vb, va);
 
-        let rgba0 = _mm_unpacklo_epi16(rg_lo, ba_lo);
-        let rgba1 = _mm_unpackhi_epi16(rg_lo, ba_lo);
-        let rgba2 = _mm_unpacklo_epi16(rg_hi, ba_hi);
-        let rgba3 = _mm_unpackhi_epi16(rg_hi, ba_hi);
+            let rgba0 = _mm_unpacklo_epi16(rg_lo, ba_lo);
+            let rgba1 = _mm_unpackhi_epi16(rg_lo, ba_lo);
+            let rgba2 = _mm_unpacklo_epi16(rg_hi, ba_hi);
+            let rgba3 = _mm_unpackhi_epi16(rg_hi, ba_hi);
 
-        let p_dst = dst.as_mut_ptr().add(*i * 4);
-        _mm_storeu_si128(p_dst as *mut __m128i, rgba0);
-        _mm_storeu_si128(p_dst.add(16) as *mut __m128i, rgba1);
-        _mm_storeu_si128(p_dst.add(32) as *mut __m128i, rgba2);
-        _mm_storeu_si128(p_dst.add(48) as *mut __m128i, rgba3);
-        *i += 16;
+            let p_dst = dst.as_mut_ptr().add(*i * 4);
+            _mm_storeu_si128(p_dst as *mut __m128i, rgba0);
+            _mm_storeu_si128(p_dst.add(16) as *mut __m128i, rgba1);
+            _mm_storeu_si128(p_dst.add(32) as *mut __m128i, rgba2);
+            _mm_storeu_si128(p_dst.add(48) as *mut __m128i, rgba3);
+            *i += 16;
+        }
     }
 }
 
@@ -199,15 +247,17 @@ unsafe fn interleave_rgba_neon(
     i: &mut usize,
     len: usize,
 ) {
-    while *i + 16 <= len {
-        let vr = vld1q_u8(r.as_ptr().add(*i));
-        let vg = vld1q_u8(g.as_ptr().add(*i));
-        let vb = vld1q_u8(b.as_ptr().add(*i));
-        let va = vld1q_u8(a.as_ptr().add(*i));
+    unsafe {
+        while *i + 16 <= len {
+            let vr = vld1q_u8(r.as_ptr().add(*i));
+            let vg = vld1q_u8(g.as_ptr().add(*i));
+            let vb = vld1q_u8(b.as_ptr().add(*i));
+            let va = vld1q_u8(a.as_ptr().add(*i));
 
-        let res = uint8x16x4_t(vr, vg, vb, va);
-        vst4q_u8(dst.as_mut_ptr().add(*i * 4), res);
-        *i += 16;
+            let res = uint8x16x4_t(vr, vg, vb, va);
+            vst4q_u8(dst.as_mut_ptr().add(*i * 4), res);
+            *i += 16;
+        }
     }
 }
 
@@ -248,8 +298,6 @@ unsafe fn interleave_rgb_packed_to_rgba_avx2(
     count: usize,
 ) {
     while *i + 32 <= count {
-        let s = *i * 3;
-        let d = *i * 4;
 
         // LLVM handles this loop very well with AVX2 if we hint it correctly.
         // For a more robust implementation, one could use _mm256_shuffle_epi8,

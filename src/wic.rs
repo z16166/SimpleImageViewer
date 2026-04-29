@@ -250,7 +250,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         self.height
     }
 
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>> {
         let mut pixels = vec![0u8; (w * h * 4) as usize];
         let stride = w * 4;
 
@@ -258,9 +258,6 @@ impl crate::loader::TiledImageSource for WicTiledSource {
         let _com = ComGuard::new();
 
         unsafe {
-            // Create a local converter for this thread to allow parallel decoding.
-            // While initialization has a cost, it's dwarfed by the benefit of
-            // utilizing all available CPU cores without lock contention.
             if let Ok(converter) = self.factory.CreateFormatConverter() {
                 if converter
                     .Initialize(
@@ -284,7 +281,7 @@ impl crate::loader::TiledImageSource for WicTiledSource {
             }
         }
 
-        pixels
+        std::sync::Arc::new(pixels)
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {

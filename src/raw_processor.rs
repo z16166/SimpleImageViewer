@@ -150,8 +150,11 @@ impl RawProcessor {
             }
 
             let mut err = 0;
-            let processed = LibRawMemory::new(ffi::libraw_dcraw_make_mem_image(self.data, &mut err))
-                .ok_or_else(|| rust_i18n::t!("error.libraw_mem_image", code = err).to_string())?;
+            let processed =
+                LibRawMemory::new(ffi::libraw_dcraw_make_mem_image(self.data, &mut err))
+                    .ok_or_else(|| {
+                        rust_i18n::t!("error.libraw_mem_image", code = err).to_string()
+                    })?;
 
             let img = processed.as_ref();
             if img.image_type != ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
@@ -191,7 +194,7 @@ impl RawProcessor {
             // SINGLE-PASS PACKING OPTIMIZATION:
             let mut rgba = vec![255u8; (width * height * 4) as usize];
             let slice = std::slice::from_raw_parts(data_ptr, data_len);
-            
+
             crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
 
             let rgba_img = image::RgbaImage::from_raw(width, height, rgba)
@@ -209,8 +212,11 @@ impl RawProcessor {
                 return Err(rust_i18n::t!("error.libraw_unpack", code = res).to_string());
             }
 
-            let processed = LibRawMemory::new(ffi::libraw_dcraw_make_mem_thumb(self.data, &mut err))
-                .ok_or_else(|| rust_i18n::t!("error.libraw_mem_image", code = err).to_string())?;
+            let processed =
+                LibRawMemory::new(ffi::libraw_dcraw_make_mem_thumb(self.data, &mut err))
+                    .ok_or_else(|| {
+                        rust_i18n::t!("error.libraw_mem_image", code = err).to_string()
+                    })?;
 
             let img = processed.as_ref();
             let data_ptr = img.data.as_ptr();
@@ -242,8 +248,12 @@ impl RawProcessor {
                 {
                     let count = img.width as usize * img.height as usize;
                     let mut rgba = vec![255u8; count * 4];
-                    
-                    if let Some(rgb) = image::RgbImage::from_raw(img.width as u32, img.height as u32, slice.to_vec()) {
+
+                    if let Some(rgb) = image::RgbImage::from_raw(
+                        img.width as u32,
+                        img.height as u32,
+                        slice.to_vec(),
+                    ) {
                         let rgba_img = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
                         Ok(crate::loader::DecodedImage::new(
                             img.width as u32,
