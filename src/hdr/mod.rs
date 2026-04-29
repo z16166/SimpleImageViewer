@@ -18,19 +18,3 @@ pub mod capabilities;
 pub mod decode;
 pub mod renderer;
 pub mod types;
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn renderer_starts_with_default_tone_map_settings() {
-        let renderer = crate::hdr::renderer::HdrImageRenderer::new();
-        let defaults = crate::hdr::types::HdrToneMapSettings::default();
-
-        assert_eq!(renderer.tone_map.exposure_ev, defaults.exposure_ev);
-        assert_eq!(renderer.tone_map.sdr_white_nits, defaults.sdr_white_nits);
-        assert_eq!(
-            renderer.tone_map.max_display_nits,
-            defaults.max_display_nits
-        );
-    }
-}

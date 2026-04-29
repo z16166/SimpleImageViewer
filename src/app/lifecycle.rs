@@ -93,12 +93,7 @@ impl ImageViewerApp {
 
         let hdr_capabilities =
             crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
-        log::info!(
-            "[HDR] Renderer initialized: available={}, mode={:?}, reason={}",
-            hdr_capabilities.available,
-            hdr_capabilities.output_mode,
-            hdr_capabilities.reason
-        );
+        let hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
 
         crate::tile_cache::MAX_TEXTURE_SIDE
             .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
@@ -179,7 +174,7 @@ impl ImageViewerApp {
             loader: ImageLoader::new(),
             texture_cache: TextureCache::new(CACHE_SIZE),
             hdr_capabilities,
-            hdr_renderer: crate::hdr::renderer::HdrImageRenderer::new(),
+            hdr_renderer,
             animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,
@@ -241,6 +236,13 @@ impl ImageViewerApp {
             music_hud_drag_offset: Vec2::ZERO,
             settings,
         };
+        log::info!(
+            "[HDR] Capability state: available={}, mode={:?}, reason={}, tone_map_sdr_white_nits={}",
+            app.hdr_capabilities.available,
+            app.hdr_capabilities.output_mode,
+            app.hdr_capabilities.reason,
+            app.hdr_renderer.tone_map.sdr_white_nits
+        );
         log::info!(
             "[Core] RAW engine initialized: {}",
             crate::raw_processor::version()

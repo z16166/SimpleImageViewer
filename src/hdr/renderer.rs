@@ -14,10 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::types::{HdrImageBuffer, HdrToneMapSettings};
+use super::types::HdrToneMapSettings;
 
 pub struct HdrImageRenderer {
-    #[allow(dead_code)]
     pub tone_map: HdrToneMapSettings,
 }
 
@@ -26,15 +25,5 @@ impl HdrImageRenderer {
         Self {
             tone_map: HdrToneMapSettings::default(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn upload_image(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _image: &HdrImageBuffer,
-    ) {
-        // First implementation keeps existing SDR path; Task 4 owns GPU texture upload.
     }
 }
