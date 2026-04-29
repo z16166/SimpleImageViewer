@@ -656,8 +656,9 @@ impl ImageLoader {
                                 continue;
                             }
 
-                            // Convert to RGBA bits
-                            let rgba = full_img.to_rgba8();
+                            // SINGLE-PASS: into_rgba8() avoids cloning since processor.develop() 
+                            // now returns ImageRgba8 directly.
+                            let rgba = full_img.into_rgba8();
                             let (w, h) = rgba.dimensions();
                             let pixels = rgba.into_raw();
 
@@ -672,7 +673,7 @@ impl ImageLoader {
                             // a sharp full-screen image immediately, without needing to zoom in past the tile threshold.
                             let limit = hq_preview_max_side();
                             let scaled = dynamic.thumbnail(limit, limit);
-                            let prev_rgba = scaled.to_rgba8();
+                            let prev_rgba = scaled.into_rgba8();
                             let preview = DecodedImage::new(
                                 prev_rgba.width(),
                                 prev_rgba.height(),
@@ -1293,7 +1294,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
         Ok(img) => img,
         Err(e) => return Err(e.to_string()),
     };
-    let rgba = img.to_rgba8();
+    let rgba = img.into_rgba8();
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
@@ -1599,7 +1600,7 @@ fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
             let mut blob = vec![0u8; len as usize];
             if f.read_exact(&mut blob).is_ok() {
                 if let Ok(img) = image::load_from_memory(&blob) {
-                    let rgba = img.to_rgba8();
+                    let rgba = img.into_rgba8();
                     log::info!(
                         "[{}] Extracted EXIF thumbnail ({}x{}) from offset {}",
                         path.file_name()
@@ -1788,8 +1789,22 @@ impl TiledImageSource for RawImageSource {
             let (iw, ih) = img.dimensions();
             if iw == self.width && ih == self.height {
                 // Full-res developed image available — direct crop, no scaling needed.
-                let crop = img.crop_imm(x, y, w, h);
-                crop.to_rgba8().into_raw()
+                if let Some(rgba) = img.as_rgba8() {
+                    let mut result = vec![0u8; (w * h * 4) as usize];
+                    for row in 0..h {
+                        let src_y = y + row;
+                        let src_offset = (src_y * iw + x) as usize * 4;
+                        let dst_offset = (row * w) as usize * 4;
+                        let len = (w as usize * 4).min(rgba.as_raw().len().saturating_sub(src_offset));
+                        if len > 0 {
+                            result[dst_offset..dst_offset + len].copy_from_slice(&rgba.as_raw()[src_offset..src_offset + len]);
+                        }
+                    }
+                    result
+                } else {
+                    let crop = img.crop_imm(x, y, w, h);
+                    crop.into_rgba8().into_raw()
+                }
             } else {
                 // Preview image (smaller than RAW dimensions).
                 // Map tile coordinates from RAW sensor space → preview space,
@@ -2024,7 +2039,7 @@ fn load_raw(
                 );
             }
 
-            let rgba = full_img.to_rgba8();
+            let rgba = full_img.into_rgba8();
             if rgba.width() == 0 || rgba.height() == 0 {
                 log::error!(
                     "[Loader] LibRaw developed a zero-dimension image for {:?}. Falling through to Rule 2.",
