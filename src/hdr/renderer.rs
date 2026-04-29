@@ -20,6 +20,13 @@ pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFor
 
 #[allow(dead_code)]
 pub const HDR_IMAGE_PLANE_SHADER: &str = r#"
+// Largest finite half-float value; caps extreme HDR values before tone mapping.
+const MAX_FINITE_HDR_VALUE: f32 = 65504.0;
+// Current SDR fallback approximates standard display gamma encoding.
+const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
+// Keeps generated UVs inside the texture for the fullscreen triangle edge.
+const MAX_UV_CLAMP: f32 = 0.999999;
+
 struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
@@ -41,7 +48,7 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
 
 fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
     let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
-    return min(positive, vec3<f32>(65504.0));
+    return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
 }
 
 fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
@@ -49,7 +56,7 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let display_scale = settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
     let exposed = sanitize_hdr_rgb(rgb * exposure_scale * display_scale);
     let mapped = reinhard_tone_map(exposed);
-    return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+    return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
 }
 
 @vertex
@@ -74,7 +81,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let texture_size = vec2<f32>(textureDimensions(hdr_texture));
-    let clamped_uv = clamp(input.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
+    let clamped_uv = clamp(input.uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
     return vec4<f32>(encode_sdr(hdr.rgb, tone_map), clamp(hdr.a, 0.0, 1.0));
@@ -332,7 +339,16 @@ mod tests {
     fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("min(positive"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("const MAX_FINITE_HDR_VALUE: f32"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE))"));
+    }
+
+    #[test]
+    fn shader_names_tone_map_numeric_constants() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("const INVERSE_DISPLAY_GAMMA: f32"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("const MAX_UV_CLAMP: f32"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("vec3<f32>(INVERSE_DISPLAY_GAMMA)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("vec2<f32>(MAX_UV_CLAMP)"));
     }
 
     #[test]
