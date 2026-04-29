@@ -23,11 +23,16 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
-use crate::constants::{RGBA_CHANNELS, RGB_CHANNELS};
+use crate::constants::{RGB_CHANNELS, RGBA_CHANNELS};
 
 /// Interleaves planar R, G, B, A channels into a packed RGBA buffer.
 pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
-    let len = r.len().min(g.len()).min(b.len()).min(a.len()).min(dst.len() / RGBA_CHANNELS);
+    let len = r
+        .len()
+        .min(g.len())
+        .min(b.len())
+        .min(a.len())
+        .min(dst.len() / RGBA_CHANNELS);
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -66,7 +71,11 @@ pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
 
 /// Interleaves planar R, G, B channels into a packed RGBA buffer with a fixed alpha.
 pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8]) {
-    let len = r.len().min(g.len()).min(b.len()).min(dst.len() / RGBA_CHANNELS);
+    let len = r
+        .len()
+        .min(g.len())
+        .min(b.len())
+        .min(dst.len() / RGBA_CHANNELS);
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -398,7 +407,6 @@ unsafe fn interleave_rgb_packed_to_rgba_avx2(
     count: usize,
 ) {
     while *i + 32 <= count {
-
         // LLVM handles this loop very well with AVX2 if we hint it correctly.
         // For a more robust implementation, one could use _mm256_shuffle_epi8,
         // but that requires complex masks for 3-to-4 byte expansion across 256-bit lanes.

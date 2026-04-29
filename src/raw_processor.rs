@@ -192,7 +192,8 @@ impl RawProcessor {
             }
 
             // SINGLE-PASS PACKING OPTIMIZATION:
-            let mut rgba = vec![255u8; width as usize * height as usize * crate::constants::RGBA_CHANNELS];
+            let mut rgba =
+                vec![255u8; width as usize * height as usize * crate::constants::RGBA_CHANNELS];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
             crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
@@ -263,9 +264,12 @@ impl RawProcessor {
                     } else {
                         // Fallback to manual if RgbImage::from_raw fails (shouldn't happen)
                         for i in 0..count {
-                            rgba[i * crate::constants::RGBA_CHANNELS] = slice[i * crate::constants::RGB_CHANNELS];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 1] = slice[i * crate::constants::RGB_CHANNELS + 1];
-                            rgba[i * crate::constants::RGBA_CHANNELS + 2] = slice[i * crate::constants::RGB_CHANNELS + 2];
+                            rgba[i * crate::constants::RGBA_CHANNELS] =
+                                slice[i * crate::constants::RGB_CHANNELS];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 1] =
+                                slice[i * crate::constants::RGB_CHANNELS + 1];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 2] =
+                                slice[i * crate::constants::RGB_CHANNELS + 2];
                         }
                         Ok(crate::loader::DecodedImage::new(
                             img.width as u32,
