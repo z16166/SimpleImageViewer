@@ -18,6 +18,14 @@ use crate::app::{ImageViewerApp, TransitionStyle};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::time::Instant;
 
+pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating: bool) -> bool {
+    !is_animating
+        || !matches!(
+            transition,
+            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+        )
+}
+
 impl ImageViewerApp {
     /// Draw the standard (non-tiled) image rendering path, including transition animations.
     ///
@@ -99,43 +107,48 @@ impl ImageViewerApp {
         let unrotated_final_dest =
             Rect::from_center_size(final_dest.center(), unrotated_final_size);
 
-        if let (Some(hdr_image), Some(target_format)) = (
-            self.current_hdr_image
-                .as_ref()
-                .and_then(|current| current.image_for_index(self.current_index))
-                .cloned(),
-            self.hdr_target_format,
-        ) {
-            if tp.is_animating {
-                if let Some(prev) = &self.prev_texture.clone() {
-                    let p_size = prev.size_vec2();
-                    let p_dest = self.compute_display_rect(p_size, screen_rect);
-                    let p_final_dest = Rect::from_center_size(
-                        p_dest.center() + tp.prev_offset,
-                        p_dest.size() * tp.prev_scale,
-                    );
-                    ui.painter().image(
-                        prev.id(),
-                        p_final_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE.linear_multiply(tp.prev_alpha),
-                    );
+        // Complex transitions are implemented by the existing SDR texture shader path.
+        // While they animate, use the cached SDR fallback; static and standard fade/slide
+        // frames can use the HDR callback with the float image plane.
+        if should_use_hdr_callback(self.active_transition, tp.is_animating) {
+            if let (Some(hdr_image), Some(target_format)) = (
+                self.current_hdr_image
+                    .as_ref()
+                    .and_then(|current| current.image_for_index(self.current_index))
+                    .cloned(),
+                self.hdr_target_format,
+            ) {
+                if tp.is_animating {
+                    if let Some(prev) = &self.prev_texture.clone() {
+                        let p_size = prev.size_vec2();
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        let p_final_dest = Rect::from_center_size(
+                            p_dest.center() + tp.prev_offset,
+                            p_dest.size() * tp.prev_scale,
+                        );
+                        ui.painter().image(
+                            prev.id(),
+                            p_final_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE.linear_multiply(tp.prev_alpha),
+                        );
+                    }
+                    ui.ctx().request_repaint();
                 }
-                ui.ctx().request_repaint();
-            }
 
-            // HDR images draw through egui-wgpu so the float buffer reaches the shader.
-            // The SDR fallback texture stays cached for non-wgpu paths and transitions.
-            ui.painter()
-                .add(crate::hdr::renderer::hdr_image_plane_callback(
-                    final_dest,
-                    hdr_image,
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    rotation as u32,
-                    tp.alpha,
-                ));
-            return;
+                // HDR images draw through egui-wgpu so the float buffer reaches the shader.
+                // The SDR fallback texture stays cached for non-wgpu paths and transitions.
+                ui.painter()
+                    .add(crate::hdr::renderer::hdr_image_plane_callback(
+                        final_dest,
+                        hdr_image,
+                        self.hdr_renderer.tone_map,
+                        target_format,
+                        rotation as u32,
+                        tp.alpha,
+                    ));
+                return;
+            }
         }
 
         // --- Draw sequence ---
@@ -193,6 +206,36 @@ impl ImageViewerApp {
                 }
             }
             ui.painter().add(egui::Shape::mesh(mesh));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_callback_is_disabled_during_complex_transitions() {
+        for style in [
+            TransitionStyle::PageFlip,
+            TransitionStyle::Ripple,
+            TransitionStyle::Curtain,
+        ] {
+            assert!(!should_use_hdr_callback(style, true));
+            assert!(should_use_hdr_callback(style, false));
+        }
+    }
+
+    #[test]
+    fn hdr_callback_can_render_standard_transitions() {
+        for style in [
+            TransitionStyle::Fade,
+            TransitionStyle::ZoomFade,
+            TransitionStyle::Slide,
+            TransitionStyle::Push,
+            TransitionStyle::None,
+        ] {
+            assert!(should_use_hdr_callback(style, true));
         }
     }
 }

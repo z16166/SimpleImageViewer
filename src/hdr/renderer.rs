@@ -113,7 +113,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
     return vec4<f32>(
-        encode_sdr(hdr.rgb, tone_map) * tone_map.alpha,
+        encode_sdr(hdr.rgb, tone_map),
         clamp(hdr.a, 0.0, 1.0) * tone_map.alpha,
     );
 }
@@ -726,6 +726,13 @@ mod tests {
 
         assert_eq!(uniform.rotation_steps, 1);
         assert_eq!(uniform.alpha, 0.25);
+    }
+
+    #[test]
+    fn shader_outputs_straight_alpha_for_standard_blending() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map),"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
     }
 
     fn hdr_image(
