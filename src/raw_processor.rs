@@ -193,7 +193,7 @@ impl RawProcessor {
 
             // SINGLE-PASS PACKING OPTIMIZATION:
             let mut rgba = vec![255u8; width as usize * height as usize * crate::constants::RGBA_CHANNELS];
-            let slice = std::slice::from_raw_parts(data_ptr, data_len);
+            let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
             crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
 

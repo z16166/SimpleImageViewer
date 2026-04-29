@@ -27,7 +27,7 @@ use crate::constants::{RGBA_CHANNELS, RGB_CHANNELS};
 
 /// Interleaves planar R, G, B, A channels into a packed RGBA buffer.
 pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
-    let len = r.len().min(g.len()).min(b.len()).min(a.len());
+    let len = r.len().min(g.len()).min(b.len()).min(a.len()).min(dst.len() / RGBA_CHANNELS);
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -66,7 +66,7 @@ pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
 
 /// Interleaves planar R, G, B channels into a packed RGBA buffer with a fixed alpha.
 pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8]) {
-    let len = r.len().min(g.len()).min(b.len());
+    let len = r.len().min(g.len()).min(b.len()).min(dst.len() / RGBA_CHANNELS);
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
@@ -281,7 +281,7 @@ unsafe fn interleave_rgba_neon(
 
 /// Interleaves packed RGB (RGBRGB...) into packed RGBA (RGBARGBA...) with a fixed alpha.
 pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
-    let count = src.len() / 3;
+    let count = (src.len() / RGB_CHANNELS).min(dst.len() / RGBA_CHANNELS);
     let mut i = 0;
 
     #[cfg(target_arch = "x86_64")]
