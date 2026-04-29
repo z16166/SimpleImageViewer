@@ -33,6 +33,7 @@ pub const RGBA_CHANNELS: usize = 4;
 /// Standard bit depth for 8-bit image formats.
 pub const BIT_DEPTH_8: usize = 8;
 /// Maximum value for a single 8-bit color channel.
+#[allow(dead_code)]
 pub const MAX_CHANNEL_VALUE: u8 = 255;
 
 /// Number of bytes in one Megabyte.

@@ -62,14 +62,18 @@ unsafe extern "C" {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 unsafe fn wasapi_monitor_init() {}
 #[cfg(not(windows))]
+#[allow(dead_code)]
 unsafe fn wasapi_monitor_uninit() {}
 #[cfg(not(windows))]
+#[allow(dead_code)]
 unsafe fn wasapi_is_device_available() -> bool {
     true
 }
 #[cfg(not(windows))]
+#[allow(dead_code)]
 unsafe fn wasapi_poll_device_lost() -> bool {
     false
 }

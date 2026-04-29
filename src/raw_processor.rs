@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use image::{DynamicImage, RgbImage};
+use image::DynamicImage;
 use libraw_sys as ffi;
 use std::ffi::CString;
 use std::path::Path;
@@ -22,6 +22,33 @@ use std::path::Path;
 pub struct RawProcessor {
     data: *mut ffi::libraw_data_t,
     is_unpacked: bool,
+}
+
+/// RAII wrapper for memory allocated by LibRaw (e.g., via libraw_dcraw_make_mem_image).
+struct LibRawMemory {
+    ptr: *mut ffi::libraw_processed_image_t,
+}
+
+impl LibRawMemory {
+    fn new(ptr: *mut ffi::libraw_processed_image_t) -> Option<Self> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(Self { ptr })
+        }
+    }
+
+    fn as_ref(&self) -> &ffi::libraw_processed_image_t {
+        unsafe { &*self.ptr }
+    }
+}
+
+impl Drop for LibRawMemory {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::libraw_dcraw_clear_mem(self.ptr);
+        }
+    }
 }
 
 unsafe impl Send for RawProcessor {}
@@ -123,14 +150,14 @@ impl RawProcessor {
             }
 
             let mut err = 0;
-            let processed = ffi::libraw_dcraw_make_mem_image(self.data, &mut err);
-            if processed.is_null() {
-                return Err(rust_i18n::t!("error.libraw_mem_image", code = err).to_string());
-            }
+            let processed =
+                LibRawMemory::new(ffi::libraw_dcraw_make_mem_image(self.data, &mut err))
+                    .ok_or_else(|| {
+                        rust_i18n::t!("error.libraw_mem_image", code = err).to_string()
+                    })?;
 
-            let img = &*processed;
+            let img = processed.as_ref();
             if img.image_type != ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
-                ffi::libraw_dcraw_clear_mem(processed);
                 return Err(rust_i18n::t!(
                     "error.unsupported_raw_type",
                     img_type = img.image_type,
@@ -142,7 +169,6 @@ impl RawProcessor {
             if img.colors != crate::constants::RGB_CHANNELS as u16
                 || img.bits != crate::constants::BIT_DEPTH_8 as u16
             {
-                ffi::libraw_dcraw_clear_mem(processed);
                 return Err(rust_i18n::t!(
                     "error.unsupported_raw_format",
                     colors = img.colors,
@@ -151,59 +177,33 @@ impl RawProcessor {
                 .to_string());
             }
 
-            // Create RgbImage from the data
             let width = img.width as u32;
             let height = img.height as u32;
-            let data_ptr = &img.data as *const u8;
-
-            // CRITICAL FIX: Use the actual data_size returned by LibRaw.
-            // Manually calculating (width * height * 3) can fail if LibRaw includes
-            // padding or alignment bytes at the end of the buffer.
+            let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
 
-            log::debug!(
-                "[RawProcessor] FFI develop: ptr={:p}, size={}, dim={}x{}, colors={}, bits={}",
-                data_ptr,
-                data_len,
-                width,
-                height,
-                img.colors,
-                img.bits
-            );
-
             if data_ptr.is_null() || data_len == 0 {
-                ffi::libraw_dcraw_clear_mem(processed);
                 return Err(rust_i18n::t!("error.libraw_mem_image", code = -1).to_string());
             }
 
-            // Verify that the data size is at least enough for the expected RGB8 data.
-            // If it's smaller, we have a memory corruption risk.
-            let expected_min = (width * height * crate::constants::RGB_CHANNELS as u32) as usize;
+            let expected_min = width as usize * height as usize * crate::constants::RGB_CHANNELS;
             if data_len < expected_min {
-                ffi::libraw_dcraw_clear_mem(processed);
-                log::error!(
-                    "[RawProcessor] Buffer size mismatch: expected at least {}, got {}",
-                    expected_min,
-                    data_len
-                );
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
-            let data = std::slice::from_raw_parts(data_ptr, data_len).to_vec();
+            // SINGLE-PASS PACKING OPTIMIZATION:
+            let mut rgba = vec![
+                crate::constants::MAX_CHANNEL_VALUE;
+                width as usize * height as usize * crate::constants::RGBA_CHANNELS
+            ];
+            let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
-            ffi::libraw_dcraw_clear_mem(processed);
+            crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
 
-            // If LibRaw included padding, we need to truncate the Vec to what RgbImage expects,
-            // or use the stride if we were to support it. RgbImage::from_raw expects exactly W*H*3.
-            let mut final_data = data;
-            if final_data.len() > expected_min {
-                final_data.truncate(expected_min);
-            }
-
-            let rgb = RgbImage::from_raw(width, height, final_data)
+            let rgba_img = image::RgbaImage::from_raw(width, height, rgba)
                 .ok_or_else(|| rust_i18n::t!("error.rgb_image_create_failed").to_string())?;
 
-            Ok(DynamicImage::ImageRgb8(rgb))
+            Ok(DynamicImage::ImageRgba8(rgba_img))
         }
     }
 
@@ -215,27 +215,27 @@ impl RawProcessor {
                 return Err(rust_i18n::t!("error.libraw_unpack", code = res).to_string());
             }
 
-            let processed = ffi::libraw_dcraw_make_mem_thumb(self.data, &mut err);
-            if processed.is_null() {
-                return Err(rust_i18n::t!("error.libraw_mem_image", code = err).to_string());
-            }
+            let processed =
+                LibRawMemory::new(ffi::libraw_dcraw_make_mem_thumb(self.data, &mut err))
+                    .ok_or_else(|| {
+                        rust_i18n::t!("error.libraw_mem_image", code = err).to_string()
+                    })?;
 
-            let img = &*processed;
-            let data_ptr = &img.data as *const u8;
+            let img = processed.as_ref();
+            let data_ptr = img.data.as_ptr();
             let data_size = img.data_size as usize;
 
             if data_ptr.is_null() || data_size == 0 {
-                ffi::libraw_dcraw_clear_mem(processed);
                 return Err(rust_i18n::t!("error.libraw_mem_image", code = -2).to_string());
             }
 
             let slice = std::slice::from_raw_parts(data_ptr, data_size);
 
-            let result = if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_JPEG as u32 {
+            if img.image_type == ffi::LibRaw_image_formats::LIBRAW_IMAGE_JPEG as u32 {
                 // JPEG thumbnail
                 match image::load_from_memory(slice) {
                     Ok(decoded) => {
-                        let rgba = decoded.to_rgba8();
+                        let rgba = decoded.into_rgba8();
                         Ok(crate::loader::DecodedImage::new(
                             rgba.width(),
                             rgba.height(),
@@ -249,24 +249,42 @@ impl RawProcessor {
                 if img.colors == crate::constants::RGB_CHANNELS as u16
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
-                    let mut rgba = Vec::with_capacity(
-                        img.width as usize * img.height as usize * crate::constants::RGBA_CHANNELS,
-                    );
-                    for i in 0..(img.width as usize * img.height as usize) {
-                        rgba.push(slice[i * crate::constants::RGB_CHANNELS]);
-                        rgba.push(slice[i * crate::constants::RGB_CHANNELS + 1]);
-                        rgba.push(slice[i * crate::constants::RGB_CHANNELS + 2]);
-                        rgba.push(crate::constants::MAX_CHANNEL_VALUE);
-                    }
-                    Ok(crate::loader::DecodedImage::new(
+                    let count = img.width as usize * img.height as usize;
+                    let mut rgba = vec![
+                        crate::constants::MAX_CHANNEL_VALUE;
+                        count * crate::constants::RGBA_CHANNELS
+                    ];
+
+                    if let Some(rgb) = image::RgbImage::from_raw(
                         img.width as u32,
                         img.height as u32,
-                        rgba,
-                    ))
+                        slice.to_vec(),
+                    ) {
+                        let rgba_img = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
+                        Ok(crate::loader::DecodedImage::new(
+                            img.width as u32,
+                            img.height as u32,
+                            rgba_img.into_raw(),
+                        ))
+                    } else {
+                        // Fallback to manual if RgbImage::from_raw fails (shouldn't happen)
+                        for i in 0..count {
+                            rgba[i * crate::constants::RGBA_CHANNELS] =
+                                slice[i * crate::constants::RGB_CHANNELS];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 1] =
+                                slice[i * crate::constants::RGB_CHANNELS + 1];
+                            rgba[i * crate::constants::RGBA_CHANNELS + 2] =
+                                slice[i * crate::constants::RGB_CHANNELS + 2];
+                        }
+                        Ok(crate::loader::DecodedImage::new(
+                            img.width as u32,
+                            img.height as u32,
+                            rgba,
+                        ))
+                    }
                 } else {
                     // Heuristic fallback: Some cameras (like Fuji) might report a thumbnail as
                     // a bitmap type but actually embed a JPEG, or report bits/colors as 0.
-                    // We check for the JPEG magic bytes (FF D8 FF).
                     if slice.len() > crate::constants::RGB_CHANNELS
                         && slice[0] == 0xFF
                         && slice[1] == 0xD8
@@ -274,7 +292,7 @@ impl RawProcessor {
                     {
                         match image::load_from_memory(slice) {
                             Ok(decoded) => {
-                                let rgba = decoded.to_rgba8();
+                                let rgba = decoded.into_rgba8();
                                 Ok(crate::loader::DecodedImage::new(
                                     rgba.width(),
                                     rgba.height(),
@@ -301,10 +319,7 @@ impl RawProcessor {
                     rust_i18n::t!("error.unknown_thumb_type", img_type = img.image_type)
                         .to_string(),
                 )
-            };
-
-            ffi::libraw_dcraw_clear_mem(processed);
-            result
+            }
         }
     }
 

@@ -58,6 +58,7 @@ pub enum ConfirmTag {
     #[cfg(target_os = "windows")]
     RemoveFileAssoc,
     /// Just a message, no action needed on confirm.
+    #[allow(dead_code)]
     InfoOnly,
 }
 
@@ -88,6 +89,7 @@ impl State {
     }
 
     /// Build state for a simple info/success dialog (single button).
+    #[allow(dead_code)]
     pub fn info(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             title: title.into(),
