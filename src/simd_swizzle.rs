@@ -78,6 +78,14 @@ pub fn interleave_rgb_with_alpha(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        // NEON is always available on aarch64
+        unsafe {
+            interleave_rgb_with_alpha_neon(r, g, b, alpha, dst, &mut i, len);
+        }
+    }
+
     // Scalar fallback
     while i < len {
         let base = i * RGBA_CHANNELS;
@@ -304,6 +312,30 @@ pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
             dst[d + 3] = 255;
         }
         i += 1;
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn interleave_rgb_with_alpha_neon(
+    r: &[u8],
+    g: &[u8],
+    b: &[u8],
+    alpha: u8,
+    dst: &mut [u8],
+    i: &mut usize,
+    len: usize,
+) {
+    unsafe {
+        let va = vmovq_n_u8(alpha);
+        while *i + 16 <= len {
+            let vr = vld1q_u8(r.as_ptr().add(*i));
+            let vg = vld1q_u8(g.as_ptr().add(*i));
+            let vb = vld1q_u8(b.as_ptr().add(*i));
+
+            let res = uint8x16x4_t(vr, vg, vb, va);
+            vst4q_u8(dst.as_mut_ptr().add(*i * 4), res);
+            *i += 16;
+        }
     }
 }
 
