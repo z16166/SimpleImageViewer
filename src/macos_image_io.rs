@@ -459,10 +459,73 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
         let mut rgba = vec![255u8; (w * h * 4) as usize];
 
-        // 1. Group processing by chunk to minimize Mutex locking overhead (CRITICAL PERF FIX)
+        if self.orientation <= 1 {
+            self.copy_physical_rect_from_strips(x, y, w, h, &mut rgba);
+            return Arc::new(rgba);
+        }
+
+        // Logical (display) tile: map each pixel to physical storage and sample strips.
+        // Cache the current horizontal strip's decoded buffer; only touch strip_cache when py
+        // crosses a strip boundary (avoids ~w*h mutex acquisitions per tile).
+        let pw = self.physical_width;
+        let ph = self.physical_height;
+        let mut cached_strip_idx: Option<u32> = None;
+        let mut cached_strip_data: Option<Arc<Vec<u8>>> = None;
+
+        for ty in 0..h {
+            for tx in 0..w {
+                let lx = x.saturating_add(tx);
+                let ly = y.saturating_add(ty);
+                let Some((px, py)) = exif_display_to_physical_pixel(
+                    lx,
+                    ly,
+                    self.orientation,
+                    pw,
+                    ph,
+                ) else {
+                    continue;
+                };
+                let dst_off = ((ty * w + tx) as usize) * 4;
+                if px >= pw || py >= ph {
+                    continue;
+                }
+                let strip_idx = py / self.chunk_h;
+                if cached_strip_idx != Some(strip_idx) {
+                    cached_strip_idx = Some(strip_idx);
+                    cached_strip_data = self.get_or_decode_chunk(strip_idx);
+                }
+                let Some(data) = cached_strip_data.as_deref() else {
+                    continue;
+                };
+                self.copy_physical_rgba_from_strip_buffer(
+                    data,
+                    strip_idx,
+                    px,
+                    py,
+                    &mut rgba[dst_off..dst_off + 4],
+                );
+            }
+        }
+
+        Arc::new(rgba)
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        HugeTiffStrideDecoder::decode_preview(&self.path, max_w.max(max_h), self.orientation)
+            .unwrap_or((0, 0, vec![]))
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        None
+    }
+}
+
+impl TiffStripCachingSource {
+    /// Copy a rectangle from horizontal strips when logical coordinates match physical
+    /// (EXIF orientation 1). `x,y,w,h` are in **physical** space (= logical for orientation 1).
+    fn copy_physical_rect_from_strips(&self, x: u32, y: u32, w: u32, h: u32, rgba: &mut [u8]) {
         let tiles_across = (self.physical_width + self.chunk_w - 1) / self.chunk_w;
 
-        // Find which chunks intersect with this tile
         let start_chunk_row = y / self.chunk_h;
         let end_chunk_row = (y + h - 1) / self.chunk_h;
         let start_chunk_col = x / self.chunk_w;
@@ -472,12 +535,10 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
             for ccol in start_chunk_col..=end_chunk_col {
                 let chunk_idx = crow * tiles_across + ccol;
 
-                // Get or decode the strip/tile (one lock per chunk instead of per pixel!)
                 if let Some(data) = self.get_or_decode_chunk(chunk_idx) {
                     let chunk_y_start = crow * self.chunk_h;
                     let chunk_x_start = ccol * self.chunk_w;
 
-                    // Calculate intersection between tile and this chunk
                     let intersect_y_start = y.max(chunk_y_start);
                     let intersect_y_end = (y + h)
                         .min(chunk_y_start + self.chunk_h)
@@ -519,30 +580,40 @@ impl crate::loader::TiledImageSource for TiffStripCachingSource {
                 }
             }
         }
+    }
 
-        // If orientation is not 1, we need to transform the whole tile
-        if self.orientation > 1 {
-            let (_ow, _oh, opixels) = apply_orientation_buffer(rgba, w, h, self.orientation);
-            // Note: apply_orientation_buffer might change dimensions if 90deg rotation is involved.
-            // But here extract_tile expects w, h. This needs careful handling.
-            // For now, if orientation > 1, we might just want to use ImageIO which handles it via CTM.
-            return std::sync::Arc::new(opixels);
+    /// Copy one RGBA pixel from a decoded strip buffer (`strip_idx` must be `py / chunk_h`).
+    /// No-op if out of bounds (tile pixel stays at its initialized fill).
+    fn copy_physical_rgba_from_strip_buffer(
+        &self,
+        data: &[u8],
+        strip_idx: u32,
+        px: u32,
+        py: u32,
+        dst: &mut [u8],
+    ) {
+        if dst.len() < 4 {
+            return;
         }
-
-        std::sync::Arc::new(rgba)
+        let pw = self.physical_width;
+        let ph = self.physical_height;
+        if px >= pw || py >= ph {
+            return;
+        }
+        let start_y = strip_idx * self.chunk_h;
+        let strip_h = self.chunk_h.min(ph.saturating_sub(start_y));
+        let y_in_chunk = py - start_y;
+        if y_in_chunk >= strip_h {
+            return;
+        }
+        let row_stride = pw as usize * 4;
+        let idx = y_in_chunk as usize * row_stride + px as usize * 4;
+        if idx + 4 > data.len() {
+            return;
+        }
+        dst[..4].copy_from_slice(&data[idx..idx + 4]);
     }
 
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        HugeTiffStrideDecoder::decode_preview(&self.path, max_w.max(max_h), self.orientation)
-            .unwrap_or((0, 0, vec![]))
-    }
-
-    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        None
-    }
-}
-
-impl TiffStripCachingSource {
     fn get_or_decode_chunk(&self, chunk_idx: u32) -> Option<Arc<Vec<u8>>> {
         {
             let cache = self.strip_cache.lock().unwrap();
@@ -925,6 +996,45 @@ fn apply_orientation_buffer(
     (out_w, out_h, out)
 }
 
+/// Inverse of [`apply_orientation_buffer`]: maps a **display** (logical) pixel to the
+/// corresponding **stored** (physical) pixel. `pw` / `ph` are the bitmap dimensions as stored
+/// in the file (before EXIF orientation is applied for viewing).
+fn exif_display_to_physical_pixel(
+    lx: u32,
+    ly: u32,
+    orientation: u32,
+    pw: u32,
+    ph: u32,
+) -> Option<(u32, u32)> {
+    if pw == 0 || ph == 0 {
+        return None;
+    }
+    let (lw, lh) = if (5..=8).contains(&orientation) {
+        (ph, pw)
+    } else {
+        (pw, ph)
+    };
+    if lx >= lw || ly >= lh {
+        return None;
+    }
+    let (px, py) = match orientation {
+        1 => (lx, ly),
+        2 => (pw - 1 - lx, ly),
+        3 => (pw - 1 - lx, ph - 1 - ly),
+        4 => (lx, ph - 1 - ly),
+        5 => (ly, lx),
+        6 => (ly, ph - 1 - lx),
+        7 => (pw - 1 - ly, ph - 1 - lx),
+        8 => (pw - 1 - ly, lx),
+        _ => (lx, ly),
+    };
+    if px < pw && py < ph {
+        Some((px, py))
+    } else {
+        None
+    }
+}
+
 unsafe fn render_cgimage_to_rgba_sync(
     cg_image: &CGImage,
     orientation: u32,
@@ -1097,11 +1207,12 @@ pub fn load_via_image_io(
             }
         }
 
-        if is_tiff && is_stripped && orientation == 1 {
+        if is_tiff && is_stripped {
             log::info!(
-                "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}). Using TiffStripCachingSource.",
+                "MacOS ImageIO: Giant STRIPPED TIFF detected ({}x{}, orientation {}). Using TiffStripCachingSource.",
                 physical_width,
-                physical_height
+                physical_height,
+                orientation
             );
 
             // Get RowsPerStrip or fallback to a reasonable chunk size (e.g., 256 for optimal scrolling)
@@ -1229,4 +1340,47 @@ pub fn discover_imageio_codecs() -> Vec<String> {
         "png".to_string(),
         "heic".to_string(),
     ]
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod exif_mapping_tests {
+    use super::exif_display_to_physical_pixel;
+
+    /// `exif_display_to_physical_pixel` must invert the forward map in `apply_orientation_buffer`.
+    #[test]
+    fn display_to_physical_inverts_forward_map() {
+        let pw = 23u32;
+        let ph = 17u32;
+        for orientation in 1u32..=8u32 {
+            let (lw, lh) = if (5..=8).contains(&orientation) {
+                (ph, pw)
+            } else {
+                (pw, ph)
+            };
+            for ly in 0..lh {
+                for lx in 0..lw {
+                    let Some((px, py)) =
+                        exif_display_to_physical_pixel(lx, ly, orientation, pw, ph)
+                    else {
+                        panic!("no inverse for o={orientation} ({lx},{ly})");
+                    };
+                    let (nx, ny) = match orientation {
+                        2 => (pw - 1 - px, py),
+                        3 => (pw - 1 - px, ph - 1 - py),
+                        4 => (px, ph - 1 - py),
+                        5 => (py, px),
+                        6 => (ph - 1 - py, px),
+                        7 => (ph - 1 - py, pw - 1 - px),
+                        8 => (py, pw - 1 - px),
+                        _ => (px, py),
+                    };
+                    assert_eq!(
+                        (nx, ny),
+                        (lx, ly),
+                        "orientation={orientation} physical=({px},{py})"
+                    );
+                }
+            }
+        }
+    }
 }
