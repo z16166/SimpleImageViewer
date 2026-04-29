@@ -237,10 +237,14 @@ impl ImageViewerApp {
             settings,
         };
         log::info!(
-            "[HDR] Capability state: available={}, mode={:?}, reason={}, tone_map_sdr_white_nits={}",
-            app.hdr_capabilities.available,
+            "[HDR] Capability state: backend={:?}, mode={:?}, available={}, native_presentation_enabled={}, reason={}, candidate_texture_format={:?}, candidate_platform_path={:?}, tone_map_sdr_white_nits={}",
+            app.hdr_capabilities.backend,
             app.hdr_capabilities.output_mode,
+            app.hdr_capabilities.available,
+            app.hdr_capabilities.native_presentation_enabled,
             app.hdr_capabilities.reason,
+            app.hdr_capabilities.candidate_texture_format,
+            app.hdr_capabilities.candidate_platform_path,
             app.hdr_renderer.tone_map.sdr_white_nits
         );
         log::info!(
