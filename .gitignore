@@ -22,6 +22,7 @@ test_large.bmp
 *.txt
 !CMakeLists.txt
 scratch/
+.worktrees/
 
 # External Dependencies
 /3rdparty/
