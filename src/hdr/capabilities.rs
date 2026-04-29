@@ -49,6 +49,27 @@ impl HdrCapabilities {
         }
     }
 
+    pub fn startup_diagnostics(&self) -> Vec<String> {
+        vec![
+            format!("[HDR] backend={:?}", self.backend),
+            format!("[HDR] mode={:?}", self.output_mode),
+            format!("[HDR] available={}", self.available),
+            format!(
+                "[HDR] native_presentation_enabled={}",
+                self.native_presentation_enabled
+            ),
+            format!("[HDR] reason={}", self.reason),
+            format!(
+                "[HDR] candidate_platform_path={:?}",
+                self.candidate_platform_path
+            ),
+            format!(
+                "[HDR] candidate_texture_format={:?}",
+                self.candidate_texture_format
+            ),
+        ]
+    }
+
     fn candidate(
         backend: wgpu::Backend,
         candidate_platform_path: HdrPresentationPath,
@@ -154,6 +175,25 @@ mod tests {
         assert!(!capabilities.native_presentation_enabled);
         assert_eq!(capabilities.candidate_texture_format, None);
         assert_eq!(capabilities.reason, "unsupported HDR backend: Vulkan");
+    }
+
+    #[test]
+    fn startup_diagnostics_include_required_fields() {
+        let capabilities = HdrCapabilities::sdr("wgpu render state unavailable");
+        let diagnostics = capabilities.startup_diagnostics();
+
+        assert_eq!(
+            diagnostics,
+            [
+                "[HDR] backend=None",
+                "[HDR] mode=SdrToneMapped",
+                "[HDR] available=false",
+                "[HDR] native_presentation_enabled=false",
+                "[HDR] reason=wgpu render state unavailable",
+                "[HDR] candidate_platform_path=None",
+                "[HDR] candidate_texture_format=None",
+            ]
+        );
     }
 }
 

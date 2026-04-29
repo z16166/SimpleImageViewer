@@ -236,15 +236,11 @@ impl ImageViewerApp {
             music_hud_drag_offset: Vec2::ZERO,
             settings,
         };
+        for diagnostic in app.hdr_capabilities.startup_diagnostics() {
+            log::info!("{diagnostic}");
+        }
         log::info!(
-            "[HDR] Capability state: backend={:?}, mode={:?}, available={}, native_presentation_enabled={}, reason={}, candidate_texture_format={:?}, candidate_platform_path={:?}, tone_map_sdr_white_nits={}",
-            app.hdr_capabilities.backend,
-            app.hdr_capabilities.output_mode,
-            app.hdr_capabilities.available,
-            app.hdr_capabilities.native_presentation_enabled,
-            app.hdr_capabilities.reason,
-            app.hdr_capabilities.candidate_texture_format,
-            app.hdr_capabilities.candidate_platform_path,
+            "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits
         );
         log::info!(
