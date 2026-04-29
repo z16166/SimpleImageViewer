@@ -1078,6 +1078,10 @@ fn load_image_file(
             false
         };
 
+        if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
+            return load_hdr(path);
+        }
+
         if ext == "psd" || ext == "psb" {
             if let Ok(item) = load_psd(path) {
                 return Ok(item);
@@ -1299,6 +1303,15 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     let pixels = rgba.into_raw();
 
     Ok(make_image_data(DecodedImage::new(width, height, pixels)))
+}
+
+fn load_hdr(path: &PathBuf) -> Result<ImageData, String> {
+    let hdr = crate::hdr::decode::decode_hdr_image(path)?;
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0);
+
+    Ok(ImageData::Static(DecodedImage::new(
+        hdr.width, hdr.height, pixels,
+    )))
 }
 
 fn process_animation_frames(
@@ -1530,11 +1543,10 @@ fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<Im
         | image::ImageFormat::Pnm
         | image::ImageFormat::Tga
         | image::ImageFormat::Dds
-        | image::ImageFormat::Hdr
         | image::ImageFormat::Farbfeld
-        | image::ImageFormat::OpenExr
         | image::ImageFormat::Avif
         | image::ImageFormat::Qoi => load_static(path),
+        image::ImageFormat::Hdr | image::ImageFormat::OpenExr => load_hdr(path),
         _ => Err(rust_i18n::t!(
             "error.unsupported_detected_format",
             format = format!("{:?}", format)
