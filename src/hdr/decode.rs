@@ -17,21 +17,42 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::ImageReader;
+use image::{ImageReader, Limits};
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
+const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;
+const HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR: u64 =
+    HDR_RGBA32F_BYTES_PER_PIXEL + SDR_RGBA8_BYTES_PER_PIXEL;
+const MAX_HDR_FALLBACK_PIXELS: u64 = 8192 * 8192;
+const MAX_HDR_FALLBACK_DECODE_BYTES: u64 = MAX_HDR_FALLBACK_PIXELS * HDR_RGBA32F_BYTES_PER_PIXEL;
+const MAX_HDR_FALLBACK_TOTAL_BYTES: u64 =
+    MAX_HDR_FALLBACK_PIXELS * HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR;
+const MAX_HDR_TONE_MAP_INPUT: f32 = f32::MAX;
 
 pub fn is_hdr_candidate_ext(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("exr") || ext.eq_ignore_ascii_case("hdr")
 }
 
 pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
-    let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
-    decoder.no_limits();
+    let (width, height) = ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+    validate_hdr_fallback_budget(width, height)?;
+
+    let mut decoder = ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = Limits::default();
+    limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
+    decoder.limits(limits);
 
     let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
-    let (width, height) = rgba.dimensions();
 
     Ok(HdrImageBuffer {
         width,
@@ -70,7 +91,7 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
 
     for pixel in buffer.rgba_f32.chunks_exact(4) {
         for channel in &pixel[..3] {
-            let exposed = sanitize_hdr_rgb(*channel) * exposure_scale;
+            let exposed = clamp_hdr_tone_map_input(sanitize_hdr_rgb(*channel) * exposure_scale);
             let mapped = exposed / (1.0 + exposed);
             let encoded = mapped.powf(1.0 / 2.2).clamp(0.0, 1.0);
             pixels.push(float_to_u8(encoded));
@@ -82,6 +103,25 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
     Ok(pixels)
 }
 
+fn validate_hdr_fallback_budget(width: u32, height: u32) -> Result<(), String> {
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| format!("HDR image dimensions overflow: {width}x{height}"))?;
+    let total_bytes = pixels
+        .checked_mul(HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR)
+        .ok_or_else(|| format!("HDR fallback byte size overflow: {width}x{height}"))?;
+
+    if pixels > MAX_HDR_FALLBACK_PIXELS || total_bytes > MAX_HDR_FALLBACK_TOTAL_BYTES {
+        return Err(format!(
+            "HDR image {width}x{height} requires {total_bytes} bytes for full-float fallback, \
+             exceeds HDR fallback limit of {MAX_HDR_FALLBACK_PIXELS} pixels / \
+             {MAX_HDR_FALLBACK_TOTAL_BYTES} bytes"
+        ));
+    }
+
+    Ok(())
+}
+
 fn sanitize_hdr_rgb(value: f32) -> f32 {
     if value.is_nan() || value <= 0.0 {
         0.0
@@ -89,6 +129,16 @@ fn sanitize_hdr_rgb(value: f32) -> f32 {
         f32::MAX
     } else {
         value
+    }
+}
+
+fn clamp_hdr_tone_map_input(value: f32) -> f32 {
+    if value.is_nan() || value <= 0.0 {
+        0.0
+    } else if value.is_infinite() {
+        MAX_HDR_TONE_MAP_INPUT
+    } else {
+        value.min(MAX_HDR_TONE_MAP_INPUT)
     }
 }
 
@@ -167,6 +217,21 @@ mod tests {
     }
 
     #[test]
+    fn tone_map_extreme_finite_rgb_with_high_exposure_saturates() {
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![f32::MAX, f32::MAX, f32::MAX, 1.0]),
+        };
+
+        let sdr = hdr_to_sdr_rgba8(&buffer, 16.0).expect("tone map extreme finite buffer");
+
+        assert_eq!(sdr, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
     fn tone_map_rejects_malformed_buffer_length() {
         let buffer = HdrImageBuffer {
             width: 1,
@@ -203,6 +268,23 @@ mod tests {
         assert!((buffer.rgba_f32[1] - 1.0).abs() < 0.01);
         assert!((buffer.rgba_f32[2] - 1.0).abs() < 0.01);
         assert_eq!(buffer.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn decode_hdr_image_rejects_oversized_hdr_header_before_pixel_decode() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_hdr_decode_huge_{}.hdr",
+            std::process::id()
+        ));
+        let width = (MAX_HDR_FALLBACK_PIXELS + 1) as u32;
+        let bytes = format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X {width}\n");
+        std::fs::write(&path, bytes).expect("write oversized test HDR");
+
+        let err = decode_hdr_image(&path).expect_err("reject oversized HDR fallback");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(err.contains("exceeds HDR fallback limit"));
+        assert!(err.contains(&width.to_string()));
     }
 
     #[test]
