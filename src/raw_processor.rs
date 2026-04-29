@@ -192,8 +192,10 @@ impl RawProcessor {
             }
 
             // SINGLE-PASS PACKING OPTIMIZATION:
-            let mut rgba =
-                vec![crate::constants::MAX_CHANNEL_VALUE; width as usize * height as usize * crate::constants::RGBA_CHANNELS];
+            let mut rgba = vec![
+                crate::constants::MAX_CHANNEL_VALUE;
+                width as usize * height as usize * crate::constants::RGBA_CHANNELS
+            ];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
             crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
@@ -248,7 +250,10 @@ impl RawProcessor {
                     && img.bits == crate::constants::BIT_DEPTH_8 as u16
                 {
                     let count = img.width as usize * img.height as usize;
-                    let mut rgba = vec![crate::constants::MAX_CHANNEL_VALUE; count * crate::constants::RGBA_CHANNELS];
+                    let mut rgba = vec![
+                        crate::constants::MAX_CHANNEL_VALUE;
+                        count * crate::constants::RGBA_CHANNELS
+                    ];
 
                     if let Some(rgb) = image::RgbImage::from_raw(
                         img.width as u32,
