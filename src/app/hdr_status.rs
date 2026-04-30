@@ -19,13 +19,16 @@ use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
 
 impl ImageViewerApp {
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
-        if self.hdr_sdr_fallback_indices.contains(&self.current_index) {
-            return Some(HdrRenderPath::SdrFallback);
-        }
-
-        self.current_hdr_image
+        let has_hdr_tiled_source = self
+            .current_hdr_tiled_image
             .as_ref()
-            .and_then(|current| current.image_for_index(self.current_index))?;
+            .is_some_and(|current| current.source_for_index(self.current_index).is_some());
+        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+
+        let has_hdr_image = self
+            .current_hdr_image
+            .as_ref()
+            .is_some_and(|current| current.image_for_index(self.current_index).is_some());
 
         let complex_transition_active = self.transition_start.is_some()
             && matches!(
@@ -33,15 +36,69 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
 
-        if self.hdr_target_format.is_some() && !complex_transition_active {
-            Some(HdrRenderPath::FloatImagePlane)
-        } else {
-            Some(HdrRenderPath::SdrFallback)
-        }
+        hdr_render_path_for_state(
+            has_hdr_tiled_source,
+            has_hdr_image,
+            has_sdr_fallback,
+            self.hdr_target_format.is_some(),
+            complex_transition_active,
+        )
     }
 
     pub(crate) fn current_hdr_osd_tag(&self) -> Option<String> {
         let render_path = self.current_hdr_render_path()?;
         hdr_osd_tag(true, render_path, &self.hdr_capabilities)
+    }
+}
+
+fn hdr_render_path_for_state(
+    has_hdr_tiled_source: bool,
+    has_hdr_image: bool,
+    has_sdr_fallback: bool,
+    has_hdr_target_format: bool,
+    complex_transition_active: bool,
+) -> Option<HdrRenderPath> {
+    if has_hdr_tiled_source && has_hdr_target_format {
+        return Some(HdrRenderPath::FloatTilePlane);
+    }
+
+    if has_hdr_image && has_hdr_target_format && !complex_transition_active {
+        return Some(HdrRenderPath::FloatImagePlane);
+    }
+
+    if has_hdr_image || has_hdr_tiled_source || has_sdr_fallback {
+        Some(HdrRenderPath::SdrFallback)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hdr_render_path_for_state;
+    use crate::hdr::status::HdrRenderPath;
+
+    #[test]
+    fn hdr_tiled_source_reports_tile_plane_before_sdr_fallback() {
+        assert_eq!(
+            hdr_render_path_for_state(true, false, true, true, false),
+            Some(HdrRenderPath::FloatTilePlane)
+        );
+    }
+
+    #[test]
+    fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
+        assert_eq!(
+            hdr_render_path_for_state(true, false, true, false, false),
+            Some(HdrRenderPath::SdrFallback)
+        );
+    }
+
+    #[test]
+    fn complex_transition_keeps_full_image_hdr_on_sdr_fallback() {
+        assert_eq!(
+            hdr_render_path_for_state(false, true, false, true, true),
+            Some(HdrRenderPath::SdrFallback)
+        );
     }
 }

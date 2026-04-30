@@ -21,6 +21,7 @@ use rust_i18n::t;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrRenderPath {
     FloatImagePlane,
+    FloatTilePlane,
     SdrFallback,
 }
 
@@ -42,6 +43,7 @@ pub fn hdr_osd_tag(
 fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
     match render_path {
         HdrRenderPath::FloatImagePlane => t!("hdr.render_path.float_plane").to_string(),
+        HdrRenderPath::FloatTilePlane => t!("hdr.render_path.float_tile_plane").to_string(),
         HdrRenderPath::SdrFallback => t!("hdr.render_path.sdr_fallback").to_string(),
     }
 }
@@ -92,6 +94,20 @@ mod tests {
         assert_eq!(
             tag.as_deref(),
             Some("HDR: source | plane | SDR tone-mapped")
+        );
+    }
+
+    #[test]
+    fn hdr_osd_tag_names_float_tile_plane() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatTilePlane,
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+        );
+
+        assert_eq!(
+            tag.as_deref(),
+            Some("HDR: source | tile plane | SDR tone-mapped")
         );
     }
 
