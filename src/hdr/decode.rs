@@ -36,6 +36,10 @@ pub fn is_hdr_candidate_ext(ext: &str) -> bool {
 }
 
 pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
+    if is_exr_path(path) {
+        return decode_exr_display_image(path);
+    }
+
     let (width, height) = ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
@@ -54,18 +58,41 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 
     let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
 
-    let color_space = if is_exr_path(path) {
-        crate::hdr::exr_tiled::exr_color_space(path)?
-    } else {
-        HdrColorSpace::LinearSrgb
-    };
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        rgba_f32: Arc::new(rgba.into_raw()),
+    })
+}
+
+pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
+    let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated(path)?;
+    validate_hdr_fallback_budget(width, height)?;
+
+    let pixels = exr::prelude::read_first_rgba_layer_from_file(
+        path,
+        move |resolution, _channels| vec![0.0_f32; resolution.width() * resolution.height() * 4],
+        move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
+            let index = (position.y() * width as usize + position.x()) * 4;
+            pixels[index] = r;
+            pixels[index + 1] = g;
+            pixels[index + 2] = b;
+            pixels[index + 3] = a;
+        },
+    )
+    .map_err(|err| err.to_string())?
+    .layer_data
+    .channel_data
+    .pixels;
 
     Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
-        color_space,
-        rgba_f32: Arc::new(rgba.into_raw()),
+        color_space: crate::hdr::exr_tiled::exr_color_space(path)?,
+        rgba_f32: Arc::new(pixels),
     })
 }
 
@@ -162,7 +189,15 @@ fn float_to_u8(value: f32) -> u8 {
 mod tests {
     use super::*;
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use std::path::PathBuf;
     use std::sync::Arc;
+
+    fn openexr_images_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
+            .filter(|path| path.is_dir())
+    }
 
     #[test]
     fn hdr_candidate_extensions_are_case_insensitive() {
@@ -327,5 +362,31 @@ mod tests {
         assert!((buffer.rgba_f32[1] - 0.5).abs() < 0.01);
         assert!((buffer.rgba_f32[2] - 2.0).abs() < 0.01);
         assert_eq!(buffer.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn decode_exr_display_image_reads_multipart_color_layer() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR multipart decode test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+        let path = root.join("v2/Stereo/composited.exr");
+        if !path.is_file() {
+            eprintln!("skipping OpenEXR multipart decode test; stereo composited sample missing");
+            return;
+        }
+
+        let buffer = decode_exr_display_image(&path).expect("decode multipart EXR display layer");
+
+        assert_eq!((buffer.width, buffer.height), (1918, 1078));
+        assert!(
+            buffer
+                .rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 0.0 || pixel[1] > 0.0 || pixel[2] > 0.0),
+            "multipart display layer should contain visible RGB content"
+        );
     }
 }

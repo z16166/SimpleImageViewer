@@ -1345,6 +1345,12 @@ fn load_image_file(
 }
 
 fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
+    if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg(path) {
+        let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+        return Ok(make_hdr_image_data(hdr, fallback));
+    }
+
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
@@ -2025,6 +2031,34 @@ mod tests {
             try_load_disk_backed_exr_hdr(&path).expect("probe should load subsampled YC EXR");
 
         assert!(matches!(image_data, Some(ImageData::HdrTiled { .. })));
+    }
+
+    #[test]
+    fn ultra_hdr_jpeg_sample_loads_as_hdr_image_data() {
+        let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
+        let path = root
+            .join("Originals")
+            .join("Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR loader test; sample missing");
+            return;
+        }
+
+        let image_data = load_jpeg(&path).expect("load Ultra HDR JPEG_R sample");
+
+        let ImageData::Hdr { hdr, fallback } = image_data else {
+            panic!("expected Ultra HDR JPEG_R to load as HDR image data");
+        };
+        assert_eq!((hdr.width, hdr.height), (4080, 3072));
+        assert_eq!((fallback.width, fallback.height), (4080, 3072));
+        assert!(
+            hdr.rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "Ultra HDR loader should preserve HDR highlights"
+        );
     }
 
     #[test]

@@ -1888,10 +1888,20 @@ mod tests {
         let reference = crate::hdr::decode::decode_hdr_image(&base.join("composited.exr"))
             .expect("decode flattened OpenEXR reference");
 
-        assert_eq!(
-            (composited.width, composited.height),
-            (reference.width, reference.height)
-        );
+        let reference_header = super::read_first_header_for_probe(&base.join("composited.exr"))
+            .expect("read reference header");
+        let offset_x = (reference_header.own_attributes.layer_position.x()
+            - reference_header
+                .shared_attributes
+                .display_window
+                .position
+                .x()) as u32;
+        let offset_y = (reference_header.own_attributes.layer_position.y()
+            - reference_header
+                .shared_attributes
+                .display_window
+                .position
+                .y()) as u32;
 
         let sample_points = [
             (reference.width / 5, reference.height / 5),
@@ -1902,9 +1912,12 @@ mod tests {
         let mean_luma_delta = sample_points
             .iter()
             .map(|&(x, y)| {
-                let index = (y as usize * reference.width as usize + x as usize) * 4;
-                let actual = luma(&composited.rgba_f32[index..index + 3]);
-                let expected = luma(&reference.rgba_f32[index..index + 3]);
+                let reference_index = (y as usize * reference.width as usize + x as usize) * 4;
+                let composited_index = ((y + offset_y) as usize * composited.width as usize
+                    + (x + offset_x) as usize)
+                    * 4;
+                let actual = luma(&composited.rgba_f32[composited_index..composited_index + 3]);
+                let expected = luma(&reference.rgba_f32[reference_index..reference_index + 3]);
                 (actual - expected).abs()
             })
             .sum::<f32>()

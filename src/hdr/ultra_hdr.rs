@@ -1,0 +1,415 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+const JPEG_SOI: [u8; 2] = [0xFF, 0xD8];
+const JPEG_SOS: u8 = 0xDA;
+const JPEG_EOI: u8 = 0xD9;
+const JPEG_APP1: u8 = 0xE1;
+const HDR_GAIN_MAP_NAMESPACE: &str = "http://ns.adobe.com/hdr-gain-map/1.0/";
+const HDR_GAIN_MAP_VERSION: &str = "hdrgm:Version";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UltraHdrJpegInfo {
+    pub(crate) is_ultra_hdr: bool,
+    pub(crate) primary_xmp_has_gain_map: bool,
+    pub(crate) gain_map_item_count: usize,
+}
+
+#[cfg(test)]
+fn inspect_ultra_hdr_jpeg(path: &Path) -> Result<UltraHdrJpegInfo, String> {
+    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    inspect_ultra_hdr_jpeg_bytes(&bytes)
+}
+
+#[cfg(test)]
+fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    extract_gain_map_jpeg_bytes(&bytes)
+}
+
+pub(crate) fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
+    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    decode_ultra_hdr_jpeg_bytes(&bytes)
+}
+
+fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
+    let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
+    if !info.is_ultra_hdr {
+        return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
+    }
+
+    let (width, height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
+    let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
+    let metadata = gain_map_metadata(&gain_map_jpeg)?;
+    let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        let gain_y = (u64::from(y) * u64::from(gain_height) / u64::from(height)) as u32;
+        for x in 0..width {
+            let gain_x = (u64::from(x) * u64::from(gain_width) / u64::from(width)) as u32;
+            let sdr_index = (y as usize * width as usize + x as usize) * 4;
+            let gain_index = (gain_y as usize * gain_width as usize + gain_x as usize) * 4;
+            let gain_value = f32::from(gain_rgba[gain_index]) / 255.0;
+            let log_boost = metadata.gain_map_min
+                + (metadata.gain_map_max - metadata.gain_map_min)
+                    * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE));
+            let boost = 2.0_f32.powf(log_boost);
+
+            for channel in &sdr_rgba[sdr_index..sdr_index + 3] {
+                let linear_sdr = srgb_u8_to_linear_f32(*channel);
+                let hdr =
+                    ((linear_sdr + metadata.offset_sdr) * boost - metadata.offset_hdr).max(0.0);
+                rgba_f32.push(hdr);
+            }
+            rgba_f32.push(f32::from(sdr_rgba[sdr_index + 3]) / 255.0);
+        }
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
+    if !bytes.starts_with(&JPEG_SOI) {
+        return Err("not a JPEG stream".to_string());
+    }
+
+    let mut primary_xmp_has_gain_map = false;
+    let mut gain_map_item_count = 0;
+
+    for segment in primary_metadata_segments(bytes)? {
+        if segment.marker != JPEG_APP1 {
+            continue;
+        }
+
+        let text = String::from_utf8_lossy(segment.payload);
+        if text.contains(HDR_GAIN_MAP_NAMESPACE) && text.contains(HDR_GAIN_MAP_VERSION) {
+            primary_xmp_has_gain_map = true;
+        }
+        gain_map_item_count += text.matches("Item:Semantic=\"GainMap\"").count();
+        gain_map_item_count += text.matches("Item:Semantic='GainMap'").count();
+        gain_map_item_count += text.matches("Semantic=\"GainMap\"").count();
+        gain_map_item_count += text.matches("Semantic='GainMap'").count();
+    }
+
+    Ok(UltraHdrJpegInfo {
+        is_ultra_hdr: primary_xmp_has_gain_map && gain_map_item_count > 0,
+        primary_xmp_has_gain_map,
+        gain_map_item_count,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GainMapMetadata {
+    gain_map_min: f32,
+    gain_map_max: f32,
+    gamma: f32,
+    offset_sdr: f32,
+    offset_hdr: f32,
+}
+
+fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
+    primary_metadata_segments(gain_map_jpeg)?
+        .iter()
+        .filter(|segment| segment.marker == JPEG_APP1)
+        .find_map(|segment| {
+            let text = String::from_utf8_lossy(segment.payload);
+            if !text.contains(HDR_GAIN_MAP_NAMESPACE) || !text.contains(HDR_GAIN_MAP_VERSION) {
+                return None;
+            }
+            Some(GainMapMetadata {
+                gain_map_min: attribute_f32(&text, "hdrgm:GainMapMin").unwrap_or(0.0),
+                gain_map_max: attribute_f32(&text, "hdrgm:GainMapMax")?,
+                gamma: attribute_f32(&text, "hdrgm:Gamma").unwrap_or(1.0),
+                offset_sdr: attribute_f32(&text, "hdrgm:OffsetSDR").unwrap_or(1.0 / 64.0),
+                offset_hdr: attribute_f32(&text, "hdrgm:OffsetHDR").unwrap_or(1.0 / 64.0),
+            })
+        })
+        .ok_or_else(|| "Ultra HDR gain map metadata not found".to_string())
+}
+
+fn attribute_f32(text: &str, name: &str) -> Option<f32> {
+    parse_quoted_attribute(text, name)?.parse().ok()
+}
+
+fn srgb_u8_to_linear_f32(value: u8) -> f32 {
+    let encoded = f32::from(value) / 255.0;
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let length = primary_metadata_segments(bytes)?
+        .iter()
+        .filter(|segment| segment.marker == JPEG_APP1)
+        .find_map(|segment| {
+            let text = String::from_utf8_lossy(segment.payload);
+            gain_map_item_length(&text)
+        })
+        .ok_or_else(|| "Ultra HDR gain map item length not found".to_string())?;
+
+    if length > bytes.len() {
+        return Err("Ultra HDR gain map length exceeds JPEG file size".to_string());
+    }
+
+    let start = bytes.len() - length;
+    let gain_map = &bytes[start..];
+    if !gain_map.starts_with(&JPEG_SOI) || !gain_map.ends_with(&[0xFF, JPEG_EOI]) {
+        return Err("Ultra HDR gain map payload is not a trailing JPEG stream".to_string());
+    }
+
+    Ok(gain_map.to_vec())
+}
+
+fn gain_map_item_length(xmp: &str) -> Option<usize> {
+    let semantic_index = xmp
+        .find("Item:Semantic=\"GainMap\"")
+        .or_else(|| xmp.find("Item:Semantic='GainMap'"))
+        .or_else(|| xmp.find("Semantic=\"GainMap\""))
+        .or_else(|| xmp.find("Semantic='GainMap'"))?;
+    let item_start = xmp[..semantic_index].rfind("<Container:Item")?;
+    let item = &xmp[item_start..semantic_index];
+    attribute_usize(item, "Item:Length").or_else(|| attribute_usize(item, "Length"))
+}
+
+fn attribute_usize(text: &str, name: &str) -> Option<usize> {
+    parse_quoted_attribute(text, name)?.parse().ok()
+}
+
+fn parse_quoted_attribute<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let start = text.find(name)? + name.len();
+    let tail = text[start..].trim_start();
+    let tail = tail.strip_prefix('=')?.trim_start();
+    let quote = tail.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let value_start = quote.len_utf8();
+    let value_end = tail[value_start..].find(quote)?;
+    Some(&tail[value_start..value_start + value_end])
+}
+
+#[derive(Debug, Clone, Copy)]
+struct JpegSegment<'a> {
+    marker: u8,
+    payload: &'a [u8],
+}
+
+fn primary_metadata_segments(bytes: &[u8]) -> Result<Vec<JpegSegment<'_>>, String> {
+    let mut segments = Vec::new();
+    let mut offset = JPEG_SOI.len();
+
+    while offset < bytes.len() {
+        if bytes[offset] != 0xFF {
+            return Err(format!("invalid JPEG marker at byte offset {offset}"));
+        }
+
+        while offset < bytes.len() && bytes[offset] == 0xFF {
+            offset += 1;
+        }
+        if offset >= bytes.len() {
+            break;
+        }
+
+        let marker = bytes[offset];
+        offset += 1;
+
+        if marker == JPEG_SOS || marker == JPEG_EOI {
+            break;
+        }
+        if marker_has_no_payload(marker) {
+            continue;
+        }
+        if offset + 2 > bytes.len() {
+            return Err("truncated JPEG segment length".to_string());
+        }
+
+        let segment_len = u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+        if segment_len < 2 {
+            return Err(format!("invalid JPEG segment length {segment_len}"));
+        }
+        let payload_start = offset + 2;
+        let payload_end = offset
+            .checked_add(segment_len)
+            .ok_or_else(|| "JPEG segment length overflow".to_string())?;
+        if payload_end > bytes.len() {
+            return Err("truncated JPEG segment payload".to_string());
+        }
+
+        segments.push(JpegSegment {
+            marker,
+            payload: &bytes[payload_start..payload_end],
+        });
+        offset = payload_end;
+    }
+
+    Ok(segments)
+}
+
+fn marker_has_no_payload(marker: u8) -> bool {
+    marker == 0x01 || (0xD0..=0xD7).contains(&marker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn ultra_hdr_samples_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\Ultra_HDR_Samples")))
+            .filter(|path| path.is_dir())
+    }
+
+    fn sample_path(root: &Path, relative: &str) -> PathBuf {
+        relative
+            .split('/')
+            .fold(root.to_path_buf(), |path, segment| path.join(segment))
+    }
+
+    #[test]
+    fn ultra_hdr_original_samples_are_detected_as_jpeg_r() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+
+        for index in 1..=10 {
+            let path = sample_path(
+                &root,
+                &format!("Originals/Ultra_HDR_Samples_Originals_{index:02}.jpg"),
+            );
+            if !path.is_file() {
+                eprintln!("skipping Ultra HDR sample {}; file missing", path.display());
+                continue;
+            }
+
+            let info = inspect_ultra_hdr_jpeg(&path).expect("inspect Ultra HDR JPEG_R sample");
+            assert!(
+                info.is_ultra_hdr,
+                "{} should be detected as Ultra HDR",
+                path.display()
+            );
+            assert!(
+                info.primary_xmp_has_gain_map,
+                "{} should advertise hdrgm metadata",
+                path.display()
+            );
+            assert!(
+                info.gain_map_item_count >= 1,
+                "{} should include a gain map item",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn plain_jpeg_xmp_is_not_detected_as_jpeg_r() {
+        let bytes = minimal_jpeg_with_app1_xmp(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF></rdf:RDF></x:xmpmeta>"#,
+        );
+
+        let info = inspect_ultra_hdr_jpeg_bytes(&bytes).expect("inspect plain JPEG");
+
+        assert!(!info.is_ultra_hdr);
+        assert!(!info.primary_xmp_has_gain_map);
+        assert_eq!(info.gain_map_item_count, 0);
+    }
+
+    #[test]
+    fn ultra_hdr_original_gain_map_jpeg_is_extractable() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+        let path = sample_path(&root, "Originals/Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR gain map extraction test; sample missing");
+            return;
+        }
+
+        let gain_map_jpeg = extract_gain_map_jpeg(&path).expect("extract embedded gain map JPEG");
+        let (width, height, pixels) =
+            libjpeg_turbo::decode_to_rgba(gain_map_jpeg.as_slice()).expect("decode gain map JPEG");
+
+        assert_eq!((width, height), (1020, 768));
+        assert_eq!(pixels.len(), width as usize * height as usize * 4);
+    }
+
+    #[test]
+    fn ultra_hdr_original_decodes_to_hdr_float_buffer() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+        let path = sample_path(&root, "Originals/Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR decode test; sample missing");
+            return;
+        }
+
+        let hdr = decode_ultra_hdr_jpeg(&path).expect("decode Ultra HDR JPEG_R");
+
+        assert_eq!((hdr.width, hdr.height), (4080, 3072));
+        assert_eq!(hdr.format, crate::hdr::types::HdrPixelFormat::Rgba32Float);
+        assert_eq!(
+            hdr.color_space,
+            crate::hdr::types::HdrColorSpace::LinearSrgb
+        );
+        assert_eq!(
+            hdr.rgba_f32.len(),
+            hdr.width as usize * hdr.height as usize * 4
+        );
+        assert!(
+            hdr.rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "Ultra HDR decode should recover highlights above SDR white"
+        );
+    }
+
+    fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {
+        let payload = format!("http://ns.adobe.com/xap/1.0/\0{xmp}");
+        let len = u16::try_from(payload.len() + 2).expect("test XMP fits in JPEG segment");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
+        bytes.extend_from_slice(&len.to_be_bytes());
+        bytes.extend_from_slice(payload.as_bytes());
+        bytes.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9]);
+        bytes
+    }
+}
