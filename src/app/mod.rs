@@ -176,18 +176,18 @@ impl CurrentHdrImage {
 #[derive(Clone)]
 pub(crate) struct CurrentHdrTiledImage {
     index: usize,
-    source: Arc<crate::hdr::tiled::HdrTiledImageSource>,
+    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
 }
 
 impl CurrentHdrTiledImage {
-    pub(crate) fn new(index: usize, source: Arc<crate::hdr::tiled::HdrTiledImageSource>) -> Self {
+    pub(crate) fn new(index: usize, source: Arc<dyn crate::hdr::tiled::HdrTiledSource>) -> Self {
         Self { index, source }
     }
 
     pub(crate) fn source_for_index(
         &self,
         index: usize,
-    ) -> Option<&Arc<crate::hdr::tiled::HdrTiledImageSource>> {
+    ) -> Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>> {
         (self.index == index).then_some(&self.source)
     }
 }
@@ -212,7 +212,7 @@ pub struct ImageViewerApp {
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
-    pub(crate) hdr_tiled_source_cache: HashMap<usize, Arc<crate::hdr::tiled::HdrTiledImageSource>>,
+    pub(crate) hdr_tiled_source_cache: HashMap<usize, Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
@@ -879,7 +879,7 @@ mod tests {
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
         };
-        let source = Arc::new(
+        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
             crate::hdr::tiled::HdrTiledImageSource::new(image).expect("valid HDR tiled source"),
         );
         let current = CurrentHdrTiledImage::new(7, Arc::clone(&source));

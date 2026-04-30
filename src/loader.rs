@@ -260,7 +260,7 @@ pub enum ImageData {
     /// Large HDR image that keeps its float source for future native HDR tiled rendering,
     /// with an SDR tiled fallback for the existing tile renderer.
     HdrTiled {
-        hdr: std::sync::Arc<crate::hdr::tiled::HdrTiledImageSource>,
+        hdr: std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource>,
         fallback: std::sync::Arc<dyn TiledImageSource>,
     },
     /// Virtualized image source — tiles are decoded on-demand from disk or other sources.

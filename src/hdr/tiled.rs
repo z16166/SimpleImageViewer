@@ -36,6 +36,20 @@ pub struct HdrTileBuffer {
     pub rgba_f32: Arc<Vec<f32>>,
 }
 
+#[allow(dead_code)]
+pub trait HdrTiledSource: Send + Sync {
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn color_space(&self) -> HdrColorSpace;
+    fn extract_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Arc<HdrTileBuffer>, String>;
+}
+
 #[derive(Debug)]
 pub struct HdrTiledImageSource {
     image: HdrImageBuffer,
@@ -65,19 +79,6 @@ impl HdrTiledImageSource {
         })
     }
 
-    pub fn width(&self) -> u32 {
-        self.image.width
-    }
-
-    pub fn height(&self) -> u32 {
-        self.image.height
-    }
-
-    #[allow(dead_code)]
-    pub fn color_space(&self) -> HdrColorSpace {
-        self.image.color_space
-    }
-
     #[allow(dead_code)]
     pub fn extract_tile_rgba32f(
         &self,
@@ -90,7 +91,45 @@ impl HdrTiledImageSource {
             .map(|tile| (*tile).clone())
     }
 
-    pub fn extract_tile_rgba32f_arc(
+    #[cfg(test)]
+    fn cached_tile_count(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.len())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cached_tile_bytes(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.current_bytes())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cache_budget_bytes(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.max_bytes())
+            .unwrap_or_default()
+    }
+}
+
+impl HdrTiledSource for HdrTiledImageSource {
+    fn width(&self) -> u32 {
+        self.image.width
+    }
+
+    fn height(&self) -> u32 {
+        self.image.height
+    }
+
+    fn color_space(&self) -> HdrColorSpace {
+        self.image.color_space
+    }
+
+    fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
         y: u32,
@@ -128,30 +167,6 @@ impl HdrTiledImageSource {
         }
 
         Ok(tile)
-    }
-
-    #[cfg(test)]
-    fn cached_tile_count(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.len())
-            .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    fn cached_tile_bytes(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.current_bytes())
-            .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    fn cache_budget_bytes(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.max_bytes())
-            .unwrap_or_default()
     }
 }
 
@@ -291,7 +306,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::hdr::tiled::{
-        HdrTiledImageSource, configured_hdr_tile_cache_max_bytes,
+        HdrTiledImageSource, HdrTiledSource, configured_hdr_tile_cache_max_bytes,
         set_global_hdr_tile_cache_max_bytes_for_tests,
     };
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
@@ -322,6 +337,22 @@ mod tests {
                 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
             ]
         );
+    }
+
+    #[test]
+    fn in_memory_hdr_tile_source_can_be_used_through_trait_object() {
+        let source: Arc<dyn HdrTiledSource> =
+            Arc::new(HdrTiledImageSource::new(test_image(2, 1)).expect("valid HDR tile source"));
+
+        assert_eq!(source.width(), 2);
+        assert_eq!(source.height(), 1);
+        let tile = source
+            .extract_tile_rgba32f_arc(1, 0, 1, 1)
+            .expect("extract through trait object");
+        assert_eq!(tile.width, 1);
+        assert_eq!(tile.height, 1);
+        assert_eq!(tile.color_space, HdrColorSpace::LinearSrgb);
+        assert_eq!(tile.rgba_f32.as_slice(), &[1.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
