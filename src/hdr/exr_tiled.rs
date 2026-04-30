@@ -17,14 +17,17 @@
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use exr::block::BlockIndex;
 use exr::block::reader::ChunksReader;
 use exr::math::Vec2;
 use exr::meta::attribute::{ChannelList, SampleType};
 
-use crate::hdr::tiled::{HdrTileBuffer, HdrTiledSource, HdrTiledSourceKind};
+use crate::hdr::tiled::{
+    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
+    configured_hdr_tile_cache_max_bytes,
+};
 use crate::hdr::types::HdrColorSpace;
 
 #[derive(Debug)]
@@ -32,10 +35,15 @@ pub struct ExrTiledImageSource {
     path: PathBuf,
     width: u32,
     height: u32,
+    tile_cache: Mutex<HdrTileCache>,
 }
 
 impl ExrTiledImageSource {
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_with_cache_budget(path, configured_hdr_tile_cache_max_bytes())
+    }
+
+    pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
         let file = File::open(path).map_err(|err| err.to_string())?;
         let reader =
             exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
@@ -53,7 +61,24 @@ impl ExrTiledImageSource {
             path: path.to_path_buf(),
             width,
             height,
+            tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
         })
+    }
+
+    #[cfg(test)]
+    fn cached_tile_count(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.len())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cached_tile_bytes(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.current_bytes())
+            .unwrap_or_default()
     }
 }
 
@@ -105,6 +130,12 @@ impl HdrTiledSource for ExrTiledImageSource {
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
         crate::hdr::tiled::validate_tile_bounds(self.width, self.height, x, y, width, height)?;
+        let key = (x, y, width, height);
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            if let Some(tile) = cache.get(key) {
+                return Ok(tile);
+            }
+        }
 
         let file = File::open(&self.path).map_err(|err| err.to_string())?;
         let reader =
@@ -151,12 +182,18 @@ impl HdrTiledSource for ExrTiledImageSource {
             }
         }
 
-        Ok(Arc::new(HdrTileBuffer {
+        let tile = Arc::new(HdrTileBuffer {
             width,
             height,
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(rgba),
-        }))
+        });
+
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            cache.insert(key, Arc::clone(&tile));
+        }
+
+        Ok(tile)
     }
 }
 
@@ -344,21 +381,29 @@ mod tests {
 
     use crate::hdr::tiled::{HdrTiledSource, HdrTiledSourceKind};
 
-    #[test]
-    fn exr_tiled_source_extracts_requested_rgba32f_region() {
+    fn write_test_exr(width: u32, height: u32, suffix: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_exr_tiled_{}.exr",
-            std::process::id()
+            "simple_image_viewer_exr_tiled_{}_{}.exr",
+            std::process::id(),
+            suffix
         ));
-        let pixels = vec![
-            0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2, 1.0, 4.0,
-            4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0, 6.0, 6.1, 6.2, 1.0, 7.0, 7.1, 7.2, 1.0,
-        ];
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(4, 2, pixels)
+        let pixels: Vec<f32> = (0..width * height)
+            .flat_map(|index| {
+                let value = index as f32;
+                [value, value + 0.1, value + 0.2, 1.0]
+            })
+            .collect();
+        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(width, height, pixels)
             .expect("build test EXR image");
         image::DynamicImage::ImageRgba32F(img)
             .save_with_format(&path, image::ImageFormat::OpenExr)
             .expect("write test EXR");
+        path
+    }
+
+    #[test]
+    fn exr_tiled_source_extracts_requested_rgba32f_region() {
+        let path = write_test_exr(4, 2, "region");
 
         let source: Arc<dyn HdrTiledSource> =
             Arc::new(super::ExrTiledImageSource::open(&path).expect("open EXR tiled source"));
@@ -379,5 +424,50 @@ mod tests {
                 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 5.0, 5.1, 5.2, 1.0, 6.0, 6.1, 6.2, 1.0,
             ]
         );
+    }
+
+    #[test]
+    fn exr_tiled_source_reuses_cached_tile_arcs() {
+        let path = write_test_exr(2, 1, "reuse");
+        let source = super::ExrTiledImageSource::open(&path).expect("open EXR tiled source");
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first tile");
+        let second = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract cached tile");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn exr_tiled_source_evicts_lru_cached_tiles_when_over_budget() {
+        let path = write_test_exr(3, 1, "lru");
+        let source = super::ExrTiledImageSource::open_with_cache_budget(
+            &path,
+            2 * 4 * std::mem::size_of::<f32>(),
+        )
+        .expect("open EXR tiled source");
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first tile");
+        let second = source
+            .extract_tile_rgba32f_arc(1, 0, 1, 1)
+            .expect("extract second tile");
+        let _third = source
+            .extract_tile_rgba32f_arc(2, 0, 1, 1)
+            .expect("extract third tile");
+        let first_after_eviction = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("re-extract first tile");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(!Arc::ptr_eq(&first, &first_after_eviction));
+        assert_eq!(source.cached_tile_count(), 2);
+        assert!(source.cached_tile_bytes() <= 2 * 4 * std::mem::size_of::<f32>());
+        assert!(Arc::strong_count(&second) >= 1);
     }
 }

@@ -25,7 +25,7 @@ const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_HDR_TILE_CACHE_MAX_BYTES);
 
-type HdrTileCacheKey = (u32, u32, u32, u32);
+pub(crate) type HdrTileCacheKey = (u32, u32, u32, u32);
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -213,7 +213,7 @@ fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
 }
 
 #[derive(Debug)]
-struct HdrTileCache {
+pub(crate) struct HdrTileCache {
     entries: HashMap<HdrTileCacheKey, Arc<HdrTileBuffer>>,
     lru: VecDeque<HdrTileCacheKey>,
     current_bytes: usize,
@@ -221,7 +221,7 @@ struct HdrTileCache {
 }
 
 impl HdrTileCache {
-    fn new(max_bytes: usize) -> Self {
+    pub(crate) fn new(max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
             lru: VecDeque::new(),
@@ -230,13 +230,13 @@ impl HdrTileCache {
         }
     }
 
-    fn get(&mut self, key: HdrTileCacheKey) -> Option<Arc<HdrTileBuffer>> {
+    pub(crate) fn get(&mut self, key: HdrTileCacheKey) -> Option<Arc<HdrTileBuffer>> {
         let tile = self.entries.get(&key).cloned()?;
         self.touch(key);
         Some(tile)
     }
 
-    fn insert(&mut self, key: HdrTileCacheKey, tile: Arc<HdrTileBuffer>) {
+    pub(crate) fn insert(&mut self, key: HdrTileCacheKey, tile: Arc<HdrTileBuffer>) {
         if let Some(old_tile) = self.entries.remove(&key) {
             self.current_bytes = self.current_bytes.saturating_sub(tile_len_bytes(&old_tile));
             self.lru.retain(|existing| *existing != key);
@@ -268,12 +268,12 @@ impl HdrTileCache {
     }
 
     #[cfg(test)]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
     #[cfg(test)]
-    fn current_bytes(&self) -> usize {
+    pub(crate) fn current_bytes(&self) -> usize {
         self.current_bytes
     }
 
