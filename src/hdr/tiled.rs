@@ -14,10 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+type HdrTileCacheKey = (u32, u32, u32, u32);
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -31,11 +36,18 @@ pub struct HdrTileBuffer {
 #[derive(Debug)]
 pub struct HdrTiledImageSource {
     image: HdrImageBuffer,
-    tile_cache: Mutex<std::collections::HashMap<(u32, u32, u32, u32), Arc<HdrTileBuffer>>>,
+    tile_cache: Mutex<HdrTileCache>,
 }
 
 impl HdrTiledImageSource {
     pub fn new(image: HdrImageBuffer) -> Result<Self, String> {
+        Self::new_with_cache_budget(image, DEFAULT_HDR_TILE_CACHE_MAX_BYTES)
+    }
+
+    pub fn new_with_cache_budget(
+        image: HdrImageBuffer,
+        max_cache_bytes: usize,
+    ) -> Result<Self, String> {
         if image.format != HdrPixelFormat::Rgba32Float {
             return Err(format!(
                 "HDR tiled source currently supports only Rgba32Float buffers, got {:?}",
@@ -46,7 +58,7 @@ impl HdrTiledImageSource {
         validate_rgba32f_len(image.width, image.height, image.rgba_f32.len())?;
         Ok(Self {
             image,
-            tile_cache: Mutex::new(std::collections::HashMap::new()),
+            tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
         })
     }
 
@@ -84,9 +96,9 @@ impl HdrTiledImageSource {
     ) -> Result<Arc<HdrTileBuffer>, String> {
         validate_tile_bounds(self.image.width, self.image.height, x, y, width, height)?;
         let key = (x, y, width, height);
-        if let Ok(cache) = self.tile_cache.lock() {
-            if let Some(tile) = cache.get(&key) {
-                return Ok(Arc::clone(tile));
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            if let Some(tile) = cache.get(key) {
+                return Ok(tile);
             }
         }
 
@@ -114,6 +126,92 @@ impl HdrTiledImageSource {
 
         Ok(tile)
     }
+
+    #[cfg(test)]
+    fn cached_tile_count(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.len())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cached_tile_bytes(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.current_bytes())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug)]
+struct HdrTileCache {
+    entries: HashMap<HdrTileCacheKey, Arc<HdrTileBuffer>>,
+    lru: VecDeque<HdrTileCacheKey>,
+    current_bytes: usize,
+    max_bytes: usize,
+}
+
+impl HdrTileCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            current_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn get(&mut self, key: HdrTileCacheKey) -> Option<Arc<HdrTileBuffer>> {
+        let tile = self.entries.get(&key).cloned()?;
+        self.touch(key);
+        Some(tile)
+    }
+
+    fn insert(&mut self, key: HdrTileCacheKey, tile: Arc<HdrTileBuffer>) {
+        if let Some(old_tile) = self.entries.remove(&key) {
+            self.current_bytes = self.current_bytes.saturating_sub(tile_len_bytes(&old_tile));
+            self.lru.retain(|existing| *existing != key);
+        }
+
+        let bytes = tile_len_bytes(&tile);
+        while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
+            if let Some(evicted_key) = self.lru.pop_front() {
+                if let Some(evicted_tile) = self.entries.remove(&evicted_key) {
+                    self.current_bytes = self
+                        .current_bytes
+                        .saturating_sub(tile_len_bytes(&evicted_tile));
+                }
+            }
+        }
+
+        if self.current_bytes.saturating_add(bytes) <= self.max_bytes {
+            self.entries.insert(key, tile);
+            self.lru.push_back(key);
+            self.current_bytes += bytes;
+        }
+    }
+
+    fn touch(&mut self, key: HdrTileCacheKey) {
+        if let Some(pos) = self.lru.iter().position(|existing| *existing == key) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(key);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    fn current_bytes(&self) -> usize {
+        self.current_bytes
+    }
+}
+
+fn tile_len_bytes(tile: &HdrTileBuffer) -> usize {
+    tile.rgba_f32.len() * std::mem::size_of::<f32>()
 }
 
 fn validate_rgba32f_len(width: u32, height: u32, actual_len: usize) -> Result<(), String> {
@@ -232,5 +330,69 @@ mod tests {
             .expect("extract cached tile");
 
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn hdr_tile_cache_evicts_least_recently_used_tile_when_over_budget() {
+        let source =
+            HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
+                .expect("valid HDR tile source");
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first tile");
+        let _second = source
+            .extract_tile_rgba32f_arc(1, 0, 1, 1)
+            .expect("extract second tile");
+        let _third = source
+            .extract_tile_rgba32f_arc(2, 0, 1, 1)
+            .expect("extract third tile");
+        let first_after_eviction = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("re-extract first tile");
+
+        assert!(!Arc::ptr_eq(&first, &first_after_eviction));
+        assert_eq!(source.cached_tile_count(), 2);
+        assert!(source.cached_tile_bytes() <= 2 * tile_bytes(1, 1));
+    }
+
+    #[test]
+    fn hdr_tile_cache_refreshes_lru_on_repeated_access() {
+        let source =
+            HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
+                .expect("valid HDR tile source");
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first tile");
+        let second = source
+            .extract_tile_rgba32f_arc(1, 0, 1, 1)
+            .expect("extract second tile");
+        let first_refreshed = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("refresh first tile");
+        let _third = source
+            .extract_tile_rgba32f_arc(2, 0, 1, 1)
+            .expect("extract third tile");
+        let second_after_eviction = source
+            .extract_tile_rgba32f_arc(1, 0, 1, 1)
+            .expect("re-extract second tile");
+
+        assert!(Arc::ptr_eq(&first, &first_refreshed));
+        assert!(!Arc::ptr_eq(&second, &second_after_eviction));
+    }
+
+    fn test_image(width: u32, height: u32) -> HdrImageBuffer {
+        HdrImageBuffer {
+            width,
+            height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0; width as usize * height as usize * 4]),
+        }
+    }
+
+    fn tile_bytes(width: u32, height: u32) -> usize {
+        width as usize * height as usize * 4 * std::mem::size_of::<f32>()
     }
 }
