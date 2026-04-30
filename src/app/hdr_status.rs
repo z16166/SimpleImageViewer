@@ -41,7 +41,7 @@ impl ImageViewerApp {
             has_hdr_tiled_source,
             has_hdr_image,
             has_sdr_fallback,
-            self.hdr_target_format.is_some(),
+            self.hdr_target_format,
             complex_transition_active,
         )
     }
@@ -76,14 +76,15 @@ fn hdr_render_path_for_state(
     has_hdr_tiled_source: bool,
     has_hdr_image: bool,
     has_sdr_fallback: bool,
-    has_hdr_target_format: bool,
+    hdr_target_format: Option<wgpu::TextureFormat>,
     complex_transition_active: bool,
 ) -> Option<HdrRenderPath> {
-    if has_hdr_tiled_source && has_hdr_target_format {
+    let has_renderable_target = hdr_target_format.is_some();
+    if has_hdr_tiled_source && has_renderable_target {
         return Some(HdrRenderPath::FloatTilePlane);
     }
 
-    if has_hdr_image && has_hdr_target_format && !complex_transition_active {
+    if has_hdr_image && has_renderable_target && !complex_transition_active {
         return Some(HdrRenderPath::FloatImagePlane);
     }
 
@@ -102,7 +103,13 @@ mod tests {
     #[test]
     fn hdr_tiled_source_reports_tile_plane_before_sdr_fallback() {
         assert_eq!(
-            hdr_render_path_for_state(true, false, true, true, false),
+            hdr_render_path_for_state(
+                true,
+                false,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                false
+            ),
             Some(HdrRenderPath::FloatTilePlane)
         );
     }
@@ -110,7 +117,7 @@ mod tests {
     #[test]
     fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
         assert_eq!(
-            hdr_render_path_for_state(true, false, true, false, false),
+            hdr_render_path_for_state(true, false, true, None, false),
             Some(HdrRenderPath::SdrFallback)
         );
     }
@@ -118,8 +125,28 @@ mod tests {
     #[test]
     fn complex_transition_keeps_full_image_hdr_on_sdr_fallback() {
         assert_eq!(
-            hdr_render_path_for_state(false, true, false, true, true),
+            hdr_render_path_for_state(
+                false,
+                true,
+                false,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                true
+            ),
             Some(HdrRenderPath::SdrFallback)
+        );
+    }
+
+    #[test]
+    fn hdr_render_path_uses_float_plane_even_when_shader_tone_maps_to_sdr_target() {
+        assert_eq!(
+            hdr_render_path_for_state(
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Bgra8Unorm),
+                false
+            ),
+            Some(HdrRenderPath::FloatImagePlane)
         );
     }
 }

@@ -40,6 +40,26 @@ impl HdrRenderOutputMode {
             Self::SdrToneMapped
         }
     }
+
+    pub fn as_diagnostic_label(self) -> &'static str {
+        match self {
+            Self::NativeHdr => "native_hdr",
+            Self::SdrToneMapped => "sdr_tone_mapped",
+        }
+    }
+}
+
+pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
+    let output_mode = target_format.map(HdrRenderOutputMode::for_target_format);
+    [
+        format!("[HDR] render_target_format={target_format:?}"),
+        format!(
+            "[HDR] shader_output_mode={}",
+            output_mode
+                .map(HdrRenderOutputMode::as_diagnostic_label)
+                .unwrap_or("unknown")
+        ),
+    ]
 }
 
 #[allow(dead_code)]
@@ -363,11 +383,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
 
-        let uniform = ToneMapUniform::from_settings(
+        let uniform = image_tone_map_uniform(
             self.tone_map,
             self.rotation_steps,
             self.alpha,
-            HdrRenderOutputMode::for_target_format(self.target_format),
+            self.target_format,
             self.image.color_space,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -592,6 +612,22 @@ impl ToneMapUniform {
 }
 
 fn tile_tone_map_uniform(
+    settings: HdrToneMapSettings,
+    rotation_steps: u32,
+    alpha: f32,
+    target_format: wgpu::TextureFormat,
+    input_color_space: HdrColorSpace,
+) -> ToneMapUniform {
+    ToneMapUniform::from_settings(
+        settings,
+        rotation_steps,
+        alpha,
+        HdrRenderOutputMode::for_target_format(target_format),
+        input_color_space,
+    )
+}
+
+fn image_tone_map_uniform(
     settings: HdrToneMapSettings,
     rotation_steps: u32,
     alpha: f32,
@@ -1191,6 +1227,67 @@ mod tests {
         assert_eq!(uniform.rotation_steps, 2);
         assert_eq!(uniform.alpha, 0.5);
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+    }
+
+    #[test]
+    fn image_and_tile_uniforms_share_transform_output_and_color_space_logic() {
+        let settings = HdrToneMapSettings {
+            exposure_ev: 1.0,
+            sdr_white_nits: 203.0,
+            max_display_nits: 1000.0,
+        };
+
+        let image_uniform = image_tone_map_uniform(
+            settings,
+            5,
+            0.75,
+            wgpu::TextureFormat::Bgra8Unorm,
+            HdrColorSpace::Rec2020Linear,
+        );
+        let tile_uniform = tile_tone_map_uniform(
+            settings,
+            5,
+            0.75,
+            wgpu::TextureFormat::Bgra8Unorm,
+            HdrColorSpace::Rec2020Linear,
+        );
+
+        assert_eq!(image_uniform.rotation_steps, tile_uniform.rotation_steps);
+        assert_eq!(image_uniform.alpha, tile_uniform.alpha);
+        assert_eq!(image_uniform.output_mode, tile_uniform.output_mode);
+        assert_eq!(
+            image_uniform.input_color_space,
+            tile_uniform.input_color_space
+        );
+        assert_eq!(
+            image_uniform.output_mode,
+            HdrRenderOutputMode::SdrToneMapped as u32
+        );
+    }
+
+    #[test]
+    fn render_output_diagnostics_distinguish_native_hdr_and_sdr_tone_mapping() {
+        assert_eq!(
+            hdr_render_output_diagnostics(Some(wgpu::TextureFormat::Rgba16Float)),
+            [
+                "[HDR] render_target_format=Some(Rgba16Float)",
+                "[HDR] shader_output_mode=native_hdr",
+            ]
+        );
+        assert_eq!(
+            hdr_render_output_diagnostics(Some(wgpu::TextureFormat::Bgra8Unorm)),
+            [
+                "[HDR] render_target_format=Some(Bgra8Unorm)",
+                "[HDR] shader_output_mode=sdr_tone_mapped",
+            ]
+        );
+        assert_eq!(
+            hdr_render_output_diagnostics(None),
+            [
+                "[HDR] render_target_format=None",
+                "[HDR] shader_output_mode=unknown",
+            ]
+        );
     }
 
     #[test]
