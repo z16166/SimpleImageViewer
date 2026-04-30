@@ -17,6 +17,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
@@ -40,6 +43,25 @@ const ISO_MULTI_CHANNEL_FLAG: u8 = 1 << 7;
 const ISO_BACKWARD_DIRECTION_FLAG: u8 = 1 << 2;
 const ISO_COMMON_DENOMINATOR_FLAG: u8 = 1 << 3;
 const DEFAULT_TARGET_HDR_CAPACITY: f32 = DEFAULT_MAX_DISPLAY_NITS / DEFAULT_SDR_WHITE_NITS;
+
+#[cfg(test)]
+static BASE_JPEG_DECODE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn decode_base_jpeg_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    #[cfg(test)]
+    BASE_JPEG_DECODE_COUNT.fetch_add(1, Ordering::Relaxed);
+    libjpeg_turbo::decode_to_rgba(bytes)
+}
+
+#[cfg(test)]
+fn reset_base_jpeg_decode_count() {
+    BASE_JPEG_DECODE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn base_jpeg_decode_count() -> usize {
+    BASE_JPEG_DECODE_COUNT.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UltraHdrJpegInfo {
@@ -156,12 +178,12 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
 pub struct UltraHdrTiledImageSource {
     #[allow(dead_code)]
     path: PathBuf,
-    mmap: Arc<memmap2::Mmap>,
     width: u32,
     height: u32,
     physical_width: u32,
     physical_height: u32,
     orientation: u16,
+    sdr_rgba: Arc<Vec<u8>>,
     gain_width: u32,
     gain_height: u32,
     gain_rgba: Arc<Vec<u8>>,
@@ -178,12 +200,7 @@ impl UltraHdrTiledImageSource {
             return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
         }
 
-        let decompressor = libjpeg_turbo::Decompressor::new()?;
-        let (physical_width, physical_height, _) = decompressor.decompress_header(&bytes)?;
-        let physical_width = u32::try_from(physical_width)
-            .map_err(|_| "Ultra HDR JPEG width is negative".to_string())?;
-        let physical_height = u32::try_from(physical_height)
-            .map_err(|_| "Ultra HDR JPEG height is negative".to_string())?;
+        let (physical_width, physical_height, sdr_rgba) = decode_base_jpeg_rgba(&bytes)?;
         let (width, height) = oriented_dimensions(physical_width, physical_height, orientation);
 
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(&bytes)?;
@@ -192,12 +209,12 @@ impl UltraHdrTiledImageSource {
 
         Ok(Self {
             path,
-            mmap: bytes,
             width,
             height,
             physical_width,
             physical_height,
             orientation,
+            sdr_rgba: Arc::new(sdr_rgba),
             gain_width,
             gain_height,
             gain_rgba: Arc::new(gain_rgba),
@@ -257,11 +274,6 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let (decoded_width, decoded_height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(&self.mmap)?;
-        if decoded_width != self.physical_width || decoded_height != self.physical_height {
-            return Err("Ultra HDR JPEG dimensions changed while extracting tile".to_string());
-        }
-
         let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
         for dy in 0..height {
             for dx in 0..width {
@@ -287,7 +299,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
                 );
                 append_hdr_pixel_from_sdr_and_gain(
                     &mut rgba_f32,
-                    &sdr_rgba[sdr_index..sdr_index + 4],
+                    &self.sdr_rgba[sdr_index..sdr_index + 4],
                     gain_value,
                     self.metadata,
                     DEFAULT_TARGET_HDR_CAPACITY,
@@ -1000,6 +1012,37 @@ mod tests {
                 .chunks_exact(4)
                 .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
             "Ultra HDR decode should recover highlights above SDR white"
+        );
+    }
+
+    #[test]
+    fn tiled_source_reuses_base_jpeg_decode_for_distinct_tiles() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+        let path = sample_path(&root, "Originals/Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR tiled decode count test; sample missing");
+            return;
+        }
+
+        reset_base_jpeg_decode_count();
+        let source = UltraHdrTiledImageSource::open(path, 1).expect("open Ultra HDR tiled source");
+
+        source
+            .extract_tile_rgba32f_arc(0, 0, 64, 64)
+            .expect("extract first Ultra HDR tile");
+        source
+            .extract_tile_rgba32f_arc(64, 0, 64, 64)
+            .expect("extract second Ultra HDR tile");
+
+        assert_eq!(
+            base_jpeg_decode_count(),
+            1,
+            "Ultra HDR tiled source should decode the base JPEG once and reuse it for distinct tiles"
         );
     }
 
