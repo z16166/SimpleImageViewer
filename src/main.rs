@@ -519,6 +519,12 @@ fn main() -> eframe::Result {
         crate::hdr::surface::preferred_native_hdr_target_format_for_settings(
             settings.hdr_native_surface_enabled,
         );
+    for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
+        settings.hdr_native_surface_enabled,
+        preferred_hdr_target_format,
+    ) {
+        log::info!("{diagnostic}");
+    }
 
     let native_options = eframe::NativeOptions {
         viewport,
