@@ -123,3 +123,6 @@ strip = "debuginfo"
 
 [profile.dev]
 opt-level = 0
+
+[dev-dependencies]
+naga = { version = "29.0.1", default-features = false, features = ["wgsl-in"] }

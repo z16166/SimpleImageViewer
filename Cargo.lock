@@ -4875,6 +4875,7 @@ dependencies = [
  "miniz_oxide",
  "moka",
  "monkey-sdk-sys",
+ "naga",
  "parking_lot",
  "pollster",
  "printpdf",

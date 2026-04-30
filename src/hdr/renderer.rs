@@ -1494,6 +1494,12 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("var rgb: vec3<f32>;"));
     }
 
+    #[test]
+    fn hdr_image_plane_shader_parses_as_wgsl() {
+        naga::front::wgsl::parse_str(HDR_IMAGE_PLANE_SHADER)
+            .expect("HDR image plane shader must parse before runtime pipeline creation");
+    }
+
     fn hdr_image(
         width: u32,
         height: u32,
