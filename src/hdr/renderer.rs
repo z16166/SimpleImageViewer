@@ -180,7 +180,10 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
 
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let exposure_scale = exp2(settings.exposure_ev);
-    return sanitize_hdr_rgb(rgb * exposure_scale);
+    let exposed = sanitize_hdr_rgb(rgb * exposure_scale);
+    let mapped = reinhard_tone_map(exposed);
+    let sdr_base = pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
+    return max(sdr_base, exposed);
 }
 
 @vertex
@@ -1483,6 +1486,12 @@ mod tests {
         );
         assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
+    }
+
+    #[test]
+    fn native_hdr_shader_keeps_low_linear_exr_values_display_visible() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("let sdr_base ="));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("return max(sdr_base, exposed);"));
     }
 
     #[test]

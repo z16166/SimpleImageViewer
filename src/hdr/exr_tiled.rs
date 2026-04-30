@@ -1692,6 +1692,61 @@ mod tests {
         );
     }
 
+    fn assert_sample_extracts_visible_tile(root: &Path, relative_path: &str) {
+        let path = root.join(relative_path);
+        assert!(
+            path.is_file(),
+            "OpenEXR sample file is missing: {}",
+            path.display()
+        );
+        let source = super::ExrTiledImageSource::open_with_cache_budget(&path, 4 * 1024 * 1024)
+            .expect("open OpenEXR sample as disk-backed tile source");
+        let tile_width = source.width.min(64);
+        let tile_height = source.height.min(64);
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, tile_width, tile_height)
+            .expect("extract visible tile from OpenEXR sample");
+
+        let max_rgb = tile
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+        let max_alpha = tile
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .fold(0.0_f32, f32::max);
+        let visible_alpha_pixels = tile
+            .rgba_f32
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 0.0)
+            .count();
+        let total_pixels = tile_width as usize * tile_height as usize;
+
+        assert!(
+            max_rgb > 0.0,
+            "tile RGB should contain visible energy for {}",
+            path.display()
+        );
+        assert!(
+            max_rgb < 0.01,
+            "this regression sample should exercise low linear EXR display values for {}",
+            path.display()
+        );
+        assert!(
+            max_alpha > 0.0,
+            "tile alpha should not make the display plane fully transparent for {}",
+            path.display()
+        );
+        assert_eq!(
+            visible_alpha_pixels,
+            total_pixels,
+            "tile alpha should keep all display pixels visible for {}",
+            path.display()
+        );
+    }
+
     fn assert_sample_generates_preview(root: &Path, relative_path: &str) {
         let path = root.join(relative_path);
         assert!(
@@ -1926,6 +1981,18 @@ mod tests {
         assert_sample_extracts_tile(&root, "TestImages/WideColorGamut.exr");
         assert_sample_extracts_tile(&root, "Tiles/GoldenGate.exr");
         assert_sample_extracts_tile(&root, "Chromaticities/Rec709_YC.exr");
+    }
+
+    #[test]
+    fn gray_ramps_horizontal_extracts_visible_hdr_tile() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR GrayRampsHorizontal regression test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        assert_sample_extracts_visible_tile(&root, "TestImages/GrayRampsHorizontal.exr");
     }
 
     #[test]
