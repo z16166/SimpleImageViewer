@@ -15,14 +15,17 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use exr::block::BlockIndex;
+use exr::block::chunk::Chunk;
 use exr::block::reader::ChunksReader;
+use exr::block::{BlockIndex, UncompressedBlock};
 use exr::math::Vec2;
+use exr::meta::BlockDescription;
 use exr::meta::attribute::{ChannelList, Chromaticities, SampleType};
+use exr::prelude::MetaData;
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -36,6 +39,8 @@ pub struct ExrTiledImageSource {
     width: u32,
     height: u32,
     color_space: HdrColorSpace,
+    requires_disk_backed_decode: bool,
+    has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
 }
 
@@ -45,29 +50,86 @@ impl ExrTiledImageSource {
     }
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
-        let file = File::open(path).map_err(|err| err.to_string())?;
-        let reader =
-            exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
-        let header = reader
-            .headers()
-            .first()
-            .ok_or_else(|| "EXR file has no image layers".to_string())?;
+        let header = read_first_header_for_probe(path)?;
         let width = u32::try_from(header.layer_size.width())
             .map_err(|_| "EXR width exceeds u32".to_string())?;
         let height = u32::try_from(header.layer_size.height())
             .map_err(|_| "EXR height exceeds u32".to_string())?;
-        validate_required_rgba_channels(&header.channels)?;
+        if header.deep {
+            return Err("deep data not supported yet".to_string());
+        }
+        let channel_layout = validate_required_rgba_channels(&header.channels)?;
         let chromaticities = header.shared_attributes.chromaticities;
         let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
         log_unsupported_exr_chromaticities(path, chromaticities);
+        let has_subsampled_channels = header
+            .channels
+            .list
+            .iter()
+            .any(|channel| channel.sampling != Vec2(1, 1));
 
         Ok(Self {
             path: path.to_path_buf(),
             width,
             height,
             color_space,
+            requires_disk_backed_decode: channel_layout.requires_disk_backed_decode(),
+            has_subsampled_channels,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
         })
+    }
+
+    pub(crate) fn requires_disk_backed_decode(&self) -> bool {
+        self.requires_disk_backed_decode
+    }
+
+    fn extract_tile_rgba32f_arc_unvalidated_scanline(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Arc<HdrTileBuffer>, String> {
+        let (bytes, mut meta_data, offset_tables) =
+            read_unvalidated_exr_bytes_and_offsets(&self.path)?;
+        normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
+        let header = meta_data
+            .headers
+            .first()
+            .ok_or_else(|| "EXR file has no image layers".to_string())?;
+        if !matches!(header.blocks, BlockDescription::ScanLines) || header.deep {
+            return Err("subsampled EXR fallback supports only flat scanline images".to_string());
+        }
+
+        validate_required_rgba_channels(&header.channels)?;
+        let channel_roles = channel_roles(&header.channels);
+        let tile_bounds = TileBounds::new(x, y, width, height);
+        let mut tile = YcaTileAccumulator::new(width, height, yca_luma_weights(self.color_space));
+
+        for offset in offset_tables.first().into_iter().flatten() {
+            let mut cursor = Cursor::new(bytes.as_slice());
+            cursor
+                .seek(SeekFrom::Start(*offset))
+                .map_err(|err| err.to_string())?;
+            let chunk = Chunk::read(&mut cursor, &meta_data).map_err(|err| err.to_string())?;
+            if chunk.layer_index != 0 {
+                continue;
+            }
+
+            let block = UncompressedBlock::decompress_chunk(chunk, &meta_data, false)
+                .map_err(|err| err.to_string())?;
+            if !block_intersects_tile(block.index, tile_bounds) {
+                continue;
+            }
+            copy_subsampled_block_to_tile(&block, header, &channel_roles, tile_bounds, &mut tile)?;
+        }
+
+        Ok(Arc::new(HdrTileBuffer {
+            width,
+            height,
+            color_space: self.color_space,
+            rgba_f32: Arc::new(tile.into_rgba32f()),
+        }))
     }
 
     #[cfg(test)]
@@ -105,6 +167,10 @@ impl HdrTiledSource for ExrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        if self.has_subsampled_channels {
+            return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
+        }
+
         let preview = exr::prelude::read_first_rgba_layer_from_file(
             &self.path,
             move |resolution, _channels| {
@@ -146,6 +212,10 @@ impl HdrTiledSource for ExrTiledImageSource {
         }
 
         let file = File::open(&self.path).map_err(|err| err.to_string())?;
+        if self.has_subsampled_channels {
+            return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
+        }
+
         let reader =
             exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
         let tile_bounds = TileBounds::new(x, y, width, height);
@@ -205,6 +275,132 @@ impl HdrTiledSource for ExrTiledImageSource {
     }
 }
 
+impl ExrTiledImageSource {
+    fn generate_sdr_preview_from_hdr_tile(
+        &self,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
+            &crate::hdr::types::HdrImageBuffer {
+                width: tile.width,
+                height: tile.height,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: tile.color_space,
+                rgba_f32: Arc::clone(&tile.rgba_f32),
+            },
+            0.0,
+        )?;
+        let image = image::RgbaImage::from_raw(tile.width, tile.height, pixels)
+            .ok_or_else(|| "Failed to build SDR preview image from HDR tile".to_string())?;
+        let preview = image::imageops::thumbnail(&image, max_w, max_h);
+        Ok((preview.width(), preview.height(), preview.into_raw()))
+    }
+}
+
+fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header, String> {
+    match File::open(path)
+        .map_err(|err| err.to_string())
+        .and_then(|file| {
+            exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())
+        }) {
+        Ok(reader) => reader
+            .headers()
+            .first()
+            .cloned()
+            .ok_or_else(|| "EXR file has no image layers".to_string()),
+        Err(err) if is_exr_unvalidated_probe_error(&err) => {
+            let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+            meta_data
+                .headers
+                .first()
+                .cloned()
+                .ok_or_else(|| "EXR file has no image layers".to_string())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn is_exr_unvalidated_probe_error(err: &str) -> bool {
+    err.contains("channel subsampling not supported yet")
+}
+
+fn read_unvalidated_exr_bytes_and_offsets(
+    path: &Path,
+) -> Result<(Vec<u8>, MetaData, Vec<Vec<u64>>), String> {
+    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    let mut cursor = Cursor::new(bytes.as_slice());
+    let meta_data =
+        MetaData::read_from_buffered(&mut cursor, false).map_err(|err| err.to_string())?;
+    let mut offset_tables = Vec::with_capacity(meta_data.headers.len());
+    for header in &meta_data.headers {
+        let mut offsets = Vec::with_capacity(header.chunk_count);
+        for _ in 0..header.chunk_count {
+            offsets.push(read_u64_le(&mut cursor)?);
+        }
+        offset_tables.push(offsets);
+    }
+
+    Ok((bytes, meta_data, offset_tables))
+}
+
+fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, String> {
+    let mut bytes = [0_u8; 8];
+    cursor
+        .read_exact(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn normalize_subsampled_metadata_for_decompression(meta_data: &mut MetaData) -> Result<(), String> {
+    for header in &mut meta_data.headers {
+        if header
+            .channels
+            .list
+            .iter()
+            .any(|channel| channel.sampling != Vec2(1, 1))
+        {
+            header.channels.bytes_per_pixel =
+                effective_subsampled_bytes_per_pixel(&header.channels)?;
+        }
+    }
+    Ok(())
+}
+
+fn effective_subsampled_bytes_per_pixel(channels: &ChannelList) -> Result<usize, String> {
+    let denominator = channels
+        .list
+        .iter()
+        .map(|channel| channel.sampling.x() * channel.sampling.y())
+        .fold(1_usize, lcm);
+    let numerator = channels
+        .list
+        .iter()
+        .map(|channel| {
+            channel.sample_type.bytes_per_sample() * denominator
+                / (channel.sampling.x() * channel.sampling.y())
+        })
+        .sum::<usize>();
+    if numerator % denominator != 0 {
+        return Err("subsampled EXR has non-integral effective bytes per pixel".to_string());
+    }
+    Ok(numerator / denominator)
+}
+
+fn lcm(a: usize, b: usize) -> usize {
+    a / gcd(a, b) * b
+}
+
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
 pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let reader = exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
@@ -215,6 +411,19 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
     let chromaticities = header.shared_attributes.chromaticities;
     log_unsupported_exr_chromaticities(path, chromaticities);
     Ok(hdr_color_space_from_exr_chromaticities(chromaticities))
+}
+
+pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
+    let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+    let header = meta_data
+        .headers
+        .first()
+        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    let width = u32::try_from(header.layer_size.width())
+        .map_err(|_| "EXR width exceeds u32".to_string())?;
+    let height = u32::try_from(header.layer_size.height())
+        .map_err(|_| "EXR height exceeds u32".to_string())?;
+    Ok((width, height))
 }
 
 pub(crate) fn hdr_color_space_from_exr_chromaticities(
@@ -427,19 +636,65 @@ fn block_intersects_tile(block: BlockIndex, tile: TileBounds) -> bool {
         && block_bottom > tile.y
 }
 
-fn channel_roles(channels: &ChannelList) -> Vec<Option<usize>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelRole {
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Luminance,
+    ChromaRy,
+    ChromaBy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExrChannelLayout {
+    Rgb,
+    Luminance,
+}
+
+impl ExrChannelLayout {
+    fn requires_disk_backed_decode(self) -> bool {
+        matches!(self, Self::Luminance)
+    }
+}
+
+fn channel_roles(channels: &ChannelList) -> Vec<Option<ChannelRole>> {
+    let has_rgb = ["R", "G", "B"].into_iter().all(|name| {
+        channels
+            .list
+            .iter()
+            .any(|channel| channel.name.eq_case_insensitive(name))
+    });
+
     channels
         .list
         .iter()
         .map(|channel| {
-            if channel.name.eq_case_insensitive("R") {
-                Some(0)
+            if channel.name.eq_case_insensitive("RY") {
+                Some(ChannelRole::ChromaRy)
+            } else if channel.name.eq_case_insensitive("BY") {
+                Some(ChannelRole::ChromaBy)
+            } else if !has_rgb
+                && (channel.name.eq_case_insensitive("R")
+                    || channel.name.eq_case_insensitive("G")
+                    || channel.name.eq_case_insensitive("B")
+                    || channel.name.eq_case_insensitive("Y")
+                    || channel.name.eq_case_insensitive("main"))
+            {
+                Some(ChannelRole::Luminance)
+            } else if channel.name.eq_case_insensitive("R") {
+                Some(ChannelRole::Red)
             } else if channel.name.eq_case_insensitive("G") {
-                Some(1)
+                Some(ChannelRole::Green)
             } else if channel.name.eq_case_insensitive("B") {
-                Some(2)
+                Some(ChannelRole::Blue)
             } else if channel.name.eq_case_insensitive("A") {
-                Some(3)
+                Some(ChannelRole::Alpha)
+            } else if channel.name.eq_case_insensitive("Y")
+                || channel.name.eq_case_insensitive("main")
+            {
+                Some(ChannelRole::Luminance)
             } else {
                 None
             }
@@ -447,22 +702,40 @@ fn channel_roles(channels: &ChannelList) -> Vec<Option<usize>> {
         .collect()
 }
 
-fn validate_required_rgba_channels(channels: &ChannelList) -> Result<(), String> {
+fn validate_required_rgba_channels(channels: &ChannelList) -> Result<ExrChannelLayout, String> {
     let roles = channel_roles(channels);
-    for (name, index) in [("R", 0), ("G", 1), ("B", 2)] {
-        if !roles.iter().any(|role| *role == Some(index)) {
+    let has_rgb = [ChannelRole::Red, ChannelRole::Green, ChannelRole::Blue]
+        .into_iter()
+        .all(|role| roles.iter().any(|candidate| *candidate == Some(role)));
+    if has_rgb {
+        return Ok(ExrChannelLayout::Rgb);
+    }
+
+    if roles
+        .iter()
+        .any(|role| *role == Some(ChannelRole::Luminance))
+    {
+        return Ok(ExrChannelLayout::Luminance);
+    }
+
+    for (name, role) in [
+        ("R", ChannelRole::Red),
+        ("G", ChannelRole::Green),
+        ("B", ChannelRole::Blue),
+    ] {
+        if !roles.iter().any(|candidate| *candidate == Some(role)) {
             return Err(format!(
                 "EXR layer does not contain required {name} channel"
             ));
         }
     }
-    Ok(())
+    unreachable!("RGB channel validation should have returned earlier")
 }
 
 fn copy_line_channel_to_tile(
     line: exr::block::lines::LineRef<'_>,
     sample_type: SampleType,
-    channel: usize,
+    channel: ChannelRole,
     tile: TileBounds,
     rgba: &mut [f32],
 ) -> Result<(), String> {
@@ -484,11 +757,209 @@ fn copy_line_channel_to_tile(
     let dest_y = (line_y - tile.y) as usize;
     for source_x in source_start..(source_start + (copy_end - copy_start) as usize) {
         let dest_x = line_x as usize + source_x - tile.x as usize;
-        let dest = (dest_y * tile.width as usize + dest_x) * 4 + channel;
-        rgba[dest] = samples[source_x];
+        let dest = (dest_y * tile.width as usize + dest_x) * 4;
+        match channel {
+            ChannelRole::Red => rgba[dest] = samples[source_x],
+            ChannelRole::Green => rgba[dest + 1] = samples[source_x],
+            ChannelRole::Blue => rgba[dest + 2] = samples[source_x],
+            ChannelRole::Alpha => rgba[dest + 3] = samples[source_x],
+            ChannelRole::ChromaRy | ChannelRole::ChromaBy => {}
+            ChannelRole::Luminance => {
+                rgba[dest] = samples[source_x];
+                rgba[dest + 1] = samples[source_x];
+                rgba[dest + 2] = samples[source_x];
+            }
+        }
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct YcaTileAccumulator {
+    width: u32,
+    height: u32,
+    y: Vec<f32>,
+    ry: Vec<f32>,
+    by: Vec<f32>,
+    alpha: Vec<f32>,
+    weights: [f32; 3],
+}
+
+impl YcaTileAccumulator {
+    fn new(width: u32, height: u32, weights: [f32; 3]) -> Self {
+        let len = width as usize * height as usize;
+        Self {
+            width,
+            height,
+            y: vec![0.0; len],
+            ry: vec![0.0; len],
+            by: vec![0.0; len],
+            alpha: vec![1.0; len],
+            weights,
+        }
+    }
+
+    fn set_luminance(&mut self, x: usize, y: usize, value: f32) {
+        self.y[y * self.width as usize + x] = value;
+    }
+
+    fn set_chroma(&mut self, x: usize, y: usize, role: ChannelRole, value: f32) {
+        let index = y * self.width as usize + x;
+        match role {
+            ChannelRole::ChromaRy => self.ry[index] = value,
+            ChannelRole::ChromaBy => self.by[index] = value,
+            _ => {}
+        }
+    }
+
+    fn set_alpha(&mut self, x: usize, y: usize, value: f32) {
+        self.alpha[y * self.width as usize + x] = value;
+    }
+
+    fn into_rgba32f(self) -> Vec<f32> {
+        let mut rgba = vec![0.0; self.width as usize * self.height as usize * 4];
+        let [wr, wg, wb] = self.weights;
+        for index in 0..self.y.len() {
+            let y = self.y[index];
+            let r = y * (1.0 + self.ry[index]);
+            let b = y * (1.0 + self.by[index]);
+            let g = if wg.abs() > f32::EPSILON {
+                (y - r * wr - b * wb) / wg
+            } else {
+                y
+            };
+            let offset = index * 4;
+            rgba[offset] = r;
+            rgba[offset + 1] = g;
+            rgba[offset + 2] = b;
+            rgba[offset + 3] = self.alpha[index];
+        }
+        rgba
+    }
+}
+
+fn copy_subsampled_block_to_tile(
+    block: &UncompressedBlock,
+    header: &exr::meta::header::Header,
+    channel_roles: &[Option<ChannelRole>],
+    tile: TileBounds,
+    accumulator: &mut YcaTileAccumulator,
+) -> Result<(), String> {
+    let block_x = block.index.pixel_position.x() as u32;
+    let block_y = block.index.pixel_position.y() as u32;
+    let block_width = block.index.pixel_size.width() as u32;
+    let block_height = block.index.pixel_size.height() as u32;
+    let mut byte_offset = 0;
+
+    for local_y in 0..block_height {
+        let image_y = block_y + local_y;
+        for (channel_index, channel) in header.channels.list.iter().enumerate() {
+            if image_y as usize % channel.sampling.y() != 0 {
+                continue;
+            }
+
+            let sample_count = block_width as usize / channel.sampling.x();
+            let byte_len = sample_count * channel.sample_type.bytes_per_sample();
+            let line_end = byte_offset + byte_len;
+            if line_end > block.data.len() {
+                return Err("subsampled EXR block line exceeds decompressed byte size".to_string());
+            }
+
+            let Some(role) = channel_roles.get(channel_index).and_then(|role| *role) else {
+                byte_offset = line_end;
+                continue;
+            };
+            let samples = read_samples_from_native_bytes(
+                &block.data[byte_offset..line_end],
+                channel.sample_type,
+            )?;
+            copy_subsampled_line_to_tile(
+                &samples,
+                block_x,
+                image_y,
+                channel.sampling.x() as u32,
+                channel.sampling.y() as u32,
+                role,
+                tile,
+                accumulator,
+            );
+            byte_offset = line_end;
+        }
+    }
+
+    Ok(())
+}
+
+fn copy_subsampled_line_to_tile(
+    samples: &[f32],
+    line_x: u32,
+    line_y: u32,
+    sampling_x: u32,
+    sampling_y: u32,
+    role: ChannelRole,
+    tile: TileBounds,
+    accumulator: &mut YcaTileAccumulator,
+) {
+    for (sample_index, value) in samples.iter().enumerate() {
+        let image_x = line_x + sample_index as u32 * sampling_x;
+        for dy in 0..sampling_y {
+            let y = line_y + dy;
+            if y < tile.y || y >= tile.bottom() {
+                continue;
+            }
+            for dx in 0..sampling_x {
+                let x = image_x + dx;
+                if x < tile.x || x >= tile.right() {
+                    continue;
+                }
+                let tile_x = (x - tile.x) as usize;
+                let tile_y = (y - tile.y) as usize;
+                match role {
+                    ChannelRole::Luminance => accumulator.set_luminance(tile_x, tile_y, *value),
+                    ChannelRole::ChromaRy | ChannelRole::ChromaBy => {
+                        accumulator.set_chroma(tile_x, tile_y, role, *value);
+                    }
+                    ChannelRole::Alpha => accumulator.set_alpha(tile_x, tile_y, *value),
+                    ChannelRole::Red | ChannelRole::Green | ChannelRole::Blue => {}
+                }
+            }
+        }
+    }
+}
+
+fn read_samples_from_native_bytes(
+    bytes: &[u8],
+    sample_type: SampleType,
+) -> Result<Vec<f32>, String> {
+    match sample_type {
+        SampleType::F16 => Ok(bytes
+            .chunks_exact(2)
+            .map(|bytes| {
+                let bits = u16::from_ne_bytes([bytes[0], bytes[1]]);
+                exr::prelude::f16::from_bits(bits).to_f32()
+            })
+            .collect::<Vec<_>>()),
+        SampleType::F32 => Ok(bytes
+            .chunks_exact(4)
+            .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect::<Vec<_>>()),
+        SampleType::U32 => Ok(bytes
+            .chunks_exact(4)
+            .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32)
+            .collect::<Vec<_>>()),
+    }
+}
+
+fn yca_luma_weights(color_space: HdrColorSpace) -> [f32; 3] {
+    match color_space {
+        HdrColorSpace::Xyz => [0.0, 1.0, 0.0],
+        HdrColorSpace::Rec2020Linear => [0.2627, 0.6780, 0.0593],
+        HdrColorSpace::Aces2065_1 => [0.34396645, 0.7281661, -0.07213255],
+        HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb | HdrColorSpace::Unknown => {
+            [0.2126, 0.7152, 0.0722]
+        }
+    }
 }
 
 fn read_line_samples(
@@ -810,6 +1281,7 @@ mod tests {
         assert_sample_extracts_tile(&root, "ScanLines/Carrots.exr");
         assert_sample_extracts_tile(&root, "TestImages/WideColorGamut.exr");
         assert_sample_extracts_tile(&root, "Tiles/GoldenGate.exr");
+        assert_sample_extracts_tile(&root, "Chromaticities/Rec709_YC.exr");
     }
 
     #[test]
@@ -824,5 +1296,6 @@ mod tests {
         assert_sample_generates_preview(&root, "ScanLines/Carrots.exr");
         assert_sample_generates_preview(&root, "TestImages/WideColorGamut.exr");
         assert_sample_generates_preview(&root, "Tiles/GoldenGate.exr");
+        assert_sample_generates_preview(&root, "Chromaticities/Rec709_YC.exr");
     }
 }

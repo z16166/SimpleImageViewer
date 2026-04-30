@@ -1389,7 +1389,17 @@ fn load_hdr(path: &Path) -> Result<ImageData, String> {
         }
     }
 
-    let hdr = crate::hdr::decode::decode_hdr_image(path)?;
+    let hdr = match crate::hdr::decode::decode_hdr_image(path) {
+        Ok(hdr) => hdr,
+        Err(err) if is_exr_deep_data_unsupported_error(&err) => {
+            log::warn!(
+                "[Loader] Deep EXR data is not composited yet for {}; using visible placeholder",
+                path.display()
+            );
+            return make_deep_exr_placeholder(path);
+        }
+        Err(err) => return Err(err),
+    };
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
 
@@ -1417,7 +1427,10 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
-    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+    if !source.requires_disk_backed_decode()
+        && pixel_count < tiled_limit
+        && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
+    {
         return Ok(None);
     }
 
@@ -1434,6 +1447,39 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
 
 fn is_exr_disk_backed_probe_fallback_error(err: &str) -> bool {
     err.contains("channel subsampling not supported yet")
+        || err.contains("EXR layer does not contain required")
+        || err.contains("deep data not supported yet")
+}
+
+fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
+    err.contains("deep data not supported yet")
+}
+
+fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
+    let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated(path)?;
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| format!("Deep EXR placeholder dimensions overflow: {width}x{height}"))?;
+    let mut rgba_f32 = vec![0.0_f32; pixel_count as usize * 4];
+    for alpha in rgba_f32.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
+        *alpha = 1.0;
+    }
+    let mut fallback_pixels = vec![0_u8; pixel_count as usize * 4];
+    for alpha in fallback_pixels
+        .chunks_exact_mut(4)
+        .map(|pixel| &mut pixel[3])
+    {
+        *alpha = 255;
+    }
+    let hdr = crate::hdr::types::HdrImageBuffer {
+        width,
+        height,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        rgba_f32: Arc::new(rgba_f32),
+    };
+    let fallback = DecodedImage::new(width, height, fallback_pixels);
+    Ok(make_hdr_image_data(hdr, fallback))
 }
 
 fn process_animation_frames(
@@ -1709,6 +1755,7 @@ fn make_hdr_image_data_for_limit(
 mod tests {
     use super::*;
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {
@@ -1814,8 +1861,66 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn openexr_images_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
+            .filter(|path| path.is_dir())
+    }
+
+    fn collect_exr_files(root: &Path, files: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(root).unwrap_or_else(|err| {
+            panic!("read OpenEXR corpus directory {}: {err}", root.display())
+        });
+        for entry in entries {
+            let path = entry.expect("read OpenEXR corpus entry").path();
+            if path.is_dir() {
+                collect_exr_files(&path, files);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
+            {
+                files.push(path);
+            }
+        }
+    }
+
     #[test]
-    fn disk_backed_exr_probe_falls_back_for_subsampled_yc_sample() {
+    fn openexr_standard_corpus_loads_every_exr_sample() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR corpus load test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        let mut files = Vec::new();
+        collect_exr_files(&root, &mut files);
+        files.sort();
+        assert!(!files.is_empty(), "OpenEXR corpus contains no EXR files");
+
+        let failures: Vec<String> = files
+            .iter()
+            .filter_map(|path| {
+                load_hdr(path).err().map(|err| {
+                    let relative = path.strip_prefix(&root).unwrap_or(path);
+                    format!("{}: {err}", relative.display())
+                })
+            })
+            .collect();
+
+        assert!(
+            failures.is_empty(),
+            "OpenEXR corpus load failures ({}/{}):\n{}",
+            failures.len(),
+            files.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn disk_backed_exr_probe_accepts_subsampled_yc_sample() {
         let path = std::path::PathBuf::from(r"F:\HDR\openexr-images\Chromaticities\Rec709_YC.exr");
         if !path.is_file() {
             eprintln!(
@@ -1825,9 +1930,9 @@ mod tests {
         }
 
         let image_data =
-            try_load_disk_backed_exr_hdr(&path).expect("probe should not fail the whole load");
+            try_load_disk_backed_exr_hdr(&path).expect("probe should load subsampled YC EXR");
 
-        assert!(image_data.is_none());
+        assert!(matches!(image_data, Some(ImageData::HdrTiled { .. })));
     }
 
     #[test]
