@@ -33,8 +33,16 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
 pub(crate) fn should_draw_static_hdr_immediately(
     output_mode: HdrRenderOutputMode,
     has_hdr_image: bool,
+    transition: TransitionStyle,
+    is_animating: bool,
 ) -> bool {
-    has_hdr_image && output_mode == HdrRenderOutputMode::NativeHdr
+    has_hdr_image
+        && output_mode == HdrRenderOutputMode::NativeHdr
+        && !(is_animating
+            && matches!(
+                transition,
+                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+            ))
 }
 
 impl ImageViewerApp {
@@ -95,7 +103,12 @@ impl ImageViewerApp {
             self.hdr_target_format,
             self.hdr_monitor_state.selection(),
         );
-        if should_draw_static_hdr_immediately(hdr_output_mode, hdr_image.is_some()) {
+        if should_draw_static_hdr_immediately(
+            hdr_output_mode,
+            hdr_image.is_some(),
+            self.active_transition,
+            tp.is_animating,
+        ) {
             self.transition_start = None;
             self.prev_texture = None;
             tp = crate::app::rendering::transitions::TransitionParams::default();
@@ -252,15 +265,27 @@ mod tests {
     fn native_static_hdr_draws_immediately_without_sdr_transition_phase() {
         assert!(should_draw_static_hdr_immediately(
             HdrRenderOutputMode::NativeHdr,
-            true
+            true,
+            TransitionStyle::None,
+            false
         ));
         assert!(!should_draw_static_hdr_immediately(
             HdrRenderOutputMode::SdrToneMapped,
-            true
+            true,
+            TransitionStyle::None,
+            false
         ));
         assert!(!should_draw_static_hdr_immediately(
             HdrRenderOutputMode::NativeHdr,
+            false,
+            TransitionStyle::None,
             false
+        ));
+        assert!(!should_draw_static_hdr_immediately(
+            HdrRenderOutputMode::NativeHdr,
+            true,
+            TransitionStyle::Curtain,
+            true
         ));
     }
 }

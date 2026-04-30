@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::ImageViewerApp;
 use crate::app::rendering::geometry::{
     rotated_image_size_for_display, unrotated_draw_rect_for_display,
 };
+use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
@@ -28,6 +28,19 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
+
+pub(crate) fn should_draw_tiled_preview_transition(
+    transition: TransitionStyle,
+    is_animating: bool,
+    has_preview_texture: bool,
+) -> bool {
+    is_animating
+        && has_preview_texture
+        && matches!(
+            transition,
+            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+        )
+}
 
 fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     let rot = egui::emath::Rot2::from_angle(angle);
@@ -93,9 +106,12 @@ impl ImageViewerApp {
         let rotation = self.current_rotation;
         let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
 
-        // Extract immutable data first (avoids borrow conflict with compute_display_rect)
-        let tm_ref = self.tile_manager.as_ref().unwrap();
-        let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
+        // Extract dimensions first; transition handling below needs mutable access to self.
+        let (full_width, full_height) = {
+            let tm = self.tile_manager.as_ref().unwrap();
+            (tm.full_width, tm.full_height)
+        };
+        let img_size = Vec2::new(full_width as f32, full_height as f32);
 
         let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
@@ -103,6 +119,31 @@ impl ImageViewerApp {
         // The painter transform will handle the actual rotation.
         // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
         let unrotated_dest = unrotated_draw_rect_for_display(dest, rotation);
+
+        let tp = self.compute_transition_params();
+        let preview_for_transition = self
+            .tile_manager
+            .as_ref()
+            .and_then(|tm| tm.preview_texture.clone());
+        if should_draw_tiled_preview_transition(
+            self.active_transition,
+            tp.is_animating,
+            preview_for_transition.is_some(),
+        ) {
+            if let Some(preview) = preview_for_transition {
+                self.draw_complex_transition(
+                    ui,
+                    screen_rect,
+                    &preview,
+                    dest,
+                    unrotated_dest,
+                    rotation,
+                    angle,
+                    tp.alpha,
+                );
+                return;
+            }
+        }
 
         // 1. Draw preview texture as blurry background
         if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
@@ -134,7 +175,8 @@ impl ImageViewerApp {
         // preview_scale: ratio of preview texture resolution to the ORIGINAL image resolution.
         // This tells us at what display scale the preview's native pixels would be 1:1.
         // Above this scale, tiles provide higher quality than the preview.
-        let preview_scale = if let Some(ref p) = tm_ref.preview_texture {
+        let preview_scale = if let Some(ref p) = self.tile_manager.as_ref().unwrap().preview_texture
+        {
             p.size()[0] as f32 / rotated_img_size.x.max(1.0)
         } else {
             FALLBACK_PREVIEW_SCALE // Fallback
@@ -459,8 +501,46 @@ impl ImageViewerApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect};
+    use super::{
+        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect,
+        should_draw_tiled_preview_transition,
+    };
+    use crate::app::TransitionStyle;
     use eframe::egui::{Pos2, Rect};
+
+    #[test]
+    fn tiled_preview_supports_complex_transitions() {
+        assert!(should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+        assert!(should_draw_tiled_preview_transition(
+            TransitionStyle::PageFlip,
+            true,
+            true
+        ));
+        assert!(should_draw_tiled_preview_transition(
+            TransitionStyle::Ripple,
+            true,
+            true
+        ));
+        assert!(!should_draw_tiled_preview_transition(
+            TransitionStyle::Fade,
+            true,
+            true
+        ));
+        assert!(!should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            false,
+            true
+        ));
+        assert!(!should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            true,
+            false
+        ));
+    }
 
     #[test]
     fn rotated_axis_aligned_rect_swaps_size_for_quarter_turns() {

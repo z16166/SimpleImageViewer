@@ -1465,10 +1465,10 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
-    if !source.requires_disk_backed_decode()
-        && pixel_count < tiled_limit
-        && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
-    {
+    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        if source.requires_disk_backed_decode() {
+            return exr_tiled_source_to_static_hdr(path, source).map(Some);
+        }
         return Ok(None);
     }
 
@@ -1481,6 +1481,29 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
         hdr.height()
     );
     Ok(Some(ImageData::HdrTiled { hdr, fallback }))
+}
+
+fn exr_tiled_source_to_static_hdr(
+    path: &Path,
+    source: crate::hdr::exr_tiled::ExrTiledImageSource,
+) -> Result<ImageData, String> {
+    let tile = source.extract_tile_rgba32f_arc(0, 0, source.width(), source.height())?;
+    let hdr = crate::hdr::types::HdrImageBuffer {
+        width: tile.width,
+        height: tile.height,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: tile.color_space,
+        rgba_f32: Arc::clone(&tile.rgba_f32),
+    };
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+    log::info!(
+        "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
+        hdr.width,
+        hdr.height,
+        path.display()
+    );
+    Ok(make_hdr_image_data(hdr, fallback))
 }
 
 fn try_load_disk_backed_radiance_hdr(path: &Path) -> Result<Option<ImageData>, String> {
@@ -2051,28 +2074,25 @@ mod tests {
 
         let image_data =
             load_hdr(&path).unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
-        let (route, hdr_max_rgb, fallback_pixels) = match image_data {
+        let (hdr_max_rgb, fallback_pixels) = match image_data {
             ImageData::Hdr { hdr, fallback } => (
-                "static",
                 max_hdr_rgb(hdr.rgba_f32.as_slice()),
                 fallback.rgba().to_vec(),
             ),
-            ImageData::HdrTiled { hdr, fallback } => {
-                let tile_w = hdr.width().min(128);
-                let tile_h = hdr.height().min(128);
-                let tile = hdr
-                    .extract_tile_rgba32f_arc(0, 0, tile_w, tile_h)
-                    .unwrap_or_else(|err| panic!("extract tile from {}: {err}", path.display()));
-                let (_w, _h, pixels) = fallback.generate_preview(128, 128);
-                ("tiled", max_hdr_rgb(tile.rgba_f32.as_slice()), pixels)
-            }
-            _ => panic!("expected {} to load as HDR image data", path.display()),
+            ImageData::HdrTiled { .. } => panic!(
+                "{} is small enough for static HDR and should not route through tiled rendering",
+                path.display()
+            ),
+            _ => panic!(
+                "expected {} to load as static HDR image data",
+                path.display()
+            ),
         };
         let fallback_max_rgb = max_rgba8_rgb(&fallback_pixels);
 
         assert!(
             fallback_max_rgb > 0,
-            "fallback display pixels should not be all black for {} (route={route}, hdr_max_rgb={hdr_max_rgb:?})",
+            "fallback display pixels should not be all black for {} (hdr_max_rgb={hdr_max_rgb:?})",
             path.display(),
         );
     }
