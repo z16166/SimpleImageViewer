@@ -14,8 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use crate::hdr::tiled::{
+    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
+    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
+};
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 #[cfg(test)]
@@ -70,18 +75,12 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer
             let sdr_index = (y as usize * width as usize + x as usize) * 4;
             let gain_value =
                 sample_gain_map_value(&gain_rgba, gain_width, gain_height, x, y, width, height);
-            let log_boost = metadata.gain_map_min
-                + (metadata.gain_map_max - metadata.gain_map_min)
-                    * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE));
-            let boost = 2.0_f32.powf(log_boost);
-
-            for channel in &sdr_rgba[sdr_index..sdr_index + 3] {
-                let linear_sdr = srgb_u8_to_linear_f32(*channel);
-                let hdr =
-                    ((linear_sdr + metadata.offset_sdr) * boost - metadata.offset_hdr).max(0.0);
-                rgba_f32.push(hdr);
-            }
-            rgba_f32.push(f32::from(sdr_rgba[sdr_index + 3]) / 255.0);
+            append_hdr_pixel_from_sdr_and_gain(
+                &mut rgba_f32,
+                &sdr_rgba[sdr_index..sdr_index + 4],
+                gain_value,
+                metadata,
+            );
         }
     }
 
@@ -138,6 +137,160 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
         format: buffer.format,
         color_space: buffer.color_space,
         rgba_f32: Arc::new(out),
+    }
+}
+
+#[derive(Debug)]
+pub struct UltraHdrTiledImageSource {
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    physical_width: u32,
+    physical_height: u32,
+    orientation: u16,
+    gain_width: u32,
+    gain_height: u32,
+    gain_rgba: Arc<Vec<u8>>,
+    metadata: GainMapMetadata,
+    tile_cache: Mutex<HdrTileCache>,
+}
+
+impl UltraHdrTiledImageSource {
+    pub(crate) fn open(path: PathBuf, orientation: u16) -> Result<Self, String> {
+        let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+        let info = inspect_ultra_hdr_jpeg_bytes(&bytes)?;
+        if !info.is_ultra_hdr {
+            return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
+        }
+
+        let decompressor = libjpeg_turbo::Decompressor::new()?;
+        let (physical_width, physical_height, _) = decompressor.decompress_header(&bytes)?;
+        let physical_width = u32::try_from(physical_width)
+            .map_err(|_| "Ultra HDR JPEG width is negative".to_string())?;
+        let physical_height = u32::try_from(physical_height)
+            .map_err(|_| "Ultra HDR JPEG height is negative".to_string())?;
+        let (width, height) = oriented_dimensions(physical_width, physical_height, orientation);
+
+        let gain_map_jpeg = extract_gain_map_jpeg_bytes(&bytes)?;
+        let metadata = gain_map_metadata(&gain_map_jpeg)?;
+        let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
+
+        Ok(Self {
+            path,
+            width,
+            height,
+            physical_width,
+            physical_height,
+            orientation,
+            gain_width,
+            gain_height,
+            gain_rgba: Arc::new(gain_rgba),
+            metadata,
+            tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
+        })
+    }
+}
+
+impl HdrTiledSource for UltraHdrTiledImageSource {
+    fn source_kind(&self) -> HdrTiledSourceKind {
+        HdrTiledSourceKind::DiskBacked
+    }
+
+    fn width(&self) -> u32 {
+        self.width
+    }
+
+    fn height(&self) -> u32 {
+        self.height
+    }
+
+    fn color_space(&self) -> HdrColorSpace {
+        HdrColorSpace::LinearSrgb
+    }
+
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
+            &HdrImageBuffer {
+                width: tile.width,
+                height: tile.height,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: tile.color_space,
+                rgba_f32: Arc::clone(&tile.rgba_f32),
+            },
+            0.0,
+        )?;
+        let image = image::RgbaImage::from_raw(tile.width, tile.height, pixels)
+            .ok_or_else(|| "Failed to build Ultra HDR SDR preview image".to_string())?;
+        let preview = image::imageops::thumbnail(&image, max_w, max_h);
+        Ok((preview.width(), preview.height(), preview.into_raw()))
+    }
+
+    fn extract_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Arc<HdrTileBuffer>, String> {
+        validate_tile_bounds(self.width, self.height, x, y, width, height)?;
+        let key = (x, y, width, height);
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            if let Some(tile) = cache.get(key) {
+                return Ok(tile);
+            }
+        }
+
+        let bytes = std::fs::read(&self.path).map_err(|err| err.to_string())?;
+        let (decoded_width, decoded_height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(&bytes)?;
+        if decoded_width != self.physical_width || decoded_height != self.physical_height {
+            return Err("Ultra HDR JPEG dimensions changed while extracting tile".to_string());
+        }
+
+        let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+        for dy in 0..height {
+            for dx in 0..width {
+                let display_x = x + dx;
+                let display_y = y + dy;
+                let (physical_x, physical_y) = display_to_physical_pixel(
+                    display_x,
+                    display_y,
+                    self.physical_width,
+                    self.physical_height,
+                    self.orientation,
+                );
+                let sdr_index =
+                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
+                let gain_value = sample_gain_map_value(
+                    &self.gain_rgba,
+                    self.gain_width,
+                    self.gain_height,
+                    physical_x,
+                    physical_y,
+                    self.physical_width,
+                    self.physical_height,
+                );
+                append_hdr_pixel_from_sdr_and_gain(
+                    &mut rgba_f32,
+                    &sdr_rgba[sdr_index..sdr_index + 4],
+                    gain_value,
+                    self.metadata,
+                );
+            }
+        }
+
+        let tile = Arc::new(HdrTileBuffer {
+            width,
+            height,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(rgba_f32),
+        });
+
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            cache.insert(key, Arc::clone(&tile));
+        }
+
+        Ok(tile)
     }
 }
 
@@ -204,6 +357,25 @@ fn attribute_f32(text: &str, name: &str) -> Option<f32> {
     parse_quoted_attribute(text, name)?.parse().ok()
 }
 
+fn append_hdr_pixel_from_sdr_and_gain(
+    rgba_f32: &mut Vec<f32>,
+    sdr_rgba: &[u8],
+    gain_value: f32,
+    metadata: GainMapMetadata,
+) {
+    let log_boost = metadata.gain_map_min
+        + (metadata.gain_map_max - metadata.gain_map_min)
+            * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE));
+    let boost = 2.0_f32.powf(log_boost);
+
+    for channel in &sdr_rgba[..3] {
+        let linear_sdr = srgb_u8_to_linear_f32(*channel);
+        let hdr = ((linear_sdr + metadata.offset_sdr) * boost - metadata.offset_hdr).max(0.0);
+        rgba_f32.push(hdr);
+    }
+    rgba_f32.push(f32::from(sdr_rgba[3]) / 255.0);
+}
+
 fn srgb_u8_to_linear_f32(value: u8) -> f32 {
     let encoded = f32::from(value) / 255.0;
     if encoded <= 0.04045 {
@@ -257,6 +429,39 @@ fn gain_map_luma(gain_rgba: &[u8], gain_width: u32, x: u32, y: u32) -> f32 {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) {
+    if (5..=8).contains(&orientation) {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
+fn display_to_physical_pixel(
+    display_x: u32,
+    display_y: u32,
+    physical_width: u32,
+    physical_height: u32,
+    orientation: u16,
+) -> (u32, u32) {
+    match orientation {
+        2 => (physical_width - 1 - display_x, display_y),
+        3 => (
+            physical_width - 1 - display_x,
+            physical_height - 1 - display_y,
+        ),
+        4 => (display_x, physical_height - 1 - display_y),
+        5 => (display_y, display_x),
+        6 => (display_y, physical_height - 1 - display_x),
+        7 => (
+            physical_width - 1 - display_y,
+            physical_height - 1 - display_x,
+        ),
+        8 => (physical_width - 1 - display_y, display_x),
+        _ => (display_x, display_y),
+    }
 }
 
 fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -544,6 +749,12 @@ mod tests {
                 0.0, 1.0, 0.0, 1.0,
             ]
         );
+    }
+
+    #[test]
+    fn display_to_physical_maps_orientation_six() {
+        assert_eq!(display_to_physical_pixel(0, 0, 2, 1, 6), (0, 0));
+        assert_eq!(display_to_physical_pixel(0, 1, 2, 1, 6), (1, 0));
     }
 
     fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {

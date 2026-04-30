@@ -1349,6 +1349,35 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let orientation = crate::metadata_utils::get_exif_orientation(path);
     if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes(&mmap) {
+        let pixel_count = hdr.width as u64 * hdr.height as u64;
+        let tiled_limit =
+            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        let max_side = hdr.width.max(hdr.height);
+        if pixel_count >= tiled_limit || max_side > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+            let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+            if orientation > 1 {
+                let oriented =
+                    crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+                w = oriented.0;
+                h = oriented.1;
+                pixels = oriented.2;
+            }
+            if let Ok(hdr_source) =
+                crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open(path.clone(), orientation)
+            {
+                let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
+                    w,
+                    h,
+                    Arc::new(pixels),
+                    true,
+                ));
+                return Ok(ImageData::HdrTiled {
+                    hdr: Arc::new(hdr_source),
+                    fallback,
+                });
+            }
+        }
+
         let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
         let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
         let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
@@ -2107,6 +2136,46 @@ mod tests {
             failures.is_empty(),
             "Ultra HDR corpus failures:\n{}",
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
+        let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
+        let path = root
+            .join("Originals")
+            .join("Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR tiled loader test; sample missing");
+            return;
+        }
+        let old_threshold =
+            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+
+        let image_data = load_jpeg(&path).expect("load Ultra HDR JPEG_R sample as tiled HDR");
+
+        crate::tile_cache::TILED_THRESHOLD
+            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
+        let ImageData::HdrTiled { hdr, fallback } = image_data else {
+            panic!("expected Ultra HDR JPEG_R to route to HDR tiled image data");
+        };
+        assert_eq!(
+            hdr.source_kind(),
+            crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
+        );
+        assert!(fallback.is_hdr_sdr_fallback());
+        let tile = hdr
+            .extract_tile_rgba32f_arc(0, 0, 64, 64)
+            .expect("extract Ultra HDR tile");
+        assert_eq!((tile.width, tile.height), (64, 64));
+        assert!(
+            tile.rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "Ultra HDR tiled source should preserve HDR highlights"
         );
     }
 
