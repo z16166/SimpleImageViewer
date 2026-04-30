@@ -72,13 +72,13 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct RadianceHeaderParams {
+pub(crate) struct RadianceHeaderParams {
     exposure: f32,
     colorcorr: [f32; 3],
 }
 
 impl RadianceHeaderParams {
-    fn read_from_path(path: &Path) -> Result<Self, String> {
+    pub(crate) fn read_from_path(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|err| err.to_string())?;
         let mut reader = BufReader::new(file);
         let mut params = Self::default();
@@ -101,7 +101,7 @@ impl RadianceHeaderParams {
         Ok(params)
     }
 
-    fn apply_header_line(&mut self, line: &str) {
+    pub(crate) fn apply_header_line(&mut self, line: &str) {
         if let Some(value) = line.strip_prefix("EXPOSURE=") {
             if let Ok(exposure) = value.trim().parse::<f32>() {
                 if exposure.is_finite() && exposure > 0.0 {
@@ -126,7 +126,7 @@ impl RadianceHeaderParams {
         }
     }
 
-    fn apply_to_pixels(self, pixels: &mut [f32]) {
+    pub(crate) fn apply_to_pixels(self, pixels: &mut [f32]) {
         let scale = [
             1.0 / (self.exposure * self.colorcorr[0]),
             1.0 / (self.exposure * self.colorcorr[1]),

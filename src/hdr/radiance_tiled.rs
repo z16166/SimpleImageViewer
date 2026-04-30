@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +26,12 @@ use crate::hdr::tiled::{
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Rgbe8Pixel {
+    rgb: [u8; 3],
+    exponent: u8,
+}
 
 #[derive(Debug)]
 pub struct RadianceHdrTiledImageSource {
@@ -101,17 +109,8 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             }
         }
 
-        let image = crate::hdr::decode::decode_hdr_image(&self.path)?;
-        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-        let source_stride = image.width as usize * 4;
-        let row_len = width as usize * 4;
-        let start_x = x as usize * 4;
-
-        for row in y..(y + height) {
-            let start = row as usize * source_stride + start_x;
-            let end = start + row_len;
-            rgba.extend_from_slice(&image.rgba_f32[start..end]);
-        }
+        let rgba =
+            decode_radiance_tile_window(&self.path, self.width, self.height, x, y, width, height)?;
 
         let tile = Arc::new(HdrTileBuffer {
             width,
@@ -125,6 +124,242 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
         }
 
         Ok(tile)
+    }
+}
+
+fn decode_radiance_tile_window(
+    path: &Path,
+    expected_width: u32,
+    expected_height: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let mut reader = BufReader::new(file);
+    let mut params = crate::hdr::decode::RadianceHeaderParams::default();
+    let (source_width, source_height) = read_radiance_header(&mut reader, &mut params)?;
+    if (source_width, source_height) != (expected_width, expected_height) {
+        return Err(format!(
+            "Radiance HDR dimensions changed while extracting tile: expected {expected_width}x{expected_height}, got {source_width}x{source_height}"
+        ));
+    }
+
+    let mut scanline = vec![Rgbe8Pixel::default(); source_width as usize];
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    let first_row = y;
+    let last_row_exclusive = y + height;
+    for row in 0..last_row_exclusive {
+        read_scanline(&mut reader, &mut scanline)?;
+        if row < first_row {
+            continue;
+        }
+
+        let start = x as usize;
+        let end = start + width as usize;
+        for pixel in &scanline[start..end] {
+            let rgb = pixel.to_rgb_f32();
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+        }
+    }
+    params.apply_to_pixels(&mut rgba);
+
+    Ok(rgba)
+}
+
+fn read_radiance_header<R: BufRead>(
+    reader: &mut R,
+    params: &mut crate::hdr::decode::RadianceHeaderParams,
+) -> Result<(u32, u32), String> {
+    let mut line = String::new();
+    reader.read_line(&mut line).map_err(|err| err.to_string())?;
+    if line.trim_end() != "#?RADIANCE" {
+        return Err("Radiance HDR signature not found".to_string());
+    }
+
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line).map_err(|err| err.to_string())?;
+        if bytes_read == 0 {
+            return Err("EOF in Radiance HDR header".to_string());
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if !trimmed.starts_with('#') {
+            params.apply_header_line(trimmed);
+        }
+    }
+
+    line.clear();
+    reader.read_line(&mut line).map_err(|err| err.to_string())?;
+    parse_standard_dimensions(line.trim())
+}
+
+fn parse_standard_dimensions(line: &str) -> Result<(u32, u32), String> {
+    let mut parts = line.split_whitespace();
+    let Some(y_tag) = parts.next() else {
+        return Err("Radiance HDR dimensions line is empty".to_string());
+    };
+    let Some(height) = parts.next() else {
+        return Err("Radiance HDR dimensions line is missing height".to_string());
+    };
+    let Some(x_tag) = parts.next() else {
+        return Err("Radiance HDR dimensions line is missing X tag".to_string());
+    };
+    let Some(width) = parts.next() else {
+        return Err("Radiance HDR dimensions line is missing width".to_string());
+    };
+    if parts.next().is_some() || y_tag != "-Y" || x_tag != "+X" {
+        return Err(format!(
+            "Unsupported Radiance HDR orientation in dimensions line: {line}"
+        ));
+    }
+
+    let width = width
+        .parse::<u32>()
+        .map_err(|err| format!("Invalid Radiance HDR width: {err}"))?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|err| format!("Invalid Radiance HDR height: {err}"))?;
+    Ok((width, height))
+}
+
+fn read_scanline<R: Read>(reader: &mut R, scanline: &mut [Rgbe8Pixel]) -> Result<(), String> {
+    if scanline.is_empty() {
+        return Ok(());
+    }
+
+    let first = read_rgbe(reader)?;
+    if first.rgb[0] == 2 && first.rgb[1] == 2 && first.rgb[2] < 128 {
+        decode_component(reader, scanline.len(), |offset, value| {
+            scanline[offset].rgb[0] = value;
+        })?;
+        decode_component(reader, scanline.len(), |offset, value| {
+            scanline[offset].rgb[1] = value;
+        })?;
+        decode_component(reader, scanline.len(), |offset, value| {
+            scanline[offset].rgb[2] = value;
+        })?;
+        decode_component(reader, scanline.len(), |offset, value| {
+            scanline[offset].exponent = value;
+        })?;
+    } else {
+        decode_old_rle(reader, first, scanline)?;
+    }
+    Ok(())
+}
+
+fn decode_component<R: Read, F: FnMut(usize, u8)>(
+    reader: &mut R,
+    width: usize,
+    mut set_component: F,
+) -> Result<(), String> {
+    let mut pos = 0usize;
+    let mut buf = [0u8; 128];
+    while pos < width {
+        let run = read_byte(reader)?;
+        if run <= 128 {
+            let count = run as usize;
+            if pos + count > width {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {width}",
+                    pos + count
+                ));
+            }
+            reader
+                .read_exact(&mut buf[..count])
+                .map_err(|err| err.to_string())?;
+            for (offset, value) in buf[..count].iter().copied().enumerate() {
+                set_component(pos + offset, value);
+            }
+            pos += count;
+        } else {
+            let count = (run - 128) as usize;
+            if pos + count > width {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {width}",
+                    pos + count
+                ));
+            }
+            let value = read_byte(reader)?;
+            for offset in 0..count {
+                set_component(pos + offset, value);
+            }
+            pos += count;
+        }
+    }
+    Ok(())
+}
+
+fn decode_old_rle<R: Read>(
+    reader: &mut R,
+    first: Rgbe8Pixel,
+    scanline: &mut [Rgbe8Pixel],
+) -> Result<(), String> {
+    scanline[0] = first;
+    let mut x = 1usize;
+    let mut run_multiplier = 1usize;
+    let mut previous = first;
+
+    while x < scanline.len() {
+        let pixel = read_rgbe(reader)?;
+        if pixel.rgb == [1, 1, 1] {
+            let count = pixel.exponent as usize * run_multiplier;
+            run_multiplier *= 256;
+            if x + count > scanline.len() {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {}",
+                    x + count,
+                    scanline.len()
+                ));
+            }
+            for dst in &mut scanline[x..x + count] {
+                *dst = previous;
+            }
+            x += count;
+        } else {
+            run_multiplier = 1;
+            previous = pixel;
+            scanline[x] = pixel;
+            x += 1;
+        }
+    }
+    Ok(())
+}
+
+fn read_rgbe<R: Read>(reader: &mut R) -> Result<Rgbe8Pixel, String> {
+    let mut bytes = [0u8; 4];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    Ok(Rgbe8Pixel {
+        rgb: [bytes[0], bytes[1], bytes[2]],
+        exponent: bytes[3],
+    })
+}
+
+fn read_byte<R: Read>(reader: &mut R) -> Result<u8, String> {
+    let mut byte = [0u8; 1];
+    reader
+        .read_exact(&mut byte)
+        .map_err(|err| err.to_string())?;
+    Ok(byte[0])
+}
+
+impl Rgbe8Pixel {
+    fn to_rgb_f32(self) -> [f32; 3] {
+        if self.exponent == 0 {
+            return [0.0; 3];
+        }
+        let scale = 2.0_f32.powi(i32::from(self.exponent) - 128 - 8);
+        [
+            f32::from(self.rgb[0]) * scale,
+            f32::from(self.rgb[1]) * scale,
+            f32::from(self.rgb[2]) * scale,
+        ]
     }
 }
 
@@ -150,6 +385,33 @@ mod tests {
         assert!((tile.rgba_f32[0] - 0.25).abs() < 0.01);
         assert!((tile.rgba_f32[1] - 0.125).abs() < 0.01);
         assert!((tile.rgba_f32[2] - 0.0625).abs() < 0.01);
+        assert_eq!(tile.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn extract_tile_does_not_require_full_image_decode_budget() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_radiance_tile_window_{}.hdr",
+            std::process::id()
+        ));
+        let width = 8193_u32;
+        let height = 8193_u32;
+        let mut bytes =
+            format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
+        bytes.extend_from_slice(&[0x80, 0x80, 0x80, 0x81]);
+        bytes.resize(bytes.len() + ((width - 1) as usize * 4), 0);
+        std::fs::write(&path, bytes).expect("write oversized tiled HDR");
+
+        let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first pixel without full-image decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((tile.width, tile.height), (1, 1));
+        assert!((tile.rgba_f32[0] - 1.0).abs() < 0.01);
+        assert!((tile.rgba_f32[1] - 1.0).abs() < 0.01);
+        assert!((tile.rgba_f32[2] - 1.0).abs() < 0.01);
         assert_eq!(tile.rgba_f32[3], 1.0);
     }
 }
