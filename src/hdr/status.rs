@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::capabilities::{HdrCapabilities, HdrPresentationPath};
-use super::types::HdrOutputMode;
+use super::types::{HdrColorSpace, HdrOutputMode};
 use rust_i18n::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub enum HdrRenderPath {
 pub fn hdr_osd_tag(
     is_hdr_source: bool,
     render_path: HdrRenderPath,
+    color_space: Option<HdrColorSpace>,
     capabilities: &HdrCapabilities,
 ) -> Option<String> {
     if !is_hdr_source {
@@ -35,9 +36,13 @@ pub fn hdr_osd_tag(
     }
 
     let render = hdr_render_path_label(render_path);
+    let color = color_space.map(hdr_color_space_label);
     let output = hdr_output_label(capabilities);
 
-    Some(format!("HDR: source | {render} | {output}"))
+    Some(match color {
+        Some(color) => format!("HDR: source | {color} | {render} | {output}"),
+        None => format!("HDR: source | {render} | {output}"),
+    })
 }
 
 fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
@@ -57,6 +62,17 @@ pub fn hdr_output_label(capabilities: &HdrCapabilities) -> String {
         }
     } else {
         t!("hdr.output.sdr_tone_mapped").to_string()
+    }
+}
+
+fn hdr_color_space_label(color_space: HdrColorSpace) -> String {
+    match color_space {
+        HdrColorSpace::LinearSrgb => t!("hdr.color_space.linear_srgb").to_string(),
+        HdrColorSpace::LinearScRgb => t!("hdr.color_space.linear_scrgb").to_string(),
+        HdrColorSpace::Rec2020Linear => t!("hdr.color_space.rec2020_linear").to_string(),
+        HdrColorSpace::Aces2065_1 => t!("hdr.color_space.aces2065_1").to_string(),
+        HdrColorSpace::Xyz => t!("hdr.color_space.xyz").to_string(),
+        HdrColorSpace::Unknown => t!("hdr.color_space.unknown").to_string(),
     }
 }
 
@@ -82,12 +98,14 @@ pub fn hdr_surface_format_label(capabilities: &HdrCapabilities) -> String {
 mod tests {
     use crate::hdr::capabilities::HdrCapabilities;
     use crate::hdr::status::{HdrRenderPath, hdr_osd_tag, hdr_surface_format_label};
+    use crate::hdr::types::HdrColorSpace;
 
     #[test]
     fn hdr_osd_tag_names_float_plane_and_sdr_output() {
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
+            None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
         );
 
@@ -102,6 +120,7 @@ mod tests {
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
+            None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
         );
 
@@ -112,10 +131,41 @@ mod tests {
     }
 
     #[test]
+    fn hdr_osd_tag_includes_known_input_color_space() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatTilePlane,
+            Some(HdrColorSpace::Rec2020Linear),
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+        );
+
+        assert_eq!(
+            tag.as_deref(),
+            Some("HDR: source | Rec.2020 linear | tile plane | SDR tone-mapped")
+        );
+    }
+
+    #[test]
+    fn hdr_osd_tag_warns_for_unknown_input_color_space() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatImagePlane,
+            Some(HdrColorSpace::Unknown),
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+        );
+
+        assert_eq!(
+            tag.as_deref(),
+            Some("HDR: source | unknown color | plane | SDR tone-mapped")
+        );
+    }
+
+    #[test]
     fn hdr_osd_tag_is_hidden_for_non_hdr_images() {
         let tag = hdr_osd_tag(
             false,
             HdrRenderPath::SdrFallback,
+            Some(HdrColorSpace::LinearSrgb),
             &HdrCapabilities::sdr("not an HDR image"),
         );
 

@@ -225,6 +225,10 @@ pub(crate) fn hdr_color_space_from_exr_chromaticities(
         HdrColorSpace::LinearSrgb
     } else if chromaticities_match(chromaticities, REC2020_CHROMATICITIES) {
         HdrColorSpace::Rec2020Linear
+    } else if chromaticities_match(chromaticities, ACES_AP0_CHROMATICITIES) {
+        HdrColorSpace::Aces2065_1
+    } else if chromaticities_match(chromaticities, XYZ_CHROMATICITIES) {
+        HdrColorSpace::Xyz
     } else {
         HdrColorSpace::Unknown
     }
@@ -242,6 +246,20 @@ const REC2020_CHROMATICITIES: Chromaticities = Chromaticities {
     green: Vec2(0.170, 0.797),
     blue: Vec2(0.131, 0.046),
     white: Vec2(0.3127, 0.3290),
+};
+
+const ACES_AP0_CHROMATICITIES: Chromaticities = Chromaticities {
+    red: Vec2(0.7347, 0.2653),
+    green: Vec2(0.0, 1.0),
+    blue: Vec2(0.0001, -0.0770),
+    white: Vec2(0.32168, 0.33767),
+};
+
+const XYZ_CHROMATICITIES: Chromaticities = Chromaticities {
+    red: Vec2(1.0, 0.0),
+    green: Vec2(0.0, 1.0),
+    blue: Vec2(0.0, 0.0),
+    white: Vec2(0.33333, 0.33333),
 };
 
 fn chromaticities_match(actual: Chromaticities, expected: Chromaticities) -> bool {
@@ -579,6 +597,18 @@ mod tests {
             blue: exr::math::Vec2(0.131, 0.046),
             white: exr::math::Vec2(0.3127, 0.3290),
         };
+        let aces_ap0 = Chromaticities {
+            red: exr::math::Vec2(0.7347, 0.2653),
+            green: exr::math::Vec2(0.0, 1.0),
+            blue: exr::math::Vec2(0.0001, -0.0770),
+            white: exr::math::Vec2(0.32168, 0.33767),
+        };
+        let xyz = Chromaticities {
+            red: exr::math::Vec2(1.0, 0.0),
+            green: exr::math::Vec2(0.0, 1.0),
+            blue: exr::math::Vec2(0.0, 0.0),
+            white: exr::math::Vec2(0.33333, 0.33333),
+        };
         let unknown = Chromaticities {
             red: exr::math::Vec2(0.8, 0.2),
             green: exr::math::Vec2(0.2, 0.8),
@@ -597,6 +627,14 @@ mod tests {
         assert_eq!(
             super::hdr_color_space_from_exr_chromaticities(Some(rec2020)),
             HdrColorSpace::Rec2020Linear
+        );
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(Some(aces_ap0)),
+            HdrColorSpace::Aces2065_1
+        );
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(Some(xyz)),
+            HdrColorSpace::Xyz
         );
         assert_eq!(
             super::hdr_color_space_from_exr_chromaticities(Some(unknown)),

@@ -25,12 +25,15 @@ pub enum HdrPixelFormat {
 }
 
 #[allow(dead_code)]
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrColorSpace {
-    LinearSrgb,
-    LinearScRgb,
-    Rec2020Linear,
-    Unknown,
+    LinearSrgb = 0,
+    LinearScRgb = 1,
+    Rec2020Linear = 2,
+    Aces2065_1 = 3,
+    Xyz = 4,
+    Unknown = 5,
 }
 
 #[allow(dead_code)]

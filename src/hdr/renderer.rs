@@ -52,6 +52,8 @@ const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
+const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
+const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
 
 struct ToneMapSettings {
     exposure_ev: f32,
@@ -91,9 +93,31 @@ fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
+fn aces2065_1_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        2.5216 * rgb.r - 1.1369 * rgb.g - 0.3849 * rgb.b,
+        -0.2762 * rgb.r + 1.3697 * rgb.g - 0.0935 * rgb.b,
+        -0.0159 * rgb.r - 0.1478 * rgb.g + 1.1638 * rgb.b,
+    );
+}
+
+fn xyz_to_linear_srgb(xyz: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        3.2404 * xyz.x - 1.5371 * xyz.y - 0.4985 * xyz.z,
+        -0.9692 * xyz.x + 1.8760 * xyz.y + 0.0415 * xyz.z,
+        0.0556 * xyz.x - 0.2040 * xyz.y + 1.0572 * xyz.z,
+    );
+}
+
 fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<f32> {
     if input_color_space == INPUT_COLOR_SPACE_REC2020_LINEAR {
         return rec2020_to_linear_srgb(rgb);
+    }
+    if input_color_space == INPUT_COLOR_SPACE_ACES2065_1 {
+        return aces2065_1_to_linear_srgb(rgb);
+    }
+    if input_color_space == INPUT_COLOR_SPACE_XYZ {
+        return xyz_to_linear_srgb(rgb);
     }
     return rgb;
 }
@@ -1308,6 +1332,20 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_REC2020_LINEAR"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn convert_input_to_linear_srgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("1.6605"));
+    }
+
+    #[test]
+    fn shader_converts_aces2065_1_input_to_linear_srgb() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_ACES2065_1"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn aces2065_1_to_linear_srgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("2.5216"));
+    }
+
+    #[test]
+    fn shader_converts_xyz_input_to_linear_srgb() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_XYZ"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn xyz_to_linear_srgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("3.2404"));
     }
 
     #[test]

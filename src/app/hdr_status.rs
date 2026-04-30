@@ -16,6 +16,7 @@
 
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
+use crate::hdr::types::HdrColorSpace;
 
 impl ImageViewerApp {
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
@@ -47,7 +48,27 @@ impl ImageViewerApp {
 
     pub(crate) fn current_hdr_osd_tag(&self) -> Option<String> {
         let render_path = self.current_hdr_render_path()?;
-        hdr_osd_tag(true, render_path, &self.hdr_capabilities)
+        hdr_osd_tag(
+            true,
+            render_path,
+            self.current_hdr_color_space(),
+            &self.hdr_capabilities,
+        )
+    }
+
+    fn current_hdr_color_space(&self) -> Option<HdrColorSpace> {
+        if let Some(source) = self
+            .current_hdr_tiled_image
+            .as_ref()
+            .and_then(|current| current.source_for_index(self.current_index))
+        {
+            return Some(source.color_space());
+        }
+
+        self.current_hdr_image
+            .as_ref()
+            .and_then(|current| current.image_for_index(self.current_index))
+            .map(|image| image.color_space)
     }
 }
 
