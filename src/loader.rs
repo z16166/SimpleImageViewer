@@ -1423,6 +1423,8 @@ fn load_hdr(path: &Path) -> Result<ImageData, String> {
         if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
             return Ok(image_data);
         }
+    } else if let Some(image_data) = try_load_disk_backed_radiance_hdr(path)? {
+        return Ok(image_data);
     }
 
     let hdr = match crate::hdr::decode::decode_hdr_image(path) {
@@ -1475,6 +1477,26 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
         Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
     log::info!(
         "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
+        hdr.width(),
+        hdr.height()
+    );
+    Ok(Some(ImageData::HdrTiled { hdr, fallback }))
+}
+
+fn try_load_disk_backed_radiance_hdr(path: &Path) -> Result<Option<ImageData>, String> {
+    let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open(path)?;
+    let pixel_count = source.width() as u64 * source.height() as u64;
+    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let max_side = source.width().max(source.height());
+    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        return Ok(None);
+    }
+
+    let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
+    let fallback: Arc<dyn TiledImageSource> =
+        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
+    log::info!(
+        "[Loader] Radiance HDR {}x{} routed to disk-backed HDR tiles.",
         hdr.width(),
         hdr.height()
     );
@@ -1870,8 +1892,21 @@ mod tests {
 
         crate::tile_cache::TILED_THRESHOLD
             .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
+        let ImageData::HdrTiled { hdr, fallback } = image_data else {
+            panic!("expected Radiance HDR to route to HDR tiled image data");
+        };
+        assert_eq!(
+            hdr.source_kind(),
+            crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
+        );
+        assert!(fallback.is_hdr_sdr_fallback());
+        let tile = hdr
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract Radiance HDR tile");
+        assert_eq!((tile.width, tile.height), (1, 1));
+        assert_eq!(tile.color_space, HdrColorSpace::LinearSrgb);
+        assert_eq!(tile.rgba_f32.len(), 4);
         let _ = std::fs::remove_file(&path);
-        assert!(matches!(image_data, ImageData::HdrTiled { .. }));
     }
 
     #[test]
