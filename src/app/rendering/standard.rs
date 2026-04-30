@@ -18,6 +18,7 @@ use crate::app::rendering::geometry::{
     rotated_image_size_for_display, unrotated_draw_rect_for_display,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
+use crate::hdr::renderer::HdrRenderOutputMode;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::time::Instant;
 
@@ -27,6 +28,13 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
             transition,
             TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
         )
+}
+
+pub(crate) fn should_draw_static_hdr_immediately(
+    output_mode: HdrRenderOutputMode,
+    has_hdr_image: bool,
+) -> bool {
+    has_hdr_image && output_mode == HdrRenderOutputMode::NativeHdr
 }
 
 impl ImageViewerApp {
@@ -78,6 +86,20 @@ impl ImageViewerApp {
         // --- Transition parameter computation ---
         // Slide and Push use normalised offsets; multiply by screen width here.
         let mut tp = self.compute_transition_params();
+        let hdr_image = self
+            .current_hdr_image
+            .as_ref()
+            .and_then(|current| current.image_for_index(self.current_index))
+            .cloned();
+        let hdr_output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.hdr_target_format,
+            self.hdr_monitor_state.selection(),
+        );
+        if should_draw_static_hdr_immediately(hdr_output_mode, hdr_image.is_some()) {
+            self.transition_start = None;
+            self.prev_texture = None;
+            tp = crate::app::rendering::transitions::TransitionParams::default();
+        }
         if matches!(
             self.active_transition,
             TransitionStyle::Slide | TransitionStyle::Push
@@ -103,13 +125,7 @@ impl ImageViewerApp {
         // While they animate, use the cached SDR fallback; static and standard fade/slide
         // frames can use the HDR callback with the float image plane.
         if should_use_hdr_callback(self.active_transition, tp.is_animating) {
-            if let (Some(hdr_image), Some(target_format)) = (
-                self.current_hdr_image
-                    .as_ref()
-                    .and_then(|current| current.image_for_index(self.current_index))
-                    .cloned(),
-                self.hdr_target_format,
-            ) {
+            if let (Some(hdr_image), Some(target_format)) = (hdr_image, self.hdr_target_format) {
                 if tp.is_animating {
                     if let Some(prev) = &self.prev_texture.clone() {
                         let p_size = prev.size_vec2();
@@ -136,10 +152,7 @@ impl ImageViewerApp {
                         hdr_image,
                         self.hdr_renderer.tone_map,
                         target_format,
-                        crate::hdr::monitor::effective_render_output_mode(
-                            self.hdr_target_format,
-                            self.hdr_monitor_state.selection(),
-                        ),
+                        hdr_output_mode,
                         rotation as u32,
                         tp.alpha,
                     ));
@@ -233,5 +246,21 @@ mod tests {
         ] {
             assert!(should_use_hdr_callback(style, true));
         }
+    }
+
+    #[test]
+    fn native_static_hdr_draws_immediately_without_sdr_transition_phase() {
+        assert!(should_draw_static_hdr_immediately(
+            HdrRenderOutputMode::NativeHdr,
+            true
+        ));
+        assert!(!should_draw_static_hdr_immediately(
+            HdrRenderOutputMode::SdrToneMapped,
+            true
+        ));
+        assert!(!should_draw_static_hdr_immediately(
+            HdrRenderOutputMode::NativeHdr,
+            false
+        ));
     }
 }
