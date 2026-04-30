@@ -18,15 +18,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{
-    DEFAULT_MAX_DISPLAY_NITS, DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageBuffer, HdrPixelFormat,
-};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+#[cfg(test)]
+use crate::hdr::types::HdrToneMapSettings;
 
 #[cfg(test)]
 use std::path::Path;
@@ -42,25 +43,25 @@ const ISO_GAIN_MAP_NAMESPACE: &[u8] = b"urn:iso:std:iso:ts:21496:-1\0";
 const ISO_MULTI_CHANNEL_FLAG: u8 = 1 << 7;
 const ISO_BACKWARD_DIRECTION_FLAG: u8 = 1 << 2;
 const ISO_COMMON_DENOMINATOR_FLAG: u8 = 1 << 3;
-const DEFAULT_TARGET_HDR_CAPACITY: f32 = DEFAULT_MAX_DISPLAY_NITS / DEFAULT_SDR_WHITE_NITS;
-
 #[cfg(test)]
-static BASE_JPEG_DECODE_COUNT: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static BASE_JPEG_DECODE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
 
 fn decode_base_jpeg_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     #[cfg(test)]
-    BASE_JPEG_DECODE_COUNT.fetch_add(1, Ordering::Relaxed);
+    BASE_JPEG_DECODE_COUNT.with(|count| count.set(count.get() + 1));
     libjpeg_turbo::decode_to_rgba(bytes)
 }
 
 #[cfg(test)]
 fn reset_base_jpeg_decode_count() {
-    BASE_JPEG_DECODE_COUNT.store(0, Ordering::Relaxed);
+    BASE_JPEG_DECODE_COUNT.with(|count| count.set(0));
 }
 
 #[cfg(test)]
 fn base_jpeg_decode_count() -> usize {
-    BASE_JPEG_DECODE_COUNT.load(Ordering::Relaxed)
+    BASE_JPEG_DECODE_COUNT.with(Cell::get)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,10 +89,16 @@ fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
 fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-    decode_ultra_hdr_jpeg_bytes(&bytes)
+    decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+        &bytes,
+        HdrToneMapSettings::default().target_hdr_capacity(),
+    )
 }
 
-pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
     if !info.is_ultra_hdr {
         return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
@@ -113,7 +120,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer
                 &sdr_rgba[sdr_index..sdr_index + 4],
                 gain_value,
                 metadata,
-                DEFAULT_TARGET_HDR_CAPACITY,
+                target_hdr_capacity,
             );
         }
     }
@@ -188,11 +195,16 @@ pub struct UltraHdrTiledImageSource {
     gain_height: u32,
     gain_rgba: Arc<Vec<u8>>,
     metadata: GainMapMetadata,
+    target_hdr_capacity: f32,
     tile_cache: Mutex<HdrTileCache>,
 }
 
 impl UltraHdrTiledImageSource {
-    pub(crate) fn open(path: PathBuf, orientation: u16) -> Result<Self, String> {
+    pub(crate) fn open_with_target_capacity(
+        path: PathBuf,
+        orientation: u16,
+        target_hdr_capacity: f32,
+    ) -> Result<Self, String> {
         let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
         let bytes = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
         let info = inspect_ultra_hdr_jpeg_bytes(&bytes)?;
@@ -219,6 +231,7 @@ impl UltraHdrTiledImageSource {
             gain_height,
             gain_rgba: Arc::new(gain_rgba),
             metadata,
+            target_hdr_capacity,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
         })
     }
@@ -302,7 +315,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
                     &self.sdr_rgba[sdr_index..sdr_index + 4],
                     gain_value,
                     self.metadata,
-                    DEFAULT_TARGET_HDR_CAPACITY,
+                    self.target_hdr_capacity,
                 );
             }
         }
@@ -1030,7 +1043,12 @@ mod tests {
         }
 
         reset_base_jpeg_decode_count();
-        let source = UltraHdrTiledImageSource::open(path, 1).expect("open Ultra HDR tiled source");
+        let source = UltraHdrTiledImageSource::open_with_target_capacity(
+            path,
+            1,
+            HdrToneMapSettings::default().target_hdr_capacity(),
+        )
+        .expect("open Ultra HDR tiled source");
 
         source
             .extract_tile_rgba32f_arc(0, 0, 64, 64)
@@ -1043,6 +1061,46 @@ mod tests {
             base_jpeg_decode_count(),
             1,
             "Ultra HDR tiled source should decode the base JPEG once and reuse it for distinct tiles"
+        );
+    }
+
+    #[test]
+    fn tiled_source_uses_target_hdr_capacity() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+        let path = sample_path(&root, "Originals/Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR tiled target capacity test; sample missing");
+            return;
+        }
+
+        let low = UltraHdrTiledImageSource::open_with_target_capacity(path.clone(), 1, 1.0)
+            .expect("open low-capacity Ultra HDR tiled source")
+            .extract_tile_rgba32f_arc(0, 0, 64, 64)
+            .expect("extract low-capacity tile");
+        let high = UltraHdrTiledImageSource::open_with_target_capacity(path, 1, 8.0)
+            .expect("open high-capacity Ultra HDR tiled source")
+            .extract_tile_rgba32f_arc(0, 0, 64, 64)
+            .expect("extract high-capacity tile");
+
+        let low_peak = low
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+        let high_peak = high
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            high_peak > low_peak,
+            "higher target HDR capacity should recover brighter tiled JPEG_R highlights"
         );
     }
 
@@ -1279,6 +1337,44 @@ mod tests {
         assert!((rgba[0] - 2.0).abs() < 0.001);
         assert!((rgba[1] - 4.0).abs() < 0.001);
         assert!((rgba[2] - 8.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn ultra_hdr_decode_uses_target_hdr_capacity() {
+        let Some(root) = ultra_hdr_samples_root() else {
+            eprintln!(
+                "skipping Ultra HDR corpus test; set SIV_ULTRA_HDR_SAMPLES_DIR to Ultra_HDR_Samples"
+            );
+            return;
+        };
+        let path = sample_path(&root, "Originals/Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR target capacity test; sample missing");
+            return;
+        }
+        let file = std::fs::File::open(&path).expect("open Ultra HDR sample");
+        let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap Ultra HDR sample") };
+
+        let low = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 1.0)
+            .expect("decode low-capacity Ultra HDR");
+        let high = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 8.0)
+            .expect("decode high-capacity Ultra HDR");
+
+        let low_peak = low
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+        let high_peak = high
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            high_peak > low_peak,
+            "higher target HDR capacity should recover brighter JPEG_R highlights"
+        );
     }
 
     fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {

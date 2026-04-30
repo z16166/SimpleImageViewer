@@ -62,6 +62,12 @@ impl Default for HdrToneMapSettings {
     }
 }
 
+impl HdrToneMapSettings {
+    pub fn target_hdr_capacity(self) -> f32 {
+        self.max_display_nits.max(self.sdr_white_nits.max(1.0)) / self.sdr_white_nits.max(1.0)
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HdrImageBuffer {
@@ -116,7 +122,7 @@ impl TilePixelBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{TilePixelBuffer, TilePixelFormat};
+    use super::{HdrToneMapSettings, TilePixelBuffer, TilePixelFormat};
     use std::sync::Arc;
 
     #[test]
@@ -142,5 +148,16 @@ mod tests {
             pixels.len() * std::mem::size_of::<f32>()
         );
         assert!(buffer.is_hdr());
+    }
+
+    #[test]
+    fn tone_map_settings_report_target_hdr_capacity() {
+        let settings = HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+
+        assert_eq!(settings.target_hdr_capacity(), 5.0);
     }
 }

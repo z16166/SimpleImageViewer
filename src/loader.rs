@@ -25,6 +25,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -347,6 +348,7 @@ struct DelayedFallbackJob {
     current_gen: Arc<std::sync::atomic::AtomicU64>,
     tx: Sender<LoaderOutput>,
     refine_tx: Sender<RefinementRequest>,
+    hdr_target_capacity: f32,
 }
 
 pub struct ImageLoader {
@@ -367,6 +369,7 @@ pub struct ImageLoader {
     local_queue: std::collections::VecDeque<LoaderOutput>,
     /// Mutex holds at most one pending delayed fallback job; Condvar wakes the worker.
     delayed_fallback: Arc<(Mutex<Option<DelayedFallbackJob>>, Condvar)>,
+    hdr_target_capacity_bits: Arc<AtomicU32>,
 }
 
 impl ImageLoader {
@@ -415,6 +418,11 @@ impl ImageLoader {
         };
 
         let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let hdr_target_capacity_bits = Arc::new(AtomicU32::new(
+            crate::hdr::types::HdrToneMapSettings::default()
+                .target_hdr_capacity()
+                .to_bits(),
+        ));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
         {
@@ -480,6 +488,7 @@ impl ImageLoader {
                             job.loading.clone(),
                             job.current_gen.clone(),
                             job.high_quality,
+                            job.hdr_target_capacity,
                         );
                     }
                 });
@@ -727,6 +736,7 @@ impl ImageLoader {
             refine_tx,
             local_queue: std::collections::VecDeque::new(),
             delayed_fallback,
+            hdr_target_capacity_bits,
         }
     }
 
@@ -748,6 +758,20 @@ impl ImageLoader {
     pub fn set_generation(&self, generation: u64) {
         self.current_gen
             .store(generation, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_hdr_tone_map_settings(&self, settings: crate::hdr::types::HdrToneMapSettings) {
+        self.hdr_target_capacity_bits.store(
+            settings.target_hdr_capacity().to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    fn hdr_target_capacity(&self) -> f32 {
+        f32::from_bits(
+            self.hdr_target_capacity_bits
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     pub fn request_load(
@@ -780,6 +804,7 @@ impl ImageLoader {
         let current_gen2 = Arc::clone(&current_gen);
         let rtx1 = self.refine_tx.clone();
         let rtx2 = self.refine_tx.clone();
+        let hdr_target_capacity = self.hdr_target_capacity();
 
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
@@ -810,6 +835,7 @@ impl ImageLoader {
                 loading1,
                 current_gen1,
                 high_quality,
+                hdr_target_capacity,
             );
         });
 
@@ -825,6 +851,7 @@ impl ImageLoader {
             current_gen: current_gen2,
             tx: tx2,
             refine_tx: rtx2,
+            hdr_target_capacity,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -843,6 +870,7 @@ impl ImageLoader {
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         current_gen: Arc<std::sync::atomic::AtomicU64>,
         high_quality: bool,
+        hdr_target_capacity: f32,
     ) {
         let global_gen = current_gen.load(std::sync::atomic::Ordering::Relaxed);
         if generation != global_gen {
@@ -861,6 +889,7 @@ impl ImageLoader {
                 tx.clone(),
                 refine_tx.clone(),
                 high_quality,
+                hdr_target_capacity,
             )
         }))
         .unwrap_or_else(|e| {
@@ -1083,6 +1112,7 @@ fn load_image_file(
     _tx: Sender<LoaderOutput>,
     refine_tx: Sender<RefinementRequest>,
     high_quality: bool,
+    hdr_target_capacity: f32,
 ) -> LoadResult {
     let file_name = path
         .file_name()
@@ -1127,7 +1157,7 @@ fn load_image_file(
         }
 
         if ext == "jpg" || ext == "jpeg" {
-            return load_jpeg(path);
+            return load_jpeg_with_target_capacity(path, hdr_target_capacity);
         }
         if ext == "tif" || ext == "tiff" {
             return crate::libtiff_loader::load_via_libtiff(path);
@@ -1149,7 +1179,7 @@ fn load_image_file(
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
             "heif" | "heic" => load_heic(path),
-            "jpg" | "jpeg" => load_jpeg(path),
+            "jpg" | "jpeg" => load_jpeg_with_target_capacity(path, hdr_target_capacity),
             _ => load_static(path),
         };
         if result.is_err() {
@@ -1163,7 +1193,7 @@ fn load_image_file(
             }
 
             // Last resort: Detect format by content (magic bytes)
-            if let Ok(retry_img) = load_via_content_detection(path) {
+            if let Ok(retry_img) = load_via_content_detection(path, hdr_target_capacity) {
                 log::info!(
                     "[{}] Successfully recovered via content-based detection",
                     file_name
@@ -1344,11 +1374,25 @@ fn load_image_file(
     }
 }
 
+#[cfg(test)]
 fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
+    load_jpeg_with_target_capacity(
+        path,
+        crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+    )
+}
+
+fn load_jpeg_with_target_capacity(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+) -> Result<ImageData, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let orientation = crate::metadata_utils::get_exif_orientation(path);
-    if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes(&mmap) {
+    if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+        &mmap,
+        hdr_target_capacity,
+    ) {
         let pixel_count = hdr.width as u64 * hdr.height as u64;
         let tiled_limit =
             crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
@@ -1363,7 +1407,11 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
                 pixels = oriented.2;
             }
             if let Ok(hdr_source) =
-                crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open(path.clone(), orientation)
+                crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
+                    path.clone(),
+                    orientation,
+                    hdr_target_capacity,
+                )
             {
                 let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
                     w,
@@ -2297,6 +2345,49 @@ mod tests {
     }
 
     #[test]
+    fn ultra_hdr_loader_uses_target_hdr_capacity() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
+        let path = root
+            .join("Originals")
+            .join("Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR loader target capacity test; sample missing");
+            return;
+        }
+
+        let low = load_jpeg_with_target_capacity(&path, 1.0)
+            .expect("load low-capacity Ultra HDR JPEG_R sample");
+        let high = load_jpeg_with_target_capacity(&path, 8.0)
+            .expect("load high-capacity Ultra HDR JPEG_R sample");
+
+        let ImageData::Hdr { hdr: low, .. } = low else {
+            panic!("expected low-capacity Ultra HDR JPEG_R to load as HDR image data");
+        };
+        let ImageData::Hdr { hdr: high, .. } = high else {
+            panic!("expected high-capacity Ultra HDR JPEG_R to load as HDR image data");
+        };
+
+        let low_peak = low
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+        let high_peak = high
+            .rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            high_peak > low_peak,
+            "loader should pass target HDR capacity into JPEG_R gain-map recovery"
+        );
+    }
+
+    #[test]
     fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
         let _threshold_lock = lock_tiled_threshold_for_test();
         let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
@@ -2406,14 +2497,18 @@ mod tests {
 
 const DETECTION_BUFFER_SIZE: usize = 16;
 
-fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<ImageData, String> {
+fn load_by_image_format(
+    format: image::ImageFormat,
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+) -> Result<ImageData, String> {
     match format {
         image::ImageFormat::Png => load_png(path),
         image::ImageFormat::Gif => load_gif(path),
         image::ImageFormat::WebP => load_webp(path),
         image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(path),
         // Standard single-frame formats handled by load_static
-        image::ImageFormat::Jpeg => load_jpeg(path),
+        image::ImageFormat::Jpeg => load_jpeg_with_target_capacity(path, hdr_target_capacity),
         image::ImageFormat::Bmp
         | image::ImageFormat::Ico
         | image::ImageFormat::Pnm
@@ -2431,7 +2526,10 @@ fn load_by_image_format(format: image::ImageFormat, path: &PathBuf) -> Result<Im
     }
 }
 
-fn load_via_content_detection(path: &PathBuf) -> Result<ImageData, String> {
+fn load_via_content_detection(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+) -> Result<ImageData, String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
 
@@ -2441,7 +2539,7 @@ fn load_via_content_detection(path: &PathBuf) -> Result<ImageData, String> {
 
     // 1. Try standard image-rs detection
     if let Ok(guessed) = image::guess_format(&header[..n]) {
-        return load_by_image_format(guessed, path);
+        return load_by_image_format(guessed, path, hdr_target_capacity);
     }
 
     // 2. Manual HEIC detection (since image-rs 0.25 doesn't natively guess it)

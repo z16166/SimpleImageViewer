@@ -258,6 +258,8 @@ impl ImageViewerApp {
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
             log::info!("{diagnostic}");
         }
+        app.loader
+            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits
