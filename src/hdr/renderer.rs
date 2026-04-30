@@ -24,6 +24,23 @@ use wgpu::util::DeviceExt;
 
 pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrRenderOutputMode {
+    SdrToneMapped = 0,
+    NativeHdr = 1,
+}
+
+impl HdrRenderOutputMode {
+    pub fn for_target_format(target_format: wgpu::TextureFormat) -> Self {
+        if crate::hdr::surface::is_native_hdr_surface_format(Some(target_format)) {
+            Self::NativeHdr
+        } else {
+            Self::SdrToneMapped
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub const HDR_IMAGE_PLANE_SHADER: &str = r#"
 // Largest finite half-float value; caps extreme HDR values before tone mapping.
@@ -32,6 +49,7 @@ const MAX_FINITE_HDR_VALUE: f32 = 65504.0;
 const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 // Keeps generated UVs inside the texture for the fullscreen triangle edge.
 const MAX_UV_CLAMP: f32 = 0.999999;
+const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 
 struct ToneMapSettings {
     exposure_ev: f32,
@@ -39,9 +57,9 @@ struct ToneMapSettings {
     max_display_nits: f32,
     rotation_steps: u32,
     alpha: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    output_mode: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 struct VertexOutput {
@@ -86,6 +104,11 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
 }
 
+fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let exposure_scale = exp2(settings.exposure_ev);
+    return sanitize_hdr_rgb(rgb * exposure_scale);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2<f32>, 3>(
@@ -112,8 +135,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
+    let rgb = if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
+        encode_native_hdr(hdr.rgb, tone_map)
+    } else {
+        encode_sdr(hdr.rgb, tone_map)
+    };
     return vec4<f32>(
-        encode_sdr(hdr.rgb, tone_map),
+        rgb,
         clamp(hdr.a, 0.0, 1.0) * tone_map.alpha,
     );
 }
@@ -261,7 +289,12 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
 
-        let uniform = ToneMapUniform::from_settings(self.tone_map, self.rotation_steps, self.alpha);
+        let uniform = ToneMapUniform::from_settings(
+            self.tone_map,
+            self.rotation_steps,
+            self.alpha,
+            HdrRenderOutputMode::for_target_format(self.target_format),
+        );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let image_key = HdrImageKey::from_image(&self.image);
@@ -347,25 +380,30 @@ struct ToneMapUniform {
     max_display_nits: f32,
     rotation_steps: u32,
     alpha: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    output_mode: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
 unsafe impl bytemuck::Pod for ToneMapUniform {}
 
 impl ToneMapUniform {
-    fn from_settings(settings: HdrToneMapSettings, rotation_steps: u32, alpha: f32) -> Self {
+    fn from_settings(
+        settings: HdrToneMapSettings,
+        rotation_steps: u32,
+        alpha: f32,
+        output_mode: HdrRenderOutputMode,
+    ) -> Self {
         Self {
             exposure_ev: settings.exposure_ev,
             sdr_white_nits: settings.sdr_white_nits,
             max_display_nits: settings.max_display_nits,
             rotation_steps: rotation_steps % 4,
             alpha: alpha.clamp(0.0, 1.0),
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            output_mode: output_mode as u32,
+            _pad0: 0,
+            _pad1: 0,
         }
     }
 }
@@ -484,6 +522,7 @@ fn create_callback_resources(
             HdrToneMapSettings::default(),
             0,
             1.0,
+            HdrRenderOutputMode::SdrToneMapped,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -722,15 +761,51 @@ mod tests {
 
     #[test]
     fn tone_map_uniform_carries_rotation_and_alpha() {
-        let uniform = ToneMapUniform::from_settings(HdrToneMapSettings::default(), 5, 0.25);
+        let uniform = ToneMapUniform::from_settings(
+            HdrToneMapSettings::default(),
+            5,
+            0.25,
+            HdrRenderOutputMode::SdrToneMapped,
+        );
 
         assert_eq!(uniform.rotation_steps, 1);
         assert_eq!(uniform.alpha, 0.25);
     }
 
     #[test]
+    fn render_mode_uses_native_hdr_for_float_targets_only() {
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::NativeHdr
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba32Float),
+            HdrRenderOutputMode::NativeHdr
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Bgra8Unorm),
+            HdrRenderOutputMode::SdrToneMapped
+        );
+    }
+
+    #[test]
+    fn tone_map_uniform_carries_output_mode() {
+        let uniform = ToneMapUniform::from_settings(
+            HdrToneMapSettings::default(),
+            0,
+            1.0,
+            HdrRenderOutputMode::NativeHdr,
+        );
+
+        assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+    }
+
+    #[test]
     fn shader_outputs_straight_alpha_for_standard_blending() {
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map),"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr"));
+        assert!(
+            HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR")
+        );
         assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
     }
