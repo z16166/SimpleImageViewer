@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -80,7 +80,12 @@ pub(crate) struct RadianceHeaderParams {
 impl RadianceHeaderParams {
     pub(crate) fn read_from_path(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|err| err.to_string())?;
-        let mut reader = BufReader::new(file);
+        let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+        Self::read_from_bytes(&mmap)
+    }
+
+    pub(crate) fn read_from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let mut reader = Cursor::new(bytes);
         let mut params = Self::default();
         let mut line = String::new();
 

@@ -15,11 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-use image::ImageReader;
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -35,7 +33,9 @@ struct Rgbe8Pixel {
 
 #[derive(Debug)]
 pub struct RadianceHdrTiledImageSource {
+    #[allow(dead_code)]
     path: PathBuf,
+    mmap: Arc<memmap2::Mmap>,
     width: u32,
     height: u32,
     tile_cache: Mutex<HdrTileCache>,
@@ -43,15 +43,14 @@ pub struct RadianceHdrTiledImageSource {
 
 impl RadianceHdrTiledImageSource {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let (width, height) = ImageReader::open(path)
-            .map_err(|err| err.to_string())?
-            .with_guessed_format()
-            .map_err(|err| err.to_string())?
-            .into_dimensions()
-            .map_err(|err| err.to_string())?;
+        let file = File::open(path).map_err(|err| err.to_string())?;
+        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
+        let mut params = crate::hdr::decode::RadianceHeaderParams::default();
+        let (width, height) = read_radiance_header(&mut Cursor::new(&mmap[..]), &mut params)?;
 
         Ok(Self {
             path: path.to_path_buf(),
+            mmap,
             width,
             height,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
@@ -77,21 +76,7 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
-            &HdrImageBuffer {
-                width: tile.width,
-                height: tile.height,
-                format: HdrPixelFormat::Rgba32Float,
-                color_space: tile.color_space,
-                rgba_f32: Arc::clone(&tile.rgba_f32),
-            },
-            0.0,
-        )?;
-        let image = image::RgbaImage::from_raw(tile.width, tile.height, pixels)
-            .ok_or_else(|| "Failed to build Radiance HDR SDR preview image".to_string())?;
-        let preview = image::imageops::thumbnail(&image, max_w, max_h);
-        Ok((preview.width(), preview.height(), preview.into_raw()))
+        decode_radiance_sdr_preview(&self.mmap, self.width, self.height, max_w, max_h)
     }
 
     fn extract_tile_rgba32f_arc(
@@ -110,7 +95,7 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
         }
 
         let rgba =
-            decode_radiance_tile_window(&self.path, self.width, self.height, x, y, width, height)?;
+            decode_radiance_tile_window(&self.mmap, self.width, self.height, x, y, width, height)?;
 
         let tile = Arc::new(HdrTileBuffer {
             width,
@@ -128,7 +113,7 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
 }
 
 fn decode_radiance_tile_window(
-    path: &Path,
+    mmap: &[u8],
     expected_width: u32,
     expected_height: u32,
     x: u32,
@@ -136,8 +121,7 @@ fn decode_radiance_tile_window(
     width: u32,
     height: u32,
 ) -> Result<Vec<f32>, String> {
-    let file = File::open(path).map_err(|err| err.to_string())?;
-    let mut reader = BufReader::new(file);
+    let mut reader = Cursor::new(mmap);
     let mut params = crate::hdr::decode::RadianceHeaderParams::default();
     let (source_width, source_height) = read_radiance_header(&mut reader, &mut params)?;
     if (source_width, source_height) != (expected_width, expected_height) {
@@ -166,6 +150,83 @@ fn decode_radiance_tile_window(
     params.apply_to_pixels(&mut rgba);
 
     Ok(rgba)
+}
+
+fn decode_radiance_sdr_preview(
+    mmap: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+    max_w: u32,
+    max_h: u32,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (preview_width, preview_height) =
+        preview_dimensions(expected_width, expected_height, max_w, max_h);
+    if preview_width == 0 || preview_height == 0 {
+        return Ok((preview_width, preview_height, Vec::new()));
+    }
+
+    let mut reader = Cursor::new(mmap);
+    let mut params = crate::hdr::decode::RadianceHeaderParams::default();
+    let (source_width, source_height) = read_radiance_header(&mut reader, &mut params)?;
+    if (source_width, source_height) != (expected_width, expected_height) {
+        return Err(format!(
+            "Radiance HDR dimensions changed while generating preview: expected {expected_width}x{expected_height}, got {source_width}x{source_height}"
+        ));
+    }
+
+    let mut scanline = vec![Rgbe8Pixel::default(); source_width as usize];
+    let mut rgba = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+    let mut next_source_row = 0_u32;
+
+    for preview_y in 0..preview_height {
+        let source_y = preview_sample_coord(preview_y, preview_height, source_height);
+        for _ in next_source_row..=source_y {
+            read_scanline(&mut reader, &mut scanline)?;
+        }
+        next_source_row = source_y + 1;
+
+        for preview_x in 0..preview_width {
+            let source_x = preview_sample_coord(preview_x, preview_width, source_width) as usize;
+            let rgb = scanline[source_x].to_rgb_f32();
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+        }
+    }
+    params.apply_to_pixels(&mut rgba);
+
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
+        &HdrImageBuffer {
+            width: preview_width,
+            height: preview_height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(rgba),
+        },
+        0.0,
+    )?;
+
+    Ok((preview_width, preview_height, pixels))
+}
+
+fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if width == 0 || height == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+
+    let scale = (max_w as f32 / width as f32)
+        .min(max_h as f32 / height as f32)
+        .min(1.0);
+    let preview_width = ((width as f32 * scale).round() as u32).clamp(1, max_w);
+    let preview_height = ((height as f32 * scale).round() as u32).clamp(1, max_h);
+    (preview_width, preview_height)
+}
+
+fn preview_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: u32) -> u32 {
+    if preview_extent <= 1 {
+        return 0;
+    }
+
+    ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
+        as u32
 }
 
 fn read_radiance_header<R: BufRead>(
@@ -413,5 +474,33 @@ mod tests {
         assert!((tile.rgba_f32[1] - 1.0).abs() < 0.01);
         assert!((tile.rgba_f32[2] - 1.0).abs() < 0.01);
         assert_eq!(tile.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn generate_preview_does_not_require_full_image_decode_budget() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_radiance_preview_window_{}.hdr",
+            std::process::id()
+        ));
+        let width = 8193_u32;
+        let height = 8193_u32;
+        let mut bytes =
+            format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
+        bytes.extend_from_slice(&[0x80, 0x80, 0x80, 0x81]);
+        bytes.resize(bytes.len() + ((width - 1) as usize * 4), 0);
+        std::fs::write(&path, bytes).expect("write oversized preview HDR");
+
+        let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
+        let (preview_width, preview_height, pixels) = source
+            .generate_sdr_preview(1, 1)
+            .expect("generate sampled preview without full-image decode");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((preview_width, preview_height), (1, 1));
+        assert_eq!(pixels.len(), 4);
+        assert!(pixels[0] > 0);
+        assert!(pixels[1] > 0);
+        assert!(pixels[2] > 0);
+        assert_eq!(pixels[3], 255);
     }
 }
