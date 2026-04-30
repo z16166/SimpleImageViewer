@@ -203,7 +203,8 @@ struct PreviewAccumulator {
     source_height: u32,
     width: u32,
     height: u32,
-    rgba_f32: Vec<f32>,
+    rgba_sum: Vec<f32>,
+    sample_counts: Vec<u32>,
 }
 
 impl PreviewAccumulator {
@@ -213,16 +214,15 @@ impl PreviewAccumulator {
             .min(1.0);
         let width = ((source_width as f32 * scale).round() as u32).max(1);
         let height = ((source_height as f32 * scale).round() as u32).max(1);
-        let mut rgba_f32 = vec![0.0; width as usize * height as usize * 4];
-        for alpha in rgba_f32.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
-            *alpha = 1.0;
-        }
+        let rgba_sum = vec![0.0; width as usize * height as usize * 4];
+        let sample_counts = vec![0; width as usize * height as usize];
         Self {
             source_width,
             source_height,
             width,
             height,
-            rgba_f32,
+            rgba_sum,
+            sample_counts,
         }
     }
 
@@ -231,18 +231,36 @@ impl PreviewAccumulator {
             .min(self.width.saturating_sub(1) as u64) as usize;
         let y = ((source_y as u64 * self.height as u64) / self.source_height as u64)
             .min(self.height.saturating_sub(1) as u64) as usize;
-        let offset = (y * self.width as usize + x) * 4;
-        self.rgba_f32[offset..offset + 4].copy_from_slice(&rgba);
+        let pixel = y * self.width as usize + x;
+        let offset = pixel * 4;
+        for (channel, value) in rgba.iter().enumerate() {
+            self.rgba_sum[offset + channel] += *value;
+        }
+        self.sample_counts[pixel] += 1;
     }
 
     fn into_sdr_rgba8(self) -> Result<(u32, u32, Vec<u8>), String> {
+        let mut rgba_f32 = self.rgba_sum;
+        for (pixel, count) in self.sample_counts.iter().enumerate() {
+            let offset = pixel * 4;
+            if *count == 0 {
+                rgba_f32[offset + 3] = 1.0;
+                continue;
+            }
+
+            let scale = 1.0 / *count as f32;
+            for channel in 0..4 {
+                rgba_f32[offset + channel] *= scale;
+            }
+        }
+
         let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
             &crate::hdr::types::HdrImageBuffer {
                 width: self.width,
                 height: self.height,
                 format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                 color_space: HdrColorSpace::LinearSrgb,
-                rgba_f32: Arc::new(self.rgba_f32),
+                rgba_f32: Arc::new(rgba_f32),
             },
             0.0,
         )?;
@@ -469,5 +487,19 @@ mod tests {
         assert_eq!(source.cached_tile_count(), 2);
         assert!(source.cached_tile_bytes() <= 2 * 4 * std::mem::size_of::<f32>());
         assert!(Arc::strong_count(&second) >= 1);
+    }
+
+    #[test]
+    fn preview_accumulator_averages_source_pixels_that_map_to_same_preview_pixel() {
+        let mut preview = super::PreviewAccumulator::new(2, 1, 1, 1);
+
+        preview.set(0, 0, [4.0, 4.0, 4.0, 1.0]);
+        preview.set(1, 0, [0.0, 0.0, 0.0, 1.0]);
+        let (_w, _h, pixels) = preview.into_sdr_rgba8().expect("tone map preview");
+
+        assert!(
+            pixels[0] > 0,
+            "downscaled preview should retain energy from bright source pixels"
+        );
     }
 }
