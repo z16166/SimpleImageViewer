@@ -194,7 +194,8 @@ pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, St
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
 
-    let pixels = crate::hdr::exr_tiled::catch_exr_panic("decode EXR display image", || {
+    let context = crate::hdr::exr_tiled::exr_file_context("decode EXR display image", path);
+    let pixels = crate::hdr::exr_tiled::catch_exr_panic(&context, || {
         exr::prelude::read()
             .no_deep_data()
             .largest_resolution_level()

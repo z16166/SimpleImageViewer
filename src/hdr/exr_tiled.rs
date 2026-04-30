@@ -68,9 +68,12 @@ impl ExrTiledImageSource {
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
         let mmap = mmap_file(path)?;
-        let parts = exr_part_infos_from_mmap(&mmap)?;
+        let parts = exr_part_infos_from_mmap(&mmap, &exr_file_context("read EXR part info", path))?;
         let part_index = default_display_part_index(&parts).unwrap_or(0);
-        let header = read_first_header_for_probe_from_mmap(&mmap)?;
+        let header = read_first_header_for_probe_from_mmap(
+            &mmap,
+            &exr_file_context("read EXR header", path),
+        )?;
         let width = u32::try_from(header.layer_size.width())
             .map_err(|_| "EXR width exceeds u32".to_string())?;
         let height = u32::try_from(header.layer_size.height())
@@ -113,7 +116,10 @@ impl ExrTiledImageSource {
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
         let (bytes, mut meta_data, offset_tables) =
-            read_unvalidated_exr_bytes_and_offsets_from_mmap(Arc::clone(&self.mmap))?;
+            read_unvalidated_exr_bytes_and_offsets_from_mmap(
+                Arc::clone(&self.mmap),
+                &exr_file_context("read unvalidated EXR metadata", &self.path),
+            )?;
         normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
         let header = meta_data
             .headers
@@ -189,7 +195,8 @@ impl HdrTiledSource for ExrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        catch_exr_panic("generate EXR SDR preview", || {
+        let context = exr_file_context("generate EXR SDR preview", &self.path);
+        catch_exr_panic(&context, || {
             if self.has_subsampled_channels {
                 return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
             }
@@ -240,7 +247,8 @@ impl HdrTiledSource for ExrTiledImageSource {
             }
         }
 
-        catch_exr_panic("extract EXR HDR tile", || {
+        let context = exr_file_context("extract EXR HDR tile", &self.path);
+        catch_exr_panic(&context, || {
             if self.has_subsampled_channels {
                 return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
             }
@@ -336,6 +344,10 @@ fn mmap_file(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
     }))
 }
 
+pub(crate) fn exr_file_context(action: &str, path: &Path) -> String {
+    format!("{action} ({})", path.display())
+}
+
 pub(crate) fn catch_exr_panic<T>(
     context: &str,
     f: impl FnOnce() -> Result<T, String>,
@@ -385,11 +397,14 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header, String> {
     let mmap = mmap_file(path)?;
-    read_first_header_for_probe_from_mmap(&mmap)
+    read_first_header_for_probe_from_mmap(&mmap, &exr_file_context("read EXR header", path))
 }
 
-fn read_first_header_for_probe_from_mmap(mmap: &[u8]) -> Result<exr::meta::header::Header, String> {
-    catch_exr_panic("read EXR header", || {
+fn read_first_header_for_probe_from_mmap(
+    mmap: &[u8],
+    context: &str,
+) -> Result<exr::meta::header::Header, String> {
+    catch_exr_panic(context, || {
         match exr::block::read(Cursor::new(mmap), false).map_err(|err| err.to_string()) {
             Ok(reader) => select_default_display_header(reader.headers()),
             Err(err) if is_exr_unvalidated_probe_error(&err) => {
@@ -439,11 +454,11 @@ fn is_exr_unvalidated_probe_error(err: &str) -> bool {
 #[cfg(test)]
 pub(crate) fn exr_part_infos(path: &Path) -> Result<Vec<ExrPartInfo>, String> {
     let mmap = mmap_file(path)?;
-    exr_part_infos_from_mmap(&mmap)
+    exr_part_infos_from_mmap(&mmap, &exr_file_context("read EXR part info", path))
 }
 
-fn exr_part_infos_from_mmap(mmap: &[u8]) -> Result<Vec<ExrPartInfo>, String> {
-    catch_exr_panic("read EXR part info", || {
+fn exr_part_infos_from_mmap(mmap: &[u8], context: &str) -> Result<Vec<ExrPartInfo>, String> {
+    catch_exr_panic(context, || {
         let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
             .map_err(|err| err.to_string())?;
         Ok(meta_data
@@ -483,13 +498,17 @@ pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize>
 fn read_unvalidated_exr_bytes_and_offsets(
     path: &Path,
 ) -> Result<(Arc<memmap2::Mmap>, MetaData, Vec<Vec<u64>>), String> {
-    read_unvalidated_exr_bytes_and_offsets_from_mmap(mmap_file(path)?)
+    read_unvalidated_exr_bytes_and_offsets_from_mmap(
+        mmap_file(path)?,
+        &exr_file_context("read unvalidated EXR metadata", path),
+    )
 }
 
 fn read_unvalidated_exr_bytes_and_offsets_from_mmap(
     bytes: Arc<memmap2::Mmap>,
+    context: &str,
 ) -> Result<(Arc<memmap2::Mmap>, MetaData, Vec<Vec<u64>>), String> {
-    catch_exr_panic("read unvalidated EXR metadata", || {
+    catch_exr_panic(context, || {
         let mut cursor = Cursor::new(&bytes[..]);
         let meta_data =
             MetaData::read_from_buffered(&mut cursor, false).map_err(|err| err.to_string())?;
@@ -571,7 +590,8 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
 
 pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
     let mmap = mmap_file(path)?;
-    catch_exr_panic("read EXR dimensions", || {
+    let context = exr_file_context("read EXR dimensions", path);
+    catch_exr_panic(&context, || {
         let meta_data = MetaData::read_from_buffered(Cursor::new(&mmap[..]), false)
             .map_err(|err| err.to_string())?;
         let header = select_default_display_header(&meta_data.headers)?;
@@ -1894,6 +1914,18 @@ mod tests {
 
         assert!(err.contains("test EXR boundary"));
         assert!(err.contains("synthetic EXR decoder panic"));
+    }
+
+    #[test]
+    fn exr_file_context_includes_action_and_path() {
+        let context = super::exr_file_context(
+            "decode EXR display image",
+            std::path::Path::new("samples/problem.exr"),
+        );
+
+        assert!(context.contains("decode EXR display image"));
+        assert!(context.contains("samples"));
+        assert!(context.contains("problem.exr"));
     }
 
     #[test]
