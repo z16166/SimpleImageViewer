@@ -127,3 +127,29 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
         Ok(tile)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_tile_applies_radiance_exposure_and_colorcorr() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_radiance_tile_params_{}.hdr",
+            std::process::id()
+        ));
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=2\nCOLORCORR=2 4 8\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
+        std::fs::write(&path, bytes).expect("write test HDR");
+
+        let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract Radiance HDR tile");
+        let _ = std::fs::remove_file(&path);
+
+        assert!((tile.rgba_f32[0] - 0.25).abs() < 0.01);
+        assert!((tile.rgba_f32[1] - 0.125).abs() < 0.01);
+        assert!((tile.rgba_f32[2] - 0.0625).abs() < 0.01);
+        assert_eq!(tile.rgba_f32[3], 1.0);
+    }
+}

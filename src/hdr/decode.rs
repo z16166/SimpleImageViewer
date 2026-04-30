@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -39,6 +41,7 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     if is_exr_path(path) {
         return decode_exr_display_image(path);
     }
+    let radiance_params = RadianceHeaderParams::read_from_path(path)?;
 
     let (width, height) = ImageReader::open(path)
         .map_err(|e| e.to_string())?
@@ -56,7 +59,8 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
     decoder.limits(limits);
 
-    let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
+    let mut rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
+    radiance_params.apply_to_pixels(rgba.as_flat_samples_mut().samples);
 
     Ok(HdrImageBuffer {
         width,
@@ -65,6 +69,91 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         color_space: HdrColorSpace::LinearSrgb,
         rgba_f32: Arc::new(rgba.into_raw()),
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RadianceHeaderParams {
+    exposure: f32,
+    colorcorr: [f32; 3],
+}
+
+impl RadianceHeaderParams {
+    fn read_from_path(path: &Path) -> Result<Self, String> {
+        let file = File::open(path).map_err(|err| err.to_string())?;
+        let mut reader = BufReader::new(file);
+        let mut params = Self::default();
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let bytes_read = reader.read_line(&mut line).map_err(|err| err.to_string())?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            params.apply_header_line(trimmed);
+        }
+
+        Ok(params)
+    }
+
+    fn apply_header_line(&mut self, line: &str) {
+        if let Some(value) = line.strip_prefix("EXPOSURE=") {
+            if let Ok(exposure) = value.trim().parse::<f32>() {
+                if exposure.is_finite() && exposure > 0.0 {
+                    self.exposure *= exposure;
+                }
+            }
+        } else if let Some(value) = line.strip_prefix("COLORCORR=") {
+            let mut parts = value.split_whitespace();
+            let (Some(r), Some(g), Some(b), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return;
+            };
+            let Ok(r) = r.parse::<f32>() else { return };
+            let Ok(g) = g.parse::<f32>() else { return };
+            let Ok(b) = b.parse::<f32>() else { return };
+            if r.is_finite() && r > 0.0 && g.is_finite() && g > 0.0 && b.is_finite() && b > 0.0 {
+                self.colorcorr[0] *= r;
+                self.colorcorr[1] *= g;
+                self.colorcorr[2] *= b;
+            }
+        }
+    }
+
+    fn apply_to_pixels(self, pixels: &mut [f32]) {
+        let scale = [
+            1.0 / (self.exposure * self.colorcorr[0]),
+            1.0 / (self.exposure * self.colorcorr[1]),
+            1.0 / (self.exposure * self.colorcorr[2]),
+        ];
+        if scale
+            .iter()
+            .all(|value| (*value - 1.0).abs() <= f32::EPSILON)
+        {
+            return;
+        }
+
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[0] *= scale[0];
+            pixel[1] *= scale[1];
+            pixel[2] *= scale[2];
+        }
+    }
+}
+
+impl Default for RadianceHeaderParams {
+    fn default() -> Self {
+        Self {
+            exposure: 1.0,
+            colorcorr: [1.0; 3],
+        }
+    }
 }
 
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
@@ -314,6 +403,24 @@ mod tests {
         assert!((buffer.rgba_f32[0] - 1.0).abs() < 0.01);
         assert!((buffer.rgba_f32[1] - 1.0).abs() < 0.01);
         assert!((buffer.rgba_f32[2] - 1.0).abs() < 0.01);
+        assert_eq!(buffer.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn decode_hdr_image_applies_radiance_exposure_and_colorcorr() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_hdr_decode_params_{}.hdr",
+            std::process::id()
+        ));
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=2\nCOLORCORR=2 4 8\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
+        std::fs::write(&path, bytes).expect("write test HDR");
+
+        let buffer = decode_hdr_image(&path).expect("decode test HDR with header params");
+        let _ = std::fs::remove_file(&path);
+
+        assert!((buffer.rgba_f32[0] - 0.25).abs() < 0.01);
+        assert!((buffer.rgba_f32[1] - 0.125).abs() < 0.01);
+        assert!((buffer.rgba_f32[2] - 0.0625).abs() < 0.01);
         assert_eq!(buffer.rgba_f32[3], 1.0);
     }
 
