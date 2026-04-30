@@ -19,15 +19,13 @@ use crate::app::rendering::geometry::{
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
+use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating: bool) -> bool {
-    !is_animating
-        || !matches!(
-            transition,
-            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
-        )
+    !is_animating || !matches!(transition, TransitionStyle::Ripple)
 }
 
 pub(crate) fn should_draw_static_hdr_immediately(
@@ -41,7 +39,7 @@ pub(crate) fn should_draw_static_hdr_immediately(
         && !(is_animating
             && matches!(
                 transition,
-                TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+                TransitionStyle::PageFlip | TransitionStyle::Curtain
             ))
 }
 
@@ -134,9 +132,36 @@ impl ImageViewerApp {
         // The painter transform handles visual rotation; draw un-rotated texture into un-rotated rect.
         let unrotated_final_dest = unrotated_draw_rect_for_display(final_dest, rotation);
 
-        // Complex transitions are implemented by the existing SDR texture shader path.
-        // While they animate, use the cached SDR fallback; static and standard fade/slide
-        // frames can use the HDR callback with the float image plane.
+        if tp.is_animating
+            && matches!(
+                self.active_transition,
+                TransitionStyle::PageFlip | TransitionStyle::Curtain
+            )
+        {
+            if let (Some(hdr_image), Some(target_format)) =
+                (hdr_image.clone(), self.hdr_target_format)
+            {
+                self.draw_rectangular_hdr_transition(
+                    ui,
+                    screen_rect,
+                    final_dest,
+                    unrotated_final_dest,
+                    rotation,
+                    angle,
+                    hdr_image,
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    tp.alpha,
+                );
+                ui.ctx().request_repaint();
+                return;
+            }
+        }
+
+        // Static HDR images draw through egui-wgpu so the float buffer reaches the shader.
+        // Ripple remains on the SDR texture path because its circular mesh cannot be expressed
+        // by the current rectangular HDR image-plane callback.
         if should_use_hdr_callback(self.active_transition, tp.is_animating) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, self.hdr_target_format) {
                 if tp.is_animating {
@@ -230,6 +255,272 @@ impl ImageViewerApp {
             ui.painter().add(egui::Shape::mesh(mesh));
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_rectangular_hdr_transition(
+        &self,
+        ui: &mut egui::Ui,
+        screen_rect: Rect,
+        final_dest: Rect,
+        unrotated_final_dest: Rect,
+        rotation: i32,
+        angle: f32,
+        hdr_image: Arc<HdrImageBuffer>,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        hdr_output_mode: HdrRenderOutputMode,
+        alpha: f32,
+    ) {
+        match self.active_transition {
+            TransitionStyle::PageFlip => self.draw_page_flip_hdr_new_image(
+                ui,
+                screen_rect,
+                final_dest,
+                unrotated_final_dest,
+                rotation,
+                angle,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                alpha,
+            ),
+            TransitionStyle::Curtain => self.draw_curtain_hdr_new_image(
+                ui,
+                screen_rect,
+                final_dest,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                alpha,
+            ),
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_hdr_image_plane_clipped(
+        &self,
+        ui: &mut egui::Ui,
+        clip: Rect,
+        rect: Rect,
+        hdr_image: Arc<HdrImageBuffer>,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        hdr_output_mode: HdrRenderOutputMode,
+        rotation: i32,
+        alpha: f32,
+    ) {
+        ui.painter()
+            .with_clip_rect(clip)
+            .add(crate::hdr::renderer::hdr_image_plane_callback(
+                rect,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                rotation as u32,
+                alpha,
+            ));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_page_flip_hdr_new_image(
+        &self,
+        ui: &mut egui::Ui,
+        screen_rect: Rect,
+        final_dest: Rect,
+        _unrotated_final_dest: Rect,
+        rotation: i32,
+        _angle: f32,
+        hdr_image: Arc<HdrImageBuffer>,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        hdr_output_mode: HdrRenderOutputMode,
+        alpha: f32,
+    ) {
+        if let Some(prev) = self.prev_texture.as_ref() {
+            let p_size = prev.size_vec2();
+            let p_dest = self.compute_display_rect(p_size, screen_rect);
+            let union_rect = p_dest.union(final_dest);
+
+            let elapsed = self
+                .transition_start
+                .map(|s| s.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            let duration = self.settings.transition_ms as f32 / 1000.0;
+            let t = (elapsed / duration).clamp(0.0, 1.0);
+            let ease_in_out = 3.0 * t * t - 2.0 * t * t * t;
+
+            let clip_x = if self.is_next {
+                union_rect.max.x - (union_rect.width() * ease_in_out)
+            } else {
+                union_rect.min.x + (union_rect.width() * ease_in_out)
+            };
+
+            let mut new_clip = union_rect;
+            if self.is_next {
+                new_clip.min.x = clip_x;
+            } else {
+                new_clip.max.x = clip_x;
+            }
+            self.draw_hdr_image_plane_clipped(
+                ui,
+                new_clip,
+                final_dest,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                rotation,
+                alpha,
+            );
+
+            let mut old_clip = union_rect;
+            if self.is_next {
+                old_clip.max.x = clip_x;
+            } else {
+                old_clip.min.x = clip_x;
+            }
+            ui.painter().with_clip_rect(old_clip).image(
+                prev.id(),
+                p_dest,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            let shadow_width = 40.0;
+            let shadow_alpha = (1.0 - ease_in_out) * 0.4;
+            let shadow_rect = if self.is_next {
+                Rect::from_min_max(
+                    Pos2::new(clip_x - shadow_width, union_rect.min.y),
+                    Pos2::new(clip_x, union_rect.max.y),
+                )
+            } else {
+                Rect::from_min_max(
+                    Pos2::new(clip_x, union_rect.min.y),
+                    Pos2::new(clip_x + shadow_width, union_rect.max.y),
+                )
+            };
+
+            let color_shadow = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
+            let color_transparent = Color32::TRANSPARENT;
+            let mut shadow_mesh = egui::Mesh::default();
+            let (c_left, c_right) = if self.is_next {
+                (color_transparent, color_shadow)
+            } else {
+                (color_shadow, color_transparent)
+            };
+            shadow_mesh.colored_vertex(shadow_rect.left_top(), c_left);
+            shadow_mesh.colored_vertex(shadow_rect.right_top(), c_right);
+            shadow_mesh.colored_vertex(shadow_rect.right_bottom(), c_right);
+            shadow_mesh.colored_vertex(shadow_rect.left_bottom(), c_left);
+            shadow_mesh.add_triangle(0, 1, 2);
+            shadow_mesh.add_triangle(0, 2, 3);
+            ui.painter().add(egui::Shape::mesh(shadow_mesh));
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_curtain_hdr_new_image(
+        &self,
+        ui: &mut egui::Ui,
+        screen_rect: Rect,
+        final_dest: Rect,
+        hdr_image: Arc<HdrImageBuffer>,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        hdr_output_mode: HdrRenderOutputMode,
+        alpha: f32,
+    ) {
+        if let Some(prev) = self.prev_texture.as_ref() {
+            let p_size = prev.size_vec2();
+            let p_dest = self.compute_display_rect(p_size, screen_rect);
+            let union_rect = p_dest.union(final_dest);
+
+            let elapsed = self
+                .transition_start
+                .map(|s| s.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            let duration = self.settings.transition_ms as f32 / 1000.0;
+            let t = (elapsed / duration).clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - t).powi(3);
+
+            let center_x = union_rect.center().x;
+            let half_w = union_rect.width() / 2.0;
+            let shift = ease * half_w;
+
+            let new_clip = Rect::from_min_max(
+                Pos2::new(center_x - shift, union_rect.min.y),
+                Pos2::new(center_x + shift, union_rect.max.y),
+            );
+            self.draw_hdr_image_plane_clipped(
+                ui,
+                new_clip,
+                final_dest,
+                hdr_image,
+                tone_map,
+                target_format,
+                hdr_output_mode,
+                0,
+                alpha,
+            );
+
+            let left_clip = Rect::from_min_max(
+                union_rect.left_top(),
+                Pos2::new(center_x - shift, union_rect.max.y),
+            );
+            ui.painter().with_clip_rect(left_clip).image(
+                prev.id(),
+                p_dest.translate(Vec2::new(-shift, 0.0)),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            let right_clip = Rect::from_min_max(
+                Pos2::new(center_x + shift, union_rect.min.y),
+                union_rect.right_bottom(),
+            );
+            ui.painter().with_clip_rect(right_clip).image(
+                prev.id(),
+                p_dest.translate(Vec2::new(shift, 0.0)),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+
+            let shadow_w = 30.0;
+            let shadow_alpha = (1.0 - ease) * 0.45;
+            let shadow_color = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
+            let transparent = Color32::TRANSPARENT;
+
+            let mut lm = egui::Mesh::default();
+            let ls_rect = Rect::from_min_max(
+                Pos2::new(center_x - shift - shadow_w, union_rect.min.y),
+                Pos2::new(center_x - shift, union_rect.max.y),
+            );
+            lm.colored_vertex(ls_rect.left_top(), transparent);
+            lm.colored_vertex(ls_rect.right_top(), shadow_color);
+            lm.colored_vertex(ls_rect.right_bottom(), shadow_color);
+            lm.colored_vertex(ls_rect.left_bottom(), transparent);
+            lm.add_triangle(0, 1, 2);
+            lm.add_triangle(0, 2, 3);
+            ui.painter().add(egui::Shape::mesh(lm));
+
+            let mut rm = egui::Mesh::default();
+            let rs_rect = Rect::from_min_max(
+                Pos2::new(center_x + shift, union_rect.min.y),
+                Pos2::new(center_x + shift + shadow_w, union_rect.max.y),
+            );
+            rm.colored_vertex(rs_rect.left_top(), shadow_color);
+            rm.colored_vertex(rs_rect.right_top(), transparent);
+            rm.colored_vertex(rs_rect.right_bottom(), transparent);
+            rm.colored_vertex(rs_rect.left_bottom(), shadow_color);
+            rm.add_triangle(0, 1, 2);
+            rm.add_triangle(0, 2, 3);
+            ui.painter().add(egui::Shape::mesh(rm));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -238,13 +529,16 @@ mod tests {
 
     #[test]
     fn hdr_callback_is_disabled_during_complex_transitions() {
-        for style in [
-            TransitionStyle::PageFlip,
-            TransitionStyle::Ripple,
-            TransitionStyle::Curtain,
-        ] {
+        for style in [TransitionStyle::Ripple] {
             assert!(!should_use_hdr_callback(style, true));
             assert!(should_use_hdr_callback(style, false));
+        }
+    }
+
+    #[test]
+    fn rectangular_complex_transitions_can_reveal_static_hdr_directly() {
+        for style in [TransitionStyle::PageFlip, TransitionStyle::Curtain] {
+            assert!(should_use_hdr_callback(style, true));
         }
     }
 
@@ -285,6 +579,12 @@ mod tests {
             HdrRenderOutputMode::NativeHdr,
             true,
             TransitionStyle::Curtain,
+            true
+        ));
+        assert!(should_draw_static_hdr_immediately(
+            HdrRenderOutputMode::NativeHdr,
+            true,
+            TransitionStyle::Ripple,
             true
         ));
     }
