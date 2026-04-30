@@ -192,6 +192,9 @@ impl From<image::RgbaImage> for DecodedImage {
 pub trait TiledImageSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
+    fn is_hdr_sdr_fallback(&self) -> bool {
+        false
+    }
     /// Extract a rectangular region of the image as RGBA8.
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> std::sync::Arc<Vec<u8>>;
     /// Generate a downscaled preview of the full image.
@@ -1566,10 +1569,11 @@ fn make_hdr_image_data_for_limit(
             max_texture_side,
             tiled_limit as f64 / 1_000_000.0
         );
-        ImageData::Tiled(Arc::new(MemoryImageSource::new(
+        ImageData::Tiled(Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
             fallback.width,
             fallback.height,
             fallback.into_arc_pixels(),
+            true,
         )))
     } else {
         ImageData::Hdr { hdr, fallback }
@@ -1643,6 +1647,25 @@ mod tests {
             .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let _ = std::fs::remove_file(&path);
         assert!(matches!(image_data, ImageData::Tiled(_)));
+    }
+
+    #[test]
+    fn oversized_hdr_tiled_fallback_remembers_hdr_source() {
+        let hdr = HdrImageBuffer {
+            width: 4097,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0; 4097 * 4]),
+        };
+        let fallback = DecodedImage::new(4097, 1, vec![255; 4097 * 4]);
+
+        let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
+
+        let ImageData::Tiled(source) = image_data else {
+            panic!("expected HDR tiled fallback");
+        };
+        assert!(source.is_hdr_sdr_fallback());
     }
 }
 
@@ -2225,14 +2248,25 @@ pub struct MemoryImageSource {
     width: u32,
     height: u32,
     pixels: Arc<Vec<u8>>,
+    hdr_sdr_fallback: bool,
 }
 
 impl MemoryImageSource {
     pub fn new(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
+        Self::new_with_hdr_sdr_fallback(width, height, pixels, false)
+    }
+
+    pub fn new_with_hdr_sdr_fallback(
+        width: u32,
+        height: u32,
+        pixels: Arc<Vec<u8>>,
+        hdr_sdr_fallback: bool,
+    ) -> Self {
         Self {
             width,
             height,
             pixels,
+            hdr_sdr_fallback,
         }
     }
 }
@@ -2244,6 +2278,10 @@ impl TiledImageSource for MemoryImageSource {
 
     fn height(&self) -> u32 {
         self.height
+    }
+
+    fn is_hdr_sdr_fallback(&self) -> bool {
+        self.hdr_sdr_fallback
     }
 
     fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {

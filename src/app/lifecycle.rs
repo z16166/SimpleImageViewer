@@ -180,6 +180,7 @@ impl ImageViewerApp {
             hdr_target_format,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
+            hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,

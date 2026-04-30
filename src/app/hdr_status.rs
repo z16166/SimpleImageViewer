@@ -19,6 +19,10 @@ use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
 
 impl ImageViewerApp {
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
+        if self.hdr_sdr_fallback_indices.contains(&self.current_index) {
+            return Some(HdrRenderPath::SdrFallback);
+        }
+
         self.current_hdr_image
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))?;

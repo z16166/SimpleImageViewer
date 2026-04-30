@@ -22,7 +22,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod media;
 pub(crate) mod rendering;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -184,6 +184,7 @@ pub struct ImageViewerApp {
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
 

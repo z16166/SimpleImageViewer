@@ -15,11 +15,13 @@ use std::time::Instant;
 impl ImageViewerApp {
     pub(crate) fn clear_hdr_image_state(&mut self) {
         self.hdr_image_cache.clear();
+        self.hdr_sdr_fallback_indices.clear();
         self.current_hdr_image = None;
     }
 
     pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
         self.hdr_image_cache.remove(&index);
+        self.hdr_sdr_fallback_indices.remove(&index);
         if self
             .current_hdr_image
             .as_ref()
@@ -905,6 +907,9 @@ impl ImageViewerApp {
             }
             Ok(ImageData::Tiled(source)) => {
                 self.remove_hdr_image_index(idx);
+                if source.is_hdr_sdr_fallback() {
+                    self.hdr_sdr_fallback_indices.insert(idx);
+                }
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
                 if let Some(preview) = load_result.preview.as_ref() {
