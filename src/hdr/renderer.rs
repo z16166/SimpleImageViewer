@@ -19,7 +19,7 @@ use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -708,20 +708,36 @@ fn create_callback_resources(
     }
 }
 
-#[derive(Default)]
 struct HdrTileBindings {
     entries: HashMap<HdrTileKey, HdrTileBinding>,
+    lru: VecDeque<HdrTileKey>,
+    current_bytes: usize,
+    max_bytes: usize,
 }
 
-struct HdrTileBinding {
-    _texture: Option<wgpu::Texture>,
-    _view: Option<wgpu::TextureView>,
-    bind_group: Option<wgpu::BindGroup>,
+impl Default for HdrTileBindings {
+    fn default() -> Self {
+        Self::with_budget(crate::hdr::tiled::configured_hdr_tile_cache_max_bytes())
+    }
 }
 
 impl HdrTileBindings {
-    fn contains(&self, key: HdrTileKey) -> bool {
-        self.entries.contains_key(&key)
+    fn with_budget(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            current_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn contains(&mut self, key: HdrTileKey) -> bool {
+        if self.entries.contains_key(&key) {
+            self.touch(key);
+            true
+        } else {
+            false
+        }
     }
 
     #[cfg(test)]
@@ -736,30 +752,75 @@ impl HdrTileBindings {
         view: wgpu::TextureView,
         bind_group: wgpu::BindGroup,
     ) {
-        self.entries.insert(
+        self.insert_binding(
             key,
             HdrTileBinding {
                 _texture: Some(texture),
                 _view: Some(view),
                 bind_group: Some(bind_group),
+                estimated_bytes: 0,
             },
         );
     }
 
+    fn insert_binding(&mut self, key: HdrTileKey, binding: HdrTileBinding) {
+        if let Some(old_binding) = self.entries.remove(&key) {
+            self.current_bytes = self
+                .current_bytes
+                .saturating_sub(old_binding.estimated_bytes);
+            self.lru.retain(|existing| *existing != key);
+        }
+
+        let bytes = hdr_tile_key_bytes(key);
+        while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
+            if let Some(evicted_key) = self.lru.pop_front() {
+                if let Some(evicted_binding) = self.entries.remove(&evicted_key) {
+                    self.current_bytes = self
+                        .current_bytes
+                        .saturating_sub(evicted_binding.estimated_bytes);
+                }
+            }
+        }
+
+        if self.current_bytes.saturating_add(bytes) <= self.max_bytes {
+            let mut binding = binding;
+            binding.estimated_bytes = bytes;
+            self.entries.insert(key, binding);
+            self.lru.push_back(key);
+            self.current_bytes += bytes;
+        }
+    }
+
+    fn touch(&mut self, key: HdrTileKey) {
+        if let Some(pos) = self.lru.iter().position(|existing| *existing == key) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(key);
+    }
+
+    #[cfg(test)]
+    fn current_bytes(&self) -> usize {
+        self.current_bytes
+    }
+
     #[cfg(test)]
     fn insert_placeholder(&mut self, key: HdrTileKey) {
-        self.entries.insert(
+        self.insert_binding(
             key,
             HdrTileBinding {
                 _texture: None,
                 _view: None,
                 bind_group: None,
+                estimated_bytes: 0,
             },
         );
     }
 
     fn remove(&mut self, key: HdrTileKey) {
-        self.entries.remove(&key);
+        if let Some(binding) = self.entries.remove(&key) {
+            self.current_bytes = self.current_bytes.saturating_sub(binding.estimated_bytes);
+        }
+        self.lru.retain(|existing| *existing != key);
     }
 
     fn bind_group(&self, key: HdrTileKey) -> Option<&wgpu::BindGroup> {
@@ -767,6 +828,17 @@ impl HdrTileBindings {
             .get(&key)
             .and_then(|entry| entry.bind_group.as_ref())
     }
+}
+
+struct HdrTileBinding {
+    _texture: Option<wgpu::Texture>,
+    _view: Option<wgpu::TextureView>,
+    bind_group: Option<wgpu::BindGroup>,
+    estimated_bytes: usize,
+}
+
+fn hdr_tile_key_bytes(key: HdrTileKey) -> usize {
+    key.rgba_len * std::mem::size_of::<f32>()
 }
 
 #[allow(dead_code)]
@@ -1090,6 +1162,41 @@ mod tests {
         assert!(resources.contains(first));
         assert!(resources.contains(second));
         assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
+    fn callback_resources_evict_lru_tile_bindings_when_over_budget() {
+        let first = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![1.0, 0.0, 0.0, 1.0]));
+        let second = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 1.0, 0.0, 1.0]));
+        let third = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 0.0, 1.0, 1.0]));
+        let mut resources = HdrTileBindings::with_budget(2 * hdr_tile_key_bytes(first));
+
+        resources.insert_placeholder(first);
+        resources.insert_placeholder(second);
+        resources.insert_placeholder(third);
+
+        assert!(!resources.contains(first));
+        assert!(resources.contains(second));
+        assert!(resources.contains(third));
+        assert_eq!(resources.len(), 2);
+        assert!(resources.current_bytes() <= 2 * hdr_tile_key_bytes(first));
+    }
+
+    #[test]
+    fn callback_resources_refresh_lru_on_existing_tile_binding() {
+        let first = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![1.0, 0.0, 0.0, 1.0]));
+        let second = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 1.0, 0.0, 1.0]));
+        let third = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 0.0, 1.0, 1.0]));
+        let mut resources = HdrTileBindings::with_budget(2 * hdr_tile_key_bytes(first));
+
+        resources.insert_placeholder(first);
+        resources.insert_placeholder(second);
+        assert!(resources.contains(first));
+        resources.insert_placeholder(third);
+
+        assert!(resources.contains(first));
+        assert!(!resources.contains(second));
+        assert!(resources.contains(third));
     }
 
     #[test]
