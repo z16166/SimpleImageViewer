@@ -29,6 +29,7 @@ pub struct HdrCapabilities {
     pub available: bool,
     pub output_mode: HdrOutputMode,
     pub backend: Option<wgpu::Backend>,
+    pub current_surface_format: Option<wgpu::TextureFormat>,
     pub candidate_platform_path: Option<HdrPresentationPath>,
     pub native_presentation_enabled: bool,
     pub reason: String,
@@ -42,6 +43,7 @@ impl HdrCapabilities {
             available: false,
             output_mode: HdrOutputMode::SdrToneMapped,
             backend: None,
+            current_surface_format: None,
             candidate_platform_path: None,
             native_presentation_enabled: false,
             reason: reason.into(),
@@ -52,6 +54,10 @@ impl HdrCapabilities {
     pub fn startup_diagnostics(&self) -> Vec<String> {
         vec![
             format!("[HDR] backend={:?}", self.backend),
+            format!(
+                "[HDR] current_surface_format={:?}",
+                self.current_surface_format
+            ),
             format!("[HDR] mode={:?}", self.output_mode),
             format!("[HDR] available={}", self.available),
             format!(
@@ -72,23 +78,43 @@ impl HdrCapabilities {
 
     fn candidate(
         backend: wgpu::Backend,
+        current_surface_format: Option<wgpu::TextureFormat>,
         candidate_platform_path: HdrPresentationPath,
+        native_output_mode: HdrOutputMode,
         reason: impl Into<String>,
     ) -> Self {
+        let native_presentation_enabled = is_native_hdr_surface_format(current_surface_format);
         Self {
-            available: false,
-            output_mode: HdrOutputMode::SdrToneMapped,
+            available: native_presentation_enabled,
+            output_mode: if native_presentation_enabled {
+                native_output_mode
+            } else {
+                HdrOutputMode::SdrToneMapped
+            },
             backend: Some(backend),
+            current_surface_format,
             candidate_platform_path: Some(candidate_platform_path),
-            native_presentation_enabled: false,
-            reason: reason.into(),
+            native_presentation_enabled,
+            reason: if native_presentation_enabled {
+                reason.into()
+            } else {
+                format!(
+                    "{}; current surface format is {:?}, so native HDR presentation is not active",
+                    reason.into(),
+                    current_surface_format
+                )
+            },
             candidate_texture_format: Some(wgpu::TextureFormat::Rgba16Float),
         }
     }
 
-    fn unsupported_backend(backend: wgpu::Backend) -> Self {
+    fn unsupported_backend(
+        backend: wgpu::Backend,
+        current_surface_format: Option<wgpu::TextureFormat>,
+    ) -> Self {
         Self {
             backend: Some(backend),
+            current_surface_format,
             reason: format!("unsupported HDR backend: {backend:?}"),
             ..Self::sdr("")
         }
@@ -123,6 +149,10 @@ mod tests {
         assert_eq!(capabilities.output_mode, HdrOutputMode::SdrToneMapped);
         assert_eq!(capabilities.backend, Some(wgpu::Backend::Dx12));
         assert_eq!(
+            capabilities.current_surface_format,
+            Some(wgpu::TextureFormat::Bgra8Unorm)
+        );
+        assert_eq!(
             capabilities.candidate_platform_path,
             Some(HdrPresentationPath::WindowsDx12ScRgb)
         );
@@ -136,7 +166,34 @@ mod tests {
                 .reason
                 .contains("DX12 backend detected, scRGB/HDR swapchain configuration")
         );
-        assert!(capabilities.reason.contains("not exposed/wired yet"));
+        assert!(
+            capabilities
+                .reason
+                .contains("native HDR presentation is not active")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dx12_with_float_surface_enables_windows_scrgb_native_presentation() {
+        let capabilities = detect_from_backend_and_surface_format(
+            wgpu::Backend::Dx12,
+            Some(wgpu::TextureFormat::Rgba16Float),
+        );
+
+        assert!(capabilities.available);
+        assert_eq!(capabilities.output_mode, HdrOutputMode::WindowsScRgb);
+        assert_eq!(capabilities.backend, Some(wgpu::Backend::Dx12));
+        assert_eq!(
+            capabilities.current_surface_format,
+            Some(wgpu::TextureFormat::Rgba16Float)
+        );
+        assert!(capabilities.native_presentation_enabled);
+        assert!(
+            capabilities
+                .reason
+                .contains("DX12 backend with float surface format")
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -161,7 +218,11 @@ mod tests {
                 .reason
                 .contains("Metal backend detected, EDR CAMetalLayer configuration")
         );
-        assert!(capabilities.reason.contains("not exposed/wired yet"));
+        assert!(
+            capabilities
+                .reason
+                .contains("native HDR presentation is not active")
+        );
     }
 
     #[test]
@@ -171,6 +232,10 @@ mod tests {
         assert!(!capabilities.available);
         assert_eq!(capabilities.output_mode, HdrOutputMode::SdrToneMapped);
         assert_eq!(capabilities.backend, Some(wgpu::Backend::Vulkan));
+        assert_eq!(
+            capabilities.current_surface_format,
+            Some(wgpu::TextureFormat::Bgra8Unorm)
+        );
         assert_eq!(capabilities.candidate_platform_path, None);
         assert!(!capabilities.native_presentation_enabled);
         assert_eq!(capabilities.candidate_texture_format, None);
@@ -186,6 +251,7 @@ mod tests {
             diagnostics,
             [
                 "[HDR] backend=None",
+                "[HDR] current_surface_format=None",
                 "[HDR] mode=SdrToneMapped",
                 "[HDR] available=false",
                 "[HDR] native_presentation_enabled=false",
@@ -203,24 +269,53 @@ pub fn detect_from_wgpu_state(state: Option<&eframe::egui_wgpu::RenderState>) ->
         return HdrCapabilities::sdr("wgpu render state unavailable");
     };
 
-    let backend = state.adapter.get_info().backend;
-    detect_from_backend(backend)
+    detect_from_backend_and_surface_format(
+        state.adapter.get_info().backend,
+        Some(state.target_format),
+    )
 }
 
-pub fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
+#[cfg(test)]
+fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
+    detect_from_backend_and_surface_format(backend, Some(wgpu::TextureFormat::Bgra8Unorm))
+}
+
+pub fn detect_from_backend_and_surface_format(
+    backend: wgpu::Backend,
+    current_surface_format: Option<wgpu::TextureFormat>,
+) -> HdrCapabilities {
     match backend {
         #[cfg(target_os = "windows")]
         wgpu::Backend::Dx12 => HdrCapabilities::candidate(
             backend,
+            current_surface_format,
             HdrPresentationPath::WindowsDx12ScRgb,
-            "DX12 backend detected, scRGB/HDR swapchain configuration not exposed/wired yet",
+            HdrOutputMode::WindowsScRgb,
+            if is_native_hdr_surface_format(current_surface_format) {
+                "DX12 backend with float surface format; Windows scRGB native presentation path is active"
+            } else {
+                "DX12 backend detected, scRGB/HDR swapchain configuration candidate"
+            },
         ),
         #[cfg(target_os = "macos")]
         wgpu::Backend::Metal => HdrCapabilities::candidate(
             backend,
+            current_surface_format,
             HdrPresentationPath::MacOsMetalEdr,
-            "Metal backend detected, EDR CAMetalLayer configuration not exposed/wired yet",
+            HdrOutputMode::MacOsEdr,
+            if is_native_hdr_surface_format(current_surface_format) {
+                "Metal backend with float surface format; macOS EDR native presentation path is active"
+            } else {
+                "Metal backend detected, EDR CAMetalLayer configuration candidate"
+            },
         ),
-        _ => HdrCapabilities::unsupported_backend(backend),
+        _ => HdrCapabilities::unsupported_backend(backend, current_surface_format),
     }
+}
+
+fn is_native_hdr_surface_format(format: Option<wgpu::TextureFormat>) -> bool {
+    matches!(
+        format,
+        Some(wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float)
+    )
 }
