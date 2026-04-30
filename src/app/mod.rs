@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
+pub(crate) mod hdr_status;
 pub(crate) mod image_management;
 pub(crate) mod input;
 pub(crate) mod lifecycle;

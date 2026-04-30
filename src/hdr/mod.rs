@@ -17,4 +17,5 @@
 pub mod capabilities;
 pub mod decode;
 pub mod renderer;
+pub mod status;
 pub mod types;

@@ -93,7 +93,8 @@ impl ImageViewerApp {
 
         let hdr_capabilities =
             crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
-        let hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
+        let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
+        hdr_renderer.tone_map = settings.hdr_tone_map_settings();
         let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
 
         crate::tile_cache::MAX_TEXTURE_SIDE

@@ -35,6 +35,7 @@ pub struct OsdState {
     pub current_pos_ms: u64,
     pub total_duration_ms: u64,
     pub cue_markers: Vec<u64>,
+    pub hdr_status: Option<String>,
 }
 
 pub struct OsdRenderer {
@@ -64,8 +65,13 @@ impl OsdRenderer {
         save_error: &Option<(String, Instant)>,
     ) {
         if self.last_state.as_ref() != Some(state) {
+            let hdr = state
+                .hdr_status
+                .as_ref()
+                .map(|status| format!("    [{status}]"))
+                .unwrap_or_default();
             let hud = format!(
-                "{} / {}    {}    {}%    {}×{}    [{}]",
+                "{} / {}    {}    {}%    {}×{}    [{}]{}",
                 state.index + 1,
                 state.total,
                 file_name,
@@ -73,6 +79,7 @@ impl OsdRenderer {
                 state.res.0,
                 state.res.1,
                 state.mode,
+                hdr,
             );
 
             self.cached_hud = Some(hud);

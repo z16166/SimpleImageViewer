@@ -150,6 +150,82 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     }
 }
 
+fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(t!("section.hdr"))
+            .color(app.cached_palette.accent2)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    let status = app
+        .current_hdr_osd_tag()
+        .unwrap_or_else(|| t!("hdr.status.no_source").to_string());
+    ui.label(
+        RichText::new(status)
+            .color(app.cached_palette.text_muted)
+            .small(),
+    );
+    ui.label(
+        RichText::new(format!(
+            "{}: {}",
+            t!("hdr.capability"),
+            crate::hdr::status::hdr_candidate_label(&app.hdr_capabilities)
+        ))
+        .color(app.cached_palette.text_muted)
+        .small(),
+    )
+    .on_hover_text(app.hdr_capabilities.reason.as_str());
+
+    let old = (
+        app.settings.hdr_exposure_ev,
+        app.settings.hdr_sdr_white_nits,
+        app.settings.hdr_max_display_nits,
+    );
+
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.exposure_ev"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_exposure_ev, -8.0..=8.0)
+                .step_by(0.1)
+                .suffix(" EV"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.sdr_white_nits"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
+                .step_by(1.0)
+                .suffix(" nits"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.max_display_nits"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
+                .logarithmic(true)
+                .suffix(" nits"),
+        );
+    });
+
+    if old
+        != (
+            app.settings.hdr_exposure_ev,
+            app.settings.hdr_sdr_white_nits,
+            app.settings.hdr_max_display_nits,
+        )
+    {
+        app.settings.hdr_max_display_nits = app
+            .settings
+            .hdr_max_display_nits
+            .max(app.settings.hdr_sdr_white_nits);
+        app.hdr_renderer.tone_map = app.settings.hdr_tone_map_settings();
+        app.queue_save();
+        ui.ctx().request_repaint();
+    }
+}
+
 fn draw_settings_left_col(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
@@ -346,6 +422,8 @@ fn draw_settings_left_col(
                 app.queue_save();
             }
         });
+
+        draw_hdr_section(app, ui);
 
         // ── Transitions ──────────────────────────────────────────
         ui.add_space(8.0);
