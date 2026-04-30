@@ -126,6 +126,14 @@ impl HardwareTier {
         }
     }
 
+    pub fn hdr_tile_cache_mb(&self) -> usize {
+        match self {
+            Self::Low => 128,
+            Self::Medium => 256,
+            Self::High => 512,
+        }
+    }
+
     pub fn tiled_threshold_pixels(&self) -> u64 {
         64_000_000 // Reverted to 64MP for all tiers as requested
     }
@@ -878,5 +886,12 @@ mod tests {
 
         assert!(current.source_for_index(6).is_none());
         assert!(Arc::ptr_eq(current.source_for_index(7).unwrap(), &source));
+    }
+
+    #[test]
+    fn hardware_tier_scales_hdr_tile_cache_budget() {
+        assert_eq!(HardwareTier::Low.hdr_tile_cache_mb(), 128);
+        assert_eq!(HardwareTier::Medium.hdr_tile_cache_mb(), 256);
+        assert_eq!(HardwareTier::High.hdr_tile_cache_mb(), 512);
     }
 }

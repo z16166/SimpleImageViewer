@@ -162,6 +162,10 @@ impl ImageViewerApp {
         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
             cache.set_max_mb(tier.cpu_cache_mb());
         }
+        crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
+            tier.hdr_tile_cache_mb() * 1024 * 1024,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
 

@@ -17,10 +17,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
+    AtomicUsize::new(DEFAULT_HDR_TILE_CACHE_MAX_BYTES);
 
 type HdrTileCacheKey = (u32, u32, u32, u32);
 
@@ -41,7 +44,7 @@ pub struct HdrTiledImageSource {
 
 impl HdrTiledImageSource {
     pub fn new(image: HdrImageBuffer) -> Result<Self, String> {
-        Self::new_with_cache_budget(image, DEFAULT_HDR_TILE_CACHE_MAX_BYTES)
+        Self::new_with_cache_budget(image, configured_hdr_tile_cache_max_bytes())
     }
 
     pub fn new_with_cache_budget(
@@ -142,6 +145,23 @@ impl HdrTiledImageSource {
             .map(|cache| cache.current_bytes())
             .unwrap_or_default()
     }
+
+    #[cfg(test)]
+    fn cache_budget_bytes(&self) -> usize {
+        self.tile_cache
+            .lock()
+            .map(|cache| cache.max_bytes())
+            .unwrap_or_default()
+    }
+}
+
+pub fn configured_hdr_tile_cache_max_bytes() -> usize {
+    HDR_TILE_CACHE_MAX_BYTES.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
+    HDR_TILE_CACHE_MAX_BYTES.store(max_bytes, Ordering::Relaxed);
 }
 
 #[derive(Debug)]
@@ -208,6 +228,11 @@ impl HdrTileCache {
     fn current_bytes(&self) -> usize {
         self.current_bytes
     }
+
+    #[cfg(test)]
+    fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
 }
 
 fn tile_len_bytes(tile: &HdrTileBuffer) -> usize {
@@ -265,7 +290,10 @@ fn validate_tile_bounds(
 mod tests {
     use std::sync::Arc;
 
-    use crate::hdr::tiled::HdrTiledImageSource;
+    use crate::hdr::tiled::{
+        HdrTiledImageSource, configured_hdr_tile_cache_max_bytes,
+        set_global_hdr_tile_cache_max_bytes_for_tests,
+    };
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
     #[test]
@@ -380,6 +408,17 @@ mod tests {
 
         assert!(Arc::ptr_eq(&first, &first_refreshed));
         assert!(!Arc::ptr_eq(&second, &second_after_eviction));
+    }
+
+    #[test]
+    fn default_hdr_tile_source_uses_global_cache_budget() {
+        let old_budget = configured_hdr_tile_cache_max_bytes();
+        set_global_hdr_tile_cache_max_bytes_for_tests(tile_bytes(1, 1));
+
+        let source = HdrTiledImageSource::new(test_image(2, 1)).expect("valid HDR tile source");
+
+        set_global_hdr_tile_cache_max_bytes_for_tests(old_budget);
+        assert_eq!(source.cache_budget_bytes(), tile_bytes(1, 1));
     }
 
     fn test_image(width: u32, height: u32) -> HdrImageBuffer {
