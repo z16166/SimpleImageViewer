@@ -2063,6 +2063,54 @@ mod tests {
     }
 
     #[test]
+    fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
+        let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
+        let originals = root.join("Originals");
+        if !originals.is_dir() {
+            eprintln!("skipping Ultra HDR corpus loader test; Originals directory missing");
+            return;
+        }
+
+        let failures = (1..=10)
+            .filter_map(|index| {
+                let path = originals.join(format!("Ultra_HDR_Samples_Originals_{index:02}.jpg"));
+                if !path.is_file() {
+                    return Some(format!("{}: missing", path.display()));
+                }
+
+                match load_jpeg(&path) {
+                    Ok(ImageData::Hdr { hdr, fallback }) => {
+                        let has_hdr_highlight = hdr
+                            .rgba_f32
+                            .chunks_exact(4)
+                            .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0);
+                        if hdr.width == 0
+                            || hdr.height == 0
+                            || fallback.width != hdr.width
+                            || fallback.height != hdr.height
+                            || !has_hdr_highlight
+                        {
+                            Some(format!("{}: invalid HDR output", path.display()))
+                        } else {
+                            None
+                        }
+                    }
+                    Ok(_) => Some(format!("{}: loaded as non-HDR image data", path.display())),
+                    Err(err) => Some(format!("{}: {err}", path.display())),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            failures.is_empty(),
+            "Ultra HDR corpus failures:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
     fn oversized_hdr_tiled_fallback_remembers_hdr_source() {
         let hdr = HdrImageBuffer {
             width: 4097,

@@ -289,7 +289,8 @@ fn gain_map_item_length(xmp: &str) -> Option<usize> {
         .or_else(|| xmp.find("Semantic=\"GainMap\""))
         .or_else(|| xmp.find("Semantic='GainMap'"))?;
     let item_start = xmp[..semantic_index].rfind("<Container:Item")?;
-    let item = &xmp[item_start..semantic_index];
+    let item_end = xmp[semantic_index..].find('>')? + semantic_index;
+    let item = &xmp[item_start..item_end];
     attribute_usize(item, "Item:Length").or_else(|| attribute_usize(item, "Length"))
 }
 
@@ -506,6 +507,18 @@ mod tests {
         let sampled = sample_gain_map_value(&gain_rgba, 2, 1, 1, 0, 3, 1);
 
         assert!((sampled - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn gain_map_item_length_accepts_length_after_semantic() {
+        let xmp = r#"
+            <Container:Item
+              Item:Mime="image/jpeg"
+              Item:Semantic="GainMap"
+              Item:Length="12345"/>
+        "#;
+
+        assert_eq!(gain_map_item_length(xmp), Some(12345));
     }
 
     #[test]
