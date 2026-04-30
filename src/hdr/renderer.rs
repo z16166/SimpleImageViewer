@@ -19,6 +19,7 @@ use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -329,11 +330,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
             match upload_callback_image(device, queue, &self.image, &resources.bind_group_layout) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = Some(image_key);
-                    resources.uploaded_tile_key = None;
                     resources.uploaded_texture = Some(uploaded.texture);
                     resources.uploaded_view = Some(uploaded.view);
-                    resources.bind_group = Some(device.create_bind_group(
-                        &wgpu::BindGroupDescriptor {
+                    resources.bind_group =
+                        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("simple-image-viewer-hdr-image-plane-bind-group"),
                             layout: &resources.bind_group_layout,
                             entries: &[
@@ -348,8 +348,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                                     resource: resources.tone_map_buffer.as_entire_binding(),
                                 },
                             ],
-                        },
-                    ));
+                        }));
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR image plane upload: {err}");
@@ -432,38 +431,34 @@ impl CallbackTrait for HdrTilePlaneCallback {
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let tile_key = HdrTileKey::from_tile(&self.tile);
-        if resources.uploaded_tile_key != Some(tile_key) {
+        if !resources.tile_bindings.contains(tile_key) {
             match upload_callback_tile(device, queue, &self.tile) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = None;
-                    resources.uploaded_tile_key = Some(tile_key);
-                    resources.uploaded_texture = Some(uploaded.texture);
-                    resources.uploaded_view = Some(uploaded.view);
-                    resources.bind_group = Some(device.create_bind_group(
-                        &wgpu::BindGroupDescriptor {
-                            label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
-                            layout: &resources.bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(
-                                        resources.uploaded_view.as_ref().unwrap(),
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: resources.tone_map_buffer.as_entire_binding(),
-                                },
-                            ],
-                        },
-                    ));
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+                        layout: &resources.bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&uploaded.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: resources.tone_map_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+                    resources.tile_bindings.insert(
+                        tile_key,
+                        uploaded.texture,
+                        uploaded.view,
+                        bind_group,
+                    );
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR tile plane upload: {err}");
-                    resources.uploaded_tile_key = None;
-                    resources.uploaded_texture = None;
-                    resources.uploaded_view = None;
-                    resources.bind_group = None;
+                    resources.tile_bindings.remove(tile_key);
                 }
             }
         }
@@ -480,7 +475,8 @@ impl CallbackTrait for HdrTilePlaneCallback {
         let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
             return;
         };
-        let Some(bind_group) = resources.bind_group.as_ref() else {
+        let tile_key = HdrTileKey::from_tile(&self.tile);
+        let Some(bind_group) = resources.tile_bindings.bind_group(tile_key) else {
             return;
         };
 
@@ -551,7 +547,7 @@ struct HdrImageKey {
     rgba_len: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct HdrTileKey {
     width: u32,
     height: u32,
@@ -589,7 +585,7 @@ struct HdrCallbackResources {
     pipeline: wgpu::RenderPipeline,
     tone_map_buffer: wgpu::Buffer,
     uploaded_image_key: Option<HdrImageKey>,
-    uploaded_tile_key: Option<HdrTileKey>,
+    tile_bindings: HdrTileBindings,
     uploaded_texture: Option<wgpu::Texture>,
     uploaded_view: Option<wgpu::TextureView>,
     bind_group: Option<wgpu::BindGroup>,
@@ -688,10 +684,71 @@ fn create_callback_resources(
         pipeline,
         tone_map_buffer,
         uploaded_image_key: None,
-        uploaded_tile_key: None,
+        tile_bindings: HdrTileBindings::default(),
         uploaded_texture: None,
         uploaded_view: None,
         bind_group: None,
+    }
+}
+
+#[derive(Default)]
+struct HdrTileBindings {
+    entries: HashMap<HdrTileKey, HdrTileBinding>,
+}
+
+struct HdrTileBinding {
+    _texture: Option<wgpu::Texture>,
+    _view: Option<wgpu::TextureView>,
+    bind_group: Option<wgpu::BindGroup>,
+}
+
+impl HdrTileBindings {
+    fn contains(&self, key: HdrTileKey) -> bool {
+        self.entries.contains_key(&key)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn insert(
+        &mut self,
+        key: HdrTileKey,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        bind_group: wgpu::BindGroup,
+    ) {
+        self.entries.insert(
+            key,
+            HdrTileBinding {
+                _texture: Some(texture),
+                _view: Some(view),
+                bind_group: Some(bind_group),
+            },
+        );
+    }
+
+    #[cfg(test)]
+    fn insert_placeholder(&mut self, key: HdrTileKey) {
+        self.entries.insert(
+            key,
+            HdrTileBinding {
+                _texture: None,
+                _view: None,
+                bind_group: None,
+            },
+        );
+    }
+
+    fn remove(&mut self, key: HdrTileKey) {
+        self.entries.remove(&key);
+    }
+
+    fn bind_group(&self, key: HdrTileKey) -> Option<&wgpu::BindGroup> {
+        self.entries
+            .get(&key)
+            .and_then(|entry| entry.bind_group.as_ref())
     }
 }
 
@@ -979,6 +1036,31 @@ mod tests {
     }
 
     #[test]
+    fn hdr_tile_keys_distinguish_equal_size_tile_buffers() {
+        let first = hdr_tile(1, 1, vec![1.0, 0.0, 0.0, 1.0]);
+        let second = hdr_tile(1, 1, vec![0.0, 1.0, 0.0, 1.0]);
+
+        assert_ne!(
+            HdrTileKey::from_tile(&first),
+            HdrTileKey::from_tile(&second)
+        );
+    }
+
+    #[test]
+    fn callback_resources_store_independent_tile_bind_groups() {
+        let first = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![1.0, 0.0, 0.0, 1.0]));
+        let second = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 1.0, 0.0, 1.0]));
+        let mut resources = HdrTileBindings::default();
+
+        resources.insert_placeholder(first);
+        resources.insert_placeholder(second);
+
+        assert!(resources.contains(first));
+        assert!(resources.contains(second));
+        assert_eq!(resources.len(), 2);
+    }
+
+    #[test]
     fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
@@ -1049,7 +1131,9 @@ mod tests {
     #[test]
     fn shader_outputs_straight_alpha_for_standard_blending() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR"));
+        assert!(
+            HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR")
+        );
         assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
     }
