@@ -2,6 +2,26 @@ use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
 use eframe::egui::{Context, Rect, Vec2};
 
+pub(crate) fn rotated_image_size_for_display(img_size: Vec2, rotation_steps: i32) -> Vec2 {
+    if rotation_steps.rem_euclid(4) % 2 != 0 {
+        Vec2::new(img_size.y, img_size.x)
+    } else {
+        img_size
+    }
+}
+
+pub(crate) fn unrotated_draw_rect_for_display(
+    rotated_display_rect: Rect,
+    rotation_steps: i32,
+) -> Rect {
+    let size = if rotation_steps.rem_euclid(4) % 2 != 0 {
+        Vec2::new(rotated_display_rect.height(), rotated_display_rect.width())
+    } else {
+        rotated_display_rect.size()
+    };
+    Rect::from_center_size(rotated_display_rect.center(), size)
+}
+
 impl ImageViewerApp {
     /// Calculate current absolute display scale relative to image pixels (logical scale).
     pub(crate) fn calculate_effective_scale(&self, img_size: Vec2, screen_rect: Rect) -> f32 {
@@ -103,5 +123,39 @@ impl ImageViewerApp {
             tm.generation = self.generation;
             tm.pending_tiles.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Pos2, Rect, Vec2};
+
+    #[test]
+    fn rotated_image_size_swaps_only_for_quarter_turns() {
+        let size = Vec2::new(400.0, 200.0);
+
+        assert_eq!(rotated_image_size_for_display(size, 0), size);
+        assert_eq!(
+            rotated_image_size_for_display(size, 1),
+            Vec2::new(200.0, 400.0)
+        );
+        assert_eq!(rotated_image_size_for_display(size, 2), size);
+        assert_eq!(
+            rotated_image_size_for_display(size, 3),
+            Vec2::new(200.0, 400.0)
+        );
+    }
+
+    #[test]
+    fn unrotated_draw_rect_preserves_rotated_display_bounds() {
+        let rotated_bounds = Rect::from_center_size(Pos2::new(100.0, 80.0), Vec2::new(40.0, 120.0));
+
+        let quarter_turn_rect = unrotated_draw_rect_for_display(rotated_bounds, 1);
+        assert_eq!(quarter_turn_rect.center(), rotated_bounds.center());
+        assert_eq!(quarter_turn_rect.size(), Vec2::new(120.0, 40.0));
+
+        let half_turn_rect = unrotated_draw_rect_for_display(rotated_bounds, 2);
+        assert_eq!(half_turn_rect, rotated_bounds);
     }
 }

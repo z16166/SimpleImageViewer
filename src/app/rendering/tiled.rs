@@ -15,6 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
+use crate::app::rendering::geometry::{
+    rotated_image_size_for_display, unrotated_draw_rect_for_display,
+};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
@@ -48,6 +51,23 @@ fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
 }
 
+fn hdr_tile_plane_rect_for_sdr_tile(
+    tile_screen_rect: Rect,
+    pivot: Pos2,
+    rotation_steps: i32,
+) -> Rect {
+    let rotation_steps = rotation_steps.rem_euclid(4);
+    if rotation_steps == 0 {
+        tile_screen_rect
+    } else {
+        rotated_axis_aligned_rect(
+            tile_screen_rect,
+            pivot,
+            rotation_steps as f32 * (std::f32::consts::PI / 2.0),
+        )
+    }
+}
+
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
     ///
@@ -71,28 +91,18 @@ impl ImageViewerApp {
 
         // Rotation logic
         let rotation = self.current_rotation;
-        let needs_swap = rotation % 2 != 0;
         let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
 
         // Extract immutable data first (avoids borrow conflict with compute_display_rect)
         let tm_ref = self.tile_manager.as_ref().unwrap();
         let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
 
-        let rotated_img_size = if needs_swap {
-            Vec2::new(img_size.y, img_size.x)
-        } else {
-            img_size
-        };
+        let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
 
         // The painter transform will handle the actual rotation.
         // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
-        let unrotated_size = if needs_swap {
-            Vec2::new(dest.height(), dest.width())
-        } else {
-            dest.size()
-        };
-        let unrotated_dest = Rect::from_center_size(dest.center(), unrotated_size);
+        let unrotated_dest = unrotated_draw_rect_for_display(dest, rotation);
 
         // 1. Draw preview texture as blurry background
         if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
@@ -293,15 +303,11 @@ impl ImageViewerApp {
                                     .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                                 {
                                     Ok(hdr_tile) => {
-                                        let hdr_rect = rot
-                                            .map(|_| {
-                                                rotated_axis_aligned_rect(
-                                                    *tile_screen_rect,
-                                                    pivot,
-                                                    angle,
-                                                )
-                                            })
-                                            .unwrap_or(*tile_screen_rect);
+                                        let hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
+                                            *tile_screen_rect,
+                                            pivot,
+                                            rotation,
+                                        );
                                         ui.painter().add(
                                             crate::hdr::renderer::hdr_tile_plane_callback(
                                                 hdr_rect,
@@ -449,7 +455,7 @@ impl ImageViewerApp {
 
 #[cfg(test)]
 mod tests {
-    use super::rotated_axis_aligned_rect;
+    use super::{hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect};
     use eframe::egui::{Pos2, Rect};
 
     #[test]
@@ -462,5 +468,19 @@ mod tests {
         assert_eq!(rotated.width(), rect.height());
         assert_eq!(rotated.height(), rect.width());
         assert_eq!(rotated.center(), rect.center());
+    }
+
+    #[test]
+    fn hdr_tile_plane_rect_matches_sdr_tile_geometry() {
+        let rect = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 60.0));
+        let pivot = Pos2::new(20.0, 40.0);
+
+        assert_eq!(hdr_tile_plane_rect_for_sdr_tile(rect, pivot, 0), rect);
+
+        let rotated = hdr_tile_plane_rect_for_sdr_tile(rect, pivot, 1);
+        assert_eq!(
+            rotated,
+            rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2)
+        );
     }
 }

@@ -14,6 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::rendering::geometry::{
+    rotated_image_size_for_display, unrotated_draw_rect_for_display,
+};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::time::Instant;
@@ -85,27 +88,16 @@ impl ImageViewerApp {
 
         // --- Rotation setup ---
         let rotation = self.current_rotation;
-        let needs_swap = rotation % 2 != 0;
         let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
 
         // Compute current display rect, swapping dimensions for 90°/270° rotations
-        let rotated_img_size = if needs_swap {
-            Vec2::new(img_size.y, img_size.x)
-        } else {
-            img_size
-        };
+        let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
         let dest = self.compute_display_rect(rotated_img_size, screen_rect);
 
         let final_dest = Rect::from_center_size(dest.center() + tp.offset, dest.size() * tp.scale);
 
         // The painter transform handles visual rotation; draw un-rotated texture into un-rotated rect.
-        let unrotated_final_size = if needs_swap {
-            Vec2::new(final_dest.height(), final_dest.width())
-        } else {
-            final_dest.size()
-        };
-        let unrotated_final_dest =
-            Rect::from_center_size(final_dest.center(), unrotated_final_size);
+        let unrotated_final_dest = unrotated_draw_rect_for_display(final_dest, rotation);
 
         // Complex transitions are implemented by the existing SDR texture shader path.
         // While they animate, use the cached SDR fallback; static and standard fade/slide
