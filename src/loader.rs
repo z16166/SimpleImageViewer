@@ -760,11 +760,9 @@ impl ImageLoader {
             .store(generation, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn set_hdr_tone_map_settings(&self, settings: crate::hdr::types::HdrToneMapSettings) {
-        self.hdr_target_capacity_bits.store(
-            settings.target_hdr_capacity().to_bits(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+    pub fn set_hdr_target_capacity(&self, capacity: f32) {
+        self.hdr_target_capacity_bits
+            .store(capacity.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
     fn hdr_target_capacity(&self) -> f32 {

@@ -13,6 +13,77 @@ use std::sync::Arc;
 use std::time::Instant;
 
 impl ImageViewerApp {
+    pub(crate) fn effective_ultra_hdr_decode_capacity(&self) -> f32 {
+        crate::app::ultra_hdr_decode_capacity_for_output_mode(
+            self.settings.hdr_tone_map_settings(),
+            self.hdr_capabilities.output_mode,
+        )
+    }
+
+    pub(crate) fn refresh_ultra_hdr_decode_capacity(&mut self, ctx: &egui::Context) {
+        const CAPACITY_EPSILON: f32 = 0.001;
+        let next_capacity = self.effective_ultra_hdr_decode_capacity();
+        if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON {
+            return;
+        }
+
+        let previous_capacity = self.ultra_hdr_decode_capacity;
+        self.ultra_hdr_decode_capacity = next_capacity;
+        self.loader.set_hdr_target_capacity(next_capacity);
+        log::info!(
+            "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}",
+            previous_capacity,
+            next_capacity
+        );
+
+        self.invalidate_ultra_hdr_capacity_sensitive_state(ctx);
+    }
+
+    fn invalidate_ultra_hdr_capacity_sensitive_state(&mut self, ctx: &egui::Context) {
+        let static_hdr_indices: std::collections::HashSet<_> =
+            self.hdr_image_cache.keys().copied().collect();
+        let hdr_tiled_indices: std::collections::HashSet<_> =
+            self.hdr_tiled_source_cache.keys().copied().collect();
+        let refresh = crate::app::plan_ultra_hdr_capacity_refresh(
+            self.current_index,
+            &static_hdr_indices,
+            &hdr_tiled_indices,
+            &self.hdr_sdr_fallback_indices,
+        );
+        self.loader.cancel_all();
+        if refresh.indices_to_invalidate.is_empty() {
+            self.schedule_preloads(true);
+            ctx.request_repaint();
+            return;
+        }
+
+        for idx in &refresh.indices_to_invalidate {
+            self.texture_cache.remove(*idx);
+            self.prefetched_tiles.remove(idx);
+            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                cache.remove_image(*idx);
+            }
+            self.remove_hdr_image_index(*idx);
+        }
+
+        if refresh.reload_current && !self.image_files.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            self.tile_manager = None;
+            self.current_image_res = None;
+            self.animation = None;
+            self.loader.request_load(
+                self.current_index,
+                self.generation,
+                self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
+            );
+        }
+
+        self.schedule_preloads(true);
+        ctx.request_repaint();
+    }
+
     pub(crate) fn clear_hdr_image_state(&mut self) {
         self.hdr_image_cache.clear();
         self.hdr_tiled_source_cache.clear();

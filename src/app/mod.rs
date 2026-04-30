@@ -50,6 +50,50 @@ pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
 
+pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
+    settings: crate::hdr::types::HdrToneMapSettings,
+    output_mode: crate::hdr::types::HdrOutputMode,
+) -> f32 {
+    if output_mode == crate::hdr::types::HdrOutputMode::SdrToneMapped {
+        1.0
+    } else {
+        settings.target_hdr_capacity()
+    }
+}
+
+pub(crate) fn collect_ultra_hdr_capacity_sensitive_indices(
+    static_hdr: &HashSet<usize>,
+    hdr_tiled: &HashSet<usize>,
+    hdr_fallback: &HashSet<usize>,
+) -> Vec<usize> {
+    let mut indices = std::collections::BTreeSet::new();
+    indices.extend(static_hdr.iter().copied());
+    indices.extend(hdr_tiled.iter().copied());
+    indices.extend(hdr_fallback.iter().copied());
+    indices.into_iter().collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UltraHdrCapacityRefresh {
+    pub(crate) indices_to_invalidate: Vec<usize>,
+    pub(crate) reload_current: bool,
+}
+
+pub(crate) fn plan_ultra_hdr_capacity_refresh(
+    current_index: usize,
+    static_hdr: &HashSet<usize>,
+    hdr_tiled: &HashSet<usize>,
+    hdr_fallback: &HashSet<usize>,
+) -> UltraHdrCapacityRefresh {
+    let indices_to_invalidate =
+        collect_ultra_hdr_capacity_sensitive_indices(static_hdr, hdr_tiled, hdr_fallback);
+    let reload_current = indices_to_invalidate.binary_search(&current_index).is_ok();
+    UltraHdrCapacityRefresh {
+        indices_to_invalidate,
+        reload_current,
+    }
+}
+
 /// Compute preload byte budgets based on total system RAM.
 /// Forward budget = total_ram / 32, backward = total_ram / 64, both clamped.
 pub(crate) fn compute_preload_budgets() -> (u64, u64) {
@@ -210,6 +254,7 @@ pub struct ImageViewerApp {
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
+    pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
@@ -564,6 +609,7 @@ impl eframe::App for ImageViewerApp {
         self.hdr_capabilities.available =
             output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
+        self.refresh_ultra_hdr_decode_capacity(ctx);
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
 
         // Automatic theme refresh (for System theme trailing detection)
@@ -903,5 +949,53 @@ mod tests {
         assert_eq!(HardwareTier::Low.hdr_tile_cache_mb(), 128);
         assert_eq!(HardwareTier::Medium.hdr_tile_cache_mb(), 256);
         assert_eq!(HardwareTier::High.hdr_tile_cache_mb(), 512);
+    }
+
+    #[test]
+    fn sdr_output_mode_uses_sdr_ultra_hdr_decode_capacity() {
+        let settings = crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::SdrToneMapped
+            ),
+            1.0
+        );
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::WindowsScRgb
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn capacity_refresh_targets_all_hdr_cache_indices() {
+        let static_hdr = HashSet::from([1_usize, 4]);
+        let hdr_tiled = HashSet::from([2_usize, 4]);
+        let hdr_fallback = HashSet::from([3_usize, 4]);
+
+        assert_eq!(
+            collect_ultra_hdr_capacity_sensitive_indices(&static_hdr, &hdr_tiled, &hdr_fallback),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn capacity_refresh_reloads_current_when_current_is_hdr() {
+        let static_hdr = HashSet::from([7_usize]);
+        let hdr_tiled = HashSet::new();
+        let hdr_fallback = HashSet::new();
+
+        let refresh = plan_ultra_hdr_capacity_refresh(7, &static_hdr, &hdr_tiled, &hdr_fallback);
+
+        assert_eq!(refresh.indices_to_invalidate, vec![7]);
+        assert!(refresh.reload_current);
     }
 }

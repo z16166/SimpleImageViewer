@@ -96,6 +96,11 @@ impl ImageViewerApp {
         let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
         hdr_renderer.tone_map = settings.hdr_tone_map_settings();
         let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
+        let initial_hdr_output_mode = hdr_capabilities.output_mode;
+        let ultra_hdr_decode_capacity = crate::app::ultra_hdr_decode_capacity_for_output_mode(
+            settings.hdr_tone_map_settings(),
+            initial_hdr_output_mode,
+        );
         for diagnostic in crate::hdr::renderer::hdr_render_output_diagnostics(hdr_target_format) {
             log::info!("{diagnostic}");
         }
@@ -189,6 +194,7 @@ impl ImageViewerApp {
             hdr_renderer,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
+            ultra_hdr_decode_capacity,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,
@@ -259,7 +265,7 @@ impl ImageViewerApp {
             log::info!("{diagnostic}");
         }
         app.loader
-            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
+            .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits
