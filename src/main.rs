@@ -515,19 +515,23 @@ fn main() -> eframe::Result {
         }
     }
 
+    let preferred_hdr_target_format =
+        crate::hdr::surface::preferred_native_hdr_target_format_for_settings(
+            settings.hdr_native_surface_enabled,
+        );
+
     let native_options = eframe::NativeOptions {
         viewport,
         centered: true,
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
-            preferred_target_format:
-                crate::hdr::surface::preferred_native_hdr_target_format_for_platform(),
+            preferred_target_format: preferred_hdr_target_format,
             ..Default::default()
         },
         // Dithering assumes SDR gamma-space output. Leave it off when we ask
         // for a float HDR target; egui-wgpu falls back safely if unsupported.
-        dithering: crate::hdr::surface::preferred_native_hdr_target_format_for_platform().is_none(),
+        dithering: preferred_hdr_target_format.is_none(),
         ..Default::default()
     };
 

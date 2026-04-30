@@ -178,6 +178,25 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     )
     .on_hover_text(app.hdr_capabilities.reason.as_str());
 
+    let old_native_surface_enabled = app.settings.hdr_native_surface_enabled;
+    if ui
+        .checkbox(
+            &mut app.settings.hdr_native_surface_enabled,
+            t!("hdr.native_surface_enabled"),
+        )
+        .on_hover_text(t!("hdr.native_surface_restart_hint"))
+        .changed()
+    {
+        app.queue_save();
+    }
+    if old_native_surface_enabled != app.settings.hdr_native_surface_enabled {
+        ui.label(
+            RichText::new(t!("hdr.native_surface_restart_hint"))
+                .color(app.cached_palette.text_muted)
+                .small(),
+        );
+    }
+
     let old = (
         app.settings.hdr_exposure_ev,
         app.settings.hdr_sdr_white_nits,

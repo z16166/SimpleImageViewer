@@ -156,6 +156,8 @@ pub struct Settings {
     pub raw_high_quality: bool,
 
     // HDR tone mapping
+    #[serde(default = "default_true")]
+    pub hdr_native_surface_enabled: bool,
     #[serde(default)]
     pub hdr_exposure_ev: f32,
     #[serde(default = "default_hdr_sdr_white_nits")]
@@ -242,6 +244,7 @@ impl Default for Settings {
             last_music_cue_track: None,
             audio_device: None,
             raw_high_quality: false,
+            hdr_native_surface_enabled: true,
             hdr_exposure_ev: 0.0,
             hdr_sdr_white_nits: default_hdr_sdr_white_nits(),
             hdr_max_display_nits: default_hdr_max_display_nits(),
@@ -386,6 +389,28 @@ mod tests {
             settings.hdr_max_display_nits,
             crate::hdr::types::DEFAULT_MAX_DISPLAY_NITS
         );
+    }
+
+    #[test]
+    fn default_settings_enable_native_hdr_surface_request() {
+        let settings = Settings::default();
+
+        assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn missing_native_hdr_surface_setting_defaults_to_enabled() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn explicit_native_hdr_surface_setting_can_disable_request() {
+        let settings: Settings =
+            serde_yaml::from_str("hdr_native_surface_enabled: false").expect("deserialize setting");
+
+        assert!(!settings.hdr_native_surface_enabled);
     }
 
     #[test]

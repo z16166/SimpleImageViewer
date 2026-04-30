@@ -43,6 +43,16 @@ pub fn preferred_native_hdr_target_format_for_platform() -> Option<wgpu::Texture
     }
 }
 
+pub fn preferred_native_hdr_target_format_for_settings(
+    native_surface_enabled: bool,
+) -> Option<wgpu::TextureFormat> {
+    if native_surface_enabled {
+        preferred_native_hdr_target_format_for_platform()
+    } else {
+        None
+    }
+}
+
 pub fn is_native_hdr_surface_format(format: Option<wgpu::TextureFormat>) -> bool {
     let Some(format) = format else {
         return false;
@@ -133,6 +143,14 @@ mod tests {
         assert_eq!(
             super::preferred_native_hdr_target_format_for_platform(),
             expected
+        );
+    }
+
+    #[test]
+    fn disabled_native_hdr_request_returns_no_preferred_target_format() {
+        assert_eq!(
+            super::preferred_native_hdr_target_format_for_settings(false),
+            None
         );
     }
 }
