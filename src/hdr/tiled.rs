@@ -114,7 +114,9 @@ fn validate_tile_bounds(
     height: u32,
 ) -> Result<(), String> {
     if width == 0 || height == 0 {
-        return Err(format!("HDR tile requires non-zero dimensions, got {width}x{height}"));
+        return Err(format!(
+            "HDR tile requires non-zero dimensions, got {width}x{height}"
+        ));
     }
 
     let end_x = x
@@ -148,8 +150,8 @@ mod tests {
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(vec![
-                0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2,
-                1.0, 4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
+                0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2, 1.0,
+                4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
             ]),
         };
 
@@ -163,8 +165,7 @@ mod tests {
         assert_eq!(
             tile.rgba_f32.as_slice(),
             &[
-                1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2,
-                1.0,
+                1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
             ]
         );
     }

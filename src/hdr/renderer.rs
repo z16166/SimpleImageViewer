@@ -259,11 +259,38 @@ pub fn hdr_image_plane_callback(
     ))
 }
 
+#[allow(dead_code)]
+pub fn hdr_tile_plane_callback(
+    rect: egui::Rect,
+    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    alpha: f32,
+) -> egui::Shape {
+    egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        HdrTilePlaneCallback {
+            tile,
+            tone_map,
+            target_format,
+            alpha,
+        },
+    ))
+}
+
 struct HdrImagePlaneCallback {
     image: Arc<HdrImageBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
     rotation_steps: u32,
+    alpha: f32,
+}
+
+#[allow(dead_code)]
+struct HdrTilePlaneCallback {
+    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
     alpha: f32,
 }
 
@@ -302,10 +329,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
             match upload_callback_image(device, queue, &self.image, &resources.bind_group_layout) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = Some(image_key);
+                    resources.uploaded_tile_key = None;
                     resources.uploaded_texture = Some(uploaded.texture);
                     resources.uploaded_view = Some(uploaded.view);
-                    resources.bind_group =
-                        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    resources.bind_group = Some(device.create_bind_group(
+                        &wgpu::BindGroupDescriptor {
                             label: Some("simple-image-viewer-hdr-image-plane-bind-group"),
                             layout: &resources.bind_group_layout,
                             entries: &[
@@ -320,7 +348,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                                     resource: resources.tone_map_buffer.as_entire_binding(),
                                 },
                             ],
-                        }));
+                        },
+                    ));
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR image plane upload: {err}");
@@ -350,6 +379,111 @@ impl CallbackTrait for HdrImagePlaneCallback {
 
         // egui-wgpu already sets this viewport before invoking callbacks; repeat it
         // here so the fullscreen triangle is explicitly scoped to the image rect.
+        let viewport = info.viewport_in_pixels();
+        render_pass.set_viewport(
+            viewport.left_px as f32,
+            viewport.top_px as f32,
+            viewport.width_px as f32,
+            viewport.height_px as f32,
+            0.0,
+            1.0,
+        );
+        let scissor = info.clip_rect_in_pixels();
+        render_pass.set_scissor_rect(
+            scissor.left_px.max(0) as u32,
+            scissor.top_px.max(0) as u32,
+            scissor.width_px.max(0) as u32,
+            scissor.height_px.max(0) as u32,
+        );
+        render_pass.set_pipeline(&resources.pipeline);
+        render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+impl CallbackTrait for HdrTilePlaneCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        callback_resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let needs_resources = callback_resources
+            .get::<HdrCallbackResources>()
+            .map_or(true, |resources| {
+                resources.target_format != self.target_format
+            });
+        if needs_resources {
+            callback_resources.insert(create_callback_resources(device, self.target_format));
+        }
+
+        let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {
+            return Vec::new();
+        };
+
+        let uniform = ToneMapUniform::from_settings(
+            self.tone_map,
+            0,
+            self.alpha,
+            HdrRenderOutputMode::for_target_format(self.target_format),
+        );
+        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        let tile_key = HdrTileKey::from_tile(&self.tile);
+        if resources.uploaded_tile_key != Some(tile_key) {
+            match upload_callback_tile(device, queue, &self.tile) {
+                Ok(uploaded) => {
+                    resources.uploaded_image_key = None;
+                    resources.uploaded_tile_key = Some(tile_key);
+                    resources.uploaded_texture = Some(uploaded.texture);
+                    resources.uploaded_view = Some(uploaded.view);
+                    resources.bind_group = Some(device.create_bind_group(
+                        &wgpu::BindGroupDescriptor {
+                            label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+                            layout: &resources.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        resources.uploaded_view.as_ref().unwrap(),
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: resources.tone_map_buffer.as_entire_binding(),
+                                },
+                            ],
+                        },
+                    ));
+                }
+                Err(err) => {
+                    log::warn!("[HDR] Skipping HDR tile plane upload: {err}");
+                    resources.uploaded_tile_key = None;
+                    resources.uploaded_texture = None;
+                    resources.uploaded_view = None;
+                    resources.bind_group = None;
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &CallbackResources,
+    ) {
+        let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
+            return;
+        };
+        let Some(bind_group) = resources.bind_group.as_ref() else {
+            return;
+        };
+
         let viewport = info.viewport_in_pixels();
         render_pass.set_viewport(
             viewport.left_px as f32,
@@ -417,6 +551,26 @@ struct HdrImageKey {
     rgba_len: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HdrTileKey {
+    width: u32,
+    height: u32,
+    rgba_ptr: usize,
+    rgba_len: usize,
+}
+
+impl HdrTileKey {
+    #[allow(dead_code)]
+    fn from_tile(tile: &crate::hdr::tiled::HdrTileBuffer) -> Self {
+        Self {
+            width: tile.width,
+            height: tile.height,
+            rgba_ptr: Arc::as_ptr(&tile.rgba_f32) as usize,
+            rgba_len: tile.rgba_f32.len(),
+        }
+    }
+}
+
 impl HdrImageKey {
     fn from_image(image: &HdrImageBuffer) -> Self {
         Self {
@@ -435,6 +589,7 @@ struct HdrCallbackResources {
     pipeline: wgpu::RenderPipeline,
     tone_map_buffer: wgpu::Buffer,
     uploaded_image_key: Option<HdrImageKey>,
+    uploaded_tile_key: Option<HdrTileKey>,
     uploaded_texture: Option<wgpu::Texture>,
     uploaded_view: Option<wgpu::TextureView>,
     bind_group: Option<wgpu::BindGroup>,
@@ -533,10 +688,49 @@ fn create_callback_resources(
         pipeline,
         tone_map_buffer,
         uploaded_image_key: None,
+        uploaded_tile_key: None,
         uploaded_texture: None,
         uploaded_view: None,
         bind_group: None,
     }
+}
+
+#[allow(dead_code)]
+fn upload_callback_tile(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tile: &crate::hdr::tiled::HdrTileBuffer,
+) -> Result<CallbackUpload, String> {
+    let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("simple-image-viewer-hdr-tile-plane-callback-texture"),
+        size: layout.size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: layout.format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(layout.bytes_per_row),
+            rows_per_image: Some(layout.size.height),
+        },
+        layout.size,
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(CallbackUpload { texture, view })
 }
 
 fn upload_callback_image(
@@ -588,13 +782,6 @@ fn validate_upload_layout(
     image: &HdrImageBuffer,
     max_texture_dimension_2d: u32,
 ) -> Result<HdrUploadLayout, String> {
-    if image.width == 0 || image.height == 0 {
-        return Err(format!(
-            "HDR upload requires non-zero dimensions, got {}x{}",
-            image.width, image.height
-        ));
-    }
-
     if image.format != HdrPixelFormat::Rgba32Float {
         return Err(format!(
             "HDR upload currently supports only Rgba32Float buffers, got {:?}",
@@ -602,50 +789,69 @@ fn validate_upload_layout(
         ));
     }
 
-    if image.width > max_texture_dimension_2d || image.height > max_texture_dimension_2d {
+    validate_rgba32f_upload_layout(
+        image.width,
+        image.height,
+        image.rgba_f32.len(),
+        max_texture_dimension_2d,
+        "HDR upload",
+    )
+}
+
+#[allow(dead_code)]
+fn validate_tile_upload_layout(
+    tile: &crate::hdr::tiled::HdrTileBuffer,
+    max_texture_dimension_2d: u32,
+) -> Result<HdrUploadLayout, String> {
+    validate_rgba32f_upload_layout(
+        tile.width,
+        tile.height,
+        tile.rgba_f32.len(),
+        max_texture_dimension_2d,
+        "HDR tile upload",
+    )
+}
+
+fn validate_rgba32f_upload_layout(
+    width: u32,
+    height: u32,
+    actual_len: usize,
+    max_texture_dimension_2d: u32,
+    label: &str,
+) -> Result<HdrUploadLayout, String> {
+    if width == 0 || height == 0 {
         return Err(format!(
-            "HDR upload dimensions {}x{} exceed device max_texture_dimension_2d {}",
-            image.width, image.height, max_texture_dimension_2d
+            "{label} requires non-zero dimensions, got {width}x{height}"
         ));
     }
 
-    let expected_len = image
-        .width
-        .checked_mul(image.height)
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(format!(
+            "{label} dimensions {width}x{height} exceed device max_texture_dimension_2d {max_texture_dimension_2d}",
+        ));
+    }
+
+    let expected_len = width
+        .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))
         .map(|len| len as usize)
-        .ok_or_else(|| {
-            format!(
-                "HDR upload dimensions overflow: {}x{}",
-                image.width, image.height
-            )
-        })?;
+        .ok_or_else(|| format!("{label} dimensions overflow: {width}x{height}"))?;
 
-    if image.rgba_f32.len() != expected_len {
+    if actual_len != expected_len {
         return Err(format!(
-            "Malformed HDR upload buffer: expected {} floats for {}x{} RGBA, got {}",
-            expected_len,
-            image.width,
-            image.height,
-            image.rgba_f32.len()
+            "Malformed {label} buffer: expected {expected_len} floats for {width}x{height} RGBA, got {actual_len}",
         ));
     }
 
-    let bytes_per_row = image
-        .width
+    let bytes_per_row = width
         .checked_mul(4)
         .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
-        .ok_or_else(|| {
-            format!(
-                "HDR upload row byte count overflows for width {}",
-                image.width
-            )
-        })?;
+        .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?;
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
-            width: image.width,
-            height: image.height,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         bytes_per_row,
@@ -660,6 +866,7 @@ fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hdr::tiled::HdrTileBuffer;
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
     use std::sync::Arc;
 
@@ -733,6 +940,45 @@ mod tests {
     }
 
     #[test]
+    fn tile_upload_layout_matches_rgba32f_rows() {
+        let tile = hdr_tile(7, 5, vec![0.0; 7 * 5 * 4]);
+
+        let layout = validate_tile_upload_layout(&tile, 4096).expect("valid tile upload layout");
+
+        assert_eq!(layout.size.width, 7);
+        assert_eq!(layout.size.height, 5);
+        assert_eq!(
+            layout.bytes_per_row,
+            7 * 4 * std::mem::size_of::<f32>() as u32
+        );
+        assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
+    }
+
+    #[test]
+    fn tile_upload_layout_rejects_malformed_buffer_length() {
+        let tile = hdr_tile(2, 2, vec![0.0; 15]);
+
+        let err = validate_tile_upload_layout(&tile, 4096).expect_err("reject malformed tile");
+
+        assert!(err.contains("expected 16 floats"));
+        assert!(err.contains("got 15"));
+    }
+
+    #[test]
+    fn hdr_tile_plane_callback_returns_paint_callback_shape() {
+        let tile = Arc::new(hdr_tile(1, 1, vec![1.0, 1.0, 1.0, 1.0]));
+        let shape = hdr_tile_plane_callback(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0)),
+            tile,
+            HdrToneMapSettings::default(),
+            wgpu::TextureFormat::Rgba16Float,
+            1.0,
+        );
+
+        assert!(matches!(shape, egui::Shape::Callback(_)));
+    }
+
+    #[test]
     fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
@@ -803,9 +1049,7 @@ mod tests {
     #[test]
     fn shader_outputs_straight_alpha_for_standard_blending() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr"));
-        assert!(
-            HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR")
-        );
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
     }
@@ -820,6 +1064,15 @@ mod tests {
             width,
             height,
             format,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(rgba_f32),
+        }
+    }
+
+    fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
+        HdrTileBuffer {
+            width,
+            height,
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(rgba_f32),
         }
