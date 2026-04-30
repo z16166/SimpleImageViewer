@@ -325,6 +325,7 @@ fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header,
 
 fn is_exr_unvalidated_probe_error(err: &str) -> bool {
     err.contains("channel subsampling not supported yet")
+        || err.contains("deep data not supported yet")
 }
 
 fn read_unvalidated_exr_bytes_and_offsets(
@@ -468,6 +469,77 @@ pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, Strin
         color_space,
         rgba_f32: Arc::new(rgba),
     })
+}
+
+#[cfg(test)]
+pub(crate) fn decode_deep_exr_passes_flattened(
+    paths: &[PathBuf],
+) -> Result<HdrImageBuffer, String> {
+    let mut flattened: Option<HdrImageBuffer> = None;
+    let mut display_origin = Vec2(0_i32, 0_i32);
+
+    for path in paths {
+        let pass = decode_deep_exr_image(path)?;
+        let header = read_first_header_for_probe(path)?;
+        let display_window = header.shared_attributes.display_window;
+        if let Some(dest) = &mut flattened {
+            if (dest.width, dest.height)
+                != (
+                    display_window.size.width() as u32,
+                    display_window.size.height() as u32,
+                )
+            {
+                return Err(format!(
+                    "Deep EXR pass display window does not match: {} is {}x{}, expected {}x{}",
+                    path.display(),
+                    display_window.size.width(),
+                    display_window.size.height(),
+                    dest.width,
+                    dest.height
+                ));
+            }
+            let offset_x = header.own_attributes.layer_position.x() - display_origin.x();
+            let offset_y = header.own_attributes.layer_position.y() - display_origin.y();
+            composite_premultiplied_pass_region_over(
+                Arc::make_mut(&mut dest.rgba_f32).as_mut_slice(),
+                dest.width,
+                dest.height,
+                pass.rgba_f32.as_slice(),
+                pass.width,
+                pass.height,
+                offset_x,
+                offset_y,
+            )?;
+        } else {
+            display_origin = display_window.position;
+            let width = u32::try_from(display_window.size.width())
+                .map_err(|_| "Deep EXR display width exceeds u32".to_string())?;
+            let height = u32::try_from(display_window.size.height())
+                .map_err(|_| "Deep EXR display height exceeds u32".to_string())?;
+            let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+            let offset_x = header.own_attributes.layer_position.x() - display_origin.x();
+            let offset_y = header.own_attributes.layer_position.y() - display_origin.y();
+            composite_premultiplied_pass_region_over(
+                rgba.as_mut_slice(),
+                width,
+                height,
+                pass.rgba_f32.as_slice(),
+                pass.width,
+                pass.height,
+                offset_x,
+                offset_y,
+            )?;
+            flattened = Some(HdrImageBuffer {
+                width,
+                height,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: pass.color_space,
+                rgba_f32: Arc::new(rgba),
+            });
+        }
+    }
+
+    flattened.ok_or_else(|| "No deep EXR passes to flatten".to_string())
 }
 
 pub(crate) fn hdr_color_space_from_exr_chromaticities(
@@ -1187,6 +1259,58 @@ fn composite_sample_over(dest: &mut [f32], sample: [f32; 4]) {
     dest[3] += contribution;
 }
 
+#[cfg(test)]
+fn composite_premultiplied_pass_over(dest: &mut [f32], source: &[f32]) {
+    for (dest, source) in dest.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+        let remaining = 1.0 - dest[3].clamp(0.0, 1.0);
+        dest[0] += source[0] * remaining;
+        dest[1] += source[1] * remaining;
+        dest[2] += source[2] * remaining;
+        dest[3] += source[3].clamp(0.0, 1.0) * remaining;
+    }
+}
+
+#[cfg(test)]
+fn composite_premultiplied_pass_region_over(
+    dest: &mut [f32],
+    dest_width: u32,
+    dest_height: u32,
+    source: &[f32],
+    source_width: u32,
+    source_height: u32,
+    offset_x: i32,
+    offset_y: i32,
+) -> Result<(), String> {
+    if dest.len() != dest_width as usize * dest_height as usize * 4 {
+        return Err("Deep EXR destination canvas has malformed RGBA length".to_string());
+    }
+    if source.len() != source_width as usize * source_height as usize * 4 {
+        return Err("Deep EXR source pass has malformed RGBA length".to_string());
+    }
+
+    for source_y in 0..source_height {
+        let dest_y = offset_y + source_y as i32;
+        if dest_y < 0 || dest_y >= dest_height as i32 {
+            continue;
+        }
+        for source_x in 0..source_width {
+            let dest_x = offset_x + source_x as i32;
+            if dest_x < 0 || dest_x >= dest_width as i32 {
+                continue;
+            }
+
+            let source_index = (source_y as usize * source_width as usize + source_x as usize) * 4;
+            let dest_index = (dest_y as usize * dest_width as usize + dest_x as usize) * 4;
+            composite_premultiplied_pass_over(
+                &mut dest[dest_index..dest_index + 4],
+                &source[source_index..source_index + 4],
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn decompress_deep_bytes(
     compression: Compression,
     compressed: Vec<u8>,
@@ -1670,5 +1794,60 @@ mod tests {
         assert_sample_generates_preview(&root, "TestImages/WideColorGamut.exr");
         assert_sample_generates_preview(&root, "Tiles/GoldenGate.exr");
         assert_sample_generates_preview(&root, "Chromaticities/Rec709_YC.exr");
+    }
+
+    #[test]
+    fn lowres_deep_openexr_passes_match_flattened_reference_luma() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR deep composite test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+        let base = root.join("v2/LowResLeftView");
+        let pass_paths = ["Leaves.exr", "Trunks.exr", "Ground.exr", "Balls.exr"]
+            .into_iter()
+            .map(|name| base.join(name))
+            .collect::<Vec<_>>();
+        if !pass_paths.iter().all(|path| path.is_file()) || !base.join("composited.exr").is_file() {
+            eprintln!("skipping OpenEXR deep composite test; low-res v2 samples missing");
+            return;
+        }
+
+        let composited =
+            super::decode_deep_exr_passes_flattened(&pass_paths).expect("flatten deep EXR passes");
+        let reference = crate::hdr::decode::decode_hdr_image(&base.join("composited.exr"))
+            .expect("decode flattened OpenEXR reference");
+
+        assert_eq!(
+            (composited.width, composited.height),
+            (reference.width, reference.height)
+        );
+
+        let sample_points = [
+            (reference.width / 5, reference.height / 5),
+            (reference.width / 2, reference.height / 2),
+            (reference.width * 4 / 5, reference.height / 3),
+            (reference.width / 3, reference.height * 4 / 5),
+        ];
+        let mean_luma_delta = sample_points
+            .iter()
+            .map(|&(x, y)| {
+                let index = (y as usize * reference.width as usize + x as usize) * 4;
+                let actual = luma(&composited.rgba_f32[index..index + 3]);
+                let expected = luma(&reference.rgba_f32[index..index + 3]);
+                (actual - expected).abs()
+            })
+            .sum::<f32>()
+            / sample_points.len() as f32;
+
+        assert!(
+            mean_luma_delta < 0.08,
+            "flattened deep composite luma delta too high: {mean_luma_delta}"
+        );
+    }
+
+    fn luma(rgb: &[f32]) -> f32 {
+        rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
     }
 }
