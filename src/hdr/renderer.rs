@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::types::{HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
@@ -51,6 +51,7 @@ const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 // Keeps generated UVs inside the texture for the fullscreen triangle edge.
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
+const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 
 struct ToneMapSettings {
     exposure_ev: f32,
@@ -59,8 +60,10 @@ struct ToneMapSettings {
     rotation_steps: u32,
     alpha: f32,
     output_mode: u32,
+    input_color_space: u32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 };
 
 struct VertexOutput {
@@ -78,6 +81,21 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
 fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
     let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
     return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
+}
+
+fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        1.6605 * rgb.r - 0.5876 * rgb.g - 0.0728 * rgb.b,
+        -0.1246 * rgb.r + 1.1329 * rgb.g - 0.0083 * rgb.b,
+        -0.0182 * rgb.r - 0.1006 * rgb.g + 1.1187 * rgb.b,
+    );
+}
+
+fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<f32> {
+    if input_color_space == INPUT_COLOR_SPACE_REC2020_LINEAR {
+        return rec2020_to_linear_srgb(rgb);
+    }
+    return rgb;
 }
 
 fn rotate_uv_for_display(uv: vec2<f32>, rotation_steps: u32) -> vec2<f32> {
@@ -136,10 +154,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
+    let source_rgb = convert_input_to_linear_srgb(hdr.rgb, tone_map.input_color_space);
     let rgb = if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
-        encode_native_hdr(hdr.rgb, tone_map)
+        encode_native_hdr(source_rgb, tone_map)
     } else {
-        encode_sdr(hdr.rgb, tone_map)
+        encode_sdr(source_rgb, tone_map)
     };
     return vec4<f32>(
         rgb,
@@ -325,6 +344,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.rotation_steps,
             self.alpha,
             HdrRenderOutputMode::for_target_format(self.target_format),
+            self.image.color_space,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -430,6 +450,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.rotation_steps,
             self.alpha,
             self.target_format,
+            self.tile.color_space,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -514,8 +535,10 @@ struct ToneMapUniform {
     rotation_steps: u32,
     alpha: f32,
     output_mode: u32,
+    input_color_space: u32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
@@ -527,6 +550,7 @@ impl ToneMapUniform {
         rotation_steps: u32,
         alpha: f32,
         output_mode: HdrRenderOutputMode,
+        input_color_space: HdrColorSpace,
     ) -> Self {
         Self {
             exposure_ev: settings.exposure_ev,
@@ -535,8 +559,10 @@ impl ToneMapUniform {
             rotation_steps: rotation_steps % 4,
             alpha: alpha.clamp(0.0, 1.0),
             output_mode: output_mode as u32,
+            input_color_space: input_color_space as u32,
             _pad0: 0,
             _pad1: 0,
+            _pad2: 0,
         }
     }
 }
@@ -546,12 +572,14 @@ fn tile_tone_map_uniform(
     rotation_steps: u32,
     alpha: f32,
     target_format: wgpu::TextureFormat,
+    input_color_space: HdrColorSpace,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
         rotation_steps,
         alpha,
         HdrRenderOutputMode::for_target_format(target_format),
+        input_color_space,
     )
 }
 
@@ -691,6 +719,7 @@ fn create_callback_resources(
             0,
             1.0,
             HdrRenderOutputMode::SdrToneMapped,
+            HdrColorSpace::LinearSrgb,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -1132,6 +1161,7 @@ mod tests {
             6,
             0.5,
             wgpu::TextureFormat::Rgba16Float,
+            HdrColorSpace::LinearSrgb,
         );
 
         assert_eq!(uniform.rotation_steps, 2);
@@ -1233,6 +1263,7 @@ mod tests {
             5,
             0.25,
             HdrRenderOutputMode::SdrToneMapped,
+            HdrColorSpace::LinearSrgb,
         );
 
         assert_eq!(uniform.rotation_steps, 1);
@@ -1262,9 +1293,21 @@ mod tests {
             0,
             1.0,
             HdrRenderOutputMode::NativeHdr,
+            HdrColorSpace::Rec2020Linear,
         );
 
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+        assert_eq!(
+            uniform.input_color_space,
+            HdrColorSpace::Rec2020Linear as u32
+        );
+    }
+
+    #[test]
+    fn shader_converts_rec2020_input_to_linear_srgb() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_REC2020_LINEAR"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn convert_input_to_linear_srgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("1.6605"));
     }
 
     #[test]

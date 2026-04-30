@@ -54,13 +54,25 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 
     let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
 
+    let color_space = if is_exr_path(path) {
+        crate::hdr::exr_tiled::exr_color_space(path)?
+    } else {
+        HdrColorSpace::LinearSrgb
+    };
+
     Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::LinearSrgb,
+        color_space,
         rgba_f32: Arc::new(rgba.into_raw()),
     })
+}
+
+fn is_exr_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
 }
 
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {

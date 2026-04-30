@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use exr::block::BlockIndex;
 use exr::block::reader::ChunksReader;
 use exr::math::Vec2;
-use exr::meta::attribute::{ChannelList, SampleType};
+use exr::meta::attribute::{ChannelList, Chromaticities, SampleType};
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -35,6 +35,7 @@ pub struct ExrTiledImageSource {
     path: PathBuf,
     width: u32,
     height: u32,
+    color_space: HdrColorSpace,
     tile_cache: Mutex<HdrTileCache>,
 }
 
@@ -56,11 +57,14 @@ impl ExrTiledImageSource {
         let height = u32::try_from(header.layer_size.height())
             .map_err(|_| "EXR height exceeds u32".to_string())?;
         validate_required_rgba_channels(&header.channels)?;
+        let color_space =
+            hdr_color_space_from_exr_chromaticities(header.shared_attributes.chromaticities);
 
         Ok(Self {
             path: path.to_path_buf(),
             width,
             height,
+            color_space,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
         })
     }
@@ -96,7 +100,7 @@ impl HdrTiledSource for ExrTiledImageSource {
     }
 
     fn color_space(&self) -> HdrColorSpace {
-        HdrColorSpace::LinearSrgb
+        self.color_space
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
@@ -185,7 +189,7 @@ impl HdrTiledSource for ExrTiledImageSource {
         let tile = Arc::new(HdrTileBuffer {
             width,
             height,
-            color_space: HdrColorSpace::LinearSrgb,
+            color_space: self.color_space,
             rgba_f32: Arc::new(rgba),
         });
 
@@ -195,6 +199,61 @@ impl HdrTiledSource for ExrTiledImageSource {
 
         Ok(tile)
     }
+}
+
+pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let reader = exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
+    let header = reader
+        .headers()
+        .first()
+        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    Ok(hdr_color_space_from_exr_chromaticities(
+        header.shared_attributes.chromaticities,
+    ))
+}
+
+pub(crate) fn hdr_color_space_from_exr_chromaticities(
+    chromaticities: Option<Chromaticities>,
+) -> HdrColorSpace {
+    let Some(chromaticities) = chromaticities else {
+        // OpenEXR specifies BT.709/sRGB primaries when chromaticities is absent.
+        return HdrColorSpace::LinearSrgb;
+    };
+
+    if chromaticities_match(chromaticities, SRGB_CHROMATICITIES) {
+        HdrColorSpace::LinearSrgb
+    } else if chromaticities_match(chromaticities, REC2020_CHROMATICITIES) {
+        HdrColorSpace::Rec2020Linear
+    } else {
+        HdrColorSpace::Unknown
+    }
+}
+
+const SRGB_CHROMATICITIES: Chromaticities = Chromaticities {
+    red: Vec2(0.64, 0.33),
+    green: Vec2(0.30, 0.60),
+    blue: Vec2(0.15, 0.06),
+    white: Vec2(0.3127, 0.3290),
+};
+
+const REC2020_CHROMATICITIES: Chromaticities = Chromaticities {
+    red: Vec2(0.708, 0.292),
+    green: Vec2(0.170, 0.797),
+    blue: Vec2(0.131, 0.046),
+    white: Vec2(0.3127, 0.3290),
+};
+
+fn chromaticities_match(actual: Chromaticities, expected: Chromaticities) -> bool {
+    const EPSILON: f32 = 0.002;
+    chromaticity_point_matches(actual.red, expected.red, EPSILON)
+        && chromaticity_point_matches(actual.green, expected.green, EPSILON)
+        && chromaticity_point_matches(actual.blue, expected.blue, EPSILON)
+        && chromaticity_point_matches(actual.white, expected.white, EPSILON)
+}
+
+fn chromaticity_point_matches(actual: Vec2<f32>, expected: Vec2<f32>, epsilon: f32) -> bool {
+    (actual.x() - expected.x()).abs() <= epsilon && (actual.y() - expected.y()).abs() <= epsilon
 }
 
 #[derive(Debug)]
@@ -397,7 +456,10 @@ fn read_line_samples(
 mod tests {
     use std::sync::Arc;
 
+    use exr::meta::attribute::Chromaticities;
+
     use crate::hdr::tiled::{HdrTiledSource, HdrTiledSourceKind};
+    use crate::hdr::types::HdrColorSpace;
 
     fn write_test_exr(width: u32, height: u32, suffix: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -500,6 +562,45 @@ mod tests {
         assert!(
             pixels[0] > 0,
             "downscaled preview should retain energy from bright source pixels"
+        );
+    }
+
+    #[test]
+    fn exr_chromaticities_classify_known_hdr_color_spaces() {
+        let srgb = Chromaticities {
+            red: exr::math::Vec2(0.64, 0.33),
+            green: exr::math::Vec2(0.30, 0.60),
+            blue: exr::math::Vec2(0.15, 0.06),
+            white: exr::math::Vec2(0.3127, 0.3290),
+        };
+        let rec2020 = Chromaticities {
+            red: exr::math::Vec2(0.708, 0.292),
+            green: exr::math::Vec2(0.170, 0.797),
+            blue: exr::math::Vec2(0.131, 0.046),
+            white: exr::math::Vec2(0.3127, 0.3290),
+        };
+        let unknown = Chromaticities {
+            red: exr::math::Vec2(0.8, 0.2),
+            green: exr::math::Vec2(0.2, 0.8),
+            blue: exr::math::Vec2(0.1, 0.1),
+            white: exr::math::Vec2(0.333, 0.333),
+        };
+
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(None),
+            HdrColorSpace::LinearSrgb
+        );
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(Some(srgb)),
+            HdrColorSpace::LinearSrgb
+        );
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(Some(rec2020)),
+            HdrColorSpace::Rec2020Linear
+        );
+        assert_eq!(
+            super::hdr_color_space_from_exr_chromaticities(Some(unknown)),
+            HdrColorSpace::Unknown
         );
     }
 }
