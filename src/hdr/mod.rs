@@ -16,6 +16,7 @@
 
 pub mod capabilities;
 pub mod decode;
+pub mod exr_tiled;
 pub mod renderer;
 pub mod status;
 pub mod surface;

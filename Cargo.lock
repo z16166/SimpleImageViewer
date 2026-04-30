@@ -1540,6 +1540,7 @@ dependencies = [
  "half",
  "lebe",
  "miniz_oxide",
+ "rayon-core",
  "smallvec",
  "zune-inflate",
 ]
@@ -4855,6 +4856,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "encoding_rs",
+ "exr",
  "flexi_logger",
  "font-kit",
  "foreign-types",

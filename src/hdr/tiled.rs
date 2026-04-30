@@ -39,12 +39,14 @@ pub struct HdrTileBuffer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrTiledSourceKind {
     InMemory,
+    DiskBacked,
 }
 
 impl HdrTiledSourceKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InMemory => "in-memory",
+            Self::DiskBacked => "disk-backed",
         }
     }
 }
@@ -289,7 +291,7 @@ fn validate_rgba32f_len(width: u32, height: u32, actual_len: usize) -> Result<()
 }
 
 #[allow(dead_code)]
-fn validate_tile_bounds(
+pub(crate) fn validate_tile_bounds(
     image_width: u32,
     image_height: u32,
     x: u32,
