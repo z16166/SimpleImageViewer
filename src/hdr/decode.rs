@@ -194,28 +194,28 @@ pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, St
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
 
-    let pixels = exr::prelude::read()
-        .no_deep_data()
-        .largest_resolution_level()
-        .rgba_channels(
-            move |resolution, _channels| {
-                vec![0.0_f32; resolution.width() * resolution.height() * 4]
-            },
-            move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                let index = (position.y() * width as usize + position.x()) * 4;
-                pixels[index] = r;
-                pixels[index + 1] = g;
-                pixels[index + 2] = b;
-                pixels[index + 3] = a;
-            },
-        )
-        .first_valid_layer()
-        .all_attributes()
-        .from_buffered(Cursor::new(&mmap[..]))
-        .map_err(|err| err.to_string())?
-        .layer_data
-        .channel_data
-        .pixels;
+    let pixels = crate::hdr::exr_tiled::catch_exr_panic("decode EXR display image", || {
+        exr::prelude::read()
+            .no_deep_data()
+            .largest_resolution_level()
+            .rgba_channels(
+                move |resolution, _channels| {
+                    vec![0.0_f32; resolution.width() * resolution.height() * 4]
+                },
+                move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
+                    let index = (position.y() * width as usize + position.x()) * 4;
+                    pixels[index] = r;
+                    pixels[index + 1] = g;
+                    pixels[index + 2] = b;
+                    pixels[index + 3] = a;
+                },
+            )
+            .first_valid_layer()
+            .all_attributes()
+            .from_buffered(Cursor::new(&mmap[..]))
+            .map_err(|err| err.to_string())
+            .map(|image| image.layer_data.channel_data.pixels)
+    })?;
 
     Ok(HdrImageBuffer {
         width,

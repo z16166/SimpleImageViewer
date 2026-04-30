@@ -184,38 +184,40 @@ impl HdrTiledSource for ExrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        if self.has_subsampled_channels {
-            return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
-        }
+        catch_exr_panic("generate EXR SDR preview", || {
+            if self.has_subsampled_channels {
+                return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
+            }
 
-        let preview = exr::prelude::read()
-            .no_deep_data()
-            .largest_resolution_level()
-            .rgba_channels(
-                move |resolution, _channels| {
-                    // Previews should remain visible even for EXR files whose alpha is absent or zero.
-                    // The HDR tile/rendering path still preserves source alpha.
-                    PreviewAccumulator::new_with_alpha(
-                        resolution.width() as u32,
-                        resolution.height() as u32,
-                        max_w,
-                        max_h,
-                        false,
-                    )
-                },
-                |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                    preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
-                },
-            )
-            .first_valid_layer()
-            .all_attributes()
-            .from_buffered(Cursor::new(&self.mmap[..]))
-            .map_err(|err| err.to_string())?
-            .layer_data
-            .channel_data
-            .pixels;
+            let preview = exr::prelude::read()
+                .no_deep_data()
+                .largest_resolution_level()
+                .rgba_channels(
+                    move |resolution, _channels| {
+                        // Previews should remain visible even for EXR files whose alpha is absent or zero.
+                        // The HDR tile/rendering path still preserves source alpha.
+                        PreviewAccumulator::new_with_alpha(
+                            resolution.width() as u32,
+                            resolution.height() as u32,
+                            max_w,
+                            max_h,
+                            false,
+                        )
+                    },
+                    |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
+                        preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
+                    },
+                )
+                .first_valid_layer()
+                .all_attributes()
+                .from_buffered(Cursor::new(&self.mmap[..]))
+                .map_err(|err| err.to_string())?
+                .layer_data
+                .channel_data
+                .pixels;
 
-        preview.into_sdr_rgba8()
+            preview.into_sdr_rgba8()
+        })
     }
 
     fn extract_tile_rgba32f_arc(
@@ -233,66 +235,68 @@ impl HdrTiledSource for ExrTiledImageSource {
             }
         }
 
-        if self.has_subsampled_channels {
-            return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
-        }
-
-        let reader =
-            exr::block::read(Cursor::new(&self.mmap[..]), false).map_err(|err| err.to_string())?;
-        let tile_bounds = TileBounds::new(x, y, width, height);
-        let chunks = reader
-            .filter_chunks(false, |_meta, _tile, block| {
-                block.level == Vec2(0, 0)
-                    && block.layer == self.part_index
-                    && block_intersects_tile(block, tile_bounds)
-            })
-            .map_err(|err| err.to_string())?;
-
-        let header = chunks
-            .headers()
-            .get(self.part_index)
-            .ok_or_else(|| "EXR file has no image layers".to_string())?
-            .clone();
-        validate_required_rgba_channels(&header.channels)?;
-        let channel_roles = channel_roles(&header.channels);
-
-        let mut rgba = vec![0.0; width as usize * height as usize * 4];
-        for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
-            *alpha = 1.0;
-        }
-
-        let mut decompressor = chunks.sequential_decompressor(false);
-        while let Some(block) = decompressor.next() {
-            let block = block.map_err(|err| err.to_string())?;
-            for line in block.lines(&header.channels) {
-                let Some(channel) = channel_roles
-                    .get(line.location.channel)
-                    .and_then(|role| *role)
-                else {
-                    continue;
-                };
-                copy_line_channel_to_tile(
-                    line,
-                    header.channels.list[line.location.channel].sample_type,
-                    channel,
-                    tile_bounds,
-                    &mut rgba,
-                )?;
+        catch_exr_panic("extract EXR HDR tile", || {
+            if self.has_subsampled_channels {
+                return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
             }
-        }
 
-        let tile = Arc::new(HdrTileBuffer {
-            width,
-            height,
-            color_space: self.color_space,
-            rgba_f32: Arc::new(rgba),
-        });
+            let reader = exr::block::read(Cursor::new(&self.mmap[..]), false)
+                .map_err(|err| err.to_string())?;
+            let tile_bounds = TileBounds::new(x, y, width, height);
+            let chunks = reader
+                .filter_chunks(false, |_meta, _tile, block| {
+                    block.level == Vec2(0, 0)
+                        && block.layer == self.part_index
+                        && block_intersects_tile(block, tile_bounds)
+                })
+                .map_err(|err| err.to_string())?;
 
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.insert(key, Arc::clone(&tile));
-        }
+            let header = chunks
+                .headers()
+                .get(self.part_index)
+                .ok_or_else(|| "EXR file has no image layers".to_string())?
+                .clone();
+            validate_required_rgba_channels(&header.channels)?;
+            let channel_roles = channel_roles(&header.channels);
 
-        Ok(tile)
+            let mut rgba = vec![0.0; width as usize * height as usize * 4];
+            for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
+                *alpha = 1.0;
+            }
+
+            let mut decompressor = chunks.sequential_decompressor(false);
+            while let Some(block) = decompressor.next() {
+                let block = block.map_err(|err| err.to_string())?;
+                for line in block.lines(&header.channels) {
+                    let Some(channel) = channel_roles
+                        .get(line.location.channel)
+                        .and_then(|role| *role)
+                    else {
+                        continue;
+                    };
+                    copy_line_channel_to_tile(
+                        line,
+                        header.channels.list[line.location.channel].sample_type,
+                        channel,
+                        tile_bounds,
+                        &mut rgba,
+                    )?;
+                }
+            }
+
+            let tile = Arc::new(HdrTileBuffer {
+                width,
+                height,
+                color_space: self.color_space,
+                rgba_f32: Arc::new(rgba),
+            });
+
+            if let Ok(mut cache) = self.tile_cache.lock() {
+                cache.insert(key, Arc::clone(&tile));
+            }
+
+            Ok(tile)
+        })
     }
 }
 
@@ -327,21 +331,46 @@ fn mmap_file(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
     }))
 }
 
+pub(crate) fn catch_exr_panic<T>(
+    context: &str,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "{context} panicked: {}",
+            panic_payload_message(&*payload)
+        )),
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
 fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header, String> {
     let mmap = mmap_file(path)?;
     read_first_header_for_probe_from_mmap(&mmap)
 }
 
 fn read_first_header_for_probe_from_mmap(mmap: &[u8]) -> Result<exr::meta::header::Header, String> {
-    match exr::block::read(Cursor::new(mmap), false).map_err(|err| err.to_string()) {
-        Ok(reader) => select_default_display_header(reader.headers()),
-        Err(err) if is_exr_unvalidated_probe_error(&err) => {
-            let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
-                .map_err(|err| err.to_string())?;
-            select_default_display_header(&meta_data.headers)
+    catch_exr_panic("read EXR header", || {
+        match exr::block::read(Cursor::new(mmap), false).map_err(|err| err.to_string()) {
+            Ok(reader) => select_default_display_header(reader.headers()),
+            Err(err) if is_exr_unvalidated_probe_error(&err) => {
+                let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
+                    .map_err(|err| err.to_string())?;
+                select_default_display_header(&meta_data.headers)
+            }
+            Err(err) => Err(err),
         }
-        Err(err) => Err(err),
-    }
+    })
 }
 
 fn select_default_display_header(
@@ -385,32 +414,34 @@ pub(crate) fn exr_part_infos(path: &Path) -> Result<Vec<ExrPartInfo>, String> {
 }
 
 fn exr_part_infos_from_mmap(mmap: &[u8]) -> Result<Vec<ExrPartInfo>, String> {
-    let meta_data =
-        MetaData::read_from_buffered(Cursor::new(mmap), false).map_err(|err| err.to_string())?;
-    Ok(meta_data
-        .headers
-        .iter()
-        .enumerate()
-        .map(|(index, header)| {
-            let channel_names = header
-                .channels
-                .list
-                .iter()
-                .map(|channel| channel.name.to_string())
-                .collect::<Vec<_>>();
-            let is_displayable_color = has_rgb_channels(&header.channels)
-                || channel_roles(&header.channels)
+    catch_exr_panic("read EXR part info", || {
+        let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
+            .map_err(|err| err.to_string())?;
+        Ok(meta_data
+            .headers
+            .iter()
+            .enumerate()
+            .map(|(index, header)| {
+                let channel_names = header
+                    .channels
+                    .list
                     .iter()
-                    .any(|role| *role == Some(ChannelRole::Luminance));
-            let is_depth_only = !is_displayable_color
-                && channel_names.iter().any(|name| is_depth_channel_name(name));
-            ExrPartInfo {
-                index,
-                is_displayable_color,
-                is_depth_only,
-            }
-        })
-        .collect())
+                    .map(|channel| channel.name.to_string())
+                    .collect::<Vec<_>>();
+                let is_displayable_color = has_rgb_channels(&header.channels)
+                    || channel_roles(&header.channels)
+                        .iter()
+                        .any(|role| *role == Some(ChannelRole::Luminance));
+                let is_depth_only = !is_displayable_color
+                    && channel_names.iter().any(|name| is_depth_channel_name(name));
+                ExrPartInfo {
+                    index,
+                    is_displayable_color,
+                    is_depth_only,
+                }
+            })
+            .collect())
+    })
 }
 
 pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize> {
@@ -429,19 +460,21 @@ fn read_unvalidated_exr_bytes_and_offsets(
 fn read_unvalidated_exr_bytes_and_offsets_from_mmap(
     bytes: Arc<memmap2::Mmap>,
 ) -> Result<(Arc<memmap2::Mmap>, MetaData, Vec<Vec<u64>>), String> {
-    let mut cursor = Cursor::new(&bytes[..]);
-    let meta_data =
-        MetaData::read_from_buffered(&mut cursor, false).map_err(|err| err.to_string())?;
-    let mut offset_tables = Vec::with_capacity(meta_data.headers.len());
-    for header in &meta_data.headers {
-        let mut offsets = Vec::with_capacity(header.chunk_count);
-        for _ in 0..header.chunk_count {
-            offsets.push(read_u64_le(&mut cursor)?);
+    catch_exr_panic("read unvalidated EXR metadata", || {
+        let mut cursor = Cursor::new(&bytes[..]);
+        let meta_data =
+            MetaData::read_from_buffered(&mut cursor, false).map_err(|err| err.to_string())?;
+        let mut offset_tables = Vec::with_capacity(meta_data.headers.len());
+        for header in &meta_data.headers {
+            let mut offsets = Vec::with_capacity(header.chunk_count);
+            for _ in 0..header.chunk_count {
+                offsets.push(read_u64_le(&mut cursor)?);
+            }
+            offset_tables.push(offsets);
         }
-        offset_tables.push(offsets);
-    }
 
-    Ok((bytes, meta_data, offset_tables))
+        Ok((bytes, meta_data, offset_tables))
+    })
 }
 
 fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, String> {
@@ -509,14 +542,16 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
 
 pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
     let mmap = mmap_file(path)?;
-    let meta_data = MetaData::read_from_buffered(Cursor::new(&mmap[..]), false)
-        .map_err(|err| err.to_string())?;
-    let header = select_default_display_header(&meta_data.headers)?;
-    let width = u32::try_from(header.layer_size.width())
-        .map_err(|_| "EXR width exceeds u32".to_string())?;
-    let height = u32::try_from(header.layer_size.height())
-        .map_err(|_| "EXR height exceeds u32".to_string())?;
-    Ok((width, height))
+    catch_exr_panic("read EXR dimensions", || {
+        let meta_data = MetaData::read_from_buffered(Cursor::new(&mmap[..]), false)
+            .map_err(|err| err.to_string())?;
+        let header = select_default_display_header(&meta_data.headers)?;
+        let width = u32::try_from(header.layer_size.width())
+            .map_err(|_| "EXR width exceeds u32".to_string())?;
+        let height = u32::try_from(header.layer_size.height())
+            .map_err(|_| "EXR height exceeds u32".to_string())?;
+        Ok((width, height))
+    })
 }
 
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
@@ -1764,6 +1799,17 @@ mod tests {
             pixels[0] > 0,
             "downscaled preview should retain energy from bright source pixels"
         );
+    }
+
+    #[test]
+    fn exr_panic_boundary_converts_decoder_panic_to_error() {
+        let err = super::catch_exr_panic("test EXR boundary", || -> Result<(), String> {
+            panic!("synthetic EXR decoder panic")
+        })
+        .expect_err("panic should be converted into an error");
+
+        assert!(err.contains("test EXR boundary"));
+        assert!(err.contains("synthetic EXR decoder panic"));
     }
 
     #[test]
