@@ -14,10 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+#[cfg(test)]
+use std::path::Path;
 
 const JPEG_SOI: [u8; 2] = [0xFF, 0xD8];
 const JPEG_SOS: u8 = 0xDA;
@@ -45,12 +47,13 @@ fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
     extract_gain_map_jpeg_bytes(&bytes)
 }
 
-pub(crate) fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
+#[cfg(test)]
+fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
     let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
     decode_ultra_hdr_jpeg_bytes(&bytes)
 }
 
-fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
     let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
     if !info.is_ultra_hdr {
         return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
