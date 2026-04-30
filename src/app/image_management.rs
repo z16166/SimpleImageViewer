@@ -905,7 +905,10 @@ impl ImageViewerApp {
                     }
                 }
             }
-            Ok(ImageData::Tiled(source)) => {
+            Ok(ImageData::Tiled(source))
+            | Ok(ImageData::HdrTiled {
+                fallback: source, ..
+            }) => {
                 self.remove_hdr_image_index(idx);
                 if source.is_hdr_sdr_fallback() {
                     self.hdr_sdr_fallback_indices.insert(idx);

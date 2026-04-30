@@ -257,6 +257,12 @@ pub enum ImageData {
         hdr: crate::hdr::types::HdrImageBuffer,
         fallback: DecodedImage,
     },
+    /// Large HDR image that keeps its float source for future native HDR tiled rendering,
+    /// with an SDR tiled fallback for the existing tile renderer.
+    HdrTiled {
+        hdr: std::sync::Arc<crate::hdr::tiled::HdrTiledImageSource>,
+        fallback: std::sync::Arc<dyn TiledImageSource>,
+    },
     /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
     Tiled(std::sync::Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
@@ -891,8 +897,16 @@ impl ImageLoader {
 
         // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
         // (avoids cloning full Static/Animated pixel buffers).
-        if let Ok(ImageData::Tiled(ref source)) = load_result.result {
-            let source = Arc::clone(source);
+        if let Ok(ref image_data) = load_result.result {
+            let source = match image_data {
+                ImageData::Tiled(source) => Some(Arc::clone(source)),
+                ImageData::HdrTiled { fallback, .. } => Some(Arc::clone(fallback)),
+                _ => None,
+            };
+            let Some(source) = source else {
+                let _ = tx.send(LoaderOutput::Image(load_result));
+                return;
+            };
             let tx_cloned = tx.clone();
             let gen_ref = Arc::clone(&current_gen);
             REFINEMENT_POOL.spawn(move || {
@@ -1232,6 +1246,50 @@ fn load_image_file(
 
             Ok(ImageData::Tiled(source))
         }
+        Ok(ImageData::HdrTiled { hdr, fallback }) => {
+            log::info!(
+                "[{}] HDR tiled image source active: {}x{} ({:.1} MP)",
+                file_name,
+                hdr.width(),
+                hdr.height(),
+                (hdr.width() as f64 * hdr.height() as f64) / 1_000_000.0
+            );
+
+            let t0 = std::time::Instant::now();
+            let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                fallback.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+            }));
+            match gen_result {
+                Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                    log::info!(
+                        "[{}] HDR fallback {}px preview generated ({}x{}) in {:?}",
+                        file_name,
+                        DEFAULT_PREVIEW_SIZE,
+                        pw,
+                        ph,
+                        t0.elapsed()
+                    );
+                    preview = Some(DecodedImage::new(pw, ph, p_pixels));
+                }
+                Ok(_) => {
+                    log::warn!(
+                        "[{}] HDR fallback generate_preview returned empty/zero-size result in {:?}",
+                        file_name,
+                        t0.elapsed()
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "[{}] HDR fallback generate_preview PANICKED: {:?} in {:?}",
+                        file_name,
+                        e,
+                        t0.elapsed()
+                    );
+                }
+            }
+
+            Ok(ImageData::HdrTiled { hdr, fallback })
+        }
         Ok(ImageData::Static(decoded)) => Ok(make_image_data(decoded)),
         Ok(ImageData::Hdr { hdr, fallback }) => Ok(make_hdr_image_data(hdr, fallback)),
         Ok(ImageData::Animated(frames)) => {
@@ -1569,12 +1627,23 @@ fn make_hdr_image_data_for_limit(
             max_texture_side,
             tiled_limit as f64 / 1_000_000.0
         );
-        ImageData::Tiled(Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
+        let fallback_source = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
             fallback.width,
             fallback.height,
             fallback.into_arc_pixels(),
             true,
-        )))
+        ));
+
+        match crate::hdr::tiled::HdrTiledImageSource::new(hdr) {
+            Ok(hdr_source) => ImageData::HdrTiled {
+                hdr: Arc::new(hdr_source),
+                fallback: fallback_source,
+            },
+            Err(err) => {
+                log::warn!("[Loader] HDR tiled source unavailable; using SDR fallback: {err}");
+                ImageData::Tiled(fallback_source)
+            }
+        }
     } else {
         ImageData::Hdr { hdr, fallback }
     }
@@ -1626,7 +1695,7 @@ mod tests {
 
         let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
 
-        assert!(matches!(image_data, ImageData::Tiled(_)));
+        assert!(matches!(image_data, ImageData::HdrTiled { .. }));
     }
 
     #[test]
@@ -1646,7 +1715,7 @@ mod tests {
         crate::tile_cache::TILED_THRESHOLD
             .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let _ = std::fs::remove_file(&path);
-        assert!(matches!(image_data, ImageData::Tiled(_)));
+        assert!(matches!(image_data, ImageData::HdrTiled { .. }));
     }
 
     #[test]
@@ -1662,10 +1731,12 @@ mod tests {
 
         let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
 
-        let ImageData::Tiled(source) = image_data else {
-            panic!("expected HDR tiled fallback");
+        let ImageData::HdrTiled { hdr, fallback } = image_data else {
+            panic!("expected HDR tiled image data");
         };
-        assert!(source.is_hdr_sdr_fallback());
+        assert_eq!(hdr.width(), 4097);
+        assert_eq!(hdr.height(), 1);
+        assert!(fallback.is_hdr_sdr_fallback());
     }
 }
 
@@ -2111,6 +2182,11 @@ fn load_raw(
             Ok(ImageData::Tiled(source)) => {
                 let lim = hq_preview_max_side();
                 let (pw, ph, p) = source.generate_preview(lim, lim);
+                Some(DecodedImage::new(pw, ph, p))
+            }
+            Ok(ImageData::HdrTiled { fallback, .. }) => {
+                let lim = hq_preview_max_side();
+                let (pw, ph, p) = fallback.generate_preview(lim, lim);
                 Some(DecodedImage::new(pw, ph, p))
             }
             _ => {
