@@ -106,6 +106,9 @@ winresource = "0.1"
 cc = "1.2.60"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 
+[patch.crates-io]
+egui-wgpu = { path = "patched-crates/egui-wgpu" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

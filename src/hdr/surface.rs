@@ -35,6 +35,14 @@ pub fn choose_native_hdr_surface_format(formats: &[wgpu::TextureFormat]) -> HdrS
     }
 }
 
+pub fn preferred_native_hdr_target_format_for_platform() -> Option<wgpu::TextureFormat> {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        Some(wgpu::TextureFormat::Rgba16Float)
+    } else {
+        None
+    }
+}
+
 pub fn is_native_hdr_surface_format(format: Option<wgpu::TextureFormat>) -> bool {
     let Some(format) = format else {
         return false;
@@ -111,6 +119,20 @@ mod tests {
             Some(
                 "current eframe/wgpu target format is unknown; native HDR requires a float surface"
             )
+        );
+    }
+
+    #[test]
+    fn platform_native_hdr_request_is_limited_to_windows_and_macos() {
+        let expected = if cfg!(any(target_os = "windows", target_os = "macos")) {
+            Some(wgpu::TextureFormat::Rgba16Float)
+        } else {
+            None
+        };
+
+        assert_eq!(
+            super::preferred_native_hdr_target_format_for_platform(),
+            expected
         );
     }
 }
