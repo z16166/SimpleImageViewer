@@ -1783,7 +1783,6 @@ mod tests {
 
         crate::tile_cache::TILED_THRESHOLD
             .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
-        let _ = std::fs::remove_file(&path);
         let ImageData::HdrTiled { hdr, fallback } = image_data else {
             panic!("expected disk-backed HDR tiled image data");
         };
@@ -1792,6 +1791,13 @@ mod tests {
             crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
         );
         assert!(fallback.is_hdr_sdr_fallback());
+        let (preview_w, preview_h, preview_pixels) = fallback.generate_preview(2, 1);
+        assert_eq!((preview_w, preview_h), (2, 1));
+        assert!(
+            preview_pixels.iter().any(|channel| *channel > 0),
+            "disk-backed EXR fallback preview should contain tone-mapped image data"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -2470,12 +2476,17 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
     }
 
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let scale = (max_w as f32 / self.width() as f32)
-            .min(max_h as f32 / self.height() as f32)
-            .min(1.0);
-        let width = ((self.width() as f32 * scale).round() as u32).max(1);
-        let height = ((self.height() as f32 * scale).round() as u32).max(1);
-        (width, height, vec![0; width as usize * height as usize * 4])
+        self.source
+            .generate_sdr_preview(max_w, max_h)
+            .unwrap_or_else(|err| {
+                log::warn!("[Loader] HDR SDR preview fallback failed: {err}");
+                let scale = (max_w as f32 / self.width() as f32)
+                    .min(max_h as f32 / self.height() as f32)
+                    .min(1.0);
+                let width = ((self.width() as f32 * scale).round() as u32).max(1);
+                let height = ((self.height() as f32 * scale).round() as u32).max(1);
+                (width, height, vec![0; width as usize * height as usize * 4])
+            })
     }
 
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {

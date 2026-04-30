@@ -74,6 +74,29 @@ impl HdrTiledSource for ExrTiledImageSource {
         HdrColorSpace::LinearSrgb
     }
 
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let preview = exr::prelude::read_first_rgba_layer_from_file(
+            &self.path,
+            move |resolution, _channels| {
+                PreviewAccumulator::new(
+                    resolution.width() as u32,
+                    resolution.height() as u32,
+                    max_w,
+                    max_h,
+                )
+            },
+            |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
+                preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
+            },
+        )
+        .map_err(|err| err.to_string())?
+        .layer_data
+        .channel_data
+        .pixels;
+
+        preview.into_sdr_rgba8()
+    }
+
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
@@ -134,6 +157,59 @@ impl HdrTiledSource for ExrTiledImageSource {
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(rgba),
         }))
+    }
+}
+
+#[derive(Debug)]
+struct PreviewAccumulator {
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    rgba_f32: Vec<f32>,
+}
+
+impl PreviewAccumulator {
+    fn new(source_width: u32, source_height: u32, max_w: u32, max_h: u32) -> Self {
+        let scale = (max_w as f32 / source_width as f32)
+            .min(max_h as f32 / source_height as f32)
+            .min(1.0);
+        let width = ((source_width as f32 * scale).round() as u32).max(1);
+        let height = ((source_height as f32 * scale).round() as u32).max(1);
+        let mut rgba_f32 = vec![0.0; width as usize * height as usize * 4];
+        for alpha in rgba_f32.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
+            *alpha = 1.0;
+        }
+        Self {
+            source_width,
+            source_height,
+            width,
+            height,
+            rgba_f32,
+        }
+    }
+
+    fn set(&mut self, source_x: u32, source_y: u32, rgba: [f32; 4]) {
+        let x = ((source_x as u64 * self.width as u64) / self.source_width as u64)
+            .min(self.width.saturating_sub(1) as u64) as usize;
+        let y = ((source_y as u64 * self.height as u64) / self.source_height as u64)
+            .min(self.height.saturating_sub(1) as u64) as usize;
+        let offset = (y * self.width as usize + x) * 4;
+        self.rgba_f32[offset..offset + 4].copy_from_slice(&rgba);
+    }
+
+    fn into_sdr_rgba8(self) -> Result<(u32, u32, Vec<u8>), String> {
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
+            &crate::hdr::types::HdrImageBuffer {
+                width: self.width,
+                height: self.height,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(self.rgba_f32),
+            },
+            0.0,
+        )?;
+        Ok((self.width, self.height, pixels))
     }
 }
 

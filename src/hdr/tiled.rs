@@ -57,6 +57,7 @@ pub trait HdrTiledSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
@@ -147,6 +148,18 @@ impl HdrTiledSource for HdrTiledImageSource {
 
     fn color_space(&self) -> HdrColorSpace {
         self.image.color_space
+    }
+
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&self.image, 0.0)?;
+        let image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+            self.image.width,
+            self.image.height,
+            pixels,
+        )
+        .ok_or_else(|| "Failed to create HDR SDR preview buffer".to_string())?;
+        let preview = image::imageops::thumbnail(&image, max_w, max_h);
+        Ok((preview.width(), preview.height(), preview.into_raw()))
     }
 
     fn extract_tile_rgba32f_arc(
