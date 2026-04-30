@@ -85,6 +85,8 @@ const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
+const HDR_DOWNSCALE_SAMPLE_GRID: u32 = 4u;
+const HDR_DOWNSCALE_MAX_FOOTPRINT: f32 = 8.0;
 
 struct ToneMapSettings {
     exposure_ev: f32,
@@ -170,6 +172,41 @@ fn rotate_uv_for_display(uv: vec2<f32>, rotation_steps: u32) -> vec2<f32> {
     }
 }
 
+fn load_hdr_texel(texel: vec2<i32>, texture_size: vec2<i32>) -> vec4<f32> {
+    return textureLoad(
+        hdr_texture,
+        clamp(texel, vec2<i32>(0), texture_size - vec2<i32>(1)),
+        0,
+    );
+}
+
+fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
+    let texture_size_u = textureDimensions(hdr_texture);
+    let texture_size = vec2<f32>(texture_size_u);
+    let texture_size_i = vec2<i32>(texture_size_u);
+    let footprint = min(
+        max(
+            max(abs(dpdx(uv)) * texture_size, abs(dpdy(uv)) * texture_size),
+            vec2<f32>(1.0),
+        ),
+        vec2<f32>(HDR_DOWNSCALE_MAX_FOOTPRINT),
+    );
+
+    if max(footprint.x, footprint.y) <= 1.25 {
+        return load_hdr_texel(vec2<i32>(uv * texture_size), texture_size_i);
+    }
+
+    var sum = vec4<f32>(0.0);
+    for (var y = 0u; y < HDR_DOWNSCALE_SAMPLE_GRID; y = y + 1u) {
+        for (var x = 0u; x < HDR_DOWNSCALE_SAMPLE_GRID; x = x + 1u) {
+            let sample_uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(HDR_DOWNSCALE_SAMPLE_GRID);
+            let offset = (sample_uv - vec2<f32>(0.5)) * footprint;
+            sum += load_hdr_texel(vec2<i32>(uv * texture_size + offset), texture_size_i);
+        }
+    }
+    return sum / f32(HDR_DOWNSCALE_SAMPLE_GRID * HDR_DOWNSCALE_SAMPLE_GRID);
+}
+
 fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let exposure_scale = exp2(settings.exposure_ev);
     let display_scale = settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
@@ -207,11 +244,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let texture_size = vec2<f32>(textureDimensions(hdr_texture));
     let rotated_uv = rotate_uv_for_display(input.uv, tone_map.rotation_steps);
     let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
-    let texel = vec2<i32>(clamped_uv * texture_size);
-    let hdr = textureLoad(hdr_texture, texel, 0);
+    let hdr = sample_hdr_for_display(clamped_uv);
     let source_rgb = convert_input_to_linear_srgb(hdr.rgb, tone_map.input_color_space);
     var rgb: vec3<f32>;
     if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
@@ -1499,6 +1534,14 @@ mod tests {
     fn native_hdr_shader_keeps_low_linear_exr_values_display_visible() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("let sdr_base ="));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("return max(sdr_base, exposed);"));
+    }
+
+    #[test]
+    fn shader_averages_hdr_texels_when_downscaling() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sample_hdr_for_display"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_SAMPLE_GRID"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("dpdx(uv)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("sum += load_hdr_texel"));
     }
 
     #[test]

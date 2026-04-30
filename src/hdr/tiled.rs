@@ -57,9 +57,6 @@ pub trait HdrTiledSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
-    fn supports_native_hdr_overlay(&self) -> bool {
-        true
-    }
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
     fn extract_tile_rgba32f_arc(
         &self,
