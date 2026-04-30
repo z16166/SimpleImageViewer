@@ -32,8 +32,13 @@ const JPEG_SOI: [u8; 2] = [0xFF, 0xD8];
 const JPEG_SOS: u8 = 0xDA;
 const JPEG_EOI: u8 = 0xD9;
 const JPEG_APP1: u8 = 0xE1;
+const JPEG_APP2: u8 = 0xE2;
 const HDR_GAIN_MAP_NAMESPACE: &str = "http://ns.adobe.com/hdr-gain-map/1.0/";
 const HDR_GAIN_MAP_VERSION: &str = "hdrgm:Version";
+const ISO_GAIN_MAP_NAMESPACE: &[u8] = b"urn:iso:std:iso:ts:21496:-1\0";
+const ISO_MULTI_CHANNEL_FLAG: u8 = 1 << 7;
+const ISO_BACKWARD_DIRECTION_FLAG: u8 = 1 << 2;
+const ISO_COMMON_DENOMINATOR_FLAG: u8 = 1 << 3;
 const DEFAULT_TARGET_HDR_CAPACITY: f32 = DEFAULT_MAX_DISPLAY_NITS / DEFAULT_SDR_WHITE_NITS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,7 +346,17 @@ struct GainMapMetadata {
 }
 
 fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
-    for segment in primary_metadata_segments(gain_map_jpeg)?
+    let segments = primary_metadata_segments(gain_map_jpeg)?;
+    for segment in segments
+        .iter()
+        .filter(|segment| segment.marker == JPEG_APP2)
+    {
+        if let Some(iso_metadata) = iso_gain_map_metadata(segment.payload) {
+            return iso_metadata;
+        }
+    }
+
+    for segment in segments
         .iter()
         .filter(|segment| segment.marker == JPEG_APP1)
     {
@@ -373,6 +388,182 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
     }
 
     Err("Ultra HDR gain map metadata not found".to_string())
+}
+
+fn iso_gain_map_metadata(payload: &[u8]) -> Option<Result<GainMapMetadata, String>> {
+    payload
+        .strip_prefix(ISO_GAIN_MAP_NAMESPACE)
+        .map(parse_iso_gain_map_metadata)
+}
+
+fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMetadata, String> {
+    let mut reader = ByteReader::new(metadata);
+    let min_version = reader.read_u16()?;
+    if min_version != 0 {
+        return Err(format!(
+            "unsupported ISO 21496-1 gain map metadata minimum version {min_version}"
+        ));
+    }
+    let _writer_version = reader.read_u16()?;
+    let flags = reader.read_u8()?;
+    if flags & ISO_BACKWARD_DIRECTION_FLAG != 0 {
+        return Err("ISO 21496-1 HDR base gain maps are not supported yet".to_string());
+    }
+
+    let channel_count = if flags & ISO_MULTI_CHANNEL_FLAG != 0 {
+        3
+    } else {
+        1
+    };
+    let common_denominator = flags & ISO_COMMON_DENOMINATOR_FLAG != 0;
+    let mut fraction = IsoGainMapFraction::default();
+
+    if common_denominator {
+        let denominator = reader.read_u32()?;
+        fraction.base_hdr_headroom = (reader.read_u32()?, denominator);
+        fraction.alternate_hdr_headroom = (reader.read_u32()?, denominator);
+        for channel in 0..channel_count {
+            fraction.gain_map_min[channel] = (reader.read_i32()?, denominator);
+            fraction.gain_map_max[channel] = (reader.read_i32()?, denominator);
+            fraction.gamma[channel] = (reader.read_u32()?, denominator);
+            fraction.base_offset[channel] = (reader.read_i32()?, denominator);
+            fraction.alternate_offset[channel] = (reader.read_i32()?, denominator);
+        }
+    } else {
+        fraction.base_hdr_headroom = (reader.read_u32()?, reader.read_u32()?);
+        fraction.alternate_hdr_headroom = (reader.read_u32()?, reader.read_u32()?);
+        for channel in 0..channel_count {
+            fraction.gain_map_min[channel] = (reader.read_i32()?, reader.read_u32()?);
+            fraction.gain_map_max[channel] = (reader.read_i32()?, reader.read_u32()?);
+            fraction.gamma[channel] = (reader.read_u32()?, reader.read_u32()?);
+            fraction.base_offset[channel] = (reader.read_i32()?, reader.read_u32()?);
+            fraction.alternate_offset[channel] = (reader.read_i32()?, reader.read_u32()?);
+        }
+    }
+
+    if channel_count == 1 {
+        for channel in 1..3 {
+            fraction.gain_map_min[channel] = fraction.gain_map_min[0];
+            fraction.gain_map_max[channel] = fraction.gain_map_max[0];
+            fraction.gamma[channel] = fraction.gamma[0];
+            fraction.base_offset[channel] = fraction.base_offset[0];
+            fraction.alternate_offset[channel] = fraction.alternate_offset[0];
+        }
+    }
+
+    fraction.into_gain_map_metadata()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IsoGainMapFraction {
+    gain_map_min: [(i32, u32); 3],
+    gain_map_max: [(i32, u32); 3],
+    gamma: [(u32, u32); 3],
+    base_offset: [(i32, u32); 3],
+    alternate_offset: [(i32, u32); 3],
+    base_hdr_headroom: (u32, u32),
+    alternate_hdr_headroom: (u32, u32),
+}
+
+impl Default for IsoGainMapFraction {
+    fn default() -> Self {
+        Self {
+            gain_map_min: [(0, 1); 3],
+            gain_map_max: [(0, 1); 3],
+            gamma: [(1, 1); 3],
+            base_offset: [(0, 1); 3],
+            alternate_offset: [(0, 1); 3],
+            base_hdr_headroom: (0, 1),
+            alternate_hdr_headroom: (0, 1),
+        }
+    }
+}
+
+impl IsoGainMapFraction {
+    fn into_gain_map_metadata(self) -> Result<GainMapMetadata, String> {
+        let mut gain_map_min = [0.0; 3];
+        let mut gain_map_max = [0.0; 3];
+        let mut gamma = [1.0; 3];
+        let mut offset_sdr = [0.0; 3];
+        let mut offset_hdr = [0.0; 3];
+
+        for channel in 0..3 {
+            gain_map_min[channel] = signed_fraction(self.gain_map_min[channel])?;
+            gain_map_max[channel] = signed_fraction(self.gain_map_max[channel])?;
+            gamma[channel] = unsigned_fraction(self.gamma[channel])?;
+            offset_sdr[channel] = signed_fraction(self.base_offset[channel])?;
+            offset_hdr[channel] = signed_fraction(self.alternate_offset[channel])?;
+        }
+
+        Ok(GainMapMetadata {
+            gain_map_min,
+            gain_map_max,
+            gamma,
+            offset_sdr,
+            offset_hdr,
+            hdr_capacity_min: 2.0_f32.powf(unsigned_fraction(self.base_hdr_headroom)?),
+            hdr_capacity_max: 2.0_f32.powf(unsigned_fraction(self.alternate_hdr_headroom)?),
+        })
+    }
+}
+
+fn signed_fraction((numerator, denominator): (i32, u32)) -> Result<f32, String> {
+    if denominator == 0 {
+        return Err("ISO 21496-1 gain map metadata has zero denominator".to_string());
+    }
+    Ok(numerator as f32 / denominator as f32)
+}
+
+fn unsigned_fraction((numerator, denominator): (u32, u32)) -> Result<f32, String> {
+    if denominator == 0 {
+        return Err("ISO 21496-1 gain map metadata has zero denominator".to_string());
+    }
+    Ok(numerator as f32 / denominator as f32)
+}
+
+struct ByteReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ByteReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_u8(&mut self) -> Result<u8, String> {
+        if self.offset >= self.bytes.len() {
+            return Err("truncated ISO 21496-1 gain map metadata".to_string());
+        }
+        let value = self.bytes[self.offset];
+        self.offset += 1;
+        Ok(value)
+    }
+
+    fn read_u16(&mut self) -> Result<u16, String> {
+        let bytes = self.read_array::<2>()?;
+        Ok(u16::from_be_bytes(bytes))
+    }
+
+    fn read_u32(&mut self) -> Result<u32, String> {
+        let bytes = self.read_array::<4>()?;
+        Ok(u32::from_be_bytes(bytes))
+    }
+
+    fn read_i32(&mut self) -> Result<i32, String> {
+        let bytes = self.read_array::<4>()?;
+        Ok(i32::from_be_bytes(bytes))
+    }
+
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], String> {
+        if self.offset + N > self.bytes.len() {
+            return Err("truncated ISO 21496-1 gain map metadata".to_string());
+        }
+        let mut out = [0; N];
+        out.copy_from_slice(&self.bytes[self.offset..self.offset + N]);
+        self.offset += N;
+        Ok(out)
+    }
 }
 
 fn attribute_f32(text: &str, name: &str) -> Option<f32> {
@@ -871,6 +1062,38 @@ mod tests {
     }
 
     #[test]
+    fn gain_map_metadata_prefers_iso_over_xmp() {
+        let mut iso = Vec::new();
+        write_iso_common_denominator_metadata(
+            &mut iso,
+            10,
+            0,
+            20,
+            &[(0, 30, 10, 0, 0), (1, 31, 11, 1, 1), (2, 32, 12, 2, 2)],
+        );
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp_and_app2_iso(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="1.0"
+              hdrgm:HDRCapacityMax="1.0"/>
+        "#,
+            &iso,
+        );
+
+        let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse ISO gain map metadata");
+
+        assert_eq!(metadata.gain_map_min, [0.0, 0.1, 0.2]);
+        assert_eq!(metadata.gain_map_max, [3.0, 3.1, 3.2]);
+        assert_eq!(metadata.gamma, [1.0, 1.1, 1.2]);
+        assert_eq!(metadata.offset_sdr, [0.0, 0.1, 0.2]);
+        assert_eq!(metadata.offset_hdr, [0.0, 0.1, 0.2]);
+        assert_eq!(metadata.hdr_capacity_min, 1.0);
+        assert_eq!(metadata.hdr_capacity_max, 4.0);
+    }
+
+    #[test]
     fn gain_map_metadata_parses_ordered_rgb_values() {
         let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
             r#"
@@ -1018,5 +1241,40 @@ mod tests {
         bytes.extend_from_slice(payload.as_bytes());
         bytes.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9]);
         bytes
+    }
+
+    fn minimal_jpeg_with_app1_xmp_and_app2_iso(xmp: &str, iso_metadata: &[u8]) -> Vec<u8> {
+        let mut bytes = minimal_jpeg_with_app1_xmp(xmp);
+        bytes.truncate(bytes.len() - 6);
+        let mut payload = b"urn:iso:std:iso:ts:21496:-1\0".to_vec();
+        payload.extend_from_slice(iso_metadata);
+        let len = u16::try_from(payload.len() + 2).expect("test ISO metadata fits in JPEG segment");
+        bytes.extend_from_slice(&[0xFF, 0xE2]);
+        bytes.extend_from_slice(&len.to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9]);
+        bytes
+    }
+
+    fn write_iso_common_denominator_metadata(
+        out: &mut Vec<u8>,
+        denominator: u32,
+        base_hdr_headroom_n: u32,
+        alternate_hdr_headroom_n: u32,
+        channels: &[(i32, i32, u32, i32, i32); 3],
+    ) {
+        out.extend_from_slice(&0_u16.to_be_bytes());
+        out.extend_from_slice(&0_u16.to_be_bytes());
+        out.push(0x80 | 0x08);
+        out.extend_from_slice(&denominator.to_be_bytes());
+        out.extend_from_slice(&base_hdr_headroom_n.to_be_bytes());
+        out.extend_from_slice(&alternate_hdr_headroom_n.to_be_bytes());
+        for (gain_min, gain_max, gamma, offset_sdr, offset_hdr) in channels {
+            out.extend_from_slice(&gain_min.to_be_bytes());
+            out.extend_from_slice(&gain_max.to_be_bytes());
+            out.extend_from_slice(&gamma.to_be_bytes());
+            out.extend_from_slice(&offset_sdr.to_be_bytes());
+            out.extend_from_slice(&offset_hdr.to_be_bytes());
+        }
     }
 }
