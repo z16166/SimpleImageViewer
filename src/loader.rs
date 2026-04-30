@@ -1936,6 +1936,33 @@ mod tests {
     }
 
     #[test]
+    fn load_radiance_hdr_routes_small_images_to_float_image_data() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_hdr_static_route_{}.hdr",
+            std::process::id()
+        ));
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
+        std::fs::write(&path, bytes).expect("write test HDR");
+        let _threshold_override = TiledThresholdOverride::set(u64::MAX);
+
+        let image_data = load_hdr(&path).expect("load tiny Radiance HDR");
+
+        let ImageData::Hdr { hdr, fallback } = image_data else {
+            panic!("expected small Radiance HDR to route to static HDR image data");
+        };
+        assert_eq!((hdr.width, hdr.height), (1, 1));
+        assert_eq!((fallback.width, fallback.height), (1, 1));
+        assert_eq!(hdr.color_space, HdrColorSpace::LinearSrgb);
+        assert_eq!(hdr.rgba_f32.len(), 4);
+        assert!(
+            hdr.rgba_f32.iter().any(|value| *value > 0.0),
+            "Radiance HDR float buffer should contain visible samples"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_exr_routes_threshold_sized_images_to_disk_backed_hdr_tiles() {
         let _threshold_lock = lock_tiled_threshold_for_test();
         let path = std::env::temp_dir().join(format!(
@@ -1968,6 +1995,41 @@ mod tests {
         assert!(
             preview_pixels.iter().any(|channel| *channel > 0),
             "disk-backed EXR fallback preview should contain tone-mapped image data"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_exr_routes_small_images_to_float_image_data() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_exr_static_route_{}.exr",
+            std::process::id()
+        ));
+        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
+            2,
+            1,
+            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
+        )
+        .expect("build test EXR image");
+        image::DynamicImage::ImageRgba32F(img)
+            .save_with_format(&path, image::ImageFormat::OpenExr)
+            .expect("write test EXR");
+        let _threshold_override = TiledThresholdOverride::set(u64::MAX);
+
+        let image_data = load_hdr(&path).expect("load tiny EXR");
+
+        let ImageData::Hdr { hdr, fallback } = image_data else {
+            panic!("expected small EXR to route to static HDR image data");
+        };
+        assert_eq!((hdr.width, hdr.height), (2, 1));
+        assert_eq!((fallback.width, fallback.height), (2, 1));
+        assert_eq!(hdr.color_space, HdrColorSpace::LinearSrgb);
+        assert!(
+            hdr.rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "EXR static route should preserve HDR float highlights"
         );
         let _ = std::fs::remove_file(&path);
     }

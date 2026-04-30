@@ -149,4 +149,69 @@ mod tests {
             Some(HdrRenderPath::FloatImagePlane)
         );
     }
+
+    #[test]
+    fn hdr_render_path_matrix_keeps_float_routes_when_target_exists() {
+        let cases = [
+            (
+                "static HDR",
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                false,
+                Some(HdrRenderPath::FloatImagePlane),
+            ),
+            (
+                "tiled HDR",
+                true,
+                false,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                false,
+                Some(HdrRenderPath::FloatTilePlane),
+            ),
+            (
+                "static HDR on SDR target",
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Bgra8Unorm),
+                false,
+                Some(HdrRenderPath::FloatImagePlane),
+            ),
+            (
+                "tiled HDR without render target",
+                true,
+                false,
+                true,
+                None,
+                false,
+                Some(HdrRenderPath::SdrFallback),
+            ),
+        ];
+
+        for (
+            label,
+            has_hdr_tiled_source,
+            has_hdr_image,
+            has_sdr_fallback,
+            hdr_target_format,
+            complex_transition_active,
+            expected,
+        ) in cases
+        {
+            assert_eq!(
+                hdr_render_path_for_state(
+                    has_hdr_tiled_source,
+                    has_hdr_image,
+                    has_sdr_fallback,
+                    hdr_target_format,
+                    complex_transition_active,
+                ),
+                expected,
+                "{label}"
+            );
+        }
+    }
 }
