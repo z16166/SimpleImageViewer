@@ -15,12 +15,15 @@ use std::time::Instant;
 impl ImageViewerApp {
     pub(crate) fn clear_hdr_image_state(&mut self) {
         self.hdr_image_cache.clear();
+        self.hdr_tiled_source_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
         self.current_hdr_image = None;
+        self.current_hdr_tiled_image = None;
     }
 
     pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
         self.hdr_image_cache.remove(&index);
+        self.hdr_tiled_source_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
         if self
             .current_hdr_image
@@ -28,6 +31,13 @@ impl ImageViewerApp {
             .is_some_and(|current| current.image_for_index(index).is_some())
         {
             self.current_hdr_image = None;
+        }
+        if self
+            .current_hdr_tiled_image
+            .as_ref()
+            .is_some_and(|current| current.source_for_index(index).is_some())
+        {
+            self.current_hdr_tiled_image = None;
         }
     }
 
@@ -180,6 +190,11 @@ impl ImageViewerApp {
             .get(&self.current_index)
             .cloned()
             .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
+        self.current_hdr_tiled_image = self
+            .hdr_tiled_source_cache
+            .get(&self.current_index)
+            .cloned()
+            .map(|source| crate::app::CurrentHdrTiledImage::new(self.current_index, source));
         self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
@@ -905,10 +920,7 @@ impl ImageViewerApp {
                     }
                 }
             }
-            Ok(ImageData::Tiled(source))
-            | Ok(ImageData::HdrTiled {
-                fallback: source, ..
-            }) => {
+            Ok(ImageData::Tiled(source)) => {
                 self.remove_hdr_image_index(idx);
                 if source.is_hdr_sdr_fallback() {
                     self.hdr_sdr_fallback_indices.insert(idx);
@@ -982,6 +994,79 @@ impl ImageViewerApp {
                         TileManager::with_source(idx, load_result.generation, Arc::clone(source));
 
                     // Prefer existing cached texture (might be HQ) over the initial low-res preview
+                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
+                        tm.preview_texture = Some(cached_handle);
+                    } else if let Some(preview) = load_result.preview.as_ref() {
+                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
+                    }
+                    self.prefetched_tiles.insert(idx, tm);
+                }
+            }
+            Ok(ImageData::HdrTiled { hdr, fallback }) => {
+                self.remove_hdr_image_index(idx);
+                self.hdr_tiled_source_cache.insert(idx, Arc::clone(hdr));
+                self.hdr_sdr_fallback_indices.insert(idx);
+
+                let source = fallback;
+                // Upload preview into texture_cache so it persists across navigations.
+                if let Some(preview) = load_result.preview.as_ref() {
+                    let bootstrap_max = preview.width.max(preview.height);
+                    let allow_sync_preview = !self.texture_cache.contains(idx)
+                        || self
+                            .texture_cache
+                            .cached_preview_max_side(idx)
+                            .map_or(true, |cached_max| bootstrap_max > cached_max);
+
+                    if allow_sync_preview {
+                        let color_image = ColorImage::from_rgba_unmultiplied(
+                            [preview.width as usize, preview.height as usize],
+                            preview.rgba(),
+                        );
+                        let name = format!("img_preview_{}", idx);
+                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                        if let Some(evicted_idx) = self.texture_cache.insert(
+                            idx,
+                            handle,
+                            source.width(),
+                            source.height(),
+                            true,
+                            self.current_index,
+                            self.image_files.len(),
+                        ) {
+                            self.handle_texture_cache_eviction(evicted_idx);
+                        }
+                    }
+                }
+
+                if idx == self.current_index {
+                    self.current_hdr_tiled_image =
+                        Some(crate::app::CurrentHdrTiledImage::new(idx, Arc::clone(hdr)));
+                    self.current_image_res = Some((source.width(), source.height()));
+                    crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
+                    let mut tm =
+                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+
+                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
+                        tm.preview_texture = Some(cached_handle);
+                    } else if let Some(preview) = load_result.preview.as_ref() {
+                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
+                    }
+
+                    self.tile_manager = Some(tm);
+                    self.animation = None;
+                    if let Some(res) = self.current_image_res {
+                        self.log_large_image(idx, res.0, res.1);
+                    } else {
+                        log::warn!(
+                            "[UI] Attempted to log large HDR tiled image resolution, but res was None for index {}",
+                            idx
+                        );
+                    }
+                    source.request_refinement(idx, self.generation);
+                } else {
+                    let mut tm =
+                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+
                     if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
                         tm.preview_texture = Some(cached_handle);
                     } else if let Some(preview) = load_result.preview.as_ref() {

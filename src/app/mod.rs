@@ -165,6 +165,25 @@ impl CurrentHdrImage {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct CurrentHdrTiledImage {
+    index: usize,
+    source: Arc<crate::hdr::tiled::HdrTiledImageSource>,
+}
+
+impl CurrentHdrTiledImage {
+    pub(crate) fn new(index: usize, source: Arc<crate::hdr::tiled::HdrTiledImageSource>) -> Self {
+        Self { index, source }
+    }
+
+    pub(crate) fn source_for_index(
+        &self,
+        index: usize,
+    ) -> Option<&Arc<crate::hdr::tiled::HdrTiledImageSource>> {
+        (self.index == index).then_some(&self.source)
+    }
+}
+
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -184,6 +203,8 @@ pub struct ImageViewerApp {
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
+    pub(crate) hdr_tiled_source_cache: HashMap<usize, Arc<crate::hdr::tiled::HdrTiledImageSource>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
@@ -839,5 +860,23 @@ mod tests {
 
         assert!(current.image_for_index(6).is_none());
         assert!(Arc::ptr_eq(current.image_for_index(7).unwrap(), &image));
+    }
+
+    #[test]
+    fn current_hdr_tiled_image_only_matches_its_source_index() {
+        let image = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        };
+        let source = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(image).expect("valid HDR tiled source"),
+        );
+        let current = CurrentHdrTiledImage::new(7, Arc::clone(&source));
+
+        assert!(current.source_for_index(6).is_none());
+        assert!(Arc::ptr_eq(current.source_for_index(7).unwrap(), &source));
     }
 }

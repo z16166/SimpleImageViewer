@@ -257,6 +257,43 @@ impl ImageViewerApp {
                                 .with_clip_rect(screen_rect)
                                 .add(egui::Shape::mesh(mesh));
 
+                            if rotation == 0
+                                && let Some(hdr_source) =
+                                    self.current_hdr_tiled_image.as_ref().and_then(|current| {
+                                        current.source_for_index(self.current_index)
+                                    })
+                            {
+                                let ts = crate::tile_cache::get_tile_size();
+                                let tile_x = coord.col * ts;
+                                let tile_y = coord.row * ts;
+                                let tile_w = ts.min(hdr_source.width() - tile_x);
+                                let tile_h = ts.min(hdr_source.height() - tile_y);
+                                match hdr_source
+                                    .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+                                {
+                                    Ok(hdr_tile) => {
+                                        ui.painter().add(
+                                            crate::hdr::renderer::hdr_tile_plane_callback(
+                                                *tile_screen_rect,
+                                                hdr_tile,
+                                                self.hdr_renderer.tone_map,
+                                                self.hdr_target_format
+                                                    .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                                1.0,
+                                            ),
+                                        );
+                                    }
+                                    Err(err) => {
+                                        log::warn!(
+                                            "[HDR] Failed to extract HDR tile ({},{}): {}",
+                                            coord.col,
+                                            coord.row,
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
                             if self.settings.show_osd {

@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -27,9 +28,10 @@ pub struct HdrTileBuffer {
     pub rgba_f32: Arc<Vec<f32>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HdrTiledImageSource {
     image: HdrImageBuffer,
+    tile_cache: Mutex<std::collections::HashMap<(u32, u32, u32, u32), Arc<HdrTileBuffer>>>,
 }
 
 impl HdrTiledImageSource {
@@ -42,7 +44,10 @@ impl HdrTiledImageSource {
         }
 
         validate_rgba32f_len(image.width, image.height, image.rgba_f32.len())?;
-        Ok(Self { image })
+        Ok(Self {
+            image,
+            tile_cache: Mutex::new(std::collections::HashMap::new()),
+        })
     }
 
     pub fn width(&self) -> u32 {
@@ -66,7 +71,24 @@ impl HdrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Result<HdrTileBuffer, String> {
+        self.extract_tile_rgba32f_arc(x, y, width, height)
+            .map(|tile| (*tile).clone())
+    }
+
+    pub fn extract_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Arc<HdrTileBuffer>, String> {
         validate_tile_bounds(self.image.width, self.image.height, x, y, width, height)?;
+        let key = (x, y, width, height);
+        if let Ok(cache) = self.tile_cache.lock() {
+            if let Some(tile) = cache.get(&key) {
+                return Ok(Arc::clone(tile));
+            }
+        }
 
         let mut tile = Vec::with_capacity((width as usize) * (height as usize) * 4);
         let source_stride = self.image.width as usize * 4;
@@ -79,12 +101,18 @@ impl HdrTiledImageSource {
             tile.extend_from_slice(&self.image.rgba_f32[start..end]);
         }
 
-        Ok(HdrTileBuffer {
+        let tile = Arc::new(HdrTileBuffer {
             width,
             height,
             color_space: self.image.color_space,
             rgba_f32: Arc::new(tile),
-        })
+        });
+
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            cache.insert(key, Arc::clone(&tile));
+        }
+
+        Ok(tile)
     }
 }
 
@@ -183,5 +211,26 @@ mod tests {
         let err = HdrTiledImageSource::new(image).expect_err("reject malformed source");
 
         assert!(err.contains("expected 16 floats"));
+    }
+
+    #[test]
+    fn repeated_tile_extraction_reuses_cached_tile_buffer() {
+        let image = HdrImageBuffer {
+            width: 2,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![1.0; 2 * 4]),
+        };
+        let source = HdrTiledImageSource::new(image).expect("valid HDR tile source");
+
+        let first = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract first tile");
+        let second = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract cached tile");
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }
