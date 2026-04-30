@@ -19,6 +19,8 @@ use std::io::{BufRead, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 
+use exr::prelude::{ReadChannels, ReadLayers};
+use image::ImageDecoder;
 use image::{ImageReader, Limits};
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
@@ -41,7 +43,9 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     if is_exr_path(path) {
         return decode_exr_display_image(path);
     }
-    let radiance_params = RadianceHeaderParams::read_from_path(path)?;
+    if is_radiance_hdr_path(path) {
+        return decode_radiance_hdr_image(path);
+    }
 
     let (width, height) = ImageReader::open(path)
         .map_err(|e| e.to_string())?
@@ -59,8 +63,7 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     limits.max_alloc = Some(MAX_HDR_FALLBACK_DECODE_BYTES);
     decoder.limits(limits);
 
-    let mut rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
-    radiance_params.apply_to_pixels(rgba.as_flat_samples_mut().samples);
+    let rgba = decoder.decode().map_err(|e| e.to_string())?.into_rgba32f();
 
     Ok(HdrImageBuffer {
         width,
@@ -71,6 +74,36 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     })
 }
 
+fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+    let radiance_params = RadianceHeaderParams::read_from_bytes(&mmap)?;
+    let decoder = image::codecs::hdr::HdrDecoder::new(Cursor::new(&mmap[..]))
+        .map_err(|err| err.to_string())?;
+    let (width, height) = decoder.dimensions();
+    validate_hdr_fallback_budget(width, height)?;
+
+    let mut rgb_bytes = vec![0_u8; decoder.total_bytes() as usize];
+    decoder
+        .read_image(&mut rgb_bytes)
+        .map_err(|err| err.to_string())?;
+
+    let rgb_f32: &[f32] = bytemuck::cast_slice(&rgb_bytes);
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for rgb in rgb_f32.chunks_exact(3) {
+        rgba_f32.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+    }
+    radiance_params.apply_to_pixels(&mut rgba_f32);
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RadianceHeaderParams {
     exposure: f32,
@@ -78,12 +111,6 @@ pub(crate) struct RadianceHeaderParams {
 }
 
 impl RadianceHeaderParams {
-    pub(crate) fn read_from_path(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|err| err.to_string())?;
-        let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-        Self::read_from_bytes(&mmap)
-    }
-
     pub(crate) fn read_from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let mut reader = Cursor::new(bytes);
         let mut params = Self::default();
@@ -164,22 +191,31 @@ impl Default for RadianceHeaderParams {
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated(path)?;
     validate_hdr_fallback_budget(width, height)?;
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
 
-    let pixels = exr::prelude::read_first_rgba_layer_from_file(
-        path,
-        move |resolution, _channels| vec![0.0_f32; resolution.width() * resolution.height() * 4],
-        move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
-            let index = (position.y() * width as usize + position.x()) * 4;
-            pixels[index] = r;
-            pixels[index + 1] = g;
-            pixels[index + 2] = b;
-            pixels[index + 3] = a;
-        },
-    )
-    .map_err(|err| err.to_string())?
-    .layer_data
-    .channel_data
-    .pixels;
+    let pixels = exr::prelude::read()
+        .no_deep_data()
+        .largest_resolution_level()
+        .rgba_channels(
+            move |resolution, _channels| {
+                vec![0.0_f32; resolution.width() * resolution.height() * 4]
+            },
+            move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
+                let index = (position.y() * width as usize + position.x()) * 4;
+                pixels[index] = r;
+                pixels[index + 1] = g;
+                pixels[index + 2] = b;
+                pixels[index + 3] = a;
+            },
+        )
+        .first_valid_layer()
+        .all_attributes()
+        .from_buffered(Cursor::new(&mmap[..]))
+        .map_err(|err| err.to_string())?
+        .layer_data
+        .channel_data
+        .pixels;
 
     Ok(HdrImageBuffer {
         width,
@@ -194,6 +230,12 @@ fn is_exr_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
+}
+
+fn is_radiance_hdr_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("hdr"))
 }
 
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {

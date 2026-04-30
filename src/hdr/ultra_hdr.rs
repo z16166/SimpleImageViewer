@@ -50,19 +50,22 @@ pub(crate) struct UltraHdrJpegInfo {
 
 #[cfg(test)]
 fn inspect_ultra_hdr_jpeg(path: &Path) -> Result<UltraHdrJpegInfo, String> {
-    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
     inspect_ultra_hdr_jpeg_bytes(&bytes)
 }
 
 #[cfg(test)]
 fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
-    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
     extract_gain_map_jpeg_bytes(&bytes)
 }
 
 #[cfg(test)]
 fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
+    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
     decode_ultra_hdr_jpeg_bytes(&bytes)
 }
 
@@ -151,7 +154,9 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
 
 #[derive(Debug)]
 pub struct UltraHdrTiledImageSource {
+    #[allow(dead_code)]
     path: PathBuf,
+    mmap: Arc<memmap2::Mmap>,
     width: u32,
     height: u32,
     physical_width: u32,
@@ -166,7 +171,8 @@ pub struct UltraHdrTiledImageSource {
 
 impl UltraHdrTiledImageSource {
     pub(crate) fn open(path: PathBuf, orientation: u16) -> Result<Self, String> {
-        let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+        let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
+        let bytes = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
         let info = inspect_ultra_hdr_jpeg_bytes(&bytes)?;
         if !info.is_ultra_hdr {
             return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
@@ -186,6 +192,7 @@ impl UltraHdrTiledImageSource {
 
         Ok(Self {
             path,
+            mmap: bytes,
             width,
             height,
             physical_width,
@@ -250,8 +257,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let bytes = std::fs::read(&self.path).map_err(|err| err.to_string())?;
-        let (decoded_width, decoded_height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(&bytes)?;
+        let (decoded_width, decoded_height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(&self.mmap)?;
         if decoded_width != self.physical_width || decoded_height != self.physical_height {
             return Err("Ultra HDR JPEG dimensions changed while extracting tile".to_string());
         }

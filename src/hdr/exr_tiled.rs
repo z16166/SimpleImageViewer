@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,7 @@ use exr::math::Vec2;
 use exr::meta::BlockDescription;
 use exr::meta::attribute::{ChannelList, Chromaticities, SampleType};
 use exr::prelude::MetaData;
+use exr::prelude::{ReadChannels, ReadLayers};
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -36,7 +37,9 @@ use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 #[derive(Debug)]
 pub struct ExrTiledImageSource {
+    #[allow(dead_code)]
     path: PathBuf,
+    mmap: Arc<memmap2::Mmap>,
     width: u32,
     height: u32,
     part_index: usize,
@@ -59,9 +62,10 @@ impl ExrTiledImageSource {
     }
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
-        let parts = exr_part_infos(path)?;
+        let mmap = mmap_file(path)?;
+        let parts = exr_part_infos_from_mmap(&mmap)?;
         let part_index = default_display_part_index(&parts).unwrap_or(0);
-        let header = read_first_header_for_probe(path)?;
+        let header = read_first_header_for_probe_from_mmap(&mmap)?;
         let width = u32::try_from(header.layer_size.width())
             .map_err(|_| "EXR width exceeds u32".to_string())?;
         let height = u32::try_from(header.layer_size.height())
@@ -81,6 +85,7 @@ impl ExrTiledImageSource {
 
         Ok(Self {
             path: path.to_path_buf(),
+            mmap,
             width,
             height,
             part_index,
@@ -103,7 +108,7 @@ impl ExrTiledImageSource {
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
         let (bytes, mut meta_data, offset_tables) =
-            read_unvalidated_exr_bytes_and_offsets(&self.path)?;
+            read_unvalidated_exr_bytes_and_offsets_from_mmap(Arc::clone(&self.mmap))?;
         normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
         let header = meta_data
             .headers
@@ -119,7 +124,7 @@ impl ExrTiledImageSource {
         let mut tile = YcaTileAccumulator::new(width, height, yca_luma_weights(self.color_space));
 
         for offset in offset_tables.get(self.part_index).into_iter().flatten() {
-            let mut cursor = Cursor::new(bytes.as_slice());
+            let mut cursor = Cursor::new(&bytes[..]);
             cursor
                 .seek(SeekFrom::Start(*offset))
                 .map_err(|err| err.to_string())?;
@@ -183,27 +188,32 @@ impl HdrTiledSource for ExrTiledImageSource {
             return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
         }
 
-        let preview = exr::prelude::read_first_rgba_layer_from_file(
-            &self.path,
-            move |resolution, _channels| {
-                // Previews should remain visible even for EXR files whose alpha is absent or zero.
-                // The HDR tile/rendering path still preserves source alpha.
-                PreviewAccumulator::new_with_alpha(
-                    resolution.width() as u32,
-                    resolution.height() as u32,
-                    max_w,
-                    max_h,
-                    false,
-                )
-            },
-            |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
-            },
-        )
-        .map_err(|err| err.to_string())?
-        .layer_data
-        .channel_data
-        .pixels;
+        let preview = exr::prelude::read()
+            .no_deep_data()
+            .largest_resolution_level()
+            .rgba_channels(
+                move |resolution, _channels| {
+                    // Previews should remain visible even for EXR files whose alpha is absent or zero.
+                    // The HDR tile/rendering path still preserves source alpha.
+                    PreviewAccumulator::new_with_alpha(
+                        resolution.width() as u32,
+                        resolution.height() as u32,
+                        max_w,
+                        max_h,
+                        false,
+                    )
+                },
+                |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
+                    preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
+                },
+            )
+            .first_valid_layer()
+            .all_attributes()
+            .from_buffered(Cursor::new(&self.mmap[..]))
+            .map_err(|err| err.to_string())?
+            .layer_data
+            .channel_data
+            .pixels;
 
         preview.into_sdr_rgba8()
     }
@@ -223,13 +233,12 @@ impl HdrTiledSource for ExrTiledImageSource {
             }
         }
 
-        let file = File::open(&self.path).map_err(|err| err.to_string())?;
         if self.has_subsampled_channels {
             return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
         }
 
         let reader =
-            exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
+            exr::block::read(Cursor::new(&self.mmap[..]), false).map_err(|err| err.to_string())?;
         let tile_bounds = TileBounds::new(x, y, width, height);
         let chunks = reader
             .filter_chunks(false, |_meta, _tile, block| {
@@ -311,15 +320,24 @@ impl ExrTiledImageSource {
     }
 }
 
+fn mmap_file(path: &Path) -> Result<Arc<memmap2::Mmap>, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
+    Ok(Arc::new(unsafe {
+        memmap2::Mmap::map(&file).map_err(|err| err.to_string())?
+    }))
+}
+
 fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header, String> {
-    match File::open(path)
-        .map_err(|err| err.to_string())
-        .and_then(|file| {
-            exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())
-        }) {
+    let mmap = mmap_file(path)?;
+    read_first_header_for_probe_from_mmap(&mmap)
+}
+
+fn read_first_header_for_probe_from_mmap(mmap: &[u8]) -> Result<exr::meta::header::Header, String> {
+    match exr::block::read(Cursor::new(mmap), false).map_err(|err| err.to_string()) {
         Ok(reader) => select_default_display_header(reader.headers()),
         Err(err) if is_exr_unvalidated_probe_error(&err) => {
-            let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+            let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
+                .map_err(|err| err.to_string())?;
             select_default_display_header(&meta_data.headers)
         }
         Err(err) => Err(err),
@@ -360,8 +378,15 @@ fn is_exr_unvalidated_probe_error(err: &str) -> bool {
         || err.contains("deep data not supported yet")
 }
 
+#[cfg(test)]
 pub(crate) fn exr_part_infos(path: &Path) -> Result<Vec<ExrPartInfo>, String> {
-    let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+    let mmap = mmap_file(path)?;
+    exr_part_infos_from_mmap(&mmap)
+}
+
+fn exr_part_infos_from_mmap(mmap: &[u8]) -> Result<Vec<ExrPartInfo>, String> {
+    let meta_data =
+        MetaData::read_from_buffered(Cursor::new(mmap), false).map_err(|err| err.to_string())?;
     Ok(meta_data
         .headers
         .iter()
@@ -397,9 +422,14 @@ pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize>
 
 fn read_unvalidated_exr_bytes_and_offsets(
     path: &Path,
-) -> Result<(Vec<u8>, MetaData, Vec<Vec<u64>>), String> {
-    let bytes = std::fs::read(path).map_err(|err| err.to_string())?;
-    let mut cursor = Cursor::new(bytes.as_slice());
+) -> Result<(Arc<memmap2::Mmap>, MetaData, Vec<Vec<u64>>), String> {
+    read_unvalidated_exr_bytes_and_offsets_from_mmap(mmap_file(path)?)
+}
+
+fn read_unvalidated_exr_bytes_and_offsets_from_mmap(
+    bytes: Arc<memmap2::Mmap>,
+) -> Result<(Arc<memmap2::Mmap>, MetaData, Vec<Vec<u64>>), String> {
+    let mut cursor = Cursor::new(&bytes[..]);
     let meta_data =
         MetaData::read_from_buffered(&mut cursor, false).map_err(|err| err.to_string())?;
     let mut offset_tables = Vec::with_capacity(meta_data.headers.len());
@@ -478,7 +508,9 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
 }
 
 pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
-    let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+    let mmap = mmap_file(path)?;
+    let meta_data = MetaData::read_from_buffered(Cursor::new(&mmap[..]), false)
+        .map_err(|err| err.to_string())?;
     let header = select_default_display_header(&meta_data.headers)?;
     let width = u32::try_from(header.layer_size.width())
         .map_err(|_| "EXR width exceeds u32".to_string())?;
@@ -509,7 +541,7 @@ pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, Strin
     let channel_roles = channel_roles(&header.channels);
 
     for offset in offset_tables.first().into_iter().flatten() {
-        let mut cursor = Cursor::new(bytes.as_slice());
+        let mut cursor = Cursor::new(&bytes[..]);
         cursor
             .seek(SeekFrom::Start(*offset))
             .map_err(|err| err.to_string())?;
