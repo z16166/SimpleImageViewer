@@ -57,8 +57,9 @@ impl ExrTiledImageSource {
         let height = u32::try_from(header.layer_size.height())
             .map_err(|_| "EXR height exceeds u32".to_string())?;
         validate_required_rgba_channels(&header.channels)?;
-        let color_space =
-            hdr_color_space_from_exr_chromaticities(header.shared_attributes.chromaticities);
+        let chromaticities = header.shared_attributes.chromaticities;
+        let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
+        log_unsupported_exr_chromaticities(path, chromaticities);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -107,11 +108,14 @@ impl HdrTiledSource for ExrTiledImageSource {
         let preview = exr::prelude::read_first_rgba_layer_from_file(
             &self.path,
             move |resolution, _channels| {
-                PreviewAccumulator::new(
+                // Previews should remain visible even for EXR files whose alpha is absent or zero.
+                // The HDR tile/rendering path still preserves source alpha.
+                PreviewAccumulator::new_with_alpha(
                     resolution.width() as u32,
                     resolution.height() as u32,
                     max_w,
                     max_h,
+                    false,
                 )
             },
             |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
@@ -208,9 +212,9 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
         .headers()
         .first()
         .ok_or_else(|| "EXR file has no image layers".to_string())?;
-    Ok(hdr_color_space_from_exr_chromaticities(
-        header.shared_attributes.chromaticities,
-    ))
+    let chromaticities = header.shared_attributes.chromaticities;
+    log_unsupported_exr_chromaticities(path, chromaticities);
+    Ok(hdr_color_space_from_exr_chromaticities(chromaticities))
 }
 
 pub(crate) fn hdr_color_space_from_exr_chromaticities(
@@ -232,6 +236,33 @@ pub(crate) fn hdr_color_space_from_exr_chromaticities(
     } else {
         HdrColorSpace::Unknown
     }
+}
+
+pub(crate) fn unsupported_exr_chromaticities_diagnostic(
+    chromaticities: Option<Chromaticities>,
+) -> Option<String> {
+    let chromaticities = chromaticities?;
+    if hdr_color_space_from_exr_chromaticities(Some(chromaticities)) != HdrColorSpace::Unknown {
+        return None;
+    }
+
+    Some(format!(
+        "unsupported EXR chromaticities: red={}, green={}, blue={}, white={}",
+        format_xy(chromaticities.red),
+        format_xy(chromaticities.green),
+        format_xy(chromaticities.blue),
+        format_xy(chromaticities.white),
+    ))
+}
+
+fn log_unsupported_exr_chromaticities(path: &Path, chromaticities: Option<Chromaticities>) {
+    if let Some(diagnostic) = unsupported_exr_chromaticities_diagnostic(chromaticities) {
+        log::warn!("[HDR] {}: {}", path.display(), diagnostic);
+    }
+}
+
+fn format_xy(point: Vec2<f32>) -> String {
+    format!("({:.4}, {:.4})", point.x(), point.y())
 }
 
 const SRGB_CHROMATICITIES: Chromaticities = Chromaticities {
@@ -280,12 +311,19 @@ struct PreviewAccumulator {
     source_height: u32,
     width: u32,
     height: u32,
+    has_alpha_channel: bool,
     rgba_sum: Vec<f32>,
     sample_counts: Vec<u32>,
 }
 
 impl PreviewAccumulator {
-    fn new(source_width: u32, source_height: u32, max_w: u32, max_h: u32) -> Self {
+    fn new_with_alpha(
+        source_width: u32,
+        source_height: u32,
+        max_w: u32,
+        max_h: u32,
+        has_alpha_channel: bool,
+    ) -> Self {
         let scale = (max_w as f32 / source_width as f32)
             .min(max_h as f32 / source_height as f32)
             .min(1.0);
@@ -298,6 +336,7 @@ impl PreviewAccumulator {
             source_height,
             width,
             height,
+            has_alpha_channel,
             rgba_sum,
             sample_counts,
         }
@@ -310,6 +349,10 @@ impl PreviewAccumulator {
             .min(self.height.saturating_sub(1) as u64) as usize;
         let pixel = y * self.width as usize + x;
         let offset = pixel * 4;
+        let mut rgba = rgba;
+        if !self.has_alpha_channel {
+            rgba[3] = 1.0;
+        }
         for (channel, value) in rgba.iter().enumerate() {
             self.rgba_sum[offset + channel] += *value;
         }
@@ -472,6 +515,7 @@ fn read_line_samples(
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use exr::meta::attribute::Chromaticities;
@@ -497,6 +541,76 @@ mod tests {
             .save_with_format(&path, image::ImageFormat::OpenExr)
             .expect("write test EXR");
         path
+    }
+
+    fn openexr_images_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
+            .filter(|path| path.is_dir())
+    }
+
+    fn assert_sample_color_space(root: &Path, relative_path: &str, expected: HdrColorSpace) {
+        let path = root.join(relative_path);
+        assert!(
+            path.is_file(),
+            "OpenEXR sample file is missing: {}",
+            path.display()
+        );
+        assert_eq!(
+            super::exr_color_space(&path).expect("read OpenEXR sample chromaticities"),
+            expected,
+            "unexpected color space for {}",
+            path.display()
+        );
+    }
+
+    fn assert_sample_extracts_tile(root: &Path, relative_path: &str) {
+        let path = root.join(relative_path);
+        assert!(
+            path.is_file(),
+            "OpenEXR sample file is missing: {}",
+            path.display()
+        );
+        let source = super::ExrTiledImageSource::open_with_cache_budget(&path, 4 * 1024 * 1024)
+            .expect("open OpenEXR sample as disk-backed tile source");
+        let tile_width = source.width.min(8);
+        let tile_height = source.height.min(8);
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, tile_width, tile_height)
+            .expect("extract tile from OpenEXR sample");
+
+        assert_eq!(tile.width, tile_width);
+        assert_eq!(tile.height, tile_height);
+        assert_eq!(
+            tile.rgba_f32.len(),
+            tile_width as usize * tile_height as usize * 4
+        );
+    }
+
+    fn assert_sample_generates_preview(root: &Path, relative_path: &str) {
+        let path = root.join(relative_path);
+        assert!(
+            path.is_file(),
+            "OpenEXR sample file is missing: {}",
+            path.display()
+        );
+        let source = super::ExrTiledImageSource::open_with_cache_budget(&path, 4 * 1024 * 1024)
+            .expect("open OpenEXR sample as disk-backed tile source");
+        let (width, height, pixels) = source
+            .generate_sdr_preview(64, 64)
+            .expect("generate SDR preview from OpenEXR sample");
+
+        assert!(width > 0);
+        assert!(height > 0);
+        assert!(width <= 64);
+        assert!(height <= 64);
+        assert_eq!(pixels.len(), width as usize * height as usize * 4);
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel[3] != 0),
+            "preview should contain visible pixels for {}",
+            path.display()
+        );
     }
 
     #[test]
@@ -571,7 +685,7 @@ mod tests {
 
     #[test]
     fn preview_accumulator_averages_source_pixels_that_map_to_same_preview_pixel() {
-        let mut preview = super::PreviewAccumulator::new(2, 1, 1, 1);
+        let mut preview = super::PreviewAccumulator::new_with_alpha(2, 1, 1, 1, true);
 
         preview.set(0, 0, [4.0, 4.0, 4.0, 1.0]);
         preview.set(1, 0, [0.0, 0.0, 0.0, 1.0]);
@@ -640,5 +754,75 @@ mod tests {
             super::hdr_color_space_from_exr_chromaticities(Some(unknown)),
             HdrColorSpace::Unknown
         );
+    }
+
+    #[test]
+    fn unsupported_exr_chromaticities_diagnostic_includes_xy_coordinates() {
+        let unsupported = Chromaticities {
+            red: exr::math::Vec2(0.8, 0.2),
+            green: exr::math::Vec2(0.2, 0.8),
+            blue: exr::math::Vec2(0.1, 0.1),
+            white: exr::math::Vec2(0.333, 0.333),
+        };
+
+        let diagnostic = super::unsupported_exr_chromaticities_diagnostic(Some(unsupported))
+            .expect("unsupported chromaticities should produce a diagnostic");
+
+        assert!(diagnostic.contains("unsupported EXR chromaticities"));
+        assert!(diagnostic.contains("red=(0.8000, 0.2000)"));
+        assert!(diagnostic.contains("green=(0.2000, 0.8000)"));
+        assert!(diagnostic.contains("blue=(0.1000, 0.1000)"));
+        assert!(diagnostic.contains("white=(0.3330, 0.3330)"));
+    }
+
+    #[test]
+    fn openexr_standard_samples_classify_expected_color_spaces() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR sample corpus test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        assert_sample_color_space(
+            &root,
+            "Chromaticities/Rec709.exr",
+            HdrColorSpace::LinearSrgb,
+        );
+        assert_sample_color_space(&root, "Chromaticities/XYZ.exr", HdrColorSpace::Xyz);
+        assert_sample_color_space(
+            &root,
+            "TestImages/WideColorGamut.exr",
+            HdrColorSpace::LinearSrgb,
+        );
+        assert_sample_color_space(&root, "ScanLines/Carrots.exr", HdrColorSpace::Aces2065_1);
+    }
+
+    #[test]
+    fn openexr_standard_samples_extract_hdr_tiles() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR sample corpus test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        assert_sample_extracts_tile(&root, "ScanLines/Carrots.exr");
+        assert_sample_extracts_tile(&root, "TestImages/WideColorGamut.exr");
+        assert_sample_extracts_tile(&root, "Tiles/GoldenGate.exr");
+    }
+
+    #[test]
+    fn openexr_standard_samples_generate_sdr_previews() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR sample corpus test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        assert_sample_generates_preview(&root, "ScanLines/Carrots.exr");
+        assert_sample_generates_preview(&root, "TestImages/WideColorGamut.exr");
+        assert_sample_generates_preview(&root, "Tiles/GoldenGate.exr");
     }
 }
