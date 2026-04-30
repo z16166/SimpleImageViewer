@@ -62,6 +62,17 @@ pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>)
     ]
 }
 
+pub fn hdr_egui_overlay_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
+    let shader_entry_point = target_format.map(egui_wgpu::egui_framebuffer_shader_entry_point);
+    [
+        format!("[HDR] egui_overlay_target_format={target_format:?}"),
+        format!(
+            "[HDR] egui_overlay_framebuffer_shader={}",
+            shader_entry_point.unwrap_or("unknown")
+        ),
+    ]
+}
+
 #[allow(dead_code)]
 pub const HDR_IMAGE_PLANE_SHADER: &str = r#"
 // Largest finite half-float value; caps extreme HDR values before tone mapping.
@@ -1286,6 +1297,24 @@ mod tests {
             [
                 "[HDR] render_target_format=None",
                 "[HDR] shader_output_mode=unknown",
+            ]
+        );
+    }
+
+    #[test]
+    fn egui_overlay_diagnostics_report_linear_sdr_ui_on_hdr_float_target() {
+        assert_eq!(
+            hdr_egui_overlay_diagnostics(Some(wgpu::TextureFormat::Rgba16Float)),
+            [
+                "[HDR] egui_overlay_target_format=Some(Rgba16Float)",
+                "[HDR] egui_overlay_framebuffer_shader=fs_main_linear_framebuffer",
+            ]
+        );
+        assert_eq!(
+            hdr_egui_overlay_diagnostics(Some(wgpu::TextureFormat::Bgra8Unorm)),
+            [
+                "[HDR] egui_overlay_target_format=Some(Bgra8Unorm)",
+                "[HDR] egui_overlay_framebuffer_shader=fs_main_gamma_framebuffer",
             ]
         );
     }

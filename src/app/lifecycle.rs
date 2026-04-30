@@ -99,6 +99,9 @@ impl ImageViewerApp {
         for diagnostic in crate::hdr::renderer::hdr_render_output_diagnostics(hdr_target_format) {
             log::info!("{diagnostic}");
         }
+        for diagnostic in crate::hdr::renderer::hdr_egui_overlay_diagnostics(hdr_target_format) {
+            log::info!("{diagnostic}");
+        }
 
         crate::tile_cache::MAX_TEXTURE_SIDE
             .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);

@@ -6,6 +6,21 @@ use epaint::{PaintCallbackInfo, Primitive, Vertex, emath::NumExt as _};
 
 use wgpu::util::DeviceExt as _;
 
+pub fn egui_framebuffer_shader_entry_point(
+    output_color_format: wgpu::TextureFormat,
+) -> &'static str {
+    if output_color_format.is_srgb()
+        || matches!(
+            output_color_format,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+        )
+    {
+        "fs_main_linear_framebuffer"
+    } else {
+        "fs_main_gamma_framebuffer"
+    }
+}
+
 // Only implements Send + Sync on wasm32 in order to allow storing wgpu resources on the type map.
 #[cfg(not(all(
     target_arch = "wasm32",
@@ -403,12 +418,7 @@ impl Renderer {
 
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some(if output_color_format.is_srgb() {
-                        log::warn!("Detected a linear (sRGBA aware) framebuffer {output_color_format:?}. egui prefers Rgba8Unorm or Bgra8Unorm");
-                        "fs_main_linear_framebuffer"
-                    } else {
-                        "fs_main_gamma_framebuffer" // this is what we prefer
-                    }),
+                    entry_point: Some(egui_framebuffer_shader_entry_point(output_color_format)),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: output_color_format,
                         blend: Some(wgpu::BlendState {
@@ -1161,4 +1171,20 @@ impl ScissorRect {
 fn renderer_impl_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Renderer>();
+}
+
+#[test]
+fn hdr_float_target_uses_linear_framebuffer_shader_for_sdr_ui() {
+    assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba16Float),
+        "fs_main_linear_framebuffer"
+    );
+    assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba32Float),
+        "fs_main_linear_framebuffer"
+    );
+    assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Bgra8Unorm),
+        "fs_main_gamma_framebuffer"
+    );
 }
