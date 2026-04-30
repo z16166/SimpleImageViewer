@@ -1393,10 +1393,10 @@ fn load_hdr(path: &Path) -> Result<ImageData, String> {
         Ok(hdr) => hdr,
         Err(err) if is_exr_deep_data_unsupported_error(&err) => {
             log::warn!(
-                "[Loader] Deep EXR data is not composited yet for {}; using visible placeholder",
+                "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return make_deep_exr_placeholder(path);
+            return load_deep_exr(path);
         }
         Err(err) => return Err(err),
     };
@@ -1453,6 +1453,23 @@ fn is_exr_disk_backed_probe_fallback_error(err: &str) -> bool {
 
 fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
     err.contains("deep data not supported yet")
+}
+
+fn load_deep_exr(path: &Path) -> Result<ImageData, String> {
+    match crate::hdr::exr_tiled::decode_deep_exr_image(path) {
+        Ok(hdr) => {
+            let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+            let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+            Ok(make_hdr_image_data(hdr, fallback))
+        }
+        Err(err) => {
+            log::warn!(
+                "[Loader] Deep EXR compositing failed for {}: {err}; using visible placeholder",
+                path.display()
+            );
+            make_deep_exr_placeholder(path)
+        }
+    }
 }
 
 fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
@@ -1916,6 +1933,81 @@ mod tests {
             failures.len(),
             files.len(),
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn deep_openexr_standard_passes_decode_without_placeholder() {
+        let root = std::path::PathBuf::from(r"F:\HDR\openexr-images");
+        if !root.is_dir() {
+            eprintln!(
+                "skipping OpenEXR deep sample test; set up F:\\HDR\\openexr-images or SIV_OPENEXR_IMAGES_DIR"
+            );
+            return;
+        }
+
+        for relative_path in [
+            "v2/LeftView/Balls.exr",
+            "v2/LeftView/Ground.exr",
+            "v2/LeftView/Leaves.exr",
+            "v2/LeftView/Trunks.exr",
+            "v2/LowResLeftView/Balls.exr",
+            "v2/LowResLeftView/Ground.exr",
+            "v2/LowResLeftView/Leaves.exr",
+            "v2/LowResLeftView/Trunks.exr",
+            "v2/Stereo/Balls.exr",
+            "v2/Stereo/Ground.exr",
+            "v2/Stereo/Leaves.exr",
+            "v2/Stereo/Trunks.exr",
+        ] {
+            let path = root.join(relative_path);
+            assert!(
+                path.is_file(),
+                "OpenEXR deep sample file is missing: {}",
+                path.display()
+            );
+
+            let hdr = crate::hdr::exr_tiled::decode_deep_exr_image(&path).unwrap_or_else(|err| {
+                panic!(
+                    "decode deep OpenEXR sample failed for {}: {err}",
+                    path.display()
+                )
+            });
+            assert_eq!(
+                hdr.rgba_f32.len(),
+                hdr.width as usize * hdr.height as usize * 4
+            );
+            assert!(
+                hdr.rgba_f32.iter().all(|value| value.is_finite()),
+                "deep EXR decode should produce finite float samples: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn deep_openexr_standard_sample_loads_hdr_float_content() {
+        let path = std::path::PathBuf::from(r"F:\HDR\openexr-images\v2\LowResLeftView\Balls.exr");
+        if !path.is_file() {
+            eprintln!(
+                "skipping OpenEXR deep sample test; set up F:\\HDR\\openexr-images or SIV_OPENEXR_IMAGES_DIR"
+            );
+            return;
+        }
+
+        let image_data = load_hdr(&path).expect("load deep OpenEXR sample");
+        let ImageData::Hdr { hdr, .. } = image_data else {
+            panic!("unexpected deep EXR image data");
+        };
+        assert!(
+            hdr.rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 0.0 || pixel[1] > 0.0 || pixel[2] > 0.0),
+            "deep EXR HDR buffer should contain visible RGB content"
+        );
+        assert!(
+            hdr.rgba_f32.chunks_exact(4).any(|pixel| pixel[3] > 0.0),
+            "deep EXR HDR buffer should contain visible alpha"
         );
     }
 

@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use exr::block::chunk::Chunk;
 use exr::block::reader::ChunksReader;
 use exr::block::{BlockIndex, UncompressedBlock};
+use exr::compression::Compression;
 use exr::math::Vec2;
 use exr::meta::BlockDescription;
 use exr::meta::attribute::{ChannelList, Chromaticities, SampleType};
@@ -31,7 +32,7 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes,
 };
-use crate::hdr::types::HdrColorSpace;
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 #[derive(Debug)]
 pub struct ExrTiledImageSource {
@@ -424,6 +425,49 @@ pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), Stri
     let height = u32::try_from(header.layer_size.height())
         .map_err(|_| "EXR height exceeds u32".to_string())?;
     Ok((width, height))
+}
+
+pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
+    let (bytes, meta_data, offset_tables) = read_unvalidated_exr_bytes_and_offsets(path)?;
+    let header = meta_data
+        .headers
+        .first()
+        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    if !header.deep || !matches!(header.blocks, BlockDescription::ScanLines) {
+        return Err("Only deep scanline EXR images are supported".to_string());
+    }
+
+    let width = u32::try_from(header.layer_size.width())
+        .map_err(|_| "EXR width exceeds u32".to_string())?;
+    let height = u32::try_from(header.layer_size.height())
+        .map_err(|_| "EXR height exceeds u32".to_string())?;
+    let chromaticities = header.shared_attributes.chromaticities;
+    let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
+    log_unsupported_exr_chromaticities(path, chromaticities);
+
+    let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+    let channel_roles = channel_roles(&header.channels);
+
+    for offset in offset_tables.first().into_iter().flatten() {
+        let mut cursor = Cursor::new(bytes.as_slice());
+        cursor
+            .seek(SeekFrom::Start(*offset))
+            .map_err(|err| err.to_string())?;
+        let (layer_index, block) = read_deep_scanline_chunk_unvalidated(&mut cursor, &meta_data)?;
+        if layer_index != 0 {
+            continue;
+        }
+
+        composite_deep_scanline_block(header, &channel_roles, block, &mut rgba)?;
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space,
+        rgba_f32: Arc::new(rgba),
+    })
 }
 
 pub(crate) fn hdr_color_space_from_exr_chromaticities(
@@ -949,6 +993,335 @@ fn read_samples_from_native_bytes(
             .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32)
             .collect::<Vec<_>>()),
     }
+}
+
+fn composite_deep_scanline_block(
+    header: &exr::meta::header::Header,
+    channel_roles: &[Option<ChannelRole>],
+    block: exr::block::chunk::CompressedDeepScanLineBlock,
+    rgba: &mut [f32],
+) -> Result<(), String> {
+    let block_y = block
+        .y_coordinate
+        .checked_sub(header.own_attributes.layer_position.y())
+        .ok_or_else(|| "invalid deep EXR scanline block y coordinate".to_string())?;
+    if block_y < 0 {
+        return Err("invalid deep EXR scanline block before data window".to_string());
+    }
+    let block_y = block_y as usize;
+    let width = header.layer_size.width();
+    let block_height = header
+        .compression
+        .scan_lines_per_block()
+        .min(header.layer_size.height().saturating_sub(block_y));
+    if block_height == 0 {
+        return Ok(());
+    }
+
+    let expected_table_bytes = width
+        .checked_mul(block_height)
+        .and_then(|pixels| pixels.checked_mul(std::mem::size_of::<i32>()))
+        .ok_or_else(|| "deep EXR pixel offset table size overflow".to_string())?;
+    let table_bytes = decompress_deep_bytes(
+        header.compression,
+        block
+            .compressed_pixel_offset_table
+            .into_iter()
+            .map(|byte| byte as u8)
+            .collect(),
+        expected_table_bytes,
+    )?;
+    let offsets = table_bytes
+        .chunks_exact(4)
+        .map(|bytes| i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect::<Vec<_>>();
+    if offsets.len() != width * block_height {
+        return Err("deep EXR pixel offset table has unexpected size".to_string());
+    }
+
+    let total_samples = offsets.last().copied().unwrap_or_default().max(0) as usize;
+    let sample_bytes = decompress_deep_bytes(
+        header.compression,
+        block.compressed_sample_data_le,
+        block.decompressed_sample_data_size,
+    )?;
+    let channel_offsets =
+        deep_channel_offsets(&header.channels, total_samples, sample_bytes.len())?;
+
+    for local_y in 0..block_height {
+        let image_y = block_y + local_y;
+        if image_y >= header.layer_size.height() {
+            continue;
+        }
+        for x in 0..width {
+            let pixel_index = local_y * width + x;
+            let sample_end = offsets[pixel_index].max(0) as usize;
+            let sample_start = if pixel_index == 0 {
+                0
+            } else {
+                offsets[pixel_index - 1].max(0) as usize
+            };
+            if sample_end < sample_start || sample_end > total_samples {
+                return Err("deep EXR pixel offset table is not monotonic".to_string());
+            }
+
+            let dest = (image_y * width + x) * 4;
+            for sample_index in sample_start..sample_end {
+                let sample = read_deep_rgba_sample(
+                    &sample_bytes,
+                    &header.channels,
+                    channel_roles,
+                    &channel_offsets,
+                    sample_index,
+                )?;
+                composite_sample_over(&mut rgba[dest..dest + 4], sample);
+                if rgba[dest + 3] >= 0.999 {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn deep_channel_offsets(
+    channels: &ChannelList,
+    total_samples: usize,
+    sample_data_len: usize,
+) -> Result<Vec<usize>, String> {
+    let mut offsets = Vec::with_capacity(channels.list.len());
+    let mut offset = 0_usize;
+    for channel in &channels.list {
+        offsets.push(offset);
+        offset = offset
+            .checked_add(
+                total_samples
+                    .checked_mul(channel.sample_type.bytes_per_sample())
+                    .ok_or_else(|| "deep EXR channel sample byte size overflow".to_string())?,
+            )
+            .ok_or_else(|| "deep EXR channel offset overflow".to_string())?;
+    }
+    if offset > sample_data_len {
+        return Err("deep EXR sample data is smaller than channel layout".to_string());
+    }
+    Ok(offsets)
+}
+
+fn read_deep_rgba_sample(
+    sample_bytes: &[u8],
+    channels: &ChannelList,
+    channel_roles: &[Option<ChannelRole>],
+    channel_offsets: &[usize],
+    sample_index: usize,
+) -> Result<[f32; 4], String> {
+    let mut rgba = [0.0_f32, 0.0, 0.0, 1.0];
+    let mut has_alpha = false;
+
+    for (channel_index, channel) in channels.list.iter().enumerate() {
+        let Some(role) = channel_roles.get(channel_index).and_then(|role| *role) else {
+            continue;
+        };
+        let value = read_deep_sample(
+            sample_bytes,
+            channel_offsets[channel_index],
+            sample_index,
+            channel.sample_type,
+        )?;
+        match role {
+            ChannelRole::Red => rgba[0] = value,
+            ChannelRole::Green => rgba[1] = value,
+            ChannelRole::Blue => rgba[2] = value,
+            ChannelRole::Alpha => {
+                rgba[3] = value;
+                has_alpha = true;
+            }
+            ChannelRole::Luminance => {
+                rgba[0] = value;
+                rgba[1] = value;
+                rgba[2] = value;
+            }
+            ChannelRole::ChromaRy | ChannelRole::ChromaBy => {}
+        }
+    }
+
+    if !has_alpha {
+        rgba[3] = 1.0;
+    }
+    Ok(rgba)
+}
+
+fn read_deep_sample(
+    sample_bytes: &[u8],
+    channel_offset: usize,
+    sample_index: usize,
+    sample_type: SampleType,
+) -> Result<f32, String> {
+    let sample_size = sample_type.bytes_per_sample();
+    let offset = channel_offset
+        .checked_add(
+            sample_index
+                .checked_mul(sample_size)
+                .ok_or_else(|| "deep EXR sample offset overflow".to_string())?,
+        )
+        .ok_or_else(|| "deep EXR sample offset overflow".to_string())?;
+    let bytes = sample_bytes
+        .get(offset..offset + sample_size)
+        .ok_or_else(|| "deep EXR sample read exceeds decompressed data".to_string())?;
+    match sample_type {
+        SampleType::F16 => {
+            Ok(exr::prelude::f16::from_bits(u16::from_le_bytes([bytes[0], bytes[1]])).to_f32())
+        }
+        SampleType::F32 => Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+        SampleType::U32 => Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32),
+    }
+}
+
+fn composite_sample_over(dest: &mut [f32], sample: [f32; 4]) {
+    let alpha = sample[3].clamp(0.0, 1.0);
+    let remaining = 1.0 - dest[3].clamp(0.0, 1.0);
+    let contribution = remaining * alpha;
+    dest[0] += sample[0] * contribution;
+    dest[1] += sample[1] * contribution;
+    dest[2] += sample[2] * contribution;
+    dest[3] += contribution;
+}
+
+fn decompress_deep_bytes(
+    compression: Compression,
+    compressed: Vec<u8>,
+    expected_byte_size: usize,
+) -> Result<Vec<u8>, String> {
+    if compressed.len() == expected_byte_size || matches!(compression, Compression::Uncompressed) {
+        return Ok(compressed);
+    }
+
+    let mut decompressed = match compression {
+        Compression::ZIP1 => miniz_oxide::inflate::decompress_to_vec_zlib(&compressed)
+            .map_err(|_| "zlib-compressed deep EXR data malformed".to_string())?,
+        Compression::RLE => decompress_rle_bytes(&compressed, expected_byte_size)?,
+        _ => {
+            return Err(format!(
+                "deep EXR compression method is not supported yet: {compression:?}"
+            ));
+        }
+    };
+    differences_to_samples(&mut decompressed);
+    interleave_byte_blocks(&mut decompressed);
+    if decompressed.len() != expected_byte_size {
+        return Err("deep EXR decompressed data has unexpected size".to_string());
+    }
+    Ok(decompressed)
+}
+
+fn decompress_rle_bytes(compressed: &[u8], expected_byte_size: usize) -> Result<Vec<u8>, String> {
+    let mut remaining = compressed;
+    let mut decompressed = Vec::with_capacity(expected_byte_size);
+    while !remaining.is_empty() && decompressed.len() != expected_byte_size {
+        let count = remaining[0] as i8 as i32;
+        remaining = &remaining[1..];
+        if count < 0 {
+            let len = (-count) as usize;
+            if remaining.len() < len {
+                return Err("malformed RLE-compressed deep EXR data".to_string());
+            }
+            decompressed.extend_from_slice(&remaining[..len]);
+            remaining = &remaining[len..];
+        } else {
+            let Some((&value, rest)) = remaining.split_first() else {
+                return Err("malformed RLE-compressed deep EXR data".to_string());
+            };
+            decompressed.resize(decompressed.len() + count as usize + 1, value);
+            remaining = rest;
+        }
+    }
+    if decompressed.len() != expected_byte_size {
+        return Err("RLE-compressed deep EXR data has unexpected size".to_string());
+    }
+    Ok(decompressed)
+}
+
+fn differences_to_samples(buffer: &mut [u8]) {
+    if let Some(first) = buffer.first().copied() {
+        let mut previous = first as i16;
+        for value in &mut buffer[1..] {
+            let sample = (previous + *value as i16 - 128) as u8;
+            *value = sample;
+            previous = sample as i16;
+        }
+    }
+}
+
+fn interleave_byte_blocks(separated: &mut [u8]) {
+    let mut interleaved = vec![0_u8; separated.len()];
+    let (first_half, second_half) = separated.split_at(separated.len().div_ceil(2));
+    for (index, value) in first_half.iter().enumerate() {
+        interleaved[index * 2] = *value;
+    }
+    for (index, value) in second_half.iter().enumerate() {
+        let dest = index * 2 + 1;
+        if dest < interleaved.len() {
+            interleaved[dest] = *value;
+        }
+    }
+    separated.copy_from_slice(&interleaved);
+}
+
+fn read_deep_scanline_chunk_unvalidated(
+    cursor: &mut Cursor<&[u8]>,
+    meta_data: &MetaData,
+) -> Result<(usize, exr::block::chunk::CompressedDeepScanLineBlock), String> {
+    let layer_index = if meta_data.headers.len() > 1 {
+        let part = read_i32_le(cursor)?;
+        if part < 0 {
+            return Err("invalid deep EXR chunk part number".to_string());
+        }
+        part as usize
+    } else {
+        0
+    };
+    let header = meta_data
+        .headers
+        .get(layer_index)
+        .ok_or_else(|| "invalid deep EXR chunk part number".to_string())?;
+    if !header.deep || !matches!(header.blocks, BlockDescription::ScanLines) {
+        return Err("Only deep scanline EXR chunks are supported".to_string());
+    }
+
+    let y_coordinate = read_i32_le(cursor)?;
+    let table_size = usize::try_from(read_u64_le(cursor)?)
+        .map_err(|_| "deep EXR table size exceeds usize".to_string())?;
+    let sample_data_size = usize::try_from(read_u64_le(cursor)?)
+        .map_err(|_| "deep EXR sample data size exceeds usize".to_string())?;
+    let decompressed_sample_data_size = usize::try_from(read_u64_le(cursor)?)
+        .map_err(|_| "deep EXR raw sample data size exceeds usize".to_string())?;
+
+    let mut table = vec![0_u8; table_size];
+    cursor
+        .read_exact(&mut table)
+        .map_err(|err| err.to_string())?;
+    let mut sample_data = vec![0_u8; sample_data_size];
+    cursor
+        .read_exact(&mut sample_data)
+        .map_err(|err| err.to_string())?;
+
+    Ok((
+        layer_index,
+        exr::block::chunk::CompressedDeepScanLineBlock {
+            y_coordinate,
+            decompressed_sample_data_size,
+            compressed_pixel_offset_table: table.into_iter().map(|byte| byte as i8).collect(),
+            compressed_sample_data_le: sample_data,
+        },
+    ))
+}
+
+fn read_i32_le(cursor: &mut Cursor<&[u8]>) -> Result<i32, String> {
+    let mut bytes = [0_u8; 4];
+    cursor
+        .read_exact(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    Ok(i32::from_le_bytes(bytes))
 }
 
 fn yca_luma_weights(color_space: HdrColorSpace) -> [f32; 3] {

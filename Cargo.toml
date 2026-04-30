@@ -62,6 +62,7 @@ libjpeg-turbo = { path = "libraries/libjpeg-turbo" }
 libtiff-viewer = { path = "libraries/libtiff" }
 bytemuck = "1.25.0"
 exr = "1.74.0"
+miniz_oxide = "0.8.9"
 
 [features]
 # Feature for Windows 7 compatibility (ANGLE bridge)

@@ -4872,6 +4872,7 @@ dependencies = [
  "log",
  "memmap2",
  "mimalloc",
+ "miniz_oxide",
  "moka",
  "monkey-sdk-sys",
  "parking_lot",
