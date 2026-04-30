@@ -323,6 +323,7 @@ pub fn hdr_image_plane_callback(
     image: Arc<HdrImageBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
 ) -> egui::Shape {
@@ -332,6 +333,7 @@ pub fn hdr_image_plane_callback(
             image,
             tone_map,
             target_format,
+            output_mode,
             rotation_steps: rotation_steps % 4,
             alpha,
         },
@@ -344,6 +346,7 @@ pub fn hdr_tile_plane_callback(
     tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
 ) -> egui::Shape {
@@ -353,6 +356,7 @@ pub fn hdr_tile_plane_callback(
             tile,
             tone_map,
             target_format,
+            output_mode,
             rotation_steps: rotation_steps % 4,
             alpha,
         },
@@ -363,6 +367,7 @@ struct HdrImagePlaneCallback {
     image: Arc<HdrImageBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
 }
@@ -372,6 +377,7 @@ struct HdrTilePlaneCallback {
     tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
 }
@@ -402,7 +408,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.tone_map,
             self.rotation_steps,
             self.alpha,
-            self.target_format,
+            self.output_mode,
             self.image.color_space,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -508,7 +514,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.tone_map,
             self.rotation_steps,
             self.alpha,
-            self.target_format,
+            self.output_mode,
             self.tile.color_space,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -630,14 +636,14 @@ fn tile_tone_map_uniform(
     settings: HdrToneMapSettings,
     rotation_steps: u32,
     alpha: f32,
-    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
         rotation_steps,
         alpha,
-        HdrRenderOutputMode::for_target_format(target_format),
+        output_mode,
         input_color_space,
     )
 }
@@ -646,14 +652,14 @@ fn image_tone_map_uniform(
     settings: HdrToneMapSettings,
     rotation_steps: u32,
     alpha: f32,
-    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
         rotation_steps,
         alpha,
-        HdrRenderOutputMode::for_target_format(target_format),
+        output_mode,
         input_color_space,
     )
 }
@@ -1222,6 +1228,7 @@ mod tests {
             tile,
             HdrToneMapSettings::default(),
             wgpu::TextureFormat::Rgba16Float,
+            HdrRenderOutputMode::NativeHdr,
             0,
             1.0,
         );
@@ -1235,7 +1242,7 @@ mod tests {
             HdrToneMapSettings::default(),
             6,
             0.5,
-            wgpu::TextureFormat::Rgba16Float,
+            HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::LinearSrgb,
         );
 
@@ -1256,14 +1263,14 @@ mod tests {
             settings,
             5,
             0.75,
-            wgpu::TextureFormat::Bgra8Unorm,
+            HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
         );
         let tile_uniform = tile_tone_map_uniform(
             settings,
             5,
             0.75,
-            wgpu::TextureFormat::Bgra8Unorm,
+            HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
         );
 

@@ -136,6 +136,10 @@ impl ImageViewerApp {
                         hdr_image,
                         self.hdr_renderer.tone_map,
                         target_format,
+                        crate::hdr::monitor::effective_render_output_mode(
+                            self.hdr_target_format,
+                            self.hdr_monitor_state.selection(),
+                        ),
                         rotation as u32,
                         tp.alpha,
                     ));

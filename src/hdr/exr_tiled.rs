@@ -18,6 +18,7 @@ use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use exr::block::chunk::Chunk;
 use exr::block::reader::ChunksReader;
@@ -34,6 +35,10 @@ use crate::hdr::tiled::{
     configured_hdr_tile_cache_max_bytes,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+
+thread_local! {
+    static SUPPRESS_EXR_PANIC_HOOK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 #[derive(Debug)]
 pub struct ExrTiledImageSource {
@@ -335,12 +340,36 @@ pub(crate) fn catch_exr_panic<T>(
     context: &str,
     f: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+    let _guard = ExrPanicHookSuppressionGuard::new();
+    match std::panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(payload) => Err(format!(
             "{context} panicked: {}",
             panic_payload_message(&*payload)
         )),
+    }
+}
+
+pub(crate) fn is_exr_panic_hook_suppressed() -> bool {
+    SUPPRESS_EXR_PANIC_HOOK_DEPTH.with(|depth| depth.get() > 0)
+}
+
+struct ExrPanicHookSuppressionGuard;
+
+impl ExrPanicHookSuppressionGuard {
+    fn new() -> Self {
+        SUPPRESS_EXR_PANIC_HOOK_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_add(1));
+        });
+        Self
+    }
+}
+
+impl Drop for ExrPanicHookSuppressionGuard {
+    fn drop(&mut self) {
+        SUPPRESS_EXR_PANIC_HOOK_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
     }
 }
 
@@ -1865,6 +1894,20 @@ mod tests {
 
         assert!(err.contains("test EXR boundary"));
         assert!(err.contains("synthetic EXR decoder panic"));
+    }
+
+    #[test]
+    fn exr_panic_boundary_suppresses_global_panic_hook_until_unwind_is_caught() {
+        assert!(!super::is_exr_panic_hook_suppressed());
+
+        let err = super::catch_exr_panic("test EXR hook suppression", || -> Result<(), String> {
+            assert!(super::is_exr_panic_hook_suppressed());
+            panic!("synthetic suppressed EXR decoder panic")
+        })
+        .expect_err("panic should be converted into an error");
+
+        assert!(err.contains("synthetic suppressed EXR decoder panic"));
+        assert!(!super::is_exr_panic_hook_suppressed());
     }
 
     #[test]

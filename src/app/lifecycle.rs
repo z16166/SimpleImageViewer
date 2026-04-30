@@ -188,6 +188,7 @@ impl ImageViewerApp {
             hdr_capabilities,
             hdr_renderer,
             hdr_target_format,
+            hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,

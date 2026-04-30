@@ -315,6 +315,10 @@ impl ImageViewerApp {
                                                 self.hdr_renderer.tone_map,
                                                 self.hdr_target_format
                                                     .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                                crate::hdr::monitor::effective_render_output_mode(
+                                                    self.hdr_target_format,
+                                                    self.hdr_monitor_state.selection(),
+                                                ),
                                                 rotation as u32,
                                                 1.0,
                                             ),

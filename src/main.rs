@@ -288,6 +288,10 @@ fn log_env_info() -> String {
 /// Set up a global panic hook to capture and report crashes across all threads.
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
+        if crate::hdr::exr_tiled::is_exr_panic_hook_suppressed() {
+            return;
+        }
+
         let location = panic_info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))

@@ -209,6 +209,7 @@ pub struct ImageViewerApp {
     pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
+    pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
@@ -554,6 +555,15 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
+        self.hdr_monitor_state.refresh_from_viewport(ctx, now);
+        let output_mode = crate::hdr::monitor::effective_capability_output_mode(
+            self.hdr_target_format,
+            self.hdr_monitor_state.selection(),
+        );
+        self.hdr_capabilities.output_mode = output_mode;
+        self.hdr_capabilities.available =
+            output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
+        self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
 
         // Automatic theme refresh (for System theme trailing detection)

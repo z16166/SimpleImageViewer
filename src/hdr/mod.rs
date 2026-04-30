@@ -17,6 +17,7 @@
 pub mod capabilities;
 pub mod decode;
 pub mod exr_tiled;
+pub mod monitor;
 pub mod radiance_tiled;
 pub mod renderer;
 pub mod status;
