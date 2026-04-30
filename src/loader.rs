@@ -1403,7 +1403,17 @@ fn is_exr_path(path: &Path) -> bool {
 }
 
 fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
-    let source = crate::hdr::exr_tiled::ExrTiledImageSource::open(path)?;
+    let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open(path) {
+        Ok(source) => source,
+        Err(err) if is_exr_disk_backed_probe_fallback_error(&err) => {
+            log::warn!(
+                "[Loader] Disk-backed EXR tiled source unavailable for {}: {err}; falling back to full HDR decode",
+                path.display()
+            );
+            return Ok(None);
+        }
+        Err(err) => return Err(err),
+    };
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
@@ -1420,6 +1430,10 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
         hdr.height()
     );
     Ok(Some(ImageData::HdrTiled { hdr, fallback }))
+}
+
+fn is_exr_disk_backed_probe_fallback_error(err: &str) -> bool {
+    err.contains("channel subsampling not supported yet")
 }
 
 fn process_animation_frames(
@@ -1798,6 +1812,22 @@ mod tests {
             "disk-backed EXR fallback preview should contain tone-mapped image data"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disk_backed_exr_probe_falls_back_for_subsampled_yc_sample() {
+        let path = std::path::PathBuf::from(r"F:\HDR\openexr-images\Chromaticities\Rec709_YC.exr");
+        if !path.is_file() {
+            eprintln!(
+                "skipping OpenEXR YC sample test; set up F:\\HDR\\openexr-images or SIV_OPENEXR_IMAGES_DIR"
+            );
+            return;
+        }
+
+        let image_data =
+            try_load_disk_backed_exr_hdr(&path).expect("probe should not fail the whole load");
+
+        assert!(image_data.is_none());
     }
 
     #[test]
