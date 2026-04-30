@@ -26,6 +26,28 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
 
+fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ]
+    .map(|p| pivot + rot * (p - pivot));
+    let min_x = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let max_y = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
+}
+
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
     ///
@@ -257,11 +279,10 @@ impl ImageViewerApp {
                                 .with_clip_rect(screen_rect)
                                 .add(egui::Shape::mesh(mesh));
 
-                            if rotation == 0
-                                && let Some(hdr_source) =
-                                    self.current_hdr_tiled_image.as_ref().and_then(|current| {
-                                        current.source_for_index(self.current_index)
-                                    })
+                            if let Some(hdr_source) = self
+                                .current_hdr_tiled_image
+                                .as_ref()
+                                .and_then(|current| current.source_for_index(self.current_index))
                             {
                                 let ts = crate::tile_cache::get_tile_size();
                                 let tile_x = coord.col * ts;
@@ -272,13 +293,23 @@ impl ImageViewerApp {
                                     .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                                 {
                                     Ok(hdr_tile) => {
+                                        let hdr_rect = rot
+                                            .map(|_| {
+                                                rotated_axis_aligned_rect(
+                                                    *tile_screen_rect,
+                                                    pivot,
+                                                    angle,
+                                                )
+                                            })
+                                            .unwrap_or(*tile_screen_rect);
                                         ui.painter().add(
                                             crate::hdr::renderer::hdr_tile_plane_callback(
-                                                *tile_screen_rect,
+                                                hdr_rect,
                                                 hdr_tile,
                                                 self.hdr_renderer.tone_map,
                                                 self.hdr_target_format
                                                     .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                                rotation as u32,
                                                 1.0,
                                             ),
                                         );
@@ -413,5 +444,23 @@ impl ImageViewerApp {
                 ui.ctx().request_repaint();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rotated_axis_aligned_rect;
+    use eframe::egui::{Pos2, Rect};
+
+    #[test]
+    fn rotated_axis_aligned_rect_swaps_size_for_quarter_turns() {
+        let rect = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 60.0));
+        let pivot = Pos2::new(20.0, 40.0);
+
+        let rotated = rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2);
+
+        assert_eq!(rotated.width(), rect.height());
+        assert_eq!(rotated.height(), rect.width());
+        assert_eq!(rotated.center(), rect.center());
     }
 }

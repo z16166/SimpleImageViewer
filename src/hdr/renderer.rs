@@ -266,6 +266,7 @@ pub fn hdr_tile_plane_callback(
     tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    rotation_steps: u32,
     alpha: f32,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
@@ -274,6 +275,7 @@ pub fn hdr_tile_plane_callback(
             tile,
             tone_map,
             target_format,
+            rotation_steps: rotation_steps % 4,
             alpha,
         },
     ))
@@ -292,6 +294,7 @@ struct HdrTilePlaneCallback {
     tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
     tone_map: HdrToneMapSettings,
     target_format: wgpu::TextureFormat,
+    rotation_steps: u32,
     alpha: f32,
 }
 
@@ -422,11 +425,11 @@ impl CallbackTrait for HdrTilePlaneCallback {
             return Vec::new();
         };
 
-        let uniform = ToneMapUniform::from_settings(
+        let uniform = tile_tone_map_uniform(
             self.tone_map,
-            0,
+            self.rotation_steps,
             self.alpha,
-            HdrRenderOutputMode::for_target_format(self.target_format),
+            self.target_format,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -536,6 +539,20 @@ impl ToneMapUniform {
             _pad1: 0,
         }
     }
+}
+
+fn tile_tone_map_uniform(
+    settings: HdrToneMapSettings,
+    rotation_steps: u32,
+    alpha: f32,
+    target_format: wgpu::TextureFormat,
+) -> ToneMapUniform {
+    ToneMapUniform::from_settings(
+        settings,
+        rotation_steps,
+        alpha,
+        HdrRenderOutputMode::for_target_format(target_format),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1029,10 +1046,25 @@ mod tests {
             tile,
             HdrToneMapSettings::default(),
             wgpu::TextureFormat::Rgba16Float,
+            0,
             1.0,
         );
 
         assert!(matches!(shape, egui::Shape::Callback(_)));
+    }
+
+    #[test]
+    fn tile_tone_map_uniform_carries_rotation() {
+        let uniform = tile_tone_map_uniform(
+            HdrToneMapSettings::default(),
+            6,
+            0.5,
+            wgpu::TextureFormat::Rgba16Float,
+        );
+
+        assert_eq!(uniform.rotation_steps, 2);
+        assert_eq!(uniform.alpha, 0.5);
+        assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
     }
 
     #[test]
