@@ -210,11 +210,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(clamped_uv * texture_size);
     let hdr = textureLoad(hdr_texture, texel, 0);
     let source_rgb = convert_input_to_linear_srgb(hdr.rgb, tone_map.input_color_space);
-    let rgb = if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
-        encode_native_hdr(source_rgb, tone_map)
+    var rgb: vec3<f32>;
+    if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
+        rgb = encode_native_hdr(source_rgb, tone_map);
     } else {
-        encode_sdr(source_rgb, tone_map)
-    };
+        rgb = encode_sdr(source_rgb, tone_map);
+    }
     return vec4<f32>(
         rgb,
         clamp(hdr.a, 0.0, 1.0) * tone_map.alpha,
@@ -1482,6 +1483,15 @@ mod tests {
         );
         assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
+    }
+
+    #[test]
+    fn shader_uses_wgsl_if_statement_for_output_mode_selection() {
+        assert!(
+            !HDR_IMAGE_PLANE_SHADER.contains("let rgb = if "),
+            "WGSL/Naga rejects Rust-style if expressions in shader code"
+        );
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("var rgb: vec3<f32>;"));
     }
 
     fn hdr_image(
