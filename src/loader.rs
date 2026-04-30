@@ -19,6 +19,7 @@ use crate::constants::{
     BYTES_PER_GB, BYTES_PER_MB, DEFAULT_ANIMATION_DELAY_MS, DEFAULT_PREVIEW_SIZE,
     MAX_QUALITY_PREVIEW_SIZE, MIN_ANIMATION_DELAY_THRESHOLD_MS, RGBA_CHANNELS,
 };
+use crate::hdr::tiled::HdrTiledSource;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -1382,11 +1383,43 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 fn load_hdr(path: &Path) -> Result<ImageData, String> {
+    if is_exr_path(path) {
+        if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
+            return Ok(image_data);
+        }
+    }
+
     let hdr = crate::hdr::decode::decode_hdr_image(path)?;
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
 
     Ok(make_hdr_image_data(hdr, fallback))
+}
+
+fn is_exr_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
+}
+
+fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String> {
+    let source = crate::hdr::exr_tiled::ExrTiledImageSource::open(path)?;
+    let pixel_count = source.width() as u64 * source.height() as u64;
+    let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let max_side = source.width().max(source.height());
+    if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        return Ok(None);
+    }
+
+    let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
+    let fallback: Arc<dyn TiledImageSource> =
+        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
+    log::info!(
+        "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
+        hdr.width(),
+        hdr.height()
+    );
+    Ok(Some(ImageData::HdrTiled { hdr, fallback }))
 }
 
 fn process_animation_frames(
@@ -1725,6 +1758,40 @@ mod tests {
             .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let _ = std::fs::remove_file(&path);
         assert!(matches!(image_data, ImageData::HdrTiled { .. }));
+    }
+
+    #[test]
+    fn load_exr_routes_threshold_sized_images_to_disk_backed_hdr_tiles() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_exr_route_{}.exr",
+            std::process::id()
+        ));
+        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
+            2,
+            1,
+            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
+        )
+        .expect("build test EXR image");
+        image::DynamicImage::ImageRgba32F(img)
+            .save_with_format(&path, image::ImageFormat::OpenExr)
+            .expect("write test EXR");
+        let old_threshold =
+            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+
+        let image_data = load_hdr(&path).expect("load tiny EXR");
+
+        crate::tile_cache::TILED_THRESHOLD
+            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
+        let _ = std::fs::remove_file(&path);
+        let ImageData::HdrTiled { hdr, fallback } = image_data else {
+            panic!("expected disk-backed HDR tiled image data");
+        };
+        assert_eq!(
+            hdr.source_kind(),
+            crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
+        );
+        assert!(fallback.is_hdr_sdr_fallback());
     }
 
     #[test]
@@ -2353,6 +2420,66 @@ impl MemoryImageSource {
             pixels,
             hdr_sdr_fallback,
         }
+    }
+}
+
+struct HdrSdrTiledFallbackSource {
+    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+}
+
+impl HdrSdrTiledFallbackSource {
+    fn new(source: Arc<dyn crate::hdr::tiled::HdrTiledSource>) -> Self {
+        Self { source }
+    }
+}
+
+impl TiledImageSource for HdrSdrTiledFallbackSource {
+    fn width(&self) -> u32 {
+        self.source.width()
+    }
+
+    fn height(&self) -> u32 {
+        self.source.height()
+    }
+
+    fn is_hdr_sdr_fallback(&self) -> bool {
+        true
+    }
+
+    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+        let pixels = self
+            .source
+            .extract_tile_rgba32f_arc(x, y, w, h)
+            .and_then(|tile| {
+                crate::hdr::decode::hdr_to_sdr_rgba8(
+                    &crate::hdr::types::HdrImageBuffer {
+                        width: tile.width,
+                        height: tile.height,
+                        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                        color_space: tile.color_space,
+                        rgba_f32: Arc::clone(&tile.rgba_f32),
+                    },
+                    0.0,
+                )
+            })
+            .unwrap_or_else(|err| {
+                log::warn!("[Loader] HDR SDR tile fallback failed: {err}");
+                vec![0; w as usize * h as usize * 4]
+            });
+        Arc::new(pixels)
+    }
+
+    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
+        let scale = (max_w as f32 / self.width() as f32)
+            .min(max_h as f32 / self.height() as f32)
+            .min(1.0);
+        let width = ((self.width() as f32 * scale).round() as u32).max(1);
+        let height = ((self.height() as f32 * scale).round() as u32).max(1);
+        (width, height, vec![0; width as usize * height as usize * 4])
+    }
+
+    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+        None
     }
 }
 

@@ -35,7 +35,6 @@ pub struct ExrTiledImageSource {
 }
 
 impl ExrTiledImageSource {
-    #[allow(dead_code)]
     pub fn open(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|err| err.to_string())?;
         let reader =
