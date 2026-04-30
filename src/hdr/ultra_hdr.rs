@@ -94,6 +94,53 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer
     })
 }
 
+pub(crate) fn apply_orientation_to_hdr_buffer(
+    buffer: HdrImageBuffer,
+    orientation: u16,
+) -> HdrImageBuffer {
+    if orientation <= 1 {
+        return buffer;
+    }
+
+    let expected_len = buffer.width as usize * buffer.height as usize * 4;
+    if buffer.rgba_f32.len() != expected_len {
+        return buffer;
+    }
+
+    let (out_w, out_h) = if (5..=8).contains(&orientation) {
+        (buffer.height, buffer.width)
+    } else {
+        (buffer.width, buffer.height)
+    };
+    let mut out = vec![0.0_f32; out_w as usize * out_h as usize * 4];
+
+    for y in 0..buffer.height {
+        for x in 0..buffer.width {
+            let (nx, ny) = match orientation {
+                2 => (buffer.width - 1 - x, y),
+                3 => (buffer.width - 1 - x, buffer.height - 1 - y),
+                4 => (x, buffer.height - 1 - y),
+                5 => (y, x),
+                6 => (buffer.height - 1 - y, x),
+                7 => (buffer.height - 1 - y, buffer.width - 1 - x),
+                8 => (y, buffer.width - 1 - x),
+                _ => (x, y),
+            };
+            let src_idx = (y as usize * buffer.width as usize + x as usize) * 4;
+            let dst_idx = (ny as usize * out_w as usize + nx as usize) * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&buffer.rgba_f32[src_idx..src_idx + 4]);
+        }
+    }
+
+    HdrImageBuffer {
+        width: out_w,
+        height: out_h,
+        format: buffer.format,
+        color_space: buffer.color_space,
+        rgba_f32: Arc::new(out),
+    }
+}
+
 fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
     if !bytes.starts_with(&JPEG_SOI) {
         return Err("not a JPEG stream".to_string());
@@ -459,6 +506,31 @@ mod tests {
         let sampled = sample_gain_map_value(&gain_rgba, 2, 1, 1, 0, 3, 1);
 
         assert!((sampled - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn hdr_orientation_rotates_float_buffer_like_exif_orientation() {
+        let hdr = HdrImageBuffer {
+            width: 2,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![
+                1.0, 0.0, 0.0, 1.0, //
+                0.0, 1.0, 0.0, 1.0,
+            ]),
+        };
+
+        let oriented = apply_orientation_to_hdr_buffer(hdr, 6);
+
+        assert_eq!((oriented.width, oriented.height), (1, 2));
+        assert_eq!(
+            oriented.rgba_f32.as_slice(),
+            &[
+                1.0, 0.0, 0.0, 1.0, //
+                0.0, 1.0, 0.0, 1.0,
+            ]
+        );
     }
 
     fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {

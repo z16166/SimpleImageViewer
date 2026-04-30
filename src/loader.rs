@@ -1347,7 +1347,9 @@ fn load_image_file(
 fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    let orientation = crate::metadata_utils::get_exif_orientation(path);
     if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes(&mmap) {
+        let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
         let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
         let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
         return Ok(make_hdr_image_data(hdr, fallback));
@@ -1355,7 +1357,6 @@ fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {
 
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
 
-    let orientation = crate::metadata_utils::get_exif_orientation(path);
     if orientation > 1 {
         let (out_w, out_h, out_pixels) =
             crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
