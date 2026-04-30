@@ -21,7 +21,9 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+use crate::hdr::types::{
+    DEFAULT_MAX_DISPLAY_NITS, DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageBuffer, HdrPixelFormat,
+};
 
 #[cfg(test)]
 use std::path::Path;
@@ -32,6 +34,7 @@ const JPEG_EOI: u8 = 0xD9;
 const JPEG_APP1: u8 = 0xE1;
 const HDR_GAIN_MAP_NAMESPACE: &str = "http://ns.adobe.com/hdr-gain-map/1.0/";
 const HDR_GAIN_MAP_VERSION: &str = "hdrgm:Version";
+const DEFAULT_TARGET_HDR_CAPACITY: f32 = DEFAULT_MAX_DISPLAY_NITS / DEFAULT_SDR_WHITE_NITS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UltraHdrJpegInfo {
@@ -80,6 +83,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer
                 &sdr_rgba[sdr_index..sdr_index + 4],
                 gain_value,
                 metadata,
+                DEFAULT_TARGET_HDR_CAPACITY,
             );
         }
     }
@@ -275,6 +279,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
                     &sdr_rgba[sdr_index..sdr_index + 4],
                     gain_value,
                     self.metadata,
+                    DEFAULT_TARGET_HDR_CAPACITY,
                 );
             }
         }
@@ -331,6 +336,8 @@ struct GainMapMetadata {
     gamma: f32,
     offset_sdr: f32,
     offset_hdr: f32,
+    hdr_capacity_min: f32,
+    hdr_capacity_max: f32,
 }
 
 fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
@@ -342,12 +349,16 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
             if !text.contains(HDR_GAIN_MAP_NAMESPACE) || !text.contains(HDR_GAIN_MAP_VERSION) {
                 return None;
             }
+            let gain_map_max = attribute_f32(&text, "hdrgm:GainMapMax")?;
             Some(GainMapMetadata {
                 gain_map_min: attribute_f32(&text, "hdrgm:GainMapMin").unwrap_or(0.0),
-                gain_map_max: attribute_f32(&text, "hdrgm:GainMapMax")?,
+                gain_map_max,
                 gamma: attribute_f32(&text, "hdrgm:Gamma").unwrap_or(1.0),
                 offset_sdr: attribute_f32(&text, "hdrgm:OffsetSDR").unwrap_or(1.0 / 64.0),
                 offset_hdr: attribute_f32(&text, "hdrgm:OffsetHDR").unwrap_or(1.0 / 64.0),
+                hdr_capacity_min: attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
+                hdr_capacity_max: attribute_f32(&text, "hdrgm:HDRCapacityMax")
+                    .unwrap_or(gain_map_max),
             })
         })
         .ok_or_else(|| "Ultra HDR gain map metadata not found".to_string())
@@ -362,18 +373,47 @@ fn append_hdr_pixel_from_sdr_and_gain(
     sdr_rgba: &[u8],
     gain_value: f32,
     metadata: GainMapMetadata,
+    target_hdr_capacity: f32,
 ) {
-    let log_boost = metadata.gain_map_min
-        + (metadata.gain_map_max - metadata.gain_map_min)
-            * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE));
-    let boost = 2.0_f32.powf(log_boost);
-
     for channel in &sdr_rgba[..3] {
-        let linear_sdr = srgb_u8_to_linear_f32(*channel);
-        let hdr = ((linear_sdr + metadata.offset_sdr) * boost - metadata.offset_hdr).max(0.0);
-        rgba_f32.push(hdr);
+        rgba_f32.push(recover_hdr_channel_from_sdr_and_gain(
+            *channel,
+            gain_value,
+            metadata,
+            target_hdr_capacity,
+        ));
     }
     rgba_f32.push(f32::from(sdr_rgba[3]) / 255.0);
+}
+
+fn recover_hdr_channel_from_sdr_and_gain(
+    sdr_channel: u8,
+    gain_value: f32,
+    metadata: GainMapMetadata,
+    target_hdr_capacity: f32,
+) -> f32 {
+    let gain_weight = gain_map_weight(metadata, target_hdr_capacity);
+    let log_boost = metadata.gain_map_min
+        + (metadata.gain_map_max - metadata.gain_map_min)
+            * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE))
+            * gain_weight;
+    let boost = 2.0_f32.powf(log_boost);
+
+    let linear_sdr = srgb_u8_to_linear_f32(sdr_channel);
+    ((linear_sdr + metadata.offset_sdr) * boost - metadata.offset_hdr).max(0.0)
+}
+
+fn gain_map_weight(metadata: GainMapMetadata, target_hdr_capacity: f32) -> f32 {
+    let capacity_range = metadata.hdr_capacity_max - metadata.hdr_capacity_min;
+    if capacity_range <= f32::EPSILON {
+        return if target_hdr_capacity >= metadata.hdr_capacity_max {
+            1.0
+        } else {
+            0.0
+        };
+    }
+
+    ((target_hdr_capacity - metadata.hdr_capacity_min) / capacity_range).clamp(0.0, 1.0)
 }
 
 fn srgb_u8_to_linear_f32(value: u8) -> f32 {
@@ -727,6 +767,25 @@ mod tests {
     }
 
     #[test]
+    fn gain_map_metadata_parses_hdr_capacity_bounds() {
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="3.0"
+              hdrgm:HDRCapacityMin="1.25"
+              hdrgm:HDRCapacityMax="4.5"/>
+        "#,
+        );
+
+        let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse gain map metadata");
+
+        assert_eq!(metadata.hdr_capacity_min, 1.25);
+        assert_eq!(metadata.hdr_capacity_max, 4.5);
+    }
+
+    #[test]
     fn hdr_orientation_rotates_float_buffer_like_exif_orientation() {
         let hdr = HdrImageBuffer {
             width: 2,
@@ -755,6 +814,49 @@ mod tests {
     fn display_to_physical_maps_orientation_six() {
         assert_eq!(display_to_physical_pixel(0, 0, 2, 1, 6), (0, 0));
         assert_eq!(display_to_physical_pixel(0, 1, 2, 1, 6), (1, 0));
+    }
+
+    #[test]
+    fn hdr_capacity_scales_gain_map_application() {
+        let metadata = GainMapMetadata {
+            gain_map_min: 0.0,
+            gain_map_max: 2.0,
+            gamma: 1.0,
+            offset_sdr: 0.0,
+            offset_hdr: 0.0,
+            hdr_capacity_min: 1.0,
+            hdr_capacity_max: 3.0,
+        };
+
+        assert_eq!(gain_map_weight(metadata, 0.5), 0.0);
+        assert!((gain_map_weight(metadata, 2.0) - 0.5).abs() < 0.001);
+        assert_eq!(gain_map_weight(metadata, 4.0), 1.0);
+    }
+
+    #[test]
+    fn hdr_capacity_weight_changes_recovered_hdr_pixel() {
+        let metadata = GainMapMetadata {
+            gain_map_min: 0.0,
+            gain_map_max: 2.0,
+            gamma: 1.0,
+            offset_sdr: 0.0,
+            offset_hdr: 0.0,
+            hdr_capacity_min: 0.0,
+            hdr_capacity_max: 2.0,
+        };
+        let sdr = [255, 255, 255, 255];
+
+        let low = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0.0);
+        let mid = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 1.0);
+        let high = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 2.0);
+
+        assert!((low - 1.0).abs() < 0.001);
+        assert!(mid > low && mid < high);
+        assert!((high - 4.0).abs() < 0.001);
+
+        let mut rgba = Vec::new();
+        append_hdr_pixel_from_sdr_and_gain(&mut rgba, &sdr, 1.0, metadata, 2.0);
+        assert!((rgba[0] - high).abs() < 0.001);
     }
 
     fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {

@@ -1831,6 +1831,35 @@ mod tests {
     use super::*;
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
     use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex, MutexGuard};
+
+    static TILED_THRESHOLD_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TiledThresholdOverride {
+        old_threshold: u64,
+    }
+
+    impl TiledThresholdOverride {
+        fn set(value: u64) -> Self {
+            let old_threshold =
+                crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+            crate::tile_cache::TILED_THRESHOLD.store(value, std::sync::atomic::Ordering::Relaxed);
+            Self { old_threshold }
+        }
+    }
+
+    impl Drop for TiledThresholdOverride {
+        fn drop(&mut self) {
+            crate::tile_cache::TILED_THRESHOLD
+                .store(self.old_threshold, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn lock_tiled_threshold_for_test() -> MutexGuard<'static, ()> {
+        TILED_THRESHOLD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {
@@ -1878,20 +1907,17 @@ mod tests {
 
     #[test]
     fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
         let path = std::env::temp_dir().join(format!(
             "simple_image_viewer_loader_hdr_route_{}.hdr",
             std::process::id()
         ));
         let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
         std::fs::write(&path, bytes).expect("write test HDR");
-        let old_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+        let _threshold_override = TiledThresholdOverride::set(1);
 
         let image_data = load_hdr(&path).expect("load tiny HDR");
 
-        crate::tile_cache::TILED_THRESHOLD
-            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let ImageData::HdrTiled { hdr, fallback } = image_data else {
             panic!("expected Radiance HDR to route to HDR tiled image data");
         };
@@ -1911,6 +1937,7 @@ mod tests {
 
     #[test]
     fn load_exr_routes_threshold_sized_images_to_disk_backed_hdr_tiles() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
         let path = std::env::temp_dir().join(format!(
             "simple_image_viewer_loader_exr_route_{}.exr",
             std::process::id()
@@ -1924,14 +1951,10 @@ mod tests {
         image::DynamicImage::ImageRgba32F(img)
             .save_with_format(&path, image::ImageFormat::OpenExr)
             .expect("write test EXR");
-        let old_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+        let _threshold_override = TiledThresholdOverride::set(1);
 
         let image_data = load_hdr(&path).expect("load tiny EXR");
 
-        crate::tile_cache::TILED_THRESHOLD
-            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let ImageData::HdrTiled { hdr, fallback } = image_data else {
             panic!("expected disk-backed HDR tiled image data");
         };
@@ -2100,6 +2123,7 @@ mod tests {
 
     #[test]
     fn ultra_hdr_jpeg_sample_loads_as_hdr_image_data() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
         let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
@@ -2128,6 +2152,7 @@ mod tests {
 
     #[test]
     fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
         let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
@@ -2176,6 +2201,7 @@ mod tests {
 
     #[test]
     fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
         let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
@@ -2186,14 +2212,10 @@ mod tests {
             eprintln!("skipping Ultra HDR tiled loader test; sample missing");
             return;
         }
-        let old_threshold =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+        let _threshold_override = TiledThresholdOverride::set(1);
 
         let image_data = load_jpeg(&path).expect("load Ultra HDR JPEG_R sample as tiled HDR");
 
-        crate::tile_cache::TILED_THRESHOLD
-            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
         let ImageData::HdrTiled { hdr, fallback } = image_data else {
             panic!("expected Ultra HDR JPEG_R to route to HDR tiled image data");
         };
