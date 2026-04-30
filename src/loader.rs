@@ -1635,10 +1635,19 @@ fn make_hdr_image_data_for_limit(
         ));
 
         match crate::hdr::tiled::HdrTiledImageSource::new(hdr) {
-            Ok(hdr_source) => ImageData::HdrTiled {
-                hdr: Arc::new(hdr_source),
-                fallback: fallback_source,
-            },
+            Ok(hdr_source) => {
+                let kind = crate::hdr::tiled::HdrTiledSource::source_kind(&hdr_source);
+                log::info!(
+                    "[Loader] HDR tiled source ready: kind={}, {}x{}",
+                    kind.as_str(),
+                    fallback_source.width(),
+                    fallback_source.height()
+                );
+                ImageData::HdrTiled {
+                    hdr: Arc::new(hdr_source),
+                    fallback: fallback_source,
+                }
+            }
             Err(err) => {
                 log::warn!("[Loader] HDR tiled source unavailable; using SDR fallback: {err}");
                 ImageData::Tiled(fallback_source)

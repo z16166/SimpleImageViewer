@@ -36,8 +36,22 @@ pub struct HdrTileBuffer {
     pub rgba_f32: Arc<Vec<f32>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrTiledSourceKind {
+    InMemory,
+}
+
+impl HdrTiledSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InMemory => "in-memory",
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub trait HdrTiledSource: Send + Sync {
+    fn source_kind(&self) -> HdrTiledSourceKind;
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
@@ -117,6 +131,10 @@ impl HdrTiledImageSource {
 }
 
 impl HdrTiledSource for HdrTiledImageSource {
+    fn source_kind(&self) -> HdrTiledSourceKind {
+        HdrTiledSourceKind::InMemory
+    }
+
     fn width(&self) -> u32 {
         self.image.width
     }
@@ -306,8 +324,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::hdr::tiled::{
-        HdrTiledImageSource, HdrTiledSource, configured_hdr_tile_cache_max_bytes,
-        set_global_hdr_tile_cache_max_bytes_for_tests,
+        HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
+        configured_hdr_tile_cache_max_bytes, set_global_hdr_tile_cache_max_bytes_for_tests,
     };
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -344,6 +362,8 @@ mod tests {
         let source: Arc<dyn HdrTiledSource> =
             Arc::new(HdrTiledImageSource::new(test_image(2, 1)).expect("valid HDR tile source"));
 
+        assert_eq!(source.source_kind(), HdrTiledSourceKind::InMemory);
+        assert_eq!(source.source_kind().as_str(), "in-memory");
         assert_eq!(source.width(), 2);
         assert_eq!(source.height(), 1);
         let tile = source
