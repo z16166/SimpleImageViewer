@@ -18,4 +18,5 @@ pub mod capabilities;
 pub mod decode;
 pub mod renderer;
 pub mod status;
+pub mod surface;
 pub mod types;
