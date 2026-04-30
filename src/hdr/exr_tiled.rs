@@ -194,10 +194,14 @@ impl HdrTiledSource for ExrTiledImageSource {
         self.color_space
     }
 
+    fn supports_native_hdr_overlay(&self) -> bool {
+        !self.requires_disk_backed_decode
+    }
+
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
         catch_exr_panic(&context, || {
-            if self.has_subsampled_channels {
+            if self.requires_disk_backed_decode || self.has_subsampled_channels {
                 return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
             }
 
@@ -2068,6 +2072,31 @@ mod tests {
         };
 
         assert_sample_extracts_visible_tile(&root, "TestImages/GrayRampsHorizontal.exr");
+    }
+
+    #[test]
+    fn gray_ramps_use_sdr_fallback_for_tiled_window_display() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR GrayRamps display routing test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        for relative_path in [
+            "TestImages/GrayRampsDiagonal.exr",
+            "TestImages/GrayRampsHorizontal.exr",
+        ] {
+            let path = root.join(relative_path);
+            let source = super::ExrTiledImageSource::open_with_cache_budget(&path, 4 * 1024 * 1024)
+                .unwrap_or_else(|err| panic!("open {}: {err}", path.display()));
+
+            assert!(
+                !crate::hdr::tiled::HdrTiledSource::supports_native_hdr_overlay(&source),
+                "{} should keep the visible SDR fallback instead of drawing the generic HDR overlay",
+                path.display()
+            );
+        }
     }
 
     #[test]

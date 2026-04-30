@@ -2041,6 +2041,57 @@ mod tests {
             .filter(|path| path.is_dir())
     }
 
+    fn assert_gray_ramp_loads_with_visible_fallback(root: &Path, relative_path: &str) {
+        let path = root.join(relative_path);
+        assert!(
+            path.is_file(),
+            "OpenEXR sample file is missing: {}",
+            path.display()
+        );
+
+        let image_data =
+            load_hdr(&path).unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
+        let (route, hdr_max_rgb, fallback_pixels) = match image_data {
+            ImageData::Hdr { hdr, fallback } => (
+                "static",
+                max_hdr_rgb(hdr.rgba_f32.as_slice()),
+                fallback.rgba().to_vec(),
+            ),
+            ImageData::HdrTiled { hdr, fallback } => {
+                let tile_w = hdr.width().min(128);
+                let tile_h = hdr.height().min(128);
+                let tile = hdr
+                    .extract_tile_rgba32f_arc(0, 0, tile_w, tile_h)
+                    .unwrap_or_else(|err| panic!("extract tile from {}: {err}", path.display()));
+                let (_w, _h, pixels) = fallback.generate_preview(128, 128);
+                ("tiled", max_hdr_rgb(tile.rgba_f32.as_slice()), pixels)
+            }
+            _ => panic!("expected {} to load as HDR image data", path.display()),
+        };
+        let fallback_max_rgb = max_rgba8_rgb(&fallback_pixels);
+
+        assert!(
+            fallback_max_rgb > 0,
+            "fallback display pixels should not be all black for {} (route={route}, hdr_max_rgb={hdr_max_rgb:?})",
+            path.display(),
+        );
+    }
+
+    fn max_hdr_rgb(rgba_f32: &[f32]) -> Option<f32> {
+        rgba_f32
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .reduce(f32::max)
+    }
+
+    fn max_rgba8_rgb(pixels: &[u8]) -> u8 {
+        pixels
+            .chunks_exact(4)
+            .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
+            .max()
+            .unwrap_or(0)
+    }
+
     fn collect_exr_files(root: &Path, files: &mut Vec<PathBuf>) {
         let entries = std::fs::read_dir(root).unwrap_or_else(|err| {
             panic!("read OpenEXR corpus directory {}: {err}", root.display())
@@ -2057,6 +2108,19 @@ mod tests {
                 files.push(path);
             }
         }
+    }
+
+    #[test]
+    fn gray_ramps_load_with_visible_fallback_pixels() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR GrayRamps loader regression test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+
+        assert_gray_ramp_loads_with_visible_fallback(&root, "TestImages/GrayRampsDiagonal.exr");
+        assert_gray_ramp_loads_with_visible_fallback(&root, "TestImages/GrayRampsHorizontal.exr");
     }
 
     #[test]

@@ -293,6 +293,7 @@ impl ImageViewerApp {
                                 .current_hdr_tiled_image
                                 .as_ref()
                                 .and_then(|current| current.source_for_index(self.current_index))
+                                .filter(|source| source.supports_native_hdr_overlay())
                             {
                                 let ts = crate::tile_cache::get_tile_size();
                                 let tile_x = coord.col * ts;
