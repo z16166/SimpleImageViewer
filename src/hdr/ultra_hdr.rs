@@ -341,35 +341,53 @@ struct GainMapMetadata {
 }
 
 fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
-    primary_metadata_segments(gain_map_jpeg)?
+    for segment in primary_metadata_segments(gain_map_jpeg)?
         .iter()
         .filter(|segment| segment.marker == JPEG_APP1)
-        .find_map(|segment| {
-            let text = String::from_utf8_lossy(segment.payload);
-            if !text.contains(HDR_GAIN_MAP_NAMESPACE) || !text.contains(HDR_GAIN_MAP_VERSION) {
-                return None;
-            }
-            let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")?;
-            let max_gain_map_max = gain_map_max
-                .iter()
-                .copied()
-                .fold(f32::NEG_INFINITY, f32::max);
-            Some(GainMapMetadata {
-                gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
-                gain_map_max,
-                gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
-                offset_sdr: attribute_rgb_f32(&text, "hdrgm:OffsetSDR").unwrap_or([1.0 / 64.0; 3]),
-                offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
-                hdr_capacity_min: attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
-                hdr_capacity_max: attribute_f32(&text, "hdrgm:HDRCapacityMax")
-                    .unwrap_or(max_gain_map_max),
-            })
-        })
-        .ok_or_else(|| "Ultra HDR gain map metadata not found".to_string())
+    {
+        let text = String::from_utf8_lossy(segment.payload);
+        if !text.contains(HDR_GAIN_MAP_NAMESPACE) || !text.contains(HDR_GAIN_MAP_VERSION) {
+            continue;
+        }
+        if attribute_bool(&text, "hdrgm:BaseRenditionIsHDR").unwrap_or(false) {
+            return Err(
+                "Ultra HDR gain map BaseRenditionIsHDR=True is not supported yet".to_string(),
+            );
+        }
+        let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")
+            .ok_or_else(|| "Ultra HDR gain map metadata missing GainMapMax".to_string())?;
+        let max_gain_map_max = gain_map_max
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        return Ok(GainMapMetadata {
+            gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
+            gain_map_max,
+            gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
+            offset_sdr: attribute_rgb_f32(&text, "hdrgm:OffsetSDR").unwrap_or([1.0 / 64.0; 3]),
+            offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
+            hdr_capacity_min: attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
+            hdr_capacity_max: attribute_f32(&text, "hdrgm:HDRCapacityMax")
+                .unwrap_or(max_gain_map_max),
+        });
+    }
+
+    Err("Ultra HDR gain map metadata not found".to_string())
 }
 
 fn attribute_f32(text: &str, name: &str) -> Option<f32> {
     parse_quoted_attribute(text, name)?.parse().ok()
+}
+
+fn attribute_bool(text: &str, name: &str) -> Option<bool> {
+    match parse_quoted_attribute(text, name)?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn attribute_rgb_f32(text: &str, name: &str) -> Option<[f32; 3]> {
@@ -829,6 +847,27 @@ mod tests {
 
         assert_eq!(metadata.hdr_capacity_min, 1.25);
         assert_eq!(metadata.hdr_capacity_max, 4.5);
+    }
+
+    #[test]
+    fn gain_map_metadata_rejects_hdr_base_rendition() {
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="3.0"
+              hdrgm:BaseRenditionIsHDR="True"/>
+        "#,
+        );
+
+        let err =
+            gain_map_metadata(&gain_map_jpeg).expect_err("HDR base gain maps are unsupported");
+
+        assert!(
+            err.contains("BaseRenditionIsHDR"),
+            "unexpected error message: {err}"
+        );
     }
 
     #[test]
