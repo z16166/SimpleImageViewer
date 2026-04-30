@@ -39,10 +39,18 @@ pub struct ExrTiledImageSource {
     path: PathBuf,
     width: u32,
     height: u32,
+    part_index: usize,
     color_space: HdrColorSpace,
     requires_disk_backed_decode: bool,
     has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExrPartInfo {
+    pub(crate) index: usize,
+    pub(crate) is_displayable_color: bool,
+    pub(crate) is_depth_only: bool,
 }
 
 impl ExrTiledImageSource {
@@ -51,6 +59,8 @@ impl ExrTiledImageSource {
     }
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
+        let parts = exr_part_infos(path)?;
+        let part_index = default_display_part_index(&parts).unwrap_or(0);
         let header = read_first_header_for_probe(path)?;
         let width = u32::try_from(header.layer_size.width())
             .map_err(|_| "EXR width exceeds u32".to_string())?;
@@ -73,6 +83,7 @@ impl ExrTiledImageSource {
             path: path.to_path_buf(),
             width,
             height,
+            part_index,
             color_space,
             requires_disk_backed_decode: channel_layout.requires_disk_backed_decode(),
             has_subsampled_channels,
@@ -96,7 +107,7 @@ impl ExrTiledImageSource {
         normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
         let header = meta_data
             .headers
-            .first()
+            .get(self.part_index)
             .ok_or_else(|| "EXR file has no image layers".to_string())?;
         if !matches!(header.blocks, BlockDescription::ScanLines) || header.deep {
             return Err("subsampled EXR fallback supports only flat scanline images".to_string());
@@ -107,13 +118,13 @@ impl ExrTiledImageSource {
         let tile_bounds = TileBounds::new(x, y, width, height);
         let mut tile = YcaTileAccumulator::new(width, height, yca_luma_weights(self.color_space));
 
-        for offset in offset_tables.first().into_iter().flatten() {
+        for offset in offset_tables.get(self.part_index).into_iter().flatten() {
             let mut cursor = Cursor::new(bytes.as_slice());
             cursor
                 .seek(SeekFrom::Start(*offset))
                 .map_err(|err| err.to_string())?;
             let chunk = Chunk::read(&mut cursor, &meta_data).map_err(|err| err.to_string())?;
-            if chunk.layer_index != 0 {
+            if chunk.layer_index != self.part_index {
                 continue;
             }
 
@@ -222,15 +233,15 @@ impl HdrTiledSource for ExrTiledImageSource {
         let tile_bounds = TileBounds::new(x, y, width, height);
         let chunks = reader
             .filter_chunks(false, |_meta, _tile, block| {
-                block.layer == 0
-                    && block.level == Vec2(0, 0)
+                block.level == Vec2(0, 0)
+                    && block.layer == self.part_index
                     && block_intersects_tile(block, tile_bounds)
             })
             .map_err(|err| err.to_string())?;
 
         let header = chunks
             .headers()
-            .first()
+            .get(self.part_index)
             .ok_or_else(|| "EXR file has no image layers".to_string())?
             .clone();
         validate_required_rgba_channels(&header.channels)?;
@@ -306,26 +317,82 @@ fn read_first_header_for_probe(path: &Path) -> Result<exr::meta::header::Header,
         .and_then(|file| {
             exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())
         }) {
-        Ok(reader) => reader
-            .headers()
-            .first()
-            .cloned()
-            .ok_or_else(|| "EXR file has no image layers".to_string()),
+        Ok(reader) => select_default_display_header(reader.headers()),
         Err(err) if is_exr_unvalidated_probe_error(&err) => {
             let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
-            meta_data
-                .headers
-                .first()
-                .cloned()
-                .ok_or_else(|| "EXR file has no image layers".to_string())
+            select_default_display_header(&meta_data.headers)
         }
         Err(err) => Err(err),
     }
 }
 
+fn select_default_display_header(
+    headers: &[exr::meta::header::Header],
+) -> Result<exr::meta::header::Header, String> {
+    let index = default_display_part_index_from_headers(headers)
+        .or_else(|| (!headers.is_empty()).then_some(0))
+        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    Ok(headers[index].clone())
+}
+
+fn default_display_part_index_from_headers(headers: &[exr::meta::header::Header]) -> Option<usize> {
+    headers
+        .iter()
+        .enumerate()
+        .find(|(_, header)| {
+            let is_displayable_color = has_rgb_channels(&header.channels)
+                || channel_roles(&header.channels)
+                    .iter()
+                    .any(|role| *role == Some(ChannelRole::Luminance));
+            let is_depth_only = !is_displayable_color
+                && header
+                    .channels
+                    .list
+                    .iter()
+                    .any(|channel| is_depth_channel_name(&channel.name.to_string()));
+            is_displayable_color && !is_depth_only
+        })
+        .map(|(index, _)| index)
+}
+
 fn is_exr_unvalidated_probe_error(err: &str) -> bool {
     err.contains("channel subsampling not supported yet")
         || err.contains("deep data not supported yet")
+}
+
+pub(crate) fn exr_part_infos(path: &Path) -> Result<Vec<ExrPartInfo>, String> {
+    let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
+    Ok(meta_data
+        .headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let channel_names = header
+                .channels
+                .list
+                .iter()
+                .map(|channel| channel.name.to_string())
+                .collect::<Vec<_>>();
+            let is_displayable_color = has_rgb_channels(&header.channels)
+                || channel_roles(&header.channels)
+                    .iter()
+                    .any(|role| *role == Some(ChannelRole::Luminance));
+            let is_depth_only = !is_displayable_color
+                && channel_names.iter().any(|name| is_depth_channel_name(name));
+            ExrPartInfo {
+                index,
+                is_displayable_color,
+                is_depth_only,
+            }
+        })
+        .collect())
+}
+
+pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize> {
+    parts
+        .iter()
+        .find(|part| part.is_displayable_color && !part.is_depth_only)
+        .map(|part| part.index)
 }
 
 fn read_unvalidated_exr_bytes_and_offsets(
@@ -404,12 +471,7 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
 }
 
 pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
-    let file = File::open(path).map_err(|err| err.to_string())?;
-    let reader = exr::block::read(BufReader::new(file), false).map_err(|err| err.to_string())?;
-    let header = reader
-        .headers()
-        .first()
-        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    let header = read_first_header_for_probe(path)?;
     let chromaticities = header.shared_attributes.chromaticities;
     log_unsupported_exr_chromaticities(path, chromaticities);
     Ok(hdr_color_space_from_exr_chromaticities(chromaticities))
@@ -417,10 +479,7 @@ pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
 
 pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), String> {
     let meta_data = MetaData::read_from_file(path, false).map_err(|err| err.to_string())?;
-    let header = meta_data
-        .headers
-        .first()
-        .ok_or_else(|| "EXR file has no image layers".to_string())?;
+    let header = select_default_display_header(&meta_data.headers)?;
     let width = u32::try_from(header.layer_size.width())
         .map_err(|_| "EXR width exceeds u32".to_string())?;
     let height = u32::try_from(header.layer_size.height())
@@ -776,12 +835,7 @@ impl ExrChannelLayout {
 }
 
 fn channel_roles(channels: &ChannelList) -> Vec<Option<ChannelRole>> {
-    let has_rgb = ["R", "G", "B"].into_iter().all(|name| {
-        channels
-            .list
-            .iter()
-            .any(|channel| channel.name.eq_case_insensitive(name))
-    });
+    let has_rgb = has_rgb_channels(channels);
 
     channels
         .list
@@ -816,6 +870,21 @@ fn channel_roles(channels: &ChannelList) -> Vec<Option<ChannelRole>> {
             }
         })
         .collect()
+}
+
+fn has_rgb_channels(channels: &ChannelList) -> bool {
+    ["R", "G", "B"].into_iter().all(|name| {
+        channels
+            .list
+            .iter()
+            .any(|channel| channel.name.eq_case_insensitive(name))
+    })
+}
+
+fn is_depth_channel_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("Z")
+        || name.eq_ignore_ascii_case("depth")
+        || name.to_ascii_lowercase().ends_with(".z")
 }
 
 fn validate_required_rgba_channels(channels: &ChannelList) -> Result<ExrChannelLayout, String> {
@@ -1849,5 +1918,40 @@ mod tests {
 
     fn luma(rgb: &[f32]) -> f32 {
         rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
+    }
+
+    #[test]
+    fn multipart_openexr_default_display_part_skips_depth_only_parts() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!(
+                "skipping OpenEXR multipart test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+            );
+            return;
+        };
+        let path = root.join("v2/Stereo/composited.exr");
+        if !path.is_file() {
+            eprintln!("skipping OpenEXR multipart test; stereo composited sample missing");
+            return;
+        }
+
+        let parts = super::exr_part_infos(&path).expect("read EXR part info");
+        assert!(
+            parts.len() > 1,
+            "Stereo/composited.exr should expose multiple parts"
+        );
+        assert!(
+            parts.iter().any(|part| part.is_depth_only),
+            "Stereo/composited.exr should include a depth-only part"
+        );
+
+        let selected = super::default_display_part_index(&parts).expect("select displayable part");
+        assert!(
+            parts[selected].is_displayable_color,
+            "default display part should be RGB/color-displayable"
+        );
+        assert!(
+            !parts[selected].is_depth_only,
+            "default display part should not be depth-only"
+        );
     }
 }
