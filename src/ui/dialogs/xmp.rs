@@ -116,12 +116,9 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                     ui.add_space(6.0);
                 });
 
-            // ── Scrollable data table fills remaining space ───────────────────
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                if let Some(data) = &state.data {
-                    render_table(ui, data, palette);
-                }
-            });
+            if let Some(data) = &state.data {
+                render_table(ui, data, palette);
+            }
 
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = ModalResult::Dismissed;
@@ -141,28 +138,29 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn render_table(ui: &mut egui::Ui, data: &[(String, String)], palette: &ThemePalette) {
-    use egui_extras::{Column, TableBuilder};
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .vscroll(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(180.0).at_least(120.0))
-            .column(Column::remainder().at_least(100.0))
-            .body(|body| {
-                body.rows(24.0, data.len(), |mut row| {
-                    let (k, v) = &data[row.index()];
-                    row.col(|ui| {
+    egui::ScrollArea::both()
+        .id_salt("xmp_scroll")
+        .show(ui, |ui| {
+            egui::Grid::new("xmp_grid")
+                .striped(true)
+                .num_columns(2)
+                .spacing([20.0, 8.0])
+                .min_col_width(120.0)
+                .show(ui, |ui| {
+                    for (k, v) in data {
+                        // Key column
                         ui.label(RichText::new(k).color(palette.text_muted).monospace());
-                    });
-                    row.col(|ui| {
-                        let _ = ui.selectable_label(
-                            false,
-                            RichText::new(v).color(palette.text_normal).monospace(),
+
+                        // Value column
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(v).color(palette.text_normal).monospace(),
+                            )
+                            .selectable(true),
                         );
-                    });
+
+                        ui.end_row();
+                    }
                 });
-            });
-    });
+        });
 }
