@@ -66,12 +66,10 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<HdrImageBuffer
 
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
-        let gain_y = (u64::from(y) * u64::from(gain_height) / u64::from(height)) as u32;
         for x in 0..width {
-            let gain_x = (u64::from(x) * u64::from(gain_width) / u64::from(width)) as u32;
             let sdr_index = (y as usize * width as usize + x as usize) * 4;
-            let gain_index = (gain_y as usize * gain_width as usize + gain_x as usize) * 4;
-            let gain_value = f32::from(gain_rgba[gain_index]) / 255.0;
+            let gain_value =
+                sample_gain_map_value(&gain_rgba, gain_width, gain_height, x, y, width, height);
             let log_boost = metadata.gain_map_min
                 + (metadata.gain_map_max - metadata.gain_map_min)
                     * gain_value.powf(1.0 / metadata.gamma.max(f32::MIN_POSITIVE));
@@ -166,6 +164,52 @@ fn srgb_u8_to_linear_f32(value: u8) -> f32 {
     } else {
         ((encoded + 0.055) / 1.055).powf(2.4)
     }
+}
+
+fn sample_gain_map_value(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> f32 {
+    if gain_width == 0 || gain_height == 0 || width == 0 || height == 0 {
+        return 0.0;
+    }
+
+    let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
+        .clamp(0.0, gain_width.saturating_sub(1) as f32);
+    let gy = ((y as f32 + 0.5) * gain_height as f32 / height as f32 - 0.5)
+        .clamp(0.0, gain_height.saturating_sub(1) as f32);
+    let x0 = gx.floor() as u32;
+    let y0 = gy.floor() as u32;
+    let x1 = (x0 + 1).min(gain_width - 1);
+    let y1 = (y0 + 1).min(gain_height - 1);
+    let tx = gx - x0 as f32;
+    let ty = gy - y0 as f32;
+
+    let top = lerp(
+        gain_map_luma(gain_rgba, gain_width, x0, y0),
+        gain_map_luma(gain_rgba, gain_width, x1, y0),
+        tx,
+    );
+    let bottom = lerp(
+        gain_map_luma(gain_rgba, gain_width, x0, y1),
+        gain_map_luma(gain_rgba, gain_width, x1, y1),
+        tx,
+    );
+    lerp(top, bottom, ty)
+}
+
+fn gain_map_luma(gain_rgba: &[u8], gain_width: u32, x: u32, y: u32) -> f32 {
+    let index = (y as usize * gain_width as usize + x as usize) * 4;
+    f32::from(gain_rgba[index]) / 255.0
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -403,6 +447,18 @@ mod tests {
                 .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
             "Ultra HDR decode should recover highlights above SDR white"
         );
+    }
+
+    #[test]
+    fn gain_map_sampling_interpolates_between_source_pixels() {
+        let gain_rgba = vec![
+            0, 0, 0, 255, //
+            255, 255, 255, 255,
+        ];
+
+        let sampled = sample_gain_map_value(&gain_rgba, 2, 1, 1, 0, 3, 1);
+
+        assert!((sampled - 0.5).abs() < 0.01);
     }
 
     fn minimal_jpeg_with_app1_xmp(xmp: &str) -> Vec<u8> {
