@@ -58,6 +58,8 @@ label.z_toggle_hint: "Press Z to toggle scale mode"
 # HDR
 hdr.status.no_source: "HDR: no HDR source image"
 hdr.capability: "Native output"
+hdr.current_surface_format: "Current surface"
+hdr.surface_format.unknown: "unknown"
 hdr.exposure_ev: "Exposure"
 hdr.sdr_white_nits: "SDR white"
 hdr.max_display_nits: "Max display"

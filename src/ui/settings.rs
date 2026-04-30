@@ -177,6 +177,13 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         .small(),
     )
     .on_hover_text(app.hdr_capabilities.reason.as_str());
+    ui.label(
+        RichText::new(crate::hdr::status::hdr_surface_format_label(
+            &app.hdr_capabilities,
+        ))
+        .color(app.cached_palette.text_muted)
+        .small(),
+    );
 
     let old_native_surface_enabled = app.settings.hdr_native_surface_enabled;
     if ui

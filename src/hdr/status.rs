@@ -68,10 +68,18 @@ pub fn hdr_candidate_label(capabilities: &HdrCapabilities) -> String {
     }
 }
 
+pub fn hdr_surface_format_label(capabilities: &HdrCapabilities) -> String {
+    let format = capabilities
+        .current_surface_format
+        .map(|format| format!("{format:?}"))
+        .unwrap_or_else(|| t!("hdr.surface_format.unknown").to_string());
+    format!("{}: {format}", t!("hdr.current_surface_format"))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::hdr::capabilities::HdrCapabilities;
-    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
+    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag, hdr_surface_format_label};
 
     #[test]
     fn hdr_osd_tag_names_float_plane_and_sdr_output() {
@@ -96,5 +104,26 @@ mod tests {
         );
 
         assert_eq!(tag, None);
+    }
+
+    #[test]
+    fn hdr_surface_format_label_reports_current_target_format() {
+        let mut capabilities = HdrCapabilities::sdr("test");
+        capabilities.current_surface_format = Some(wgpu::TextureFormat::Rgba16Float);
+
+        assert_eq!(
+            hdr_surface_format_label(&capabilities),
+            "Current surface: Rgba16Float"
+        );
+    }
+
+    #[test]
+    fn hdr_surface_format_label_reports_unknown_target_format() {
+        let capabilities = HdrCapabilities::sdr("test");
+
+        assert_eq!(
+            hdr_surface_format_label(&capabilities),
+            "Current surface: unknown"
+        );
     }
 }

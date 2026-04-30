@@ -58,6 +58,8 @@ label.z_toggle_hint: "按 Z 鍵切換縮放模式"
 # HDR
 hdr.status.no_source: "HDR：目前不是 HDR 來源圖片"
 hdr.capability: "原生輸出"
+hdr.current_surface_format: "目前表面格式"
+hdr.surface_format.unknown: "未知"
 hdr.exposure_ev: "曝光"
 hdr.sdr_white_nits: "SDR 白點"
 hdr.max_display_nits: "顯示器峰值"
