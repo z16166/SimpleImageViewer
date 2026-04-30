@@ -1325,7 +1325,7 @@ fn load_hdr(path: &Path) -> Result<ImageData, String> {
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
 
-    Ok(ImageData::Hdr { hdr, fallback })
+    Ok(make_hdr_image_data(hdr, fallback))
 }
 
 fn process_animation_frames(
@@ -1622,6 +1622,26 @@ mod tests {
 
         let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
 
+        assert!(matches!(image_data, ImageData::Tiled(_)));
+    }
+
+    #[test]
+    fn load_hdr_routes_threshold_sized_images_to_tiled_fallback() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_hdr_route_{}.hdr",
+            std::process::id()
+        ));
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
+        std::fs::write(&path, bytes).expect("write test HDR");
+        let old_threshold =
+            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+        crate::tile_cache::TILED_THRESHOLD.store(1, std::sync::atomic::Ordering::Relaxed);
+
+        let image_data = load_hdr(&path).expect("load tiny HDR");
+
+        crate::tile_cache::TILED_THRESHOLD
+            .store(old_threshold, std::sync::atomic::Ordering::Relaxed);
+        let _ = std::fs::remove_file(&path);
         assert!(matches!(image_data, ImageData::Tiled(_)));
     }
 }
