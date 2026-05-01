@@ -21,8 +21,9 @@ use crate::app::rendering::plane::{
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
@@ -153,8 +154,12 @@ fn should_schedule_hdr_tile_extract(
     is_cached: bool,
     pending_count: usize,
     pending_cap: usize,
+    hard_pending_cap: usize,
+    is_primary_visible: bool,
 ) -> bool {
-    !is_cached && pending_count < pending_cap
+    !is_cached
+        && pending_count < hard_pending_cap
+        && (is_primary_visible || pending_count < pending_cap)
 }
 
 fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
@@ -170,6 +175,10 @@ fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     }
 }
 
+fn hdr_tile_extract_hard_pending_cap(tile_size: u32) -> usize {
+    if tile_size >= 1024 { 96 } else { 192 }
+}
+
 fn hdr_tile_cache_key_for_coord(
     source: &dyn crate::hdr::tiled::HdrTiledSource,
     coord: TileCoord,
@@ -183,13 +192,21 @@ fn hdr_tile_cache_key_for_coord(
 }
 
 fn prioritize_hdr_tile_visits(
-    _primary_visible: &[(TileCoord, Rect, Rect)],
+    primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
-    // TileManager::visible_tiles already sorts the padded region by distance to
-    // the viewport center. Preserve that SDR behavior for HDR instead of
-    // regrouping all on-screen tiles ahead of nearby lookahead tiles.
-    padded_visible.to_vec()
+    let mut ordered = primary_visible.to_vec();
+    let primary_coords = primary_visible
+        .iter()
+        .map(|(coord, _, _)| *coord)
+        .collect::<HashSet<_>>();
+    ordered.extend(
+        padded_visible
+            .iter()
+            .filter(|(coord, _, _)| !primary_coords.contains(coord))
+            .copied(),
+    );
+    ordered
 }
 
 fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
@@ -240,6 +257,7 @@ fn schedule_hdr_tile_extract(
     key: PendingHdrTileExtract,
     source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
     ctx: egui::Context,
+    is_primary_visible: bool,
 ) -> bool {
     let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
         return false;
@@ -250,15 +268,37 @@ fn schedule_hdr_tile_extract(
     drop(pending);
 
     rayon::spawn(move || {
-        if let Err(err) = source.extract_tile_rgba32f_arc(key.x, key.y, key.width, key.height) {
-            log::warn!(
-                "[HDR] Failed to asynchronously extract HDR tile ({},{} {}x{}): {}",
-                key.x,
-                key.y,
-                key.width,
-                key.height,
-                err
-            );
+        let started = Instant::now();
+        let result = source.extract_tile_rgba32f_arc(key.x, key.y, key.width, key.height);
+        let elapsed = started.elapsed();
+        match result {
+            Ok(_) => {
+                log::info!(
+                    "[HDR][tile] extracted index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
+                    key.index,
+                    key.generation,
+                    is_primary_visible,
+                    key.x,
+                    key.y,
+                    key.width,
+                    key.height,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "[HDR][tile] failed index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}: {}",
+                    key.index,
+                    key.generation,
+                    is_primary_visible,
+                    key.x,
+                    key.y,
+                    key.width,
+                    key.height,
+                    elapsed.as_secs_f64() * 1000.0,
+                    err
+                );
+            }
         }
         if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
             pending.remove(&key);
@@ -505,6 +545,10 @@ impl ImageViewerApp {
             } else {
                 prioritize_hdr_tile_visits(&primary_visible, &visible)
             };
+            let primary_visible_coords = primary_visible
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<HashSet<_>>();
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
                 let protected_keys: Vec<_> = primary_visible
@@ -547,6 +591,8 @@ impl ImageViewerApp {
             let mut newly_uploaded = 0;
             let hdr_pending_cap =
                 hdr_tile_extract_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
+            let hdr_hard_pending_cap =
+                hdr_tile_extract_hard_pending_cap(crate::tile_cache::get_tile_size());
             let mut hdr_pending_count =
                 pending_hdr_tile_extract_count(self.current_index, self.generation);
 
@@ -563,6 +609,7 @@ impl ImageViewerApp {
                 for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
                     if !draw_sdr_tiles {
                         if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                            let is_primary_visible = primary_visible_coords.contains(coord);
                             let (tile_x, tile_y, tile_w, tile_h) =
                                 hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord);
                             let Some(hdr_tile) =
@@ -572,6 +619,8 @@ impl ImageViewerApp {
                                     false,
                                     hdr_pending_count,
                                     hdr_pending_cap,
+                                    hdr_hard_pending_cap,
+                                    is_primary_visible,
                                 ) && schedule_hdr_tile_extract(
                                     PendingHdrTileExtract {
                                         index: self.current_index,
@@ -583,6 +632,7 @@ impl ImageViewerApp {
                                     },
                                     Arc::clone(hdr_source),
                                     ui.ctx().clone(),
+                                    is_primary_visible,
                                 ) {
                                     hdr_pending_count += 1;
                                 }
@@ -743,11 +793,12 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipped_hdr_tile_plane, hdr_tile_extract_pending_cap, hdr_tile_plane_rect_for_sdr_tile,
-        is_tiled_plane_active, rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
-        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
-        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_schedule_hdr_tile_extract, tiled_plane_threshold,
+        clipped_hdr_tile_plane, hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
+        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
+        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
+        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
+        tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -832,9 +883,11 @@ mod tests {
 
     #[test]
     fn hdr_tile_extract_scheduling_is_budgeted() {
-        assert!(!should_schedule_hdr_tile_extract(true, 0, 96));
-        assert!(should_schedule_hdr_tile_extract(false, 2, 96));
-        assert!(!should_schedule_hdr_tile_extract(false, 96, 96));
+        assert!(!should_schedule_hdr_tile_extract(true, 0, 96, 192, true));
+        assert!(should_schedule_hdr_tile_extract(false, 2, 96, 192, false));
+        assert!(!should_schedule_hdr_tile_extract(false, 96, 96, 192, false));
+        assert!(should_schedule_hdr_tile_extract(false, 96, 96, 192, true));
+        assert!(!should_schedule_hdr_tile_extract(false, 192, 96, 192, true));
     }
 
     #[test]
@@ -847,7 +900,13 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tile_visit_order_matches_center_out_padded_order() {
+    fn hdr_tile_extract_hard_pending_cap_bounds_primary_overcommit() {
+        assert_eq!(hdr_tile_extract_hard_pending_cap(512), 192);
+        assert_eq!(hdr_tile_extract_hard_pending_cap(1024), 96);
+    }
+
+    #[test]
+    fn hdr_tile_visit_order_prioritizes_primary_visible_before_lookahead() {
         let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
         let padded = vec![
             tile_visit(2, 3),
@@ -865,9 +924,9 @@ mod tests {
         assert_eq!(
             ordered_coords,
             vec![
-                TileCoord { col: 2, row: 3 },
                 TileCoord { col: 3, row: 3 },
                 TileCoord { col: 4, row: 3 },
+                TileCoord { col: 2, row: 3 },
                 TileCoord { col: 5, row: 3 },
             ]
         );
