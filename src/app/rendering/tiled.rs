@@ -43,7 +43,28 @@ struct PendingHdrTileExtract {
     height: u32,
 }
 
-static PENDING_HDR_TILE_EXTRACTS: LazyLock<Mutex<BTreeSet<PendingHdrTileExtract>>> =
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PendingHdrTileKey {
+    index: usize,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl PendingHdrTileExtract {
+    fn pending_key(self) -> PendingHdrTileKey {
+        PendingHdrTileKey {
+            index: self.index,
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+static PENDING_HDR_TILE_EXTRACTS: LazyLock<Mutex<BTreeSet<PendingHdrTileKey>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
 pub(crate) fn should_draw_tiled_preview_transition(
@@ -155,10 +176,13 @@ fn should_schedule_hdr_tile_extract(
     pending_count: usize,
     pending_cap: usize,
     hard_pending_cap: usize,
+    scheduled_this_frame: usize,
+    frame_schedule_cap: usize,
     is_primary_visible: bool,
 ) -> bool {
     !is_cached
         && pending_count < hard_pending_cap
+        && scheduled_this_frame < frame_schedule_cap
         && (is_primary_visible || pending_count < pending_cap)
 }
 
@@ -177,6 +201,11 @@ fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
 
 fn hdr_tile_extract_hard_pending_cap(tile_size: u32) -> usize {
     if tile_size >= 1024 { 96 } else { 192 }
+}
+
+fn hdr_tile_extract_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
+    let scale = if tile_size >= 1024 { 1 } else { 2 };
+    worker_threads.max(1) * scale
 }
 
 fn hdr_tile_cache_key_for_coord(
@@ -259,22 +288,46 @@ fn schedule_hdr_tile_extract(
     ctx: egui::Context,
     is_primary_visible: bool,
 ) -> bool {
+    let pending_key = key.pending_key();
     let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
         return false;
     };
-    if !pending.insert(key) {
+    if !pending.insert(pending_key) {
         return false;
     }
     drop(pending);
 
     rayon::spawn(move || {
         let started = Instant::now();
+        if source
+            .cached_tile_rgba32f_arc(key.x, key.y, key.width, key.height)
+            .is_some()
+        {
+            let elapsed = started.elapsed();
+            log::info!(
+                "[HDR][tile] cache_hit index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
+                key.index,
+                key.generation,
+                is_primary_visible,
+                key.x,
+                key.y,
+                key.width,
+                key.height,
+                elapsed.as_secs_f64() * 1000.0
+            );
+            if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
+                pending.remove(&pending_key);
+            }
+            ctx.request_repaint();
+            return;
+        }
+
         let result = source.extract_tile_rgba32f_arc(key.x, key.y, key.width, key.height);
         let elapsed = started.elapsed();
         match result {
             Ok(_) => {
                 log::info!(
-                    "[HDR][tile] extracted index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
+                    "[HDR][tile] decoded index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
                     key.index,
                     key.generation,
                     is_primary_visible,
@@ -301,7 +354,7 @@ fn schedule_hdr_tile_extract(
             }
         }
         if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
-            pending.remove(&key);
+            pending.remove(&pending_key);
         }
         ctx.request_repaint();
     });
@@ -309,14 +362,11 @@ fn schedule_hdr_tile_extract(
     true
 }
 
-fn pending_hdr_tile_extract_count(index: usize, generation: u64) -> usize {
+fn pending_hdr_tile_extract_count(index: usize, _generation: u64) -> usize {
     let Ok(pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
         return 0;
     };
-    pending
-        .iter()
-        .filter(|key| key.index == index && key.generation == generation)
-        .count()
+    pending.iter().filter(|key| key.index == index).count()
 }
 
 impl ImageViewerApp {
@@ -593,8 +643,13 @@ impl ImageViewerApp {
                 hdr_tile_extract_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
             let hdr_hard_pending_cap =
                 hdr_tile_extract_hard_pending_cap(crate::tile_cache::get_tile_size());
+            let hdr_frame_schedule_cap = hdr_tile_extract_frame_schedule_cap(
+                rayon::current_num_threads(),
+                crate::tile_cache::get_tile_size(),
+            );
             let mut hdr_pending_count =
                 pending_hdr_tile_extract_count(self.current_index, self.generation);
+            let mut hdr_scheduled_this_frame = 0;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -620,6 +675,8 @@ impl ImageViewerApp {
                                     hdr_pending_count,
                                     hdr_pending_cap,
                                     hdr_hard_pending_cap,
+                                    hdr_scheduled_this_frame,
+                                    hdr_frame_schedule_cap,
                                     is_primary_visible,
                                 ) && schedule_hdr_tile_extract(
                                     PendingHdrTileExtract {
@@ -635,6 +692,7 @@ impl ImageViewerApp {
                                     is_primary_visible,
                                 ) {
                                     hdr_pending_count += 1;
+                                    hdr_scheduled_this_frame += 1;
                                 }
                                 continue;
                             };
@@ -793,7 +851,8 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipped_hdr_tile_plane, hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
+        PendingHdrTileExtract, clipped_hdr_tile_plane, hdr_tile_extract_frame_schedule_cap,
+        hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
         hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
         should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
         should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
@@ -883,11 +942,24 @@ mod tests {
 
     #[test]
     fn hdr_tile_extract_scheduling_is_budgeted() {
-        assert!(!should_schedule_hdr_tile_extract(true, 0, 96, 192, true));
-        assert!(should_schedule_hdr_tile_extract(false, 2, 96, 192, false));
-        assert!(!should_schedule_hdr_tile_extract(false, 96, 96, 192, false));
-        assert!(should_schedule_hdr_tile_extract(false, 96, 96, 192, true));
-        assert!(!should_schedule_hdr_tile_extract(false, 192, 96, 192, true));
+        assert!(!should_schedule_hdr_tile_extract(
+            true, 0, 96, 192, 0, 32, true
+        ));
+        assert!(should_schedule_hdr_tile_extract(
+            false, 2, 96, 192, 0, 32, false
+        ));
+        assert!(!should_schedule_hdr_tile_extract(
+            false, 96, 96, 192, 0, 32, false
+        ));
+        assert!(should_schedule_hdr_tile_extract(
+            false, 96, 96, 192, 0, 32, true
+        ));
+        assert!(!should_schedule_hdr_tile_extract(
+            false, 192, 96, 192, 0, 32, true
+        ));
+        assert!(!should_schedule_hdr_tile_extract(
+            false, 2, 96, 192, 32, 32, true
+        ));
     }
 
     #[test]
@@ -903,6 +975,31 @@ mod tests {
     fn hdr_tile_extract_hard_pending_cap_bounds_primary_overcommit() {
         assert_eq!(hdr_tile_extract_hard_pending_cap(512), 192);
         assert_eq!(hdr_tile_extract_hard_pending_cap(1024), 96);
+    }
+
+    #[test]
+    fn hdr_tile_extract_frame_schedule_cap_limits_queue_bursts() {
+        assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 512), 16);
+        assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 1024), 8);
+        assert_eq!(hdr_tile_extract_frame_schedule_cap(0, 512), 2);
+    }
+
+    #[test]
+    fn hdr_tile_pending_key_dedupes_same_tile_across_generations() {
+        let older = PendingHdrTileExtract {
+            index: 7,
+            generation: 41,
+            x: 1024,
+            y: 2048,
+            width: 512,
+            height: 512,
+        };
+        let newer = PendingHdrTileExtract {
+            generation: 42,
+            ..older
+        };
+
+        assert_eq!(older.pending_key(), newer.pending_key());
     }
 
     #[test]
