@@ -107,6 +107,10 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     let (width, height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
     let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
+    log::debug!(
+        "[HDR] Ultra HDR JPEG_R metadata: {}",
+        gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
+    );
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
@@ -217,6 +221,11 @@ impl UltraHdrTiledImageSource {
 
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(&bytes)?;
         let metadata = gain_map_metadata(&gain_map_jpeg)?;
+        log::debug!(
+            "[HDR] {}: Ultra HDR JPEG_R metadata: {}",
+            path.display(),
+            gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
+        );
         let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
         Ok(Self {
@@ -406,7 +415,7 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
-        return Ok(GainMapMetadata {
+        return validate_gain_map_metadata(GainMapMetadata {
             gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
             gain_map_max,
             gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
@@ -419,6 +428,49 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
     }
 
     Err("Ultra HDR gain map metadata not found".to_string())
+}
+
+fn gain_map_metadata_diagnostic(metadata: GainMapMetadata, target_hdr_capacity: f32) -> String {
+    format!(
+        "GainMapMin={} GainMapMax={} Gamma={} OffsetSDR={} OffsetHDR={} HDRCapacity=[{:.3},{:.3}] target={:.3} weight={:.3}",
+        format_rgb_triplet(metadata.gain_map_min),
+        format_rgb_triplet(metadata.gain_map_max),
+        format_rgb_triplet(metadata.gamma),
+        format_rgb_triplet(metadata.offset_sdr),
+        format_rgb_triplet(metadata.offset_hdr),
+        metadata.hdr_capacity_min,
+        metadata.hdr_capacity_max,
+        target_hdr_capacity,
+        gain_map_weight(metadata, target_hdr_capacity),
+    )
+}
+
+fn format_rgb_triplet(values: [f32; 3]) -> String {
+    format!("[{:.3},{:.3},{:.3}]", values[0], values[1], values[2])
+}
+
+fn validate_gain_map_metadata(metadata: GainMapMetadata) -> Result<GainMapMetadata, String> {
+    validate_finite_triplet("GainMapMin", metadata.gain_map_min)?;
+    validate_finite_triplet("GainMapMax", metadata.gain_map_max)?;
+    validate_finite_triplet("OffsetSDR", metadata.offset_sdr)?;
+    validate_finite_triplet("OffsetHDR", metadata.offset_hdr)?;
+    for gamma in metadata.gamma {
+        if !gamma.is_finite() || gamma <= 0.0 {
+            return Err("Ultra HDR gain map metadata has non-positive Gamma".to_string());
+        }
+    }
+    if !metadata.hdr_capacity_min.is_finite() || !metadata.hdr_capacity_max.is_finite() {
+        return Err("Ultra HDR gain map metadata has non-finite HDRCapacity".to_string());
+    }
+    Ok(metadata)
+}
+
+fn validate_finite_triplet(name: &str, values: [f32; 3]) -> Result<(), String> {
+    if values.iter().all(|value| value.is_finite()) {
+        Ok(())
+    } else {
+        Err(format!("Ultra HDR gain map metadata has non-finite {name}"))
+    }
 }
 
 fn iso_gain_map_metadata(payload: &[u8]) -> Option<Result<GainMapMetadata, String>> {
@@ -526,7 +578,7 @@ impl IsoGainMapFraction {
             offset_hdr[channel] = signed_fraction(self.alternate_offset[channel])?;
         }
 
-        Ok(GainMapMetadata {
+        validate_gain_map_metadata(GainMapMetadata {
             gain_map_min,
             gain_map_max,
             gamma,
@@ -1148,6 +1200,29 @@ mod tests {
     }
 
     #[test]
+    fn gain_map_metadata_diagnostic_reports_recovery_parameters() {
+        let metadata = GainMapMetadata {
+            gain_map_min: [0.1, 0.2, 0.3],
+            gain_map_max: [1.0, 2.0, 3.0],
+            gamma: [1.0, 1.5, 2.0],
+            offset_sdr: [0.01, 0.02, 0.03],
+            offset_hdr: [0.04, 0.05, 0.06],
+            hdr_capacity_min: 1.25,
+            hdr_capacity_max: 4.5,
+        };
+
+        let diagnostic = gain_map_metadata_diagnostic(metadata, 3.0);
+
+        assert!(diagnostic.contains("GainMapMin=[0.100,0.200,0.300]"));
+        assert!(diagnostic.contains("GainMapMax=[1.000,2.000,3.000]"));
+        assert!(diagnostic.contains("Gamma=[1.000,1.500,2.000]"));
+        assert!(diagnostic.contains("OffsetSDR=[0.010,0.020,0.030]"));
+        assert!(diagnostic.contains("OffsetHDR=[0.040,0.050,0.060]"));
+        assert!(diagnostic.contains("HDRCapacity=[1.250,4.500]"));
+        assert!(diagnostic.contains("target=3.000"));
+    }
+
+    #[test]
     fn gain_map_metadata_rejects_hdr_base_rendition() {
         let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
             r#"
@@ -1226,6 +1301,40 @@ mod tests {
         assert_eq!(metadata.gain_map_min, [0.1, 0.2, 0.3]);
         assert_eq!(metadata.gain_map_max, [1.0, 2.0, 3.0]);
         assert_eq!(metadata.gamma, [1.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn gain_map_metadata_rejects_non_positive_gamma() {
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="3.0"
+              hdrgm:Gamma="0.0"/>
+        "#,
+        );
+
+        let err = gain_map_metadata(&gain_map_jpeg).expect_err("reject non-positive gamma");
+
+        assert!(err.contains("Gamma"));
+    }
+
+    #[test]
+    fn gain_map_offsets_and_gamma_affect_recovered_hdr_pixel() {
+        let metadata = GainMapMetadata {
+            gain_map_min: [0.0; 3],
+            gain_map_max: [4.0; 3],
+            gamma: [2.0; 3],
+            offset_sdr: [0.25; 3],
+            offset_hdr: [0.10; 3],
+            hdr_capacity_min: 0.0,
+            hdr_capacity_max: 2.0,
+        };
+
+        let recovered = recover_hdr_channel_from_sdr_and_gain(255, 0.25, metadata, 0, 2.0);
+
+        assert!((recovered - 4.9).abs() < 0.001);
     }
 
     #[test]

@@ -84,6 +84,11 @@ impl ExrTiledImageSource {
         let channel_layout = validate_required_rgba_channels(&header.channels)?;
         let chromaticities = header.shared_attributes.chromaticities;
         let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
+        log::debug!(
+            "[HDR] {}: {}",
+            path.display(),
+            exr_metadata_diagnostic(chromaticities)
+        );
         log_unsupported_exr_chromaticities(path, chromaticities);
         let has_subsampled_channels = header
             .channels
@@ -588,6 +593,11 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
 pub(crate) fn exr_color_space(path: &Path) -> Result<HdrColorSpace, String> {
     let header = read_first_header_for_probe(path)?;
     let chromaticities = header.shared_attributes.chromaticities;
+    log::debug!(
+        "[HDR] {}: {}",
+        path.display(),
+        exr_metadata_diagnostic(chromaticities)
+    );
     log_unsupported_exr_chromaticities(path, chromaticities);
     Ok(hdr_color_space_from_exr_chromaticities(chromaticities))
 }
@@ -623,6 +633,11 @@ pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, Strin
         .map_err(|_| "EXR height exceeds u32".to_string())?;
     let chromaticities = header.shared_attributes.chromaticities;
     let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
+    log::debug!(
+        "[HDR] {}: {}",
+        path.display(),
+        exr_metadata_diagnostic(chromaticities)
+    );
     log_unsupported_exr_chromaticities(path, chromaticities);
 
     let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
@@ -757,6 +772,24 @@ pub(crate) fn unsupported_exr_chromaticities_diagnostic(
         format_xy(chromaticities.blue),
         format_xy(chromaticities.white),
     ))
+}
+
+pub(crate) fn exr_metadata_diagnostic(chromaticities: Option<Chromaticities>) -> String {
+    let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
+    match chromaticities {
+        Some(chromaticities) => format!(
+            "EXR color_space={:?} chromaticities red={}, green={}, blue={}, white={}",
+            color_space,
+            format_xy(chromaticities.red),
+            format_xy(chromaticities.green),
+            format_xy(chromaticities.blue),
+            format_xy(chromaticities.white),
+        ),
+        None => format!(
+            "EXR color_space={:?} chromaticities=default-sRGB",
+            color_space
+        ),
+    }
 }
 
 fn log_unsupported_exr_chromaticities(path: &Path, chromaticities: Option<Chromaticities>) {
@@ -1800,6 +1833,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn static_and_tiled_exr_decode_keep_color_space_and_pixels_consistent() {
+        let path = write_test_exr(2, 2, "static_tile_consistency");
+
+        let static_hdr =
+            crate::hdr::decode::decode_exr_display_image(&path).expect("decode static EXR");
+        let source = super::ExrTiledImageSource::open_with_cache_budget(&path, 4 * 1024 * 1024)
+            .expect("open tiled EXR");
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, 2, 2)
+            .expect("extract tiled EXR");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(static_hdr.color_space, tile.color_space);
+        assert_eq!(static_hdr.rgba_f32.len(), tile.rgba_f32.len());
+        for (static_value, tile_value) in static_hdr.rgba_f32.iter().zip(tile.rgba_f32.iter()) {
+            assert!(
+                (static_value - tile_value).abs() < 0.001,
+                "static={static_value}, tile={tile_value}"
+            );
+        }
+    }
+
     fn assert_sample_generates_preview(root: &Path, relative_path: &str) {
         let path = root.join(relative_path);
         assert!(
@@ -2022,6 +2078,22 @@ mod tests {
         assert!(diagnostic.contains("green=(0.2000, 0.8000)"));
         assert!(diagnostic.contains("blue=(0.1000, 0.1000)"));
         assert!(diagnostic.contains("white=(0.3330, 0.3330)"));
+    }
+
+    #[test]
+    fn exr_metadata_diagnostic_reports_color_space_and_chromaticities() {
+        let chromaticities = Chromaticities {
+            red: exr::math::Vec2(0.64, 0.33),
+            green: exr::math::Vec2(0.30, 0.60),
+            blue: exr::math::Vec2(0.15, 0.06),
+            white: exr::math::Vec2(0.3127, 0.3290),
+        };
+
+        let diagnostic = super::exr_metadata_diagnostic(Some(chromaticities));
+
+        assert!(diagnostic.contains("EXR color_space=LinearSrgb"));
+        assert!(diagnostic.contains("red=(0.6400, 0.3300)"));
+        assert!(diagnostic.contains("white=(0.3127, 0.3290)"));
     }
 
     #[test]

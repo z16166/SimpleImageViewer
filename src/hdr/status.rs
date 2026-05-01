@@ -32,6 +32,7 @@ pub fn hdr_osd_tag(
     capabilities: &HdrCapabilities,
     ultra_hdr_decode_capacity: Option<f32>,
     monitor_label: Option<&str>,
+    metadata_diagnostic_label: Option<&str>,
 ) -> Option<String> {
     if !is_hdr_source {
         return None;
@@ -49,6 +50,10 @@ pub fn hdr_osd_tag(
         parts.push_str(&format!(" | JPEG_R cap {capacity:.2}x"));
     }
     if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
+        parts.push_str(" | ");
+        parts.push_str(label);
+    }
+    if let Some(label) = metadata_diagnostic_label.filter(|label| !label.is_empty()) {
         parts.push_str(" | ");
         parts.push_str(label);
     }
@@ -119,6 +124,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            None,
         );
 
         assert_eq!(
@@ -134,6 +140,7 @@ mod tests {
             HdrRenderPath::FloatTilePlane,
             None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
             None,
             None,
         );
@@ -153,6 +160,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            None,
         );
 
         assert_eq!(
@@ -170,6 +178,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             Some(5.5),
             Some("DISPLAY1"),
+            None,
         );
 
         assert_eq!(
@@ -181,12 +190,33 @@ mod tests {
     }
 
     #[test]
+    fn hdr_osd_tag_includes_metadata_diagnostic_label() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatImagePlane,
+            Some(HdrColorSpace::LinearSrgb),
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
+            Some("metadata: EXR chromaticities"),
+        );
+
+        assert_eq!(
+            tag.as_deref(),
+            Some(
+                "HDR: source | linear sRGB | plane | SDR tone-mapped | metadata: EXR chromaticities"
+            )
+        );
+    }
+
+    #[test]
     fn hdr_osd_tag_warns_for_unknown_input_color_space() {
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
             Some(HdrColorSpace::Unknown),
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
             None,
             None,
         );
@@ -204,6 +234,7 @@ mod tests {
             HdrRenderPath::SdrFallback,
             Some(HdrColorSpace::LinearSrgb),
             &HdrCapabilities::sdr("not an HDR image"),
+            None,
             None,
             None,
         );

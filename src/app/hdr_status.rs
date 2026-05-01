@@ -57,6 +57,7 @@ impl ImageViewerApp {
             self.hdr_monitor_state
                 .selection()
                 .map(|selection| selection.label.as_str()),
+            self.current_hdr_metadata_diagnostic_label(),
         )
     }
 
@@ -73,6 +74,24 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))
             .map(|image| image.color_space)
+    }
+
+    fn current_hdr_metadata_diagnostic_label(&self) -> Option<&'static str> {
+        let path = self.image_files.get(self.current_index)?;
+        let ext = path.extension()?.to_str()?;
+        if (ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"))
+            && self
+                .ultra_hdr_capacity_sensitive_indices
+                .contains(&self.current_index)
+        {
+            Some("metadata: JPEG_R gain map")
+        } else if ext.eq_ignore_ascii_case("hdr") {
+            Some("metadata: Radiance EXPOSURE/COLORCORR")
+        } else if ext.eq_ignore_ascii_case("exr") {
+            Some("metadata: EXR chromaticities")
+        } else {
+            None
+        }
     }
 }
 

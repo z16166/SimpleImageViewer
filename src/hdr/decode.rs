@@ -78,6 +78,11 @@ fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
     let radiance_params = RadianceHeaderParams::read_from_bytes(&mmap)?;
+    log::debug!(
+        "[HDR] {}: {}",
+        path.display(),
+        radiance_params.diagnostic_label()
+    );
     let decoder = image::codecs::hdr::HdrDecoder::new(Cursor::new(&mmap[..]))
         .map_err(|err| err.to_string())?;
     let (width, height) = decoder.dimensions();
@@ -176,6 +181,13 @@ impl RadianceHeaderParams {
             pixel[1] *= scale[1];
             pixel[2] *= scale[2];
         }
+    }
+
+    pub(crate) fn diagnostic_label(self) -> String {
+        format!(
+            "Radiance EXPOSURE={:.3} COLORCORR=[{:.3},{:.3},{:.3}]",
+            self.exposure, self.colorcorr[0], self.colorcorr[1], self.colorcorr[2]
+        )
     }
 }
 
@@ -429,6 +441,19 @@ mod tests {
 
         assert!(err.contains("expected 4 floats"));
         assert!(err.contains("got 3"));
+    }
+
+    #[test]
+    fn radiance_header_params_diagnostic_reports_exposure_and_colorcorr() {
+        let params = RadianceHeaderParams::read_from_bytes(
+            b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=2\nCOLORCORR=2 4 8\n\n-Y 1 +X 1\n",
+        )
+        .expect("parse Radiance header params");
+
+        assert_eq!(
+            params.diagnostic_label(),
+            "Radiance EXPOSURE=2.000 COLORCORR=[2.000,4.000,8.000]"
+        );
     }
 
     #[test]

@@ -47,6 +47,7 @@ impl RadianceHdrTiledImageSource {
         let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
         let mut params = crate::hdr::decode::RadianceHeaderParams::default();
         let (width, height) = read_radiance_header(&mut Cursor::new(&mmap[..]), &mut params)?;
+        log::debug!("[HDR] {}: {}", path.display(), params.diagnostic_label());
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -447,6 +448,32 @@ mod tests {
         assert!((tile.rgba_f32[1] - 0.125).abs() < 0.01);
         assert!((tile.rgba_f32[2] - 0.0625).abs() < 0.01);
         assert_eq!(tile.rgba_f32[3], 1.0);
+    }
+
+    #[test]
+    fn static_and_tiled_radiance_decode_apply_same_header_params() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_radiance_static_tile_consistency_{}.hdr",
+            std::process::id()
+        ));
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=2\nCOLORCORR=2 4 8\n\n-Y 1 +X 1\n\x80\x80\x80\x81";
+        std::fs::write(&path, bytes).expect("write test HDR");
+
+        let static_hdr = crate::hdr::decode::decode_hdr_image(&path).expect("decode static HDR");
+        let source = RadianceHdrTiledImageSource::open(&path).expect("open tiled HDR");
+        let tile = source
+            .extract_tile_rgba32f_arc(0, 0, 1, 1)
+            .expect("extract tiled HDR");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(static_hdr.color_space, tile.color_space);
+        assert_eq!(static_hdr.rgba_f32.len(), tile.rgba_f32.len());
+        for (static_value, tile_value) in static_hdr.rgba_f32.iter().zip(tile.rgba_f32.iter()) {
+            assert!(
+                (static_value - tile_value).abs() < 0.01,
+                "static={static_value}, tile={tile_value}"
+            );
+        }
     }
 
     #[test]
