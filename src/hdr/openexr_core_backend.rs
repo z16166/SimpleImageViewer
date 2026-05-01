@@ -11,6 +11,7 @@
 use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::time::Instant;
 
 use openexr_core_sys as sys;
 
@@ -94,6 +95,13 @@ impl OpenExrCoreReadContext {
         self.part_count
     }
 
+    fn source_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
+
     pub(crate) fn part(&self, part_index: usize) -> Result<OpenExrCorePartInfo, String> {
         if part_index >= self.part_count {
             return Err(format!(
@@ -151,6 +159,10 @@ impl OpenExrCoreReadContext {
     ) -> Result<OpenExrCoreRgbaTile, String> {
         let part = self.part(part_index)?;
         validate_tile_bounds(part.width, part.height, x, y, width, height)?;
+        #[cfg(feature = "tile-debug")]
+        let tile_start = Instant::now();
+        #[cfg(feature = "tile-debug")]
+        let mut decoded_chunk_count = 0_u32;
 
         let part_index =
             i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
@@ -189,17 +201,44 @@ impl OpenExrCoreReadContext {
                         .map_err(|_| {
                             "OpenEXRCore chunk start_y is outside data window".to_string()
                         })?;
-                    self.decode_chunk_to_tile(
+                    let timing = self.decode_chunk_to_tile(
                         part_index,
                         &chunk,
                         (chunk_origin_x, chunk_origin_y),
                         (x, y, width, height),
                         &mut rgba,
                     )?;
+                    #[cfg(feature = "tile-debug")]
+                    {
+                        decoded_chunk_count += 1;
+                        self.log_tile_chunk_decode(
+                            part_index,
+                            &part,
+                            &chunk,
+                            (chunk_origin_x, chunk_origin_y),
+                            (x, y, width, height),
+                            timing,
+                        );
+                    }
                 }
             }
             sys::EXR_STORAGE_TILED => {
                 let tile_grid = self.tile_grid(part_index)?;
+                #[cfg(feature = "tile-debug")]
+                log::info!(
+                    "[HDR][tile][openexr-core] file=\"{}\" part={} request=({}, {}) size={}x{} storage={} native_tile={}x{} native_tile_count={}x{}",
+                    self.source_name(),
+                    part_index,
+                    x,
+                    y,
+                    width,
+                    height,
+                    storage_name(part.storage),
+                    tile_grid.tile_width,
+                    tile_grid.tile_height,
+                    tile_grid.count_x,
+                    tile_grid.count_y
+                );
                 let start_tile_x = x / tile_grid.tile_width;
                 let end_tile_x = (x + width - 1) / tile_grid.tile_width;
                 let start_tile_y = y / tile_grid.tile_height;
@@ -227,16 +266,29 @@ impl OpenExrCoreReadContext {
                         if chunk.height <= 0 || chunk.width <= 0 {
                             continue;
                         }
-                        self.decode_chunk_to_tile(
+                        let chunk_origin = (
+                            tile_x_index * tile_grid.tile_width,
+                            tile_y_index * tile_grid.tile_height,
+                        );
+                        let timing = self.decode_chunk_to_tile(
                             part_index,
                             &chunk,
-                            (
-                                tile_x_index * tile_grid.tile_width,
-                                tile_y_index * tile_grid.tile_height,
-                            ),
+                            chunk_origin,
                             (x, y, width, height),
                             &mut rgba,
                         )?;
+                        #[cfg(feature = "tile-debug")]
+                        {
+                            decoded_chunk_count += 1;
+                            self.log_tile_chunk_decode(
+                                part_index,
+                                &part,
+                                &chunk,
+                                chunk_origin,
+                                (x, y, width, height),
+                                timing,
+                            );
+                        }
                     }
                 }
             }
@@ -248,11 +300,57 @@ impl OpenExrCoreReadContext {
             }
         }
 
+        #[cfg(feature = "tile-debug")]
+        log::info!(
+            "[HDR][tile][openexr-core] done file=\"{}\" part={} request=({}, {}) size={}x{} storage={} decoded_chunks={} elapsed_ms={:.2}",
+            self.source_name(),
+            part_index,
+            x,
+            y,
+            width,
+            height,
+            storage_name(part.storage),
+            decoded_chunk_count,
+            tile_start.elapsed().as_secs_f64() * 1000.0
+        );
+
         Ok(OpenExrCoreRgbaTile {
             width,
             height,
             rgba,
         })
+    }
+
+    #[cfg(feature = "tile-debug")]
+    fn log_tile_chunk_decode(
+        &self,
+        part_index: i32,
+        part: &OpenExrCorePartInfo,
+        chunk: &sys::ExrChunkInfo,
+        chunk_origin: (u32, u32),
+        request: (u32, u32, u32, u32),
+        timing: OpenExrCoreChunkDecodeTiming,
+    ) {
+        let (request_x, request_y, request_width, request_height) = request;
+        log::info!(
+            "[HDR][tile][openexr-core] chunk file=\"{}\" part={} request=({}, {}) size={}x{} storage={} native_coord=({}, {}) native_size={}x{} compression={} packed_bytes={} unpacked_bytes={} decode_ms={:.2} copy_ms={:.2}",
+            self.source_name(),
+            part_index,
+            request_x,
+            request_y,
+            request_width,
+            request_height,
+            storage_name(part.storage),
+            chunk_origin.0,
+            chunk_origin.1,
+            chunk.width,
+            chunk.height,
+            compression_name(chunk.compression),
+            chunk.packed_size,
+            chunk.unpacked_size,
+            timing.decode_ms,
+            timing.copy_ms
+        );
     }
 
     fn tile_grid(&self, part_index: i32) -> Result<OpenExrCoreTileGrid, String> {
@@ -300,7 +398,7 @@ impl OpenExrCoreReadContext {
         chunk_origin: (u32, u32),
         tile: (u32, u32, u32, u32),
         rgba: &mut [f32],
-    ) -> Result<(), String> {
+    ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
         let (tile_x, tile_y, tile_width, tile_height) = tile;
         let chunk_width = usize::try_from(chunk.width)
             .map_err(|_| "OpenEXRCore chunk width is negative".to_string())?;
@@ -350,9 +448,11 @@ impl OpenExrCoreReadContext {
                 &mut pipeline,
             )
         })?;
+        let decode_start = Instant::now();
         exr_result(unsafe {
             sys::exr_decoding_run(self.raw.cast_const(), part_index, &mut pipeline)
         })?;
+        let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
         let tile_right = tile_x + tile_width;
         let tile_bottom = tile_y + tile_height;
@@ -363,9 +463,13 @@ impl OpenExrCoreReadContext {
         let copy_end_y = (chunk_y + chunk.height as u32).min(tile_bottom);
 
         if copy_start_x >= copy_end_x || copy_start_y >= copy_end_y {
-            return Ok(());
+            return Ok(OpenExrCoreChunkDecodeTiming {
+                decode_ms,
+                copy_ms: 0.0,
+            });
         }
 
+        let copy_start = Instant::now();
         for (channel_index, role) in roles.iter().enumerate() {
             let Some(role) = role else {
                 continue;
@@ -388,9 +492,16 @@ impl OpenExrCoreReadContext {
                 }
             }
         }
+        let copy_ms = copy_start.elapsed().as_secs_f64() * 1000.0;
 
-        Ok(())
+        Ok(OpenExrCoreChunkDecodeTiming { decode_ms, copy_ms })
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct OpenExrCoreChunkDecodeTiming {
+    decode_ms: f64,
+    copy_ms: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -460,6 +571,36 @@ fn decode_pipeline_channels(
         return Err("OpenEXRCore returned null decode channel info".to_string());
     }
     Ok(unsafe { std::slice::from_raw_parts_mut(pipeline.channels, count) })
+}
+
+#[cfg(feature = "tile-debug")]
+fn storage_name(storage: i32) -> &'static str {
+    match storage {
+        sys::EXR_STORAGE_SCANLINE => "scanline",
+        sys::EXR_STORAGE_TILED => "tiled",
+        2 => "deep-scanline",
+        3 => "deep-tiled",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "tile-debug")]
+fn compression_name(compression: u8) -> &'static str {
+    match compression {
+        0 => "none",
+        1 => "rle",
+        2 => "zips",
+        3 => "zip",
+        4 => "piz",
+        5 => "pxr24",
+        6 => "b44",
+        7 => "b44a",
+        8 => "dwaa",
+        9 => "dwab",
+        10 => "htj2k256",
+        11 => "htj2k32",
+        _ => "unknown",
+    }
 }
 
 fn channel_name_to_role(name: *const c_char) -> Option<ChannelRole> {
