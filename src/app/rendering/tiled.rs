@@ -21,7 +21,7 @@ use crate::app::rendering::plane::{
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
@@ -164,6 +164,24 @@ fn hdr_tile_cache_key_for_coord(
     let tile_w = ts.min(source.width() - tile_x);
     let tile_h = ts.min(source.height() - tile_y);
     (tile_x, tile_y, tile_w, tile_h)
+}
+
+fn prioritize_hdr_tile_visits(
+    primary_visible: &[(TileCoord, Rect, Rect)],
+    padded_visible: &[(TileCoord, Rect, Rect)],
+) -> Vec<(TileCoord, Rect, Rect)> {
+    let mut ordered = primary_visible.to_vec();
+    let primary_coords = primary_visible
+        .iter()
+        .map(|(coord, _, _)| *coord)
+        .collect::<HashSet<_>>();
+    ordered.extend(
+        padded_visible
+            .iter()
+            .filter(|(coord, _, _)| !primary_coords.contains(coord))
+            .copied(),
+    );
+    ordered
 }
 
 fn should_invalidate_tile_requests_on_pan_drag() -> bool {
@@ -452,13 +470,19 @@ impl ImageViewerApp {
                 tile_clip,
                 padding,
             );
-            let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
-            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                let protected_keys: Vec<_> = self
-                    .tile_manager
+            let primary_visible =
+                self.tile_manager
                     .as_ref()
                     .unwrap()
-                    .visible_tiles(unrotated_dest, tile_clip, 0.0)
+                    .visible_tiles(unrotated_dest, tile_clip, 0.0);
+            let tile_visits = if draw_sdr_tiles {
+                visible.clone()
+            } else {
+                prioritize_hdr_tile_visits(&primary_visible, &visible)
+            };
+            let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                let protected_keys: Vec<_> = primary_visible
                     .iter()
                     .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
                     .collect();
@@ -508,7 +532,7 @@ impl ImageViewerApp {
                     None
                 };
 
-                for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
+                for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
                     if !draw_sdr_tiles {
                         if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
                             let (tile_x, tile_y, tile_w, tile_h) =
@@ -697,6 +721,7 @@ mod tests {
         tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
+    use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};
 
     #[test]
@@ -787,6 +812,33 @@ mod tests {
     }
 
     #[test]
+    fn hdr_tile_visit_order_prioritizes_screen_visible_tiles_before_lookahead() {
+        let primary = vec![tile_visit(1, 1), tile_visit(2, 1)];
+        let padded = vec![
+            tile_visit(0, 1),
+            tile_visit(1, 1),
+            tile_visit(2, 1),
+            tile_visit(3, 1),
+        ];
+
+        let ordered = super::prioritize_hdr_tile_visits(&primary, &padded);
+        let ordered_coords = ordered
+            .iter()
+            .map(|(coord, _, _)| *coord)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered_coords,
+            vec![
+                TileCoord { col: 1, row: 1 },
+                TileCoord { col: 2, row: 1 },
+                TileCoord { col: 0, row: 1 },
+                TileCoord { col: 3, row: 1 },
+            ]
+        );
+    }
+
+    #[test]
     fn pan_drag_keeps_tile_generation_and_worker_queue_alive() {
         assert!(!should_invalidate_tile_requests_on_pan_drag());
     }
@@ -818,5 +870,13 @@ mod tests {
         assert_eq!(tiled_plane_threshold(0.05, 0.25, 512), 0.2625);
         assert!(!is_tiled_plane_active(0.59, 0.6));
         assert!(is_tiled_plane_active(0.6, 0.6));
+    }
+
+    fn tile_visit(col: u32, row: u32) -> (TileCoord, Rect, Rect) {
+        (
+            TileCoord { col, row },
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        )
     }
 }

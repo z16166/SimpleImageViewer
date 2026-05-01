@@ -152,12 +152,13 @@ impl ExrTiledImageSource {
             if chunk.layer_index != self.part_index {
                 continue;
             }
+            let block_index = compressed_chunk_block_index(&chunk, header)?;
+            if !should_decompress_unvalidated_block_for_tile(block_index, tile_bounds) {
+                continue;
+            }
 
             let block = UncompressedBlock::decompress_chunk(chunk, &meta_data, false)
                 .map_err(|err| err.to_string())?;
-            if !block_intersects_tile(block.index, tile_bounds) {
-                continue;
-            }
             copy_subsampled_block_to_tile(&block, header, &channel_roles, tile_bounds, &mut tile)?;
         }
 
@@ -1031,6 +1032,31 @@ fn block_intersects_tile(block: BlockIndex, tile: TileBounds) -> bool {
         && block_bottom > tile.y
 }
 
+fn should_decompress_unvalidated_block_for_tile(block: BlockIndex, tile: TileBounds) -> bool {
+    block_intersects_tile(block, tile)
+}
+
+fn compressed_chunk_block_index(
+    chunk: &Chunk,
+    header: &exr::meta::header::Header,
+) -> Result<BlockIndex, String> {
+    let tile_data_indices = header
+        .get_block_data_indices(&chunk.compressed_block)
+        .map_err(|err| err.to_string())?;
+    let absolute_indices = header
+        .get_absolute_block_pixel_coordinates(tile_data_indices)
+        .map_err(|err| err.to_string())?;
+    Ok(BlockIndex {
+        layer: chunk.layer_index,
+        pixel_position: absolute_indices
+            .position
+            .to_usize("data indices start")
+            .map_err(|err| err.to_string())?,
+        pixel_size: absolute_indices.size,
+        level: tile_data_indices.level_index,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChannelRole {
     Red,
@@ -1775,6 +1801,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    use exr::block::BlockIndex;
+    use exr::math::Vec2;
     use exr::meta::attribute::Chromaticities;
 
     use crate::hdr::tiled::{HdrTiledSource, HdrTiledSourceKind};
@@ -1843,6 +1871,22 @@ mod tests {
             tile.rgba_f32.len(),
             tile_width as usize * tile_height as usize * 4
         );
+    }
+
+    #[test]
+    fn unvalidated_scanline_fallback_skips_offscreen_blocks_before_decompress() {
+        let block = BlockIndex {
+            layer: 0,
+            pixel_position: Vec2(0, 0),
+            pixel_size: Vec2(512, 16),
+            level: Vec2(0, 0),
+        };
+        let requested_tile = super::TileBounds::new(0, 512, 512, 512);
+
+        assert!(!super::should_decompress_unvalidated_block_for_tile(
+            block,
+            requested_tile
+        ));
     }
 
     fn assert_sample_extracts_visible_tile(root: &Path, relative_path: &str) {
