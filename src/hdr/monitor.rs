@@ -411,8 +411,6 @@ unsafe extern "C" {
     fn sel_registerName(name: *const std::ffi::c_char) -> ObjcSel;
     #[link_name = "objc_msgSend"]
     fn objc_msg_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId;
-    #[link_name = "objc_msgSend"]
-    fn objc_msg_send_f64(receiver: ObjcId, selector: ObjcSel) -> f64;
 }
 
 #[cfg(target_os = "macos")]
@@ -441,6 +439,13 @@ fn objc_sel(name: &str) -> Result<ObjcSel, String> {
     } else {
         Ok(selector)
     }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn objc_msg_send_f64(receiver: ObjcId, selector: ObjcSel) -> f64 {
+    let send: unsafe extern "C" fn(ObjcId, ObjcSel) -> f64 =
+        unsafe { std::mem::transmute(objc_msg_send_id as *const ()) };
+    unsafe { send(receiver, selector) }
 }
 
 #[cfg(target_os = "macos")]
