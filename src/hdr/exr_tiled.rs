@@ -27,11 +27,11 @@ use exr::math::Vec2;
 use exr::meta::BlockDescription;
 use exr::meta::attribute::{ChannelList, Chromaticities, SampleType};
 use exr::prelude::MetaData;
-use exr::prelude::{ReadChannels, ReadLayers};
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes,
+    configured_hdr_tile_cache_max_bytes, hdr_preview_from_tiled_source_nearest,
+    sdr_preview_from_hdr_preview,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -272,75 +272,14 @@ impl HdrTiledSource for ExrTiledImageSource {
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let context = exr_file_context("generate EXR HDR preview", &self.path);
         catch_exr_panic(&context, || {
-            if self.requires_disk_backed_decode || self.has_subsampled_channels {
-                return self.generate_hdr_preview_from_hdr_tile(max_w, max_h);
-            }
-
-            let color_space = self.color_space;
-            let preview = exr::prelude::read()
-                .no_deep_data()
-                .largest_resolution_level()
-                .rgba_channels(
-                    move |resolution, _channels| {
-                        PreviewAccumulator::new_with_alpha(
-                            resolution.width() as u32,
-                            resolution.height() as u32,
-                            max_w,
-                            max_h,
-                            false,
-                        )
-                    },
-                    |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                        preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
-                    },
-                )
-                .first_valid_layer()
-                .all_attributes()
-                .from_buffered(Cursor::new(&self.mmap[..]))
-                .map_err(|err| err.to_string())?
-                .layer_data
-                .channel_data
-                .pixels;
-
-            Ok(preview.into_hdr_image(color_space))
+            self.generate_hdr_preview_from_hdr_tile(max_w, max_h)
         })
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
         catch_exr_panic(&context, || {
-            if self.requires_disk_backed_decode || self.has_subsampled_channels {
-                return self.generate_sdr_preview_from_hdr_tile(max_w, max_h);
-            }
-
-            let preview = exr::prelude::read()
-                .no_deep_data()
-                .largest_resolution_level()
-                .rgba_channels(
-                    move |resolution, _channels| {
-                        // Previews should remain visible even for EXR files whose alpha is absent or zero.
-                        // The HDR tile/rendering path still preserves source alpha.
-                        PreviewAccumulator::new_with_alpha(
-                            resolution.width() as u32,
-                            resolution.height() as u32,
-                            max_w,
-                            max_h,
-                            false,
-                        )
-                    },
-                    |preview, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                        preview.set(position.x() as u32, position.y() as u32, [r, g, b, a]);
-                    },
-                )
-                .first_valid_layer()
-                .all_attributes()
-                .from_buffered(Cursor::new(&self.mmap[..]))
-                .map_err(|err| err.to_string())?
-                .layer_data
-                .channel_data
-                .pixels;
-
-            preview.into_sdr_rgba8()
+            self.generate_sdr_preview_from_hdr_tile(max_w, max_h)
         })
     }
 
@@ -468,8 +407,7 @@ impl ExrTiledImageSource {
         max_w: u32,
         max_h: u32,
     ) -> Result<HdrImageBuffer, String> {
-        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
-        crate::hdr::tiled::hdr_preview_from_tile_nearest(&tile, max_w, max_h)
+        hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
     }
 
     fn generate_sdr_preview_from_hdr_tile(
@@ -477,21 +415,8 @@ impl ExrTiledImageSource {
         max_w: u32,
         max_h: u32,
     ) -> Result<(u32, u32, Vec<u8>), String> {
-        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
-            &crate::hdr::types::HdrImageBuffer {
-                width: tile.width,
-                height: tile.height,
-                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
-                color_space: tile.color_space,
-                rgba_f32: Arc::clone(&tile.rgba_f32),
-            },
-            0.0,
-        )?;
-        let image = image::RgbaImage::from_raw(tile.width, tile.height, pixels)
-            .ok_or_else(|| "Failed to build SDR preview image from HDR tile".to_string())?;
-        let preview = image::imageops::thumbnail(&image, max_w, max_h);
-        Ok((preview.width(), preview.height(), preview.into_raw()))
+        let preview = self.generate_hdr_preview_from_hdr_tile(max_w, max_h)?;
+        sdr_preview_from_hdr_preview(&preview)
     }
 }
 
@@ -1026,6 +951,7 @@ fn chromaticity_point_matches(actual: Vec2<f32>, expected: Vec2<f32>, epsilon: f
 }
 
 #[derive(Debug)]
+#[cfg(test)]
 struct PreviewAccumulator {
     source_width: u32,
     source_height: u32,
@@ -1036,6 +962,7 @@ struct PreviewAccumulator {
     sample_counts: Vec<u32>,
 }
 
+#[cfg(test)]
 impl PreviewAccumulator {
     fn new_with_alpha(
         source_width: u32,

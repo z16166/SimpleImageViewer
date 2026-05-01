@@ -271,25 +271,12 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
-        let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
-        crate::hdr::tiled::hdr_preview_from_tile_nearest(&tile, max_w, max_h)
+        crate::hdr::tiled::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let preview = self.generate_hdr_preview(max_w, max_h)?;
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
-            &HdrImageBuffer {
-                width: preview.width,
-                height: preview.height,
-                format: HdrPixelFormat::Rgba32Float,
-                color_space: preview.color_space,
-                rgba_f32: Arc::clone(&preview.rgba_f32),
-            },
-            0.0,
-        )?;
-        let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
-            .ok_or_else(|| "Failed to build Ultra HDR SDR preview image".to_string())?;
-        Ok((image.width(), image.height(), image.into_raw()))
+        crate::hdr::tiled::sdr_preview_from_hdr_preview(&preview)
     }
 
     fn cached_tile_rgba32f_arc(

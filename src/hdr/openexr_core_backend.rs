@@ -8,12 +8,11 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString, c_char};
-use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use openexr_core_sys as sys;
@@ -26,6 +25,7 @@ pub(crate) struct OpenExrCoreReadContext {
     raw: sys::ExrContext,
     part_count: usize,
     decoded_chunks: Mutex<OpenExrCoreDecodedChunkCache>,
+    decoded_chunk_ready: Condvar,
 }
 
 // OpenEXRCore read contexts parse headers up front and are documented as safe
@@ -89,6 +89,7 @@ struct OpenExrCoreDecodedChunkCache {
     max_bytes: usize,
     current_bytes: usize,
     entries: HashMap<OpenExrCoreDecodedChunkKey, Arc<OpenExrCoreDecodedChunk>>,
+    in_flight: HashSet<OpenExrCoreDecodedChunkKey>,
     lru: VecDeque<OpenExrCoreDecodedChunkKey>,
     #[cfg(test)]
     hits: usize,
@@ -102,6 +103,7 @@ impl OpenExrCoreDecodedChunkCache {
             max_bytes,
             current_bytes: 0,
             entries: HashMap::new(),
+            in_flight: HashSet::new(),
             lru: VecDeque::new(),
             #[cfg(test)]
             hits: 0,
@@ -125,6 +127,14 @@ impl OpenExrCoreDecodedChunkCache {
             }
         }
         chunk
+    }
+
+    fn begin_decode(&mut self, key: OpenExrCoreDecodedChunkKey) -> bool {
+        self.in_flight.insert(key)
+    }
+
+    fn finish_decode(&mut self, key: &OpenExrCoreDecodedChunkKey) {
+        self.in_flight.remove(key);
     }
 
     fn insert(&mut self, key: OpenExrCoreDecodedChunkKey, chunk: Arc<OpenExrCoreDecodedChunk>) {
@@ -197,6 +207,7 @@ impl OpenExrCoreReadContext {
             decoded_chunks: Mutex::new(OpenExrCoreDecodedChunkCache::new(
                 DEFAULT_DECODED_CHUNK_CACHE_BYTES,
             )),
+            decoded_chunk_ready: Condvar::new(),
         })
     }
 
@@ -514,8 +525,13 @@ impl OpenExrCoreReadContext {
         rgba: &mut [f32],
     ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
         let key = decoded_chunk_key(part_index, chunk, chunk_origin)?;
-        if let Ok(mut cache) = self.decoded_chunks.lock() {
+        let mut cache = self
+            .decoded_chunks
+            .lock()
+            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        loop {
             if let Some(decoded) = cache.get(&key) {
+                drop(cache);
                 let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
                 return Ok(OpenExrCoreChunkDecodeTiming {
                     decode_ms: 0.0,
@@ -523,12 +539,35 @@ impl OpenExrCoreReadContext {
                     cache_hit: true,
                 });
             }
+            if cache.begin_decode(key) {
+                break;
+            }
+            cache = self
+                .decoded_chunk_ready
+                .wait(cache)
+                .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
         }
+        drop(cache);
 
-        let (decoded, decode_ms) = self.decode_chunk_to_rgba(part_index, chunk, chunk_origin)?;
-        if let Ok(mut cache) = self.decoded_chunks.lock() {
-            cache.insert(key, Arc::clone(&decoded));
-        }
+        let decode_result = self.decode_chunk_to_rgba(part_index, chunk, chunk_origin);
+        let (decoded, decode_ms) = match decode_result {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                if let Ok(mut cache) = self.decoded_chunks.lock() {
+                    cache.finish_decode(&key);
+                }
+                self.decoded_chunk_ready.notify_all();
+                return Err(err);
+            }
+        };
+        let mut cache = self
+            .decoded_chunks
+            .lock()
+            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        cache.finish_decode(&key);
+        cache.insert(key, Arc::clone(&decoded));
+        drop(cache);
+        self.decoded_chunk_ready.notify_all();
         let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
 
         Ok(OpenExrCoreChunkDecodeTiming {
@@ -956,5 +995,21 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&cached, &chunk));
         assert_eq!(cache.miss_count(), 1);
         assert_eq!(cache.hit_count(), 1);
+    }
+
+    #[test]
+    fn decoded_chunk_cache_tracks_in_flight_native_chunk_decode() {
+        let key = super::OpenExrCoreDecodedChunkKey {
+            part_index: 0,
+            chunk_index: 7,
+            origin: (0, 6144),
+            size: (24576, 32),
+        };
+        let mut cache = super::OpenExrCoreDecodedChunkCache::new(64);
+
+        assert!(cache.begin_decode(key));
+        assert!(!cache.begin_decode(key));
+        cache.finish_decode(&key);
+        assert!(cache.begin_decode(key));
     }
 }

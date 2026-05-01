@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+const DISK_BACKED_PREVIEW_SAMPLE_ROWS: u32 = 32;
 pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_HDR_TILE_CACHE_MAX_BYTES);
 
@@ -270,25 +271,59 @@ pub(crate) fn downsample_hdr_image_nearest(
     })
 }
 
-pub(crate) fn hdr_preview_from_tile_nearest(
-    tile: &HdrTileBuffer,
+pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
+    source: &S,
     max_w: u32,
     max_h: u32,
 ) -> Result<HdrImageBuffer, String> {
-    downsample_hdr_image_nearest(
-        &HdrImageBuffer {
-            width: tile.width,
-            height: tile.height,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: tile.color_space,
-            rgba_f32: Arc::clone(&tile.rgba_f32),
-        },
-        max_w,
-        max_h,
-    )
+    let (width, height) = preview_dimensions(source.width(), source.height(), max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("HDR tiled preview dimensions must be non-zero".to_string());
+    }
+
+    let sample_height = if source.source_kind() == HdrTiledSourceKind::DiskBacked {
+        height.min(DISK_BACKED_PREVIEW_SAMPLE_ROWS)
+    } else {
+        height
+    };
+    let mut sampled_rows = Vec::with_capacity(sample_height as usize);
+    for sample_y in 0..sample_height {
+        let preview_y = preview_sample_coord(sample_y, sample_height, height);
+        let src_y = preview_sample_coord(preview_y, height, source.height());
+        let row = source.extract_tile_rgba32f_arc(0, src_y, source.width(), 1)?;
+        sampled_rows.push(row);
+    }
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for preview_y in 0..height {
+        let sample_y = preview_sample_coord(preview_y, height, sample_height) as usize;
+        let row = &sampled_rows[sample_y];
+        for preview_x in 0..width {
+            let src_x = preview_sample_coord(preview_x, width, source.width()) as usize;
+            let offset = src_x * 4;
+            rgba_f32.extend_from_slice(&row.rgba_f32[offset..offset + 4]);
+        }
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: source.color_space(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
 }
 
-fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+pub(crate) fn sdr_preview_from_hdr_preview(
+    preview: &HdrImageBuffer,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
+        .ok_or_else(|| "Failed to build SDR preview image from HDR preview".to_string())?;
+    Ok((image.width(), image.height(), image.into_raw()))
+}
+
+pub(crate) fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     if width == 0 || height == 0 || max_w == 0 || max_h == 0 {
         return (0, 0);
     }
@@ -300,7 +335,11 @@ fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, 
     (preview_width, preview_height)
 }
 
-fn preview_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: u32) -> u32 {
+pub(crate) fn preview_sample_coord(
+    preview_coord: u32,
+    preview_extent: u32,
+    source_extent: u32,
+) -> u32 {
     if preview_extent <= 1 {
         return 0;
     }
@@ -520,6 +559,36 @@ mod tests {
         assert_eq!(preview.format, HdrPixelFormat::Rgba32Float);
         assert_eq!(preview.color_space, HdrColorSpace::LinearSrgb);
         assert_eq!(preview.rgba_f32.len(), 2 * 4);
+    }
+
+    #[test]
+    fn tile_backed_hdr_preview_samples_expected_source_pixels() {
+        let pixels = (0..12)
+            .flat_map(|value| {
+                let value = value as f32;
+                [value, value, value, 1.0]
+            })
+            .collect();
+        let source = HdrTiledImageSource::new(HdrImageBuffer {
+            width: 4,
+            height: 3,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(pixels),
+        })
+        .expect("valid HDR tile source");
+
+        let preview = super::hdr_preview_from_tiled_source_nearest(&source, 2, 2)
+            .expect("generate tiled HDR preview");
+
+        assert_eq!((preview.width, preview.height), (2, 2));
+        assert_eq!(
+            preview.rgba_f32.as_slice(),
+            &[
+                0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0, 1.0, 8.0, 8.0, 8.0, 1.0, 11.0, 11.0, 11.0,
+                1.0,
+            ]
+        );
     }
 
     #[test]
