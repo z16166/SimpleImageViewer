@@ -21,7 +21,6 @@ use std::sync::{Arc, Mutex};
 use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use exr::block::chunk::Chunk;
-use exr::block::reader::ChunksReader;
 use exr::block::{BlockIndex, UncompressedBlock};
 use exr::compression::Compression;
 use exr::math::Vec2;
@@ -45,6 +44,10 @@ pub struct ExrTiledImageSource {
     #[allow(dead_code)]
     path: PathBuf,
     mmap: Arc<memmap2::Mmap>,
+    meta_data: MetaData,
+    header: exr::meta::header::Header,
+    cached_blocks: Vec<CachedExrBlock>,
+    channel_roles: Vec<Option<ChannelRole>>,
     width: u32,
     height: u32,
     part_index: usize,
@@ -52,6 +55,12 @@ pub struct ExrTiledImageSource {
     requires_disk_backed_decode: bool,
     has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CachedExrBlock {
+    index: BlockIndex,
+    offset: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -67,22 +76,26 @@ impl ExrTiledImageSource {
     }
 
     pub fn open_with_cache_budget(path: &Path, max_cache_bytes: usize) -> Result<Self, String> {
-        let mmap = mmap_file(path)?;
-        let parts = exr_part_infos_from_mmap(&mmap, &exr_file_context("read EXR part info", path))?;
+        let (mmap, mut meta_data, offset_tables) =
+            read_unvalidated_exr_bytes_and_offsets_from_mmap(
+                mmap_file(path)?,
+                &exr_file_context("read EXR metadata", path),
+            )?;
+        let parts = exr_part_infos_from_metadata(&meta_data);
         let part_index = default_display_part_index(&parts).unwrap_or(0);
-        let header = read_first_header_for_probe_from_mmap(
-            &mmap,
-            &exr_file_context("read EXR header", path),
-        )?;
-        let width = u32::try_from(header.layer_size.width())
+        let probe_header = meta_data
+            .headers
+            .get(part_index)
+            .ok_or_else(|| "EXR file has no image layers".to_string())?;
+        let width = u32::try_from(probe_header.layer_size.width())
             .map_err(|_| "EXR width exceeds u32".to_string())?;
-        let height = u32::try_from(header.layer_size.height())
+        let height = u32::try_from(probe_header.layer_size.height())
             .map_err(|_| "EXR height exceeds u32".to_string())?;
-        if header.deep {
+        if probe_header.deep {
             return Err("deep data not supported yet".to_string());
         }
-        let channel_layout = validate_required_rgba_channels(&header.channels)?;
-        let chromaticities = header.shared_attributes.chromaticities;
+        let channel_layout = validate_required_rgba_channels(&probe_header.channels)?;
+        let chromaticities = probe_header.shared_attributes.chromaticities;
         let color_space = hdr_color_space_from_exr_chromaticities(chromaticities);
         log::debug!(
             "[HDR] {}: {}",
@@ -90,15 +103,35 @@ impl ExrTiledImageSource {
             exr_metadata_diagnostic(chromaticities)
         );
         log_unsupported_exr_chromaticities(path, chromaticities);
-        let has_subsampled_channels = header
+        let has_subsampled_channels = probe_header
             .channels
             .list
             .iter()
             .any(|channel| channel.sampling != Vec2(1, 1));
+        if has_subsampled_channels {
+            normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
+        }
+        let header = meta_data
+            .headers
+            .get(part_index)
+            .ok_or_else(|| "EXR file has no image layers".to_string())?
+            .clone();
+        let channel_roles = channel_roles(&header.channels);
+        let cached_blocks = build_cached_exr_blocks(
+            &header,
+            part_index,
+            offset_tables
+                .get(part_index)
+                .ok_or_else(|| "EXR file has no offset table for display layer".to_string())?,
+        )?;
 
         Ok(Self {
             path: path.to_path_buf(),
             mmap,
+            meta_data,
+            header,
+            cached_blocks,
+            channel_roles,
             width,
             height,
             part_index,
@@ -124,42 +157,33 @@ impl ExrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
-        let (bytes, mut meta_data, offset_tables) =
-            read_unvalidated_exr_bytes_and_offsets_from_mmap(
-                Arc::clone(&self.mmap),
-                &exr_file_context("read unvalidated EXR metadata", &self.path),
-            )?;
-        normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
-        let header = meta_data
-            .headers
-            .get(self.part_index)
-            .ok_or_else(|| "EXR file has no image layers".to_string())?;
-        if !matches!(header.blocks, BlockDescription::ScanLines) || header.deep {
+        if !matches!(self.header.blocks, BlockDescription::ScanLines) || self.header.deep {
             return Err("subsampled EXR fallback supports only flat scanline images".to_string());
         }
 
-        validate_required_rgba_channels(&header.channels)?;
-        let channel_roles = channel_roles(&header.channels);
+        validate_required_rgba_channels(&self.header.channels)?;
         let tile_bounds = TileBounds::new(x, y, width, height);
         let mut tile = YcaTileAccumulator::new(width, height, yca_luma_weights(self.color_space));
 
-        for offset in offset_tables.get(self.part_index).into_iter().flatten() {
-            let mut cursor = Cursor::new(&bytes[..]);
+        for cached_block in self.intersecting_cached_blocks(tile_bounds) {
+            let mut cursor = Cursor::new(&self.mmap[..]);
             cursor
-                .seek(SeekFrom::Start(*offset))
+                .seek(SeekFrom::Start(cached_block.offset))
                 .map_err(|err| err.to_string())?;
-            let chunk = Chunk::read(&mut cursor, &meta_data).map_err(|err| err.to_string())?;
+            let chunk = Chunk::read(&mut cursor, &self.meta_data).map_err(|err| err.to_string())?;
             if chunk.layer_index != self.part_index {
                 continue;
             }
-            let block_index = compressed_chunk_block_index(&chunk, header)?;
-            if !should_decompress_unvalidated_block_for_tile(block_index, tile_bounds) {
-                continue;
-            }
 
-            let block = UncompressedBlock::decompress_chunk(chunk, &meta_data, false)
+            let block = UncompressedBlock::decompress_chunk(chunk, &self.meta_data, false)
                 .map_err(|err| err.to_string())?;
-            copy_subsampled_block_to_tile(&block, header, &channel_roles, tile_bounds, &mut tile)?;
+            copy_subsampled_block_to_tile(
+                &block,
+                &self.header,
+                &self.channel_roles,
+                tile_bounds,
+                &mut tile,
+            )?;
         }
 
         Ok(Arc::new(HdrTileBuffer {
@@ -184,6 +208,22 @@ impl ExrTiledImageSource {
             .lock()
             .map(|cache| cache.current_bytes())
             .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cached_block_index_count_for_tests(&self) -> usize {
+        self.cached_blocks.len()
+    }
+
+    fn intersecting_cached_blocks(&self, tile_bounds: TileBounds) -> Vec<CachedExrBlock> {
+        let mut blocks = self
+            .cached_blocks
+            .iter()
+            .copied()
+            .filter(|block| block_intersects_tile(block.index, tile_bounds))
+            .collect::<Vec<_>>();
+        blocks.sort_by_key(|block| block.offset);
+        blocks
     }
 }
 
@@ -319,35 +359,29 @@ impl HdrTiledSource for ExrTiledImageSource {
                 return self.extract_tile_rgba32f_arc_unvalidated_scanline(x, y, width, height);
             }
 
-            let reader = exr::block::read(Cursor::new(&self.mmap[..]), false)
-                .map_err(|err| err.to_string())?;
             let tile_bounds = TileBounds::new(x, y, width, height);
-            let chunks = reader
-                .filter_chunks(false, |_meta, _tile, block| {
-                    block.level == Vec2(0, 0)
-                        && block.layer == self.part_index
-                        && block_intersects_tile(block, tile_bounds)
-                })
-                .map_err(|err| err.to_string())?;
-
-            let header = chunks
-                .headers()
-                .get(self.part_index)
-                .ok_or_else(|| "EXR file has no image layers".to_string())?
-                .clone();
-            validate_required_rgba_channels(&header.channels)?;
-            let channel_roles = channel_roles(&header.channels);
+            validate_required_rgba_channels(&self.header.channels)?;
 
             let mut rgba = vec![0.0; width as usize * height as usize * 4];
             for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
                 *alpha = 1.0;
             }
 
-            let mut decompressor = chunks.sequential_decompressor(false);
-            while let Some(block) = decompressor.next() {
-                let block = block.map_err(|err| err.to_string())?;
-                for line in block.lines(&header.channels) {
-                    let Some(channel) = channel_roles
+            for cached_block in self.intersecting_cached_blocks(tile_bounds) {
+                let mut cursor = Cursor::new(&self.mmap[..]);
+                cursor
+                    .seek(SeekFrom::Start(cached_block.offset))
+                    .map_err(|err| err.to_string())?;
+                let chunk =
+                    Chunk::read(&mut cursor, &self.meta_data).map_err(|err| err.to_string())?;
+                if chunk.layer_index != self.part_index {
+                    continue;
+                }
+                let block = UncompressedBlock::decompress_chunk(chunk, &self.meta_data, false)
+                    .map_err(|err| err.to_string())?;
+                for line in block.lines(&self.header.channels) {
+                    let Some(channel) = self
+                        .channel_roles
                         .get(line.location.channel)
                         .and_then(|role| *role)
                     else {
@@ -355,7 +389,7 @@ impl HdrTiledSource for ExrTiledImageSource {
                     };
                     copy_line_channel_to_tile(
                         line,
-                        header.channels.list[line.location.channel].sample_type,
+                        self.header.channels.list[line.location.channel].sample_type,
                         channel,
                         tile_bounds,
                         &mut rgba,
@@ -532,35 +566,40 @@ pub(crate) fn exr_part_infos(path: &Path) -> Result<Vec<ExrPartInfo>, String> {
     exr_part_infos_from_mmap(&mmap, &exr_file_context("read EXR part info", path))
 }
 
+#[cfg(test)]
 fn exr_part_infos_from_mmap(mmap: &[u8], context: &str) -> Result<Vec<ExrPartInfo>, String> {
     catch_exr_panic(context, || {
         let meta_data = MetaData::read_from_buffered(Cursor::new(mmap), false)
             .map_err(|err| err.to_string())?;
-        Ok(meta_data
-            .headers
-            .iter()
-            .enumerate()
-            .map(|(index, header)| {
-                let channel_names = header
-                    .channels
-                    .list
-                    .iter()
-                    .map(|channel| channel.name.to_string())
-                    .collect::<Vec<_>>();
-                let is_displayable_color = has_rgb_channels(&header.channels)
-                    || channel_roles(&header.channels)
-                        .iter()
-                        .any(|role| *role == Some(ChannelRole::Luminance));
-                let is_depth_only = !is_displayable_color
-                    && channel_names.iter().any(|name| is_depth_channel_name(name));
-                ExrPartInfo {
-                    index,
-                    is_displayable_color,
-                    is_depth_only,
-                }
-            })
-            .collect())
+        Ok(exr_part_infos_from_metadata(&meta_data))
     })
+}
+
+fn exr_part_infos_from_metadata(meta_data: &MetaData) -> Vec<ExrPartInfo> {
+    meta_data
+        .headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let channel_names = header
+                .channels
+                .list
+                .iter()
+                .map(|channel| channel.name.to_string())
+                .collect::<Vec<_>>();
+            let is_displayable_color = has_rgb_channels(&header.channels)
+                || channel_roles(&header.channels)
+                    .iter()
+                    .any(|role| *role == Some(ChannelRole::Luminance));
+            let is_depth_only = !is_displayable_color
+                && channel_names.iter().any(|name| is_depth_channel_name(name));
+            ExrPartInfo {
+                index,
+                is_displayable_color,
+                is_depth_only,
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn default_display_part_index(parts: &[ExrPartInfo]) -> Option<usize> {
@@ -606,6 +645,35 @@ fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, String> {
         .read_exact(&mut bytes)
         .map_err(|err| err.to_string())?;
     Ok(u64::from_le_bytes(bytes))
+}
+
+fn build_cached_exr_blocks(
+    header: &exr::meta::header::Header,
+    part_index: usize,
+    offsets: &[u64],
+) -> Result<Vec<CachedExrBlock>, String> {
+    let mut blocks = Vec::with_capacity(offsets.len());
+    for (block_index, tile) in header.blocks_increasing_y_order().enumerate() {
+        let data_indices = header
+            .get_absolute_block_pixel_coordinates(tile.location)
+            .map_err(|err| err.to_string())?;
+        let offset = *offsets
+            .get(block_index)
+            .ok_or_else(|| "EXR offset table is shorter than block index".to_string())?;
+        blocks.push(CachedExrBlock {
+            index: BlockIndex {
+                layer: part_index,
+                level: tile.location.level_index,
+                pixel_position: data_indices
+                    .position
+                    .to_usize("data indices start")
+                    .map_err(|err| err.to_string())?,
+                pixel_size: data_indices.size,
+            },
+            offset,
+        });
+    }
+    Ok(blocks)
 }
 
 fn normalize_subsampled_metadata_for_decompression(meta_data: &mut MetaData) -> Result<(), String> {
@@ -1032,29 +1100,9 @@ fn block_intersects_tile(block: BlockIndex, tile: TileBounds) -> bool {
         && block_bottom > tile.y
 }
 
+#[cfg(test)]
 fn should_decompress_unvalidated_block_for_tile(block: BlockIndex, tile: TileBounds) -> bool {
     block_intersects_tile(block, tile)
-}
-
-fn compressed_chunk_block_index(
-    chunk: &Chunk,
-    header: &exr::meta::header::Header,
-) -> Result<BlockIndex, String> {
-    let tile_data_indices = header
-        .get_block_data_indices(&chunk.compressed_block)
-        .map_err(|err| err.to_string())?;
-    let absolute_indices = header
-        .get_absolute_block_pixel_coordinates(tile_data_indices)
-        .map_err(|err| err.to_string())?;
-    Ok(BlockIndex {
-        layer: chunk.layer_index,
-        pixel_position: absolute_indices
-            .position
-            .to_usize("data indices start")
-            .map_err(|err| err.to_string())?,
-        pixel_size: absolute_indices.size,
-        level: tile_data_indices.level_index,
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1996,8 +2044,12 @@ mod tests {
     fn exr_tiled_source_extracts_requested_rgba32f_region() {
         let path = write_test_exr(4, 2, "region");
 
-        let source: Arc<dyn HdrTiledSource> =
-            Arc::new(super::ExrTiledImageSource::open(&path).expect("open EXR tiled source"));
+        let concrete = super::ExrTiledImageSource::open(&path).expect("open EXR tiled source");
+        assert!(
+            concrete.cached_block_index_count_for_tests() > 0,
+            "EXR source should cache block index metadata at open"
+        );
+        let source: Arc<dyn HdrTiledSource> = Arc::new(concrete);
         assert_eq!(source.source_kind(), HdrTiledSourceKind::DiskBacked);
         assert_eq!(source.width(), 4);
         assert_eq!(source.height(), 2);
