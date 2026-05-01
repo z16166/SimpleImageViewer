@@ -581,13 +581,18 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.tile.color_space,
             self.uv_rect,
         );
-        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        let tile_key = HdrTileKey::from_tile(&self.tile);
+        let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
         if !resources.tile_bindings.contains(tile_key) {
             match upload_callback_tile(device, queue, &self.tile) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = None;
+                    let tone_map_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
+                            contents: bytemuck::bytes_of(&uniform),
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        });
                     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
                         layout: &resources.bind_group_layout,
@@ -598,7 +603,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
-                                resource: resources.tone_map_buffer.as_entire_binding(),
+                                resource: tone_map_buffer.as_entire_binding(),
                             },
                         ],
                     });
@@ -606,6 +611,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         tile_key,
                         uploaded.texture,
                         uploaded.view,
+                        tone_map_buffer,
                         bind_group,
                     );
                 }
@@ -613,6 +619,11 @@ impl CallbackTrait for HdrTilePlaneCallback {
                     log::warn!("[HDR] Skipping HDR tile plane upload: {err}");
                     resources.tile_bindings.remove(tile_key);
                 }
+            }
+        }
+        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+            if let Some(buffer) = binding.tone_map_buffer.as_ref() {
+                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
             }
         }
 
@@ -628,7 +639,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
         let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
             return;
         };
-        let tile_key = HdrTileKey::from_tile(&self.tile);
+        let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
         let Some(bind_group) = resources.tile_bindings.bind_group(tile_key) else {
             return;
         };
@@ -751,16 +762,27 @@ struct HdrTileKey {
     height: u32,
     rgba_ptr: usize,
     rgba_len: usize,
+    uv_min_bits: [u32; 2],
+    uv_max_bits: [u32; 2],
 }
 
 impl HdrTileKey {
     #[allow(dead_code)]
     fn from_tile(tile: &crate::hdr::tiled::HdrTileBuffer) -> Self {
+        Self::from_tile_with_uv(
+            tile,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        )
+    }
+
+    fn from_tile_with_uv(tile: &crate::hdr::tiled::HdrTileBuffer, uv_rect: egui::Rect) -> Self {
         Self {
             width: tile.width,
             height: tile.height,
             rgba_ptr: Arc::as_ptr(&tile.rgba_f32) as usize,
             rgba_len: tile.rgba_f32.len(),
+            uv_min_bits: [uv_rect.min.x.to_bits(), uv_rect.min.y.to_bits()],
+            uv_max_bits: [uv_rect.max.x.to_bits(), uv_rect.max.y.to_bits()],
         }
     }
 }
@@ -933,6 +955,7 @@ impl HdrTileBindings {
         key: HdrTileKey,
         texture: wgpu::Texture,
         view: wgpu::TextureView,
+        tone_map_buffer: wgpu::Buffer,
         bind_group: wgpu::BindGroup,
     ) {
         self.insert_binding(
@@ -940,6 +963,7 @@ impl HdrTileBindings {
             HdrTileBinding {
                 _texture: Some(texture),
                 _view: Some(view),
+                tone_map_buffer: Some(tone_map_buffer),
                 bind_group: Some(bind_group),
                 estimated_bytes: 0,
             },
@@ -993,6 +1017,7 @@ impl HdrTileBindings {
             HdrTileBinding {
                 _texture: None,
                 _view: None,
+                tone_map_buffer: None,
                 bind_group: None,
                 estimated_bytes: 0,
             },
@@ -1011,11 +1036,16 @@ impl HdrTileBindings {
             .get(&key)
             .and_then(|entry| entry.bind_group.as_ref())
     }
+
+    fn binding_mut(&mut self, key: HdrTileKey) -> Option<&mut HdrTileBinding> {
+        self.entries.get_mut(&key)
+    }
 }
 
 struct HdrTileBinding {
     _texture: Option<wgpu::Texture>,
     _view: Option<wgpu::TextureView>,
+    tone_map_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     estimated_bytes: usize,
 }
@@ -1429,6 +1459,21 @@ mod tests {
             HdrTileKey::from_tile(&first),
             HdrTileKey::from_tile(&second)
         );
+    }
+
+    #[test]
+    fn hdr_tile_keys_distinguish_uv_subrects() {
+        let tile = hdr_tile(2, 2, vec![1.0; 2 * 2 * 4]);
+        let full = HdrTileKey::from_tile_with_uv(
+            &tile,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        );
+        let clipped = HdrTileKey::from_tile_with_uv(
+            &tile,
+            egui::Rect::from_min_max(egui::Pos2::new(0.5, 0.0), egui::Pos2::new(1.0, 1.0)),
+        );
+
+        assert_ne!(full, clipped);
     }
 
     #[test]
