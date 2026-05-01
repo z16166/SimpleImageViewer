@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,6 +68,7 @@ pub trait HdrTiledSource: Send + Sync {
     ) -> Option<Arc<HdrTileBuffer>> {
         None
     }
+    fn protect_cached_tiles(&self, _tiles: &[(u32, u32, u32, u32)]) {}
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
@@ -187,6 +188,12 @@ impl HdrTiledSource for HdrTiledImageSource {
             .lock()
             .ok()
             .and_then(|mut cache| cache.get((x, y, width, height)))
+    }
+
+    fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            cache.set_protected_keys(tiles.iter().copied());
+        }
     }
 
     fn extract_tile_rgba32f_arc(
@@ -311,6 +318,7 @@ fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
 pub(crate) struct HdrTileCache {
     entries: HashMap<HdrTileCacheKey, Arc<HdrTileBuffer>>,
     lru: VecDeque<HdrTileCacheKey>,
+    protected: HashSet<HdrTileCacheKey>,
     current_bytes: usize,
     max_bytes: usize,
 }
@@ -320,6 +328,7 @@ impl HdrTileCache {
         Self {
             entries: HashMap::new(),
             lru: VecDeque::new(),
+            protected: HashSet::new(),
             current_bytes: 0,
             max_bytes,
         }
@@ -339,12 +348,18 @@ impl HdrTileCache {
 
         let bytes = tile_len_bytes(&tile);
         while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
-            if let Some(evicted_key) = self.lru.pop_front() {
-                if let Some(evicted_tile) = self.entries.remove(&evicted_key) {
-                    self.current_bytes = self
-                        .current_bytes
-                        .saturating_sub(tile_len_bytes(&evicted_tile));
-                }
+            let evict_pos = self
+                .lru
+                .iter()
+                .position(|existing| !self.protected.contains(existing))
+                .unwrap_or(0);
+            let Some(evicted_key) = self.lru.remove(evict_pos) else {
+                break;
+            };
+            if let Some(evicted_tile) = self.entries.remove(&evicted_key) {
+                self.current_bytes = self
+                    .current_bytes
+                    .saturating_sub(tile_len_bytes(&evicted_tile));
             }
         }
 
@@ -360,6 +375,11 @@ impl HdrTileCache {
             self.lru.remove(pos);
         }
         self.lru.push_back(key);
+    }
+
+    pub(crate) fn set_protected_keys(&mut self, keys: impl IntoIterator<Item = HdrTileCacheKey>) {
+        self.protected.clear();
+        self.protected.extend(keys);
     }
 
     #[cfg(test)]
@@ -560,6 +580,24 @@ mod tests {
     }
 
     #[test]
+    fn hdr_tile_cache_keeps_protected_visible_tiles_when_over_budget() {
+        let mut cache = super::HdrTileCache::new(2 * tile_bytes(1, 1));
+        let first_key = (0, 0, 1, 1);
+        let second_key = (1, 0, 1, 1);
+        let third_key = (2, 0, 1, 1);
+
+        cache.insert(first_key, Arc::new(hdr_tile(1, 1, 1.0)));
+        cache.insert(second_key, Arc::new(hdr_tile(1, 1, 2.0)));
+        cache.set_protected_keys([first_key]);
+        cache.insert(third_key, Arc::new(hdr_tile(1, 1, 3.0)));
+
+        assert!(cache.get(first_key).is_some());
+        assert!(cache.get(third_key).is_some());
+        assert!(cache.get(second_key).is_none());
+        assert!(cache.current_bytes() <= 2 * tile_bytes(1, 1));
+    }
+
+    #[test]
     fn hdr_tile_cache_refreshes_lru_on_repeated_access() {
         let source =
             HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
@@ -629,5 +667,14 @@ mod tests {
 
     fn tile_bytes(width: u32, height: u32) -> usize {
         width as usize * height as usize * 4 * std::mem::size_of::<f32>()
+    }
+
+    fn hdr_tile(width: u32, height: u32, value: f32) -> super::HdrTileBuffer {
+        super::HdrTileBuffer {
+            width,
+            height,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![value; width as usize * height as usize * 4]),
+        }
     }
 }

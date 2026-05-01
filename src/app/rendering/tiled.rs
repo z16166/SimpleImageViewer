@@ -154,6 +154,18 @@ fn should_schedule_hdr_tile_extract(is_cached: bool, scheduled_this_frame: usize
     !is_cached && scheduled_this_frame < HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
 }
 
+fn hdr_tile_cache_key_for_coord(
+    source: &dyn crate::hdr::tiled::HdrTiledSource,
+    coord: TileCoord,
+) -> (u32, u32, u32, u32) {
+    let ts = crate::tile_cache::get_tile_size();
+    let tile_x = coord.col * ts;
+    let tile_y = coord.row * ts;
+    let tile_w = ts.min(source.width() - tile_x);
+    let tile_h = ts.min(source.height() - tile_y);
+    (tile_x, tile_y, tile_w, tile_h)
+}
+
 fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
@@ -441,6 +453,17 @@ impl ImageViewerApp {
                 padding,
             );
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                let protected_keys: Vec<_> = self
+                    .tile_manager
+                    .as_ref()
+                    .unwrap()
+                    .visible_tiles(unrotated_dest, tile_clip, 0.0)
+                    .iter()
+                    .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
+                    .collect();
+                hdr_source.protect_cached_tiles(&protected_keys);
+            }
             if let Some(tm) = &mut self.tile_manager {
                 tm.retain_pending_tiles(&visible_coords);
             }
@@ -488,11 +511,8 @@ impl ImageViewerApp {
                 for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
                     if !draw_sdr_tiles {
                         if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                            let ts = crate::tile_cache::get_tile_size();
-                            let tile_x = coord.col * ts;
-                            let tile_y = coord.row * ts;
-                            let tile_w = ts.min(hdr_source.width() - tile_x);
-                            let tile_h = ts.min(hdr_source.height() - tile_y);
+                            let (tile_x, tile_y, tile_w, tile_h) =
+                                hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord);
                             let Some(hdr_tile) =
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {

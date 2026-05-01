@@ -97,6 +97,12 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             .and_then(|mut cache| cache.get((x, y, width, height)))
     }
 
+    fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            cache.set_protected_keys(tiles.iter().copied());
+        }
+    }
+
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
