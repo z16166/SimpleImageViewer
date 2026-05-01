@@ -12,6 +12,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+fn preserve_current_tile_manager_for_navigation(
+    current_index: usize,
+    target_index: usize,
+    tile_manager: &mut Option<TileManager>,
+    prefetched_tiles: &mut std::collections::HashMap<usize, TileManager>,
+) {
+    if current_index != target_index {
+        if let Some(tm) = tile_manager.take() {
+            prefetched_tiles.insert(current_index, tm);
+        }
+    }
+}
+
 impl ImageViewerApp {
     pub(crate) fn effective_ultra_hdr_decode_capacity(&self) -> f32 {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
@@ -265,10 +278,12 @@ impl ImageViewerApp {
             self.active_transition = TransitionStyle::None;
         }
 
-        if self.current_index != target_index {
-            // Clear tiled rendering state when switching images
-            self.tile_manager = None;
-        }
+        preserve_current_tile_manager_for_navigation(
+            self.current_index,
+            target_index,
+            &mut self.tile_manager,
+            &mut self.prefetched_tiles,
+        );
         self.current_index = target_index;
         self.current_hdr_image = self
             .hdr_image_cache
@@ -1372,5 +1387,59 @@ impl ImageViewerApp {
             egui::TextureOptions::LINEAR,
         );
         tm.preview_texture = Some(preview_handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct DummyTiledSource {
+        width: u32,
+        height: u32,
+    }
+
+    impl crate::loader::TiledImageSource for DummyTiledSource {
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; w as usize * h as usize * 4])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    #[test]
+    fn navigation_preserves_current_tile_manager_for_restore() {
+        let source = Arc::new(DummyTiledSource {
+            width: 4096,
+            height: 4096,
+        });
+        let mut tile_manager = Some(TileManager::with_source(7, 42, source));
+        let mut prefetched_tiles = HashMap::new();
+
+        preserve_current_tile_manager_for_navigation(
+            7,
+            8,
+            &mut tile_manager,
+            &mut prefetched_tiles,
+        );
+
+        assert!(tile_manager.is_none());
+        assert!(prefetched_tiles.contains_key(&7));
+        assert_eq!(prefetched_tiles.get(&7).unwrap().generation, 42);
     }
 }

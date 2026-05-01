@@ -116,6 +116,40 @@ fn clipped_hdr_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Re
     Some((rect, uv))
 }
 
+#[cfg(feature = "tile-debug")]
+fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot: Option<egui::emath::Rot2>) {
+    if let Some(r) = rot {
+        let p1 = pivot + r * (rect.left_top() - pivot);
+        let p2 = pivot + r * (rect.right_top() - pivot);
+        let p3 = pivot + r * (rect.right_bottom() - pivot);
+        let p4 = pivot + r * (rect.left_bottom() - pivot);
+        ui.painter().line_segment(
+            [p1, p2],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p2, p3],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p3, p4],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p4, p1],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+    } else {
+        ui.painter().rect(
+            rect,
+            0.0,
+            Color32::TRANSPARENT,
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 fn should_schedule_hdr_tile_extract(is_cached: bool, scheduled_this_frame: usize) -> bool {
     !is_cached && scheduled_this_frame < HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
 }
@@ -509,13 +543,7 @@ impl ImageViewerApp {
 
                                 #[cfg(feature = "tile-debug")]
                                 if self.settings.show_osd {
-                                    ui.painter().rect(
-                                        hdr_rect,
-                                        0.0,
-                                        Color32::TRANSPARENT,
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                        egui::StrokeKind::Inside,
-                                    );
+                                    draw_tile_debug_border(ui, hdr_rect, pivot, None);
                                 }
                             }
                         }
@@ -549,38 +577,7 @@ impl ImageViewerApp {
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
                             if self.settings.show_osd {
-                                let debug_rect = *tile_screen_rect;
-                                if let Some(r) = rot {
-                                    // Approximate rotation of rect for border
-                                    let p1 = pivot + r * (debug_rect.left_top() - pivot);
-                                    let p2 = pivot + r * (debug_rect.right_top() - pivot);
-                                    let p3 = pivot + r * (debug_rect.right_bottom() - pivot);
-                                    let p4 = pivot + r * (debug_rect.left_bottom() - pivot);
-                                    ui.painter().line_segment(
-                                        [p1, p2],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p2, p3],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p3, p4],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p4, p1],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                } else {
-                                    ui.painter().rect(
-                                        debug_rect,
-                                        0.0,
-                                        Color32::TRANSPARENT,
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
+                                draw_tile_debug_border(ui, *tile_screen_rect, pivot, rot);
                             }
                         }
                         TileStatus::Pending(needs_request) => {
