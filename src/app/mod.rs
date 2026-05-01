@@ -617,7 +617,9 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
-        self.hdr_monitor_state.refresh_from_viewport(ctx, now);
+        let hdr_content_visible = self.current_hdr_render_path().is_some();
+        self.hdr_monitor_state
+            .refresh_from_viewport(ctx, now, hdr_content_visible);
         let output_mode = crate::hdr::monitor::effective_capability_output_mode(
             self.hdr_target_format,
             self.hdr_monitor_state.selection(),

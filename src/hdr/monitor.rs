@@ -87,9 +87,10 @@ impl HdrMonitorState {
         &mut self,
         ctx: &egui::Context,
         now: Instant,
+        hdr_content_visible: bool,
     ) -> Option<&HdrMonitorSelection> {
         let signature = ctx.input(|input| HdrMonitorSignature::from_viewport(input.viewport()));
-        if !self.should_probe(signature, now) {
+        if !self.should_probe(signature, now, hdr_content_visible) {
             return self.selection.as_ref();
         }
 
@@ -117,15 +118,47 @@ impl HdrMonitorState {
         self.selection.as_ref()
     }
 
-    fn should_probe(&self, signature: HdrMonitorSignature, now: Instant) -> bool {
-        if self.last_signature == Some(signature) {
-            return false;
-        }
+    fn should_probe(
+        &self,
+        signature: HdrMonitorSignature,
+        now: Instant,
+        hdr_content_visible: bool,
+    ) -> bool {
+        self.should_probe_for_platform(
+            signature,
+            now,
+            hdr_content_visible,
+            cfg!(target_os = "macos"),
+        )
+    }
 
-        match self.last_probe_at {
+    fn should_probe_for_platform(
+        &self,
+        signature: HdrMonitorSignature,
+        now: Instant,
+        hdr_content_visible: bool,
+        supports_current_edr_reprobe: bool,
+    ) -> bool {
+        let interval_elapsed = match self.last_probe_at {
             Some(last_probe_at) => now.duration_since(last_probe_at) >= HDR_MONITOR_PROBE_INTERVAL,
             None => true,
+        };
+        if self.last_signature == Some(signature) {
+            return hdr_content_visible
+                && self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
+                && interval_elapsed;
         }
+
+        interval_elapsed
+    }
+
+    fn should_reprobe_current_edr_capacity(&self, supports_current_edr_reprobe: bool) -> bool {
+        if !supports_current_edr_reprobe {
+            return false;
+        }
+        self.selection.as_ref().is_some_and(|selection| {
+            selection.hdr_supported && selection.max_hdr_capacity.is_none()
+        })
     }
 }
 
@@ -477,12 +510,56 @@ mod tests {
         };
         let mut state = HdrMonitorState::default();
 
-        assert!(state.should_probe(first, start));
+        assert!(state.should_probe(first, start, false));
         state.last_signature = Some(first);
         state.last_probe_at = Some(start);
-        assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2));
-        assert!(!state.should_probe(moved, start + Duration::from_millis(100)));
-        assert!(state.should_probe(moved, start + HDR_MONITOR_PROBE_INTERVAL));
+        assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
+        assert!(!state.should_probe(moved, start + Duration::from_millis(100), false));
+        assert!(state.should_probe(moved, start + HDR_MONITOR_PROBE_INTERVAL, false));
+    }
+
+    #[test]
+    fn macos_current_edr_reprobe_uses_interval_without_viewport_change() {
+        let start = Instant::now();
+        let signature = HdrMonitorSignature {
+            outer_rect: Some([0, 0, 100, 100]),
+            monitor_size: Some([1920, 1080]),
+            native_pixels_per_point_milli: Some(1000),
+        };
+        let mut state = HdrMonitorState::default();
+        state.last_signature = Some(signature);
+        state.last_probe_at = Some(start);
+        state.selection = Some(macos_edr_selection_from_values(
+            "Built-in XDR".to_string(),
+            1.0,
+            16.0,
+            0.0,
+        ));
+
+        assert!(!state.should_probe_for_platform(
+            signature,
+            start + Duration::from_millis(100),
+            true,
+            true
+        ));
+        assert!(state.should_probe_for_platform(
+            signature,
+            start + HDR_MONITOR_PROBE_INTERVAL,
+            true,
+            true
+        ));
+        assert!(!state.should_probe_for_platform(
+            signature,
+            start + HDR_MONITOR_PROBE_INTERVAL,
+            false,
+            true
+        ));
+        assert!(!state.should_probe_for_platform(
+            signature,
+            start + HDR_MONITOR_PROBE_INTERVAL,
+            true,
+            false
+        ));
     }
 
     #[test]
