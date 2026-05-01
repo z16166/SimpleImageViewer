@@ -138,7 +138,15 @@ fn should_draw_hdr_preview_for_tiled_mode(
     effective_scale: f32,
     tile_threshold: f32,
 ) -> bool {
-    !draw_sdr_tiles && effective_scale < tile_threshold
+    let _ = (effective_scale, tile_threshold);
+    !draw_sdr_tiles
+}
+
+fn should_draw_hdr_tiles_for_tiled_mode(
+    draw_sdr_tiles: bool,
+    all_visible_tiles_cached: bool,
+) -> bool {
+    !draw_sdr_tiles && all_visible_tiles_cached
 }
 
 fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
@@ -186,6 +194,27 @@ fn schedule_hdr_tile_extract(
     });
 
     true
+}
+
+fn hdr_tile_is_cached(source: &dyn crate::hdr::tiled::HdrTiledSource, coord: TileCoord) -> bool {
+    let ts = crate::tile_cache::get_tile_size();
+    let tile_x = coord.col * ts;
+    let tile_y = coord.row * ts;
+    let tile_w = ts.min(source.width() - tile_x);
+    let tile_h = ts.min(source.height() - tile_y);
+    source
+        .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+        .is_some()
+}
+
+fn visible_hdr_tiles_are_cached(
+    source: &dyn crate::hdr::tiled::HdrTiledSource,
+    visible_coords: &[TileCoord],
+) -> bool {
+    !visible_coords.is_empty()
+        && visible_coords
+            .iter()
+            .all(|coord| hdr_tile_is_cached(source, *coord))
 }
 
 impl ImageViewerApp {
@@ -248,11 +277,13 @@ impl ImageViewerApp {
             .tile_manager
             .as_ref()
             .and_then(|tm| tm.preview_texture.clone());
-        if should_draw_tiled_preview_transition(
-            self.active_transition,
-            tp.is_animating,
-            preview_for_transition.is_some(),
-        ) {
+        if draw_sdr_tiles
+            && should_draw_tiled_preview_transition(
+                self.active_transition,
+                tp.is_animating,
+                preview_for_transition.is_some(),
+            )
+        {
             if let Some(preview) = preview_for_transition {
                 self.draw_complex_transition(
                     ui,
@@ -400,6 +431,20 @@ impl ImageViewerApp {
                 padding,
             );
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            let visible_draw_coords: Vec<TileCoord> = self
+                .tile_manager
+                .as_ref()
+                .unwrap()
+                .visible_tiles(unrotated_dest, tile_clip, 0.0)
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect();
+            let draw_hdr_tiles = hdr_source_for_frame.as_ref().is_some_and(|source| {
+                should_draw_hdr_tiles_for_tiled_mode(
+                    draw_sdr_tiles,
+                    visible_hdr_tiles_are_cached(source.as_ref(), &visible_draw_coords),
+                )
+            });
             if let Some(tm) = &mut self.tile_manager {
                 tm.retain_pending_tiles(&visible_coords);
             }
@@ -433,7 +478,6 @@ impl ImageViewerApp {
 
             let mut newly_uploaded = 0;
             let mut hdr_async_extracts = 0;
-            let mut skipped_hdr_extract = false;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -472,9 +516,11 @@ impl ImageViewerApp {
                                 {
                                     hdr_async_extracts += 1;
                                 }
-                                skipped_hdr_extract = true;
                                 continue;
                             };
+                            if !draw_hdr_tiles {
+                                continue;
+                            }
 
                             let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
                                 *tile_screen_rect,
@@ -643,7 +689,7 @@ impl ImageViewerApp {
                 .unwrap()
                 .has_ready_to_upload(&visible_coords)
                 && draw_sdr_tiles;
-            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract {
+            if newly_uploaded > 0 || has_more_ready {
                 ui.ctx().request_repaint();
             }
         }
@@ -655,9 +701,10 @@ mod tests {
     use super::{
         HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME, clipped_hdr_tile_plane,
         hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
-        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_schedule_hdr_tile_extract, tiled_plane_threshold,
+        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
+        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
+        tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use eframe::egui::{Pos2, Rect};
@@ -762,10 +809,17 @@ mod tests {
     }
 
     #[test]
-    fn native_hdr_tiled_mode_uses_hdr_preview_below_tile_threshold() {
+    fn native_hdr_tiled_mode_keeps_hdr_preview_as_base_plane() {
         assert!(should_draw_hdr_preview_for_tiled_mode(false, 0.5, 1.0));
-        assert!(!should_draw_hdr_preview_for_tiled_mode(false, 2.0, 1.0));
+        assert!(should_draw_hdr_preview_for_tiled_mode(false, 2.0, 1.0));
         assert!(!should_draw_hdr_preview_for_tiled_mode(true, 0.5, 1.0));
+    }
+
+    #[test]
+    fn native_hdr_tiled_mode_draws_tiles_only_after_visible_set_is_cached() {
+        assert!(!should_draw_hdr_tiles_for_tiled_mode(false, false));
+        assert!(should_draw_hdr_tiles_for_tiled_mode(false, true));
+        assert!(!should_draw_hdr_tiles_for_tiled_mode(true, true));
     }
 
     #[test]
