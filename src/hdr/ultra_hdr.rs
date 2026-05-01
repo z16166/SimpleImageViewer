@@ -251,6 +251,13 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         HdrTiledSourceKind::DiskBacked
     }
 
+    fn source_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
+
     fn width(&self) -> u32 {
         self.width
     }

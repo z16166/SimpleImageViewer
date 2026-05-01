@@ -54,6 +54,9 @@ impl HdrTiledSourceKind {
 #[allow(dead_code)]
 pub trait HdrTiledSource: Send + Sync {
     fn source_kind(&self) -> HdrTiledSourceKind;
+    fn source_name(&self) -> String {
+        "<memory>".to_string()
+    }
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;

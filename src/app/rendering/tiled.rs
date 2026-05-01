@@ -303,18 +303,20 @@ fn schedule_hdr_tile_extract(
             .cached_tile_rgba32f_arc(key.x, key.y, key.width, key.height)
             .is_some()
         {
-            let elapsed = started.elapsed();
-            log::info!(
-                "[HDR][tile] cache_hit index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
-                key.index,
-                key.generation,
-                is_primary_visible,
-                key.x,
-                key.y,
-                key.width,
-                key.height,
-                elapsed.as_secs_f64() * 1000.0
-            );
+            #[cfg(feature = "tile-debug")]
+            {
+                let elapsed = started.elapsed();
+                log::info!(
+                    "{}",
+                    format_hdr_tile_log(
+                        "cache_hit",
+                        &source.source_name(),
+                        &key,
+                        is_primary_visible,
+                        elapsed.as_secs_f64() * 1000.0
+                    )
+                );
+            }
             if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
                 pending.remove(&pending_key);
             }
@@ -326,21 +328,22 @@ fn schedule_hdr_tile_extract(
         let elapsed = started.elapsed();
         match result {
             Ok(_) => {
+                #[cfg(feature = "tile-debug")]
                 log::info!(
-                    "[HDR][tile] decoded index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}",
-                    key.index,
-                    key.generation,
-                    is_primary_visible,
-                    key.x,
-                    key.y,
-                    key.width,
-                    key.height,
-                    elapsed.as_secs_f64() * 1000.0
+                    "{}",
+                    format_hdr_tile_log(
+                        "decoded",
+                        &source.source_name(),
+                        &key,
+                        is_primary_visible,
+                        elapsed.as_secs_f64() * 1000.0
+                    )
                 );
             }
             Err(err) => {
                 log::warn!(
-                    "[HDR][tile] failed index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}: {}",
+                    "[HDR][tile] failed file=\"{}\" index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}: {}",
+                    source.source_name(),
                     key.index,
                     key.generation,
                     is_primary_visible,
@@ -360,6 +363,20 @@ fn schedule_hdr_tile_extract(
     });
 
     true
+}
+
+#[cfg(any(test, feature = "tile-debug"))]
+fn format_hdr_tile_log(
+    event: &str,
+    source_name: &str,
+    key: &PendingHdrTileExtract,
+    is_primary_visible: bool,
+    elapsed_ms: f64,
+) -> String {
+    format!(
+        "[HDR][tile] {event} file=\"{source_name}\" index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={elapsed_ms:.2}",
+        key.index, key.generation, is_primary_visible, key.x, key.y, key.width, key.height
+    )
 }
 
 fn pending_hdr_tile_extract_count(index: usize, _generation: u64) -> usize {
@@ -519,6 +536,7 @@ impl ImageViewerApp {
         }
 
         // Log threshold diagnostics once per image load
+        #[cfg(feature = "tile-debug")]
         {
             use std::sync::atomic::{AtomicU64, Ordering};
             static LAST_LOGGED_SCALE: AtomicU64 = AtomicU64::new(0);
@@ -851,13 +869,13 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingHdrTileExtract, clipped_hdr_tile_plane, hdr_tile_extract_frame_schedule_cap,
-        hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
-        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
-        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
-        tiled_plane_threshold,
+        PendingHdrTileExtract, clipped_hdr_tile_plane, format_hdr_tile_log,
+        hdr_tile_extract_frame_schedule_cap, hdr_tile_extract_hard_pending_cap,
+        hdr_tile_extract_pending_cap, hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active,
+        rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
+        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
+        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
+        should_schedule_hdr_tile_extract, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -1000,6 +1018,26 @@ mod tests {
         };
 
         assert_eq!(older.pending_key(), newer.pending_key());
+    }
+
+    #[test]
+    fn hdr_tile_timing_log_includes_file_name() {
+        let key = PendingHdrTileExtract {
+            index: 226,
+            generation: 24,
+            x: 14848,
+            y: 5632,
+            width: 512,
+            height: 512,
+        };
+
+        let message =
+            format_hdr_tile_log("decoded", "sundowner_overlook_24k.hdr", &key, true, 87.82);
+
+        assert_eq!(
+            message,
+            "[HDR][tile] decoded file=\"sundowner_overlook_24k.hdr\" index=226 generation=24 primary=true coord=(14848, 5632) size=512x512 elapsed_ms=87.82"
+        );
     }
 
     #[test]
