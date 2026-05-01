@@ -20,6 +20,8 @@ use crate::app::rendering::geometry::{
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use std::collections::BTreeSet;
+use std::sync::{Arc, LazyLock, Mutex};
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
@@ -28,7 +30,20 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
-const HDR_TILE_SYNC_EXTRACT_MAX_STABLE: usize = 2;
+const HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PendingHdrTileExtract {
+    index: usize,
+    generation: u64,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+static PENDING_HDR_TILE_EXTRACTS: LazyLock<Mutex<BTreeSet<PendingHdrTileExtract>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
 pub(crate) fn should_draw_tiled_preview_transition(
     transition: TransitionStyle,
@@ -100,12 +115,8 @@ fn clipped_hdr_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Re
     Some((rect, uv))
 }
 
-fn should_sync_extract_hdr_tile(
-    is_interacting: bool,
-    is_cached: bool,
-    extracted_this_frame: usize,
-) -> bool {
-    is_cached || (!is_interacting && extracted_this_frame < HDR_TILE_SYNC_EXTRACT_MAX_STABLE)
+fn should_schedule_hdr_tile_extract(is_cached: bool, scheduled_this_frame: usize) -> bool {
+    !is_cached && scheduled_this_frame < HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
 }
 
 fn should_invalidate_tile_requests_on_pan_drag() -> bool {
@@ -145,6 +156,39 @@ fn visible_hdr_tile_cache_counts(
     }
 
     (visible_count, cached_count)
+}
+
+fn schedule_hdr_tile_extract(
+    key: PendingHdrTileExtract,
+    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+    ctx: egui::Context,
+) -> bool {
+    let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
+        return false;
+    };
+    if !pending.insert(key) {
+        return false;
+    }
+    drop(pending);
+
+    rayon::spawn(move || {
+        if let Err(err) = source.extract_tile_rgba32f_arc(key.x, key.y, key.width, key.height) {
+            log::warn!(
+                "[HDR] Failed to asynchronously extract HDR tile ({},{} {}x{}): {}",
+                key.x,
+                key.y,
+                key.width,
+                key.height,
+                err
+            );
+        }
+        if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
+            pending.remove(&key);
+        }
+        ctx.request_repaint();
+    });
+
+    true
 }
 
 impl ImageViewerApp {
@@ -366,7 +410,7 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
-            let mut hdr_sync_extracts = 0;
+            let mut hdr_async_extracts = 0;
             let mut skipped_hdr_extract = false;
             let hdr_source_for_frame = self
                 .current_hdr_tiled_image
@@ -423,61 +467,54 @@ impl ImageViewerApp {
                                 let tile_h = ts.min(hdr_source.height() - tile_y);
                                 let cached_hdr_tile = hdr_source
                                     .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h);
-                                let should_extract = should_sync_extract_hdr_tile(
-                                    is_interacting,
-                                    cached_hdr_tile.is_some(),
-                                    hdr_sync_extracts,
-                                );
-                                let hdr_tile_result = if let Some(tile) = cached_hdr_tile {
-                                    Ok(tile)
-                                } else if should_extract {
-                                    hdr_sync_extracts += 1;
-                                    hdr_source
-                                        .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
-                                } else {
+                                let Some(hdr_tile) = cached_hdr_tile else {
+                                    if should_schedule_hdr_tile_extract(false, hdr_async_extracts)
+                                        && schedule_hdr_tile_extract(
+                                            PendingHdrTileExtract {
+                                                index: self.current_index,
+                                                generation: self.generation,
+                                                x: tile_x,
+                                                y: tile_y,
+                                                width: tile_w,
+                                                height: tile_h,
+                                            },
+                                            Arc::clone(hdr_source),
+                                            ui.ctx().clone(),
+                                        )
+                                    {
+                                        hdr_async_extracts += 1;
+                                    }
                                     skipped_hdr_extract = true;
                                     continue;
                                 };
 
-                                match hdr_tile_result {
-                                    Ok(hdr_tile) => {
-                                        if !draw_hdr_overlay {
-                                            continue;
-                                        }
-                                        let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
-                                            *tile_screen_rect,
-                                            pivot,
-                                            rotation,
-                                        );
-                                        if let Some((hdr_rect, uv_rect)) =
-                                            clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
-                                        {
-                                            ui.painter().add(
-                                                crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
-                                                hdr_rect,
-                                                hdr_tile,
-                                                self.hdr_renderer.tone_map,
-                                                self.hdr_target_format
-                                                    .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                                                crate::hdr::monitor::effective_render_output_mode(
-                                                    self.hdr_target_format,
-                                                    self.hdr_monitor_state.selection(),
-                                                ),
-                                                rotation as u32,
-                                                1.0,
-                                                uv_rect,
+                                if !draw_hdr_overlay {
+                                    continue;
+                                }
+                                let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
+                                    *tile_screen_rect,
+                                    pivot,
+                                    rotation,
+                                );
+                                if let Some((hdr_rect, uv_rect)) =
+                                    clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
+                                {
+                                    ui.painter().add(
+                                        crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
+                                            hdr_rect,
+                                            hdr_tile,
+                                            self.hdr_renderer.tone_map,
+                                            self.hdr_target_format
+                                                .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                            crate::hdr::monitor::effective_render_output_mode(
+                                                self.hdr_target_format,
+                                                self.hdr_monitor_state.selection(),
                                             ),
-                                            );
-                                        }
-                                    }
-                                    Err(err) => {
-                                        log::warn!(
-                                            "[HDR] Failed to extract HDR tile ({},{}): {}",
-                                            coord.col,
-                                            coord.row,
-                                            err
-                                        );
-                                    }
+                                            rotation as u32,
+                                            1.0,
+                                            uv_rect,
+                                        ),
+                                    );
                                 }
                             }
 
@@ -606,10 +643,10 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        HDR_TILE_SYNC_EXTRACT_MAX_STABLE, clipped_hdr_tile_plane, hdr_tile_plane_rect_for_sdr_tile,
-        rotated_axis_aligned_rect, should_draw_hdr_tile_overlay,
+        HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME, clipped_hdr_tile_plane,
+        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect, should_draw_hdr_tile_overlay,
         should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_sync_extract_hdr_tile,
+        should_schedule_hdr_tile_extract,
     };
     use crate::app::TransitionStyle;
     use eframe::egui::{Pos2, Rect};
@@ -692,14 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tile_sync_extract_is_skipped_while_interacting_when_not_cached() {
-        assert!(should_sync_extract_hdr_tile(false, true, 0));
-        assert!(should_sync_extract_hdr_tile(false, false, 0));
-        assert!(!should_sync_extract_hdr_tile(true, false, 0));
-        assert!(!should_sync_extract_hdr_tile(
+    fn hdr_tile_extract_scheduling_is_budgeted() {
+        assert!(!should_schedule_hdr_tile_extract(true, 0));
+        assert!(should_schedule_hdr_tile_extract(false, 0));
+        assert!(!should_schedule_hdr_tile_extract(
             false,
-            false,
-            HDR_TILE_SYNC_EXTRACT_MAX_STABLE
+            HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
         ));
     }
 
