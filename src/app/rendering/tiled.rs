@@ -21,7 +21,7 @@ use crate::app::rendering::plane::{
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
@@ -31,7 +31,6 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
-const HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct PendingHdrTileExtract {
@@ -150,8 +149,25 @@ fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot: Option<eg
     }
 }
 
-fn should_schedule_hdr_tile_extract(is_cached: bool, scheduled_this_frame: usize) -> bool {
-    !is_cached && scheduled_this_frame < HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
+fn should_schedule_hdr_tile_extract(
+    is_cached: bool,
+    pending_count: usize,
+    pending_cap: usize,
+) -> bool {
+    !is_cached && pending_count < pending_cap
+}
+
+fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
+    let scale = if tile_size >= 1024 { 2 } else { 1 };
+    if visible_count > 1000 {
+        24 / scale
+    } else if visible_count > 200 {
+        48 / scale
+    } else if visible_count > 50 {
+        64 / scale
+    } else {
+        96 / scale
+    }
 }
 
 fn hdr_tile_cache_key_for_coord(
@@ -167,21 +183,17 @@ fn hdr_tile_cache_key_for_coord(
 }
 
 fn prioritize_hdr_tile_visits(
-    primary_visible: &[(TileCoord, Rect, Rect)],
+    _primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
-    let mut ordered = primary_visible.to_vec();
-    let primary_coords = primary_visible
-        .iter()
-        .map(|(coord, _, _)| *coord)
-        .collect::<HashSet<_>>();
-    ordered.extend(
-        padded_visible
-            .iter()
-            .filter(|(coord, _, _)| !primary_coords.contains(coord))
-            .copied(),
-    );
-    ordered
+    // TileManager::visible_tiles already sorts the padded region by distance to
+    // the viewport center. Preserve that SDR behavior for HDR instead of
+    // regrouping all on-screen tiles ahead of nearby lookahead tiles.
+    padded_visible.to_vec()
+}
+
+fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
+    hardware_padding.min(tile_size as f32 * 2.0)
 }
 
 fn should_invalidate_tile_requests_on_pan_drag() -> bool {
@@ -255,6 +267,16 @@ fn schedule_hdr_tile_extract(
     });
 
     true
+}
+
+fn pending_hdr_tile_extract_count(index: usize, generation: u64) -> usize {
+    let Ok(pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
+        return 0;
+    };
+    pending
+        .iter()
+        .filter(|key| key.index == index && key.generation == generation)
+        .count()
 }
 
 impl ImageViewerApp {
@@ -439,7 +461,10 @@ impl ImageViewerApp {
             // region into unrotated coordinate space. Otherwise, for extremely
             // tall/narrow images rotated 90°/270°, the unrotated rect is narrow
             // and its intersection with screen_rect only covers the center tiles.
-            let padding = self.hardware_tier.look_ahead_padding();
+            let padding = tiled_lookahead_padding(
+                self.hardware_tier.look_ahead_padding(),
+                crate::tile_cache::get_tile_size(),
+            );
             let tile_clip = if rotation != 0 {
                 let inv_rot = egui::emath::Rot2::from_angle(-angle);
                 let pivot = layout.pivot;
@@ -520,7 +545,10 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
-            let mut hdr_async_extracts = 0;
+            let hdr_pending_cap =
+                hdr_tile_extract_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
+            let mut hdr_pending_count =
+                pending_hdr_tile_extract_count(self.current_index, self.generation);
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -540,21 +568,23 @@ impl ImageViewerApp {
                             let Some(hdr_tile) =
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
-                                if should_schedule_hdr_tile_extract(false, hdr_async_extracts)
-                                    && schedule_hdr_tile_extract(
-                                        PendingHdrTileExtract {
-                                            index: self.current_index,
-                                            generation: self.generation,
-                                            x: tile_x,
-                                            y: tile_y,
-                                            width: tile_w,
-                                            height: tile_h,
-                                        },
-                                        Arc::clone(hdr_source),
-                                        ui.ctx().clone(),
-                                    )
-                                {
-                                    hdr_async_extracts += 1;
+                                if should_schedule_hdr_tile_extract(
+                                    false,
+                                    hdr_pending_count,
+                                    hdr_pending_cap,
+                                ) && schedule_hdr_tile_extract(
+                                    PendingHdrTileExtract {
+                                        index: self.current_index,
+                                        generation: self.generation,
+                                        x: tile_x,
+                                        y: tile_y,
+                                        width: tile_w,
+                                        height: tile_h,
+                                    },
+                                    Arc::clone(hdr_source),
+                                    ui.ctx().clone(),
+                                ) {
+                                    hdr_pending_count += 1;
                                 }
                                 continue;
                             };
@@ -713,12 +743,11 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME, clipped_hdr_tile_plane,
-        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
-        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
-        tiled_plane_threshold,
+        clipped_hdr_tile_plane, hdr_tile_extract_pending_cap, hdr_tile_plane_rect_for_sdr_tile,
+        is_tiled_plane_active, rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
+        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
+        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
+        should_schedule_hdr_tile_extract, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -803,22 +832,28 @@ mod tests {
 
     #[test]
     fn hdr_tile_extract_scheduling_is_budgeted() {
-        assert!(!should_schedule_hdr_tile_extract(true, 0));
-        assert!(should_schedule_hdr_tile_extract(false, 0));
-        assert!(!should_schedule_hdr_tile_extract(
-            false,
-            HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME
-        ));
+        assert!(!should_schedule_hdr_tile_extract(true, 0, 96));
+        assert!(should_schedule_hdr_tile_extract(false, 2, 96));
+        assert!(!should_schedule_hdr_tile_extract(false, 96, 96));
     }
 
     #[test]
-    fn hdr_tile_visit_order_prioritizes_screen_visible_tiles_before_lookahead() {
-        let primary = vec![tile_visit(1, 1), tile_visit(2, 1)];
+    fn hdr_tile_extract_pending_cap_scales_like_sdr_tile_queue() {
+        assert_eq!(hdr_tile_extract_pending_cap(10, 512), 96);
+        assert_eq!(hdr_tile_extract_pending_cap(60, 512), 64);
+        assert_eq!(hdr_tile_extract_pending_cap(201, 512), 48);
+        assert_eq!(hdr_tile_extract_pending_cap(1001, 512), 24);
+        assert_eq!(hdr_tile_extract_pending_cap(60, 1024), 32);
+    }
+
+    #[test]
+    fn hdr_tile_visit_order_matches_center_out_padded_order() {
+        let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
         let padded = vec![
-            tile_visit(0, 1),
-            tile_visit(1, 1),
-            tile_visit(2, 1),
-            tile_visit(3, 1),
+            tile_visit(2, 3),
+            tile_visit(3, 3),
+            tile_visit(4, 3),
+            tile_visit(5, 3),
         ];
 
         let ordered = super::prioritize_hdr_tile_visits(&primary, &padded);
@@ -830,12 +865,18 @@ mod tests {
         assert_eq!(
             ordered_coords,
             vec![
-                TileCoord { col: 1, row: 1 },
-                TileCoord { col: 2, row: 1 },
-                TileCoord { col: 0, row: 1 },
-                TileCoord { col: 3, row: 1 },
+                TileCoord { col: 2, row: 3 },
+                TileCoord { col: 3, row: 3 },
+                TileCoord { col: 4, row: 3 },
+                TileCoord { col: 5, row: 3 },
             ]
         );
+    }
+
+    #[test]
+    fn tiled_lookahead_padding_is_capped_to_two_tile_widths() {
+        assert_eq!(super::tiled_lookahead_padding(2048.0, 512), 1024.0);
+        assert_eq!(super::tiled_lookahead_padding(1024.0, 1024), 1024.0);
     }
 
     #[test]
