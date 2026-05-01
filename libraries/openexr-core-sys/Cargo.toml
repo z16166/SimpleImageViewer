@@ -1,0 +1,11 @@
+[package]
+name = "openexr-core-sys"
+version = "0.1.0"
+edition = "2024"
+links = "openexr_core_custom"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+vcpkg = "0.2"

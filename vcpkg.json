@@ -1,7 +1,7 @@
 {
   "name": "simple-image-viewer",
   "version-string": "1.5.1",
-  "builtin-baseline": "b781af668027bbf77f2f827f47b5c6cd8d825c08",
+  "builtin-baseline": "60317e6631b4301e328fffe428e6a340c0445796",
   "dependencies": [
     {
       "name": "tiff",
@@ -23,6 +23,7 @@
         "x3f"
       ]
     },
+    "openexr",
     "zlib"
   ]
 }

@@ -43,6 +43,8 @@ thread_local! {
 pub struct ExrTiledImageSource {
     #[allow(dead_code)]
     path: PathBuf,
+    #[cfg(feature = "openexr-core")]
+    openexr_core: Option<crate::hdr::openexr_core_backend::OpenExrCoreReadContext>,
     mmap: Arc<memmap2::Mmap>,
     meta_data: MetaData,
     header: exr::meta::header::Header,
@@ -108,6 +110,15 @@ impl ExrTiledImageSource {
             .list
             .iter()
             .any(|channel| channel.sampling != Vec2(1, 1));
+        #[cfg(feature = "openexr-core")]
+        let openexr_core = open_openexr_core_backend(
+            path,
+            part_index,
+            width,
+            height,
+            channel_layout,
+            has_subsampled_channels,
+        );
         if has_subsampled_channels {
             normalize_subsampled_metadata_for_decompression(&mut meta_data)?;
         }
@@ -127,6 +138,8 @@ impl ExrTiledImageSource {
 
         Ok(Self {
             path: path.to_path_buf(),
+            #[cfg(feature = "openexr-core")]
+            openexr_core,
             mmap,
             meta_data,
             header,
@@ -213,6 +226,11 @@ impl ExrTiledImageSource {
     #[cfg(test)]
     fn cached_block_index_count_for_tests(&self) -> usize {
         self.cached_blocks.len()
+    }
+
+    #[cfg(all(test, feature = "openexr-core"))]
+    fn has_openexr_core_backend_for_tests(&self) -> bool {
+        self.openexr_core.is_some()
     }
 
     fn intersecting_cached_blocks(&self, tile_bounds: TileBounds) -> Vec<CachedExrBlock> {
@@ -357,6 +375,30 @@ impl HdrTiledSource for ExrTiledImageSource {
         if let Ok(mut cache) = self.tile_cache.lock() {
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
+            }
+        }
+
+        #[cfg(feature = "openexr-core")]
+        if let Some(openexr_core) = &self.openexr_core {
+            match openexr_core.extract_scanline_rgba32f_tile(self.part_index, x, y, width, height) {
+                Ok(tile) => {
+                    let tile = Arc::new(HdrTileBuffer {
+                        width: tile.width,
+                        height: tile.height,
+                        color_space: self.color_space,
+                        rgba_f32: Arc::new(tile.rgba),
+                    });
+                    if let Ok(mut cache) = self.tile_cache.lock() {
+                        cache.insert(key, Arc::clone(&tile));
+                    }
+                    return Ok(tile);
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[HDR] OpenEXRCore tile decode failed for {}; falling back to Rust exr backend: {err}",
+                        self.path.display()
+                    );
+                }
             }
         }
 
@@ -1132,6 +1174,53 @@ enum ExrChannelLayout {
 impl ExrChannelLayout {
     fn requires_disk_backed_decode(self) -> bool {
         matches!(self, Self::Luminance)
+    }
+}
+
+#[cfg(feature = "openexr-core")]
+fn open_openexr_core_backend(
+    path: &Path,
+    part_index: usize,
+    width: u32,
+    height: u32,
+    channel_layout: ExrChannelLayout,
+    has_subsampled_channels: bool,
+) -> Option<crate::hdr::openexr_core_backend::OpenExrCoreReadContext> {
+    if channel_layout.requires_disk_backed_decode() || has_subsampled_channels {
+        return None;
+    }
+
+    let context = match crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path) {
+        Ok(context) => context,
+        Err(err) => {
+            log::warn!(
+                "[HDR] Could not initialize OpenEXRCore backend for {}; using Rust exr backend: {err}",
+                path.display()
+            );
+            return None;
+        }
+    };
+
+    match context.part(part_index) {
+        Ok(part) if part.width == width && part.height == height => Some(context),
+        Ok(part) => {
+            log::warn!(
+                "[HDR] OpenEXRCore backend dimensions differ for {}; expected {}x{}, got {}x{}; using Rust exr backend",
+                path.display(),
+                width,
+                height,
+                part.width,
+                part.height
+            );
+            None
+        }
+        Err(err) => {
+            log::warn!(
+                "[HDR] Could not inspect OpenEXRCore part for {}; using Rust exr backend: {err}",
+                path.display()
+            );
+            None
+        }
     }
 }
 
@@ -2072,6 +2161,30 @@ mod tests {
             tile.rgba_f32.as_slice(),
             &[
                 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 5.0, 5.1, 5.2, 1.0, 6.0, 6.1, 6.2, 1.0,
+            ]
+        );
+    }
+
+    #[cfg(feature = "openexr-core")]
+    #[test]
+    fn exr_tiled_source_uses_openexr_core_backend_when_feature_enabled() {
+        let path = write_test_exr(4, 3, "openexr_core_backend");
+
+        let source = super::ExrTiledImageSource::open(&path).expect("open EXR tiled source");
+        assert!(
+            source.has_openexr_core_backend_for_tests(),
+            "openexr-core feature should initialize the official OpenEXRCore backend"
+        );
+
+        let tile = source
+            .extract_tile_rgba32f_arc(1, 1, 2, 2)
+            .expect("extract EXR tile via OpenEXRCore backend");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            tile.rgba_f32.as_slice(),
+            &[
+                5.0, 5.1, 5.2, 1.0, 6.0, 6.1, 6.2, 1.0, 9.0, 9.1, 9.2, 1.0, 10.0, 10.1, 10.2, 1.0,
             ]
         );
     }

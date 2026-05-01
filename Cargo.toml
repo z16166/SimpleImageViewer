@@ -60,6 +60,7 @@ libraw-sys = { path = "libraries/libraw-sys" }
 monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
 libjpeg-turbo = { path = "libraries/libjpeg-turbo" }
 libtiff-viewer = { path = "libraries/libtiff" }
+openexr-core-sys = { path = "libraries/openexr-core-sys", optional = true }
 bytemuck = "1.25.0"
 exr = "1.74.0"
 miniz_oxide = "0.8.9"
@@ -69,6 +70,8 @@ miniz_oxide = "0.8.9"
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 # Diagnostic tools for tiled rendering (green borders and OSD stats)
 tile-debug = []
+# Optional official OpenEXRCore C backend for EXR decoding experiments
+openexr-core = ["dep:openexr-core-sys"]
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
