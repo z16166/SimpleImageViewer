@@ -200,6 +200,8 @@ impl ImageViewerApp {
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,
             hdr_tiled_source_cache: std::collections::HashMap::new(),
+            current_hdr_tiled_preview: None,
+            hdr_tiled_preview_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,

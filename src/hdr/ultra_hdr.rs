@@ -263,22 +263,26 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         HdrColorSpace::LinearSrgb
     }
 
-    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let tile = self.extract_tile_rgba32f_arc(0, 0, self.width, self.height)?;
+        crate::hdr::tiled::hdr_preview_from_tile_nearest(&tile, max_w, max_h)
+    }
+
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let preview = self.generate_hdr_preview(max_w, max_h)?;
         let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
             &HdrImageBuffer {
-                width: tile.width,
-                height: tile.height,
+                width: preview.width,
+                height: preview.height,
                 format: HdrPixelFormat::Rgba32Float,
-                color_space: tile.color_space,
-                rgba_f32: Arc::clone(&tile.rgba_f32),
+                color_space: preview.color_space,
+                rgba_f32: Arc::clone(&preview.rgba_f32),
             },
             0.0,
         )?;
-        let image = image::RgbaImage::from_raw(tile.width, tile.height, pixels)
+        let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
             .ok_or_else(|| "Failed to build Ultra HDR SDR preview image".to_string())?;
-        let preview = image::imageops::thumbnail(&image, max_w, max_h);
-        Ok((preview.width(), preview.height(), preview.into_raw()))
+        Ok((image.width(), image.height(), image.into_raw()))
     }
 
     fn cached_tile_rgba32f_arc(

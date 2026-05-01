@@ -76,6 +76,10 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
         HdrColorSpace::LinearSrgb
     }
 
+    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
+        decode_radiance_hdr_preview(&self.mmap, self.width, self.height, max_w, max_h)
+    }
+
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         decode_radiance_sdr_preview(&self.mmap, self.width, self.height, max_w, max_h)
     }
@@ -173,10 +177,22 @@ fn decode_radiance_sdr_preview(
     max_w: u32,
     max_h: u32,
 ) -> Result<(u32, u32, Vec<u8>), String> {
+    let preview = decode_radiance_hdr_preview(mmap, expected_width, expected_height, max_w, max_h)?;
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
+    Ok((preview.width, preview.height, pixels))
+}
+
+fn decode_radiance_hdr_preview(
+    mmap: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+    max_w: u32,
+    max_h: u32,
+) -> Result<HdrImageBuffer, String> {
     let (preview_width, preview_height) =
         preview_dimensions(expected_width, expected_height, max_w, max_h);
     if preview_width == 0 || preview_height == 0 {
-        return Ok((preview_width, preview_height, Vec::new()));
+        return Err("Radiance HDR preview dimensions must be non-zero".to_string());
     }
 
     let mut reader = Cursor::new(mmap);
@@ -207,18 +223,13 @@ fn decode_radiance_sdr_preview(
     }
     params.apply_to_pixels(&mut rgba);
 
-    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(
-        &HdrImageBuffer {
-            width: preview_width,
-            height: preview_height,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: HdrColorSpace::LinearSrgb,
-            rgba_f32: Arc::new(rgba),
-        },
-        0.0,
-    )?;
-
-    Ok((preview_width, preview_height, pixels))
+    Ok(HdrImageBuffer {
+        width: preview_width,
+        height: preview_height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        rgba_f32: Arc::new(rgba),
+    })
 }
 
 fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {

@@ -14,9 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::geometry::{
-    rotated_image_size_for_display, unrotated_draw_rect_for_display,
-};
+use crate::app::rendering::geometry::PlaneLayout;
+use crate::app::rendering::plane::{draw_sdr_texture_plane, hdr_image_plane_rect};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -119,18 +118,17 @@ impl ImageViewerApp {
             tp.prev_offset.x *= screen_rect.width();
         }
 
-        // --- Rotation setup ---
-        let rotation = self.current_rotation;
-        let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
-
-        // Compute current display rect, swapping dimensions for 90°/270° rotations
-        let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
-        let dest = self.compute_display_rect(rotated_img_size, screen_rect);
+        let layout = self.compute_plane_layout(img_size, screen_rect);
+        let rotation = layout.rotation_steps;
+        let angle = layout.angle;
+        let dest = layout.dest;
 
         let final_dest = Rect::from_center_size(dest.center() + tp.offset, dest.size() * tp.scale);
 
         // The painter transform handles visual rotation; draw un-rotated texture into un-rotated rect.
-        let unrotated_final_dest = unrotated_draw_rect_for_display(final_dest, rotation);
+        let unrotated_final_dest =
+            crate::app::rendering::geometry::unrotated_draw_rect_for_display(final_dest, rotation);
+        let final_layout = PlaneLayout::from_dest(img_size, rotation, final_dest);
 
         if tp.is_animating
             && matches!(
@@ -144,7 +142,7 @@ impl ImageViewerApp {
                 self.draw_rectangular_hdr_transition(
                     ui,
                     screen_rect,
-                    final_dest,
+                    hdr_image_plane_rect(&final_layout),
                     unrotated_final_dest,
                     rotation,
                     angle,
@@ -186,7 +184,7 @@ impl ImageViewerApp {
                 // The SDR fallback texture stays cached for non-wgpu paths and transitions.
                 ui.painter()
                     .add(crate::hdr::renderer::hdr_image_plane_callback(
-                        final_dest,
+                        hdr_image_plane_rect(&final_layout),
                         hdr_image,
                         self.hdr_renderer.tone_map,
                         target_format,
@@ -239,20 +237,15 @@ impl ImageViewerApp {
             }
 
             // 2. Draw NEW image (on top, with alpha/motion)
-            let mut mesh = egui::Mesh::with_texture(texture.id());
-            mesh.add_rect_with_uv(
+            draw_sdr_texture_plane(
+                ui,
+                screen_rect,
+                texture.id(),
                 unrotated_final_dest,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE.linear_multiply(tp.alpha),
+                &final_layout,
             );
-            if rotation != 0 {
-                let rot = egui::emath::Rot2::from_angle(angle);
-                let pivot = final_dest.center();
-                for v in &mut mesh.vertices {
-                    v.pos = pivot + rot * (v.pos - pivot);
-                }
-            }
-            ui.painter().add(egui::Shape::mesh(mesh));
         }
     }
 

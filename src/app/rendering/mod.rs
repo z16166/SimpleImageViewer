@@ -1,5 +1,6 @@
 pub(crate) mod file_ops;
 pub(crate) mod geometry;
+pub(crate) mod plane;
 pub(crate) mod standard;
 pub(crate) mod tiled;
 pub(crate) mod transitions;

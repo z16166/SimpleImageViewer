@@ -89,15 +89,18 @@ impl ImageViewerApp {
     pub(crate) fn clear_hdr_image_state(&mut self) {
         self.hdr_image_cache.clear();
         self.hdr_tiled_source_cache.clear();
+        self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
         self.current_hdr_tiled_image = None;
+        self.current_hdr_tiled_preview = None;
     }
 
     pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
         self.hdr_image_cache.remove(&index);
         self.hdr_tiled_source_cache.remove(&index);
+        self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
@@ -113,6 +116,13 @@ impl ImageViewerApp {
             .is_some_and(|current| current.source_for_index(index).is_some())
         {
             self.current_hdr_tiled_image = None;
+        }
+        if self
+            .current_hdr_tiled_preview
+            .as_ref()
+            .is_some_and(|current| current.image_for_index(index).is_some())
+        {
+            self.current_hdr_tiled_preview = None;
         }
     }
 
@@ -270,6 +280,11 @@ impl ImageViewerApp {
             .get(&self.current_index)
             .cloned()
             .map(|source| crate::app::CurrentHdrTiledImage::new(self.current_index, source));
+        self.current_hdr_tiled_preview = self
+            .hdr_tiled_preview_cache
+            .get(&self.current_index)
+            .cloned()
+            .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
         self.current_rotation = 0;
         self.zoom_factor = 1.0;
         self.pan_offset = Vec2::ZERO;
@@ -1086,6 +1101,10 @@ impl ImageViewerApp {
                 self.remove_hdr_image_index(idx);
                 self.hdr_tiled_source_cache.insert(idx, Arc::clone(hdr));
                 self.hdr_sdr_fallback_indices.insert(idx);
+                if let Some(hdr_preview) = load_result.hdr_preview.as_ref() {
+                    self.hdr_tiled_preview_cache
+                        .insert(idx, Arc::clone(hdr_preview));
+                }
                 if load_result.ultra_hdr_capacity_sensitive {
                     self.ultra_hdr_capacity_sensitive_indices.insert(idx);
                 }
@@ -1124,6 +1143,11 @@ impl ImageViewerApp {
                 if idx == self.current_index {
                     self.current_hdr_tiled_image =
                         Some(crate::app::CurrentHdrTiledImage::new(idx, Arc::clone(hdr)));
+                    self.current_hdr_tiled_preview = load_result
+                        .hdr_preview
+                        .as_ref()
+                        .cloned()
+                        .map(|preview| crate::app::CurrentHdrImage::new(idx, preview));
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
                     let mut tm =

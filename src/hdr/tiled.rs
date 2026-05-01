@@ -57,6 +57,7 @@ pub trait HdrTiledSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
+    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String>;
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
     fn cached_tile_rgba32f_arc(
         &self,
@@ -160,15 +161,19 @@ impl HdrTiledSource for HdrTiledImageSource {
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&self.image, 0.0)?;
+        let preview = self.generate_hdr_preview(max_w, max_h)?;
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
         let image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            self.image.width,
-            self.image.height,
+            preview.width,
+            preview.height,
             pixels,
         )
         .ok_or_else(|| "Failed to create HDR SDR preview buffer".to_string())?;
-        let preview = image::imageops::thumbnail(&image, max_w, max_h);
-        Ok((preview.width(), preview.height(), preview.into_raw()))
+        Ok((image.width(), image.height(), image.into_raw()))
+    }
+
+    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
+        downsample_hdr_image_nearest(&self.image, max_w, max_h)
     }
 
     fn cached_tile_rgba32f_arc(
@@ -223,6 +228,74 @@ impl HdrTiledSource for HdrTiledImageSource {
 
         Ok(tile)
     }
+}
+
+pub(crate) fn downsample_hdr_image_nearest(
+    image: &HdrImageBuffer,
+    max_w: u32,
+    max_h: u32,
+) -> Result<HdrImageBuffer, String> {
+    validate_rgba32f_len(image.width, image.height, image.rgba_f32.len())?;
+    let (width, height) = preview_dimensions(image.width, image.height, max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("HDR preview dimensions must be non-zero".to_string());
+    }
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        let src_y = preview_sample_coord(y, height, image.height) as usize;
+        for x in 0..width {
+            let src_x = preview_sample_coord(x, width, image.width) as usize;
+            let offset = (src_y * image.width as usize + src_x) * 4;
+            rgba_f32.extend_from_slice(&image.rgba_f32[offset..offset + 4]);
+        }
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: image.color_space,
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+pub(crate) fn hdr_preview_from_tile_nearest(
+    tile: &HdrTileBuffer,
+    max_w: u32,
+    max_h: u32,
+) -> Result<HdrImageBuffer, String> {
+    downsample_hdr_image_nearest(
+        &HdrImageBuffer {
+            width: tile.width,
+            height: tile.height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: tile.color_space,
+            rgba_f32: Arc::clone(&tile.rgba_f32),
+        },
+        max_w,
+        max_h,
+    )
+}
+
+fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if width == 0 || height == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+    let scale = (max_w as f32 / width as f32)
+        .min(max_h as f32 / height as f32)
+        .min(1.0);
+    let preview_width = ((width as f32 * scale).round() as u32).clamp(1, max_w);
+    let preview_height = ((height as f32 * scale).round() as u32).clamp(1, max_h);
+    (preview_width, preview_height)
+}
+
+fn preview_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: u32) -> u32 {
+    if preview_extent <= 1 {
+        return 0;
+    }
+    ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
+        as u32
 }
 
 pub fn configured_hdr_tile_cache_max_bytes() -> usize {
@@ -410,6 +483,20 @@ mod tests {
         assert_eq!(tile.height, 1);
         assert_eq!(tile.color_space, HdrColorSpace::LinearSrgb);
         assert_eq!(tile.rgba_f32.as_slice(), &[1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn in_memory_hdr_tile_source_generates_hdr_preview() {
+        let source = HdrTiledImageSource::new(test_image(4, 2)).expect("valid HDR tile source");
+
+        let preview = source
+            .generate_hdr_preview(2, 1)
+            .expect("generate HDR preview");
+
+        assert_eq!((preview.width, preview.height), (2, 1));
+        assert_eq!(preview.format, HdrPixelFormat::Rgba32Float);
+        assert_eq!(preview.color_space, HdrColorSpace::LinearSrgb);
+        assert_eq!(preview.rgba_f32.len(), 2 * 4);
     }
 
     #[test]

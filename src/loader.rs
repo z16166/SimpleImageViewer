@@ -276,6 +276,7 @@ pub struct LoadResult {
     pub generation: u64,
     pub result: Result<ImageData, String>,
     pub preview: Option<DecodedImage>,
+    pub hdr_preview: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
     pub ultra_hdr_capacity_sensitive: bool,
 }
 
@@ -909,6 +910,7 @@ impl ImageLoader {
                 generation,
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview: None,
+                hdr_preview: None,
                 ultra_hdr_capacity_sensitive: false,
             }
         });
@@ -1206,6 +1208,7 @@ fn load_image_file(
     })();
 
     let mut preview: Option<DecodedImage> = None;
+    let mut hdr_preview: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>> = None;
 
     let final_result = match result {
         Ok(ImageData::Tiled(source)) => {
@@ -1285,6 +1288,41 @@ fn load_image_file(
                 hdr.height(),
                 (hdr.width() as f64 * hdr.height() as f64) / 1_000_000.0
             );
+
+            let t0 = std::time::Instant::now();
+            let hdr_preview_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hdr.generate_hdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+            }));
+            match hdr_preview_result {
+                Ok(Ok(image)) if image.width > 0 && image.height > 0 => {
+                    log::info!(
+                        "[{}] HDR {}px preview generated ({}x{}) in {:?}",
+                        file_name,
+                        DEFAULT_PREVIEW_SIZE,
+                        image.width,
+                        image.height,
+                        t0.elapsed()
+                    );
+                    hdr_preview = Some(std::sync::Arc::new(image));
+                }
+                Ok(Err(err)) => {
+                    log::warn!(
+                        "[{}] HDR preview generation failed in {:?}: {}",
+                        file_name,
+                        t0.elapsed(),
+                        err
+                    );
+                }
+                Err(err) => {
+                    log::error!(
+                        "[{}] HDR preview generation PANICKED: {:?} in {:?}",
+                        file_name,
+                        err,
+                        t0.elapsed()
+                    );
+                }
+                _ => {}
+            }
 
             let t0 = std::time::Instant::now();
             let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1372,6 +1410,7 @@ fn load_image_file(
         ultra_hdr_capacity_sensitive: is_ultra_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
         preview,
+        hdr_preview,
     }
 }
 

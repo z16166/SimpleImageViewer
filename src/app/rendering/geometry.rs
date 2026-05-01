@@ -1,6 +1,41 @@
 use crate::app::ImageViewerApp;
 use crate::app::ScaleMode;
-use eframe::egui::{Context, Rect, Vec2};
+use eframe::egui::{Context, Pos2, Rect, Vec2};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlaneLayout {
+    pub image_size: Vec2,
+    pub rotated_image_size: Vec2,
+    pub dest: Rect,
+    pub unrotated_dest: Rect,
+    pub pivot: Pos2,
+    pub rotation_steps: i32,
+    pub angle: f32,
+    pub effective_scale: f32,
+}
+
+impl PlaneLayout {
+    pub(crate) fn from_dest(image_size: Vec2, rotation_steps: i32, dest: Rect) -> Self {
+        let rotation_steps = rotation_steps.rem_euclid(4);
+        let rotated_image_size = rotated_image_size_for_display(image_size, rotation_steps);
+        let unrotated_dest = unrotated_draw_rect_for_display(dest, rotation_steps);
+        let effective_scale = if rotated_image_size.x > 0.0 {
+            dest.width() / rotated_image_size.x
+        } else {
+            0.0
+        };
+        Self {
+            image_size,
+            rotated_image_size,
+            dest,
+            unrotated_dest,
+            pivot: dest.center(),
+            rotation_steps,
+            angle: rotation_steps as f32 * (std::f32::consts::PI / 2.0),
+            effective_scale,
+        }
+    }
+}
 
 pub(crate) fn rotated_image_size_for_display(img_size: Vec2, rotation_steps: i32) -> Vec2 {
     if rotation_steps.rem_euclid(4) % 2 != 0 {
@@ -56,6 +91,13 @@ impl ImageViewerApp {
                 Rect::from_center_size(center, disp)
             }
         }
+    }
+
+    pub(crate) fn compute_plane_layout(&self, img_size: Vec2, screen_rect: Rect) -> PlaneLayout {
+        let rotation = self.current_rotation;
+        let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
+        let dest = self.compute_display_rect(rotated_img_size, screen_rect);
+        PlaneLayout::from_dest(img_size, rotation, dest)
     }
 
     /// Rotate the image while keeping the current screen center point fixed on the same image coordinate.
@@ -157,5 +199,21 @@ mod tests {
 
         let half_turn_rect = unrotated_draw_rect_for_display(rotated_bounds, 2);
         assert_eq!(half_turn_rect, rotated_bounds);
+    }
+
+    #[test]
+    fn plane_layout_preserves_shared_image_geometry() {
+        let image_size = Vec2::new(400.0, 200.0);
+        let dest = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(100.0, 200.0));
+
+        let layout = PlaneLayout::from_dest(image_size, 1, dest);
+
+        assert_eq!(layout.image_size, image_size);
+        assert_eq!(layout.rotated_image_size, Vec2::new(200.0, 400.0));
+        assert_eq!(layout.dest, dest);
+        assert_eq!(layout.unrotated_dest.size(), Vec2::new(200.0, 100.0));
+        assert_eq!(layout.pivot, dest.center());
+        assert_eq!(layout.rotation_steps, 1);
+        assert_eq!(layout.effective_scale, 0.5);
     }
 }

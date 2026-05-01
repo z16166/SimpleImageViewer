@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::geometry::{
-    rotated_image_size_for_display, unrotated_draw_rect_for_display,
+use crate::app::rendering::plane::{
+    draw_sdr_texture_plane, hdr_image_plane_rect, select_tiled_plane_backend,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
@@ -123,12 +123,35 @@ fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
 
-fn should_draw_sdr_tiles_for_tiled_mode(
-    output_mode: Option<crate::hdr::renderer::HdrRenderOutputMode>,
-    has_hdr_tiled_source: bool,
+fn should_draw_sdr_preview_for_tiled_mode(
+    draw_sdr_tiles: bool,
+    effective_scale: f32,
+    tile_threshold: f32,
 ) -> bool {
-    !(has_hdr_tiled_source
-        && output_mode == Some(crate::hdr::renderer::HdrRenderOutputMode::NativeHdr))
+    let _ = (effective_scale, tile_threshold);
+    draw_sdr_tiles
+}
+
+fn should_draw_hdr_preview_for_tiled_mode(
+    draw_sdr_tiles: bool,
+    effective_scale: f32,
+    tile_threshold: f32,
+) -> bool {
+    !draw_sdr_tiles && effective_scale < tile_threshold
+}
+
+fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
+    if preview_scale >= fit_scale {
+        (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
+    } else {
+        let min_tile_screen_px = 64.0;
+        let tile_scale_min = min_tile_screen_px / tile_size as f32;
+        tile_scale_min.max(fit_scale * FIT_SCALE_BUFFER)
+    }
+}
+
+fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
+    effective_scale >= threshold
 }
 
 fn schedule_hdr_tile_extract(
@@ -197,13 +220,27 @@ impl ImageViewerApp {
             (tm.full_width, tm.full_height)
         };
         let img_size = Vec2::new(full_width as f32, full_height as f32);
-
-        let rotated_img_size = rotated_image_size_for_display(img_size, rotation);
-        let dest = self.compute_display_rect(rotated_img_size, screen_rect);
+        let layout = self.compute_plane_layout(img_size, screen_rect);
+        let rotated_img_size = layout.rotated_image_size;
+        let dest = layout.dest;
 
         // The painter transform will handle the actual rotation.
         // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
-        let unrotated_dest = unrotated_draw_rect_for_display(dest, rotation);
+        let unrotated_dest = layout.unrotated_dest;
+        let hdr_source_for_frame = self
+            .current_hdr_tiled_image
+            .as_ref()
+            .and_then(|current| current.source_for_index(self.current_index))
+            .cloned();
+        let hdr_output_mode = hdr_source_for_frame.as_ref().map(|_| {
+            crate::hdr::monitor::effective_render_output_mode(
+                self.hdr_target_format,
+                self.hdr_monitor_state.selection(),
+            )
+        });
+        let plane_backend =
+            select_tiled_plane_backend(hdr_output_mode, hdr_source_for_frame.is_some());
+        let draw_sdr_tiles = plane_backend.draws_sdr();
 
         let tp = self.compute_transition_params();
         let preview_for_transition = self
@@ -230,26 +267,7 @@ impl ImageViewerApp {
             }
         }
 
-        // 1. Draw preview texture as blurry background
-        if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
-            let mut mesh = egui::Mesh::with_texture(preview.id());
-            let color = Color32::WHITE;
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            mesh.add_rect_with_uv(unrotated_dest, uv, color);
-
-            if rotation != 0 {
-                let pivot = dest.center();
-                let rot = egui::emath::Rot2::from_angle(angle);
-                for v in &mut mesh.vertices {
-                    v.pos = pivot + rot * (v.pos - pivot);
-                }
-            }
-            ui.painter()
-                .with_clip_rect(screen_rect)
-                .add(egui::Shape::mesh(mesh));
-        }
-
-        // 2. Render high-res tiles.
+        // Render high-res tiles.
         // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size).
         // For giant images, we also only trigger tiling when the effective scale exceeds
         // the preview scale, ensuring we don't thrash VRAM for no visual gain.
@@ -267,24 +285,47 @@ impl ImageViewerApp {
             FALLBACK_PREVIEW_SCALE // Fallback
         };
 
-        // Trigger tiling when the display resolution exceeds the preview's native resolution.
-        // Two scenarios:
-        // 1. HQ preview available (preview_scale >= fit_scale): tile when zoomed past preview quality
-        // 2. LQ bootstrap preview (preview_scale < fit_scale): use conservative threshold to avoid
-        //    flooding the queue with thousands of tiles before HQ preview arrives
-        let threshold = if preview_scale >= fit_scale {
-            // Tile when zoomed sufficiently past preview's native resolution.
-            // At preview_scale * 1.0, tiles offer no visible improvement over the preview.
-            // At 1.2x, tiles are noticeably sharper while keeping tile count manageable.
-            (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
-        } else {
-            // LQ bootstrap: require tiles to render at >= 64 screen pixels before loading
-            let min_tile_screen_px = 64.0;
-            let tile_scale_min = min_tile_screen_px / crate::tile_cache::get_tile_size() as f32;
-            tile_scale_min.max(fit_scale * FIT_SCALE_BUFFER)
-        };
+        let threshold =
+            tiled_plane_threshold(preview_scale, fit_scale, crate::tile_cache::get_tile_size());
 
         let effective_scale = dest.width() / rotated_img_size.x;
+
+        if should_draw_hdr_preview_for_tiled_mode(draw_sdr_tiles, effective_scale, threshold) {
+            if let Some(hdr_preview) = self
+                .current_hdr_tiled_preview
+                .as_ref()
+                .and_then(|current| current.image_for_index(self.current_index))
+            {
+                ui.painter()
+                    .add(crate::hdr::renderer::hdr_image_plane_callback(
+                        hdr_image_plane_rect(&layout),
+                        Arc::clone(hdr_preview),
+                        self.hdr_renderer.tone_map,
+                        self.hdr_target_format
+                            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                        hdr_output_mode
+                            .unwrap_or(crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped),
+                        rotation as u32,
+                        1.0,
+                    ));
+            }
+        }
+
+        // Draw SDR preview only when SDR tiled rendering is the active mode.
+        if should_draw_sdr_preview_for_tiled_mode(draw_sdr_tiles, effective_scale, threshold) {
+            if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                draw_sdr_texture_plane(
+                    ui,
+                    screen_rect,
+                    preview.id(),
+                    unrotated_dest,
+                    uv,
+                    Color32::WHITE,
+                    &layout,
+                );
+            }
+        }
 
         // Log threshold diagnostics once per image load
         {
@@ -313,7 +354,7 @@ impl ImageViewerApp {
             }
         }
 
-        if effective_scale >= threshold {
+        if is_tiled_plane_active(effective_scale, threshold) {
             // Compute visible tiles using the UNROTATED destination rect.
             // When rotation is active, we must inverse-rotate the screen clip
             // region into unrotated coordinate space. Otherwise, for extremely
@@ -322,7 +363,7 @@ impl ImageViewerApp {
             let padding = self.hardware_tier.look_ahead_padding();
             let tile_clip = if rotation != 0 {
                 let inv_rot = egui::emath::Rot2::from_angle(-angle);
-                let pivot = dest.center();
+                let pivot = layout.pivot;
                 let corners = [
                     screen_rect.left_top(),
                     screen_rect.right_top(),
@@ -385,25 +426,11 @@ impl ImageViewerApp {
             let mut newly_uploaded = 0;
             let mut hdr_async_extracts = 0;
             let mut skipped_hdr_extract = false;
-            let hdr_source_for_frame = self
-                .current_hdr_tiled_image
-                .as_ref()
-                .and_then(|current| current.source_for_index(self.current_index))
-                .cloned();
-            let hdr_output_mode = hdr_source_for_frame.as_ref().map(|_| {
-                crate::hdr::monitor::effective_render_output_mode(
-                    self.hdr_target_format,
-                    self.hdr_monitor_state.selection(),
-                )
-            });
-            let draw_sdr_tiles = should_draw_sdr_tiles_for_tiled_mode(
-                hdr_output_mode,
-                hdr_source_for_frame.is_some(),
-            );
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
                 let pivot = dest.center();
+                #[cfg(feature = "tile-debug")]
                 let rot = if rotation != 0 {
                     Some(egui::emath::Rot2::from_angle(angle))
                 } else {
@@ -482,16 +509,15 @@ impl ImageViewerApp {
                             // No fade-in: the preview texture is always rendered underneath,
                             // so tile pop-in is not jarring. Fade caused continuous repaints
                             // that wasted CPU/GPU cycles even when the user was not interacting.
-                            let mut mesh = egui::Mesh::with_texture(handle.id());
-                            mesh.add_rect_with_uv(*tile_screen_rect, *uv, Color32::WHITE);
-                            if let Some(r) = rot {
-                                for v in &mut mesh.vertices {
-                                    v.pos = pivot + r * (v.pos - pivot);
-                                }
-                            }
-                            ui.painter()
-                                .with_clip_rect(screen_rect)
-                                .add(egui::Shape::mesh(mesh));
+                            draw_sdr_texture_plane(
+                                ui,
+                                screen_rect,
+                                handle.id(),
+                                *tile_screen_rect,
+                                *uv,
+                                Color32::WHITE,
+                                &layout,
+                            );
 
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
@@ -620,12 +646,12 @@ impl ImageViewerApp {
 mod tests {
     use super::{
         HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME, clipped_hdr_tile_plane,
-        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect,
-        should_draw_sdr_tiles_for_tiled_mode, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
+        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
+        should_draw_hdr_preview_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
+        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
+        should_schedule_hdr_tile_extract, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
-    use crate::hdr::renderer::HdrRenderOutputMode;
     use eframe::egui::{Pos2, Rect};
 
     #[test]
@@ -721,18 +747,24 @@ mod tests {
     }
 
     #[test]
-    fn native_hdr_tiled_mode_does_not_draw_sdr_tiles() {
-        assert!(!should_draw_sdr_tiles_for_tiled_mode(
-            Some(HdrRenderOutputMode::NativeHdr),
-            true
-        ));
-        assert!(should_draw_sdr_tiles_for_tiled_mode(
-            Some(HdrRenderOutputMode::SdrToneMapped),
-            true
-        ));
-        assert!(should_draw_sdr_tiles_for_tiled_mode(
-            Some(HdrRenderOutputMode::NativeHdr),
-            false
-        ));
+    fn native_hdr_tiled_mode_hides_sdr_preview_once_tiles_are_active() {
+        assert!(!should_draw_sdr_preview_for_tiled_mode(false, 2.0, 1.0));
+        assert!(!should_draw_sdr_preview_for_tiled_mode(false, 0.5, 1.0));
+        assert!(should_draw_sdr_preview_for_tiled_mode(true, 2.0, 1.0));
+    }
+
+    #[test]
+    fn native_hdr_tiled_mode_uses_hdr_preview_below_tile_threshold() {
+        assert!(should_draw_hdr_preview_for_tiled_mode(false, 0.5, 1.0));
+        assert!(!should_draw_hdr_preview_for_tiled_mode(false, 2.0, 1.0));
+        assert!(!should_draw_hdr_preview_for_tiled_mode(true, 0.5, 1.0));
+    }
+
+    #[test]
+    fn tiled_plane_threshold_matches_preview_quality_policy() {
+        assert_eq!(tiled_plane_threshold(0.5, 0.25, 512), 0.6);
+        assert_eq!(tiled_plane_threshold(0.05, 0.25, 512), 0.2625);
+        assert!(!is_tiled_plane_active(0.59, 0.6));
+        assert!(is_tiled_plane_active(0.6, 0.6));
     }
 }
