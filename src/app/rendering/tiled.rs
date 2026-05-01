@@ -112,6 +112,41 @@ fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
 
+fn should_draw_hdr_tile_overlay(visible_count: usize, cached_count: usize) -> bool {
+    visible_count > 0 && cached_count >= visible_count
+}
+
+fn visible_hdr_tile_cache_counts(
+    source: &dyn crate::hdr::tiled::HdrTiledSource,
+    visible: &[(TileCoord, Rect, Rect)],
+    screen_rect: Rect,
+) -> (usize, usize) {
+    let ts = crate::tile_cache::get_tile_size();
+    let mut visible_count = 0;
+    let mut cached_count = 0;
+
+    for (coord, tile_screen_rect, _) in visible {
+        let clipped = tile_screen_rect.intersect(screen_rect);
+        if clipped.width() <= 0.0 || clipped.height() <= 0.0 {
+            continue;
+        }
+
+        let tile_x = coord.col * ts;
+        let tile_y = coord.row * ts;
+        let tile_w = ts.min(source.width() - tile_x);
+        let tile_h = ts.min(source.height() - tile_y);
+        visible_count += 1;
+        if source
+            .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+            .is_some()
+        {
+            cached_count += 1;
+        }
+    }
+
+    (visible_count, cached_count)
+}
+
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
     ///
@@ -333,6 +368,17 @@ impl ImageViewerApp {
             let mut newly_uploaded = 0;
             let mut hdr_sync_extracts = 0;
             let mut skipped_hdr_extract = false;
+            let hdr_source_for_frame = self
+                .current_hdr_tiled_image
+                .as_ref()
+                .and_then(|current| current.source_for_index(self.current_index))
+                .cloned();
+            let draw_hdr_overlay = hdr_source_for_frame.as_ref().is_some_and(|source| {
+                let (visible_count, cached_count) =
+                    visible_hdr_tile_cache_counts(source.as_ref(), &visible, screen_rect);
+                should_draw_hdr_tile_overlay(visible_count, cached_count)
+            });
+            let hdr_overlay_waiting = hdr_source_for_frame.is_some() && !draw_hdr_overlay;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -369,11 +415,7 @@ impl ImageViewerApp {
                                 .with_clip_rect(screen_rect)
                                 .add(egui::Shape::mesh(mesh));
 
-                            if let Some(hdr_source) = self
-                                .current_hdr_tiled_image
-                                .as_ref()
-                                .and_then(|current| current.source_for_index(self.current_index))
-                            {
+                            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
                                 let ts = crate::tile_cache::get_tile_size();
                                 let tile_x = coord.col * ts;
                                 let tile_y = coord.row * ts;
@@ -399,6 +441,9 @@ impl ImageViewerApp {
 
                                 match hdr_tile_result {
                                     Ok(hdr_tile) => {
+                                        if !draw_hdr_overlay {
+                                            continue;
+                                        }
                                         let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
                                             *tile_screen_rect,
                                             pivot,
@@ -551,7 +596,7 @@ impl ImageViewerApp {
                 .as_ref()
                 .unwrap()
                 .has_ready_to_upload(&visible_coords);
-            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract {
+            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract || hdr_overlay_waiting {
                 ui.ctx().request_repaint();
             }
         }
@@ -562,8 +607,9 @@ impl ImageViewerApp {
 mod tests {
     use super::{
         HDR_TILE_SYNC_EXTRACT_MAX_STABLE, clipped_hdr_tile_plane, hdr_tile_plane_rect_for_sdr_tile,
-        rotated_axis_aligned_rect, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_sync_extract_hdr_tile,
+        rotated_axis_aligned_rect, should_draw_hdr_tile_overlay,
+        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
+        should_sync_extract_hdr_tile,
     };
     use crate::app::TransitionStyle;
     use eframe::egui::{Pos2, Rect};
@@ -660,5 +706,13 @@ mod tests {
     #[test]
     fn pan_drag_keeps_tile_generation_and_worker_queue_alive() {
         assert!(!should_invalidate_tile_requests_on_pan_drag());
+    }
+
+    #[test]
+    fn hdr_overlay_waits_for_all_visible_tiles() {
+        assert!(!should_draw_hdr_tile_overlay(0, 0));
+        assert!(!should_draw_hdr_tile_overlay(4, 3));
+        assert!(should_draw_hdr_tile_overlay(4, 4));
+        assert!(should_draw_hdr_tile_overlay(4, 5));
     }
 }
