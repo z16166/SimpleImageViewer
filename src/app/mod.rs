@@ -57,6 +57,11 @@ pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
 ) -> f32 {
     if output_mode == crate::hdr::types::HdrOutputMode::SdrToneMapped {
         1.0
+    } else if let Some(max_hdr_capacity) = monitor
+        .and_then(|selection| selection.max_hdr_capacity)
+        .filter(|value| *value > 0.0)
+    {
+        max_hdr_capacity
     } else if let Some(max_luminance_nits) = monitor
         .and_then(|selection| selection.max_luminance_nits)
         .filter(|value| *value > 0.0)
@@ -1001,6 +1006,8 @@ mod tests {
             label: "HDR".to_string(),
             max_luminance_nits: Some(1200.0),
             max_full_frame_luminance_nits: Some(600.0),
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
         };
 
         assert_eq!(
@@ -1010,6 +1017,32 @@ mod tests {
                 Some(&monitor)
             ),
             6.0
+        );
+    }
+
+    #[test]
+    fn native_output_uses_monitor_hdr_capacity_multiplier_before_peak_nits() {
+        let settings = crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+        let monitor = crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: "macOS EDR".to_string(),
+            max_luminance_nits: Some(1200.0),
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: Some(2.5),
+            hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        };
+
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::MacOsEdr,
+                Some(&monitor)
+            ),
+            2.5
         );
     }
 

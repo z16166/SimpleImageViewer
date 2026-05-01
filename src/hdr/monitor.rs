@@ -57,6 +57,8 @@ pub struct HdrMonitorSelection {
     pub label: String,
     pub max_luminance_nits: Option<f32>,
     pub max_full_frame_luminance_nits: Option<f32>,
+    pub max_hdr_capacity: Option<f32>,
+    pub hdr_capacity_source: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -97,11 +99,13 @@ impl HdrMonitorState {
             Ok(selection) => {
                 if self.selection.as_ref() != Some(&selection) {
                     log::info!(
-                        "[HDR] active_monitor={} hdr_supported={} max_luminance_nits={:?} max_full_frame_luminance_nits={:?}",
+                        "[HDR] active_monitor={} hdr_supported={} max_luminance_nits={:?} max_full_frame_luminance_nits={:?} max_hdr_capacity={:?} hdr_capacity_source={:?}",
                         selection.label,
                         selection.hdr_supported,
                         selection.max_luminance_nits,
-                        selection.max_full_frame_luminance_nits
+                        selection.max_full_frame_luminance_nits,
+                        selection.max_hdr_capacity,
+                        selection.hdr_capacity_source
                     );
                 }
                 self.selection = Some(selection);
@@ -161,9 +165,60 @@ pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     windows_active_monitor_hdr_status()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
+    macos_active_monitor_hdr_status()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     Err("active monitor HDR probing is not implemented on this platform".to_string())
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_edr_selection_from_values(
+    label: String,
+    current_edr_capacity: f32,
+    potential_edr_capacity: f32,
+    reference_edr_capacity: f32,
+) -> HdrMonitorSelection {
+    let (capacity, source) = if let Some(value) =
+        finite_positive_capacity(current_edr_capacity).filter(|value| *value > 1.0)
+    {
+        (
+            Some(value),
+            Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        )
+    } else if let Some(value) =
+        finite_positive_capacity(potential_edr_capacity).filter(|value| *value > 1.0)
+    {
+        (
+            Some(value),
+            Some("macOS maximumPotentialExtendedDynamicRangeColorComponentValue"),
+        )
+    } else if let Some(value) =
+        finite_positive_capacity(reference_edr_capacity).filter(|value| *value > 1.0)
+    {
+        (
+            Some(value),
+            Some("macOS maximumReferenceExtendedDynamicRangeColorComponentValue"),
+        )
+    } else {
+        (None, None)
+    };
+    HdrMonitorSelection {
+        hdr_supported: capacity.is_some(),
+        label,
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: capacity,
+        hdr_capacity_source: source,
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn finite_positive_capacity(value: f32) -> Option<f32> {
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 #[cfg(target_os = "windows")]
@@ -263,6 +318,8 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
                         max_full_frame_luminance_nits: finite_positive_luminance(
                             desc.MaxFullFrameLuminance,
                         ),
+                        max_hdr_capacity: None,
+                        hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
                     });
                 }
             }
@@ -278,6 +335,125 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
 #[cfg(target_os = "windows")]
 fn finite_positive_luminance(value: f32) -> Option<f32> {
     (value.is_finite() && value > 0.0).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
+    let screen = unsafe {
+        let app_class = objc_class("NSApplication")?;
+        let app = objc_msg_send_id(app_class, objc_sel("sharedApplication")?);
+        let mut window = if app.is_null() {
+            std::ptr::null_mut()
+        } else {
+            objc_msg_send_id(app, objc_sel("keyWindow")?)
+        };
+        if window.is_null() && !app.is_null() {
+            window = objc_msg_send_id(app, objc_sel("mainWindow")?);
+        }
+
+        let mut screen = if window.is_null() {
+            std::ptr::null_mut()
+        } else {
+            objc_msg_send_id(window, objc_sel("screen")?)
+        };
+        if screen.is_null() {
+            let screen_class = objc_class("NSScreen")?;
+            screen = objc_msg_send_id(screen_class, objc_sel("mainScreen")?);
+        }
+        screen
+    };
+    if screen.is_null() {
+        return Err("active NSScreen was not found".to_string());
+    }
+
+    let label = unsafe {
+        let localized_name = objc_msg_send_id(screen, objc_sel("localizedName")?);
+        ns_string_to_string(localized_name).unwrap_or_else(|| "macOS screen".to_string())
+    };
+    let current = unsafe {
+        objc_msg_send_f64(
+            screen,
+            objc_sel("maximumExtendedDynamicRangeColorComponentValue")?,
+        ) as f32
+    };
+    let potential = unsafe {
+        objc_msg_send_f64(
+            screen,
+            objc_sel("maximumPotentialExtendedDynamicRangeColorComponentValue")?,
+        ) as f32
+    };
+    let reference = unsafe {
+        objc_msg_send_f64(
+            screen,
+            objc_sel("maximumReferenceExtendedDynamicRangeColorComponentValue")?,
+        ) as f32
+    };
+
+    Ok(macos_edr_selection_from_values(
+        label, current, potential, reference,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+type ObjcId = *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+type ObjcSel = *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "macos")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const std::ffi::c_char) -> ObjcId;
+    fn sel_registerName(name: *const std::ffi::c_char) -> ObjcSel;
+    #[link_name = "objc_msgSend"]
+    fn objc_msg_send_id(receiver: ObjcId, selector: ObjcSel) -> ObjcId;
+    #[link_name = "objc_msgSend"]
+    fn objc_msg_send_f64(receiver: ObjcId, selector: ObjcSel) -> f64;
+}
+
+#[cfg(target_os = "macos")]
+fn objc_class(name: &str) -> Result<ObjcId, String> {
+    let name = std::ffi::CString::new(name).map_err(|err| err.to_string())?;
+    let class = unsafe { objc_getClass(name.as_ptr()) };
+    if class.is_null() {
+        Err(format!(
+            "Objective-C class was not found: {}",
+            name.to_string_lossy()
+        ))
+    } else {
+        Ok(class)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn objc_sel(name: &str) -> Result<ObjcSel, String> {
+    let name = std::ffi::CString::new(name).map_err(|err| err.to_string())?;
+    let selector = unsafe { sel_registerName(name.as_ptr()) };
+    if selector.is_null() {
+        Err(format!(
+            "Objective-C selector was not found: {}",
+            name.to_string_lossy()
+        ))
+    } else {
+        Ok(selector)
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn ns_string_to_string(value: ObjcId) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    let ptr = unsafe { objc_msg_send_id(value, objc_sel("UTF8String").ok()?) };
+    if ptr.is_null() {
+        return None;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(ptr.cast()).to_string_lossy() };
+    Some(text.into_owned())
 }
 
 #[cfg(target_os = "windows")]
@@ -322,12 +498,16 @@ mod tests {
             label: "SDR".to_string(),
             max_luminance_nits: None,
             max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: None,
         };
         let hdr = HdrMonitorSelection {
             hdr_supported: true,
             label: "HDR".to_string(),
             max_luminance_nits: Some(1000.0),
             max_full_frame_luminance_nits: Some(500.0),
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
         };
 
         assert_eq!(
@@ -341,6 +521,57 @@ mod tests {
         assert_eq!(
             effective_render_output_mode(Some(wgpu::TextureFormat::Bgra8Unorm), Some(&hdr)),
             HdrRenderOutputMode::SdrToneMapped
+        );
+    }
+
+    #[test]
+    fn macos_edr_values_build_capacity_based_monitor_selection() {
+        let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 2.2, 4.0, 1.5);
+
+        assert!(selection.hdr_supported);
+        assert_eq!(selection.label, "Built-in XDR");
+        assert_eq!(selection.max_hdr_capacity, Some(2.2));
+        assert_eq!(
+            selection.hdr_capacity_source,
+            Some("macOS maximumExtendedDynamicRangeColorComponentValue")
+        );
+        assert_eq!(selection.max_luminance_nits, None);
+        assert_eq!(selection.max_full_frame_luminance_nits, None);
+    }
+
+    #[test]
+    fn macos_sdr_edr_values_build_non_hdr_monitor_selection() {
+        let selection = macos_edr_selection_from_values("SDR".to_string(), 1.0, 1.0, 0.0);
+
+        assert!(!selection.hdr_supported);
+        assert_eq!(selection.max_hdr_capacity, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_edr_selected_monitor_enables_macos_edr_on_float_surface() {
+        let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 2.2, 4.0, 1.5);
+
+        assert_eq!(
+            effective_capability_output_mode(
+                Some(wgpu::TextureFormat::Rgba16Float),
+                Some(&selection)
+            ),
+            HdrOutputMode::MacOsEdr
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_non_edr_selected_monitor_forces_sdr_tone_mapping() {
+        let selection = macos_edr_selection_from_values("SDR".to_string(), 1.0, 1.0, 0.0);
+
+        assert_eq!(
+            effective_capability_output_mode(
+                Some(wgpu::TextureFormat::Rgba16Float),
+                Some(&selection)
+            ),
+            HdrOutputMode::SdrToneMapped
         );
     }
 }
