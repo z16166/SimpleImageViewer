@@ -8,18 +8,24 @@
 
 #![allow(dead_code)]
 
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use openexr_core_sys as sys;
+
+const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
     path: PathBuf,
     raw: sys::ExrContext,
     part_count: usize,
+    decoded_chunks: Mutex<OpenExrCoreDecodedChunkCache>,
 }
 
 // OpenEXRCore read contexts parse headers up front and are documented as safe
@@ -61,6 +67,106 @@ enum ChannelRole {
     Alpha,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct OpenExrCoreDecodedChunkKey {
+    part_index: i32,
+    chunk_index: i32,
+    origin: (u32, u32),
+    size: (u32, u32),
+}
+
+#[derive(Debug)]
+struct OpenExrCoreDecodedChunk {
+    origin: (u32, u32),
+    width: u32,
+    height: u32,
+    rgba: Arc<Vec<f32>>,
+    byte_size: usize,
+}
+
+#[derive(Debug)]
+struct OpenExrCoreDecodedChunkCache {
+    max_bytes: usize,
+    current_bytes: usize,
+    entries: HashMap<OpenExrCoreDecodedChunkKey, Arc<OpenExrCoreDecodedChunk>>,
+    lru: VecDeque<OpenExrCoreDecodedChunkKey>,
+    #[cfg(test)]
+    hits: usize,
+    #[cfg(test)]
+    misses: usize,
+}
+
+impl OpenExrCoreDecodedChunkCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            current_bytes: 0,
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            #[cfg(test)]
+            hits: 0,
+            #[cfg(test)]
+            misses: 0,
+        }
+    }
+
+    fn get(&mut self, key: &OpenExrCoreDecodedChunkKey) -> Option<Arc<OpenExrCoreDecodedChunk>> {
+        let chunk = self.entries.get(key).cloned();
+        if chunk.is_some() {
+            #[cfg(test)]
+            {
+                self.hits += 1;
+            }
+            self.touch(*key);
+        } else {
+            #[cfg(test)]
+            {
+                self.misses += 1;
+            }
+        }
+        chunk
+    }
+
+    fn insert(&mut self, key: OpenExrCoreDecodedChunkKey, chunk: Arc<OpenExrCoreDecodedChunk>) {
+        if chunk.byte_size > self.max_bytes {
+            return;
+        }
+
+        if let Some(old) = self.entries.insert(key, Arc::clone(&chunk)) {
+            self.current_bytes = self.current_bytes.saturating_sub(old.byte_size);
+        }
+        self.current_bytes = self.current_bytes.saturating_add(chunk.byte_size);
+        self.touch(key);
+        self.evict_over_budget();
+    }
+
+    #[cfg(test)]
+    fn hit_count(&self) -> usize {
+        self.hits
+    }
+
+    #[cfg(test)]
+    fn miss_count(&self) -> usize {
+        self.misses
+    }
+
+    fn touch(&mut self, key: OpenExrCoreDecodedChunkKey) {
+        self.lru.retain(|candidate| candidate != &key);
+        self.lru.push_back(key);
+    }
+
+    fn evict_over_budget(&mut self) {
+        while self.current_bytes > self.max_bytes {
+            let Some(key) = self.lru.pop_front() else {
+                break;
+            };
+            if let Some(chunk) = self.entries.remove(&key) {
+                self.current_bytes = self.current_bytes.saturating_sub(chunk.byte_size);
+            }
+        }
+    }
+}
+
 impl OpenExrCoreReadContext {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let filename = CString::new(path.to_string_lossy().as_bytes())
@@ -88,6 +194,9 @@ impl OpenExrCoreReadContext {
             path: path.to_path_buf(),
             raw,
             part_count,
+            decoded_chunks: Mutex::new(OpenExrCoreDecodedChunkCache::new(
+                DEFAULT_DECODED_CHUNK_CACHE_BYTES,
+            )),
         })
     }
 
@@ -208,6 +317,8 @@ impl OpenExrCoreReadContext {
                         (x, y, width, height),
                         &mut rgba,
                     )?;
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = timing;
                     #[cfg(feature = "tile-debug")]
                     {
                         decoded_chunk_count += 1;
@@ -277,6 +388,8 @@ impl OpenExrCoreReadContext {
                             (x, y, width, height),
                             &mut rgba,
                         )?;
+                        #[cfg(not(feature = "tile-debug"))]
+                        let _ = timing;
                         #[cfg(feature = "tile-debug")]
                         {
                             decoded_chunk_count += 1;
@@ -333,7 +446,7 @@ impl OpenExrCoreReadContext {
     ) {
         let (request_x, request_y, request_width, request_height) = request;
         log::info!(
-            "[HDR][tile][openexr-core] chunk file=\"{}\" part={} request=({}, {}) size={}x{} storage={} native_coord=({}, {}) native_size={}x{} compression={} packed_bytes={} unpacked_bytes={} decode_ms={:.2} copy_ms={:.2}",
+            "[HDR][tile][openexr-core] chunk file=\"{}\" part={} request=({}, {}) size={}x{} storage={} native_coord=({}, {}) native_size={}x{} compression={} packed_bytes={} unpacked_bytes={} cache={} decode_ms={:.2} copy_ms={:.2}",
             self.source_name(),
             part_index,
             request_x,
@@ -348,6 +461,7 @@ impl OpenExrCoreReadContext {
             compression_name(chunk.compression),
             chunk.packed_size,
             chunk.unpacked_size,
+            if timing.cache_hit { "hit" } else { "miss" },
             timing.decode_ms,
             timing.copy_ms
         );
@@ -399,7 +513,37 @@ impl OpenExrCoreReadContext {
         tile: (u32, u32, u32, u32),
         rgba: &mut [f32],
     ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
-        let (tile_x, tile_y, tile_width, tile_height) = tile;
+        let key = decoded_chunk_key(part_index, chunk, chunk_origin)?;
+        if let Ok(mut cache) = self.decoded_chunks.lock() {
+            if let Some(decoded) = cache.get(&key) {
+                let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
+                return Ok(OpenExrCoreChunkDecodeTiming {
+                    decode_ms: 0.0,
+                    copy_ms,
+                    cache_hit: true,
+                });
+            }
+        }
+
+        let (decoded, decode_ms) = self.decode_chunk_to_rgba(part_index, chunk, chunk_origin)?;
+        if let Ok(mut cache) = self.decoded_chunks.lock() {
+            cache.insert(key, Arc::clone(&decoded));
+        }
+        let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
+
+        Ok(OpenExrCoreChunkDecodeTiming {
+            decode_ms,
+            copy_ms,
+            cache_hit: false,
+        })
+    }
+
+    fn decode_chunk_to_rgba(
+        &self,
+        part_index: i32,
+        chunk: &sys::ExrChunkInfo,
+        chunk_origin: (u32, u32),
+    ) -> Result<(Arc<OpenExrCoreDecodedChunk>, f64), String> {
         let chunk_width = usize::try_from(chunk.width)
             .map_err(|_| "OpenEXRCore chunk width is negative".to_string())?;
         let chunk_height = usize::try_from(chunk.height)
@@ -454,47 +598,41 @@ impl OpenExrCoreReadContext {
         })?;
         let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
-        let tile_right = tile_x + tile_width;
-        let tile_bottom = tile_y + tile_height;
-        let (chunk_x, chunk_y) = chunk_origin;
-        let copy_start_x = chunk_x.max(tile_x);
-        let copy_end_x = (chunk_x + chunk.width as u32).min(tile_right);
-        let copy_start_y = chunk_y.max(tile_y);
-        let copy_end_y = (chunk_y + chunk.height as u32).min(tile_bottom);
-
-        if copy_start_x >= copy_end_x || copy_start_y >= copy_end_y {
-            return Ok(OpenExrCoreChunkDecodeTiming {
-                decode_ms,
-                copy_ms: 0.0,
-            });
+        let mut rgba = vec![0.0_f32; sample_count * 4];
+        for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
+            *alpha = 1.0;
         }
-
-        let copy_start = Instant::now();
         for (channel_index, role) in roles.iter().enumerate() {
             let Some(role) = role else {
                 continue;
             };
             let buffer = &buffers[channel_index];
-            for source_y in copy_start_y..copy_end_y {
-                let src_row = (source_y - chunk_y) as usize;
-                let dst_row = (source_y - tile_y) as usize;
-                for source_x in copy_start_x..copy_end_x {
-                    let src_col = (source_x - chunk_x) as usize;
-                    let dst_col = (source_x - tile_x) as usize;
-                    let sample = buffer[src_row * chunk_width + src_col];
-                    let dest = (dst_row * tile_width as usize + dst_col) * 4;
-                    match *role {
-                        ChannelRole::Red => rgba[dest] = sample,
-                        ChannelRole::Green => rgba[dest + 1] = sample,
-                        ChannelRole::Blue => rgba[dest + 2] = sample,
-                        ChannelRole::Alpha => rgba[dest + 3] = sample,
-                    }
+            for sample_index in 0..sample_count {
+                let dest = sample_index * 4;
+                let sample = buffer[sample_index];
+                match *role {
+                    ChannelRole::Red => rgba[dest] = sample,
+                    ChannelRole::Green => rgba[dest + 1] = sample,
+                    ChannelRole::Blue => rgba[dest + 2] = sample,
+                    ChannelRole::Alpha => rgba[dest + 3] = sample,
                 }
             }
         }
-        let copy_ms = copy_start.elapsed().as_secs_f64() * 1000.0;
+        let rgba = Arc::new(rgba);
+        let byte_size = rgba.len() * std::mem::size_of::<f32>();
 
-        Ok(OpenExrCoreChunkDecodeTiming { decode_ms, copy_ms })
+        Ok((
+            Arc::new(OpenExrCoreDecodedChunk {
+                origin: chunk_origin,
+                width: u32::try_from(chunk_width)
+                    .map_err(|_| "OpenEXRCore chunk width exceeds u32".to_string())?,
+                height: u32::try_from(chunk_height)
+                    .map_err(|_| "OpenEXRCore chunk height exceeds u32".to_string())?,
+                rgba,
+                byte_size,
+            }),
+            decode_ms,
+        ))
     }
 }
 
@@ -502,6 +640,7 @@ impl OpenExrCoreReadContext {
 struct OpenExrCoreChunkDecodeTiming {
     decode_ms: f64,
     copy_ms: f64,
+    cache_hit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -557,6 +696,65 @@ fn validate_tile_bounds(
         return Err("EXR tile bounds exceed image dimensions".to_string());
     }
     Ok(())
+}
+
+fn decoded_chunk_key(
+    part_index: i32,
+    chunk: &sys::ExrChunkInfo,
+    origin: (u32, u32),
+) -> Result<OpenExrCoreDecodedChunkKey, String> {
+    let width = u32::try_from(chunk.width)
+        .map_err(|_| "OpenEXRCore chunk width is negative".to_string())?;
+    let height = u32::try_from(chunk.height)
+        .map_err(|_| "OpenEXRCore chunk height is negative".to_string())?;
+    Ok(OpenExrCoreDecodedChunkKey {
+        part_index,
+        chunk_index: chunk.idx,
+        origin,
+        size: (width, height),
+    })
+}
+
+fn copy_decoded_chunk_to_tile(
+    decoded: &OpenExrCoreDecodedChunk,
+    tile: (u32, u32, u32, u32),
+    rgba: &mut [f32],
+) -> Result<f64, String> {
+    let (tile_x, tile_y, tile_width, tile_height) = tile;
+    let tile_right = tile_x + tile_width;
+    let tile_bottom = tile_y + tile_height;
+    let (chunk_x, chunk_y) = decoded.origin;
+    let copy_start_x = chunk_x.max(tile_x);
+    let copy_end_x = (chunk_x + decoded.width).min(tile_right);
+    let copy_start_y = chunk_y.max(tile_y);
+    let copy_end_y = (chunk_y + decoded.height).min(tile_bottom);
+
+    if copy_start_x >= copy_end_x || copy_start_y >= copy_end_y {
+        return Ok(0.0);
+    }
+
+    let expected_len = tile_width as usize * tile_height as usize * 4;
+    if rgba.len() != expected_len {
+        return Err("EXR destination tile buffer has unexpected length".to_string());
+    }
+
+    let copy_start = Instant::now();
+    let copy_width = (copy_end_x - copy_start_x) as usize;
+    let chunk_width = decoded.width as usize;
+    let tile_width = tile_width as usize;
+    for source_y in copy_start_y..copy_end_y {
+        let src_row = (source_y - chunk_y) as usize;
+        let dst_row = (source_y - tile_y) as usize;
+        let src_col = (copy_start_x - chunk_x) as usize;
+        let dst_col = (copy_start_x - tile_x) as usize;
+        let src_start = (src_row * chunk_width + src_col) * 4;
+        let src_end = src_start + copy_width * 4;
+        let dst_start = (dst_row * tile_width + dst_col) * 4;
+        let dst_end = dst_start + copy_width * 4;
+        rgba[dst_start..dst_end].copy_from_slice(&decoded.rgba[src_start..src_end]);
+    }
+
+    Ok(copy_start.elapsed().as_secs_f64() * 1000.0)
 }
 
 fn decode_pipeline_channels(
@@ -732,5 +930,31 @@ mod tests {
         for (pixel, expected) in tile.rgba.chunks_exact(4).zip(expected_indices) {
             assert_eq!(pixel, [expected, expected + 0.1, expected + 0.2, 1.0]);
         }
+    }
+
+    #[test]
+    fn decoded_chunk_cache_reuses_native_chunk_across_horizontal_tiles() {
+        let key = super::OpenExrCoreDecodedChunkKey {
+            part_index: 0,
+            chunk_index: 7,
+            origin: (0, 6144),
+            size: (24576, 32),
+        };
+        let chunk = std::sync::Arc::new(super::OpenExrCoreDecodedChunk {
+            origin: (0, 6144),
+            width: 24576,
+            height: 32,
+            rgba: std::sync::Arc::new(vec![0.0; 4]),
+            byte_size: 16,
+        });
+        let mut cache = super::OpenExrCoreDecodedChunkCache::new(64);
+
+        assert!(cache.get(&key).is_none());
+        cache.insert(key, std::sync::Arc::clone(&chunk));
+        let cached = cache.get(&key).expect("chunk should be cached");
+
+        assert!(std::sync::Arc::ptr_eq(&cached, &chunk));
+        assert_eq!(cache.miss_count(), 1);
+        assert_eq!(cache.hit_count(), 1);
     }
 }
