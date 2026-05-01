@@ -51,10 +51,12 @@ impl HdrMonitorSignature {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HdrMonitorSelection {
     pub hdr_supported: bool,
     pub label: String,
+    pub max_luminance_nits: Option<f32>,
+    pub max_full_frame_luminance_nits: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -95,9 +97,11 @@ impl HdrMonitorState {
             Ok(selection) => {
                 if self.selection.as_ref() != Some(&selection) {
                     log::info!(
-                        "[HDR] active_monitor={} hdr_supported={}",
+                        "[HDR] active_monitor={} hdr_supported={} max_luminance_nits={:?} max_full_frame_luminance_nits={:?}",
                         selection.label,
-                        selection.hdr_supported
+                        selection.hdr_supported,
+                        selection.max_luminance_nits,
+                        selection.max_full_frame_luminance_nits
                     );
                 }
                 self.selection = Some(selection);
@@ -255,6 +259,10 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
                         } else {
                             device_name
                         },
+                        max_luminance_nits: finite_positive_luminance(desc.MaxLuminance),
+                        max_full_frame_luminance_nits: finite_positive_luminance(
+                            desc.MaxFullFrameLuminance,
+                        ),
                     });
                 }
             }
@@ -265,6 +273,11 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     }
 
     Err("active DXGI output was not found".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn finite_positive_luminance(value: f32) -> Option<f32> {
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 #[cfg(target_os = "windows")]
@@ -307,10 +320,14 @@ mod tests {
         let non_hdr = HdrMonitorSelection {
             hdr_supported: false,
             label: "SDR".to_string(),
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
         };
         let hdr = HdrMonitorSelection {
             hdr_supported: true,
             label: "HDR".to_string(),
+            max_luminance_nits: Some(1000.0),
+            max_full_frame_luminance_nits: Some(500.0),
         };
 
         assert_eq!(

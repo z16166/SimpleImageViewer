@@ -108,6 +108,10 @@ impl ExrTiledImageSource {
         self.requires_disk_backed_decode
     }
 
+    pub(crate) fn has_subsampled_channels(&self) -> bool {
+        self.has_subsampled_channels
+    }
+
     fn extract_tile_rgba32f_arc_unvalidated_scanline(
         &self,
         x: u32,

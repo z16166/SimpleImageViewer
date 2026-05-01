@@ -487,6 +487,27 @@ mod tests {
         assert_eq!(source.cache_budget_bytes(), tile_bytes(1, 1));
     }
 
+    #[test]
+    fn sdr_preview_is_exposure_neutral_for_hdr_source_tiles() {
+        let source = HdrTiledImageSource::new(HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![4.0, 4.0, 4.0, 1.0]),
+        })
+        .expect("valid HDR tile source");
+
+        let (_width, _height, pixels) = source
+            .generate_sdr_preview(1, 1)
+            .expect("generate SDR preview");
+
+        assert_eq!(
+            pixels[0], 230,
+            "fallback previews intentionally use neutral exposure; user exposure is applied by HDR rendering uniforms"
+        );
+    }
+
     fn test_image(width: u32, height: u32) -> HdrImageBuffer {
         HdrImageBuffer {
             width,

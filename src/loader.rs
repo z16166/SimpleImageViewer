@@ -276,6 +276,7 @@ pub struct LoadResult {
     pub generation: u64,
     pub result: Result<ImageData, String>,
     pub preview: Option<DecodedImage>,
+    pub ultra_hdr_capacity_sensitive: bool,
 }
 
 pub struct TileResult {
@@ -908,6 +909,7 @@ impl ImageLoader {
                 generation,
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview: None,
+                ultra_hdr_capacity_sensitive: false,
             }
         });
 
@@ -1367,9 +1369,22 @@ fn load_image_file(
     LoadResult {
         index,
         generation,
+        ultra_hdr_capacity_sensitive: is_ultra_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
         preview,
     }
+}
+
+fn is_ultra_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
+    let is_jpeg = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"));
+    is_jpeg
+        && matches!(
+            result,
+            Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. })
+        )
 }
 
 #[cfg(test)]
@@ -1512,6 +1527,17 @@ fn try_load_disk_backed_exr_hdr(path: &Path) -> Result<Option<ImageData>, String
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        if source.has_subsampled_channels() {
+            let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
+            let fallback: Arc<dyn TiledImageSource> =
+                Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr)));
+            log::info!(
+                "[Loader] subsampled EXR {}x{} kept as disk-backed HDR tiles.",
+                hdr.width(),
+                hdr.height()
+            );
+            return Ok(Some(ImageData::HdrTiled { hdr, fallback }));
+        }
         if source.requires_disk_backed_decode() {
             return exr_tiled_source_to_static_hdr(path, source).map(Some);
         }
@@ -2382,6 +2408,38 @@ mod tests {
         assert!(
             high_peak > low_peak,
             "loader should pass target HDR capacity into JPEG_R gain-map recovery"
+        );
+    }
+
+    #[test]
+    fn ultra_hdr_load_result_is_capacity_sensitive() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"F:\HDR\Ultra_HDR_Samples"));
+        let path = root
+            .join("Originals")
+            .join("Ultra_HDR_Samples_Originals_01.jpg");
+        if !path.is_file() {
+            eprintln!("skipping Ultra HDR load result marker test; sample missing");
+            return;
+        }
+
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
+        let result = load_image_file(
+            1,
+            7,
+            &path,
+            tx,
+            refine_tx,
+            false,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        );
+
+        assert!(
+            result.ultra_hdr_capacity_sensitive,
+            "JPEG_R load results should be marked for capacity-based invalidation"
         );
     }
 

@@ -30,6 +30,8 @@ pub fn hdr_osd_tag(
     render_path: HdrRenderPath,
     color_space: Option<HdrColorSpace>,
     capabilities: &HdrCapabilities,
+    ultra_hdr_decode_capacity: Option<f32>,
+    monitor_label: Option<&str>,
 ) -> Option<String> {
     if !is_hdr_source {
         return None;
@@ -39,10 +41,18 @@ pub fn hdr_osd_tag(
     let color = color_space.map(hdr_color_space_label);
     let output = hdr_output_label(capabilities);
 
-    Some(match color {
+    let mut parts = match color {
         Some(color) => format!("HDR: source | {color} | {render} | {output}"),
         None => format!("HDR: source | {render} | {output}"),
-    })
+    };
+    if let Some(capacity) = ultra_hdr_decode_capacity {
+        parts.push_str(&format!(" | JPEG_R cap {capacity:.2}x"));
+    }
+    if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
+        parts.push_str(" | ");
+        parts.push_str(label);
+    }
+    Some(parts)
 }
 
 fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
@@ -107,6 +117,8 @@ mod tests {
             HdrRenderPath::FloatImagePlane,
             None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
         );
 
         assert_eq!(
@@ -122,6 +134,8 @@ mod tests {
             HdrRenderPath::FloatTilePlane,
             None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
         );
 
         assert_eq!(
@@ -137,11 +151,32 @@ mod tests {
             HdrRenderPath::FloatTilePlane,
             Some(HdrColorSpace::Rec2020Linear),
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
         );
 
         assert_eq!(
             tag.as_deref(),
             Some("HDR: source | Rec.2020 linear | tile plane | SDR tone-mapped")
+        );
+    }
+
+    #[test]
+    fn hdr_osd_tag_includes_ultra_hdr_capacity_and_monitor() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatImagePlane,
+            Some(HdrColorSpace::Rec2020Linear),
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+            Some(5.5),
+            Some("DISPLAY1"),
+        );
+
+        assert_eq!(
+            tag.as_deref(),
+            Some(
+                "HDR: source | Rec.2020 linear | plane | SDR tone-mapped | JPEG_R cap 5.50x | DISPLAY1"
+            )
         );
     }
 
@@ -152,6 +187,8 @@ mod tests {
             HdrRenderPath::FloatImagePlane,
             Some(HdrColorSpace::Unknown),
             &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
         );
 
         assert_eq!(
@@ -167,6 +204,8 @@ mod tests {
             HdrRenderPath::SdrFallback,
             Some(HdrColorSpace::LinearSrgb),
             &HdrCapabilities::sdr("not an HDR image"),
+            None,
+            None,
         );
 
         assert_eq!(tag, None);

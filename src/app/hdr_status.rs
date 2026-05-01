@@ -53,6 +53,10 @@ impl ImageViewerApp {
             render_path,
             self.current_hdr_color_space(),
             &self.hdr_capabilities,
+            Some(self.ultra_hdr_decode_capacity),
+            self.hdr_monitor_state
+                .selection()
+                .map(|selection| selection.label.as_str()),
         )
     }
 

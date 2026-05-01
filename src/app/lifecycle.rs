@@ -100,6 +100,7 @@ impl ImageViewerApp {
         let ultra_hdr_decode_capacity = crate::app::ultra_hdr_decode_capacity_for_output_mode(
             settings.hdr_tone_map_settings(),
             initial_hdr_output_mode,
+            None,
         );
         for diagnostic in crate::hdr::renderer::hdr_render_output_diagnostics(hdr_target_format) {
             log::info!("{diagnostic}");
@@ -200,6 +201,7 @@ impl ImageViewerApp {
             current_hdr_tiled_image: None,
             hdr_tiled_source_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
+            ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,

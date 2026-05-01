@@ -17,6 +17,7 @@ impl ImageViewerApp {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
             self.settings.hdr_tone_map_settings(),
             self.hdr_capabilities.output_mode,
+            self.hdr_monitor_state.selection(),
         )
     }
 
@@ -49,6 +50,7 @@ impl ImageViewerApp {
             &static_hdr_indices,
             &hdr_tiled_indices,
             &self.hdr_sdr_fallback_indices,
+            &self.ultra_hdr_capacity_sensitive_indices,
         );
         self.loader.cancel_all();
         if refresh.indices_to_invalidate.is_empty() {
@@ -88,6 +90,7 @@ impl ImageViewerApp {
         self.hdr_image_cache.clear();
         self.hdr_tiled_source_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
+        self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
         self.current_hdr_tiled_image = None;
     }
@@ -96,6 +99,7 @@ impl ImageViewerApp {
         self.hdr_image_cache.remove(&index);
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
+        self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
             .current_hdr_image
             .as_ref()
@@ -958,6 +962,11 @@ impl ImageViewerApp {
             Ok(ImageData::Hdr { hdr, fallback }) => {
                 let hdr = Arc::new(hdr.clone());
                 self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+                if load_result.ultra_hdr_capacity_sensitive {
+                    self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+                } else {
+                    self.ultra_hdr_capacity_sensitive_indices.remove(&idx);
+                }
 
                 let color_image = ColorImage::from_rgba_unmultiplied(
                     [fallback.width as usize, fallback.height as usize],
@@ -1077,6 +1086,9 @@ impl ImageViewerApp {
                 self.remove_hdr_image_index(idx);
                 self.hdr_tiled_source_cache.insert(idx, Arc::clone(hdr));
                 self.hdr_sdr_fallback_indices.insert(idx);
+                if load_result.ultra_hdr_capacity_sensitive {
+                    self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+                }
 
                 let source = fallback;
                 // Upload preview into texture_cache so it persists across navigations.
