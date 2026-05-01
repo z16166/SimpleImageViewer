@@ -142,11 +142,8 @@ fn should_draw_hdr_preview_for_tiled_mode(
     !draw_sdr_tiles
 }
 
-fn should_draw_hdr_tiles_for_tiled_mode(
-    draw_sdr_tiles: bool,
-    all_visible_tiles_cached: bool,
-) -> bool {
-    !draw_sdr_tiles && all_visible_tiles_cached
+fn should_draw_hdr_tiles_for_tiled_mode(draw_sdr_tiles: bool, has_cached_tile: bool) -> bool {
+    !draw_sdr_tiles && has_cached_tile
 }
 
 fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
@@ -194,27 +191,6 @@ fn schedule_hdr_tile_extract(
     });
 
     true
-}
-
-fn hdr_tile_is_cached(source: &dyn crate::hdr::tiled::HdrTiledSource, coord: TileCoord) -> bool {
-    let ts = crate::tile_cache::get_tile_size();
-    let tile_x = coord.col * ts;
-    let tile_y = coord.row * ts;
-    let tile_w = ts.min(source.width() - tile_x);
-    let tile_h = ts.min(source.height() - tile_y);
-    source
-        .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
-        .is_some()
-}
-
-fn visible_hdr_tiles_are_cached(
-    source: &dyn crate::hdr::tiled::HdrTiledSource,
-    visible_coords: &[TileCoord],
-) -> bool {
-    !visible_coords.is_empty()
-        && visible_coords
-            .iter()
-            .all(|coord| hdr_tile_is_cached(source, *coord))
 }
 
 impl ImageViewerApp {
@@ -431,20 +407,6 @@ impl ImageViewerApp {
                 padding,
             );
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
-            let visible_draw_coords: Vec<TileCoord> = self
-                .tile_manager
-                .as_ref()
-                .unwrap()
-                .visible_tiles(unrotated_dest, tile_clip, 0.0)
-                .iter()
-                .map(|(coord, _, _)| *coord)
-                .collect();
-            let draw_hdr_tiles = hdr_source_for_frame.as_ref().is_some_and(|source| {
-                should_draw_hdr_tiles_for_tiled_mode(
-                    draw_sdr_tiles,
-                    visible_hdr_tiles_are_cached(source.as_ref(), &visible_draw_coords),
-                )
-            });
             if let Some(tm) = &mut self.tile_manager {
                 tm.retain_pending_tiles(&visible_coords);
             }
@@ -518,7 +480,7 @@ impl ImageViewerApp {
                                 }
                                 continue;
                             };
-                            if !draw_hdr_tiles {
+                            if !should_draw_hdr_tiles_for_tiled_mode(draw_sdr_tiles, true) {
                                 continue;
                             }
 
@@ -544,6 +506,17 @@ impl ImageViewerApp {
                                     1.0,
                                     uv_rect,
                                 ));
+
+                                #[cfg(feature = "tile-debug")]
+                                if self.settings.show_osd {
+                                    ui.painter().rect(
+                                        hdr_rect,
+                                        0.0,
+                                        Color32::TRANSPARENT,
+                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
                             }
                         }
                         continue;
@@ -816,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn native_hdr_tiled_mode_draws_tiles_only_after_visible_set_is_cached() {
+    fn native_hdr_tiled_mode_draws_cached_tiles_over_hdr_preview() {
         assert!(!should_draw_hdr_tiles_for_tiled_mode(false, false));
         assert!(should_draw_hdr_tiles_for_tiled_mode(false, true));
         assert!(!should_draw_hdr_tiles_for_tiled_mode(true, true));
