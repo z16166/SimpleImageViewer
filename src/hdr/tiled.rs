@@ -58,6 +58,15 @@ pub trait HdrTiledSource: Send + Sync {
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
+    fn cached_tile_rgba32f_arc(
+        &self,
+        _x: u32,
+        _y: u32,
+        _width: u32,
+        _height: u32,
+    ) -> Option<Arc<HdrTileBuffer>> {
+        None
+    }
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,
@@ -160,6 +169,19 @@ impl HdrTiledSource for HdrTiledImageSource {
         .ok_or_else(|| "Failed to create HDR SDR preview buffer".to_string())?;
         let preview = image::imageops::thumbnail(&image, max_w, max_h);
         Ok((preview.width(), preview.height(), preview.into_raw()))
+    }
+
+    fn cached_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Arc<HdrTileBuffer>> {
+        self.tile_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get((x, y, width, height)))
     }
 
     fn extract_tile_rgba32f_arc(

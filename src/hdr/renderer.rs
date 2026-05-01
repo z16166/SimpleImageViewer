@@ -99,6 +99,8 @@ struct ToneMapSettings {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    uv_min: vec2<f32>,
+    uv_max: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -245,7 +247,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let rotated_uv = rotate_uv_for_display(input.uv, tone_map.rotation_steps);
-    let clamped_uv = clamp(rotated_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
+    let sampled_uv = tone_map.uv_min + rotated_uv * (tone_map.uv_max - tone_map.uv_min);
+    let clamped_uv = clamp(sampled_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let hdr = sample_hdr_for_display(clamped_uv);
     let source_rgb = convert_input_to_linear_srgb(hdr.rgb, tone_map.input_color_space);
     var rgb: vec3<f32>;
@@ -385,6 +388,29 @@ pub fn hdr_tile_plane_callback(
     rotation_steps: u32,
     alpha: f32,
 ) -> egui::Shape {
+    hdr_tile_plane_callback_with_uv(
+        rect,
+        tile,
+        tone_map,
+        target_format,
+        output_mode,
+        rotation_steps,
+        alpha,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+    )
+}
+
+#[allow(dead_code)]
+pub fn hdr_tile_plane_callback_with_uv(
+    rect: egui::Rect,
+    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+    uv_rect: egui::Rect,
+) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
         HdrTilePlaneCallback {
@@ -394,6 +420,7 @@ pub fn hdr_tile_plane_callback(
             output_mode,
             rotation_steps: rotation_steps % 4,
             alpha,
+            uv_rect,
         },
     ))
 }
@@ -415,6 +442,7 @@ struct HdrTilePlaneCallback {
     output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
+    uv_rect: egui::Rect,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -551,6 +579,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.alpha,
             self.output_mode,
             self.tile.color_space,
+            self.uv_rect,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -639,6 +668,8 @@ struct ToneMapUniform {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
@@ -651,6 +682,7 @@ impl ToneMapUniform {
         alpha: f32,
         output_mode: HdrRenderOutputMode,
         input_color_space: HdrColorSpace,
+        uv_rect: egui::Rect,
     ) -> Self {
         Self {
             exposure_ev: settings.exposure_ev,
@@ -663,6 +695,8 @@ impl ToneMapUniform {
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,
+            uv_min: [uv_rect.min.x, uv_rect.min.y],
+            uv_max: [uv_rect.max.x, uv_rect.max.y],
         }
     }
 }
@@ -673,6 +707,7 @@ fn tile_tone_map_uniform(
     alpha: f32,
     output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
+    uv_rect: egui::Rect,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
@@ -680,6 +715,7 @@ fn tile_tone_map_uniform(
         alpha,
         output_mode,
         input_color_space,
+        uv_rect,
     )
 }
 
@@ -696,6 +732,7 @@ fn image_tone_map_uniform(
         alpha,
         output_mode,
         input_color_space,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
     )
 }
 
@@ -836,6 +873,7 @@ fn create_callback_resources(
             1.0,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::LinearSrgb,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -1279,11 +1317,27 @@ mod tests {
             0.5,
             HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::LinearSrgb,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
         assert_eq!(uniform.rotation_steps, 2);
         assert_eq!(uniform.alpha, 0.5);
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+    }
+
+    #[test]
+    fn tile_tone_map_uniform_carries_uv_subrect() {
+        let uniform = tile_tone_map_uniform(
+            HdrToneMapSettings::default(),
+            0,
+            1.0,
+            HdrRenderOutputMode::NativeHdr,
+            HdrColorSpace::LinearSrgb,
+            egui::Rect::from_min_max(egui::Pos2::new(0.25, 0.5), egui::Pos2::new(0.75, 1.0)),
+        );
+
+        assert_eq!(uniform.uv_min, [0.25, 0.5]);
+        assert_eq!(uniform.uv_max, [0.75, 1.0]);
     }
 
     #[test]
@@ -1307,6 +1361,7 @@ mod tests {
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
         assert_eq!(image_uniform.rotation_steps, tile_uniform.rotation_steps);
@@ -1460,6 +1515,7 @@ mod tests {
             0.25,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::LinearSrgb,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
         assert_eq!(uniform.rotation_steps, 1);
@@ -1490,6 +1546,7 @@ mod tests {
             1.0,
             HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::Rec2020Linear,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);

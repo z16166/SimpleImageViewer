@@ -28,6 +28,7 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
+const HDR_TILE_SYNC_EXTRACT_MAX_STABLE: usize = 2;
 
 pub(crate) fn should_draw_tiled_preview_transition(
     transition: TransitionStyle,
@@ -81,6 +82,36 @@ fn hdr_tile_plane_rect_for_sdr_tile(
     }
 }
 
+fn clipped_hdr_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Rect, Rect)> {
+    let rect = tile_screen_rect.intersect(clip_rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+
+    let uv_min_x =
+        ((rect.min.x - tile_screen_rect.min.x) / tile_screen_rect.width()).clamp(0.0, 1.0);
+    let uv_max_x =
+        ((rect.max.x - tile_screen_rect.min.x) / tile_screen_rect.width()).clamp(0.0, 1.0);
+    let uv_min_y =
+        ((rect.min.y - tile_screen_rect.min.y) / tile_screen_rect.height()).clamp(0.0, 1.0);
+    let uv_max_y =
+        ((rect.max.y - tile_screen_rect.min.y) / tile_screen_rect.height()).clamp(0.0, 1.0);
+    let uv = Rect::from_min_max(Pos2::new(uv_min_x, uv_min_y), Pos2::new(uv_max_x, uv_max_y));
+    Some((rect, uv))
+}
+
+fn should_sync_extract_hdr_tile(
+    is_interacting: bool,
+    is_cached: bool,
+    extracted_this_frame: usize,
+) -> bool {
+    is_cached || (!is_interacting && extracted_this_frame < HDR_TILE_SYNC_EXTRACT_MAX_STABLE)
+}
+
+fn should_invalidate_tile_requests_on_pan_drag() -> bool {
+    false
+}
+
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
     ///
@@ -93,13 +124,15 @@ impl ImageViewerApp {
     ) {
         if canvas_resp.dragged() {
             self.pan_offset += canvas_resp.drag_delta();
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-            if let Some(tm) = &mut self.tile_manager {
-                tm.generation = self.generation;
-                tm.pending_tiles.clear();
+            if should_invalidate_tile_requests_on_pan_drag() {
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                if let Some(tm) = &mut self.tile_manager {
+                    tm.generation = self.generation;
+                    tm.pending_tiles.clear();
+                }
+                self.loader.flush_tile_queue();
             }
-            self.loader.flush_tile_queue();
         }
 
         // Rotation logic
@@ -266,6 +299,9 @@ impl ImageViewerApp {
                 padding,
             );
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            if let Some(tm) = &mut self.tile_manager {
+                tm.retain_pending_tiles(&visible_coords);
+            }
 
             // ANTI-THRASHING: We no longer truncate 'visible' here.
             // Eviction logic is now handled in get_or_create_tile to prevent circular holes.
@@ -295,6 +331,8 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
+            let mut hdr_sync_extracts = 0;
+            let mut skipped_hdr_extract = false;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -341,17 +379,36 @@ impl ImageViewerApp {
                                 let tile_y = coord.row * ts;
                                 let tile_w = ts.min(hdr_source.width() - tile_x);
                                 let tile_h = ts.min(hdr_source.height() - tile_y);
-                                match hdr_source
-                                    .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
-                                {
+                                let cached_hdr_tile = hdr_source
+                                    .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h);
+                                let should_extract = should_sync_extract_hdr_tile(
+                                    is_interacting,
+                                    cached_hdr_tile.is_some(),
+                                    hdr_sync_extracts,
+                                );
+                                let hdr_tile_result = if let Some(tile) = cached_hdr_tile {
+                                    Ok(tile)
+                                } else if should_extract {
+                                    hdr_sync_extracts += 1;
+                                    hdr_source
+                                        .extract_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+                                } else {
+                                    skipped_hdr_extract = true;
+                                    continue;
+                                };
+
+                                match hdr_tile_result {
                                     Ok(hdr_tile) => {
-                                        let hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
+                                        let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
                                             *tile_screen_rect,
                                             pivot,
                                             rotation,
                                         );
-                                        ui.painter().add(
-                                            crate::hdr::renderer::hdr_tile_plane_callback(
+                                        if let Some((hdr_rect, uv_rect)) =
+                                            clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
+                                        {
+                                            ui.painter().add(
+                                                crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
                                                 hdr_rect,
                                                 hdr_tile,
                                                 self.hdr_renderer.tone_map,
@@ -363,8 +420,10 @@ impl ImageViewerApp {
                                                 ),
                                                 rotation as u32,
                                                 1.0,
+                                                uv_rect,
                                             ),
-                                        );
+                                            );
+                                        }
                                     }
                                     Err(err) => {
                                         log::warn!(
@@ -492,7 +551,7 @@ impl ImageViewerApp {
                 .as_ref()
                 .unwrap()
                 .has_ready_to_upload(&visible_coords);
-            if newly_uploaded > 0 || has_more_ready {
+            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract {
                 ui.ctx().request_repaint();
             }
         }
@@ -502,8 +561,9 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect,
-        should_draw_tiled_preview_transition,
+        HDR_TILE_SYNC_EXTRACT_MAX_STABLE, clipped_hdr_tile_plane, hdr_tile_plane_rect_for_sdr_tile,
+        rotated_axis_aligned_rect, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_sync_extract_hdr_tile,
     };
     use crate::app::TransitionStyle;
     use eframe::egui::{Pos2, Rect};
@@ -566,5 +626,39 @@ mod tests {
             rotated,
             rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2)
         );
+    }
+
+    #[test]
+    fn clipped_hdr_tile_plane_preserves_visible_uv_subrect() {
+        let tile_rect = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(50.0, 110.0));
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+
+        let (rect, uv) = clipped_hdr_tile_plane(tile_rect, clip).expect("visible clipped tile");
+
+        assert_eq!(
+            rect,
+            Rect::from_min_max(Pos2::new(0.0, 10.0), Pos2::new(50.0, 100.0))
+        );
+        assert_eq!(
+            uv,
+            Rect::from_min_max(Pos2::new(0.5, 0.0), Pos2::new(1.0, 0.9))
+        );
+    }
+
+    #[test]
+    fn hdr_tile_sync_extract_is_skipped_while_interacting_when_not_cached() {
+        assert!(should_sync_extract_hdr_tile(false, true, 0));
+        assert!(should_sync_extract_hdr_tile(false, false, 0));
+        assert!(!should_sync_extract_hdr_tile(true, false, 0));
+        assert!(!should_sync_extract_hdr_tile(
+            false,
+            false,
+            HDR_TILE_SYNC_EXTRACT_MAX_STABLE
+        ));
+    }
+
+    #[test]
+    fn pan_drag_keeps_tile_generation_and_worker_queue_alive() {
+        assert!(!should_invalidate_tile_requests_on_pan_drag());
     }
 }

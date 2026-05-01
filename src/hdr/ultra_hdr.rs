@@ -281,6 +281,19 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         Ok((preview.width(), preview.height(), preview.into_raw()))
     }
 
+    fn cached_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Arc<HdrTileBuffer>> {
+        self.tile_cache
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get((x, y, width, height)))
+    }
+
     fn extract_tile_rgba32f_arc(
         &self,
         x: u32,

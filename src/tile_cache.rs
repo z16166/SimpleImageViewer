@@ -169,6 +169,62 @@ impl TilePixelCache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyTileSource {
+        width: u32,
+        height: u32,
+    }
+
+    impl crate::loader::TiledImageSource for DummyTileSource {
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; w as usize * h as usize * 4])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    #[test]
+    fn retain_pending_tiles_drops_offscreen_entries() {
+        let source = Arc::new(DummyTileSource {
+            width: 4096,
+            height: 4096,
+        });
+        let mut manager = TileManager::with_source(0, 1, source);
+        manager.pending_tiles.insert(TileCoord { col: 0, row: 0 });
+        manager.pending_tiles.insert(TileCoord { col: 4, row: 4 });
+
+        manager.retain_pending_tiles(&[TileCoord { col: 0, row: 0 }]);
+
+        assert!(
+            manager
+                .pending_tiles
+                .contains(&TileCoord { col: 0, row: 0 })
+        );
+        assert!(
+            !manager
+                .pending_tiles
+                .contains(&TileCoord { col: 4, row: 4 })
+        );
+    }
+}
+
 /// The global tile pixel cache instance.
 pub static PIXEL_CACHE: LazyLock<Mutex<TilePixelCache>> = LazyLock::new(|| {
     Mutex::new(TilePixelCache::new(512)) // Default 512MB, will be updated by settings
@@ -237,6 +293,11 @@ impl TileManager {
 
     pub fn get_source(&self) -> Arc<dyn crate::loader::TiledImageSource> {
         Arc::clone(&self.source)
+    }
+
+    pub fn retain_pending_tiles(&mut self, visible_coords: &[TileCoord]) {
+        self.pending_tiles
+            .retain(|coord| visible_coords.contains(coord));
     }
 
     /// Returns counts for the current visible set using a non-blocking try_lock: (gpu, cpu_ready, pending)
