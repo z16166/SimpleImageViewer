@@ -62,6 +62,26 @@ pub(crate) fn hdr_image_plane_rect(layout: &crate::app::rendering::geometry::Pla
     layout.dest
 }
 
+pub(crate) fn clipped_plane_rect_and_uv(rect: Rect, clip_rect: Rect) -> Option<(Rect, Rect)> {
+    let clipped = rect.intersect(clip_rect);
+    if clipped.width() <= 0.0 || clipped.height() <= 0.0 {
+        return None;
+    }
+
+    let uv_min_x = ((clipped.min.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+    let uv_max_x = ((clipped.max.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+    let uv_min_y = ((clipped.min.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+    let uv_max_y = ((clipped.max.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+
+    Some((
+        clipped,
+        Rect::from_min_max(
+            egui::pos2(uv_min_x, uv_min_y),
+            egui::pos2(uv_max_x, uv_max_y),
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::hdr::renderer::HdrRenderOutputMode;
@@ -122,5 +142,28 @@ mod tests {
 
         assert_eq!(super::hdr_image_plane_rect(&layout), layout.dest);
         assert_ne!(super::hdr_image_plane_rect(&layout), layout.unrotated_dest);
+    }
+
+    #[test]
+    fn clipped_plane_rect_preserves_uv_subrect() {
+        let rect = eframe::egui::Rect::from_min_max(
+            eframe::egui::pos2(-100.0, -50.0),
+            eframe::egui::pos2(100.0, 150.0),
+        );
+        let clip = eframe::egui::Rect::from_min_max(
+            eframe::egui::pos2(0.0, 0.0),
+            eframe::egui::pos2(50.0, 100.0),
+        );
+
+        let (clipped, uv) = super::clipped_plane_rect_and_uv(rect, clip).unwrap();
+
+        assert_eq!(clipped, clip);
+        assert_eq!(
+            uv,
+            eframe::egui::Rect::from_min_max(
+                eframe::egui::pos2(0.5, 0.25),
+                eframe::egui::pos2(0.75, 0.75)
+            )
+        );
     }
 }

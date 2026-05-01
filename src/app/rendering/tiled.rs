@@ -15,7 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::plane::{
-    draw_sdr_texture_plane, hdr_image_plane_rect, select_tiled_plane_backend,
+    clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
+    select_tiled_plane_backend,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::tile_cache::{TileCoord, TileStatus};
@@ -296,18 +297,25 @@ impl ImageViewerApp {
                 .as_ref()
                 .and_then(|current| current.image_for_index(self.current_index))
             {
-                ui.painter()
-                    .add(crate::hdr::renderer::hdr_image_plane_callback(
-                        hdr_image_plane_rect(&layout),
-                        Arc::clone(hdr_preview),
-                        self.hdr_renderer.tone_map,
-                        self.hdr_target_format
-                            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                        hdr_output_mode
-                            .unwrap_or(crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped),
-                        rotation as u32,
-                        1.0,
-                    ));
+                let hdr_rect = hdr_image_plane_rect(&layout);
+                if let Some((clipped_rect, uv_rect)) =
+                    clipped_plane_rect_and_uv(hdr_rect, screen_rect)
+                {
+                    ui.painter()
+                        .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
+                            clipped_rect,
+                            Arc::clone(hdr_preview),
+                            self.hdr_renderer.tone_map,
+                            self.hdr_target_format
+                                .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                            hdr_output_mode.unwrap_or(
+                                crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
+                            ),
+                            rotation as u32,
+                            1.0,
+                            uv_rect,
+                        ));
+                }
             }
         }
 

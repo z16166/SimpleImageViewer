@@ -356,6 +356,7 @@ impl HdrImageRenderer {
     }
 }
 
+#[allow(dead_code)]
 pub fn hdr_image_plane_callback(
     rect: egui::Rect,
     image: Arc<HdrImageBuffer>,
@@ -364,6 +365,28 @@ pub fn hdr_image_plane_callback(
     output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
+) -> egui::Shape {
+    hdr_image_plane_callback_with_uv(
+        rect,
+        image,
+        tone_map,
+        target_format,
+        output_mode,
+        rotation_steps,
+        alpha,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+    )
+}
+
+pub fn hdr_image_plane_callback_with_uv(
+    rect: egui::Rect,
+    image: Arc<HdrImageBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+    uv_rect: egui::Rect,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -374,6 +397,7 @@ pub fn hdr_image_plane_callback(
             output_mode,
             rotation_steps: rotation_steps % 4,
             alpha,
+            uv_rect,
         },
     ))
 }
@@ -432,6 +456,7 @@ struct HdrImagePlaneCallback {
     output_mode: HdrRenderOutputMode,
     rotation_steps: u32,
     alpha: f32,
+    uv_rect: egui::Rect,
 }
 
 #[allow(dead_code)]
@@ -473,6 +498,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.alpha,
             self.output_mode,
             self.image.color_space,
+            self.uv_rect,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -736,6 +762,7 @@ fn image_tone_map_uniform(
     alpha: f32,
     output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
+    uv_rect: egui::Rect,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
@@ -743,7 +770,7 @@ fn image_tone_map_uniform(
         alpha,
         output_mode,
         input_color_space,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        uv_rect,
     )
 }
 
@@ -1384,6 +1411,7 @@ mod tests {
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
         let tile_uniform = tile_tone_map_uniform(
             settings,

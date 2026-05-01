@@ -112,11 +112,14 @@ impl ImageViewerApp {
             }
         }
 
-        // Special case for asterisk which comes via Text event in some egui versions
+        // Some keyboard layouts report zoom keys as text input rather than plain key presses.
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
-                if text == "*" {
-                    return Some(AppAction::ZoomReset);
+                match text.as_str() {
+                    "+" => return Some(AppAction::ZoomIn),
+                    "-" => return Some(AppAction::ZoomOut),
+                    "*" => return Some(AppAction::ZoomReset),
+                    _ => {}
                 }
             }
         }

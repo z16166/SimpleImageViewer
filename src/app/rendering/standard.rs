@@ -15,7 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::geometry::PlaneLayout;
-use crate::app::rendering::plane::{draw_sdr_texture_plane, hdr_image_plane_rect};
+use crate::app::rendering::plane::{
+    clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
+};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -182,16 +184,17 @@ impl ImageViewerApp {
 
                 // HDR images draw through egui-wgpu so the float buffer reaches the shader.
                 // The SDR fallback texture stays cached for non-wgpu paths and transitions.
-                ui.painter()
-                    .add(crate::hdr::renderer::hdr_image_plane_callback(
-                        hdr_image_plane_rect(&final_layout),
-                        hdr_image,
-                        self.hdr_renderer.tone_map,
-                        target_format,
-                        hdr_output_mode,
-                        rotation as u32,
-                        tp.alpha,
-                    ));
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    screen_rect,
+                    hdr_image_plane_rect(&final_layout),
+                    hdr_image,
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation,
+                    tp.alpha,
+                );
                 return;
             }
         }
@@ -305,16 +308,19 @@ impl ImageViewerApp {
         rotation: i32,
         alpha: f32,
     ) {
+        let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip) else {
+            return;
+        };
         ui.painter()
-            .with_clip_rect(clip)
-            .add(crate::hdr::renderer::hdr_image_plane_callback(
-                rect,
+            .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
+                clipped_rect,
                 hdr_image,
                 tone_map,
                 target_format,
                 hdr_output_mode,
                 rotation as u32,
                 alpha,
+                uv_rect,
             ));
     }
 
