@@ -38,6 +38,8 @@ pub struct RadianceHdrTiledImageSource {
     mmap: Arc<memmap2::Mmap>,
     width: u32,
     height: u32,
+    params: crate::hdr::decode::RadianceHeaderParams,
+    scanline_offsets: Vec<usize>,
     tile_cache: Mutex<HdrTileCache>,
 }
 
@@ -46,7 +48,10 @@ impl RadianceHdrTiledImageSource {
         let file = File::open(path).map_err(|err| err.to_string())?;
         let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
         let mut params = crate::hdr::decode::RadianceHeaderParams::default();
-        let (width, height) = read_radiance_header(&mut Cursor::new(&mmap[..]), &mut params)?;
+        let mut reader = Cursor::new(&mmap[..]);
+        let (width, height) = read_radiance_header(&mut reader, &mut params)?;
+        let data_offset = reader.position() as usize;
+        let scanline_offsets = build_radiance_scanline_offsets(&mmap, data_offset, width, height)?;
         log::debug!("[HDR] {}: {}", path.display(), params.diagnostic_label());
 
         Ok(Self {
@@ -54,6 +59,8 @@ impl RadianceHdrTiledImageSource {
             mmap,
             width,
             height,
+            params,
+            scanline_offsets,
             tile_cache: Mutex::new(HdrTileCache::new(configured_hdr_tile_cache_max_bytes())),
         })
     }
@@ -77,11 +84,27 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
-        decode_radiance_hdr_preview(&self.mmap, self.width, self.height, max_w, max_h)
+        decode_radiance_hdr_preview(
+            &self.mmap,
+            self.width,
+            self.height,
+            self.params,
+            &self.scanline_offsets,
+            max_w,
+            max_h,
+        )
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
-        decode_radiance_sdr_preview(&self.mmap, self.width, self.height, max_w, max_h)
+        decode_radiance_sdr_preview(
+            &self.mmap,
+            self.width,
+            self.height,
+            self.params,
+            &self.scanline_offsets,
+            max_w,
+            max_h,
+        )
     }
 
     fn cached_tile_rgba32f_arc(
@@ -118,8 +141,17 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             }
         }
 
-        let rgba =
-            decode_radiance_tile_window(&self.mmap, self.width, self.height, x, y, width, height)?;
+        let rgba = decode_radiance_tile_window(
+            &self.mmap,
+            self.width,
+            self.height,
+            self.params,
+            &self.scanline_offsets,
+            x,
+            y,
+            width,
+            height,
+        )?;
 
         let tile = Arc::new(HdrTileBuffer {
             width,
@@ -140,29 +172,23 @@ fn decode_radiance_tile_window(
     mmap: &[u8],
     expected_width: u32,
     expected_height: u32,
+    params: crate::hdr::decode::RadianceHeaderParams,
+    scanline_offsets: &[usize],
     x: u32,
     y: u32,
     width: u32,
     height: u32,
 ) -> Result<Vec<f32>, String> {
+    validate_scanline_offsets(expected_height, scanline_offsets)?;
     let mut reader = Cursor::new(mmap);
-    let mut params = crate::hdr::decode::RadianceHeaderParams::default();
-    let (source_width, source_height) = read_radiance_header(&mut reader, &mut params)?;
-    if (source_width, source_height) != (expected_width, expected_height) {
-        return Err(format!(
-            "Radiance HDR dimensions changed while extracting tile: expected {expected_width}x{expected_height}, got {source_width}x{source_height}"
-        ));
-    }
 
-    let mut scanline = vec![Rgbe8Pixel::default(); source_width as usize];
+    let mut scanline = vec![Rgbe8Pixel::default(); expected_width as usize];
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     let first_row = y;
     let last_row_exclusive = y + height;
-    for row in 0..last_row_exclusive {
+    for row in first_row..last_row_exclusive {
+        reader.set_position(scanline_offsets[row as usize] as u64);
         read_scanline(&mut reader, &mut scanline)?;
-        if row < first_row {
-            continue;
-        }
 
         let start = x as usize;
         let end = start + width as usize;
@@ -180,10 +206,20 @@ fn decode_radiance_sdr_preview(
     mmap: &[u8],
     expected_width: u32,
     expected_height: u32,
+    params: crate::hdr::decode::RadianceHeaderParams,
+    scanline_offsets: &[usize],
     max_w: u32,
     max_h: u32,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let preview = decode_radiance_hdr_preview(mmap, expected_width, expected_height, max_w, max_h)?;
+    let preview = decode_radiance_hdr_preview(
+        mmap,
+        expected_width,
+        expected_height,
+        params,
+        scanline_offsets,
+        max_w,
+        max_h,
+    )?;
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
     Ok((preview.width, preview.height, pixels))
 }
@@ -192,6 +228,8 @@ fn decode_radiance_hdr_preview(
     mmap: &[u8],
     expected_width: u32,
     expected_height: u32,
+    params: crate::hdr::decode::RadianceHeaderParams,
+    scanline_offsets: &[usize],
     max_w: u32,
     max_h: u32,
 ) -> Result<HdrImageBuffer, String> {
@@ -201,28 +239,19 @@ fn decode_radiance_hdr_preview(
         return Err("Radiance HDR preview dimensions must be non-zero".to_string());
     }
 
+    validate_scanline_offsets(expected_height, scanline_offsets)?;
     let mut reader = Cursor::new(mmap);
-    let mut params = crate::hdr::decode::RadianceHeaderParams::default();
-    let (source_width, source_height) = read_radiance_header(&mut reader, &mut params)?;
-    if (source_width, source_height) != (expected_width, expected_height) {
-        return Err(format!(
-            "Radiance HDR dimensions changed while generating preview: expected {expected_width}x{expected_height}, got {source_width}x{source_height}"
-        ));
-    }
 
-    let mut scanline = vec![Rgbe8Pixel::default(); source_width as usize];
+    let mut scanline = vec![Rgbe8Pixel::default(); expected_width as usize];
     let mut rgba = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
-    let mut next_source_row = 0_u32;
 
     for preview_y in 0..preview_height {
-        let source_y = preview_sample_coord(preview_y, preview_height, source_height);
-        for _ in next_source_row..=source_y {
-            read_scanline(&mut reader, &mut scanline)?;
-        }
-        next_source_row = source_y + 1;
+        let source_y = preview_sample_coord(preview_y, preview_height, expected_height);
+        reader.set_position(scanline_offsets[source_y as usize] as u64);
+        read_scanline(&mut reader, &mut scanline)?;
 
         for preview_x in 0..preview_width {
-            let source_x = preview_sample_coord(preview_x, preview_width, source_width) as usize;
+            let source_x = preview_sample_coord(preview_x, preview_width, expected_width) as usize;
             let rgb = scanline[source_x].to_rgb_f32();
             rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
         }
@@ -258,6 +287,35 @@ fn preview_sample_coord(preview_coord: u32, preview_extent: u32, source_extent: 
 
     ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
         as u32
+}
+
+fn build_radiance_scanline_offsets(
+    mmap: &[u8],
+    data_offset: usize,
+    width: u32,
+    height: u32,
+) -> Result<Vec<usize>, String> {
+    let mut reader = Cursor::new(mmap);
+    reader.set_position(data_offset as u64);
+    let mut offsets = Vec::with_capacity(height as usize);
+    for _ in 0..height {
+        offsets.push(reader.position() as usize);
+        skip_scanline(&mut reader, width as usize)?;
+    }
+    Ok(offsets)
+}
+
+fn validate_scanline_offsets(
+    expected_height: u32,
+    scanline_offsets: &[usize],
+) -> Result<(), String> {
+    if scanline_offsets.len() != expected_height as usize {
+        return Err(format!(
+            "Radiance HDR scanline index has {} rows, expected {expected_height}",
+            scanline_offsets.len()
+        ));
+    }
+    Ok(())
 }
 
 fn read_radiance_header<R: BufRead>(
@@ -341,6 +399,85 @@ fn read_scanline<R: Read>(reader: &mut R, scanline: &mut [Rgbe8Pixel]) -> Result
     } else {
         decode_old_rle(reader, first, scanline)?;
     }
+    Ok(())
+}
+
+fn skip_scanline(reader: &mut Cursor<&[u8]>, width: usize) -> Result<(), String> {
+    if width == 0 {
+        return Ok(());
+    }
+
+    let first = read_rgbe(reader)?;
+    if first.rgb[0] == 2 && first.rgb[1] == 2 && first.rgb[2] < 128 {
+        for _ in 0..4 {
+            skip_component(reader, width)?;
+        }
+    } else {
+        skip_old_rle(reader, first, width)?;
+    }
+    Ok(())
+}
+
+fn skip_component(reader: &mut Cursor<&[u8]>, width: usize) -> Result<(), String> {
+    let mut pos = 0usize;
+    while pos < width {
+        let run = read_byte(reader)?;
+        if run <= 128 {
+            let count = run as usize;
+            if pos + count > width {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {width}",
+                    pos + count
+                ));
+            }
+            let next = reader
+                .position()
+                .checked_add(count as u64)
+                .ok_or_else(|| "Radiance HDR scanline offset overflow".to_string())?;
+            if next > reader.get_ref().len() as u64 {
+                return Err("EOF in Radiance HDR scanline".to_string());
+            }
+            reader.set_position(next);
+            pos += count;
+        } else {
+            let count = (run - 128) as usize;
+            if pos + count > width {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {width}",
+                    pos + count
+                ));
+            }
+            read_byte(reader)?;
+            pos += count;
+        }
+    }
+    Ok(())
+}
+
+fn skip_old_rle(reader: &mut Cursor<&[u8]>, first: Rgbe8Pixel, width: usize) -> Result<(), String> {
+    let mut x = 1usize;
+    let mut run_multiplier = 1usize;
+    let mut previous = first;
+
+    while x < width {
+        let pixel = read_rgbe(reader)?;
+        if pixel.rgb == [1, 1, 1] {
+            let count = pixel.exponent as usize * run_multiplier;
+            run_multiplier *= 256;
+            if x + count > width {
+                return Err(format!(
+                    "Wrong Radiance HDR scanline length: got {}, expected {width}",
+                    x + count
+                ));
+            }
+            x += count;
+        } else {
+            run_multiplier = 1;
+            previous = pixel;
+            x += 1;
+        }
+    }
+    let _ = previous;
     Ok(())
 }
 
@@ -516,8 +653,9 @@ mod tests {
         let height = 8193_u32;
         let mut bytes =
             format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
-        bytes.extend_from_slice(&[0x80, 0x80, 0x80, 0x81]);
-        bytes.resize(bytes.len() + ((width - 1) as usize * 4), 0);
+        for _ in 0..height {
+            append_constant_new_rle_scanline(&mut bytes, width, [128, 128, 128], 129);
+        }
         std::fs::write(&path, bytes).expect("write oversized tiled HDR");
 
         let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
@@ -543,8 +681,9 @@ mod tests {
         let height = 8193_u32;
         let mut bytes =
             format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
-        bytes.extend_from_slice(&[0x80, 0x80, 0x80, 0x81]);
-        bytes.resize(bytes.len() + ((width - 1) as usize * 4), 0);
+        for _ in 0..height {
+            append_constant_new_rle_scanline(&mut bytes, width, [128, 128, 128], 129);
+        }
         std::fs::write(&path, bytes).expect("write oversized preview HDR");
 
         let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
@@ -559,5 +698,56 @@ mod tests {
         assert!(pixels[1] > 0);
         assert!(pixels[2] > 0);
         assert_eq!(pixels[3], 255);
+    }
+
+    #[test]
+    fn open_indexes_radiance_scanline_offsets_for_direct_tile_decode() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_radiance_scanline_index_{}.hdr",
+            std::process::id()
+        ));
+        let width = 4_u32;
+        let height = 4_u32;
+        let mut bytes =
+            format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
+        for row in 0..height {
+            append_constant_new_rle_scanline(
+                &mut bytes,
+                width,
+                [32 + row as u8, 64 + row as u8, 96 + row as u8],
+                129,
+            );
+        }
+        std::fs::write(&path, bytes).expect("write indexed HDR");
+
+        let source = RadianceHdrTiledImageSource::open(&path).expect("open Radiance HDR source");
+        assert_eq!(source.scanline_offsets.len(), height as usize);
+
+        let tile = source
+            .extract_tile_rgba32f_arc(1, 3, 2, 1)
+            .expect("extract deep tile via scanline offset index");
+        let _ = std::fs::remove_file(&path);
+
+        let expected = f32::from(32_u8 + 3) * 2.0_f32.powi(129 - 128 - 8);
+        assert!((tile.rgba_f32[0] - expected).abs() < 0.001);
+        assert!((tile.rgba_f32[4] - expected).abs() < 0.001);
+    }
+
+    fn append_constant_new_rle_scanline(
+        bytes: &mut Vec<u8>,
+        width: u32,
+        rgb: [u8; 3],
+        exponent: u8,
+    ) {
+        bytes.extend_from_slice(&[2, 2, (width >> 8) as u8, (width & 0xff) as u8]);
+        for value in [rgb[0], rgb[1], rgb[2], exponent] {
+            let mut remaining = width;
+            while remaining > 0 {
+                let run = remaining.min(127);
+                bytes.push(128 + run as u8);
+                bytes.push(value);
+                remaining -= run;
+            }
+        }
     }
 }
