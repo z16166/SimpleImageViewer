@@ -123,39 +123,12 @@ fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
 
-fn should_draw_hdr_tile_overlay(visible_count: usize, cached_count: usize) -> bool {
-    visible_count > 0 && cached_count >= visible_count
-}
-
-fn visible_hdr_tile_cache_counts(
-    source: &dyn crate::hdr::tiled::HdrTiledSource,
-    visible: &[(TileCoord, Rect, Rect)],
-    screen_rect: Rect,
-) -> (usize, usize) {
-    let ts = crate::tile_cache::get_tile_size();
-    let mut visible_count = 0;
-    let mut cached_count = 0;
-
-    for (coord, tile_screen_rect, _) in visible {
-        let clipped = tile_screen_rect.intersect(screen_rect);
-        if clipped.width() <= 0.0 || clipped.height() <= 0.0 {
-            continue;
-        }
-
-        let tile_x = coord.col * ts;
-        let tile_y = coord.row * ts;
-        let tile_w = ts.min(source.width() - tile_x);
-        let tile_h = ts.min(source.height() - tile_y);
-        visible_count += 1;
-        if source
-            .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
-            .is_some()
-        {
-            cached_count += 1;
-        }
-    }
-
-    (visible_count, cached_count)
+fn should_draw_sdr_tiles_for_tiled_mode(
+    output_mode: Option<crate::hdr::renderer::HdrRenderOutputMode>,
+    has_hdr_tiled_source: bool,
+) -> bool {
+    !(has_hdr_tiled_source
+        && output_mode == Some(crate::hdr::renderer::HdrRenderOutputMode::NativeHdr))
 }
 
 fn schedule_hdr_tile_extract(
@@ -417,12 +390,16 @@ impl ImageViewerApp {
                 .as_ref()
                 .and_then(|current| current.source_for_index(self.current_index))
                 .cloned();
-            let draw_hdr_overlay = hdr_source_for_frame.as_ref().is_some_and(|source| {
-                let (visible_count, cached_count) =
-                    visible_hdr_tile_cache_counts(source.as_ref(), &visible, screen_rect);
-                should_draw_hdr_tile_overlay(visible_count, cached_count)
+            let hdr_output_mode = hdr_source_for_frame.as_ref().map(|_| {
+                crate::hdr::monitor::effective_render_output_mode(
+                    self.hdr_target_format,
+                    self.hdr_monitor_state.selection(),
+                )
             });
-            let hdr_overlay_waiting = hdr_source_for_frame.is_some() && !draw_hdr_overlay;
+            let draw_sdr_tiles = should_draw_sdr_tiles_for_tiled_mode(
+                hdr_output_mode,
+                hdr_source_for_frame.is_some(),
+            );
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -434,6 +411,63 @@ impl ImageViewerApp {
                 };
 
                 for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
+                    if !draw_sdr_tiles {
+                        if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                            let ts = crate::tile_cache::get_tile_size();
+                            let tile_x = coord.col * ts;
+                            let tile_y = coord.row * ts;
+                            let tile_w = ts.min(hdr_source.width() - tile_x);
+                            let tile_h = ts.min(hdr_source.height() - tile_y);
+                            let Some(hdr_tile) =
+                                hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+                            else {
+                                if should_schedule_hdr_tile_extract(false, hdr_async_extracts)
+                                    && schedule_hdr_tile_extract(
+                                        PendingHdrTileExtract {
+                                            index: self.current_index,
+                                            generation: self.generation,
+                                            x: tile_x,
+                                            y: tile_y,
+                                            width: tile_w,
+                                            height: tile_h,
+                                        },
+                                        Arc::clone(hdr_source),
+                                        ui.ctx().clone(),
+                                    )
+                                {
+                                    hdr_async_extracts += 1;
+                                }
+                                skipped_hdr_extract = true;
+                                continue;
+                            };
+
+                            let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
+                                *tile_screen_rect,
+                                pivot,
+                                rotation,
+                            );
+                            if let Some((hdr_rect, uv_rect)) =
+                                clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
+                            {
+                                ui.painter()
+                                    .add(crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
+                                    hdr_rect,
+                                    hdr_tile,
+                                    self.hdr_renderer.tone_map,
+                                    self.hdr_target_format
+                                        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                    hdr_output_mode.unwrap_or(
+                                        crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
+                                    ),
+                                    rotation as u32,
+                                    1.0,
+                                    uv_rect,
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+
                     let allow_upload = newly_uploaded < tile_upload_quota;
                     let (status, just_uploaded) =
                         tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
@@ -458,65 +492,6 @@ impl ImageViewerApp {
                             ui.painter()
                                 .with_clip_rect(screen_rect)
                                 .add(egui::Shape::mesh(mesh));
-
-                            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                                let ts = crate::tile_cache::get_tile_size();
-                                let tile_x = coord.col * ts;
-                                let tile_y = coord.row * ts;
-                                let tile_w = ts.min(hdr_source.width() - tile_x);
-                                let tile_h = ts.min(hdr_source.height() - tile_y);
-                                let cached_hdr_tile = hdr_source
-                                    .cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h);
-                                let Some(hdr_tile) = cached_hdr_tile else {
-                                    if should_schedule_hdr_tile_extract(false, hdr_async_extracts)
-                                        && schedule_hdr_tile_extract(
-                                            PendingHdrTileExtract {
-                                                index: self.current_index,
-                                                generation: self.generation,
-                                                x: tile_x,
-                                                y: tile_y,
-                                                width: tile_w,
-                                                height: tile_h,
-                                            },
-                                            Arc::clone(hdr_source),
-                                            ui.ctx().clone(),
-                                        )
-                                    {
-                                        hdr_async_extracts += 1;
-                                    }
-                                    skipped_hdr_extract = true;
-                                    continue;
-                                };
-
-                                if !draw_hdr_overlay {
-                                    continue;
-                                }
-                                let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
-                                    *tile_screen_rect,
-                                    pivot,
-                                    rotation,
-                                );
-                                if let Some((hdr_rect, uv_rect)) =
-                                    clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
-                                {
-                                    ui.painter().add(
-                                        crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
-                                            hdr_rect,
-                                            hdr_tile,
-                                            self.hdr_renderer.tone_map,
-                                            self.hdr_target_format
-                                                .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                                            crate::hdr::monitor::effective_render_output_mode(
-                                                self.hdr_target_format,
-                                                self.hdr_monitor_state.selection(),
-                                            ),
-                                            rotation as u32,
-                                            1.0,
-                                            uv_rect,
-                                        ),
-                                    );
-                                }
-                            }
 
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
@@ -632,8 +607,9 @@ impl ImageViewerApp {
                 .tile_manager
                 .as_ref()
                 .unwrap()
-                .has_ready_to_upload(&visible_coords);
-            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract || hdr_overlay_waiting {
+                .has_ready_to_upload(&visible_coords)
+                && draw_sdr_tiles;
+            if newly_uploaded > 0 || has_more_ready || skipped_hdr_extract {
                 ui.ctx().request_repaint();
             }
         }
@@ -644,11 +620,12 @@ impl ImageViewerApp {
 mod tests {
     use super::{
         HDR_TILE_ASYNC_EXTRACT_MAX_PER_FRAME, clipped_hdr_tile_plane,
-        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect, should_draw_hdr_tile_overlay,
-        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_schedule_hdr_tile_extract,
+        hdr_tile_plane_rect_for_sdr_tile, rotated_axis_aligned_rect,
+        should_draw_sdr_tiles_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
     };
     use crate::app::TransitionStyle;
+    use crate::hdr::renderer::HdrRenderOutputMode;
     use eframe::egui::{Pos2, Rect};
 
     #[test]
@@ -744,10 +721,18 @@ mod tests {
     }
 
     #[test]
-    fn hdr_overlay_waits_for_all_visible_tiles() {
-        assert!(!should_draw_hdr_tile_overlay(0, 0));
-        assert!(!should_draw_hdr_tile_overlay(4, 3));
-        assert!(should_draw_hdr_tile_overlay(4, 4));
-        assert!(should_draw_hdr_tile_overlay(4, 5));
+    fn native_hdr_tiled_mode_does_not_draw_sdr_tiles() {
+        assert!(!should_draw_sdr_tiles_for_tiled_mode(
+            Some(HdrRenderOutputMode::NativeHdr),
+            true
+        ));
+        assert!(should_draw_sdr_tiles_for_tiled_mode(
+            Some(HdrRenderOutputMode::SdrToneMapped),
+            true
+        ));
+        assert!(should_draw_sdr_tiles_for_tiled_mode(
+            Some(HdrRenderOutputMode::NativeHdr),
+            false
+        ));
     }
 }
