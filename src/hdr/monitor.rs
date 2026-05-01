@@ -189,25 +189,14 @@ fn macos_edr_selection_from_values(
             Some(value),
             Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
         )
-    } else if let Some(value) =
-        finite_positive_capacity(potential_edr_capacity).filter(|value| *value > 1.0)
-    {
-        (
-            Some(value),
-            Some("macOS maximumPotentialExtendedDynamicRangeColorComponentValue"),
-        )
-    } else if let Some(value) =
-        finite_positive_capacity(reference_edr_capacity).filter(|value| *value > 1.0)
-    {
-        (
-            Some(value),
-            Some("macOS maximumReferenceExtendedDynamicRangeColorComponentValue"),
-        )
     } else {
         (None, None)
     };
+    let hdr_supported = capacity.is_some()
+        || finite_positive_capacity(potential_edr_capacity).is_some_and(|value| value > 1.0)
+        || finite_positive_capacity(reference_edr_capacity).is_some_and(|value| value > 1.0);
     HdrMonitorSelection {
-        hdr_supported: capacity.is_some(),
+        hdr_supported,
         label,
         max_luminance_nits: None,
         max_full_frame_luminance_nits: None,
@@ -550,6 +539,15 @@ mod tests {
 
         assert!(!selection.hdr_supported);
         assert_eq!(selection.max_hdr_capacity, None);
+    }
+
+    #[test]
+    fn macos_potential_edr_only_does_not_force_decode_capacity() {
+        let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 1.0, 16.0, 0.0);
+
+        assert!(selection.hdr_supported);
+        assert_eq!(selection.max_hdr_capacity, None);
+        assert_eq!(selection.hdr_capacity_source, None);
     }
 
     #[cfg(target_os = "macos")]
