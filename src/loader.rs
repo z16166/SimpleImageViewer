@@ -932,7 +932,7 @@ impl ImageLoader {
         if let Ok(ref image_data) = load_result.result {
             let source = match image_data {
                 ImageData::Tiled(source) => Some(Arc::clone(source)),
-                ImageData::HdrTiled { fallback, .. } => Some(Arc::clone(fallback)),
+                ImageData::HdrTiled { .. } => None,
                 _ => None,
             };
             let Some(source) = source else {
@@ -2174,6 +2174,67 @@ mod tests {
             "HDR tiled load should not decode an SDR fallback preview when HDR preview is available"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hdr_tiled_load_does_not_start_sdr_hq_preview_refinement() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_hdr_tiled_hq_preview_{}.exr",
+            std::process::id()
+        ));
+        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
+            2,
+            1,
+            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
+        )
+        .expect("build test EXR image");
+        image::DynamicImage::ImageRgba32F(img)
+            .save_with_format(&path, image::ImageFormat::OpenExr)
+            .expect("write test EXR");
+        let _threshold_override = TiledThresholdOverride::set(1);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
+        let loading = Arc::new(Mutex::new(HashMap::from([(0, 1)])));
+        let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(1));
+
+        ImageLoader::do_load(
+            0,
+            1,
+            &path,
+            tx,
+            refine_tx,
+            loading,
+            current_gen,
+            false,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        );
+
+        let mut saw_image = false;
+        let mut saw_preview = false;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(LoaderOutput::Image(result)) => {
+                    assert!(matches!(result.result, Ok(ImageData::HdrTiled { .. })));
+                    saw_image = true;
+                }
+                Ok(LoaderOutput::Preview(_)) => {
+                    saw_preview = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        let _ = std::fs::remove_file(&path);
+        assert!(saw_image, "HDR tiled load should send its image result");
+        assert!(
+            !saw_preview,
+            "HDR tiled load should not spawn an SDR HQ preview refinement"
+        );
     }
 
     #[test]
