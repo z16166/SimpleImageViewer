@@ -1324,36 +1324,38 @@ fn load_image_file(
                 _ => {}
             }
 
-            let t0 = std::time::Instant::now();
-            let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                fallback.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
-            }));
-            match gen_result {
-                Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                    log::info!(
-                        "[{}] HDR fallback {}px preview generated ({}x{}) in {:?}",
-                        file_name,
-                        DEFAULT_PREVIEW_SIZE,
-                        pw,
-                        ph,
-                        t0.elapsed()
-                    );
-                    preview = Some(DecodedImage::new(pw, ph, p_pixels));
-                }
-                Ok(_) => {
-                    log::warn!(
-                        "[{}] HDR fallback generate_preview returned empty/zero-size result in {:?}",
-                        file_name,
-                        t0.elapsed()
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "[{}] HDR fallback generate_preview PANICKED: {:?} in {:?}",
-                        file_name,
-                        e,
-                        t0.elapsed()
-                    );
+            if hdr_preview.is_none() {
+                let t0 = std::time::Instant::now();
+                let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    fallback.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                }));
+                match gen_result {
+                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                        log::info!(
+                            "[{}] HDR fallback {}px preview generated ({}x{}) in {:?}",
+                            file_name,
+                            DEFAULT_PREVIEW_SIZE,
+                            pw,
+                            ph,
+                            t0.elapsed()
+                        );
+                        preview = Some(DecodedImage::new(pw, ph, p_pixels));
+                    }
+                    Ok(_) => {
+                        log::warn!(
+                            "[{}] HDR fallback generate_preview returned empty/zero-size result in {:?}",
+                            file_name,
+                            t0.elapsed()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "[{}] HDR fallback generate_preview PANICKED: {:?} in {:?}",
+                            file_name,
+                            e,
+                            t0.elapsed()
+                        );
+                    }
                 }
             }
 
@@ -2129,6 +2131,47 @@ mod tests {
         assert!(
             preview_pixels.iter().any(|channel| *channel > 0),
             "disk-backed EXR fallback preview should contain tone-mapped image data"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hdr_tiled_load_result_skips_sdr_preview_when_hdr_preview_is_available() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_hdr_tiled_preview_{}.exr",
+            std::process::id()
+        ));
+        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
+            2,
+            1,
+            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
+        )
+        .expect("build test EXR image");
+        image::DynamicImage::ImageRgba32F(img)
+            .save_with_format(&path, image::ImageFormat::OpenExr)
+            .expect("write test EXR");
+        let _threshold_override = TiledThresholdOverride::set(1);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
+
+        let result = load_image_file(
+            1,
+            0,
+            &path,
+            tx,
+            refine_tx,
+            false,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        );
+
+        assert!(
+            result.hdr_preview.is_some(),
+            "HDR tiled load should keep the HDR preview for native HDR rendering"
+        );
+        assert!(
+            result.preview.is_none(),
+            "HDR tiled load should not decode an SDR fallback preview when HDR preview is available"
         );
         let _ = std::fs::remove_file(&path);
     }
