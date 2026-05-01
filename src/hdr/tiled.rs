@@ -22,7 +22,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
-const DISK_BACKED_PREVIEW_SAMPLE_ROWS: u32 = 32;
 pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_HDR_TILE_CACHE_MAX_BYTES);
 
@@ -281,23 +280,10 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
         return Err("HDR tiled preview dimensions must be non-zero".to_string());
     }
 
-    let sample_height = if source.source_kind() == HdrTiledSourceKind::DiskBacked {
-        height.min(DISK_BACKED_PREVIEW_SAMPLE_ROWS)
-    } else {
-        height
-    };
-    let mut sampled_rows = Vec::with_capacity(sample_height as usize);
-    for sample_y in 0..sample_height {
-        let preview_y = preview_sample_coord(sample_y, sample_height, height);
-        let src_y = preview_sample_coord(preview_y, height, source.height());
-        let row = source.extract_tile_rgba32f_arc(0, src_y, source.width(), 1)?;
-        sampled_rows.push(row);
-    }
-
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for preview_y in 0..height {
-        let sample_y = preview_sample_coord(preview_y, height, sample_height) as usize;
-        let row = &sampled_rows[sample_y];
+        let src_y = preview_sample_coord(preview_y, height, source.height());
+        let row = source.extract_tile_rgba32f_arc(0, src_y, source.width(), 1)?;
         for preview_x in 0..width {
             let src_x = preview_sample_coord(preview_x, width, source.width()) as usize;
             let offset = src_x * 4;
@@ -494,9 +480,10 @@ pub(crate) fn validate_tile_bounds(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use crate::hdr::tiled::{
-        HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
+        HdrTileBuffer, HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
         configured_hdr_tile_cache_max_bytes, set_global_hdr_tile_cache_max_bytes_for_tests,
     };
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
@@ -589,6 +576,20 @@ mod tests {
                 1.0,
             ]
         );
+    }
+
+    #[test]
+    fn disk_backed_hdr_preview_samples_each_output_row() {
+        let source = RecordingDiskBackedSource::new(1, 128);
+
+        let preview = super::hdr_preview_from_tiled_source_nearest(&source, 64, 64)
+            .expect("generate disk-backed preview");
+
+        let requested_rows = source.requested_rows.lock().expect("read requested rows");
+        assert_eq!((preview.width, preview.height), (1, 64));
+        assert_eq!(requested_rows.len(), 64);
+        assert_eq!(requested_rows[0], 0);
+        assert_eq!(requested_rows[63], 127);
     }
 
     #[test]
@@ -747,6 +748,75 @@ mod tests {
             height,
             color_space: HdrColorSpace::LinearSrgb,
             rgba_f32: Arc::new(vec![value; width as usize * height as usize * 4]),
+        }
+    }
+
+    struct RecordingDiskBackedSource {
+        width: u32,
+        height: u32,
+        requested_rows: Mutex<Vec<u32>>,
+    }
+
+    impl RecordingDiskBackedSource {
+        fn new(width: u32, height: u32) -> Self {
+            Self {
+                width,
+                height,
+                requested_rows: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl HdrTiledSource for RecordingDiskBackedSource {
+        fn source_kind(&self) -> HdrTiledSourceKind {
+            HdrTiledSourceKind::DiskBacked
+        }
+
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn color_space(&self) -> HdrColorSpace {
+            HdrColorSpace::LinearSrgb
+        }
+
+        fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
+            super::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
+        }
+
+        fn generate_sdr_preview(
+            &self,
+            max_w: u32,
+            max_h: u32,
+        ) -> Result<(u32, u32, Vec<u8>), String> {
+            let preview = self.generate_hdr_preview(max_w, max_h)?;
+            super::sdr_preview_from_hdr_preview(&preview)
+        }
+
+        fn extract_tile_rgba32f_arc(
+            &self,
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+        ) -> Result<Arc<HdrTileBuffer>, String> {
+            assert_eq!(x, 0);
+            assert_eq!(width, self.width);
+            assert_eq!(height, 1);
+            self.requested_rows
+                .lock()
+                .expect("record requested row")
+                .push(y);
+            Ok(Arc::new(HdrTileBuffer {
+                width,
+                height,
+                color_space: HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(vec![y as f32, y as f32, y as f32, 1.0]),
+            }))
         }
     }
 }
