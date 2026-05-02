@@ -270,6 +270,105 @@ pub enum ImageData {
     Animated(Vec<AnimationFrame>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PixelPlaneKind {
+    Sdr,
+    Hdr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreviewStage {
+    Initial,
+    Refined,
+}
+
+#[derive(Clone)]
+pub enum PreviewPlane {
+    Sdr(DecodedImage),
+    Hdr(std::sync::Arc<crate::hdr::types::HdrImageBuffer>),
+}
+
+impl PreviewPlane {
+    pub fn kind(&self) -> PixelPlaneKind {
+        match self {
+            Self::Sdr(_) => PixelPlaneKind::Sdr,
+            Self::Hdr(_) => PixelPlaneKind::Hdr,
+        }
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        match self {
+            Self::Sdr(preview) => (preview.width, preview.height),
+            Self::Hdr(preview) => (preview.width, preview.height),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PreviewBundle {
+    stage: PreviewStage,
+    sdr: Option<DecodedImage>,
+    hdr: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
+}
+
+impl PreviewBundle {
+    pub fn empty(stage: PreviewStage) -> Self {
+        Self {
+            stage,
+            sdr: None,
+            hdr: None,
+        }
+    }
+
+    pub fn initial() -> Self {
+        Self::empty(PreviewStage::Initial)
+    }
+
+    pub fn refined() -> Self {
+        Self::empty(PreviewStage::Refined)
+    }
+
+    pub fn from_compat(
+        stage: PreviewStage,
+        sdr: Option<DecodedImage>,
+        hdr: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
+    ) -> Self {
+        Self { stage, sdr, hdr }
+    }
+
+    pub fn with_sdr(mut self, preview: DecodedImage) -> Self {
+        self.sdr = Some(preview);
+        self
+    }
+
+    pub fn with_hdr(
+        mut self,
+        preview: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+    ) -> Self {
+        self.hdr = Some(preview);
+        self
+    }
+
+    pub fn stage(&self) -> PreviewStage {
+        self.stage
+    }
+
+    pub fn sdr(&self) -> Option<&DecodedImage> {
+        self.sdr.as_ref()
+    }
+
+    pub fn hdr(&self) -> Option<&std::sync::Arc<crate::hdr::types::HdrImageBuffer>> {
+        self.hdr.as_ref()
+    }
+
+    pub fn plane(&self, kind: PixelPlaneKind) -> Option<PreviewPlane> {
+        match kind {
+            PixelPlaneKind::Sdr => self.sdr.clone().map(PreviewPlane::Sdr),
+            PixelPlaneKind::Hdr => self.hdr.clone().map(PreviewPlane::Hdr),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LoadResult {
     pub index: usize,
@@ -277,6 +376,7 @@ pub struct LoadResult {
     pub result: Result<ImageData, String>,
     pub preview: Option<DecodedImage>,
     pub hdr_preview: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
 }
 
@@ -1050,6 +1150,7 @@ impl ImageLoader {
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview: None,
                 hdr_preview: None,
+                preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
             }
         });
@@ -1545,6 +1646,9 @@ fn load_image_file(
         }
     };
 
+    let preview_bundle =
+        PreviewBundle::from_compat(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
+
     LoadResult {
         index,
         generation,
@@ -1552,6 +1656,7 @@ fn load_image_file(
         result: final_result,
         preview,
         hdr_preview,
+        preview_bundle,
     }
 }
 
@@ -2221,6 +2326,50 @@ mod tests {
             TileDecodeSource::Hdr(hdr_source).pixel_kind(),
             TilePixelKind::Hdr
         );
+    }
+
+    #[test]
+    fn load_result_exposes_unified_preview_bundle_while_keeping_compat_fields() {
+        let sdr_preview = DecodedImage::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
+        let hdr_preview = Arc::new(HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+        });
+        let bundle = PreviewBundle::initial()
+            .with_sdr(sdr_preview.clone())
+            .with_hdr(Arc::clone(&hdr_preview));
+
+        let result = LoadResult {
+            index: 1,
+            generation: 2,
+            result: Ok(ImageData::Static(sdr_preview.clone())),
+            preview: Some(sdr_preview),
+            hdr_preview: Some(hdr_preview),
+            preview_bundle: bundle,
+            ultra_hdr_capacity_sensitive: false,
+        };
+
+        assert_eq!(result.preview_bundle.stage(), PreviewStage::Initial);
+        assert_eq!(result.preview_bundle.sdr().expect("sdr preview").width, 2);
+        assert_eq!(result.preview_bundle.hdr().expect("hdr preview").width, 1);
+        let sdr_plane = result
+            .preview_bundle
+            .plane(PixelPlaneKind::Sdr)
+            .expect("sdr plane");
+        let hdr_plane = result
+            .preview_bundle
+            .plane(PixelPlaneKind::Hdr)
+            .expect("hdr plane");
+        assert_eq!(sdr_plane.kind(), PixelPlaneKind::Sdr);
+        assert_eq!(sdr_plane.dimensions(), (2, 1));
+        assert_eq!(hdr_plane.kind(), PixelPlaneKind::Hdr);
+        assert_eq!(hdr_plane.dimensions(), (1, 1));
+        assert_eq!(PreviewBundle::refined().stage(), PreviewStage::Refined);
+        assert!(result.preview.is_some());
+        assert!(result.hdr_preview.is_some());
     }
 
     #[test]
