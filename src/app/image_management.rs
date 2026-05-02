@@ -289,7 +289,6 @@ impl ImageViewerApp {
             self.loader.cancel_all();
         }
         if refresh.indices_to_invalidate.is_empty() {
-            self.schedule_preloads(true);
             ctx.request_repaint();
             return;
         }
@@ -317,7 +316,9 @@ impl ImageViewerApp {
             );
         }
 
-        self.schedule_preloads(true);
+        if crate::app::capacity_refresh_should_reschedule_preloads(&refresh) {
+            self.schedule_preloads(true);
+        }
         ctx.request_repaint();
     }
 
@@ -656,8 +657,10 @@ impl ImageViewerApp {
         }
         let cur = self.current_index;
 
-        // Always load the current image
-        if !self.texture_cache.contains(cur) && !self.loader.is_loading(cur, self.generation) {
+        // Always load the current image unless any renderable representation is already cached.
+        // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
+        // would re-submit expensive EXR preview generation after the initial load is processed.
+        if !self.has_loaded_asset(cur) && !self.loader.is_loading(cur, self.generation) {
             let path = self.image_files[cur].clone();
             self.loader
                 .request_load(cur, self.generation, path, self.settings.raw_high_quality);
@@ -731,7 +734,7 @@ impl ImageViewerApp {
             }
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
-            if self.texture_cache.contains(idx) || self.loader.is_loading(idx, self.generation) {
+            if self.has_loaded_asset(idx) || self.loader.is_loading(idx, self.generation) {
                 count += 1;
                 continue;
             }
@@ -754,6 +757,15 @@ impl ImageViewerApp {
             count += 1;
             new_bytes += file_size;
         }
+    }
+
+    fn has_loaded_asset(&self, index: usize) -> bool {
+        current_image_has_loaded_asset(
+            self.texture_cache.contains(index),
+            self.hdr_image_cache.contains_key(&index),
+            self.hdr_tiled_source_cache.contains_key(&index),
+            self.animation_cache.contains_key(&index),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -1638,6 +1650,15 @@ impl ImageViewerApp {
     }
 }
 
+fn current_image_has_loaded_asset(
+    has_sdr_texture: bool,
+    has_static_hdr: bool,
+    has_hdr_tiled_source: bool,
+    has_animation: bool,
+) -> bool {
+    has_sdr_texture || has_static_hdr || has_hdr_tiled_source || has_animation
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1759,6 +1780,14 @@ mod tests {
         assert!(should_cache_tiled_sdr_preview(true, true, Some(128), 512));
         assert!(!should_cache_tiled_sdr_preview(true, true, Some(512), 512));
         assert!(!should_cache_tiled_sdr_preview(true, true, Some(1024), 512));
+    }
+
+    #[test]
+    fn current_image_load_guard_treats_hdr_tiled_source_as_loaded() {
+        assert!(current_image_has_loaded_asset(false, true, false, false));
+        assert!(current_image_has_loaded_asset(false, false, true, false));
+        assert!(current_image_has_loaded_asset(false, false, false, true));
+        assert!(!current_image_has_loaded_asset(false, false, false, false));
     }
 
     #[test]

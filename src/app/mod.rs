@@ -114,6 +114,12 @@ pub(crate) fn capacity_refresh_should_cancel_loads(refresh: &UltraHdrCapacityRef
     !refresh.indices_to_invalidate.is_empty()
 }
 
+pub(crate) fn capacity_refresh_should_reschedule_preloads(
+    refresh: &UltraHdrCapacityRefresh,
+) -> bool {
+    !refresh.indices_to_invalidate.is_empty()
+}
+
 /// Compute preload byte budgets based on total system RAM.
 /// Forward budget = total_ram / 32, backward = total_ram / 64, both clamped.
 pub(crate) fn compute_preload_budgets() -> (u64, u64) {
@@ -1143,5 +1149,15 @@ mod tests {
         assert!(refresh.indices_to_invalidate.is_empty());
         assert!(!refresh.reload_current);
         assert!(!capacity_refresh_should_cancel_loads(&refresh));
+    }
+
+    #[test]
+    fn empty_capacity_refresh_does_not_reschedule_preloads() {
+        let refresh = UltraHdrCapacityRefresh {
+            indices_to_invalidate: Vec::new(),
+            reload_current: false,
+        };
+
+        assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
     }
 }

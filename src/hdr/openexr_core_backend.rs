@@ -465,6 +465,7 @@ impl OpenExrCoreReadContext {
         max_w: u32,
         max_h: u32,
     ) -> Result<OpenExrCoreRgbaTile, String> {
+        let started_at = Instant::now();
         let part = self.part(part_index)?;
         if part.storage != sys::EXR_STORAGE_SCANLINE {
             return Err("OpenEXRCore scanline preview supports only flat scanline EXR".to_string());
@@ -519,14 +520,51 @@ impl OpenExrCoreReadContext {
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }
+        let unique_chunks = rows_by_chunk.len();
+        let mut cache_hits = 0usize;
+        let mut cache_misses = 0usize;
+        let mut decode_ms = 0.0_f64;
+        let mut copy_ms = 0.0_f64;
         for (_chunk_start_y, (chunk, chunk_origin, rows)) in rows_by_chunk {
-            let decoded = self
-                .fetch_decoded_chunk(part_index, &chunk, chunk_origin)?
-                .decoded;
+            let fetched = self.fetch_decoded_chunk(part_index, &chunk, chunk_origin)?;
+            if fetched.cache_hit {
+                cache_hits += 1;
+            } else {
+                cache_misses += 1;
+            }
+            decode_ms += fetched.decode_ms;
+            let copy_started = Instant::now();
             sample_decoded_scanline_chunk_into_preview(
-                &decoded, part.width, width, height, &rows, &mut rgba,
+                &fetched.decoded,
+                part.width,
+                width,
+                height,
+                &rows,
+                &mut rgba,
             )?;
+            copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
         }
+        log::info!(
+            "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
+            self.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<unknown>"),
+            part_index,
+            max_w,
+            max_h,
+            width,
+            height,
+            part.width,
+            part.height,
+            source_row_budget,
+            unique_chunks,
+            cache_hits,
+            cache_misses,
+            decode_ms,
+            copy_ms,
+            started_at.elapsed().as_secs_f64() * 1000.0
+        );
 
         Ok(OpenExrCoreRgbaTile {
             width,
