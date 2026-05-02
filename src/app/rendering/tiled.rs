@@ -28,6 +28,7 @@ use std::sync::Arc;
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
 const FIT_SCALE_BUFFER: f32 = 1.05;
+const HDR_TILE_MIN_SCREEN_PX: f32 = 192.0;
 const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
@@ -375,6 +376,19 @@ fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> 
     }
 }
 
+fn tiled_plane_threshold_for_backend(
+    plane_backend: PlaneBackendKind,
+    preview_scale: f32,
+    fit_scale: f32,
+    tile_size: u32,
+) -> f32 {
+    let base = tiled_plane_threshold(preview_scale, fit_scale, tile_size);
+    match plane_backend {
+        PlaneBackendKind::Sdr => base,
+        PlaneBackendKind::Hdr => base.max(HDR_TILE_MIN_SCREEN_PX / tile_size.max(1) as f32),
+    }
+}
+
 fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
     effective_scale >= threshold
 }
@@ -494,8 +508,12 @@ impl ImageViewerApp {
             FALLBACK_PREVIEW_SCALE // Fallback
         };
 
-        let threshold =
-            tiled_plane_threshold(preview_scale, fit_scale, crate::tile_cache::get_tile_size());
+        let threshold = tiled_plane_threshold_for_backend(
+            plane_backend,
+            preview_scale,
+            fit_scale,
+            crate::tile_cache::get_tile_size(),
+        );
 
         let effective_scale = dest.width() / rotated_img_size.x;
 
@@ -877,7 +895,8 @@ mod tests {
         tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_kind_for_backend,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tile_request_priority, tile_visits_for_backend,
-        tiled_plane_threshold, TileRequestBudget, TiledPlaneKind,
+        tiled_plane_threshold, tiled_plane_threshold_for_backend, TileRequestBudget,
+        TiledPlaneKind,
     };
     use crate::app::rendering::plane::{clipped_plane_rect_and_uv, PlaneBackendKind};
     use crate::app::TransitionStyle;
@@ -1345,6 +1364,19 @@ mod tests {
         assert_eq!(tiled_plane_threshold(0.05, 0.25, 512), 0.2625);
         assert!(!is_tiled_plane_active(0.59, 0.6));
         assert!(is_tiled_plane_active(0.6, 0.6));
+    }
+
+    #[test]
+    fn hdr_tile_plane_threshold_waits_until_tiles_are_visually_meaningful() {
+        let sdr_threshold =
+            tiled_plane_threshold_for_backend(PlaneBackendKind::Sdr, 4096.0 / 24576.0, 0.05, 512);
+        let hdr_threshold =
+            tiled_plane_threshold_for_backend(PlaneBackendKind::Hdr, 4096.0 / 24576.0, 0.05, 512);
+
+        assert!(sdr_threshold < 0.25);
+        assert_eq!(hdr_threshold, 0.375);
+        assert!(!is_tiled_plane_active(0.25, hdr_threshold));
+        assert!(is_tiled_plane_active(0.375, hdr_threshold));
     }
 
     fn tile_visit(col: u32, row: u32) -> (TileCoord, Rect, Rect) {
