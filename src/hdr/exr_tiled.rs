@@ -189,6 +189,22 @@ impl HdrTiledSource for ExrTiledImageSource {
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         let context = exr_file_context("generate EXR HDR preview", &self.path);
         catch_exr_panic(&context, || {
+            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
+                && !self.has_subsampled_channels
+            {
+                let preview = self.context.extract_scanline_rgba32f_preview_nearest(
+                    self.part_index,
+                    max_w,
+                    max_h,
+                )?;
+                return Ok(HdrImageBuffer {
+                    width: preview.width,
+                    height: preview.height,
+                    format: HdrPixelFormat::Rgba32Float,
+                    color_space: self.color_space,
+                    rgba_f32: Arc::new(preview.rgba),
+                });
+            }
             hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
         })
     }

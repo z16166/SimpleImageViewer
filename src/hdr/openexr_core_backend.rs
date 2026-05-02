@@ -447,6 +447,77 @@ impl OpenExrCoreReadContext {
         })
     }
 
+    pub(crate) fn extract_scanline_rgba32f_preview_nearest(
+        &self,
+        part_index: usize,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<OpenExrCoreRgbaTile, String> {
+        let part = self.part(part_index)?;
+        if part.storage != sys::EXR_STORAGE_SCANLINE {
+            return Err("OpenEXRCore scanline preview supports only flat scanline EXR".to_string());
+        }
+        let (width, height) =
+            crate::hdr::tiled::preview_dimensions(part.width, part.height, max_w, max_h);
+        if width == 0 || height == 0 {
+            return Err("EXR preview dimensions must be non-zero".to_string());
+        }
+
+        let part_index =
+            i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
+        let mut rows_by_chunk = std::collections::BTreeMap::<
+            i32,
+            (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
+        >::new();
+        for preview_y in 0..height {
+            let source_y = crate::hdr::tiled::preview_sample_coord(preview_y, height, part.height);
+            let mut chunk = sys::ExrChunkInfo::default();
+            exr_result(unsafe {
+                sys::exr_read_scanline_chunk_info(
+                    self.raw.cast_const(),
+                    part_index,
+                    i32::try_from(source_y)
+                        .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                        + part.data_window_min.1,
+                    &mut chunk,
+                )
+            })?;
+            if chunk.height <= 0 || chunk.width <= 0 {
+                continue;
+            }
+            let chunk_origin = (
+                u32::try_from(chunk.start_x - part.data_window_min.0)
+                    .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
+                u32::try_from(chunk.start_y - part.data_window_min.1)
+                    .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
+            );
+            rows_by_chunk
+                .entry(chunk.start_y)
+                .or_insert_with(|| (chunk, chunk_origin, Vec::new()))
+                .2
+                .push((preview_y, source_y));
+        }
+
+        let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
+        for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
+            *alpha = 1.0;
+        }
+        for (_chunk_start_y, (chunk, chunk_origin, rows)) in rows_by_chunk {
+            let decoded = self
+                .fetch_decoded_chunk(part_index, &chunk, chunk_origin)?
+                .decoded;
+            sample_decoded_scanline_chunk_into_preview(
+                &decoded, part.width, width, height, &rows, &mut rgba,
+            )?;
+        }
+
+        Ok(OpenExrCoreRgbaTile {
+            width,
+            height,
+            rgba,
+        })
+    }
+
     #[cfg(feature = "tile-debug")]
     fn log_tile_chunk_decode(
         &self,
@@ -526,6 +597,22 @@ impl OpenExrCoreReadContext {
         tile: (u32, u32, u32, u32),
         rgba: &mut [f32],
     ) -> Result<OpenExrCoreChunkDecodeTiming, String> {
+        let fetched = self.fetch_decoded_chunk(part_index, chunk, chunk_origin)?;
+        let copy_ms = copy_decoded_chunk_to_tile(&fetched.decoded, tile, rgba)?;
+
+        Ok(OpenExrCoreChunkDecodeTiming {
+            decode_ms: fetched.decode_ms,
+            copy_ms,
+            cache_hit: fetched.cache_hit,
+        })
+    }
+
+    fn fetch_decoded_chunk(
+        &self,
+        part_index: i32,
+        chunk: &sys::ExrChunkInfo,
+        chunk_origin: (u32, u32),
+    ) -> Result<OpenExrCoreDecodedChunkFetch, String> {
         let key = decoded_chunk_key(part_index, chunk, chunk_origin)?;
         let mut cache = self
             .decoded_chunks
@@ -533,11 +620,9 @@ impl OpenExrCoreReadContext {
             .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
         loop {
             if let Some(decoded) = cache.get(&key) {
-                drop(cache);
-                let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
-                return Ok(OpenExrCoreChunkDecodeTiming {
+                return Ok(OpenExrCoreDecodedChunkFetch {
+                    decoded,
                     decode_ms: 0.0,
-                    copy_ms,
                     cache_hit: true,
                 });
             }
@@ -570,11 +655,10 @@ impl OpenExrCoreReadContext {
         cache.insert(key, Arc::clone(&decoded));
         drop(cache);
         self.decoded_chunk_ready.notify_all();
-        let copy_ms = copy_decoded_chunk_to_tile(&decoded, tile, rgba)?;
 
-        Ok(OpenExrCoreChunkDecodeTiming {
+        Ok(OpenExrCoreDecodedChunkFetch {
+            decoded,
             decode_ms,
-            copy_ms,
             cache_hit: false,
         })
     }
@@ -686,6 +770,13 @@ impl OpenExrCoreReadContext {
 struct OpenExrCoreChunkDecodeTiming {
     decode_ms: f64,
     copy_ms: f64,
+    cache_hit: bool,
+}
+
+#[derive(Clone, Debug)]
+struct OpenExrCoreDecodedChunkFetch {
+    decoded: Arc<OpenExrCoreDecodedChunk>,
+    decode_ms: f64,
     cache_hit: bool,
 }
 
@@ -801,6 +892,47 @@ fn copy_decoded_chunk_to_tile(
     }
 
     Ok(copy_start.elapsed().as_secs_f64() * 1000.0)
+}
+
+fn sample_decoded_scanline_chunk_into_preview(
+    decoded: &OpenExrCoreDecodedChunk,
+    source_width: u32,
+    preview_width: u32,
+    preview_height: u32,
+    preview_rows: &[(u32, u32)],
+    rgba: &mut [f32],
+) -> Result<(), String> {
+    let expected_len = preview_width as usize * preview_height as usize * 4;
+    if rgba.len() != expected_len {
+        return Err("EXR preview buffer has unexpected length".to_string());
+    }
+
+    let (chunk_x, chunk_y) = decoded.origin;
+    let chunk_right = chunk_x + decoded.width;
+    let chunk_bottom = chunk_y + decoded.height;
+    for &(preview_y, source_y) in preview_rows {
+        if preview_y >= preview_height {
+            return Err("EXR preview row is outside preview bounds".to_string());
+        }
+        if source_y < chunk_y || source_y >= chunk_bottom {
+            continue;
+        }
+        let source_row = (source_y - chunk_y) as usize;
+        for preview_x in 0..preview_width {
+            let source_x =
+                crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, source_width);
+            if source_x < chunk_x || source_x >= chunk_right {
+                continue;
+            }
+            let source_col = (source_x - chunk_x) as usize;
+            let source_offset = (source_row * decoded.width as usize + source_col) * 4;
+            let dest_offset =
+                (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
+            rgba[dest_offset..dest_offset + 4]
+                .copy_from_slice(&decoded.rgba[source_offset..source_offset + 4]);
+        }
+    }
+    Ok(())
 }
 
 fn decode_pipeline_channels(
@@ -994,6 +1126,36 @@ mod tests {
         assert_eq!(
             super::decoded_chunk_cache_budget_for_memory(128 * gib),
             4 * gib
+        );
+    }
+
+    #[test]
+    fn decoded_scanline_chunk_samples_nearest_preview_pixels_directly() {
+        let decoded = super::OpenExrCoreDecodedChunk {
+            origin: (0, 8),
+            width: 4,
+            height: 2,
+            rgba: std::sync::Arc::new(vec![
+                0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 3.0, 3.0, 3.0, 1.0,
+                4.0, 4.0, 4.0, 1.0, 5.0, 5.0, 5.0, 1.0, 6.0, 6.0, 6.0, 1.0, 7.0, 7.0, 7.0, 1.0,
+            ]),
+            byte_size: 32 * std::mem::size_of::<f32>(),
+        };
+        let mut preview = vec![0.0; 2 * 2 * 4];
+
+        super::sample_decoded_scanline_chunk_into_preview(
+            &decoded,
+            4,
+            2,
+            2,
+            &[(0, 8), (1, 9)],
+            &mut preview,
+        )
+        .expect("sample preview from decoded chunk");
+
+        assert_eq!(
+            preview,
+            vec![0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0, 1.0, 4.0, 4.0, 4.0, 1.0, 7.0, 7.0, 7.0, 1.0,]
         );
     }
 }
