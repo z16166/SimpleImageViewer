@@ -229,6 +229,22 @@ impl TileRequestBudget {
         self.scheduled_this_frame += 1;
     }
 
+    fn try_mark_pending(
+        &mut self,
+        pending_tiles: &mut HashSet<PendingTileKey>,
+        pending_key: PendingTileKey,
+        is_primary_visible: bool,
+    ) -> bool {
+        if !self.should_schedule(false, pending_tiles.len(), is_primary_visible) {
+            return false;
+        }
+        if !pending_tiles.insert(pending_key) {
+            return false;
+        }
+        self.record_scheduled();
+        true
+    }
+
     #[cfg(test)]
     fn pending_cap(&self) -> usize {
         self.pending_cap
@@ -656,15 +672,11 @@ impl ImageViewerApp {
                             let Some(hdr_tile) =
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
-                                let hdr_pending_count = tm.pending_tiles.len();
-                                if tile_request_budget.should_schedule(
-                                    false,
-                                    hdr_pending_count,
+                                if tile_request_budget.try_mark_pending(
+                                    &mut tm.pending_tiles,
+                                    tile_pending_key_for_backend(*coord, plane_backend),
                                     is_primary_visible,
-                                ) && tm
-                                    .pending_tiles
-                                    .insert(tile_pending_key_for_backend(*coord, plane_backend))
-                                {
+                                ) {
                                     self.loader.request_tile(
                                         self.current_index,
                                         tm.generation,
@@ -673,7 +685,6 @@ impl ImageViewerApp {
                                         coord.col,
                                         coord.row,
                                     );
-                                    tile_request_budget.record_scheduled();
                                 }
                                 continue;
                             };
@@ -743,9 +754,9 @@ impl ImageViewerApp {
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
-                                if !tile_request_budget.should_schedule(
-                                    false,
-                                    tm.pending_tiles.len(),
+                                if !tile_request_budget.try_mark_pending(
+                                    &mut tm.pending_tiles,
+                                    tile_pending_key_for_backend(*coord, plane_backend),
                                     is_primary_visible,
                                 ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
@@ -754,20 +765,14 @@ impl ImageViewerApp {
                                 let generation = tm.generation;
                                 // visible list is already sorted by distance to center
                                 let priority = (visible.len() - idx) as f32;
-                                if tm
-                                    .pending_tiles
-                                    .insert(tile_pending_key_for_backend(*coord, plane_backend))
-                                {
-                                    self.loader.request_tile(
-                                        self.current_index,
-                                        generation,
-                                        priority,
-                                        TileDecodeSource::Sdr(source),
-                                        coord.col,
-                                        coord.row,
-                                    );
-                                    tile_request_budget.record_scheduled();
-                                }
+                                self.loader.request_tile(
+                                    self.current_index,
+                                    generation,
+                                    priority,
+                                    TileDecodeSource::Sdr(source),
+                                    coord.col,
+                                    coord.row,
+                                );
                             }
                         }
                     }
@@ -1058,6 +1063,25 @@ mod tests {
             budget.record_scheduled();
         }
         assert!(!budget.should_schedule(false, 0, true));
+    }
+
+    #[test]
+    fn tile_request_budget_marks_pending_once_and_records_schedule() {
+        let mut budget = TileRequestBudget::new(10, 512, 8);
+        let coord = TileCoord { col: 2, row: 3 };
+        let key = tile_pending_key_for_backend(coord, PlaneBackendKind::Sdr);
+        let mut pending = std::collections::HashSet::new();
+
+        assert!(budget.try_mark_pending(&mut pending, key, true));
+        assert!(!budget.try_mark_pending(&mut pending, key, true));
+        assert_eq!(pending.len(), 1);
+
+        for row in 0..15 {
+            let key = tile_pending_key_for_backend(TileCoord { col: 9, row }, PlaneBackendKind::Sdr);
+            assert!(budget.try_mark_pending(&mut pending, key, true));
+        }
+        let key = tile_pending_key_for_backend(TileCoord { col: 10, row: 0 }, PlaneBackendKind::Sdr);
+        assert!(!budget.try_mark_pending(&mut pending, key, true));
     }
 
     #[test]
