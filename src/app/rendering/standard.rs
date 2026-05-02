@@ -16,8 +16,9 @@
 
 use crate::app::rendering::geometry::PlaneLayout;
 use crate::app::rendering::plane::{
-    clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
+    PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
+use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -30,13 +31,11 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
 }
 
 pub(crate) fn should_draw_static_hdr_immediately(
-    output_mode: HdrRenderOutputMode,
-    has_hdr_image: bool,
+    plan: &RenderPlan,
     transition: TransitionStyle,
     is_animating: bool,
 ) -> bool {
-    has_hdr_image
-        && output_mode == HdrRenderOutputMode::NativeHdr
+    plan.backend == PlaneBackendKind::Hdr
         && !(is_animating
             && matches!(
                 transition,
@@ -98,16 +97,8 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))
             .cloned();
-        let hdr_output_mode = crate::hdr::monitor::effective_render_output_mode(
-            self.hdr_target_format,
-            self.hdr_monitor_state.selection(),
-        );
-        if should_draw_static_hdr_immediately(
-            hdr_output_mode,
-            hdr_image.is_some(),
-            self.active_transition,
-            tp.is_animating,
-        ) {
+        let render_plan = self.build_render_plan(RenderShape::Static, hdr_image.is_some());
+        if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating) {
             self.transition_start = None;
             self.prev_texture = None;
             tp = crate::app::rendering::transitions::TransitionParams::default();
@@ -151,7 +142,7 @@ impl ImageViewerApp {
                     hdr_image,
                     self.hdr_renderer.tone_map,
                     target_format,
-                    hdr_output_mode,
+                    render_plan.output_mode,
                     tp.alpha,
                 );
                 ui.ctx().request_repaint();
@@ -163,7 +154,7 @@ impl ImageViewerApp {
         // Ripple remains on the SDR texture path because its circular mesh cannot be expressed
         // by the current rectangular HDR image-plane callback.
         if should_use_hdr_callback(self.active_transition, tp.is_animating) {
-            if let (Some(hdr_image), Some(target_format)) = (hdr_image, self.hdr_target_format) {
+            if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 if tp.is_animating {
                     if let Some(prev) = &self.prev_texture.clone() {
                         let p_size = prev.size_vec2();
@@ -191,7 +182,7 @@ impl ImageViewerApp {
                     hdr_image,
                     self.hdr_renderer.tone_map,
                     target_format,
-                    hdr_output_mode,
+                    render_plan.output_mode,
                     rotation,
                     tp.alpha,
                 );
@@ -308,20 +299,22 @@ impl ImageViewerApp {
         rotation: i32,
         alpha: f32,
     ) {
-        let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip) else {
-            return;
-        };
-        ui.painter()
-            .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
-                clipped_rect,
-                hdr_image,
+        let layout = PlaneLayout::from_dest(Vec2::new(rect.width(), rect.height()), rotation, rect);
+        draw_plane(
+            ui,
+            clip,
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            &layout,
+            PlaneDrawSource::HdrImage {
+                image: hdr_image,
                 tone_map,
                 target_format,
-                hdr_output_mode,
-                rotation as u32,
+                output_mode: hdr_output_mode,
+                rotation_steps: rotation as u32,
                 alpha,
-                uv_rect,
-            ));
+            },
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -525,6 +518,15 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::rendering::plan::{RenderPlan, RenderShape};
+
+    fn static_plan(
+        has_hdr_plane: bool,
+        target: Option<wgpu::TextureFormat>,
+        output_mode: HdrRenderOutputMode,
+    ) -> RenderPlan {
+        RenderPlan::new(RenderShape::Static, has_hdr_plane, target, output_mode)
+    }
 
     #[test]
     fn hdr_callback_is_disabled_during_complex_transitions() {
@@ -557,32 +559,43 @@ mod tests {
     #[test]
     fn native_static_hdr_draws_immediately_without_sdr_transition_phase() {
         assert!(should_draw_static_hdr_immediately(
-            HdrRenderOutputMode::NativeHdr,
-            true,
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
             TransitionStyle::None,
             false
         ));
         assert!(!should_draw_static_hdr_immediately(
-            HdrRenderOutputMode::SdrToneMapped,
-            true,
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::SdrToneMapped
+            ),
             TransitionStyle::None,
             false
         ));
         assert!(!should_draw_static_hdr_immediately(
-            HdrRenderOutputMode::NativeHdr,
-            false,
+            &static_plan(false, Some(wgpu::TextureFormat::Rgba16Float), HdrRenderOutputMode::NativeHdr),
             TransitionStyle::None,
             false
         ));
         assert!(!should_draw_static_hdr_immediately(
-            HdrRenderOutputMode::NativeHdr,
-            true,
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
             TransitionStyle::Curtain,
             true
         ));
         assert!(should_draw_static_hdr_immediately(
-            HdrRenderOutputMode::NativeHdr,
-            true,
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
             TransitionStyle::Ripple,
             true
         ));

@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::rendering::plane::PlaneBackendKind;
+use crate::app::rendering::plan::{RenderShape, build_render_plan_for_state};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
 use crate::hdr::types::HdrColorSpace;
@@ -37,12 +39,14 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
 
-        hdr_render_path_for_state(
+        hdr_render_path_for_viewer_plan(
+            self.tile_manager.is_some(),
             has_hdr_tiled_source,
             has_hdr_image,
             has_sdr_fallback,
             self.hdr_target_format,
             complex_transition_active,
+            self.hdr_monitor_state.selection(),
         )
     }
 
@@ -95,20 +99,34 @@ impl ImageViewerApp {
     }
 }
 
-fn hdr_render_path_for_state(
+fn hdr_render_path_for_viewer_plan(
+    tiled_canvas_active: bool,
     has_hdr_tiled_source: bool,
     has_hdr_image: bool,
     has_sdr_fallback: bool,
     hdr_target_format: Option<wgpu::TextureFormat>,
     complex_transition_active: bool,
+    monitor_selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
 ) -> Option<HdrRenderPath> {
-    let has_renderable_target = hdr_target_format.is_some();
-    if has_hdr_tiled_source && has_renderable_target {
-        return Some(HdrRenderPath::FloatTilePlane);
-    }
+    let shape = if tiled_canvas_active {
+        RenderShape::Tiled
+    } else {
+        RenderShape::Static
+    };
+    let has_hdr_plane = if shape == RenderShape::Tiled {
+        has_hdr_tiled_source
+    } else {
+        has_hdr_image
+    };
+    let plan =
+        build_render_plan_for_state(shape, has_hdr_plane, hdr_target_format, monitor_selection);
 
-    if has_hdr_image && has_renderable_target && !complex_transition_active {
-        return Some(HdrRenderPath::FloatImagePlane);
+    if plan.backend == PlaneBackendKind::Hdr {
+        return match shape {
+            RenderShape::Tiled => Some(HdrRenderPath::FloatTilePlane),
+            RenderShape::Static if !complex_transition_active => Some(HdrRenderPath::FloatImagePlane),
+            RenderShape::Static => Some(HdrRenderPath::SdrFallback),
+        };
     }
 
     if has_hdr_image || has_hdr_tiled_source || has_sdr_fallback {
@@ -120,18 +138,20 @@ fn hdr_render_path_for_state(
 
 #[cfg(test)]
 mod tests {
-    use super::hdr_render_path_for_state;
+    use super::hdr_render_path_for_viewer_plan;
     use crate::hdr::status::HdrRenderPath;
 
     #[test]
     fn hdr_tiled_source_reports_tile_plane_before_sdr_fallback() {
         assert_eq!(
-            hdr_render_path_for_state(
+            hdr_render_path_for_viewer_plan(
+                true,
                 true,
                 false,
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
-                false
+                false,
+                None,
             ),
             Some(HdrRenderPath::FloatTilePlane)
         );
@@ -140,7 +160,7 @@ mod tests {
     #[test]
     fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
         assert_eq!(
-            hdr_render_path_for_state(true, false, true, None, false),
+            hdr_render_path_for_viewer_plan(true, true, false, true, None, false, None),
             Some(HdrRenderPath::SdrFallback)
         );
     }
@@ -148,36 +168,41 @@ mod tests {
     #[test]
     fn complex_transition_keeps_full_image_hdr_on_sdr_fallback() {
         assert_eq!(
-            hdr_render_path_for_state(
+            hdr_render_path_for_viewer_plan(
+                false,
                 false,
                 true,
                 false,
                 Some(wgpu::TextureFormat::Rgba16Float),
-                true
+                true,
+                None,
             ),
             Some(HdrRenderPath::SdrFallback)
         );
     }
 
     #[test]
-    fn hdr_render_path_uses_float_plane_even_when_shader_tone_maps_to_sdr_target() {
+    fn tone_mapped_sdr_surface_matches_render_plan_sdr_fallback_osd() {
         assert_eq!(
-            hdr_render_path_for_state(
+            hdr_render_path_for_viewer_plan(
+                false,
                 false,
                 true,
                 true,
                 Some(wgpu::TextureFormat::Bgra8Unorm),
-                false
+                false,
+                None,
             ),
-            Some(HdrRenderPath::FloatImagePlane)
+            Some(HdrRenderPath::SdrFallback)
         );
     }
 
     #[test]
-    fn hdr_render_path_matrix_keeps_float_routes_when_target_exists() {
+    fn hdr_render_path_matrix_aligns_with_render_plan() {
         let cases = [
             (
-                "static HDR",
+                "static HDR native target",
+                false,
                 false,
                 true,
                 true,
@@ -186,7 +211,8 @@ mod tests {
                 Some(HdrRenderPath::FloatImagePlane),
             ),
             (
-                "tiled HDR",
+                "tiled HDR native target",
+                true,
                 true,
                 false,
                 true,
@@ -197,14 +223,16 @@ mod tests {
             (
                 "static HDR on SDR target",
                 false,
+                false,
                 true,
                 true,
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
-                Some(HdrRenderPath::FloatImagePlane),
+                Some(HdrRenderPath::SdrFallback),
             ),
             (
                 "tiled HDR without render target",
+                true,
                 true,
                 false,
                 true,
@@ -216,6 +244,7 @@ mod tests {
 
         for (
             label,
+            tiled_canvas_active,
             has_hdr_tiled_source,
             has_hdr_image,
             has_sdr_fallback,
@@ -225,12 +254,14 @@ mod tests {
         ) in cases
         {
             assert_eq!(
-                hdr_render_path_for_state(
+                hdr_render_path_for_viewer_plan(
+                    tiled_canvas_active,
                     has_hdr_tiled_source,
                     has_hdr_image,
                     has_sdr_fallback,
                     hdr_target_format,
                     complex_transition_active,
+                    None,
                 ),
                 expected,
                 "{label}"

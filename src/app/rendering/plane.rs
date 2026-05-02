@@ -1,5 +1,5 @@
-use crate::hdr::renderer::HdrRenderOutputMode;
 use eframe::egui::{self, Color32, Rect, TextureId};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaneBackendKind {
@@ -7,15 +7,130 @@ pub(crate) enum PlaneBackendKind {
     Hdr,
 }
 
-pub(crate) fn select_tiled_plane_backend(
-    output_mode: Option<HdrRenderOutputMode>,
-    has_hdr_tiled_source: bool,
-) -> PlaneBackendKind {
-    if has_hdr_tiled_source && output_mode == Some(HdrRenderOutputMode::NativeHdr) {
-        PlaneBackendKind::Hdr
-    } else {
-        PlaneBackendKind::Sdr
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaneDrawSourceKind {
+    SdrTexture,
+    HdrImage,
+    HdrTile,
+}
+
+impl PlaneDrawSourceKind {
+    pub(crate) fn backend(self) -> PlaneBackendKind {
+        match self {
+            Self::SdrTexture => PlaneBackendKind::Sdr,
+            Self::HdrImage | Self::HdrTile => PlaneBackendKind::Hdr,
+        }
     }
+}
+
+pub(crate) enum PlaneDrawSource {
+    SdrTexture {
+        texture_id: TextureId,
+        color: Color32,
+    },
+    HdrImage {
+        image: Arc<crate::hdr::types::HdrImageBuffer>,
+        tone_map: crate::hdr::types::HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        output_mode: crate::hdr::renderer::HdrRenderOutputMode,
+        rotation_steps: u32,
+        alpha: f32,
+    },
+    HdrTile {
+        tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+        tone_map: crate::hdr::types::HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        output_mode: crate::hdr::renderer::HdrRenderOutputMode,
+        rotation_steps: u32,
+        alpha: f32,
+    },
+}
+
+impl PlaneDrawSource {
+    pub(crate) fn kind(&self) -> PlaneDrawSourceKind {
+        match self {
+            Self::SdrTexture { .. } => PlaneDrawSourceKind::SdrTexture,
+            Self::HdrImage { .. } => PlaneDrawSourceKind::HdrImage,
+            Self::HdrTile { .. } => PlaneDrawSourceKind::HdrTile,
+        }
+    }
+}
+
+pub(crate) fn draw_plane(
+    ui: &egui::Ui,
+    clip_rect: Rect,
+    rect: Rect,
+    uv: Rect,
+    layout: &crate::app::rendering::geometry::PlaneLayout,
+    source: PlaneDrawSource,
+) {
+    let _backend = source.kind().backend();
+    match source {
+        PlaneDrawSource::SdrTexture { texture_id, color } => {
+            draw_sdr_texture_plane(ui, clip_rect, texture_id, rect, uv, color, layout);
+        }
+        PlaneDrawSource::HdrImage {
+            image,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps,
+            alpha,
+        } => {
+            let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
+                return;
+            };
+            ui.painter()
+                .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
+                    clipped_rect,
+                    image,
+                    tone_map,
+                    target_format,
+                    output_mode,
+                    rotation_steps,
+                    alpha,
+                    uv_subrect(uv, uv_rect),
+                ));
+        }
+        PlaneDrawSource::HdrTile {
+            tile,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps,
+            alpha,
+        } => {
+            let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
+                return;
+            };
+            ui.painter()
+                .add(crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
+                    clipped_rect,
+                    tile,
+                    tone_map,
+                    target_format,
+                    output_mode,
+                    rotation_steps,
+                    alpha,
+                    uv_subrect(uv, uv_rect),
+                ));
+        }
+    }
+}
+
+fn uv_subrect(base: Rect, clipped: Rect) -> Rect {
+    let width = base.width();
+    let height = base.height();
+    Rect::from_min_max(
+        egui::pos2(
+            base.min.x + clipped.min.x * width,
+            base.min.y + clipped.min.y * height,
+        ),
+        egui::pos2(
+            base.min.x + clipped.max.x * width,
+            base.min.y + clipped.max.y * height,
+        ),
+    )
 }
 
 pub(crate) fn sdr_texture_mesh(
@@ -37,7 +152,7 @@ pub(crate) fn sdr_texture_mesh(
 }
 
 pub(crate) fn draw_sdr_texture_plane(
-    ui: &mut egui::Ui,
+    ui: &egui::Ui,
     clip_rect: Rect,
     texture_id: TextureId,
     rect: Rect,
@@ -78,20 +193,39 @@ pub(crate) fn clipped_plane_rect_and_uv(rect: Rect, clip_rect: Rect) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use crate::app::rendering::plan::{RenderPlan, RenderShape};
     use crate::hdr::renderer::HdrRenderOutputMode;
 
     #[test]
-    fn tiled_plane_backend_selects_hdr_only_for_native_hdr_sources() {
+    fn render_plan_selects_tiled_hdr_only_for_native_hdr_sources() {
         assert_eq!(
-            super::select_tiled_plane_backend(Some(HdrRenderOutputMode::NativeHdr), true),
+            RenderPlan::new(
+                RenderShape::Tiled,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            )
+            .backend,
             super::PlaneBackendKind::Hdr
         );
         assert_eq!(
-            super::select_tiled_plane_backend(Some(HdrRenderOutputMode::SdrToneMapped), true),
+            RenderPlan::new(
+                RenderShape::Tiled,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::SdrToneMapped
+            )
+            .backend,
             super::PlaneBackendKind::Sdr
         );
         assert_eq!(
-            super::select_tiled_plane_backend(Some(HdrRenderOutputMode::NativeHdr), false),
+            RenderPlan::new(
+                RenderShape::Tiled,
+                false,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            )
+            .backend,
             super::PlaneBackendKind::Sdr
         );
     }
@@ -158,6 +292,22 @@ mod tests {
                 eframe::egui::pos2(0.5, 0.25),
                 eframe::egui::pos2(0.75, 0.75)
             )
+        );
+    }
+
+    #[test]
+    fn plane_draw_source_reports_backend_for_shared_dispatch() {
+        assert_eq!(
+            super::PlaneDrawSourceKind::SdrTexture.backend(),
+            super::PlaneBackendKind::Sdr
+        );
+        assert_eq!(
+            super::PlaneDrawSourceKind::HdrImage.backend(),
+            super::PlaneBackendKind::Hdr
+        );
+        assert_eq!(
+            super::PlaneDrawSourceKind::HdrTile.backend(),
+            super::PlaneBackendKind::Hdr
         );
     }
 }

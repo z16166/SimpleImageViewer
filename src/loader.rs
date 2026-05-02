@@ -382,7 +382,7 @@ impl PreviewBundle {
         Self::empty(PreviewStage::Refined)
     }
 
-    pub fn from_compat(
+    pub fn from_planes(
         stage: PreviewStage,
         sdr: Option<DecodedImage>,
         hdr: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
@@ -428,8 +428,6 @@ pub struct LoadResult {
     pub index: usize,
     pub generation: u64,
     pub result: Result<ImageData, String>,
-    pub preview: Option<DecodedImage>,
-    pub hdr_preview: Option<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>,
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
 }
@@ -505,8 +503,8 @@ impl TileInFlightKey {
 pub struct PreviewResult {
     pub index: usize,
     pub generation: u64,
-    pub result: Result<DecodedImage, String>,
     pub preview_bundle: PreviewBundle,
+    pub error: Option<String>,
 }
 
 impl PreviewResult {
@@ -515,15 +513,15 @@ impl PreviewResult {
         generation: u64,
         result: Result<DecodedImage, String>,
     ) -> Self {
-        let preview_bundle = match &result {
-            Ok(preview) => PreviewBundle::refined().with_sdr(preview.clone()),
-            Err(_) => PreviewBundle::refined(),
+        let (preview_bundle, error) = match result {
+            Ok(preview) => (PreviewBundle::refined().with_sdr(preview), None),
+            Err(error) => (PreviewBundle::refined(), Some(error)),
         };
         Self {
             index,
             generation,
-            result,
             preview_bundle,
+            error,
         }
     }
 
@@ -532,18 +530,15 @@ impl PreviewResult {
         generation: u64,
         result: Result<std::sync::Arc<crate::hdr::types::HdrImageBuffer>, String>,
     ) -> Self {
-        let (compat_result, preview_bundle) = match result {
-            Ok(preview) => (
-                Err("HDR preview is available only through preview_bundle".to_string()),
-                PreviewBundle::refined().with_hdr(preview),
-            ),
-            Err(err) => (Err(err), PreviewBundle::refined()),
+        let (preview_bundle, error) = match result {
+            Ok(preview) => (PreviewBundle::refined().with_hdr(preview), None),
+            Err(error) => (PreviewBundle::refined(), Some(error)),
         };
         Self {
             index,
             generation,
-            result: compat_result,
             preview_bundle,
+            error,
         }
     }
 }
@@ -1244,8 +1239,6 @@ impl ImageLoader {
                 index,
                 generation,
                 result: Err(format!("Decoder Panic: {}", msg)),
-                preview: None,
-                hdr_preview: None,
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
             }
@@ -1792,15 +1785,13 @@ fn load_image_file(
     };
 
     let preview_bundle =
-        PreviewBundle::from_compat(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
+        PreviewBundle::from_planes(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
 
     LoadResult {
         index,
         generation,
         ultra_hdr_capacity_sensitive: is_ultra_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
-        preview,
-        hdr_preview,
         preview_bundle,
     }
 }
@@ -2474,7 +2465,7 @@ mod tests {
     }
 
     #[test]
-    fn load_result_exposes_unified_preview_bundle_while_keeping_compat_fields() {
+    fn load_result_exposes_unified_preview_bundle_without_compat_fields() {
         let sdr_preview = DecodedImage::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
         let hdr_preview = Arc::new(HdrImageBuffer {
             width: 1,
@@ -2491,8 +2482,6 @@ mod tests {
             index: 1,
             generation: 2,
             result: Ok(ImageData::Static(sdr_preview.clone())),
-            preview: Some(sdr_preview),
-            hdr_preview: Some(hdr_preview),
             preview_bundle: bundle,
             ultra_hdr_capacity_sensitive: false,
         };
@@ -2513,8 +2502,6 @@ mod tests {
         assert_eq!(hdr_plane.kind(), PixelPlaneKind::Hdr);
         assert_eq!(hdr_plane.dimensions(), (1, 1));
         assert_eq!(PreviewBundle::refined().stage(), PreviewStage::Refined);
-        assert!(result.preview.is_some());
-        assert!(result.hdr_preview.is_some());
     }
 
     #[test]
@@ -2560,11 +2547,11 @@ mod tests {
     }
 
     #[test]
-    fn preview_result_exposes_refined_preview_bundle_with_compat_result() {
+    fn preview_result_exposes_refined_sdr_preview_bundle() {
         let preview = DecodedImage::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
         let update = PreviewResult::from_sdr_preview(3, 5, Ok(preview.clone()));
 
-        assert!(update.result.as_ref().expect("compat preview").rgba().len() == preview.rgba().len());
+        assert!(update.error.is_none());
         assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
         assert_eq!(
             update
@@ -2577,7 +2564,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_result_exposes_refined_hdr_preview_bundle_without_sdr_compat_result() {
+    fn preview_result_exposes_refined_hdr_preview_bundle() {
         let hdr_preview = Arc::new(HdrImageBuffer {
             width: 2,
             height: 1,
@@ -2587,7 +2574,7 @@ mod tests {
         });
         let update = PreviewResult::from_hdr_preview(3, 5, Ok(Arc::clone(&hdr_preview)));
 
-        assert!(update.result.is_err());
+        assert!(update.error.is_none());
         assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
         assert_eq!(
             update
@@ -2903,11 +2890,11 @@ mod tests {
         );
 
         assert!(
-            result.hdr_preview.is_some(),
+            result.preview_bundle.hdr().is_some(),
             "HDR tiled load should keep the HDR preview for native HDR rendering"
         );
         assert!(
-            result.preview.is_none(),
+            result.preview_bundle.sdr().is_none(),
             "HDR tiled load should not decode an SDR fallback preview when HDR preview is available"
         );
         let _ = std::fs::remove_file(&path);

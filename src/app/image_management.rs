@@ -2,7 +2,10 @@ use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
-use crate::loader::{DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TileResult};
+use crate::loader::{
+    DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane,
+    PreviewResult, RenderShape as LoadedRenderShape, TileResult,
+};
 use crate::scanner::{self, ScanMessage};
 use crate::tile_cache::TileManager;
 use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
@@ -53,6 +56,26 @@ fn should_cache_tiled_sdr_preview(
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssetUpdateKind {
+    ImageLoaded,
+    PreviewUpgraded,
+    TileReady,
+    RefinedFullPlane,
+}
+
+fn should_request_repaint_for_asset_update(
+    kind: AssetUpdateKind,
+    is_current: bool,
+    update_requests_repaint: bool,
+) -> bool {
+    match kind {
+        AssetUpdateKind::ImageLoaded | AssetUpdateKind::PreviewUpgraded => is_current,
+        AssetUpdateKind::TileReady => is_current && update_requests_repaint,
+        AssetUpdateKind::RefinedFullPlane => is_current,
+    }
+}
+
 fn build_tiled_manager_with_best_preview(
     index: usize,
     generation: u64,
@@ -69,6 +92,91 @@ fn current_hdr_tiled_preview_matches_index(
     index: usize,
 ) -> bool {
     current.is_some_and(|current| current.image_for_index(index).is_some())
+}
+
+enum ImageInstallPlan<'a> {
+    StaticSdr {
+        decoded: &'a DecodedImage,
+    },
+    StaticHdr {
+        hdr: Arc<crate::hdr::types::HdrImageBuffer>,
+        fallback: &'a DecodedImage,
+        ultra_hdr_capacity_sensitive: bool,
+    },
+    Tiled {
+        source: Arc<dyn crate::loader::TiledImageSource>,
+        hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+        hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+        hdr_sdr_fallback: bool,
+        ultra_hdr_capacity_sensitive: bool,
+    },
+    Animated {
+        frames: &'a [crate::loader::AnimationFrame],
+    },
+    Error {
+        error: &'a String,
+    },
+}
+
+impl<'a> ImageInstallPlan<'a> {
+    fn from_load_result(load_result: &'a LoadResult) -> Self {
+        let _preview_stage = load_result.preview_bundle.stage();
+        let Ok(image_data) = load_result.result.as_ref() else {
+            return Self::Error {
+                error: load_result.result.as_ref().err().expect("load error"),
+            };
+        };
+
+        match image_data.preferred_render_shape() {
+            LoadedRenderShape::Static if image_data.has_plane(PixelPlaneKind::Hdr) => Self::StaticHdr {
+                hdr: Arc::new(
+                    image_data
+                        .static_hdr()
+                        .expect("static HDR image exposes HDR plane")
+                        .clone(),
+                ),
+                fallback: image_data
+                    .static_sdr()
+                    .expect("static HDR image exposes SDR fallback plane"),
+                ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
+            },
+            LoadedRenderShape::Static => Self::StaticSdr {
+                decoded: image_data
+                    .static_sdr()
+                    .expect("static SDR image exposes SDR plane"),
+            },
+            LoadedRenderShape::Tiled => {
+                let source = image_data
+                    .tiled_sdr_source()
+                    .expect("tiled image exposes SDR source");
+                let hdr_source = image_data.tiled_hdr_source().cloned();
+                let hdr_preview = load_result.preview_bundle.plane(PixelPlaneKind::Hdr).and_then(
+                    |plane| {
+                        let _kind = plane.kind();
+                        let _dimensions = plane.dimensions();
+                        match plane {
+                            PreviewPlane::Hdr(preview) => Some(preview),
+                            PreviewPlane::Sdr(_) => None,
+                        }
+                    },
+                );
+                let hdr_sdr_fallback =
+                    hdr_source.is_some() || source.is_hdr_sdr_fallback();
+
+                Self::Tiled {
+                    source: Arc::clone(source),
+                    hdr_source,
+                    hdr_preview,
+                    hdr_sdr_fallback,
+                    ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
+                }
+            }
+            LoadedRenderShape::Animated => match image_data {
+                ImageData::Animated(frames) => Self::Animated { frames },
+                _ => unreachable!("animated render shape is only emitted by animated image data"),
+            },
+        }
+    }
 }
 
 impl ImageViewerApp {
@@ -884,7 +992,11 @@ impl ImageViewerApp {
                     self.handle_image_load_result(load_result, ctx);
                     uploads_this_frame += 1;
 
-                    if is_current {
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::ImageLoaded,
+                        is_current,
+                        false,
+                    ) {
                         ctx.request_repaint();
                     }
                 }
@@ -964,7 +1076,13 @@ impl ImageViewerApp {
             }
 
             self.loader.flush_tile_queue();
-            ctx.request_repaint();
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::RefinedFullPlane,
+                true,
+                false,
+            ) {
+                ctx.request_repaint();
+            }
         } else {
             // Non-current image refined in background OR stale refinement result.
 
@@ -1000,270 +1118,217 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         let idx = load_result.index;
-        match load_result.result.as_ref() {
-            Ok(ImageData::Static(decoded)) => {
-                self.remove_hdr_image_index(idx);
-                let color_image = ColorImage::from_rgba_unmultiplied(
-                    [decoded.width as usize, decoded.height as usize],
-                    decoded.rgba(),
-                );
-                let name = format!("img_{}", idx);
-                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                if let Some(evicted_idx) = self.texture_cache.insert(
-                    idx,
-                    handle,
-                    decoded.width,
-                    decoded.height,
-                    false,
-                    self.current_index,
-                    self.image_files.len(),
-                ) {
-                    self.handle_texture_cache_eviction(evicted_idx);
-                }
-                if idx == self.current_index {
-                    self.current_image_res = Some((decoded.width, decoded.height));
-                    if self
-                        .animation
-                        .as_ref()
-                        .is_some_and(|a| a.image_index == idx)
-                    {
-                        self.animation = None;
-                    }
-                }
-            }
-            Ok(ImageData::Hdr { hdr, fallback }) => {
-                let hdr = Arc::new(hdr.clone());
-                self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
-                if load_result.ultra_hdr_capacity_sensitive {
-                    self.ultra_hdr_capacity_sensitive_indices.insert(idx);
-                } else {
-                    self.ultra_hdr_capacity_sensitive_indices.remove(&idx);
-                }
+        let generation = load_result.generation;
+        let preview_bundle = load_result.preview_bundle.clone();
 
-                let color_image = ColorImage::from_rgba_unmultiplied(
-                    [fallback.width as usize, fallback.height as usize],
-                    fallback.rgba(),
-                );
-                let name = format!("img_hdr_fallback_{}", idx);
-                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                if let Some(evicted_idx) = self.texture_cache.insert(
-                    idx,
-                    handle,
-                    fallback.width,
-                    fallback.height,
-                    false,
-                    self.current_index,
-                    self.image_files.len(),
-                ) {
-                    self.handle_texture_cache_eviction(evicted_idx);
-                }
-
-                if idx == self.current_index {
-                    self.current_image_res = Some((hdr.width, hdr.height));
-                    self.current_hdr_image =
-                        Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
-                    self.tile_manager = None;
-                    if self
-                        .animation
-                        .as_ref()
-                        .is_some_and(|a| a.image_index == idx)
-                    {
-                        self.animation = None;
-                    }
-                }
+        match ImageInstallPlan::from_load_result(&load_result) {
+            ImageInstallPlan::StaticSdr { decoded } => {
+                self.install_static_sdr_image(idx, decoded, ctx);
             }
-            Ok(ImageData::Tiled(source)) => {
-                self.remove_hdr_image_index(idx);
-                if source.is_hdr_sdr_fallback() {
-                    self.hdr_sdr_fallback_indices.insert(idx);
-                }
-                // Upload preview into texture_cache so it persists across navigations.
-                // Without this, flipping away and back would re-trigger a 300ms+ load.
-                self.upload_tiled_bootstrap_preview(
+            ImageInstallPlan::StaticHdr {
+                hdr,
+                fallback,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_static_hdr_image(
+                    idx,
+                    hdr,
+                    fallback,
+                    ultra_hdr_capacity_sensitive,
                     ctx,
-                    idx,
-                    load_result.preview.as_ref(),
-                    source.width(),
-                    source.height(),
                 );
-
-                if idx == self.current_index {
-                    self.current_image_res = Some((source.width(), source.height()));
-                    crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm = build_tiled_manager_with_best_preview(
-                        idx,
-                        load_result.generation,
-                        Arc::clone(&source),
-                        self.texture_cache.get(idx).cloned(),
-                    );
-
-                    // Prefer existing cached texture (might be HQ) over the initial low-res preview
-                    self.attach_initial_preview_if_needed(
-                        ctx,
-                        idx,
-                        &mut tm,
-                        load_result.preview.as_ref(),
-                    );
-
-                    self.tile_manager = Some(tm);
-                    self.animation = None;
-                    if let Some(res) = self.current_image_res {
-                        self.log_large_image(idx, res.0, res.1);
-                    } else {
-                        log::warn!(
-                            "[UI] Attempted to log large image resolution, but res was None for index {}",
-                            idx
-                        );
-                    }
-
-                    // Trigger refinement ONLY for the actively-viewed image.
-                    // Prefetched images stay at preview quality until navigated to.
-                    source.request_refinement(idx, self.generation);
-                } else {
-                    // Preloading: create the TileManager and store it in prefetched_tiles
-                    // so that when the user switches to this image, the source (and its
-                    // background refined RAW data) is immediately available!
-                    let mut tm = build_tiled_manager_with_best_preview(
-                        idx,
-                        load_result.generation,
-                        Arc::clone(source),
-                        self.texture_cache.get(idx).cloned(),
-                    );
-
-                    // Prefer existing cached texture (might be HQ) over the initial low-res preview
-                    self.attach_initial_preview_if_needed(
-                        ctx,
-                        idx,
-                        &mut tm,
-                        load_result.preview.as_ref(),
-                    );
-                    self.prefetched_tiles.insert(idx, tm);
-                }
             }
-            Ok(ImageData::HdrTiled { hdr, fallback }) => {
-                self.remove_hdr_image_index(idx);
-                self.hdr_tiled_source_cache.insert(idx, Arc::clone(hdr));
-                self.hdr_sdr_fallback_indices.insert(idx);
-                self.cache_hdr_tiled_preview(idx, load_result.hdr_preview.as_ref().cloned());
-                if load_result.ultra_hdr_capacity_sensitive {
-                    self.ultra_hdr_capacity_sensitive_indices.insert(idx);
-                }
-
-                let source = fallback;
-                // Upload preview into texture_cache so it persists across navigations.
-                self.upload_tiled_bootstrap_preview(
+            ImageInstallPlan::Tiled {
+                source,
+                hdr_source,
+                hdr_preview,
+                hdr_sdr_fallback,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_tiled_image(
+                    idx,
+                    generation,
+                    source,
+                    hdr_source,
+                    preview_bundle.sdr(),
+                    hdr_preview,
+                    hdr_sdr_fallback,
+                    ultra_hdr_capacity_sensitive,
                     ctx,
-                    idx,
-                    load_result.preview.as_ref(),
-                    source.width(),
-                    source.height(),
                 );
-
-                if idx == self.current_index {
-                    self.current_hdr_tiled_image =
-                        Some(crate::app::CurrentHdrTiledImage::new(idx, Arc::clone(hdr)));
-                    self.current_image_res = Some((source.width(), source.height()));
-                    crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm = build_tiled_manager_with_best_preview(
-                        idx,
-                        load_result.generation,
-                        Arc::clone(source),
-                        self.texture_cache.get(idx).cloned(),
-                    );
-
-                    self.attach_initial_preview_if_needed(
-                        ctx,
-                        idx,
-                        &mut tm,
-                        load_result.preview.as_ref(),
-                    );
-
-                    self.tile_manager = Some(tm);
-                    self.animation = None;
-                    if let Some(res) = self.current_image_res {
-                        self.log_large_image(idx, res.0, res.1);
-                    } else {
-                        log::warn!(
-                            "[UI] Attempted to log large HDR tiled image resolution, but res was None for index {}",
-                            idx
-                        );
-                    }
-                    source.request_refinement(idx, self.generation);
-                } else {
-                    let mut tm = build_tiled_manager_with_best_preview(
-                        idx,
-                        load_result.generation,
-                        Arc::clone(source),
-                        self.texture_cache.get(idx).cloned(),
-                    );
-
-                    self.attach_initial_preview_if_needed(
-                        ctx,
-                        idx,
-                        &mut tm,
-                        load_result.preview.as_ref(),
-                    );
-                    self.prefetched_tiles.insert(idx, tm);
-                }
             }
-            Ok(ImageData::Animated(frames)) => {
-                self.remove_hdr_image_index(idx);
-                // Upload first frame immediately
-                if let Some(first) = frames.first() {
-                    let color_image = ColorImage::from_rgba_unmultiplied(
-                        [first.width as usize, first.height as usize],
-                        first.rgba(),
-                    );
-                    let name = format!("img_{}", idx);
-                    let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                    if let Some(evicted_idx) = self.texture_cache.insert(
-                        idx,
-                        handle,
-                        first.width,
-                        first.height,
-                        false,
-                        self.current_index,
-                        self.image_files.len(),
-                    ) {
-                        self.handle_texture_cache_eviction(evicted_idx);
-                    }
-                    if idx == self.current_index {
-                        self.current_image_res = Some((first.width, first.height));
-                    }
-                }
-
-                // Defer remaining
-                let cur = self.current_index;
-                let n = self.image_files.len();
-                let is_in_range = if n > 0 {
-                    idx == cur
-                        || idx == (cur + 1) % n
-                        || (cur > 0 && idx == cur - 1)
-                        || (cur == 0 && idx == n - 1)
-                } else {
-                    false
-                };
-
-                if is_in_range {
-                    self.pending_anim_frames = Some(PendingAnimUpload {
-                        image_index: idx,
-                        frames: frames.clone(),
-                        textures: Vec::new(),
-                        delays: Vec::new(),
-                        next_frame: 0,
-                    });
-                    ctx.request_repaint();
-                }
+            ImageInstallPlan::Animated { frames } => {
+                self.install_animated_image(idx, frames, ctx);
             }
-            Err(e) => {
-                let path_str = self.image_files[idx].display().to_string();
-                log::error!("Failed to load image at index {} ({}): {e}", idx, path_str);
-                if idx == self.current_index {
-                    self.error_message = Some(
-                        t!("status.load_failed", path = path_str, err = e.to_string()).to_string(),
-                    );
-                }
+            ImageInstallPlan::Error { error } => {
+                self.install_image_error(idx, error);
             }
+        }
+    }
+
+    fn upload_static_sdr_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        texture_name: String,
+        ctx: &egui::Context,
+    ) {
+        let color_image = ColorImage::from_rgba_unmultiplied(
+            [decoded.width as usize, decoded.height as usize],
+            decoded.rgba(),
+        );
+        let handle = ctx.load_texture(texture_name, color_image, TextureOptions::LINEAR);
+        if let Some(evicted_idx) = self.texture_cache.insert(
+            idx,
+            handle,
+            decoded.width,
+            decoded.height,
+            false,
+            self.current_index,
+            self.image_files.len(),
+        ) {
+            self.handle_texture_cache_eviction(evicted_idx);
+        }
+    }
+
+    fn clear_current_animation_for_index(&mut self, idx: usize) {
+        if self
+            .animation
+            .as_ref()
+            .is_some_and(|animation| animation.image_index == idx)
+        {
+            self.animation = None;
+        }
+    }
+
+    fn install_static_sdr_image(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        self.remove_hdr_image_index(idx);
+        self.upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
+        if idx == self.current_index {
+            self.current_image_res = Some((decoded.width, decoded.height));
+            self.clear_current_animation_for_index(idx);
+        }
+    }
+
+    fn install_static_hdr_image(
+        &mut self,
+        idx: usize,
+        hdr: Arc<crate::hdr::types::HdrImageBuffer>,
+        fallback: &DecodedImage,
+        ultra_hdr_capacity_sensitive: bool,
+        ctx: &egui::Context,
+    ) {
+        self.remove_hdr_image_index(idx);
+        self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+        if ultra_hdr_capacity_sensitive {
+            self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+        }
+
+        self.upload_static_sdr_texture(idx, fallback, format!("img_hdr_fallback_{idx}"), ctx);
+
+        if idx == self.current_index {
+            self.current_image_res = Some((hdr.width, hdr.height));
+            self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
+            self.tile_manager = None;
+            self.clear_current_animation_for_index(idx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn install_tiled_image(
+        &mut self,
+        idx: usize,
+        generation: u64,
+        source: Arc<dyn crate::loader::TiledImageSource>,
+        hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+        sdr_preview: Option<&DecodedImage>,
+        hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+        hdr_sdr_fallback: bool,
+        ultra_hdr_capacity_sensitive: bool,
+        ctx: &egui::Context,
+    ) {
+        self.remove_hdr_image_index(idx);
+        if let Some(hdr_source) = hdr_source.as_ref() {
+            self.hdr_tiled_source_cache
+                .insert(idx, Arc::clone(hdr_source));
+            self.cache_hdr_tiled_preview(idx, hdr_preview);
+        }
+        if hdr_sdr_fallback {
+            self.hdr_sdr_fallback_indices.insert(idx);
+        }
+        if ultra_hdr_capacity_sensitive {
+            self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+        }
+
+        self.upload_tiled_bootstrap_preview(ctx, idx, sdr_preview, source.width(), source.height());
+
+        let mut tm = build_tiled_manager_with_best_preview(
+            idx,
+            generation,
+            Arc::clone(&source),
+            self.texture_cache.get(idx).cloned(),
+        );
+        self.attach_initial_preview_if_needed(ctx, idx, &mut tm, sdr_preview);
+
+        if idx == self.current_index {
+            if let Some(hdr_source) = hdr_source {
+                self.current_hdr_tiled_image =
+                    Some(crate::app::CurrentHdrTiledImage::new(idx, hdr_source));
+            }
+            self.current_image_res = Some((source.width(), source.height()));
+            crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
+            self.tile_manager = Some(tm);
+            self.animation = None;
+            self.log_large_image(idx, source.width(), source.height());
+            source.request_refinement(idx, self.generation);
+        } else {
+            self.prefetched_tiles.insert(idx, tm);
+        }
+    }
+
+    fn install_animated_image(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::AnimationFrame],
+        ctx: &egui::Context,
+    ) {
+        self.remove_hdr_image_index(idx);
+        if let Some(first) = frames.first() {
+            let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
+            self.upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
+            if idx == self.current_index {
+                self.current_image_res = Some((first.width, first.height));
+            }
+        }
+
+        let cur = self.current_index;
+        let n = self.image_files.len();
+        let is_in_range = n > 0
+            && (idx == cur || idx == (cur + 1) % n || (cur > 0 && idx == cur - 1) || (cur == 0 && idx == n - 1));
+
+        if is_in_range {
+            self.pending_anim_frames = Some(PendingAnimUpload {
+                image_index: idx,
+                frames: frames.to_vec(),
+                textures: Vec::new(),
+                delays: Vec::new(),
+                next_frame: 0,
+            });
+            ctx.request_repaint();
+        }
+    }
+
+    fn install_image_error(&mut self, idx: usize, error: &str) {
+        let path_str = self.image_files[idx].display().to_string();
+        log::error!("Failed to load image at index {} ({}): {error}", idx, path_str);
+        if idx == self.current_index {
+            self.error_message =
+                Some(t!("status.load_failed", path = path_str, err = error).to_string());
         }
     }
 
@@ -1277,7 +1342,11 @@ impl ImageViewerApp {
         if let Some(ref mut tm) = self.tile_manager {
             if tm.image_index == tile_result.index && tm.generation == tile_result.generation {
                 tm.pending_tiles.remove(&tile_result.pending_key());
-                if tile_result.should_request_repaint() {
+                if should_request_repaint_for_asset_update(
+                    AssetUpdateKind::TileReady,
+                    true,
+                    tile_result.should_request_repaint(),
+                ) {
                     _ctx.request_repaint();
                 }
             }
@@ -1294,7 +1363,11 @@ impl ImageViewerApp {
 
         if update.preview_bundle.hdr().is_some() {
             self.cache_hdr_tiled_preview(update.index, update.preview_bundle.hdr().cloned());
-            if update.index == self.current_index {
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::PreviewUpgraded,
+                update.index == self.current_index,
+                false,
+            ) {
                 ctx.request_repaint();
             }
         }
@@ -1302,7 +1375,7 @@ impl ImageViewerApp {
         // Apply HQ preview if it matches the currently displayed tile manager.
         // Also check prefetched tiles and update the texture cache for future navigations.
         let preview = update.preview_bundle.sdr().cloned();
-        match (preview, update.result) {
+        match (preview, update.error) {
             (Some(preview), _) => {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
@@ -1314,7 +1387,13 @@ impl ImageViewerApp {
                             preview.height
                         );
                         tm.set_preview(preview.clone(), ctx);
-                        ctx.request_repaint();
+                        if should_request_repaint_for_asset_update(
+                            AssetUpdateKind::PreviewUpgraded,
+                            true,
+                            false,
+                        ) {
+                            ctx.request_repaint();
+                        }
                     }
                 }
 
@@ -1366,10 +1445,14 @@ impl ImageViewerApp {
                     }
                 }
             }
-            (None, Err(e)) => {
-                log::error!("Preview update failed for index {}: {}", update.index, e);
+            (None, Some(error)) => {
+                log::error!(
+                    "Preview update failed for index {}: {}",
+                    update.index,
+                    error
+                );
             }
-            (None, Ok(_)) => {
+            (None, None) => {
                 log::warn!(
                     "Preview update for index {} carried no SDR preview plane",
                     update.index
@@ -1552,6 +1635,45 @@ mod tests {
         assert!(should_cache_tiled_sdr_preview(true, true, Some(128), 512));
         assert!(!should_cache_tiled_sdr_preview(true, true, Some(512), 512));
         assert!(!should_cache_tiled_sdr_preview(true, true, Some(1024), 512));
+    }
+
+    #[test]
+    fn asset_update_repaint_policy_centralizes_current_and_tile_rules() {
+        assert!(should_request_repaint_for_asset_update(
+            AssetUpdateKind::ImageLoaded,
+            true,
+            false
+        ));
+        assert!(!should_request_repaint_for_asset_update(
+            AssetUpdateKind::ImageLoaded,
+            false,
+            false
+        ));
+        assert!(should_request_repaint_for_asset_update(
+            AssetUpdateKind::PreviewUpgraded,
+            true,
+            false
+        ));
+        assert!(!should_request_repaint_for_asset_update(
+            AssetUpdateKind::PreviewUpgraded,
+            false,
+            false
+        ));
+        assert!(should_request_repaint_for_asset_update(
+            AssetUpdateKind::TileReady,
+            true,
+            true
+        ));
+        assert!(!should_request_repaint_for_asset_update(
+            AssetUpdateKind::TileReady,
+            true,
+            false
+        ));
+        assert!(should_request_repaint_for_asset_update(
+            AssetUpdateKind::RefinedFullPlane,
+            true,
+            false
+        ));
     }
 
     #[test]

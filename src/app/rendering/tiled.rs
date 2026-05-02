@@ -15,9 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::plane::{
-    PlaneBackendKind, clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
-    select_tiled_plane_backend,
+    PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
+use crate::app::rendering::plan::RenderShape;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
 use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
@@ -89,24 +89,6 @@ fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps:
             rotation_steps as f32 * (std::f32::consts::PI / 2.0),
         )
     }
-}
-
-fn clipped_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Rect, Rect)> {
-    let rect = tile_screen_rect.intersect(clip_rect);
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return None;
-    }
-
-    let uv_min_x =
-        ((rect.min.x - tile_screen_rect.min.x) / tile_screen_rect.width()).clamp(0.0, 1.0);
-    let uv_max_x =
-        ((rect.max.x - tile_screen_rect.min.x) / tile_screen_rect.width()).clamp(0.0, 1.0);
-    let uv_min_y =
-        ((rect.min.y - tile_screen_rect.min.y) / tile_screen_rect.height()).clamp(0.0, 1.0);
-    let uv_max_y =
-        ((rect.max.y - tile_screen_rect.min.y) / tile_screen_rect.height()).clamp(0.0, 1.0);
-    let uv = Rect::from_min_max(Pos2::new(uv_min_x, uv_min_y), Pos2::new(uv_max_x, uv_max_y));
-    Some((rect, uv))
 }
 
 #[cfg(feature = "tile-debug")]
@@ -444,14 +426,8 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.source_for_index(self.current_index))
             .cloned();
-        let hdr_output_mode = hdr_source_for_frame.as_ref().map(|_| {
-            crate::hdr::monitor::effective_render_output_mode(
-                self.hdr_target_format,
-                self.hdr_monitor_state.selection(),
-            )
-        });
-        let plane_backend =
-            select_tiled_plane_backend(hdr_output_mode, hdr_source_for_frame.is_some());
+        let render_plan = self.build_render_plan(RenderShape::Tiled, hdr_source_for_frame.is_some());
+        let plane_backend = render_plan.backend;
 
         let tp = self.compute_transition_params();
         let preview_for_transition = self
@@ -508,25 +484,23 @@ impl ImageViewerApp {
                 .as_ref()
                 .and_then(|current| current.image_for_index(self.current_index))
             {
-                let hdr_rect = hdr_image_plane_rect(&layout);
-                if let Some((clipped_rect, uv_rect)) =
-                    clipped_plane_rect_and_uv(hdr_rect, screen_rect)
-                {
-                    ui.painter()
-                        .add(crate::hdr::renderer::hdr_image_plane_callback_with_uv(
-                            clipped_rect,
-                            Arc::clone(hdr_preview),
-                            self.hdr_renderer.tone_map,
-                            self.hdr_target_format
-                                .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                            hdr_output_mode.unwrap_or(
-                                crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
-                            ),
-                            rotation as u32,
-                            1.0,
-                            uv_rect,
-                        ));
-                }
+                draw_plane(
+                    ui,
+                    screen_rect,
+                    hdr_image_plane_rect(&layout),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    &layout,
+                    PlaneDrawSource::HdrImage {
+                        image: Arc::clone(hdr_preview),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format: render_plan
+                            .target_format
+                            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                        output_mode: render_plan.output_mode,
+                        rotation_steps: rotation as u32,
+                        alpha: 1.0,
+                    },
+                );
             }
         }
 
@@ -534,14 +508,16 @@ impl ImageViewerApp {
         if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr) {
             if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                draw_sdr_texture_plane(
+                draw_plane(
                     ui,
                     screen_rect,
-                    preview.id(),
                     unrotated_dest,
                     uv,
-                    Color32::WHITE,
                     &layout,
+                    PlaneDrawSource::SdrTexture {
+                        texture_id: preview.id(),
+                        color: Color32::WHITE,
+                    },
                 );
             }
         }
@@ -721,26 +697,31 @@ impl ImageViewerApp {
 
                             let unclipped_hdr_rect =
                                 tile_plane_rect_for_tile(*tile_screen_rect, pivot, rotation);
-                            if let Some((hdr_rect, uv_rect)) =
-                                clipped_tile_plane(unclipped_hdr_rect, screen_rect)
-                            {
-                                ui.painter()
-                                    .add(crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
-                                    hdr_rect,
-                                    hdr_tile,
-                                    self.hdr_renderer.tone_map,
-                                    self.hdr_target_format
+                            draw_plane(
+                                ui,
+                                screen_rect,
+                                unclipped_hdr_rect,
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                &layout,
+                                PlaneDrawSource::HdrTile {
+                                    tile: hdr_tile,
+                                    tone_map: self.hdr_renderer.tone_map,
+                                    target_format: render_plan
+                                        .target_format
                                         .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                                    hdr_output_mode.unwrap_or(
-                                        crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
-                                    ),
-                                    rotation as u32,
-                                    1.0,
-                                    uv_rect,
-                                ));
+                                    output_mode: render_plan.output_mode,
+                                    rotation_steps: rotation as u32,
+                                    alpha: 1.0,
+                                },
+                            );
 
-                                #[cfg(feature = "tile-debug")]
-                                if self.settings.show_osd {
+                            #[cfg(feature = "tile-debug")]
+                            if self.settings.show_osd {
+                                use crate::app::rendering::plane::clipped_plane_rect_and_uv;
+
+                                if let Some((hdr_rect, _)) =
+                                    clipped_plane_rect_and_uv(unclipped_hdr_rect, screen_rect)
+                                {
                                     draw_tile_debug_border(ui, hdr_rect, pivot, None);
                                 }
                             }
@@ -861,7 +842,7 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        TileRequestBudget, TiledPlaneKind, clipped_tile_plane, is_tiled_plane_active,
+        TileRequestBudget, TiledPlaneKind, is_tiled_plane_active,
         rotated_axis_aligned_rect, should_draw_tiled_preview_for_backend,
         should_draw_tiled_preview_transition_for_backend, should_draw_tiled_tile_plane_for_backend,
         should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
@@ -872,7 +853,7 @@ mod tests {
         tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
-    use crate::app::rendering::plane::PlaneBackendKind;
+    use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
     use crate::loader::{TileDecodeSource, TilePixelKind, TiledImageSource};
     use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};
@@ -1072,11 +1053,12 @@ mod tests {
     }
 
     #[test]
-    fn clipped_tile_plane_preserves_visible_uv_subrect() {
+    fn clipped_plane_rect_matches_tile_clipping_semantics() {
         let tile_rect = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(50.0, 110.0));
         let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
 
-        let (rect, uv) = clipped_tile_plane(tile_rect, clip).expect("visible clipped tile");
+        let (rect, uv) =
+            clipped_plane_rect_and_uv(tile_rect, clip).expect("visible clipped tile");
 
         assert_eq!(
             rect,
