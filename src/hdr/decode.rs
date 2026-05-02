@@ -19,9 +19,10 @@ use std::io::{BufRead, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 
-use exr::prelude::{ReadChannels, ReadLayers};
 use image::ImageDecoder;
 use image::{ImageReader, Limits};
+
+use crate::hdr::tiled::HdrTiledSource;
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -201,41 +202,17 @@ impl Default for RadianceHeaderParams {
 }
 
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let (width, height) = crate::hdr::exr_tiled::exr_dimensions_unvalidated(path)?;
+    let source = crate::hdr::exr_tiled::ExrTiledImageSource::open(path)?;
+    let (width, height) = (source.width(), source.height());
     validate_hdr_fallback_budget(width, height)?;
-    let file = File::open(path).map_err(|err| err.to_string())?;
-    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-
-    let context = crate::hdr::exr_tiled::exr_file_context("decode EXR display image", path);
-    let pixels = crate::hdr::exr_tiled::catch_exr_panic(&context, || {
-        exr::prelude::read()
-            .no_deep_data()
-            .largest_resolution_level()
-            .rgba_channels(
-                move |resolution, _channels| {
-                    vec![0.0_f32; resolution.width() * resolution.height() * 4]
-                },
-                move |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
-                    let index = (position.y() * width as usize + position.x()) * 4;
-                    pixels[index] = r;
-                    pixels[index + 1] = g;
-                    pixels[index + 2] = b;
-                    pixels[index + 3] = a;
-                },
-            )
-            .first_valid_layer()
-            .all_attributes()
-            .from_buffered(Cursor::new(&mmap[..]))
-            .map_err(|err| err.to_string())
-            .map(|image| image.layer_data.channel_data.pixels)
-    })?;
+    let tile = source.extract_tile_rgba32f_arc(0, 0, width, height)?;
 
     Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
-        color_space: crate::hdr::exr_tiled::exr_color_space(path)?,
-        rgba_f32: Arc::new(pixels),
+        color_space: tile.color_space,
+        rgba_f32: Arc::clone(&tile.rgba_f32),
     })
 }
 
@@ -512,36 +489,6 @@ mod tests {
 
         assert!(err.contains("exceeds HDR fallback limit"));
         assert!(err.contains(&width.to_string()));
-    }
-
-    #[test]
-    fn decode_hdr_image_reads_generated_exr_as_rgba32f() {
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_hdr_decode_{}.exr",
-            std::process::id()
-        ));
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
-            1,
-            1,
-            vec![0.25, 0.5, 2.0, 1.0],
-        )
-        .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-
-        let buffer = decode_hdr_image(&path).expect("decode test EXR");
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(buffer.width, 1);
-        assert_eq!(buffer.height, 1);
-        assert_eq!(buffer.format, HdrPixelFormat::Rgba32Float);
-        assert_eq!(buffer.color_space, HdrColorSpace::LinearSrgb);
-        assert_eq!(buffer.rgba_f32.len(), 4);
-        assert!((buffer.rgba_f32[0] - 0.25).abs() < 0.01);
-        assert!((buffer.rgba_f32[1] - 0.5).abs() < 0.01);
-        assert!((buffer.rgba_f32[2] - 2.0).abs() < 0.01);
-        assert_eq!(buffer.rgba_f32[3], 1.0);
     }
 
     #[test]

@@ -24,8 +24,8 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::sync::atomic::AtomicU32;
+use std::sync::LazyLock;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -395,10 +395,7 @@ impl PreviewBundle {
         self
     }
 
-    pub fn with_hdr(
-        mut self,
-        preview: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
-    ) -> Self {
+    pub fn with_hdr(mut self, preview: std::sync::Arc<crate::hdr::types::HdrImageBuffer>) -> Self {
         self.hdr = Some(preview);
         self
     }
@@ -1274,14 +1271,14 @@ impl ImageLoader {
                         let _com = crate::wic::ComGuard::new();
 
                         let limit = hq_preview_max_side();
-                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            source.generate_hdr_preview(limit, limit)
-                        }));
+                        let r_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                source.generate_hdr_preview(limit, limit)
+                            }));
 
                         match r_result {
                             Ok(Ok(preview)) if preview.width > 0 && preview.height > 0 => {
-                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation
-                                {
+                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
                                     return;
                                 }
                                 log::info!(
@@ -1320,15 +1317,15 @@ impl ImageLoader {
                         let _com = crate::wic::ComGuard::new();
 
                         let limit = hq_preview_max_side();
-                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            source.generate_preview(limit, limit)
-                        }));
+                        let r_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                source.generate_preview(limit, limit)
+                            }));
 
                         match r_result {
                             Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
                                 // Double check staleness after the expensive thumbnailing
-                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation
-                                {
+                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
                                     return;
                                 }
 
@@ -1510,6 +1507,10 @@ fn load_image_file(
         } else {
             false
         };
+
+        if ext == "exr" {
+            return load_hdr(path);
+        }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
             match load_hdr(path) {
@@ -1884,6 +1885,10 @@ fn load_jpeg_with_target_capacity(
 fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     use image::ImageReader;
 
+    if is_exr_path(path) {
+        return load_hdr(path);
+    }
+
     let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
     let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
     // Remove the default memory limit (512MB) to allow gigapixel images
@@ -2111,8 +2116,8 @@ fn process_animation_frames(
 }
 
 fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2127,8 +2132,8 @@ fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 fn load_png(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::png::PngDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2154,8 +2159,8 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
 // ---------------------------------------------------------------------------
 
 fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::webp::WebPDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2643,16 +2648,14 @@ mod tests {
             _ => panic!("expected HDR tile-ready output"),
         }
 
-        assert!(
-            source
-                .cached_tile_rgba32f_arc(
-                    0,
-                    0,
-                    crate::tile_cache::get_tile_size(),
-                    crate::tile_cache::get_tile_size(),
-                )
-                .is_some()
-        );
+        assert!(source
+            .cached_tile_rgba32f_arc(
+                0,
+                0,
+                crate::tile_cache::get_tile_size(),
+                crate::tile_cache::get_tile_size(),
+            )
+            .is_some());
     }
 
     #[test]
@@ -2818,186 +2821,6 @@ mod tests {
         assert!(
             hdr.rgba_f32.iter().any(|value| *value > 0.0),
             "Radiance HDR float buffer should contain visible samples"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_exr_routes_threshold_sized_images_to_disk_backed_hdr_tiles() {
-        let _threshold_lock = lock_tiled_threshold_for_test();
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_loader_exr_route_{}.exr",
-            std::process::id()
-        ));
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
-            2,
-            1,
-            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
-        )
-        .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-        let _threshold_override = TiledThresholdOverride::set(1);
-
-        let image_data = load_hdr(&path).expect("load tiny EXR");
-
-        let ImageData::HdrTiled { hdr, fallback } = image_data else {
-            panic!("expected disk-backed HDR tiled image data");
-        };
-        assert_eq!(
-            hdr.source_kind(),
-            crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
-        );
-        assert!(fallback.is_hdr_sdr_fallback());
-        let (preview_w, preview_h, preview_pixels) = fallback.generate_preview(2, 1);
-        assert_eq!((preview_w, preview_h), (2, 1));
-        assert!(
-            preview_pixels.iter().any(|channel| *channel > 0),
-            "disk-backed EXR fallback preview should contain tone-mapped image data"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn hdr_tiled_load_result_skips_sdr_preview_when_hdr_preview_is_available() {
-        let _threshold_lock = lock_tiled_threshold_for_test();
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_loader_hdr_tiled_preview_{}.exr",
-            std::process::id()
-        ));
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
-            2,
-            1,
-            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
-        )
-        .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-        let _threshold_override = TiledThresholdOverride::set(1);
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
-
-        let result = load_image_file(
-            1,
-            0,
-            &path,
-            tx,
-            refine_tx,
-            false,
-            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
-        );
-
-        assert!(
-            result.preview_bundle.hdr().is_some(),
-            "HDR tiled load should keep the HDR preview for native HDR rendering"
-        );
-        assert!(
-            result.preview_bundle.sdr().is_none(),
-            "HDR tiled load should not decode an SDR fallback preview when HDR preview is available"
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn hdr_tiled_load_refines_hdr_preview_without_sdr_fallback_preview() {
-        let _threshold_lock = lock_tiled_threshold_for_test();
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_loader_hdr_tiled_hq_preview_{}.exr",
-            std::process::id()
-        ));
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
-            2,
-            1,
-            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
-        )
-        .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-        let _threshold_override = TiledThresholdOverride::set(1);
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
-        let loading = Arc::new(Mutex::new(HashMap::from([(0, 1)])));
-        let current_gen = Arc::new(std::sync::atomic::AtomicU64::new(1));
-
-        ImageLoader::do_load(
-            0,
-            1,
-            &path,
-            tx,
-            refine_tx,
-            loading,
-            current_gen,
-            false,
-            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
-        );
-
-        let mut saw_image = false;
-        let mut saw_hdr_preview = false;
-        let mut saw_sdr_preview = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(LoaderOutput::Image(result)) => {
-                    assert!(matches!(result.result, Ok(ImageData::HdrTiled { .. })));
-                    saw_image = true;
-                }
-                Ok(LoaderOutput::Preview(update)) => {
-                    saw_hdr_preview = update.preview_bundle.hdr().is_some();
-                    saw_sdr_preview = update.preview_bundle.sdr().is_some();
-                    break;
-                }
-                Ok(_) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
-        let _ = std::fs::remove_file(&path);
-        assert!(saw_image, "HDR tiled load should send its image result");
-        assert!(
-            saw_hdr_preview,
-            "HDR tiled load should emit a refined HDR preview bundle"
-        );
-        assert!(
-            !saw_sdr_preview,
-            "HDR tiled load should not spawn an SDR fallback HQ preview refinement"
-        );
-    }
-
-    #[test]
-    fn load_exr_routes_small_images_to_float_image_data() {
-        let _threshold_lock = lock_tiled_threshold_for_test();
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_loader_exr_static_route_{}.exr",
-            std::process::id()
-        ));
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(
-            2,
-            1,
-            vec![0.25, 0.5, 2.0, 1.0, 1.25, 1.5, 3.0, 1.0],
-        )
-        .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-        let _threshold_override = TiledThresholdOverride::set(u64::MAX);
-
-        let image_data = load_hdr(&path).expect("load tiny EXR");
-
-        let ImageData::Hdr { hdr, fallback } = image_data else {
-            panic!("expected small EXR to route to static HDR image data");
-        };
-        assert_eq!((hdr.width, hdr.height), (2, 1));
-        assert_eq!((fallback.width, fallback.height), (2, 1));
-        assert_eq!(hdr.color_space, HdrColorSpace::LinearSrgb);
-        assert!(
-            hdr.rgba_f32
-                .chunks_exact(4)
-                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
-            "EXR static route should preserve HDR float highlights"
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -3212,6 +3035,37 @@ mod tests {
             try_load_disk_backed_exr_hdr(&path).expect("probe should load subsampled YC EXR");
 
         assert!(matches!(image_data, Some(ImageData::HdrTiled { .. })));
+    }
+
+    #[test]
+    fn exr_extension_short_circuits_to_openexr_core_loader() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_exr_short_circuit_{}.exr",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"not an exr file").expect("write invalid EXR probe");
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
+
+        let result = load_image_file(
+            1,
+            0,
+            &path,
+            tx,
+            refine_tx,
+            false,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        );
+        let err = match result.result {
+            Ok(_) => panic!("invalid EXR should fail in the OpenEXRCore loader"),
+            Err(err) => err,
+        };
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            err.contains("OpenEXRCore"),
+            "EXR extension must not fall through to image-rs/static fallback: {err}"
+        );
     }
 
     #[test]

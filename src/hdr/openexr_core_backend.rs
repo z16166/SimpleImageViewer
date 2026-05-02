@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{c_char, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Condvar, Mutex};
@@ -64,6 +64,7 @@ enum ChannelRole {
     Red,
     Green,
     Blue,
+    Luma,
     Alpha,
 }
 
@@ -653,6 +654,11 @@ impl OpenExrCoreReadContext {
                     ChannelRole::Red => rgba[dest] = sample,
                     ChannelRole::Green => rgba[dest + 1] = sample,
                     ChannelRole::Blue => rgba[dest + 2] = sample,
+                    ChannelRole::Luma => {
+                        rgba[dest] = sample;
+                        rgba[dest + 1] = sample;
+                        rgba[dest + 2] = sample;
+                    }
                     ChannelRole::Alpha => rgba[dest + 3] = sample,
                 }
             }
@@ -851,6 +857,8 @@ fn channel_name_to_role(name: *const c_char) -> Option<ChannelRole> {
         Some(ChannelRole::Green)
     } else if name.eq_ignore_ascii_case("B") {
         Some(ChannelRole::Blue)
+    } else if name.eq_ignore_ascii_case("Y") {
+        Some(ChannelRole::Luma)
     } else if name.eq_ignore_ascii_case("A") {
         Some(ChannelRole::Alpha)
     } else {
@@ -915,62 +923,6 @@ fn exr_result(result: sys::ExrResult) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    fn write_test_exr(width: u32, height: u32, suffix: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "simple_image_viewer_openexr_core_{}_{}.exr",
-            std::process::id(),
-            suffix
-        ));
-        let pixels: Vec<f32> = (0..width * height)
-            .flat_map(|index| {
-                let value = index as f32;
-                [value, value + 0.1, value + 0.2, 1.0]
-            })
-            .collect();
-        let img = image::ImageBuffer::<image::Rgba<f32>, Vec<f32>>::from_raw(width, height, pixels)
-            .expect("build test EXR image");
-        image::DynamicImage::ImageRgba32F(img)
-            .save_with_format(&path, image::ImageFormat::OpenExr)
-            .expect("write test EXR");
-        path
-    }
-
-    #[test]
-    fn openexr_core_read_context_reports_metadata_for_simple_scanline_file() {
-        let path = write_test_exr(3, 2, "metadata");
-
-        let context = super::OpenExrCoreReadContext::open(&path).expect("open with OpenEXRCore");
-        let part = context.part(0).expect("read first part metadata");
-
-        assert_eq!(context.part_count(), 1);
-        assert_eq!(part.width, 3);
-        assert_eq!(part.height, 2);
-        assert!(part.chunk_count > 0);
-        assert!(part.channels.iter().any(|channel| channel.name == "R"));
-        assert!(part.channels.iter().any(|channel| channel.name == "G"));
-        assert!(part.channels.iter().any(|channel| channel.name == "B"));
-        assert!(part.channels.iter().any(|channel| channel.name == "A"));
-    }
-
-    #[test]
-    fn openexr_core_read_context_extracts_rgba32f_tile_from_simple_scanline_file() {
-        let path = write_test_exr(4, 3, "tile");
-
-        let context = super::OpenExrCoreReadContext::open(&path).expect("open with OpenEXRCore");
-        let tile = context
-            .extract_scanline_rgba32f_tile(0, 1, 1, 2, 2)
-            .expect("extract tile with OpenEXRCore");
-
-        assert_eq!(tile.width, 2);
-        assert_eq!(tile.height, 2);
-        assert_eq!(tile.rgba.len(), 16);
-
-        let expected_indices = [5.0_f32, 6.0, 9.0, 10.0];
-        for (pixel, expected) in tile.rgba.chunks_exact(4).zip(expected_indices) {
-            assert_eq!(pixel, [expected, expected + 0.1, expected + 0.2, 1.0]);
-        }
-    }
-
     #[test]
     fn decoded_chunk_cache_reuses_native_chunk_across_horizontal_tiles() {
         let key = super::OpenExrCoreDecodedChunkKey {

@@ -22,7 +22,7 @@ eframe = { version = "0.34", default-features = false, features = [
 rust-i18n = "3"
 egui_extras = "0.34"
 image = { version = "0.25", default-features = false, features = [
-    "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "avif", "qoi", "exr",
+    "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "avif", "qoi",
 ] }
 parking_lot = "0.12"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
@@ -60,18 +60,18 @@ libraw-sys = { path = "libraries/libraw-sys" }
 monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
 libjpeg-turbo = { path = "libraries/libjpeg-turbo" }
 libtiff-viewer = { path = "libraries/libtiff" }
-openexr-core-sys = { path = "libraries/openexr-core-sys", optional = true }
+openexr-core-sys = { path = "libraries/openexr-core-sys" }
 bytemuck = "1.25.0"
-exr = "1.74.0"
 miniz_oxide = "0.8.9"
 
 [features]
+default = ["openexr-core"]
 # Feature for Windows 7 compatibility (ANGLE bridge)
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 # Diagnostic tools for tiled rendering (green borders and OSD stats)
 tile-debug = []
-# Optional official OpenEXRCore C backend for EXR decoding experiments
-openexr-core = ["dep:openexr-core-sys"]
+# Official OpenEXRCore C backend for EXR decoding.
+openexr-core = []
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
