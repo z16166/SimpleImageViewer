@@ -288,6 +288,24 @@ pub struct TileResult {
     pub pixel_kind: TilePixelKind,
 }
 
+impl TileResult {
+    pub fn pending_key(&self) -> crate::tile_cache::PendingTileKey {
+        crate::tile_cache::PendingTileKey::new(
+            crate::tile_cache::TileCoord {
+                col: self.col,
+                row: self.row,
+            },
+            self.pixel_kind,
+        )
+    }
+
+    pub fn should_request_repaint(&self) -> bool {
+        match self.pixel_kind {
+            TilePixelKind::Sdr | TilePixelKind::Hdr => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TilePixelKind {
     Sdr,
@@ -2203,6 +2221,26 @@ mod tests {
             TileDecodeSource::Hdr(hdr_source).pixel_kind(),
             TilePixelKind::Hdr
         );
+    }
+
+    #[test]
+    fn tile_result_exposes_shared_pending_key_and_repaint_policy() {
+        let result = TileResult {
+            index: 7,
+            generation: 11,
+            col: 3,
+            row: 4,
+            pixel_kind: TilePixelKind::Hdr,
+        };
+
+        assert_eq!(
+            result.pending_key(),
+            crate::tile_cache::PendingTileKey::new(
+                crate::tile_cache::TileCoord { col: 3, row: 4 },
+                TilePixelKind::Hdr,
+            )
+        );
+        assert!(result.should_request_repaint());
     }
 
     #[test]

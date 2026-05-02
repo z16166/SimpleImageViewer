@@ -328,22 +328,21 @@ fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
 
-fn should_draw_sdr_preview_for_tiled_backend(
-    plane_backend: PlaneBackendKind,
-    effective_scale: f32,
-    tile_threshold: f32,
-) -> bool {
-    let _ = (effective_scale, tile_threshold);
-    plane_backend == PlaneBackendKind::Sdr
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TiledPreviewKind {
+    Sdr,
+    Hdr,
 }
 
-fn should_draw_hdr_preview_for_tiled_backend(
+fn should_draw_tiled_preview_for_backend(
     plane_backend: PlaneBackendKind,
-    effective_scale: f32,
-    tile_threshold: f32,
+    preview_kind: TiledPreviewKind,
 ) -> bool {
-    let _ = (effective_scale, tile_threshold);
-    plane_backend == PlaneBackendKind::Hdr
+    matches!(
+        (plane_backend, preview_kind),
+        (PlaneBackendKind::Sdr, TiledPreviewKind::Sdr)
+            | (PlaneBackendKind::Hdr, TiledPreviewKind::Hdr)
+    )
 }
 
 fn should_draw_hdr_tiles_for_tiled_backend(
@@ -503,7 +502,7 @@ impl ImageViewerApp {
 
         let effective_scale = dest.width() / rotated_img_size.x;
 
-        if should_draw_hdr_preview_for_tiled_backend(plane_backend, effective_scale, threshold) {
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPreviewKind::Hdr) {
             if let Some(hdr_preview) = self
                 .current_hdr_tiled_preview
                 .as_ref()
@@ -532,7 +531,7 @@ impl ImageViewerApp {
         }
 
         // Draw SDR preview only when SDR tiled rendering is the active mode.
-        if should_draw_sdr_preview_for_tiled_backend(plane_backend, effective_scale, threshold) {
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPreviewKind::Sdr) {
             if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
                 draw_sdr_texture_plane(
@@ -858,10 +857,9 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        TileRequestBudget, clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_backend, should_draw_hdr_tiles_for_tiled_backend,
-        should_draw_sdr_preview_for_tiled_backend,
-        should_draw_tiled_preview_transition_for_backend,
+        TileRequestBudget, TiledPreviewKind, clipped_tile_plane, is_tiled_plane_active,
+        rotated_axis_aligned_rect, should_draw_hdr_tiles_for_tiled_backend,
+        should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
         should_invalidate_tile_requests_on_pan_drag, should_process_hdr_tiles_for_backend,
         should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
         tile_decode_source_for_backend, tile_kind_uses_shared_schedule_policy,
@@ -1259,40 +1257,22 @@ mod tests {
     }
 
     #[test]
-    fn native_hdr_tiled_mode_hides_sdr_preview_once_tiles_are_active() {
-        assert!(!should_draw_sdr_preview_for_tiled_backend(
-            PlaneBackendKind::Hdr,
-            2.0,
-            1.0
-        ));
-        assert!(!should_draw_sdr_preview_for_tiled_backend(
-            PlaneBackendKind::Hdr,
-            0.5,
-            1.0
-        ));
-        assert!(should_draw_sdr_preview_for_tiled_backend(
+    fn tiled_preview_base_plane_is_selected_by_backend() {
+        assert!(should_draw_tiled_preview_for_backend(
             PlaneBackendKind::Sdr,
-            2.0,
-            1.0
+            TiledPreviewKind::Sdr
         ));
-    }
-
-    #[test]
-    fn native_hdr_tiled_mode_keeps_hdr_preview_as_base_plane() {
-        assert!(should_draw_hdr_preview_for_tiled_backend(
+        assert!(!should_draw_tiled_preview_for_backend(
             PlaneBackendKind::Hdr,
-            0.5,
-            1.0
+            TiledPreviewKind::Sdr
         ));
-        assert!(should_draw_hdr_preview_for_tiled_backend(
+        assert!(should_draw_tiled_preview_for_backend(
             PlaneBackendKind::Hdr,
-            2.0,
-            1.0
+            TiledPreviewKind::Hdr
         ));
-        assert!(!should_draw_hdr_preview_for_tiled_backend(
+        assert!(!should_draw_tiled_preview_for_backend(
             PlaneBackendKind::Sdr,
-            0.5,
-            1.0
+            TiledPreviewKind::Hdr
         ));
     }
 

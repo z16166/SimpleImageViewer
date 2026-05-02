@@ -2,11 +2,9 @@ use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
-use crate::loader::{
-    DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TilePixelKind, TileResult,
-};
+use crate::loader::{DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TileResult};
 use crate::scanner::{self, ScanMessage};
-use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
+use crate::tile_cache::TileManager;
 use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
 use rand::seq::SliceRandom;
 use rust_i18n::t;
@@ -1265,19 +1263,13 @@ impl ImageViewerApp {
         tile_result: TileResult,
         _ctx: &egui::Context,
     ) {
-        let coord = TileCoord {
-            col: tile_result.col,
-            row: tile_result.row,
-        };
-
         // SDR pixels are already in PIXEL_CACHE; HDR pixels are already in the
         // HdrTiledSource cache. Either way, clear the shared pending marker.
         if let Some(ref mut tm) = self.tile_manager {
             if tm.image_index == tile_result.index && tm.generation == tile_result.generation {
-                tm.pending_tiles
-                    .remove(&PendingTileKey::new(coord, tile_result.pixel_kind));
-                match tile_result.pixel_kind {
-                    TilePixelKind::Sdr | TilePixelKind::Hdr => _ctx.request_repaint(),
+                tm.pending_tiles.remove(&tile_result.pending_key());
+                if tile_result.should_request_repaint() {
+                    _ctx.request_repaint();
                 }
             }
         }
