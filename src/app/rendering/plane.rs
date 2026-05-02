@@ -7,12 +7,6 @@ pub(crate) enum PlaneBackendKind {
     Hdr,
 }
 
-impl PlaneBackendKind {
-    pub(crate) fn draws_sdr(self) -> bool {
-        matches!(self, Self::Sdr)
-    }
-}
-
 pub(crate) fn select_tiled_plane_backend(
     output_mode: Option<HdrRenderOutputMode>,
     has_hdr_tiled_source: bool,

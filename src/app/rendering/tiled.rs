@@ -277,6 +277,10 @@ fn should_draw_hdr_tiles_for_tiled_backend(
     plane_backend == PlaneBackendKind::Hdr && has_cached_tile
 }
 
+fn should_process_hdr_tiles_for_backend(plane_backend: PlaneBackendKind) -> bool {
+    plane_backend == PlaneBackendKind::Hdr
+}
+
 fn should_repaint_for_ready_tiles_for_backend(
     plane_backend: PlaneBackendKind,
     has_ready_to_upload: bool,
@@ -351,7 +355,6 @@ impl ImageViewerApp {
         });
         let plane_backend =
             select_tiled_plane_backend(hdr_output_mode, hdr_source_for_frame.is_some());
-        let draw_sdr_tiles = plane_backend.draws_sdr();
 
         let tp = self.compute_transition_params();
         let preview_for_transition = self
@@ -585,7 +588,7 @@ impl ImageViewerApp {
                 };
 
                 for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
-                    if !draw_sdr_tiles {
+                    if should_process_hdr_tiles_for_backend(plane_backend) {
                         if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
                             let is_primary_visible = primary_visible_coords.contains(coord);
                             let (tile_x, tile_y, tile_w, tile_h) =
@@ -775,8 +778,8 @@ mod tests {
         should_draw_hdr_preview_for_tiled_backend, should_draw_hdr_tiles_for_tiled_backend,
         should_draw_sdr_preview_for_tiled_backend,
         should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
-        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
-        should_schedule_tile_request_for_pixel_kind,
+        should_process_hdr_tiles_for_backend, should_repaint_for_ready_tiles_for_backend,
+        should_schedule_tile_request, should_schedule_tile_request_for_pixel_kind,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tile_visits_for_backend, tiled_plane_threshold,
     };
@@ -850,6 +853,12 @@ mod tests {
             PlaneBackendKind::Sdr,
             false
         ));
+    }
+
+    #[test]
+    fn hdr_tile_processing_is_selected_by_backend() {
+        assert!(should_process_hdr_tiles_for_backend(PlaneBackendKind::Hdr));
+        assert!(!should_process_hdr_tiles_for_backend(PlaneBackendKind::Sdr));
     }
 
     #[test]
