@@ -15,17 +15,18 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
 use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+const MAX_HDR_TILE_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024 * 1024;
 pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
-    AtomicUsize::new(DEFAULT_HDR_TILE_CACHE_MAX_BYTES);
+    AtomicUsize::new(initial_hdr_tile_cache_max_bytes());
 
 pub(crate) type HdrTileCacheKey = (u32, u32, u32, u32);
 
@@ -371,8 +372,28 @@ pub(crate) fn preview_sample_coord(
         as u32
 }
 
+const fn initial_hdr_tile_cache_max_bytes() -> usize {
+    DEFAULT_HDR_TILE_CACHE_MAX_BYTES
+}
+
 pub fn configured_hdr_tile_cache_max_bytes() -> usize {
     HDR_TILE_CACHE_MAX_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn configure_hdr_tile_cache_budget_from_system_memory() {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    HDR_TILE_CACHE_MAX_BYTES.store(
+        hdr_tile_cache_budget_for_memory(sys.total_memory() as usize),
+        Ordering::Relaxed,
+    );
+}
+
+fn hdr_tile_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
+    (total_memory_bytes / 16).clamp(
+        DEFAULT_HDR_TILE_CACHE_MAX_BYTES,
+        MAX_HDR_TILE_CACHE_MAX_BYTES,
+    )
 }
 
 #[cfg(test)]
@@ -712,6 +733,18 @@ mod tests {
         assert!(cache.get(third_key).is_some());
         assert!(cache.get(second_key).is_none());
         assert!(cache.current_bytes() <= 2 * tile_bytes(1, 1));
+    }
+
+    #[test]
+    fn hdr_tile_cache_budget_scales_with_physical_memory() {
+        let gib = 1024 * 1024 * 1024;
+
+        assert_eq!(
+            super::hdr_tile_cache_budget_for_memory(4 * gib),
+            256 * 1024 * 1024
+        );
+        assert_eq!(super::hdr_tile_cache_budget_for_memory(32 * gib), 2 * gib);
+        assert_eq!(super::hdr_tile_cache_budget_for_memory(128 * gib), 4 * gib);
     }
 
     #[test]

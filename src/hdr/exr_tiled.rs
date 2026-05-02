@@ -38,6 +38,7 @@ pub struct ExrTiledImageSource {
     width: u32,
     height: u32,
     part_index: usize,
+    storage: i32,
     color_space: HdrColorSpace,
     has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
@@ -75,6 +76,7 @@ impl ExrTiledImageSource {
             width: part.width,
             height: part.height,
             part_index,
+            storage: part.storage,
             color_space: HdrColorSpace::Unknown,
             has_subsampled_channels,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
@@ -87,6 +89,76 @@ impl ExrTiledImageSource {
 
     pub(crate) fn has_subsampled_channels(&self) -> bool {
         self.has_subsampled_channels
+    }
+
+    fn should_prefill_scanline_band(&self, x: u32, y: u32, width: u32, height: u32) -> bool {
+        if self.storage != openexr_core_sys::EXR_STORAGE_SCANLINE {
+            return false;
+        }
+        let tile_size = crate::tile_cache::get_tile_size();
+        x % tile_size == 0
+            && y % tile_size == 0
+            && width == tile_size.min(self.width.saturating_sub(x))
+            && height == tile_size.min(self.height.saturating_sub(y))
+            && self.width > width
+    }
+
+    fn prefill_scanline_band_tiles(&self, y: u32, height: u32) -> Result<(), String> {
+        let tile_size = crate::tile_cache::get_tile_size();
+        let band_height = tile_size.min(self.height.saturating_sub(y));
+        if band_height != height {
+            return Ok(());
+        }
+
+        let keys = scanline_band_tile_keys(self.width, self.height, y, tile_size, tile_size);
+        if keys.len() <= 1 {
+            return Ok(());
+        }
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            if keys.iter().all(|key| cache.get(*key).is_some()) {
+                return Ok(());
+            }
+        }
+
+        let context = exr_file_context("extract EXR scanline tile band", &self.path);
+        let band = catch_exr_panic(&context, || {
+            self.context.extract_scanline_rgba32f_tile(
+                self.part_index,
+                0,
+                y,
+                self.width,
+                band_height,
+            )
+        })?;
+
+        let mut tiles = Vec::with_capacity(keys.len());
+        for (tile_x, tile_y, tile_width, tile_height) in keys {
+            let mut rgba = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
+            let start_x = tile_x as usize * 4;
+            let row_len = tile_width as usize * 4;
+            let source_stride = band.width as usize * 4;
+            for row in 0..tile_height as usize {
+                let start = row * source_stride + start_x;
+                let end = start + row_len;
+                rgba.extend_from_slice(&band.rgba[start..end]);
+            }
+            tiles.push((
+                (tile_x, tile_y, tile_width, tile_height),
+                Arc::new(HdrTileBuffer {
+                    width: tile_width,
+                    height: tile_height,
+                    color_space: self.color_space,
+                    rgba_f32: Arc::new(rgba),
+                }),
+            ));
+        }
+
+        if let Ok(mut cache) = self.tile_cache.lock() {
+            for (key, tile) in tiles {
+                cache.insert(key, tile);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -140,6 +212,15 @@ impl HdrTiledSource for ExrTiledImageSource {
         if let Ok(mut cache) = self.tile_cache.lock() {
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
+            }
+        }
+
+        if self.should_prefill_scanline_band(x, y, width, height) {
+            self.prefill_scanline_band_tiles(y, height)?;
+            if let Ok(mut cache) = self.tile_cache.lock() {
+                if let Some(tile) = cache.get(key) {
+                    return Ok(tile);
+                }
             }
         }
 
@@ -332,6 +413,31 @@ fn is_deep_storage(storage: i32) -> bool {
     )
 }
 
+fn scanline_band_tile_keys(
+    source_width: u32,
+    source_height: u32,
+    y: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> Vec<(u32, u32, u32, u32)> {
+    if source_width == 0 || source_height == 0 || tile_width == 0 || tile_height == 0 {
+        return Vec::new();
+    }
+    let band_y = (y / tile_height) * tile_height;
+    if band_y >= source_height {
+        return Vec::new();
+    }
+    let height = tile_height.min(source_height - band_y);
+    let mut keys = Vec::new();
+    let mut x = 0;
+    while x < source_width {
+        let width = tile_width.min(source_width - x);
+        keys.push((x, band_y, width, height));
+        x += tile_width;
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -385,5 +491,15 @@ mod tests {
         ];
 
         assert_eq!(super::default_display_part_index(&parts), Some(1));
+    }
+
+    #[test]
+    fn scanline_band_tile_keys_cover_full_horizontal_band() {
+        let keys = super::scanline_band_tile_keys(24576, 8192, 6656, 512, 512);
+
+        assert_eq!(keys.len(), 48);
+        assert_eq!(keys[0], (0, 6656, 512, 512));
+        assert_eq!(keys[27], (13824, 6656, 512, 512));
+        assert_eq!(keys[47], (24064, 6656, 512, 512));
     }
 }

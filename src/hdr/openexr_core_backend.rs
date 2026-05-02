@@ -18,6 +18,7 @@ use std::time::Instant;
 use openexr_core_sys as sys;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -206,7 +207,7 @@ impl OpenExrCoreReadContext {
             raw,
             part_count,
             decoded_chunks: Mutex::new(OpenExrCoreDecodedChunkCache::new(
-                DEFAULT_DECODED_CHUNK_CACHE_BYTES,
+                configured_decoded_chunk_cache_max_bytes(),
             )),
             decoded_chunk_ready: Condvar::new(),
         })
@@ -906,6 +907,19 @@ fn exr_attr_string_to_string(value: sys::ExrAttrString) -> Result<String, String
     String::from_utf8(bytes.to_vec()).map_err(|err| err.to_string())
 }
 
+fn configured_decoded_chunk_cache_max_bytes() -> usize {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    decoded_chunk_cache_budget_for_memory(sys.total_memory() as usize)
+}
+
+fn decoded_chunk_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
+    (total_memory_bytes / 16).clamp(
+        DEFAULT_DECODED_CHUNK_CACHE_BYTES,
+        MAX_DECODED_CHUNK_CACHE_BYTES,
+    )
+}
+
 fn exr_result(result: sys::ExrResult) -> Result<(), String> {
     if result == sys::EXR_ERR_SUCCESS {
         return Ok(());
@@ -963,5 +977,23 @@ mod tests {
         assert!(!cache.begin_decode(key));
         cache.finish_decode(&key);
         assert!(cache.begin_decode(key));
+    }
+
+    #[test]
+    fn decoded_chunk_cache_budget_scales_with_physical_memory() {
+        let gib = 1024 * 1024 * 1024;
+
+        assert_eq!(
+            super::decoded_chunk_cache_budget_for_memory(4 * gib),
+            512 * 1024 * 1024
+        );
+        assert_eq!(
+            super::decoded_chunk_cache_budget_for_memory(32 * gib),
+            2 * gib
+        );
+        assert_eq!(
+            super::decoded_chunk_cache_budget_for_memory(128 * gib),
+            4 * gib
+        );
     }
 }

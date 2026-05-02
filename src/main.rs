@@ -420,6 +420,7 @@ fn main() -> eframe::Result {
     let mut settings = settings::Settings::load();
     init_logging(&settings);
     let env_info = log_env_info();
+    hdr::tiled::configure_hdr_tile_cache_budget_from_system_memory();
 
     #[cfg(target_os = "windows")]
     {
