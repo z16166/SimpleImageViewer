@@ -23,7 +23,7 @@ use crate::hdr::tiled::{
     configured_hdr_tile_cache_max_bytes, hdr_preview_from_tiled_source_nearest,
     sdr_preview_from_hdr_preview,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 thread_local! {
     static SUPPRESS_EXR_PANIC_HOOK_DEPTH: Cell<u32> = const { Cell::new(0) };
@@ -145,10 +145,11 @@ impl ExrTiledImageSource {
             }
             tiles.push((
                 (tile_x, tile_y, tile_width, tile_height),
-                Arc::new(HdrTileBuffer::new(
+                Arc::new(HdrTileBuffer::new_with_metadata(
                     tile_width,
                     tile_height,
                     self.color_space,
+                    HdrImageMetadata::from_color_space(self.color_space),
                     Arc::new(rgba),
                 )),
             ));
@@ -203,6 +204,7 @@ impl HdrTiledSource for ExrTiledImageSource {
                     height: preview.height,
                     format: HdrPixelFormat::Rgba32Float,
                     color_space: self.color_space,
+                    metadata: HdrImageMetadata::from_color_space(self.color_space),
                     rgba_f32: Arc::new(preview.rgba),
                 });
             }
@@ -246,10 +248,11 @@ impl HdrTiledSource for ExrTiledImageSource {
             self.context
                 .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height)
         })?;
-        let tile = Arc::new(HdrTileBuffer::new(
+        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
             tile.width,
             tile.height,
             self.color_space,
+            HdrImageMetadata::from_color_space(self.color_space),
             Arc::new(tile.rgba),
         ));
 
@@ -383,6 +386,7 @@ pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, Strin
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::Unknown,
+        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::Unknown),
         rgba_f32: Arc::new(rgba_f32),
     })
 }

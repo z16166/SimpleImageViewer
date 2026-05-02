@@ -1757,6 +1757,9 @@ mod tests {
             height: 256,
             format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
             color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
             rgba_f32: Arc::new(vec![0.0; 512 * 256 * 4]),
         });
         let refined = Arc::new(crate::hdr::types::HdrImageBuffer {
@@ -1764,6 +1767,9 @@ mod tests {
             height: 2048,
             format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
             color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
             rgba_f32: Arc::new(vec![0.0; 4]),
         });
         let smaller = Arc::new(crate::hdr::types::HdrImageBuffer {
@@ -1771,6 +1777,9 @@ mod tests {
             height: 512,
             format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
             color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
             rgba_f32: Arc::new(vec![0.0; 4]),
         });
         let mut cache = HashMap::new();
@@ -1876,6 +1885,9 @@ mod tests {
             height: 1,
             format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
             color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
         });
         let current = crate::app::CurrentHdrImage::new(4, image);

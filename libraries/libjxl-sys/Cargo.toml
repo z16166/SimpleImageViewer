@@ -1,0 +1,11 @@
+[package]
+name = "libjxl-sys"
+version = "0.1.0"
+edition = "2024"
+links = "jxl"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+vcpkg = "0.2"

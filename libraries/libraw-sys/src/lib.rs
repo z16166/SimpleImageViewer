@@ -89,6 +89,8 @@ unsafe extern "C" {
     pub fn siv_libraw_set_user_flip(data: *mut libraw_data_t, flip: c_int);
     pub fn siv_libraw_set_use_camera_matrix(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_set_auto_bright_thr(data: *mut libraw_data_t, value: c_float);
+    pub fn siv_libraw_set_output_color(data: *mut libraw_data_t, value: c_int);
+    pub fn siv_libraw_set_gamma(data: *mut libraw_data_t, power: f64, slope: f64);
 
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;

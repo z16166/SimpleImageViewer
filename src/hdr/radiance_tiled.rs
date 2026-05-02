@@ -23,7 +23,7 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Rgbe8Pixel {
@@ -160,10 +160,11 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             height,
         )?;
 
-        let tile = Arc::new(HdrTileBuffer::new(
+        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
             width,
             height,
             HdrColorSpace::LinearSrgb,
+            HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             Arc::new(rgba),
         ));
 
@@ -270,6 +271,7 @@ fn decode_radiance_hdr_preview(
         height: preview_height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
+        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
         rgba_f32: Arc::new(rgba),
     })
 }

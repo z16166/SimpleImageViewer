@@ -24,6 +24,16 @@
       ]
     },
     "openexr",
+    {
+      "name": "libavif",
+      "features": [
+        "dav1d"
+      ]
+    },
+    "dav1d",
+    "libheif",
+    "libde265",
+    "libjxl",
     "zlib"
   ]
 }

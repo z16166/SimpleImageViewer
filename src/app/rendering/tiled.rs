@@ -1047,6 +1047,9 @@ mod tests {
                 height: 1,
                 format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                 color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                    crate::hdr::types::HdrColorSpace::LinearSrgb,
+                ),
                 rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
             })
             .expect("build HDR tiled source"),

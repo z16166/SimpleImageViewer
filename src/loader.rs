@@ -1589,7 +1589,9 @@ fn load_image_file(
             "gif" => load_gif(path),
             "png" | "apng" => load_png(path),
             "webp" => load_webp(path),
-            "heif" | "heic" => load_heic(path),
+            "avif" | "avis" => load_avif_with_target_capacity(path, hdr_target_capacity),
+            "jxl" => load_jxl_with_target_capacity(path, hdr_target_capacity),
+            "heif" | "heic" => load_heif_hdr_aware(path),
             "jpg" | "jpeg" => load_jpeg_with_target_capacity(path, hdr_target_capacity),
             _ => load_static(path),
         };
@@ -1821,18 +1823,18 @@ fn load_image_file(
     LoadResult {
         index,
         generation,
-        ultra_hdr_capacity_sensitive: is_ultra_hdr_capacity_sensitive_load(path, &final_result),
+        ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
         preview_bundle,
     }
 }
 
-fn is_ultra_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
+fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
     let is_jpeg = path
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"));
-    is_jpeg
+    (is_jpeg || is_hdr_capable_modern_format_path(path))
         && matches!(
             result,
             Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. })
@@ -1935,6 +1937,106 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
     Ok(make_image_data(DecodedImage::new(width, height, pixels)))
 }
 
+#[allow(dead_code)]
+fn is_avif_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("avif") || ext.eq_ignore_ascii_case("avis"))
+}
+
+#[allow(dead_code)]
+fn is_heif_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("heic")
+                || ext.eq_ignore_ascii_case("heif")
+                || ext.eq_ignore_ascii_case("hif")
+        })
+}
+
+#[allow(dead_code)]
+fn is_jxl_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jxl"))
+}
+
+fn is_hdr_capable_modern_format_path(path: &Path) -> bool {
+    is_avif_path(path) || is_heif_path(path) || is_jxl_path(path)
+}
+
+fn load_avif(path: &PathBuf) -> Result<ImageData, String> {
+    load_avif_with_target_capacity(
+        path,
+        crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+    )
+}
+
+fn load_avif_with_target_capacity(
+    path: &PathBuf,
+    _hdr_target_capacity: f32,
+) -> Result<ImageData, String> {
+    #[cfg(feature = "avif-native")]
+    {
+        match crate::hdr::avif::decode_avif_hdr_with_target_capacity(path, _hdr_target_capacity) {
+            Ok(hdr) => {
+                let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+                let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                return Ok(make_hdr_image_data(hdr, fallback));
+            }
+            Err(err) => {
+                log::warn!(
+                    "[Loader] Native AVIF HDR decode failed for {}: {err}; falling back to image-rs",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    load_static(path)
+}
+
+fn load_jxl(path: &PathBuf) -> Result<ImageData, String> {
+    load_jxl_with_target_capacity(
+        path,
+        crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+    )
+}
+
+fn load_jxl_with_target_capacity(
+    path: &PathBuf,
+    _hdr_target_capacity: f32,
+) -> Result<ImageData, String> {
+    #[cfg(feature = "jpegxl")]
+    {
+        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(path, _hdr_target_capacity)
+    }
+
+    #[cfg(not(feature = "jpegxl"))]
+    {
+        let _ = path;
+        Err("JPEG XL support requires the jpegxl feature".to_string())
+    }
+}
+
+fn load_heif_hdr_aware(path: &PathBuf) -> Result<ImageData, String> {
+    #[cfg(feature = "heif-native")]
+    {
+        match crate::hdr::heif::load_heif_hdr(path) {
+            Ok(image) => return Ok(image),
+            Err(err) => {
+                log::warn!(
+                    "[Loader] Native HEIF HDR decode failed for {}: {err}; falling back to RGBA8 HEIC",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    load_heic(path)
+}
+
 fn load_hdr(path: &Path) -> Result<ImageData, String> {
     if is_exr_path(path) {
         return load_detected_exr(path);
@@ -2019,6 +2121,7 @@ fn exr_tiled_source_to_static_hdr(
         height: tile.height,
         format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
         color_space: tile.color_space,
+        metadata: tile.metadata.clone(),
         rgba_f32: Arc::clone(&tile.rgba_f32),
     };
     let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
@@ -2100,6 +2203,9 @@ fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
         height,
         format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
         color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
         rgba_f32: Arc::new(rgba_f32),
     };
     let fallback = DecodedImage::new(width, height, fallback_pixels);
@@ -2378,7 +2484,7 @@ fn make_hdr_image_data_for_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -2419,6 +2525,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; 2 * 4]),
         };
         let fallback = DecodedImage::new(2, 1, vec![255; 2 * 4]);
@@ -2447,6 +2554,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; 4097 * 4]),
         };
         let fallback = DecodedImage::new(4097, 1, vec![255; 4097 * 4]);
@@ -2482,6 +2590,7 @@ mod tests {
                 height: 1,
                 format: HdrPixelFormat::Rgba32Float,
                 color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
                 rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
             })
             .expect("build HDR tiled source"),
@@ -2505,6 +2614,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
         });
         let bundle = PreviewBundle::initial()
@@ -2545,6 +2655,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
         };
         let static_sdr = ImageData::Static(sdr.clone());
@@ -2603,6 +2714,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
         });
         let update = PreviewResult::from_hdr_preview(3, 5, Ok(Arc::clone(&hdr_preview)));
@@ -2649,6 +2761,7 @@ mod tests {
                 height: crate::tile_cache::get_tile_size(),
                 format: HdrPixelFormat::Rgba32Float,
                 color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
                 rgba_f32: Arc::new(vec![
                     0.25;
                     crate::tile_cache::get_tile_size() as usize
@@ -2697,6 +2810,7 @@ mod tests {
                 height: crate::tile_cache::get_tile_size(),
                 format: HdrPixelFormat::Rgba32Float,
                 color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
                 rgba_f32: Arc::new(vec![
                     0.25;
                     crate::tile_cache::get_tile_size() as usize
@@ -3320,6 +3434,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; 4097 * 4]),
         };
         let fallback = DecodedImage::new(4097, 1, vec![255; 4097 * 4]);
@@ -3332,6 +3447,15 @@ mod tests {
         assert_eq!(hdr.width(), 4097);
         assert_eq!(hdr.height(), 1);
         assert!(fallback.is_hdr_sdr_fallback());
+    }
+
+    #[test]
+    fn modern_hdr_format_path_helpers_detect_supported_extensions() {
+        assert!(is_avif_path(Path::new("sample.avif")));
+        assert!(is_heif_path(Path::new("sample.HEIC")));
+        assert!(is_jxl_path(Path::new("sample.jxl")));
+        assert!(is_hdr_capable_modern_format_path(Path::new("sample.heif")));
+        assert!(!is_hdr_capable_modern_format_path(Path::new("sample.png")));
     }
 }
 
@@ -3355,8 +3479,8 @@ fn load_by_image_format(
         | image::ImageFormat::Tga
         | image::ImageFormat::Dds
         | image::ImageFormat::Farbfeld
-        | image::ImageFormat::Avif
         | image::ImageFormat::Qoi => load_static(path),
+        image::ImageFormat::Avif => load_avif(path),
         image::ImageFormat::Hdr => load_hdr(path),
         image::ImageFormat::OpenExr => load_detected_exr(path),
         _ => Err(rust_i18n::t!(
@@ -3404,18 +3528,19 @@ fn load_via_content_detection(
         return load_by_image_format(guessed, path, hdr_target_capacity);
     }
 
+    if crate::hdr::jpegxl::is_jxl_header(&header[..n]) {
+        return load_jxl(path);
+    }
+
     // 2. Manual HEIC detection (since image-rs 0.25 doesn't natively guess it)
     // HEIF/HEIC signature: "ftyp" (at offset 4) followed by various brands.
     if n >= 12 && &header[4..8] == b"ftyp" {
         let sub = &header[8..12];
-        if sub == b"heic"
-            || sub == b"heix"
-            || sub == b"hevc"
-            || sub == b"hevx"
-            || sub == b"mif1"
-            || sub == b"msf1"
-        {
-            return load_heic(path);
+        if crate::hdr::avif::is_avif_brand(sub) {
+            return load_avif(path);
+        }
+        if crate::hdr::heif::is_heif_brand(sub) {
+            return load_heif_hdr_aware(path);
         }
     }
 
@@ -3888,7 +4013,7 @@ fn load_raw(
             area as f64 / 1_000_000.0
         );
 
-        if let Ok(full_img) = processor.develop() {
+        if let Ok(hdr) = processor.develop_scene_linear_hdr() {
             let warnings = processor.process_warnings();
             if warnings != 0 {
                 log::info!(
@@ -3898,18 +4023,20 @@ fn load_raw(
                 );
             }
 
-            let rgba = full_img.into_rgba8();
-            if rgba.width() == 0 || rgba.height() == 0 {
+            if hdr.width == 0 || hdr.height == 0 {
                 log::error!(
                     "[Loader] LibRaw developed a zero-dimension image for {:?}. Falling through to Rule 2.",
                     path
                 );
             } else {
-                let decoded = DecodedImage::new(rgba.width(), rgba.height(), rgba.into_raw());
-                return Ok(ImageData::Static(decoded));
+                let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+                let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                return Ok(make_hdr_image_data(hdr, fallback));
             }
         } else {
-            log::error!("[Loader] Failed to develop Rule 1 pixels. Falling through to Rule 2.");
+            log::error!(
+                "[Loader] Failed to develop Rule 1 RAW HDR pixels. Falling through to Rule 2."
+            );
         }
     }
 
@@ -4005,6 +4132,7 @@ impl TiledImageSource for HdrSdrTiledFallbackSource {
                         height: tile.height,
                         format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
                         color_space: tile.color_space,
+                        metadata: tile.metadata.clone(),
                         rgba_f32: Arc::clone(&tile.rgba_f32),
                     },
                     0.0,

@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use super::types::{
+    HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings,
+    HdrTransferFunction,
+};
 use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
@@ -85,6 +88,9 @@ const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
+const INPUT_TRANSFER_SRGB: u32 = 1u;
+const INPUT_TRANSFER_PQ: u32 = 2u;
+const INPUT_TRANSFER_HLG: u32 = 3u;
 const HDR_DOWNSCALE_SAMPLE_GRID: u32 = 4u;
 const HDR_DOWNSCALE_MAX_FOOTPRINT: f32 = 8.0;
 
@@ -96,9 +102,9 @@ struct ToneMapSettings {
     alpha: f32,
     output_mode: u32,
     input_color_space: u32,
+    input_transfer_function: u32,
+    input_reference: u32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
 };
@@ -142,6 +148,47 @@ fn xyz_to_linear_srgb(xyz: vec3<f32>) -> vec3<f32> {
         -0.9692 * xyz.x + 1.8760 * xyz.y + 0.0415 * xyz.z,
         0.0556 * xyz.x - 0.2040 * xyz.y + 1.0572 * xyz.z,
     );
+}
+
+fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
+    let low = rgb / vec3<f32>(12.92);
+    let high = pow((rgb + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+    return select(high, low, rgb <= vec3<f32>(0.04045));
+}
+
+fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let code = pow(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / m2));
+    let numerator = max(code - vec3<f32>(c1), vec3<f32>(0.0));
+    let denominator = max(vec3<f32>(c2) - vec3<f32>(c3) * code, vec3<f32>(0.000001));
+    let absolute_nits = vec3<f32>(10000.0) * pow(numerator / denominator, vec3<f32>(1.0 / m1));
+    return absolute_nits / max(settings.sdr_white_nits, 1.0);
+}
+
+fn hlg_to_scene_linear(rgb: vec3<f32>) -> vec3<f32> {
+    let a = 0.17883277;
+    let b = 0.28466892;
+    let c = 0.55991073;
+    let low = (rgb * rgb) / vec3<f32>(3.0);
+    let high = (exp((rgb - vec3<f32>(c)) / vec3<f32>(a)) + vec3<f32>(b)) / vec3<f32>(12.0);
+    return select(high, low, rgb <= vec3<f32>(0.5));
+}
+
+fn decode_input_transfer(rgb: vec3<f32>, input_transfer_function: u32, settings: ToneMapSettings) -> vec3<f32> {
+    if input_transfer_function == INPUT_TRANSFER_SRGB {
+        return srgb_to_linear(rgb);
+    }
+    if input_transfer_function == INPUT_TRANSFER_PQ {
+        return pq_to_display_linear(rgb, settings);
+    }
+    if input_transfer_function == INPUT_TRANSFER_HLG {
+        return hlg_to_scene_linear(rgb);
+    }
+    return rgb;
 }
 
 fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<f32> {
@@ -250,7 +297,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampled_uv = tone_map.uv_min + rotated_uv * (tone_map.uv_max - tone_map.uv_min);
     let clamped_uv = clamp(sampled_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let hdr = sample_hdr_for_display(clamped_uv);
-    let source_rgb = convert_input_to_linear_srgb(hdr.rgb, tone_map.input_color_space);
+    let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
+    let source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
     var rgb: vec3<f32>;
     if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
         rgb = encode_native_hdr(source_rgb, tone_map);
@@ -497,7 +545,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.rotation_steps,
             self.alpha,
             self.output_mode,
-            self.image.color_space,
+            self.image.metadata.color_space_hint(),
+            self.image.metadata.transfer_function,
+            self.image.metadata.reference,
             self.uv_rect,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -604,7 +654,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.rotation_steps,
             self.alpha,
             self.output_mode,
-            self.tile.color_space,
+            self.tile.metadata.color_space_hint(),
+            self.tile.metadata.transfer_function,
+            self.tile.metadata.reference,
             self.uv_rect,
         );
 
@@ -702,9 +754,9 @@ struct ToneMapUniform {
     alpha: f32,
     output_mode: u32,
     input_color_space: u32,
+    input_transfer_function: u32,
+    input_reference: u32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
     uv_min: [f32; 2],
     uv_max: [f32; 2],
 }
@@ -719,6 +771,8 @@ impl ToneMapUniform {
         alpha: f32,
         output_mode: HdrRenderOutputMode,
         input_color_space: HdrColorSpace,
+        input_transfer_function: HdrTransferFunction,
+        input_reference: HdrReference,
         uv_rect: egui::Rect,
     ) -> Self {
         Self {
@@ -729,9 +783,9 @@ impl ToneMapUniform {
             alpha: alpha.clamp(0.0, 1.0),
             output_mode: output_mode as u32,
             input_color_space: input_color_space as u32,
+            input_transfer_function: input_transfer_function as u32,
+            input_reference: input_reference as u32,
             _pad0: 0,
-            _pad1: 0,
-            _pad2: 0,
             uv_min: [uv_rect.min.x, uv_rect.min.y],
             uv_max: [uv_rect.max.x, uv_rect.max.y],
         }
@@ -744,6 +798,8 @@ fn tile_tone_map_uniform(
     alpha: f32,
     output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
+    input_transfer_function: HdrTransferFunction,
+    input_reference: HdrReference,
     uv_rect: egui::Rect,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
@@ -752,6 +808,8 @@ fn tile_tone_map_uniform(
         alpha,
         output_mode,
         input_color_space,
+        input_transfer_function,
+        input_reference,
         uv_rect,
     )
 }
@@ -762,6 +820,8 @@ fn image_tone_map_uniform(
     alpha: f32,
     output_mode: HdrRenderOutputMode,
     input_color_space: HdrColorSpace,
+    input_transfer_function: HdrTransferFunction,
+    input_reference: HdrReference,
     uv_rect: egui::Rect,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
@@ -770,6 +830,8 @@ fn image_tone_map_uniform(
         alpha,
         output_mode,
         input_color_space,
+        input_transfer_function,
+        input_reference,
         uv_rect,
     )
 }
@@ -922,6 +984,8 @@ fn create_callback_resources(
             1.0,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -1293,7 +1357,10 @@ fn rgba32f_as_bytes(values: &[f32]) -> &[u8] {
 mod tests {
     use super::*;
     use crate::hdr::tiled::HdrTileBuffer;
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use crate::hdr::types::{
+        HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+        HdrTransferFunction,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -1414,6 +1481,8 @@ mod tests {
             0.5,
             HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
@@ -1430,6 +1499,8 @@ mod tests {
             1.0,
             HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::new(0.25, 0.5), egui::Pos2::new(0.75, 1.0)),
         );
 
@@ -1451,6 +1522,8 @@ mod tests {
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
         let tile_uniform = tile_tone_map_uniform(
@@ -1459,6 +1532,8 @@ mod tests {
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::Rec2020Linear,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
@@ -1658,6 +1733,8 @@ mod tests {
             0.25,
             HdrRenderOutputMode::SdrToneMapped,
             HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
@@ -1689,6 +1766,8 @@ mod tests {
             1.0,
             HdrRenderOutputMode::NativeHdr,
             HdrColorSpace::Rec2020Linear,
+            HdrTransferFunction::Pq,
+            HdrReference::DisplayReferred,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         );
 
@@ -1696,6 +1775,14 @@ mod tests {
         assert_eq!(
             uniform.input_color_space,
             HdrColorSpace::Rec2020Linear as u32
+        );
+        assert_eq!(
+            uniform.input_transfer_function,
+            HdrTransferFunction::Pq as u32
+        );
+        assert_eq!(
+            uniform.input_reference,
+            HdrReference::DisplayReferred as u32
         );
     }
 
@@ -1718,6 +1805,15 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_XYZ"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn xyz_to_linear_srgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("3.2404"));
+    }
+
+    #[test]
+    fn shader_decodes_hdr_transfer_functions_before_color_conversion() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_TRANSFER_PQ"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_TRANSFER_HLG"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn pq_to_display_linear"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn hlg_to_scene_linear"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn decode_input_transfer"));
     }
 
     #[test]
@@ -1770,6 +1866,7 @@ mod tests {
             height,
             format,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(rgba_f32),
         }
     }

@@ -54,4 +54,17 @@ extern "C" {
         LibRaw *ip = (LibRaw *)lr->parent_class;
         ip->imgdata.params.auto_bright_thr = value;
     }
+
+    void siv_libraw_set_output_color(libraw_data_t *lr, int value) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.output_color = value;
+    }
+
+    void siv_libraw_set_gamma(libraw_data_t *lr, double power, double slope) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.gamm[0] = power;
+        ip->imgdata.params.gamm[1] = slope;
+    }
 }

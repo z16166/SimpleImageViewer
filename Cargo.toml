@@ -61,6 +61,9 @@ monkey-sdk-sys = { path = "libraries/monkey-sdk-sys" }
 libjpeg-turbo = { path = "libraries/libjpeg-turbo" }
 libtiff-viewer = { path = "libraries/libtiff" }
 openexr-core-sys = { path = "libraries/openexr-core-sys" }
+libavif-sys = { path = "libraries/libavif-sys", optional = true }
+libheif-sys = { path = "libraries/libheif-sys", optional = true }
+libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
 miniz_oxide = "0.8.9"
 
@@ -72,6 +75,10 @@ legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 tile-debug = []
 # Official OpenEXRCore C backend for EXR decoding.
 openexr-core = []
+avif-native = ["dep:libavif-sys"]
+heif-native = ["dep:libheif-sys"]
+jpegxl = ["dep:libjxl-sys"]
+hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }

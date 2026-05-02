@@ -14,9 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+pub mod avif;
 pub mod capabilities;
 pub mod decode;
 pub mod exr_tiled;
+pub(crate) mod gain_map;
+pub mod heif;
+pub mod jpegxl;
 pub mod monitor;
 pub(crate) mod openexr_core_backend;
 pub mod radiance_tiled;

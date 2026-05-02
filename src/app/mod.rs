@@ -970,7 +970,7 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
     #[test]
     fn current_hdr_image_only_matches_its_source_index() {
@@ -979,6 +979,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
         });
         let current = CurrentHdrImage::new(7, Arc::clone(&image));
@@ -994,6 +995,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
         };
         let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(

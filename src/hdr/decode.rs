@@ -24,7 +24,7 @@ use image::{ImageReader, Limits};
 
 use crate::hdr::tiled::HdrTiledSource;
 
-use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+use super::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
 const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;
@@ -71,6 +71,7 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
+        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
         rgba_f32: Arc::new(rgba.into_raw()),
     })
 }
@@ -106,6 +107,7 @@ fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
+        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -212,6 +214,7 @@ pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, St
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: tile.color_space,
+        metadata: tile.metadata.clone(),
         rgba_f32: Arc::clone(&tile.rgba_f32),
     })
 }
@@ -342,6 +345,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![-1.0, 0.0, 1.0, 0.5, 4.0, 0.25, 0.5, 1.5]),
         };
 
@@ -357,6 +361,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.25, 0.25, 0.25, 1.0]),
         };
 
@@ -372,6 +377,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![
                 f32::NAN,
                 f32::NEG_INFINITY,
@@ -396,6 +402,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![f32::MAX, f32::MAX, f32::MAX, 1.0]),
         };
 
@@ -411,6 +418,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0]),
         };
 

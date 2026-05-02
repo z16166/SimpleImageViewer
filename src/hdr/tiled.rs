@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
-use super::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+use super::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HDR_TILE_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024 * 1024;
@@ -38,14 +38,32 @@ pub struct HdrTileBuffer {
     pub width: u32,
     pub height: u32,
     pub color_space: HdrColorSpace,
+    pub metadata: HdrImageMetadata,
     pub rgba_f32: Arc<Vec<f32>>,
 }
 
 impl HdrTileBuffer {
+    #[allow(dead_code)]
     pub(crate) fn new(
         width: u32,
         height: u32,
         color_space: HdrColorSpace,
+        rgba_f32: Arc<Vec<f32>>,
+    ) -> Self {
+        Self::new_with_metadata(
+            width,
+            height,
+            color_space,
+            HdrImageMetadata::from_color_space(color_space),
+            rgba_f32,
+        )
+    }
+
+    pub(crate) fn new_with_metadata(
+        width: u32,
+        height: u32,
+        color_space: HdrColorSpace,
+        metadata: HdrImageMetadata,
         rgba_f32: Arc<Vec<f32>>,
     ) -> Self {
         Self {
@@ -53,6 +71,7 @@ impl HdrTileBuffer {
             width,
             height,
             color_space,
+            metadata,
             rgba_f32,
         }
     }
@@ -82,6 +101,9 @@ pub trait HdrTiledSource: Send + Sync {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
     fn color_space(&self) -> HdrColorSpace;
+    fn metadata(&self) -> HdrImageMetadata {
+        HdrImageMetadata::from_color_space(self.color_space())
+    }
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String>;
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String>;
     fn cached_tile_rgba32f_arc(
@@ -186,6 +208,10 @@ impl HdrTiledSource for HdrTiledImageSource {
         self.image.color_space
     }
 
+    fn metadata(&self) -> HdrImageMetadata {
+        self.image.metadata.clone()
+    }
+
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let preview = self.generate_hdr_preview(max_w, max_h)?;
         let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
@@ -247,10 +273,11 @@ impl HdrTiledSource for HdrTiledImageSource {
             tile.extend_from_slice(&self.image.rgba_f32[start..end]);
         }
 
-        let tile = Arc::new(HdrTileBuffer::new(
+        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
             width,
             height,
             self.image.color_space,
+            self.image.metadata.clone(),
             Arc::new(tile),
         ));
 
@@ -288,6 +315,7 @@ pub(crate) fn downsample_hdr_image_nearest(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: image.color_space,
+        metadata: image.metadata.clone(),
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -317,6 +345,7 @@ pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: source.color_space(),
+        metadata: source.metadata(),
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -564,7 +593,10 @@ mod tests {
         HdrTileBuffer, HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
         configured_hdr_tile_cache_max_bytes, set_global_hdr_tile_cache_max_bytes_for_tests,
     };
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use crate::hdr::types::{
+        HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+        HdrReference, HdrTransferFunction,
+    };
 
     #[test]
     fn extracts_rgba32f_tile_from_in_memory_hdr_buffer() {
@@ -573,6 +605,7 @@ mod tests {
             height: 2,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![
                 0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2, 1.0,
                 4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
@@ -627,6 +660,35 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_hdr_tile_source_preserves_hdr_metadata_on_preview_and_tiles() {
+        let mut image = test_image(2, 1);
+        image.metadata = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Pq,
+            reference: HdrReference::DisplayReferred,
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 9,
+                transfer_characteristics: 16,
+                matrix_coefficients: 9,
+                full_range: false,
+            },
+            ..HdrImageMetadata::default()
+        };
+        let source = HdrTiledImageSource::new(image).expect("valid HDR tile source");
+
+        let preview = source
+            .generate_hdr_preview(1, 1)
+            .expect("generate HDR preview");
+        let tile = source
+            .extract_tile_rgba32f(0, 0, 1, 1)
+            .expect("extract HDR tile");
+
+        assert_eq!(preview.metadata.transfer_function, HdrTransferFunction::Pq);
+        assert_eq!(preview.metadata.reference, HdrReference::DisplayReferred);
+        assert_eq!(tile.metadata.transfer_function, HdrTransferFunction::Pq);
+        assert_eq!(tile.metadata.reference, HdrReference::DisplayReferred);
+    }
+
+    #[test]
     fn tile_backed_hdr_preview_samples_expected_source_pixels() {
         let pixels = (0..12)
             .flat_map(|value| {
@@ -639,6 +701,7 @@ mod tests {
             height: 3,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(pixels),
         })
         .expect("valid HDR tile source");
@@ -682,6 +745,7 @@ mod tests {
             height: 2,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; 4]),
         };
 
@@ -697,6 +761,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; 2 * 4]),
         };
         let source = HdrTiledImageSource::new(image).expect("valid HDR tile source");
@@ -809,6 +874,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![4.0, 4.0, 4.0, 1.0]),
         })
         .expect("valid HDR tile source");
@@ -830,6 +896,7 @@ mod tests {
             height: 1,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.25, 0.5, 1.0, 0.0]),
         };
 
@@ -848,6 +915,7 @@ mod tests {
             height,
             format: HdrPixelFormat::Rgba32Float,
             color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![1.0; width as usize * height as usize * 4]),
         }
     }
