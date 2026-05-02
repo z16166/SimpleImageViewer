@@ -30,8 +30,27 @@ fn should_upload_tiled_bootstrap_preview(
     cached_preview_max_side: Option<u32>,
     bootstrap_max_side: u32,
 ) -> bool {
-    !cache_contains_index
-        || cached_preview_max_side.map_or(true, |cached_max| bootstrap_max_side > cached_max)
+    should_cache_tiled_sdr_preview(
+        cache_contains_index,
+        true,
+        cached_preview_max_side,
+        bootstrap_max_side,
+    )
+}
+
+fn should_cache_tiled_sdr_preview(
+    cache_contains_index: bool,
+    is_preview_placeholder: bool,
+    cached_preview_max_side: Option<u32>,
+    preview_max_side: u32,
+) -> bool {
+    if !cache_contains_index {
+        return true;
+    }
+    if !is_preview_placeholder {
+        return false;
+    }
+    cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
 fn build_tiled_manager_with_best_preview(
@@ -43,6 +62,13 @@ fn build_tiled_manager_with_best_preview(
     let mut tm = TileManager::with_source(index, generation, source);
     tm.preview_texture = cached_handle;
     tm
+}
+
+fn current_hdr_tiled_preview_matches_index(
+    current: Option<&crate::app::CurrentHdrImage>,
+    index: usize,
+) -> bool {
+    current.is_some_and(|current| current.image_for_index(index).is_some())
 }
 
 impl ImageViewerApp {
@@ -150,11 +176,7 @@ impl ImageViewerApp {
         {
             self.current_hdr_tiled_image = None;
         }
-        if self
-            .current_hdr_tiled_preview
-            .as_ref()
-            .is_some_and(|current| current.image_for_index(index).is_some())
-        {
+        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index) {
             self.current_hdr_tiled_preview = None;
         }
     }
@@ -1122,10 +1144,7 @@ impl ImageViewerApp {
                 self.remove_hdr_image_index(idx);
                 self.hdr_tiled_source_cache.insert(idx, Arc::clone(hdr));
                 self.hdr_sdr_fallback_indices.insert(idx);
-                if let Some(hdr_preview) = load_result.hdr_preview.as_ref() {
-                    self.hdr_tiled_preview_cache
-                        .insert(idx, Arc::clone(hdr_preview));
-                }
+                self.cache_hdr_tiled_preview(idx, load_result.hdr_preview.as_ref().cloned());
                 if load_result.ultra_hdr_capacity_sensitive {
                     self.ultra_hdr_capacity_sensitive_indices.insert(idx);
                 }
@@ -1143,11 +1162,6 @@ impl ImageViewerApp {
                 if idx == self.current_index {
                     self.current_hdr_tiled_image =
                         Some(crate::app::CurrentHdrTiledImage::new(idx, Arc::clone(hdr)));
-                    self.current_hdr_tiled_preview = load_result
-                        .hdr_preview
-                        .as_ref()
-                        .cloned()
-                        .map(|preview| crate::app::CurrentHdrImage::new(idx, preview));
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
                     let mut tm = build_tiled_manager_with_best_preview(
@@ -1278,12 +1292,9 @@ impl ImageViewerApp {
             return;
         }
 
-        if let Some(hdr_preview) = update.preview_bundle.hdr().cloned() {
-            self.hdr_tiled_preview_cache
-                .insert(update.index, Arc::clone(&hdr_preview));
+        if update.preview_bundle.hdr().is_some() {
+            self.cache_hdr_tiled_preview(update.index, update.preview_bundle.hdr().cloned());
             if update.index == self.current_index {
-                self.current_hdr_tiled_preview =
-                    Some(crate::app::CurrentHdrImage::new(update.index, hdr_preview));
                 ctx.request_repaint();
             }
         }
@@ -1322,9 +1333,12 @@ impl ImageViewerApp {
 
                 // 3. Update global texture cache (so instant-flips also get HQ texture).
                 // Only update if it's empty or currently holds a preview (don't downgrade full static images).
-                if !self.texture_cache.contains(update.index)
-                    || self.texture_cache.is_preview_placeholder(update.index)
-                {
+                if should_cache_tiled_sdr_preview(
+                    self.texture_cache.contains(update.index),
+                    self.texture_cache.is_preview_placeholder(update.index),
+                    self.texture_cache.cached_preview_max_side(update.index),
+                    preview.width.max(preview.height),
+                ) {
                     // Preserve the TRUE image dimensions (e.g. 11648×8736) when updating the preview texture.
                     // Without this, a small preview (e.g. 160×120 EXIF thumbnail) would overwrite
                     // original_res, causing the OSD to display wildly wrong zoom percentages (e.g. 16000%).
@@ -1437,6 +1451,22 @@ impl ImageViewerApp {
         }
     }
 
+    fn cache_hdr_tiled_preview(
+        &mut self,
+        idx: usize,
+        preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    ) {
+        let Some(preview) = preview else {
+            return;
+        };
+
+        self.hdr_tiled_preview_cache
+            .insert(idx, Arc::clone(&preview));
+        if idx == self.current_index {
+            self.current_hdr_tiled_preview = Some(crate::app::CurrentHdrImage::new(idx, preview));
+        }
+    }
+
     fn attach_initial_preview_if_needed(
         &self,
         ctx: &egui::Context,
@@ -1515,6 +1545,16 @@ mod tests {
     }
 
     #[test]
+    fn tiled_sdr_preview_cache_policy_preserves_full_images_and_larger_previews() {
+        assert!(should_cache_tiled_sdr_preview(false, false, None, 512));
+        assert!(!should_cache_tiled_sdr_preview(true, false, Some(128), 512));
+        assert!(should_cache_tiled_sdr_preview(true, true, None, 512));
+        assert!(should_cache_tiled_sdr_preview(true, true, Some(128), 512));
+        assert!(!should_cache_tiled_sdr_preview(true, true, Some(512), 512));
+        assert!(!should_cache_tiled_sdr_preview(true, true, Some(1024), 512));
+    }
+
+    #[test]
     fn tiled_manager_install_helper_preserves_source_and_generation() {
         let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
             width: 1024,
@@ -1527,5 +1567,21 @@ mod tests {
         assert_eq!(tm.generation, 17);
         assert_eq!(tm.full_width, 1024);
         assert_eq!(tm.full_height, 768);
+    }
+
+    #[test]
+    fn current_hdr_tiled_preview_match_is_index_scoped() {
+        let image = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+        });
+        let current = crate::app::CurrentHdrImage::new(4, image);
+
+        assert!(current_hdr_tiled_preview_matches_index(Some(&current), 4));
+        assert!(!current_hdr_tiled_preview_matches_index(Some(&current), 5));
+        assert!(!current_hdr_tiled_preview_matches_index(None, 4));
     }
 }
