@@ -223,6 +223,17 @@ fn prioritize_tile_visits(
     ordered
 }
 
+fn tile_visits_for_backend(
+    plane_backend: PlaneBackendKind,
+    primary_visible: &[(TileCoord, Rect, Rect)],
+    padded_visible: &[(TileCoord, Rect, Rect)],
+) -> Vec<(TileCoord, Rect, Rect)> {
+    match plane_backend {
+        PlaneBackendKind::Sdr => padded_visible.to_vec(),
+        PlaneBackendKind::Hdr => prioritize_tile_visits(primary_visible, padded_visible),
+    }
+}
+
 fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
     hardware_padding.min(tile_size as f32 * 2.0)
 }
@@ -492,11 +503,7 @@ impl ImageViewerApp {
                     .as_ref()
                     .unwrap()
                     .visible_tiles(unrotated_dest, tile_clip, 0.0);
-            let tile_visits = if draw_sdr_tiles {
-                visible.clone()
-            } else {
-                prioritize_tile_visits(&primary_visible, &visible)
-            };
+            let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
             let primary_visible_coords = primary_visible
                 .iter()
                 .map(|(coord, _, _)| *coord)
@@ -753,7 +760,7 @@ mod tests {
         should_invalidate_tile_requests_on_pan_drag, should_schedule_tile_request,
         should_schedule_tile_request_for_pixel_kind,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
-        tile_request_pending_cap, tiled_plane_threshold,
+        tile_request_pending_cap, tile_visits_for_backend, tiled_plane_threshold,
     };
     use crate::app::rendering::plane::PlaneBackendKind;
     use crate::app::TransitionStyle;
@@ -922,6 +929,34 @@ mod tests {
 
         assert_eq!(
             ordered_coords,
+            vec![
+                TileCoord { col: 3, row: 3 },
+                TileCoord { col: 4, row: 3 },
+                TileCoord { col: 2, row: 3 },
+                TileCoord { col: 5, row: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_visit_order_is_selected_by_backend() {
+        let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
+        let padded = vec![
+            tile_visit(2, 3),
+            tile_visit(3, 3),
+            tile_visit(4, 3),
+            tile_visit(5, 3),
+        ];
+
+        let sdr_ordered = tile_visits_for_backend(PlaneBackendKind::Sdr, &primary, &padded);
+        let hdr_ordered = tile_visits_for_backend(PlaneBackendKind::Hdr, &primary, &padded);
+
+        assert_eq!(sdr_ordered, padded);
+        assert_eq!(
+            hdr_ordered
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<Vec<_>>(),
             vec![
                 TileCoord { col: 3, row: 3 },
                 TileCoord { col: 4, row: 3 },
