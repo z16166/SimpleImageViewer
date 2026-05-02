@@ -68,11 +68,7 @@ fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
 }
 
-fn hdr_tile_plane_rect_for_sdr_tile(
-    tile_screen_rect: Rect,
-    pivot: Pos2,
-    rotation_steps: i32,
-) -> Rect {
+fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps: i32) -> Rect {
     let rotation_steps = rotation_steps.rem_euclid(4);
     if rotation_steps == 0 {
         tile_screen_rect
@@ -85,7 +81,7 @@ fn hdr_tile_plane_rect_for_sdr_tile(
     }
 }
 
-fn clipped_hdr_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Rect, Rect)> {
+fn clipped_tile_plane(tile_screen_rect: Rect, clip_rect: Rect) -> Option<(Rect, Rect)> {
     let rect = tile_screen_rect.intersect(clip_rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
@@ -577,13 +573,10 @@ impl ImageViewerApp {
                                 continue;
                             }
 
-                            let unclipped_hdr_rect = hdr_tile_plane_rect_for_sdr_tile(
-                                *tile_screen_rect,
-                                pivot,
-                                rotation,
-                            );
+                            let unclipped_hdr_rect =
+                                tile_plane_rect_for_tile(*tile_screen_rect, pivot, rotation);
                             if let Some((hdr_rect, uv_rect)) =
-                                clipped_hdr_tile_plane(unclipped_hdr_rect, screen_rect)
+                                clipped_tile_plane(unclipped_hdr_rect, screen_rect)
                             {
                                 ui.painter()
                                     .add(crate::hdr::renderer::hdr_tile_plane_callback_with_uv(
@@ -713,12 +706,12 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipped_hdr_tile_plane, hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active,
-        rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
-        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
-        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_schedule_tile_request, tile_request_frame_schedule_cap,
-        tile_request_hard_pending_cap, tile_request_pending_cap, tiled_plane_threshold,
+        clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
+        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
+        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_schedule_tile_request,
+        tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
+        tile_request_pending_cap, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -771,13 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tile_plane_rect_matches_sdr_tile_geometry() {
+    fn tile_plane_rect_handles_rotation_like_sdr_tiles() {
         let rect = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 60.0));
         let pivot = Pos2::new(20.0, 40.0);
 
-        assert_eq!(hdr_tile_plane_rect_for_sdr_tile(rect, pivot, 0), rect);
+        assert_eq!(tile_plane_rect_for_tile(rect, pivot, 0), rect);
 
-        let rotated = hdr_tile_plane_rect_for_sdr_tile(rect, pivot, 1);
+        let rotated = tile_plane_rect_for_tile(rect, pivot, 1);
         assert_eq!(
             rotated,
             rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2)
@@ -785,11 +778,11 @@ mod tests {
     }
 
     #[test]
-    fn clipped_hdr_tile_plane_preserves_visible_uv_subrect() {
+    fn clipped_tile_plane_preserves_visible_uv_subrect() {
         let tile_rect = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(50.0, 110.0));
         let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
 
-        let (rect, uv) = clipped_hdr_tile_plane(tile_rect, clip).expect("visible clipped tile");
+        let (rect, uv) = clipped_tile_plane(tile_rect, clip).expect("visible clipped tile");
 
         assert_eq!(
             rect,
