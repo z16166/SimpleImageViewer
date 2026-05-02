@@ -495,10 +495,8 @@ fn draw_settings_left_col(
             });
         }
 
-        if app.settings.play_music {
-            ui.add_space(8.0);
-            draw_slideshow_section(app, ui);
-        }
+        ui.add_space(8.0);
+        draw_slideshow_section(app, ui);
     });
 }
 
@@ -511,11 +509,6 @@ fn draw_settings_right_col(
     music_enabled_changed: &mut bool,
 ) {
     ui.vertical(|ui| {
-        if !app.settings.play_music {
-            draw_slideshow_section(app, ui);
-            ui.add_space(8.0);
-        }
-
         // ── Music ──────────────────────────────────────────────────
         ui.label(
             RichText::new(t!("section.music"))
