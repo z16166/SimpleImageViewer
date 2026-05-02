@@ -1283,10 +1283,21 @@ impl ImageViewerApp {
             return;
         }
 
+        if let Some(hdr_preview) = update.preview_bundle.hdr().cloned() {
+            self.hdr_tiled_preview_cache
+                .insert(update.index, Arc::clone(&hdr_preview));
+            if update.index == self.current_index {
+                self.current_hdr_tiled_preview =
+                    Some(crate::app::CurrentHdrImage::new(update.index, hdr_preview));
+                ctx.request_repaint();
+            }
+        }
+
         // Apply HQ preview if it matches the currently displayed tile manager.
         // Also check prefetched tiles and update the texture cache for future navigations.
-        match update.result {
-            Ok(preview) => {
+        let preview = update.preview_bundle.sdr().cloned();
+        match (preview, update.result) {
+            (Some(preview), _) => {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index && update.generation == tm.generation {
@@ -1346,8 +1357,14 @@ impl ImageViewerApp {
                     }
                 }
             }
-            Err(e) => {
+            (None, Err(e)) => {
                 log::error!("Preview update failed for index {}: {}", update.index, e);
+            }
+            (None, Ok(_)) => {
+                log::warn!(
+                    "Preview update for index {} carried no SDR preview plane",
+                    update.index
+                );
             }
         }
     }

@@ -506,6 +506,46 @@ pub struct PreviewResult {
     pub index: usize,
     pub generation: u64,
     pub result: Result<DecodedImage, String>,
+    pub preview_bundle: PreviewBundle,
+}
+
+impl PreviewResult {
+    pub fn from_sdr_preview(
+        index: usize,
+        generation: u64,
+        result: Result<DecodedImage, String>,
+    ) -> Self {
+        let preview_bundle = match &result {
+            Ok(preview) => PreviewBundle::refined().with_sdr(preview.clone()),
+            Err(_) => PreviewBundle::refined(),
+        };
+        Self {
+            index,
+            generation,
+            result,
+            preview_bundle,
+        }
+    }
+
+    pub fn from_hdr_preview(
+        index: usize,
+        generation: u64,
+        result: Result<std::sync::Arc<crate::hdr::types::HdrImageBuffer>, String>,
+    ) -> Self {
+        let (compat_result, preview_bundle) = match result {
+            Ok(preview) => (
+                Err("HDR preview is available only through preview_bundle".to_string()),
+                PreviewBundle::refined().with_hdr(preview),
+            ),
+            Err(err) => (Err(err), PreviewBundle::refined()),
+        };
+        Self {
+            index,
+            generation,
+            result: compat_result,
+            preview_bundle,
+        }
+    }
 }
 
 pub enum LoaderOutput {
@@ -1003,11 +1043,13 @@ impl ImageLoader {
                             *dev_lock = Some(dynamic);
                             drop(dev_lock);
 
-                            let _ = worker_tx.send(LoaderOutput::Preview(PreviewResult {
-                                index: req.index,
-                                generation: req.generation,
-                                result: Ok(preview),
-                            }));
+                            let _ = worker_tx.send(LoaderOutput::Preview(
+                                PreviewResult::from_sdr_preview(
+                                    req.index,
+                                    req.generation,
+                                    Ok(preview),
+                                ),
+                            ));
 
                             // Notify UI to clear cache and cross-fade
                             let _ = worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
@@ -1224,57 +1266,106 @@ impl ImageLoader {
         // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
         // (avoids cloning full Static/Animated pixel buffers).
         if let Ok(ref image_data) = load_result.result {
-            let source = if image_data.tiled_hdr_source().is_none() {
-                image_data.tiled_sdr_source().cloned()
-            } else {
-                None
-            };
-            let Some(source) = source else {
-                let _ = tx.send(LoaderOutput::Image(load_result));
-                return;
-            };
+            let sdr_source = image_data.tiled_sdr_source().cloned();
+            let hdr_source = image_data.tiled_hdr_source().cloned();
             let tx_cloned = tx.clone();
             let gen_ref = Arc::clone(&current_gen);
-            REFINEMENT_POOL.spawn(move || {
-                // Staleness check: Abort if the user has navigated to a new image
-                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
-                    return;
-                }
-
-                #[cfg(target_os = "windows")]
-                let _com = crate::wic::ComGuard::new();
-
-                let limit = hq_preview_max_side();
-                let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    source.generate_preview(limit, limit)
-                }));
-
-                match r_result {
-                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                        // Double check staleness after the expensive thumbnailing
+            match (hdr_source, sdr_source) {
+                (Some(source), _) => {
+                    REFINEMENT_POOL.spawn(move || {
                         if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
                             return;
                         }
 
-                        log::info!(
-                            "[Loader] HQ preview generated: {}x{} (source {}x{})",
-                            pw,
-                            ph,
-                            source.width(),
-                            source.height()
-                        );
-                        let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
-                            index,
-                            generation,
-                            result: Ok(DecodedImage::new(pw, ph, p_pixels)),
+                        #[cfg(target_os = "windows")]
+                        let _com = crate::wic::ComGuard::new();
+
+                        let limit = hq_preview_max_side();
+                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            source.generate_hdr_preview(limit, limit)
                         }));
-                    }
-                    Err(e) => {
-                        log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
-                    }
-                    _ => {}
+
+                        match r_result {
+                            Ok(Ok(preview)) if preview.width > 0 && preview.height > 0 => {
+                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation
+                                {
+                                    return;
+                                }
+                                log::info!(
+                                    "[Loader] HQ HDR preview generated: {}x{} (source {}x{})",
+                                    preview.width,
+                                    preview.height,
+                                    source.width(),
+                                    source.height()
+                                );
+                                let _ = tx_cloned.send(LoaderOutput::Preview(
+                                    PreviewResult::from_hdr_preview(
+                                        index,
+                                        generation,
+                                        Ok(Arc::new(preview)),
+                                    ),
+                                ));
+                            }
+                            Ok(Err(e)) => {
+                                log::error!("[Loader] High-quality HDR preview failed: {e}");
+                            }
+                            Err(e) => {
+                                log::error!("[Loader] High-quality HDR preview PANICKED: {:?}", e);
+                            }
+                            _ => {}
+                        }
+                    });
                 }
-            });
+                (None, Some(source)) => {
+                    REFINEMENT_POOL.spawn(move || {
+                        // Staleness check: Abort if the user has navigated to a new image
+                        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                            return;
+                        }
+
+                        #[cfg(target_os = "windows")]
+                        let _com = crate::wic::ComGuard::new();
+
+                        let limit = hq_preview_max_side();
+                        let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            source.generate_preview(limit, limit)
+                        }));
+
+                        match r_result {
+                            Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                                // Double check staleness after the expensive thumbnailing
+                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation
+                                {
+                                    return;
+                                }
+
+                                log::info!(
+                                    "[Loader] HQ preview generated: {}x{} (source {}x{})",
+                                    pw,
+                                    ph,
+                                    source.width(),
+                                    source.height()
+                                );
+                                let _ = tx_cloned.send(LoaderOutput::Preview(
+                                    PreviewResult::from_sdr_preview(
+                                        index,
+                                        generation,
+                                        Ok(DecodedImage::new(pw, ph, p_pixels)),
+                                    ),
+                                ));
+                            }
+                            Err(e) => {
+                                log::error!("[Loader] High-quality refinement PANICKED: {:?}", e);
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+                (None, None) => {
+                    let _ = tx.send(LoaderOutput::Image(load_result));
+                    return;
+                }
+            }
         }
 
         let _ = tx.send(LoaderOutput::Image(load_result));
@@ -2469,6 +2560,47 @@ mod tests {
     }
 
     #[test]
+    fn preview_result_exposes_refined_preview_bundle_with_compat_result() {
+        let preview = DecodedImage::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
+        let update = PreviewResult::from_sdr_preview(3, 5, Ok(preview.clone()));
+
+        assert!(update.result.as_ref().expect("compat preview").rgba().len() == preview.rgba().len());
+        assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
+        assert_eq!(
+            update
+                .preview_bundle
+                .plane(PixelPlaneKind::Sdr)
+                .expect("sdr preview plane")
+                .dimensions(),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn preview_result_exposes_refined_hdr_preview_bundle_without_sdr_compat_result() {
+        let hdr_preview = Arc::new(HdrImageBuffer {
+            width: 2,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+        });
+        let update = PreviewResult::from_hdr_preview(3, 5, Ok(Arc::clone(&hdr_preview)));
+
+        assert!(update.result.is_err());
+        assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
+        assert_eq!(
+            update
+                .preview_bundle
+                .plane(PixelPlaneKind::Hdr)
+                .expect("hdr preview plane")
+                .dimensions(),
+            (2, 1)
+        );
+        assert!(update.preview_bundle.sdr().is_none());
+    }
+
+    #[test]
     fn tile_result_exposes_shared_pending_key_and_repaint_policy() {
         let result = TileResult {
             index: 7,
@@ -2782,7 +2914,7 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tiled_load_does_not_start_sdr_hq_preview_refinement() {
+    fn hdr_tiled_load_refines_hdr_preview_without_sdr_fallback_preview() {
         let _threshold_lock = lock_tiled_threshold_for_test();
         let path = std::env::temp_dir().join(format!(
             "simple_image_viewer_loader_hdr_tiled_hq_preview_{}.exr",
@@ -2816,7 +2948,8 @@ mod tests {
         );
 
         let mut saw_image = false;
-        let mut saw_preview = false;
+        let mut saw_hdr_preview = false;
+        let mut saw_sdr_preview = false;
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(50)) {
@@ -2824,8 +2957,9 @@ mod tests {
                     assert!(matches!(result.result, Ok(ImageData::HdrTiled { .. })));
                     saw_image = true;
                 }
-                Ok(LoaderOutput::Preview(_)) => {
-                    saw_preview = true;
+                Ok(LoaderOutput::Preview(update)) => {
+                    saw_hdr_preview = update.preview_bundle.hdr().is_some();
+                    saw_sdr_preview = update.preview_bundle.sdr().is_some();
                     break;
                 }
                 Ok(_) => {}
@@ -2837,8 +2971,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(saw_image, "HDR tiled load should send its image result");
         assert!(
-            !saw_preview,
-            "HDR tiled load should not spawn an SDR HQ preview refinement"
+            saw_hdr_preview,
+            "HDR tiled load should emit a refined HDR preview bundle"
+        );
+        assert!(
+            !saw_sdr_preview,
+            "HDR tiled load should not spawn an SDR fallback HQ preview refinement"
         );
     }
 
