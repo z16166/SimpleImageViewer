@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::capabilities::{HdrCapabilities, HdrPresentationPath};
+use super::capabilities::HdrCapabilities;
 use super::types::{HdrColorSpace, HdrOutputMode};
 use rust_i18n::t;
 
@@ -91,28 +91,10 @@ fn hdr_color_space_label(color_space: HdrColorSpace) -> String {
     }
 }
 
-pub fn hdr_candidate_label(capabilities: &HdrCapabilities) -> String {
-    match capabilities.candidate_platform_path {
-        Some(HdrPresentationPath::WindowsDx12ScRgb) => {
-            t!("hdr.candidate.windows_dx12_scrgb").to_string()
-        }
-        Some(HdrPresentationPath::MacOsMetalEdr) => t!("hdr.candidate.macos_metal_edr").to_string(),
-        None => t!("hdr.candidate.none").to_string(),
-    }
-}
-
-pub fn hdr_surface_format_label(capabilities: &HdrCapabilities) -> String {
-    let format = capabilities
-        .current_surface_format
-        .map(|format| format!("{format:?}"))
-        .unwrap_or_else(|| t!("hdr.surface_format.unknown").to_string());
-    format!("{}: {format}", t!("hdr.current_surface_format"))
-}
-
 #[cfg(test)]
 mod tests {
     use crate::hdr::capabilities::HdrCapabilities;
-    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag, hdr_surface_format_label};
+    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
     use crate::hdr::types::HdrColorSpace;
 
     #[test]
@@ -240,26 +222,5 @@ mod tests {
         );
 
         assert_eq!(tag, None);
-    }
-
-    #[test]
-    fn hdr_surface_format_label_reports_current_target_format() {
-        let mut capabilities = HdrCapabilities::sdr("test");
-        capabilities.current_surface_format = Some(wgpu::TextureFormat::Rgba16Float);
-
-        assert_eq!(
-            hdr_surface_format_label(&capabilities),
-            "Current surface: Rgba16Float"
-        );
-    }
-
-    #[test]
-    fn hdr_surface_format_label_reports_unknown_target_format() {
-        let capabilities = HdrCapabilities::sdr("test");
-
-        assert_eq!(
-            hdr_surface_format_label(&capabilities),
-            "Current surface: unknown"
-        );
     }
 }

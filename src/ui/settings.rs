@@ -151,7 +151,6 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 }
 
 fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    ui.add_space(8.0);
     ui.label(
         RichText::new(t!("section.hdr"))
             .color(app.cached_palette.accent2)
@@ -159,33 +158,6 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     );
     ui.add_space(2.0);
 
-    let status = app
-        .current_hdr_osd_tag()
-        .unwrap_or_else(|| t!("hdr.status.no_source").to_string());
-    ui.label(
-        RichText::new(status)
-            .color(app.cached_palette.text_muted)
-            .small(),
-    );
-    ui.label(
-        RichText::new(format!(
-            "{}: {}",
-            t!("hdr.capability"),
-            crate::hdr::status::hdr_candidate_label(&app.hdr_capabilities)
-        ))
-        .color(app.cached_palette.text_muted)
-        .small(),
-    )
-    .on_hover_text(app.hdr_capabilities.reason.as_str());
-    ui.label(
-        RichText::new(crate::hdr::status::hdr_surface_format_label(
-            &app.hdr_capabilities,
-        ))
-        .color(app.cached_palette.text_muted)
-        .small(),
-    );
-
-    let old_native_surface_enabled = app.settings.hdr_native_surface_enabled;
     if ui
         .checkbox(
             &mut app.settings.hdr_native_surface_enabled,
@@ -195,13 +167,6 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         .changed()
     {
         app.queue_save();
-    }
-    if old_native_surface_enabled != app.settings.hdr_native_surface_enabled {
-        ui.label(
-            RichText::new(t!("hdr.native_surface_restart_hint"))
-                .color(app.cached_palette.text_muted)
-                .small(),
-        );
     }
 
     let old = (
@@ -216,7 +181,8 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             egui::Slider::new(&mut app.settings.hdr_exposure_ev, -8.0..=8.0)
                 .step_by(0.1)
                 .suffix(" EV"),
-        );
+        )
+        .on_hover_text(t!("hdr.exposure_hint"));
     });
     ui.horizontal(|ui| {
         ui.label(t!("hdr.sdr_white_nits"));
@@ -224,7 +190,8 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
                 .step_by(1.0)
                 .suffix(" nits"),
-        );
+        )
+        .on_hover_text(t!("hdr.sdr_white_hint"));
     });
     ui.horizontal(|ui| {
         ui.label(t!("hdr.max_display_nits"));
@@ -232,7 +199,8 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
                 .logarithmic(true)
                 .suffix(" nits"),
-        );
+        )
+        .on_hover_text(t!("hdr.max_display_hint"));
     });
 
     if old
@@ -449,8 +417,6 @@ fn draw_settings_left_col(
                 app.queue_save();
             }
         });
-
-        draw_hdr_section(app, ui);
 
         // ── Transitions ──────────────────────────────────────────
         ui.add_space(8.0);
@@ -1062,6 +1028,9 @@ fn draw_settings_right_col(
                 app.queue_save();
             }
         });
+
+        ui.add_space(8.0);
+        draw_hdr_section(app, ui);
     });
 }
 
