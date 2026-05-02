@@ -1907,9 +1907,7 @@ fn load_static(path: &PathBuf) -> Result<ImageData, String> {
 
 fn load_hdr(path: &Path) -> Result<ImageData, String> {
     if is_exr_path(path) {
-        if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
-            return Ok(image_data);
-        }
+        return load_detected_exr(path);
     } else if let Some(image_data) = try_load_disk_backed_radiance_hdr(path)? {
         return Ok(image_data);
     }
@@ -3069,6 +3067,31 @@ mod tests {
     }
 
     #[test]
+    fn exr_magic_short_circuits_to_openexr_core_loader_even_with_wrong_extension() {
+        let path = std::env::temp_dir().join(format!(
+            "simple_image_viewer_loader_exr_magic_short_circuit_{}.png",
+            std::process::id()
+        ));
+        std::fs::write(&path, [0x76, 0x2f, 0x31, 0x01, 0, 0, 0, 0])
+            .expect("write invalid EXR magic probe");
+
+        let result = super::load_via_content_detection(
+            &path,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        );
+        let err = match result {
+            Ok(_) => panic!("invalid EXR magic should fail in the OpenEXRCore loader"),
+            Err(err) => err,
+        };
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            err.contains("OpenEXRCore"),
+            "EXR magic must route to OpenEXRCore even when extension is wrong: {err}"
+        );
+    }
+
+    #[test]
     fn ultra_hdr_jpeg_sample_loads_as_hdr_image_data() {
         let _threshold_lock = lock_tiled_threshold_for_test();
         let root = std::env::var_os("SIV_ULTRA_HDR_SAMPLES_DIR")
@@ -3302,13 +3325,35 @@ fn load_by_image_format(
         | image::ImageFormat::Farbfeld
         | image::ImageFormat::Avif
         | image::ImageFormat::Qoi => load_static(path),
-        image::ImageFormat::Hdr | image::ImageFormat::OpenExr => load_hdr(path),
+        image::ImageFormat::Hdr => load_hdr(path),
+        image::ImageFormat::OpenExr => load_detected_exr(path),
         _ => Err(rust_i18n::t!(
             "error.unsupported_detected_format",
             format = format!("{:?}", format)
         )
         .to_string()),
     }
+}
+
+fn load_detected_exr(path: &Path) -> Result<ImageData, String> {
+    if let Some(image_data) = try_load_disk_backed_exr_hdr(path)? {
+        return Ok(image_data);
+    }
+
+    let hdr = match crate::hdr::decode::decode_exr_display_image(path) {
+        Ok(hdr) => hdr,
+        Err(err) if is_exr_deep_data_unsupported_error(&err) => {
+            log::warn!(
+                "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
+                path.display()
+            );
+            return load_deep_exr(path);
+        }
+        Err(err) => return Err(err),
+    };
+    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+    Ok(make_hdr_image_data(hdr, fallback))
 }
 
 fn load_via_content_detection(
