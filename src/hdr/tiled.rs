@@ -321,10 +321,30 @@ fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
 pub(crate) fn sdr_preview_from_hdr_preview(
     preview: &HdrImageBuffer,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    let mut pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    make_visible_preview_opaque_if_alpha_is_empty(&mut pixels);
     let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
         .ok_or_else(|| "Failed to build SDR preview image from HDR preview".to_string())?;
     Ok((image.width(), image.height(), image.into_raw()))
+}
+
+fn make_visible_preview_opaque_if_alpha_is_empty(pixels: &mut [u8]) {
+    if pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+        return;
+    }
+
+    let has_visible_rgb = pixels
+        .chunks_exact(4)
+        .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
+    if !has_visible_rgb {
+        return;
+    }
+
+    for pixel in pixels.chunks_exact_mut(4) {
+        if pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0 {
+            pixel[3] = u8::MAX;
+        }
+    }
 }
 
 pub(crate) fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
@@ -749,6 +769,25 @@ mod tests {
         assert_eq!(
             pixels[0], 230,
             "fallback previews intentionally use neutral exposure; user exposure is applied by HDR rendering uniforms"
+        );
+    }
+
+    #[test]
+    fn sdr_preview_keeps_visible_rgb_opaque_when_alpha_is_zero_everywhere() {
+        let preview = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.25, 0.5, 1.0, 0.0]),
+        };
+
+        let (_width, _height, pixels) =
+            super::sdr_preview_from_hdr_preview(&preview).expect("generate SDR preview");
+
+        assert_ne!(
+            pixels[3], 0,
+            "visible RGB previews should not become fully transparent"
         );
     }
 
