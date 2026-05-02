@@ -271,6 +271,60 @@ pub enum ImageData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RenderShape {
+    Static,
+    Tiled,
+    Animated,
+}
+
+impl ImageData {
+    pub fn static_sdr(&self) -> Option<&DecodedImage> {
+        match self {
+            Self::Static(image) => Some(image),
+            Self::Hdr { fallback, .. } => Some(fallback),
+            _ => None,
+        }
+    }
+
+    pub fn static_hdr(&self) -> Option<&crate::hdr::types::HdrImageBuffer> {
+        match self {
+            Self::Hdr { hdr, .. } => Some(hdr),
+            _ => None,
+        }
+    }
+
+    pub fn tiled_sdr_source(&self) -> Option<&Arc<dyn TiledImageSource>> {
+        match self {
+            Self::Tiled(source) => Some(source),
+            Self::HdrTiled { fallback, .. } => Some(fallback),
+            _ => None,
+        }
+    }
+
+    pub fn tiled_hdr_source(&self) -> Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>> {
+        match self {
+            Self::HdrTiled { hdr, .. } => Some(hdr),
+            _ => None,
+        }
+    }
+
+    pub fn preferred_render_shape(&self) -> RenderShape {
+        match self {
+            Self::Static(_) | Self::Hdr { .. } => RenderShape::Static,
+            Self::Tiled(_) | Self::HdrTiled { .. } => RenderShape::Tiled,
+            Self::Animated(_) => RenderShape::Animated,
+        }
+    }
+
+    pub fn has_plane(&self, plane_kind: PixelPlaneKind) -> bool {
+        match plane_kind {
+            PixelPlaneKind::Sdr => self.static_sdr().is_some() || self.tiled_sdr_source().is_some(),
+            PixelPlaneKind::Hdr => self.static_hdr().is_some() || self.tiled_hdr_source().is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PixelPlaneKind {
     Sdr,
     Hdr,
@@ -1170,10 +1224,10 @@ impl ImageLoader {
         // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
         // (avoids cloning full Static/Animated pixel buffers).
         if let Ok(ref image_data) = load_result.result {
-            let source = match image_data {
-                ImageData::Tiled(source) => Some(Arc::clone(source)),
-                ImageData::HdrTiled { .. } => None,
-                _ => None,
+            let source = if image_data.tiled_hdr_source().is_none() {
+                image_data.tiled_sdr_source().cloned()
+            } else {
+                None
             };
             let Some(source) = source else {
                 let _ = tx.send(LoaderOutput::Image(load_result));
@@ -2370,6 +2424,48 @@ mod tests {
         assert_eq!(PreviewBundle::refined().stage(), PreviewStage::Refined);
         assert!(result.preview.is_some());
         assert!(result.hdr_preview.is_some());
+    }
+
+    #[test]
+    fn image_data_exposes_render_shape_and_available_planes() {
+        let sdr = DecodedImage::new(1, 1, vec![0, 0, 0, 255]);
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+        };
+        let static_sdr = ImageData::Static(sdr.clone());
+        let static_hdr = ImageData::Hdr {
+            hdr: hdr.clone(),
+            fallback: sdr.clone(),
+        };
+        let tiled_sdr_source: Arc<dyn TiledImageSource> =
+            Arc::new(MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])));
+        let tiled_hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(hdr).expect("build HDR tiled source"),
+        );
+        let tiled_hdr = ImageData::HdrTiled {
+            hdr: Arc::clone(&tiled_hdr_source),
+            fallback: Arc::clone(&tiled_sdr_source),
+        };
+
+        assert_eq!(static_sdr.preferred_render_shape(), RenderShape::Static);
+        assert!(static_sdr.has_plane(PixelPlaneKind::Sdr));
+        assert!(!static_sdr.has_plane(PixelPlaneKind::Hdr));
+        assert!(static_sdr.static_sdr().is_some());
+
+        assert_eq!(static_hdr.preferred_render_shape(), RenderShape::Static);
+        assert!(static_hdr.has_plane(PixelPlaneKind::Sdr));
+        assert!(static_hdr.has_plane(PixelPlaneKind::Hdr));
+        assert!(static_hdr.static_hdr().is_some());
+
+        assert_eq!(tiled_hdr.preferred_render_shape(), RenderShape::Tiled);
+        assert!(tiled_hdr.has_plane(PixelPlaneKind::Sdr));
+        assert!(tiled_hdr.has_plane(PixelPlaneKind::Hdr));
+        assert!(tiled_hdr.tiled_sdr_source().is_some());
+        assert!(tiled_hdr.tiled_hdr_source().is_some());
     }
 
     #[test]
