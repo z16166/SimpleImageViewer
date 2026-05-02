@@ -19,6 +19,8 @@ use openexr_core_sys as sys;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
+const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 48;
+const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 160;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -469,8 +471,14 @@ impl OpenExrCoreReadContext {
             i32,
             (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
         >::new();
+        let source_row_budget = scanline_preview_source_row_budget(width);
         for preview_y in 0..height {
-            let source_y = crate::hdr::tiled::preview_sample_coord(preview_y, height, part.height);
+            let source_y = budgeted_scanline_preview_source_y(
+                preview_y,
+                height,
+                part.height,
+                source_row_budget,
+            );
             let mut chunk = sys::ExrChunkInfo::default();
             exr_result(unsafe {
                 sys::exr_read_scanline_chunk_info(
@@ -935,6 +943,37 @@ fn sample_decoded_scanline_chunk_into_preview(
     Ok(())
 }
 
+fn scanline_preview_source_row_budget(preview_width: u32) -> u32 {
+    if preview_width <= crate::constants::DEFAULT_PREVIEW_SIZE {
+        SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET
+    } else {
+        SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET
+    }
+}
+
+fn budgeted_scanline_preview_source_y(
+    preview_y: u32,
+    preview_height: u32,
+    source_height: u32,
+    max_source_rows: u32,
+) -> u32 {
+    if preview_height == 0 || source_height == 0 {
+        return 0;
+    }
+    if max_source_rows == 0 || preview_height <= max_source_rows {
+        return crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, source_height);
+    }
+
+    let bucket = (u64::from(preview_y) * u64::from(max_source_rows) / u64::from(preview_height))
+        .min(u64::from(max_source_rows - 1));
+    let bucket_start = bucket * u64::from(preview_height) / u64::from(max_source_rows);
+    let bucket_end = ((bucket + 1) * u64::from(preview_height) / u64::from(max_source_rows))
+        .min(u64::from(preview_height))
+        .max(bucket_start + 1);
+    let representative_preview_y = ((bucket_start + bucket_end - 1) / 2) as u32;
+    crate::hdr::tiled::preview_sample_coord(representative_preview_y, preview_height, source_height)
+}
+
 fn decode_pipeline_channels(
     pipeline: &mut sys::ExrDecodePipeline,
 ) -> Result<&mut [sys::ExrCodingChannelInfo], String> {
@@ -1159,5 +1198,25 @@ mod tests {
                 0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0, 1.0, 4.0, 4.0, 4.0, 1.0, 7.0, 7.0, 7.0, 1.0,
             ]
         );
+    }
+
+    #[test]
+    fn budgeted_scanline_preview_sampling_limits_unique_source_rows() {
+        let preview_height = 1024;
+        let source_height = 12_288;
+        let max_rows = 128;
+        let sampled = (0..preview_height)
+            .map(|preview_y| {
+                super::budgeted_scanline_preview_source_y(
+                    preview_y,
+                    preview_height,
+                    source_height,
+                    max_rows,
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(sampled.len() <= max_rows as usize);
+        assert!(sampled.iter().all(|source_y| *source_y < source_height));
     }
 }

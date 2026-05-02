@@ -285,7 +285,9 @@ impl ImageViewerApp {
             &self.hdr_sdr_fallback_indices,
             &self.ultra_hdr_capacity_sensitive_indices,
         );
-        self.loader.cancel_all();
+        if crate::app::capacity_refresh_should_cancel_loads(&refresh) {
+            self.loader.cancel_all();
+        }
         if refresh.indices_to_invalidate.is_empty() {
             self.schedule_preloads(true);
             ctx.request_repaint();
