@@ -16,7 +16,7 @@
 
 use crate::app::rendering::plane::{
     clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
-    select_tiled_plane_backend,
+    select_tiled_plane_backend, PlaneBackendKind,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
@@ -231,26 +231,29 @@ fn should_invalidate_tile_requests_on_pan_drag() -> bool {
     false
 }
 
-fn should_draw_sdr_preview_for_tiled_mode(
-    draw_sdr_tiles: bool,
+fn should_draw_sdr_preview_for_tiled_backend(
+    plane_backend: PlaneBackendKind,
     effective_scale: f32,
     tile_threshold: f32,
 ) -> bool {
     let _ = (effective_scale, tile_threshold);
-    draw_sdr_tiles
+    plane_backend == PlaneBackendKind::Sdr
 }
 
-fn should_draw_hdr_preview_for_tiled_mode(
-    draw_sdr_tiles: bool,
+fn should_draw_hdr_preview_for_tiled_backend(
+    plane_backend: PlaneBackendKind,
     effective_scale: f32,
     tile_threshold: f32,
 ) -> bool {
     let _ = (effective_scale, tile_threshold);
-    !draw_sdr_tiles
+    plane_backend == PlaneBackendKind::Hdr
 }
 
-fn should_draw_hdr_tiles_for_tiled_mode(draw_sdr_tiles: bool, has_cached_tile: bool) -> bool {
-    !draw_sdr_tiles && has_cached_tile
+fn should_draw_hdr_tiles_for_tiled_backend(
+    plane_backend: PlaneBackendKind,
+    has_cached_tile: bool,
+) -> bool {
+    plane_backend == PlaneBackendKind::Hdr && has_cached_tile
 }
 
 fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
@@ -372,7 +375,7 @@ impl ImageViewerApp {
 
         let effective_scale = dest.width() / rotated_img_size.x;
 
-        if should_draw_hdr_preview_for_tiled_mode(draw_sdr_tiles, effective_scale, threshold) {
+        if should_draw_hdr_preview_for_tiled_backend(plane_backend, effective_scale, threshold) {
             if let Some(hdr_preview) = self
                 .current_hdr_tiled_preview
                 .as_ref()
@@ -401,7 +404,7 @@ impl ImageViewerApp {
         }
 
         // Draw SDR preview only when SDR tiled rendering is the active mode.
-        if should_draw_sdr_preview_for_tiled_mode(draw_sdr_tiles, effective_scale, threshold) {
+        if should_draw_sdr_preview_for_tiled_backend(plane_backend, effective_scale, threshold) {
             if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
                 draw_sdr_texture_plane(
@@ -593,7 +596,7 @@ impl ImageViewerApp {
                                 }
                                 continue;
                             };
-                            if !should_draw_hdr_tiles_for_tiled_mode(draw_sdr_tiles, true) {
+                            if !should_draw_hdr_tiles_for_tiled_backend(plane_backend, true) {
                                 continue;
                             }
 
@@ -745,13 +748,14 @@ impl ImageViewerApp {
 mod tests {
     use super::{
         clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
-        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_draw_hdr_preview_for_tiled_backend, should_draw_hdr_tiles_for_tiled_backend,
+        should_draw_sdr_preview_for_tiled_backend, should_draw_tiled_preview_transition,
         should_invalidate_tile_requests_on_pan_drag, should_schedule_tile_request,
         should_schedule_tile_request_for_pixel_kind,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tiled_plane_threshold,
     };
+    use crate::app::rendering::plane::PlaneBackendKind;
     use crate::app::TransitionStyle;
     use crate::loader::TilePixelKind;
     use crate::tile_cache::TileCoord;
@@ -940,23 +944,56 @@ mod tests {
 
     #[test]
     fn native_hdr_tiled_mode_hides_sdr_preview_once_tiles_are_active() {
-        assert!(!should_draw_sdr_preview_for_tiled_mode(false, 2.0, 1.0));
-        assert!(!should_draw_sdr_preview_for_tiled_mode(false, 0.5, 1.0));
-        assert!(should_draw_sdr_preview_for_tiled_mode(true, 2.0, 1.0));
+        assert!(!should_draw_sdr_preview_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            2.0,
+            1.0
+        ));
+        assert!(!should_draw_sdr_preview_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            0.5,
+            1.0
+        ));
+        assert!(should_draw_sdr_preview_for_tiled_backend(
+            PlaneBackendKind::Sdr,
+            2.0,
+            1.0
+        ));
     }
 
     #[test]
     fn native_hdr_tiled_mode_keeps_hdr_preview_as_base_plane() {
-        assert!(should_draw_hdr_preview_for_tiled_mode(false, 0.5, 1.0));
-        assert!(should_draw_hdr_preview_for_tiled_mode(false, 2.0, 1.0));
-        assert!(!should_draw_hdr_preview_for_tiled_mode(true, 0.5, 1.0));
+        assert!(should_draw_hdr_preview_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            0.5,
+            1.0
+        ));
+        assert!(should_draw_hdr_preview_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            2.0,
+            1.0
+        ));
+        assert!(!should_draw_hdr_preview_for_tiled_backend(
+            PlaneBackendKind::Sdr,
+            0.5,
+            1.0
+        ));
     }
 
     #[test]
     fn native_hdr_tiled_mode_draws_cached_tiles_over_hdr_preview() {
-        assert!(!should_draw_hdr_tiles_for_tiled_mode(false, false));
-        assert!(should_draw_hdr_tiles_for_tiled_mode(false, true));
-        assert!(!should_draw_hdr_tiles_for_tiled_mode(true, true));
+        assert!(!should_draw_hdr_tiles_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            false
+        ));
+        assert!(should_draw_hdr_tiles_for_tiled_backend(
+            PlaneBackendKind::Hdr,
+            true
+        ));
+        assert!(!should_draw_hdr_tiles_for_tiled_backend(
+            PlaneBackendKind::Sdr,
+            true
+        ));
     }
 
     #[test]
