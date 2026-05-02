@@ -2142,6 +2142,8 @@ mod tests {
 
     #[test]
     fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let _threshold_override = TiledThresholdOverride::set(u64::MAX);
         let hdr = HdrImageBuffer {
             width: 2,
             height: 1,
@@ -2689,6 +2691,8 @@ mod tests {
 
     #[test]
     fn gray_ramps_load_with_visible_fallback_pixels() {
+        let _threshold_lock = lock_tiled_threshold_for_test();
+        let _threshold_override = TiledThresholdOverride::set(u64::MAX);
         let Some(root) = openexr_images_root() else {
             eprintln!(
                 "skipping OpenEXR GrayRamps loader regression test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
