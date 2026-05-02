@@ -24,8 +24,8 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::sync::atomic::AtomicU32;
+use std::sync::LazyLock;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -1271,6 +1271,15 @@ impl ImageLoader {
                         let _com = crate::wic::ComGuard::new();
 
                         let limit = hq_preview_max_side();
+                        let started_at = std::time::Instant::now();
+                        log::info!(
+                            "[Loader] HQ HDR preview start: index={} generation={} limit={} source={}x{}",
+                            index,
+                            generation,
+                            limit,
+                            source.width(),
+                            source.height()
+                        );
                         let r_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 source.generate_hdr_preview(limit, limit)
@@ -1279,14 +1288,22 @@ impl ImageLoader {
                         match r_result {
                             Ok(Ok(preview)) if preview.width > 0 && preview.height > 0 => {
                                 if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                                    log::info!(
+                                        "[Loader] HQ HDR preview discarded as stale: index={} generation={} elapsed={:?}",
+                                        index,
+                                        generation,
+                                        started_at.elapsed()
+                                    );
                                     return;
                                 }
                                 log::info!(
-                                    "[Loader] HQ HDR preview generated: {}x{} (source {}x{})",
+                                    "[Loader] HQ HDR preview generated: {}x{} (source {}x{}, limit={}, elapsed={:?})",
                                     preview.width,
                                     preview.height,
                                     source.width(),
-                                    source.height()
+                                    source.height(),
+                                    limit,
+                                    started_at.elapsed()
                                 );
                                 let _ = tx_cloned.send(LoaderOutput::Preview(
                                     PreviewResult::from_hdr_preview(
@@ -1297,10 +1314,23 @@ impl ImageLoader {
                                 ));
                             }
                             Ok(Err(e)) => {
-                                log::error!("[Loader] High-quality HDR preview failed: {e}");
+                                log::error!(
+                                    "[Loader] High-quality HDR preview failed: index={} generation={} limit={} elapsed={:?}: {e}",
+                                    index,
+                                    generation,
+                                    limit,
+                                    started_at.elapsed()
+                                );
                             }
                             Err(e) => {
-                                log::error!("[Loader] High-quality HDR preview PANICKED: {:?}", e);
+                                log::error!(
+                                    "[Loader] High-quality HDR preview PANICKED: index={} generation={} limit={} elapsed={:?}: {:?}",
+                                    index,
+                                    generation,
+                                    limit,
+                                    started_at.elapsed(),
+                                    e
+                                );
                             }
                             _ => {}
                         }
@@ -2114,8 +2144,8 @@ fn process_animation_frames(
 }
 
 fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2130,8 +2160,8 @@ fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 fn load_png(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::png::PngDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2157,8 +2187,8 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
 // ---------------------------------------------------------------------------
 
 fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
-    use image::AnimationDecoder;
     use image::codecs::webp::WebPDecoder;
+    use image::AnimationDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2646,16 +2676,14 @@ mod tests {
             _ => panic!("expected HDR tile-ready output"),
         }
 
-        assert!(
-            source
-                .cached_tile_rgba32f_arc(
-                    0,
-                    0,
-                    crate::tile_cache::get_tile_size(),
-                    crate::tile_cache::get_tile_size(),
-                )
-                .is_some()
-        );
+        assert!(source
+            .cached_tile_rgba32f_arc(
+                0,
+                0,
+                crate::tile_cache::get_tile_size(),
+                crate::tile_cache::get_tile_size(),
+            )
+            .is_some());
     }
 
     #[test]

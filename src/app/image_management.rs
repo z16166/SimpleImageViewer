@@ -11,6 +11,7 @@ use crate::tile_cache::TileManager;
 use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
 use rand::seq::SliceRandom;
 use rust_i18n::t;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,7 +20,7 @@ fn preserve_current_tile_manager_for_navigation(
     current_index: usize,
     target_index: usize,
     tile_manager: &mut Option<TileManager>,
-    prefetched_tiles: &mut std::collections::HashMap<usize, TileManager>,
+    prefetched_tiles: &mut HashMap<usize, TileManager>,
 ) {
     if current_index != target_index {
         if let Some(tm) = tile_manager.take() {
@@ -61,6 +62,44 @@ fn should_cache_tiled_hdr_preview(
     preview_max_side: u32,
 ) -> bool {
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
+}
+
+fn cache_hdr_tiled_preview_state(
+    idx: usize,
+    current_index: usize,
+    cache: &mut HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    current: &mut Option<crate::app::CurrentHdrImage>,
+    preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+) {
+    let Some(preview) = preview else {
+        return;
+    };
+    let preview_max_side = preview.width.max(preview.height);
+    let cached_preview_max_side = cache
+        .get(&idx)
+        .map(|cached| cached.width.max(cached.height));
+    if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
+        log::debug!(
+            "[App] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
+            idx,
+            preview.width,
+            preview.height,
+            cached_preview_max_side
+        );
+        return;
+    }
+
+    log::info!(
+        "[App] Cached HDR tiled preview for index {} ({}x{}, cached max side {:?})",
+        idx,
+        preview.width,
+        preview.height,
+        cached_preview_max_side
+    );
+    cache.insert(idx, Arc::clone(&preview));
+    if idx == current_index {
+        *current = Some(crate::app::CurrentHdrImage::new(idx, preview));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1555,23 +1594,13 @@ impl ImageViewerApp {
         idx: usize,
         preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     ) {
-        let Some(preview) = preview else {
-            return;
-        };
-        let preview_max_side = preview.width.max(preview.height);
-        let cached_preview_max_side = self
-            .hdr_tiled_preview_cache
-            .get(&idx)
-            .map(|cached| cached.width.max(cached.height));
-        if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
-            return;
-        }
-
-        self.hdr_tiled_preview_cache
-            .insert(idx, Arc::clone(&preview));
-        if idx == self.current_index {
-            self.current_hdr_tiled_preview = Some(crate::app::CurrentHdrImage::new(idx, preview));
-        }
+        cache_hdr_tiled_preview_state(
+            idx,
+            self.current_index,
+            &mut self.hdr_tiled_preview_cache,
+            &mut self.current_hdr_tiled_preview,
+            preview,
+        );
     }
 
     fn attach_initial_preview_if_needed(
@@ -1661,6 +1690,45 @@ mod tests {
         assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
         assert!(!should_cache_tiled_hdr_preview(Some(4096), 1024));
         assert!(!should_cache_tiled_hdr_preview(Some(4096), 4096));
+    }
+
+    #[test]
+    fn current_hdr_tiled_preview_updates_only_when_larger_preview_is_cached() {
+        let initial = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 512,
+            height: 256,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0; 512 * 256 * 4]),
+        });
+        let refined = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 4096,
+            height: 2048,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0; 4]),
+        });
+        let smaller = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1024,
+            height: 512,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            rgba_f32: Arc::new(vec![0.0; 4]),
+        });
+        let mut cache = HashMap::new();
+        let mut current = None;
+
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)));
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)));
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller));
+
+        let cached = cache.get(&7).expect("preview should be cached");
+        assert_eq!(cached.width, 4096);
+        let current = current
+            .as_ref()
+            .and_then(|preview| preview.image_for_index(7))
+            .expect("current preview should match image index");
+        assert_eq!(current.width, 4096);
     }
 
     #[test]

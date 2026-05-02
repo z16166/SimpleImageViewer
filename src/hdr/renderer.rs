@@ -19,7 +19,7 @@ use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -943,9 +943,13 @@ fn create_callback_resources(
 struct HdrTileBindings {
     entries: HashMap<HdrTileKey, HdrTileBinding>,
     lru: VecDeque<HdrTileKey>,
+    protected_recent: HashSet<HdrTileKey>,
+    protected_order: VecDeque<HdrTileKey>,
     current_bytes: usize,
     max_bytes: usize,
 }
+
+const HDR_TILE_BINDING_RECENT_PROTECTION_COUNT: usize = 512;
 
 impl Default for HdrTileBindings {
     fn default() -> Self {
@@ -958,6 +962,8 @@ impl HdrTileBindings {
         Self {
             entries: HashMap::new(),
             lru: VecDeque::new(),
+            protected_recent: HashSet::new(),
+            protected_order: VecDeque::new(),
             current_bytes: 0,
             max_bytes,
         }
@@ -966,6 +972,7 @@ impl HdrTileBindings {
     fn contains(&mut self, key: HdrTileKey) -> bool {
         if self.entries.contains_key(&key) {
             self.touch(key);
+            self.protect_recent(key);
             true
         } else {
             false
@@ -985,6 +992,7 @@ impl HdrTileBindings {
         tone_map_buffer: wgpu::Buffer,
         bind_group: wgpu::BindGroup,
     ) {
+        self.protect_recent(key);
         self.insert_binding(
             key,
             HdrTileBinding {
@@ -1007,21 +1015,45 @@ impl HdrTileBindings {
 
         let bytes = hdr_tile_key_bytes(key);
         while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
-            if let Some(evicted_key) = self.lru.pop_front() {
-                if let Some(evicted_binding) = self.entries.remove(&evicted_key) {
-                    self.current_bytes = self
-                        .current_bytes
-                        .saturating_sub(evicted_binding.estimated_bytes);
-                }
+            let evict_pos = self
+                .lru
+                .iter()
+                .position(|existing| !self.protected_recent.contains(existing));
+            let Some(evict_pos) = evict_pos else {
+                break;
+            };
+            let Some(evicted_key) = self.lru.remove(evict_pos) else {
+                break;
+            };
+            self.protected_recent.remove(&evicted_key);
+            self.protected_order
+                .retain(|existing| *existing != evicted_key);
+            if let Some(evicted_binding) = self.entries.remove(&evicted_key) {
+                self.current_bytes = self
+                    .current_bytes
+                    .saturating_sub(evicted_binding.estimated_bytes);
             }
         }
 
-        if self.current_bytes.saturating_add(bytes) <= self.max_bytes {
+        if self.current_bytes.saturating_add(bytes) <= self.max_bytes
+            || self.protected_recent.contains(&key)
+        {
             let mut binding = binding;
             binding.estimated_bytes = bytes;
             self.entries.insert(key, binding);
             self.lru.push_back(key);
             self.current_bytes += bytes;
+        }
+    }
+
+    fn protect_recent(&mut self, key: HdrTileKey) {
+        self.protected_order.retain(|existing| *existing != key);
+        self.protected_order.push_back(key);
+        self.protected_recent.insert(key);
+        while self.protected_order.len() > HDR_TILE_BINDING_RECENT_PROTECTION_COUNT {
+            if let Some(expired) = self.protected_order.pop_front() {
+                self.protected_recent.remove(&expired);
+            }
         }
     }
 
@@ -1051,11 +1083,19 @@ impl HdrTileBindings {
         );
     }
 
+    #[cfg(test)]
+    fn insert_protected_placeholder(&mut self, key: HdrTileKey) {
+        self.protect_recent(key);
+        self.insert_placeholder(key);
+    }
+
     fn remove(&mut self, key: HdrTileKey) {
         if let Some(binding) = self.entries.remove(&key) {
             self.current_bytes = self.current_bytes.saturating_sub(binding.estimated_bytes);
         }
         self.lru.retain(|existing| *existing != key);
+        self.protected_recent.remove(&key);
+        self.protected_order.retain(|existing| *existing != key);
     }
 
     fn bind_group(&self, key: HdrTileKey) -> Option<&wgpu::BindGroup> {
@@ -1546,6 +1586,24 @@ mod tests {
         assert!(resources.contains(third));
         assert_eq!(resources.len(), 2);
         assert!(resources.current_bytes() <= 2 * hdr_tile_key_bytes(first));
+    }
+
+    #[test]
+    fn callback_resources_keep_recently_prepared_tile_bindings_over_budget() {
+        let first = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![1.0, 0.0, 0.0, 1.0]));
+        let second = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 1.0, 0.0, 1.0]));
+        let third = HdrTileKey::from_tile(&hdr_tile(1, 1, vec![0.0, 0.0, 1.0, 1.0]));
+        let mut resources = HdrTileBindings::with_budget(2 * hdr_tile_key_bytes(first));
+
+        resources.insert_protected_placeholder(first);
+        resources.insert_protected_placeholder(second);
+        resources.insert_protected_placeholder(third);
+
+        assert!(resources.contains(first));
+        assert!(resources.contains(second));
+        assert!(resources.contains(third));
+        assert_eq!(resources.len(), 3);
+        assert!(resources.current_bytes() > 2 * hdr_tile_key_bytes(first));
     }
 
     #[test]

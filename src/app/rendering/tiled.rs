@@ -16,7 +16,7 @@
 
 use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
-    PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
+    draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect, PlaneBackendKind, PlaneDrawSource,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
@@ -179,7 +179,11 @@ fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
 }
 
 fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
-    if tile_size >= 1024 { 96 } else { 192 }
+    if tile_size >= 1024 {
+        96
+    } else {
+        192
+    }
 }
 
 fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
@@ -342,7 +346,23 @@ fn should_repaint_for_ready_tiles_for_backend(
     plane_backend: PlaneBackendKind,
     has_ready_to_upload: bool,
 ) -> bool {
-    plane_backend == PlaneBackendKind::Sdr && has_ready_to_upload
+    match plane_backend {
+        PlaneBackendKind::Sdr | PlaneBackendKind::Hdr => has_ready_to_upload,
+    }
+}
+
+fn has_pending_visible_tiles_for_backend(
+    plane_backend: PlaneBackendKind,
+    pending_tiles: &HashSet<PendingTileKey>,
+    visible_coords: &[TileCoord],
+) -> bool {
+    if plane_backend != PlaneBackendKind::Hdr {
+        return false;
+    }
+
+    pending_tiles
+        .iter()
+        .any(|key| key.pixel_kind == TilePixelKind::Hdr && visible_coords.contains(&key.coord))
 }
 
 fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
@@ -832,7 +852,12 @@ impl ImageViewerApp {
                 self.tile_manager
                     .as_ref()
                     .unwrap()
-                    .has_ready_to_upload(&visible_coords),
+                    .has_ready_to_upload(&visible_coords)
+                    || has_pending_visible_tiles_for_backend(
+                        plane_backend,
+                        &self.tile_manager.as_ref().unwrap().pending_tiles,
+                        &visible_coords,
+                    ),
             );
             if newly_uploaded > 0 || has_more_ready {
                 ui.ctx().request_repaint();
@@ -844,7 +869,7 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        TileRequestBudget, TiledPlaneKind, is_tiled_plane_active, rotated_axis_aligned_rect,
+        has_pending_visible_tiles_for_backend, is_tiled_plane_active, rotated_axis_aligned_rect,
         should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
         should_draw_tiled_tile_plane_for_backend, should_invalidate_tile_requests_on_pan_drag,
         should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
@@ -852,13 +877,14 @@ mod tests {
         tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_kind_for_backend,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tile_request_priority, tile_visits_for_backend,
-        tiled_plane_threshold,
+        tiled_plane_threshold, TileRequestBudget, TiledPlaneKind,
     };
+    use crate::app::rendering::plane::{clipped_plane_rect_and_uv, PlaneBackendKind};
     use crate::app::TransitionStyle;
-    use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
     use crate::loader::{TileDecodeSource, TilePixelKind, TiledImageSource};
     use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -917,13 +943,33 @@ mod tests {
             PlaneBackendKind::Sdr,
             true
         ));
-        assert!(!should_repaint_for_ready_tiles_for_backend(
+        assert!(should_repaint_for_ready_tiles_for_backend(
             PlaneBackendKind::Hdr,
             true
         ));
         assert!(!should_repaint_for_ready_tiles_for_backend(
             PlaneBackendKind::Sdr,
             false
+        ));
+    }
+
+    #[test]
+    fn visible_pending_hdr_tiles_continue_repaint_until_ready() {
+        let visible = vec![TileCoord { col: 3, row: 5 }];
+        let pending = HashSet::from([crate::tile_cache::PendingTileKey::new(
+            TileCoord { col: 3, row: 5 },
+            TilePixelKind::Hdr,
+        )]);
+
+        assert!(has_pending_visible_tiles_for_backend(
+            PlaneBackendKind::Hdr,
+            &pending,
+            &visible
+        ));
+        assert!(!has_pending_visible_tiles_for_backend(
+            PlaneBackendKind::Sdr,
+            &pending,
+            &visible
         ));
     }
 
