@@ -849,6 +849,7 @@ impl ImageViewerApp {
         };
 
         let mut done = false;
+        let mut first_batch_preload_pending = false;
 
         // Drain all available messages this frame (non-blocking)
         loop {
@@ -872,7 +873,7 @@ impl ImageViewerApp {
                                     self.show_settings = false;
                                 }
                                 self.images_ever_loaded = true;
-                                self.schedule_preloads(true);
+                                first_batch_preload_pending = true;
                             }
                         }
                         ScanMessage::Done => {
@@ -925,6 +926,14 @@ impl ImageViewerApp {
                     break;
                 }
             }
+        }
+
+        if should_schedule_first_batch_preload(
+            first_batch_preload_pending,
+            self.image_files.len(),
+            done,
+        ) {
+            self.schedule_preloads(true);
         }
 
         if !done {
@@ -1659,6 +1668,14 @@ fn current_image_has_loaded_asset(
     has_sdr_texture || has_static_hdr || has_hdr_tiled_source || has_animation
 }
 
+fn should_schedule_first_batch_preload(
+    is_first_batch: bool,
+    count: usize,
+    scan_done: bool,
+) -> bool {
+    is_first_batch && count > 0 && !scan_done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1788,6 +1805,14 @@ mod tests {
         assert!(current_image_has_loaded_asset(false, false, true, false));
         assert!(current_image_has_loaded_asset(false, false, false, true));
         assert!(!current_image_has_loaded_asset(false, false, false, false));
+    }
+
+    #[test]
+    fn first_batch_preload_waits_when_scan_done_is_already_available() {
+        assert!(!should_schedule_first_batch_preload(true, 3, true));
+        assert!(should_schedule_first_batch_preload(true, 3, false));
+        assert!(!should_schedule_first_batch_preload(false, 3, false));
+        assert!(!should_schedule_first_batch_preload(true, 0, false));
     }
 
     #[test]

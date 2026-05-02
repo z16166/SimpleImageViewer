@@ -16,6 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use openexr_core_sys as sys;
+use rayon::prelude::*;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
@@ -31,6 +32,7 @@ const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
 // Refined preview is generated off the UI-critical path, so keep full row sampling for quality.
 // A zero budget means "do not collapse preview rows into representative buckets".
 const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
+const SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -525,27 +527,39 @@ impl OpenExrCoreReadContext {
         let mut cache_misses = 0usize;
         let mut decode_ms = 0.0_f64;
         let mut copy_ms = 0.0_f64;
-        for (_chunk_start_y, (chunk, chunk_origin, rows)) in rows_by_chunk {
-            let fetched = self.fetch_decoded_chunk(part_index, &chunk, chunk_origin)?;
-            if fetched.cache_hit {
-                cache_hits += 1;
-            } else {
-                cache_misses += 1;
+        let chunk_jobs = rows_by_chunk.into_values().collect::<Vec<_>>();
+        let parallel_chunks = scanline_preview_decode_parallelism(unique_chunks);
+        for chunk_batch in chunk_jobs.chunks(parallel_chunks) {
+            let fetched_batch = chunk_batch
+                .par_iter()
+                .map(|(chunk, chunk_origin, _rows)| {
+                    self.fetch_decoded_chunk(part_index, chunk, *chunk_origin)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            for (fetched, (_chunk, _chunk_origin, rows)) in
+                fetched_batch.into_iter().zip(chunk_batch.iter())
+            {
+                if fetched.cache_hit {
+                    cache_hits += 1;
+                } else {
+                    cache_misses += 1;
+                }
+                decode_ms += fetched.decode_ms;
+                let copy_started = Instant::now();
+                sample_decoded_scanline_chunk_into_preview(
+                    &fetched.decoded,
+                    part.width,
+                    width,
+                    height,
+                    rows,
+                    &mut rgba,
+                )?;
+                copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
             }
-            decode_ms += fetched.decode_ms;
-            let copy_started = Instant::now();
-            sample_decoded_scanline_chunk_into_preview(
-                &fetched.decoded,
-                part.width,
-                width,
-                height,
-                &rows,
-                &mut rgba,
-            )?;
-            copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
         }
         log::info!(
-            "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
+            "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
             self.path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -559,6 +573,7 @@ impl OpenExrCoreReadContext {
             part.height,
             source_row_budget,
             unique_chunks,
+            parallel_chunks,
             cache_hits,
             cache_misses,
             decode_ms,
@@ -1017,6 +1032,10 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
     }
 }
 
+fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
+    unique_chunks.clamp(1, SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS)
+}
+
 fn budgeted_scanline_preview_source_y(
     preview_y: u32,
     preview_height: u32,
@@ -1325,5 +1344,16 @@ mod tests {
 
         assert_eq!(super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET, 0);
         assert_eq!(sampled.len(), preview_height as usize);
+    }
+
+    #[test]
+    fn scanline_preview_decode_parallelism_is_bounded() {
+        assert_eq!(super::scanline_preview_decode_parallelism(0), 1);
+        assert_eq!(super::scanline_preview_decode_parallelism(1), 1);
+        assert_eq!(super::scanline_preview_decode_parallelism(2), 2);
+        assert_eq!(
+            super::scanline_preview_decode_parallelism(384),
+            super::SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS
+        );
     }
 }
