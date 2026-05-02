@@ -19,8 +19,18 @@ use openexr_core_sys as sys;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
-const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 48;
-const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 160;
+// These knobs are intentionally scoped to OpenEXR scanline preview generation.
+// They do not affect SDR images, Radiance HDR, JPEG_R/Ultra HDR, final EXR tiles, or tiled EXR files.
+//
+// A 512px request is the synchronous bootstrap shown before the UI leaves "loading".
+// For giant scanline PIZ files, decoding every sampled row can take many seconds because each
+// native chunk is a full-width strip. We therefore use a larger-but-still-budgeted 1024px preview:
+// it is less blocky than 512px, while the row budget keeps initial load bounded.
+const SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE: u32 = 1024;
+const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
+// Refined preview is generated off the UI-critical path, so keep full row sampling for quality.
+// A zero budget means "do not collapse preview rows into representative buckets".
+const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -459,8 +469,7 @@ impl OpenExrCoreReadContext {
         if part.storage != sys::EXR_STORAGE_SCANLINE {
             return Err("OpenEXRCore scanline preview supports only flat scanline EXR".to_string());
         }
-        let (width, height) =
-            crate::hdr::tiled::preview_dimensions(part.width, part.height, max_w, max_h);
+        let (width, height) = scanline_preview_dimensions(part.width, part.height, max_w, max_h);
         if width == 0 || height == 0 {
             return Err("EXR preview dimensions must be non-zero".to_string());
         }
@@ -471,7 +480,7 @@ impl OpenExrCoreReadContext {
             i32,
             (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
         >::new();
-        let source_row_budget = scanline_preview_source_row_budget(width);
+        let source_row_budget = scanline_preview_source_row_budget(max_w);
         for preview_y in 0..height {
             let source_y = budgeted_scanline_preview_source_y(
                 preview_y,
@@ -943,8 +952,27 @@ fn sample_decoded_scanline_chunk_into_preview(
     Ok(())
 }
 
-fn scanline_preview_source_row_budget(preview_width: u32) -> u32 {
-    if preview_width <= crate::constants::DEFAULT_PREVIEW_SIZE {
+fn scanline_preview_dimensions(
+    source_width: u32,
+    source_height: u32,
+    requested_max_w: u32,
+    requested_max_h: u32,
+) -> (u32, u32) {
+    let (max_w, max_h) = if requested_max_w <= crate::constants::DEFAULT_PREVIEW_SIZE
+        && requested_max_h <= crate::constants::DEFAULT_PREVIEW_SIZE
+    {
+        (
+            SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE,
+            SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE,
+        )
+    } else {
+        (requested_max_w, requested_max_h)
+    };
+    crate::hdr::tiled::preview_dimensions(source_width, source_height, max_w, max_h)
+}
+
+fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
+    if requested_preview_width <= crate::constants::DEFAULT_PREVIEW_SIZE {
         SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET
     } else {
         SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET
@@ -1204,7 +1232,7 @@ mod tests {
     fn budgeted_scanline_preview_sampling_limits_unique_source_rows() {
         let preview_height = 1024;
         let source_height = 12_288;
-        let max_rows = 128;
+        let max_rows = super::SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET;
         let sampled = (0..preview_height)
             .map(|preview_y| {
                 super::budgeted_scanline_preview_source_y(
@@ -1218,5 +1246,46 @@ mod tests {
 
         assert!(sampled.len() <= max_rows as usize);
         assert!(sampled.iter().all(|source_y| *source_y < source_height));
+    }
+
+    #[test]
+    fn scanline_bootstrap_preview_uses_exr_specific_quality_floor() {
+        let source_width = 24_576;
+        let source_height = 12_288;
+
+        let scanline_preview = super::scanline_preview_dimensions(
+            source_width,
+            source_height,
+            crate::constants::DEFAULT_PREVIEW_SIZE,
+            crate::constants::DEFAULT_PREVIEW_SIZE,
+        );
+        let standard_preview = crate::hdr::tiled::preview_dimensions(
+            source_width,
+            source_height,
+            crate::constants::DEFAULT_PREVIEW_SIZE,
+            crate::constants::DEFAULT_PREVIEW_SIZE,
+        );
+
+        assert_eq!(scanline_preview, (1024, 512));
+        assert_eq!(standard_preview, (512, 256));
+    }
+
+    #[test]
+    fn scanline_refined_preview_samples_all_preview_rows() {
+        let preview_height = 1024;
+        let source_height = 12_288;
+        let sampled = (0..preview_height)
+            .map(|preview_y| {
+                super::budgeted_scanline_preview_source_y(
+                    preview_y,
+                    preview_height,
+                    source_height,
+                    super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET,
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET, 0);
+        assert_eq!(sampled.len(), preview_height as usize);
     }
 }
