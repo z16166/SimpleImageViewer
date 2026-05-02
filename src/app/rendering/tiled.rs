@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::plane::{
-    clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
-    select_tiled_plane_backend, PlaneBackendKind,
+    PlaneBackendKind, clipped_plane_rect_and_uv, draw_sdr_texture_plane, hdr_image_plane_rect,
+    select_tiled_plane_backend,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
@@ -165,8 +165,22 @@ fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind
     }
 }
 
-fn tile_pending_key_for_backend(coord: TileCoord, plane_backend: PlaneBackendKind) -> PendingTileKey {
+fn tile_pending_key_for_backend(
+    coord: TileCoord,
+    plane_backend: PlaneBackendKind,
+) -> PendingTileKey {
     PendingTileKey::new(coord, tile_pixel_kind_for_backend(plane_backend))
+}
+
+fn tile_decode_source_for_backend(
+    plane_backend: PlaneBackendKind,
+    sdr_source: Option<Arc<dyn crate::loader::TiledImageSource>>,
+    hdr_source: Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+) -> Option<TileDecodeSource> {
+    match plane_backend {
+        PlaneBackendKind::Sdr => sdr_source.map(TileDecodeSource::Sdr),
+        PlaneBackendKind::Hdr => hdr_source.map(|source| TileDecodeSource::Hdr(Arc::clone(source))),
+    }
 }
 
 fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
@@ -300,6 +314,10 @@ fn tile_visits_for_backend(
         PlaneBackendKind::Sdr => padded_visible.to_vec(),
         PlaneBackendKind::Hdr => prioritize_tile_visits(primary_visible, padded_visible),
     }
+}
+
+fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> f32 {
+    tile_visit_count.saturating_sub(visit_idx) as f32
 }
 
 fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
@@ -677,14 +695,20 @@ impl ImageViewerApp {
                                     tile_pending_key_for_backend(*coord, plane_backend),
                                     is_primary_visible,
                                 ) {
-                                    self.loader.request_tile(
-                                        self.current_index,
-                                        tm.generation,
-                                        (tile_visits.len() - idx) as f32,
-                                        TileDecodeSource::Hdr(Arc::clone(hdr_source)),
-                                        coord.col,
-                                        coord.row,
-                                    );
+                                    if let Some(source) = tile_decode_source_for_backend(
+                                        plane_backend,
+                                        None,
+                                        Some(hdr_source),
+                                    ) {
+                                        self.loader.request_tile(
+                                            self.current_index,
+                                            tm.generation,
+                                            tile_request_priority(tile_visits.len(), idx),
+                                            source,
+                                            coord.col,
+                                            coord.row,
+                                        );
+                                    }
                                 }
                                 continue;
                             };
@@ -763,16 +787,21 @@ impl ImageViewerApp {
                                 }
                                 let source = tm.get_source();
                                 let generation = tm.generation;
-                                // visible list is already sorted by distance to center
-                                let priority = (visible.len() - idx) as f32;
-                                self.loader.request_tile(
-                                    self.current_index,
-                                    generation,
-                                    priority,
-                                    TileDecodeSource::Sdr(source),
-                                    coord.col,
-                                    coord.row,
-                                );
+                                let priority = tile_request_priority(tile_visits.len(), idx);
+                                if let Some(source) = tile_decode_source_for_backend(
+                                    plane_backend,
+                                    Some(source),
+                                    hdr_source_for_frame.as_ref(),
+                                ) {
+                                    self.loader.request_tile(
+                                        self.current_index,
+                                        generation,
+                                        priority,
+                                        source,
+                                        coord.col,
+                                        coord.row,
+                                    );
+                                }
                             }
                         }
                     }
@@ -829,21 +858,23 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
+        TileRequestBudget, clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
         should_draw_hdr_preview_for_tiled_backend, should_draw_hdr_tiles_for_tiled_backend,
         should_draw_sdr_preview_for_tiled_backend,
-        should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
-        should_process_hdr_tiles_for_backend, should_repaint_for_ready_tiles_for_backend,
-        should_schedule_tile_request, tile_kind_uses_shared_schedule_policy,
+        should_draw_tiled_preview_transition_for_backend,
+        should_invalidate_tile_requests_on_pan_drag, should_process_hdr_tiles_for_backend,
+        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
+        tile_decode_source_for_backend, tile_kind_uses_shared_schedule_policy,
         tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_rect_for_tile,
         tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
-        tile_visits_for_backend, tiled_plane_threshold, TileRequestBudget,
+        tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
     };
-    use crate::app::rendering::plane::PlaneBackendKind;
     use crate::app::TransitionStyle;
-    use crate::loader::TilePixelKind;
+    use crate::app::rendering::plane::PlaneBackendKind;
+    use crate::loader::{TileDecodeSource, TilePixelKind, TiledImageSource};
     use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};
+    use std::sync::Arc;
 
     #[test]
     fn tiled_preview_supports_complex_transitions() {
@@ -936,6 +967,73 @@ mod tests {
         assert_eq!(
             tile_pending_key_for_backend(coord, PlaneBackendKind::Hdr),
             crate::tile_cache::PendingTileKey::new(coord, TilePixelKind::Hdr)
+        );
+    }
+
+    struct TestTiledSource;
+
+    impl TiledImageSource for TestTiledSource {
+        fn width(&self) -> u32 {
+            1
+        }
+
+        fn height(&self) -> u32 {
+            1
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, _w: u32, _h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0, 0, 0, 255])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    fn test_hdr_source() -> Arc<dyn crate::hdr::tiled::HdrTiledSource> {
+        Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+            })
+            .expect("build HDR tiled source"),
+        )
+    }
+
+    #[test]
+    fn tile_decode_source_is_selected_by_backend() {
+        let sdr_source: Arc<dyn TiledImageSource> = Arc::new(TestTiledSource);
+        let hdr_source = test_hdr_source();
+
+        assert!(matches!(
+            tile_decode_source_for_backend(
+                PlaneBackendKind::Sdr,
+                Some(Arc::clone(&sdr_source)),
+                Some(&hdr_source)
+            ),
+            Some(TileDecodeSource::Sdr(_))
+        ));
+        assert!(matches!(
+            tile_decode_source_for_backend(
+                PlaneBackendKind::Hdr,
+                Some(Arc::clone(&sdr_source)),
+                Some(&hdr_source)
+            ),
+            Some(TileDecodeSource::Hdr(_))
+        ));
+        assert!(
+            tile_decode_source_for_backend(PlaneBackendKind::Sdr, None, Some(&hdr_source))
+                .is_none()
+        );
+        assert!(
+            tile_decode_source_for_backend(PlaneBackendKind::Hdr, Some(sdr_source), None).is_none()
         );
     }
 
@@ -1077,11 +1175,21 @@ mod tests {
         assert_eq!(pending.len(), 1);
 
         for row in 0..15 {
-            let key = tile_pending_key_for_backend(TileCoord { col: 9, row }, PlaneBackendKind::Sdr);
+            let key =
+                tile_pending_key_for_backend(TileCoord { col: 9, row }, PlaneBackendKind::Sdr);
             assert!(budget.try_mark_pending(&mut pending, key, true));
         }
-        let key = tile_pending_key_for_backend(TileCoord { col: 10, row: 0 }, PlaneBackendKind::Sdr);
+        let key =
+            tile_pending_key_for_backend(TileCoord { col: 10, row: 0 }, PlaneBackendKind::Sdr);
         assert!(!budget.try_mark_pending(&mut pending, key, true));
+    }
+
+    #[test]
+    fn tile_request_priority_is_derived_from_shared_visit_order() {
+        assert_eq!(tile_request_priority(4, 0), 4.0);
+        assert_eq!(tile_request_priority(4, 3), 1.0);
+        assert_eq!(tile_request_priority(0, 0), 0.0);
+        assert_eq!(tile_request_priority(2, 7), 0.0);
     }
 
     #[test]
