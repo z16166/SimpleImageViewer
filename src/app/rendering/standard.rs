@@ -83,10 +83,7 @@ impl ImageViewerApp {
 
         if canvas_resp.dragged() {
             self.pan_offset += canvas_resp.drag_delta();
-            // Bumping generation here ensures that if we zoom into tiled mode later,
-            // or if multiple levels of tiled loaders exist, the priority is reset.
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
+            self.invalidate_tile_requests_for_view_change();
         }
 
         // --- Transition parameter computation ---

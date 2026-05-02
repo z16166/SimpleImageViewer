@@ -24,8 +24,8 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU32;
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -2144,8 +2144,8 @@ fn process_animation_frames(
 }
 
 fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
-    use image::codecs::gif::GifDecoder;
     use image::AnimationDecoder;
+    use image::codecs::gif::GifDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2160,8 +2160,8 @@ fn load_gif(path: &PathBuf) -> Result<ImageData, String> {
 }
 
 fn load_png(path: &PathBuf) -> Result<ImageData, String> {
-    use image::codecs::png::PngDecoder;
     use image::AnimationDecoder;
+    use image::codecs::png::PngDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2187,8 +2187,8 @@ fn load_png(path: &PathBuf) -> Result<ImageData, String> {
 // ---------------------------------------------------------------------------
 
 fn load_webp(path: &PathBuf) -> Result<ImageData, String> {
-    use image::codecs::webp::WebPDecoder;
     use image::AnimationDecoder;
+    use image::codecs::webp::WebPDecoder;
     use std::io::BufReader;
 
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -2676,14 +2676,16 @@ mod tests {
             _ => panic!("expected HDR tile-ready output"),
         }
 
-        assert!(source
-            .cached_tile_rgba32f_arc(
-                0,
-                0,
-                crate::tile_cache::get_tile_size(),
-                crate::tile_cache::get_tile_size(),
-            )
-            .is_some());
+        assert!(
+            source
+                .cached_tile_rgba32f_arc(
+                    0,
+                    0,
+                    crate::tile_cache::get_tile_size(),
+                    crate::tile_cache::get_tile_size(),
+                )
+                .is_some()
+        );
     }
 
     #[test]

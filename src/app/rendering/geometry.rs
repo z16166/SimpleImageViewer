@@ -158,13 +158,8 @@ impl ImageViewerApp {
             self.pan_offset *= new_scale / old_scale;
         }
 
-        // Invalidate tiled caches to re-request tiles in new orientation
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
-        if let Some(tm) = &mut self.tile_manager {
-            tm.generation = self.generation;
-            tm.pending_tiles.clear();
-        }
+        // Invalidate tiled caches to re-request tiles in new orientation.
+        self.invalidate_tile_requests_for_view_change();
     }
 }
 

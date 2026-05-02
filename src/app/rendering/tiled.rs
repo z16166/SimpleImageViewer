@@ -16,7 +16,7 @@
 
 use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
-    draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect, PlaneBackendKind, PlaneDrawSource,
+    PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
@@ -180,11 +180,7 @@ fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
 }
 
 fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
-    if tile_size >= 1024 {
-        96
-    } else {
-        192
-    }
+    if tile_size >= 1024 { 96 } else { 192 }
 }
 
 fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
@@ -428,13 +424,7 @@ impl ImageViewerApp {
         if canvas_resp.dragged() {
             self.pan_offset += canvas_resp.drag_delta();
             if should_invalidate_tile_requests_on_pan_drag() {
-                self.generation = self.generation.wrapping_add(1);
-                self.loader.set_generation(self.generation);
-                if let Some(tm) = &mut self.tile_manager {
-                    tm.generation = self.generation;
-                    tm.pending_tiles.clear();
-                }
-                self.loader.flush_tile_queue();
+                self.invalidate_tile_requests_for_view_change();
             }
         }
 
@@ -887,19 +877,19 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        has_pending_visible_tiles_for_backend, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
-        should_draw_tiled_tile_plane_for_backend, should_invalidate_tile_requests_on_pan_drag,
-        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
-        tile_decode_source_for_backend, tile_kind_uses_shared_schedule_policy,
-        tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_kind_for_backend,
-        tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
-        tile_request_pending_cap, tile_request_priority, tile_visits_for_backend,
-        tiled_plane_threshold, tiled_plane_threshold_for_backend, TileRequestBudget,
-        TiledPlaneKind,
+        TileRequestBudget, TiledPlaneKind, has_pending_visible_tiles_for_backend,
+        is_tiled_plane_active, rotated_axis_aligned_rect, should_draw_tiled_preview_for_backend,
+        should_draw_tiled_preview_transition_for_backend, should_draw_tiled_tile_plane_for_backend,
+        should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
+        should_schedule_tile_request, tile_decode_source_for_backend,
+        tile_kind_uses_shared_schedule_policy, tile_pending_key_for_backend,
+        tile_pixel_kind_for_backend, tile_plane_kind_for_backend, tile_plane_rect_for_tile,
+        tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
+        tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
+        tiled_plane_threshold_for_backend,
     };
-    use crate::app::rendering::plane::{clipped_plane_rect_and_uv, PlaneBackendKind};
     use crate::app::TransitionStyle;
+    use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
     use crate::loader::{TileDecodeSource, TilePixelKind, TiledImageSource};
     use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};

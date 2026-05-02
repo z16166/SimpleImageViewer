@@ -155,16 +155,16 @@ impl ImageViewerApp {
             AppAction::Last => self.navigate_last(),
             AppAction::ZoomIn => {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomOut => {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomReset => {
                 self.zoom_factor = 1.0;
                 self.pan_offset = Vec2::ZERO;
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ToggleSettings => self.show_settings = !self.show_settings,
             AppAction::ToggleFullscreen => {
@@ -218,16 +218,6 @@ impl ImageViewerApp {
         }
     }
 
-    fn update_loader_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
-        if let Some(tm) = &mut self.tile_manager {
-            tm.generation = self.generation;
-            tm.pending_tiles.clear();
-        }
-        self.loader.flush_tile_queue();
-    }
-
     fn handle_mouse_input(
         &mut self,
         ctx: &Context,
@@ -256,7 +246,7 @@ impl ImageViewerApp {
                     let d = mouse - screen_center;
                     self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
                 }
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
         } else if scroll_delta.y.abs() > 0.0 {
             // Navigation with mouse wheel

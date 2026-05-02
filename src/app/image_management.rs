@@ -140,6 +140,18 @@ fn current_hdr_tiled_preview_matches_index(
     current.is_some_and(|current| current.image_for_index(index).is_some())
 }
 
+fn invalidate_tile_manager_requests_for_view_change(
+    tile_manager: &mut Option<TileManager>,
+) -> bool {
+    if let Some(tm) = tile_manager {
+        tm.generation = tm.generation.wrapping_add(1);
+        tm.pending_tiles.clear();
+        true
+    } else {
+        false
+    }
+}
+
 enum ImageInstallPlan<'a> {
     StaticSdr {
         decoded: &'a DecodedImage,
@@ -228,6 +240,12 @@ impl<'a> ImageInstallPlan<'a> {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn invalidate_tile_requests_for_view_change(&mut self) {
+        if invalidate_tile_manager_requests_for_view_change(&mut self.tile_manager) {
+            self.loader.flush_tile_queue();
+        }
+    }
+
     pub(crate) fn effective_ultra_hdr_decode_capacity(&self) -> f32 {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
             self.settings.hdr_tone_map_settings(),
@@ -1809,5 +1827,23 @@ mod tests {
         assert!(current_hdr_tiled_preview_matches_index(Some(&current), 4));
         assert!(!current_hdr_tiled_preview_matches_index(Some(&current), 5));
         assert!(!current_hdr_tiled_preview_matches_index(None, 4));
+    }
+
+    #[test]
+    fn view_change_invalidates_only_tile_manager_generation() {
+        let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
+            width: 1024,
+            height: 768,
+        });
+        let mut tile_manager = Some(TileManager::with_source(4, 9, source));
+        let loader_generation = 3;
+
+        assert!(invalidate_tile_manager_requests_for_view_change(
+            &mut tile_manager
+        ));
+
+        let tile_manager = tile_manager.expect("tile manager should remain installed");
+        assert_eq!(tile_manager.generation, 10);
+        assert_eq!(loader_generation, 3);
     }
 }
