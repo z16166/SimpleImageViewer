@@ -148,6 +148,29 @@ fn should_schedule_tile_request(
         && (is_primary_visible || pending_count < pending_cap)
 }
 
+fn should_schedule_tile_request_for_pixel_kind(
+    pixel_kind: TilePixelKind,
+    is_cached: bool,
+    pending_count: usize,
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    scheduled_this_frame: usize,
+    frame_schedule_cap: usize,
+    is_primary_visible: bool,
+) -> bool {
+    match pixel_kind {
+        TilePixelKind::Sdr | TilePixelKind::Hdr => should_schedule_tile_request(
+            is_cached,
+            pending_count,
+            pending_cap,
+            hard_pending_cap,
+            scheduled_this_frame,
+            frame_schedule_cap,
+            is_primary_visible,
+        ),
+    }
+}
+
 fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 2 } else { 1 };
     if visible_count > 1000 {
@@ -523,7 +546,7 @@ impl ImageViewerApp {
                 rayon::current_num_threads(),
                 crate::tile_cache::get_tile_size(),
             );
-            let mut hdr_scheduled_this_frame = 0;
+            let mut tile_scheduled_this_frame = 0;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -545,12 +568,13 @@ impl ImageViewerApp {
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
                                 let hdr_pending_count = tm.pending_tiles.len();
-                                if should_schedule_tile_request(
+                                if should_schedule_tile_request_for_pixel_kind(
+                                    TilePixelKind::Hdr,
                                     false,
                                     hdr_pending_count,
                                     tile_pending_cap,
                                     tile_hard_pending_cap,
-                                    hdr_scheduled_this_frame,
+                                    tile_scheduled_this_frame,
                                     tile_frame_schedule_cap,
                                     is_primary_visible,
                                 ) && tm
@@ -565,7 +589,7 @@ impl ImageViewerApp {
                                         coord.col,
                                         coord.row,
                                     );
-                                    hdr_scheduled_this_frame += 1;
+                                    tile_scheduled_this_frame += 1;
                                 }
                                 continue;
                             };
@@ -634,23 +658,37 @@ impl ImageViewerApp {
                         }
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
-                                if tm.pending_tiles.len() >= tile_pending_cap {
+                                let is_primary_visible = primary_visible_coords.contains(coord);
+                                if !should_schedule_tile_request_for_pixel_kind(
+                                    TilePixelKind::Sdr,
+                                    false,
+                                    tm.pending_tiles.len(),
+                                    tile_pending_cap,
+                                    tile_hard_pending_cap,
+                                    tile_scheduled_this_frame,
+                                    tile_frame_schedule_cap,
+                                    is_primary_visible,
+                                ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
                                 }
                                 let source = tm.get_source();
                                 let generation = tm.generation;
                                 // visible list is already sorted by distance to center
                                 let priority = (visible.len() - idx) as f32;
-                                self.loader.request_tile(
-                                    self.current_index,
-                                    generation,
-                                    priority,
-                                    TileDecodeSource::Sdr(source),
-                                    coord.col,
-                                    coord.row,
-                                );
-                                tm.pending_tiles
-                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Sdr));
+                                if tm
+                                    .pending_tiles
+                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Sdr))
+                                {
+                                    self.loader.request_tile(
+                                        self.current_index,
+                                        generation,
+                                        priority,
+                                        TileDecodeSource::Sdr(source),
+                                        coord.col,
+                                        coord.row,
+                                    );
+                                    tile_scheduled_this_frame += 1;
+                                }
                             }
                         }
                     }
@@ -710,10 +748,12 @@ mod tests {
         should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
         should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
         should_invalidate_tile_requests_on_pan_drag, should_schedule_tile_request,
+        should_schedule_tile_request_for_pixel_kind,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
+    use crate::loader::TilePixelKind;
     use crate::tile_cache::TileCoord;
     use eframe::egui::{Pos2, Rect};
 
@@ -811,6 +851,30 @@ mod tests {
         ));
         assert!(!should_schedule_tile_request(
             false, 2, 96, 192, 32, 32, true
+        ));
+    }
+
+    #[test]
+    fn sdr_tile_request_uses_shared_primary_visible_overcommit_policy() {
+        assert!(should_schedule_tile_request_for_pixel_kind(
+            TilePixelKind::Sdr,
+            false,
+            96,
+            96,
+            192,
+            0,
+            32,
+            true
+        ));
+        assert!(should_schedule_tile_request_for_pixel_kind(
+            TilePixelKind::Hdr,
+            false,
+            96,
+            96,
+            192,
+            0,
+            32,
+            true
         ));
     }
 
