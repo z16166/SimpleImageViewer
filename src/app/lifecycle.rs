@@ -1,5 +1,5 @@
 use crate::app::ImageViewerApp;
-use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
+use crate::app::{compute_preload_budgets, HardwareTier, CACHE_SIZE};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -8,8 +8,8 @@ use crate::theme::SystemThemeCache;
 use crate::ui::utils::{get_system_font_families, setup_fonts, setup_visuals};
 use eframe::egui::{self, Vec2};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Instant;
 
 impl ImageViewerApp {
@@ -171,12 +171,21 @@ impl ImageViewerApp {
             tier.max_preview_size(),
             std::sync::atomic::Ordering::Relaxed,
         );
+        let available_ram_mb = sys.available_memory() / (1024 * 1024);
+        let (cpu_cache_mb, hdr_tile_cache_mb) =
+            crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.set_max_mb(tier.cpu_cache_mb());
+            cache.set_max_mb(cpu_cache_mb);
         }
         crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
-            tier.hdr_tile_cache_mb() * 1024 * 1024,
+            hdr_tile_cache_mb * 1024 * 1024,
             std::sync::atomic::Ordering::Relaxed,
+        );
+        log::info!(
+            "Tile cache budgets: SDR={} MB, HDR={} MB (available RAM={} MB)",
+            cpu_cache_mb,
+            hdr_tile_cache_mb,
+            available_ram_mb
         );
 
         let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();

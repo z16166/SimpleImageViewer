@@ -3,8 +3,8 @@ use crate::app::{
 };
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
 use crate::loader::{
-    DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane,
-    PreviewResult, RenderShape as LoadedRenderShape, TileResult,
+    DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
+    RenderShape as LoadedRenderShape, TileResult,
 };
 use crate::scanner::{self, ScanMessage};
 use crate::tile_cache::TileManager;
@@ -53,6 +53,13 @@ fn should_cache_tiled_sdr_preview(
     if !is_preview_placeholder {
         return false;
     }
+    cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
+}
+
+fn should_cache_tiled_hdr_preview(
+    cached_preview_max_side: Option<u32>,
+    preview_max_side: u32,
+) -> bool {
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
@@ -128,18 +135,20 @@ impl<'a> ImageInstallPlan<'a> {
         };
 
         match image_data.preferred_render_shape() {
-            LoadedRenderShape::Static if image_data.has_plane(PixelPlaneKind::Hdr) => Self::StaticHdr {
-                hdr: Arc::new(
-                    image_data
-                        .static_hdr()
-                        .expect("static HDR image exposes HDR plane")
-                        .clone(),
-                ),
-                fallback: image_data
-                    .static_sdr()
-                    .expect("static HDR image exposes SDR fallback plane"),
-                ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
-            },
+            LoadedRenderShape::Static if image_data.has_plane(PixelPlaneKind::Hdr) => {
+                Self::StaticHdr {
+                    hdr: Arc::new(
+                        image_data
+                            .static_hdr()
+                            .expect("static HDR image exposes HDR plane")
+                            .clone(),
+                    ),
+                    fallback: image_data
+                        .static_sdr()
+                        .expect("static HDR image exposes SDR fallback plane"),
+                    ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
+                }
+            }
             LoadedRenderShape::Static => Self::StaticSdr {
                 decoded: image_data
                     .static_sdr()
@@ -150,18 +159,18 @@ impl<'a> ImageInstallPlan<'a> {
                     .tiled_sdr_source()
                     .expect("tiled image exposes SDR source");
                 let hdr_source = image_data.tiled_hdr_source().cloned();
-                let hdr_preview = load_result.preview_bundle.plane(PixelPlaneKind::Hdr).and_then(
-                    |plane| {
+                let hdr_preview = load_result
+                    .preview_bundle
+                    .plane(PixelPlaneKind::Hdr)
+                    .and_then(|plane| {
                         let _kind = plane.kind();
                         let _dimensions = plane.dimensions();
                         match plane {
                             PreviewPlane::Hdr(preview) => Some(preview),
                             PreviewPlane::Sdr(_) => None,
                         }
-                    },
-                );
-                let hdr_sdr_fallback =
-                    hdr_source.is_some() || source.is_hdr_sdr_fallback();
+                    });
+                let hdr_sdr_fallback = hdr_source.is_some() || source.is_hdr_sdr_fallback();
 
                 Self::Tiled {
                     source: Arc::clone(source),
@@ -1309,7 +1318,10 @@ impl ImageViewerApp {
         let cur = self.current_index;
         let n = self.image_files.len();
         let is_in_range = n > 0
-            && (idx == cur || idx == (cur + 1) % n || (cur > 0 && idx == cur - 1) || (cur == 0 && idx == n - 1));
+            && (idx == cur
+                || idx == (cur + 1) % n
+                || (cur > 0 && idx == cur - 1)
+                || (cur == 0 && idx == n - 1));
 
         if is_in_range {
             self.pending_anim_frames = Some(PendingAnimUpload {
@@ -1325,7 +1337,11 @@ impl ImageViewerApp {
 
     fn install_image_error(&mut self, idx: usize, error: &str) {
         let path_str = self.image_files[idx].display().to_string();
-        log::error!("Failed to load image at index {} ({}): {error}", idx, path_str);
+        log::error!(
+            "Failed to load image at index {} ({}): {error}",
+            idx,
+            path_str
+        );
         if idx == self.current_index {
             self.error_message =
                 Some(t!("status.load_failed", path = path_str, err = error).to_string());
@@ -1542,6 +1558,14 @@ impl ImageViewerApp {
         let Some(preview) = preview else {
             return;
         };
+        let preview_max_side = preview.width.max(preview.height);
+        let cached_preview_max_side = self
+            .hdr_tiled_preview_cache
+            .get(&idx)
+            .map(|cached| cached.width.max(cached.height));
+        if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
+            return;
+        }
 
         self.hdr_tiled_preview_cache
             .insert(idx, Arc::clone(&preview));
@@ -1623,8 +1647,20 @@ mod tests {
         assert!(should_upload_tiled_bootstrap_preview(false, None, 512));
         assert!(should_upload_tiled_bootstrap_preview(true, None, 512));
         assert!(should_upload_tiled_bootstrap_preview(true, Some(128), 512));
-        assert!(!should_upload_tiled_bootstrap_preview(true, Some(1024), 512));
+        assert!(!should_upload_tiled_bootstrap_preview(
+            true,
+            Some(1024),
+            512
+        ));
         assert!(!should_upload_tiled_bootstrap_preview(true, Some(512), 512));
+    }
+
+    #[test]
+    fn tiled_hdr_preview_replaces_only_missing_or_smaller_cached_preview() {
+        assert!(should_cache_tiled_hdr_preview(None, 1024));
+        assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
+        assert!(!should_cache_tiled_hdr_preview(Some(4096), 1024));
+        assert!(!should_cache_tiled_hdr_preview(Some(4096), 4096));
     }
 
     #[test]

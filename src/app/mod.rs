@@ -24,8 +24,8 @@ pub(crate) mod rendering;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -205,6 +205,36 @@ impl HardwareTier {
             Self::High => crate::constants::MAX_QUALITY_PREVIEW_SIZE, // Capped at 4k to prevent VRAM spikes
         }
     }
+}
+
+pub(crate) fn memory_aware_tile_cache_budgets_mb(
+    tier: HardwareTier,
+    available_memory_mb: u64,
+) -> (usize, usize) {
+    const MIN_CPU_CACHE_MB: usize = 256;
+    const MIN_HDR_CACHE_MB: usize = 256;
+
+    let desired_cpu = tier.cpu_cache_mb();
+    let desired_hdr = tier.hdr_tile_cache_mb();
+    let max_combined = (available_memory_mb / 4) as usize;
+    if max_combined >= desired_cpu + desired_hdr {
+        return (desired_cpu, desired_hdr);
+    }
+
+    let available_after_mins = max_combined.saturating_sub(MIN_CPU_CACHE_MB + MIN_HDR_CACHE_MB);
+    let desired_extra_cpu = desired_cpu.saturating_sub(MIN_CPU_CACHE_MB);
+    let desired_extra_hdr = desired_hdr.saturating_sub(MIN_HDR_CACHE_MB);
+    let desired_extra_total = desired_extra_cpu + desired_extra_hdr;
+    if desired_extra_total == 0 {
+        return (MIN_CPU_CACHE_MB, MIN_HDR_CACHE_MB);
+    }
+
+    let cpu_extra = available_after_mins * desired_extra_cpu / desired_extra_total;
+    let hdr_extra = available_after_mins.saturating_sub(cpu_extra);
+    (
+        (MIN_CPU_CACHE_MB + cpu_extra).min(desired_cpu),
+        (MIN_HDR_CACHE_MB + hdr_extra).min(desired_hdr),
+    )
 }
 
 pub enum FileOpResult {
@@ -970,6 +1000,25 @@ mod tests {
         assert_eq!(HardwareTier::Low.hdr_tile_cache_mb(), 256);
         assert_eq!(HardwareTier::Medium.hdr_tile_cache_mb(), 512);
         assert_eq!(HardwareTier::High.hdr_tile_cache_mb(), 1024);
+    }
+
+    #[test]
+    fn memory_aware_tile_cache_budgets_keep_tier_defaults_when_memory_is_available() {
+        assert_eq!(
+            memory_aware_tile_cache_budgets_mb(HardwareTier::High, 16 * 1024),
+            (2048, 1024)
+        );
+    }
+
+    #[test]
+    fn memory_aware_tile_cache_budgets_shrink_when_available_memory_is_low() {
+        let (cpu_mb, hdr_mb) = memory_aware_tile_cache_budgets_mb(HardwareTier::High, 2048);
+
+        assert!(cpu_mb < HardwareTier::High.cpu_cache_mb());
+        assert!(hdr_mb < HardwareTier::High.hdr_tile_cache_mb());
+        assert!(cpu_mb + hdr_mb <= 512);
+        assert!(cpu_mb >= 256);
+        assert!(hdr_mb >= 256);
     }
 
     #[test]
