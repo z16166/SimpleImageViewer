@@ -181,6 +181,17 @@ fn should_schedule_tile_request_for_pixel_kind(
     }
 }
 
+fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind {
+    match plane_backend {
+        PlaneBackendKind::Sdr => TilePixelKind::Sdr,
+        PlaneBackendKind::Hdr => TilePixelKind::Hdr,
+    }
+}
+
+fn tile_pending_key_for_backend(coord: TileCoord, plane_backend: PlaneBackendKind) -> PendingTileKey {
+    PendingTileKey::new(coord, tile_pixel_kind_for_backend(plane_backend))
+}
+
 fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 2 } else { 1 };
     if visible_count > 1000 {
@@ -598,7 +609,7 @@ impl ImageViewerApp {
                             else {
                                 let hdr_pending_count = tm.pending_tiles.len();
                                 if should_schedule_tile_request_for_pixel_kind(
-                                    TilePixelKind::Hdr,
+                                    tile_pixel_kind_for_backend(plane_backend),
                                     false,
                                     hdr_pending_count,
                                     tile_pending_cap,
@@ -608,7 +619,7 @@ impl ImageViewerApp {
                                     is_primary_visible,
                                 ) && tm
                                     .pending_tiles
-                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Hdr))
+                                    .insert(tile_pending_key_for_backend(*coord, plane_backend))
                                 {
                                     self.loader.request_tile(
                                         self.current_index,
@@ -689,7 +700,7 @@ impl ImageViewerApp {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
                                 if !should_schedule_tile_request_for_pixel_kind(
-                                    TilePixelKind::Sdr,
+                                    tile_pixel_kind_for_backend(plane_backend),
                                     false,
                                     tm.pending_tiles.len(),
                                     tile_pending_cap,
@@ -706,7 +717,7 @@ impl ImageViewerApp {
                                 let priority = (visible.len() - idx) as f32;
                                 if tm
                                     .pending_tiles
-                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Sdr))
+                                    .insert(tile_pending_key_for_backend(*coord, plane_backend))
                                 {
                                     self.loader.request_tile(
                                         self.current_index,
@@ -780,8 +791,9 @@ mod tests {
         should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
         should_process_hdr_tiles_for_backend, should_repaint_for_ready_tiles_for_backend,
         should_schedule_tile_request, should_schedule_tile_request_for_pixel_kind,
-        tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
-        tile_request_pending_cap, tile_visits_for_backend, tiled_plane_threshold,
+        tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_rect_for_tile,
+        tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
+        tile_visits_for_backend, tiled_plane_threshold,
     };
     use crate::app::rendering::plane::PlaneBackendKind;
     use crate::app::TransitionStyle;
@@ -859,6 +871,28 @@ mod tests {
     fn hdr_tile_processing_is_selected_by_backend() {
         assert!(should_process_hdr_tiles_for_backend(PlaneBackendKind::Hdr));
         assert!(!should_process_hdr_tiles_for_backend(PlaneBackendKind::Sdr));
+    }
+
+    #[test]
+    fn tiled_backend_selects_matching_pixel_kind_and_pending_key() {
+        let coord = TileCoord { col: 2, row: 3 };
+
+        assert_eq!(
+            tile_pixel_kind_for_backend(PlaneBackendKind::Sdr),
+            TilePixelKind::Sdr
+        );
+        assert_eq!(
+            tile_pixel_kind_for_backend(PlaneBackendKind::Hdr),
+            TilePixelKind::Hdr
+        );
+        assert_eq!(
+            tile_pending_key_for_backend(coord, PlaneBackendKind::Sdr),
+            crate::tile_cache::PendingTileKey::new(coord, TilePixelKind::Sdr)
+        );
+        assert_eq!(
+            tile_pending_key_for_backend(coord, PlaneBackendKind::Hdr),
+            crate::tile_cache::PendingTileKey::new(coord, TilePixelKind::Hdr)
+        );
     }
 
     #[test]
