@@ -19,11 +19,11 @@ use crate::app::rendering::plane::{
     select_tiled_plane_backend,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
-use crate::tile_cache::{TileCoord, TileStatus};
+use crate::loader::TilePixelKind;
+use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
@@ -32,44 +32,6 @@ const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PendingHdrTileExtract {
-    index: usize,
-    generation: u64,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PendingHdrTileKey {
-    index: usize,
-    generation: u64,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-impl PendingHdrTileExtract {
-    fn pending_key(self) -> PendingHdrTileKey {
-        PendingHdrTileKey {
-            index: self.index,
-            generation: self.generation,
-            x: self.x,
-            y: self.y,
-            width: self.width,
-            height: self.height,
-        }
-    }
-}
-
-static PENDING_HDR_TILE_EXTRACTS: LazyLock<Mutex<BTreeSet<PendingHdrTileKey>>> =
-    LazyLock::new(|| Mutex::new(BTreeSet::new()));
-static ACTIVE_HDR_TILE_GENERATIONS: LazyLock<Mutex<HashMap<usize, u64>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn should_draw_tiled_preview_transition(
     transition: TransitionStyle,
@@ -284,135 +246,6 @@ fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> 
 
 fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
     effective_scale >= threshold
-}
-
-fn remember_active_hdr_tile_generation(index: usize, generation: u64) {
-    if let Ok(mut generations) = ACTIVE_HDR_TILE_GENERATIONS.lock() {
-        generations.insert(index, generation);
-    }
-}
-
-fn is_stale_hdr_tile_extract(key: &PendingHdrTileExtract) -> bool {
-    let Ok(generations) = ACTIVE_HDR_TILE_GENERATIONS.lock() else {
-        return false;
-    };
-    generations
-        .get(&key.index)
-        .is_some_and(|generation| *generation != key.generation)
-}
-
-fn schedule_hdr_tile_extract(
-    key: PendingHdrTileExtract,
-    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-    ctx: egui::Context,
-    is_primary_visible: bool,
-) -> bool {
-    let pending_key = key.pending_key();
-    let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
-        return false;
-    };
-    if !pending.insert(pending_key) {
-        return false;
-    }
-    drop(pending);
-
-    rayon::spawn(move || {
-        let started = Instant::now();
-        if is_stale_hdr_tile_extract(&key) {
-            if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
-                pending.remove(&pending_key);
-            }
-            return;
-        }
-
-        if source
-            .cached_tile_rgba32f_arc(key.x, key.y, key.width, key.height)
-            .is_some()
-        {
-            #[cfg(feature = "tile-debug")]
-            {
-                let elapsed = started.elapsed();
-                log::info!(
-                    "{}",
-                    format_hdr_tile_log(
-                        "cache_hit",
-                        &source.source_name(),
-                        &key,
-                        is_primary_visible,
-                        elapsed.as_secs_f64() * 1000.0
-                    )
-                );
-            }
-            if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
-                pending.remove(&pending_key);
-            }
-            ctx.request_repaint();
-            return;
-        }
-
-        let result = source.extract_tile_rgba32f_arc(key.x, key.y, key.width, key.height);
-        let elapsed = started.elapsed();
-        match result {
-            Ok(_) => {
-                #[cfg(feature = "tile-debug")]
-                log::info!(
-                    "{}",
-                    format_hdr_tile_log(
-                        "decoded",
-                        &source.source_name(),
-                        &key,
-                        is_primary_visible,
-                        elapsed.as_secs_f64() * 1000.0
-                    )
-                );
-            }
-            Err(err) => {
-                log::warn!(
-                    "[HDR][tile] failed file=\"{}\" index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={:.2}: {}",
-                    source.source_name(),
-                    key.index,
-                    key.generation,
-                    is_primary_visible,
-                    key.x,
-                    key.y,
-                    key.width,
-                    key.height,
-                    elapsed.as_secs_f64() * 1000.0,
-                    err
-                );
-            }
-        }
-        if let Ok(mut pending) = PENDING_HDR_TILE_EXTRACTS.lock() {
-            pending.remove(&pending_key);
-        }
-        ctx.request_repaint();
-    });
-
-    true
-}
-
-#[cfg(any(test, feature = "tile-debug"))]
-fn format_hdr_tile_log(
-    event: &str,
-    source_name: &str,
-    key: &PendingHdrTileExtract,
-    is_primary_visible: bool,
-    elapsed_ms: f64,
-) -> String {
-    format!(
-        "[HDR][tile] {event} file=\"{source_name}\" index={} generation={} primary={} coord=({}, {}) size={}x{} elapsed_ms={elapsed_ms:.2}",
-        key.index, key.generation, is_primary_visible, key.x, key.y, key.width, key.height
-    )
-}
-
-fn pending_hdr_tile_extract_count(index: usize, generation: u64) -> usize {
-    let Ok(pending) = PENDING_HDR_TILE_EXTRACTS.lock() else {
-        return 0;
-    };
-    pending
-        .iter()
-        .filter(|key| key.index == index && key.generation == generation)
-        .count()
 }
 
 impl ImageViewerApp {
@@ -648,7 +481,6 @@ impl ImageViewerApp {
                 .collect::<HashSet<_>>();
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
             if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                remember_active_hdr_tile_generation(self.current_index, self.generation);
                 let protected_keys: Vec<_> = primary_visible
                     .iter()
                     .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
@@ -695,8 +527,6 @@ impl ImageViewerApp {
                 rayon::current_num_threads(),
                 crate::tile_cache::get_tile_size(),
             );
-            let mut hdr_pending_count =
-                pending_hdr_tile_extract_count(self.current_index, self.generation);
             let mut hdr_scheduled_this_frame = 0;
 
             {
@@ -718,6 +548,7 @@ impl ImageViewerApp {
                             let Some(hdr_tile) =
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
+                                let hdr_pending_count = tm.pending_tiles.len();
                                 if should_schedule_hdr_tile_extract(
                                     false,
                                     hdr_pending_count,
@@ -726,20 +557,18 @@ impl ImageViewerApp {
                                     hdr_scheduled_this_frame,
                                     hdr_frame_schedule_cap,
                                     is_primary_visible,
-                                ) && schedule_hdr_tile_extract(
-                                    PendingHdrTileExtract {
-                                        index: self.current_index,
-                                        generation: self.generation,
-                                        x: tile_x,
-                                        y: tile_y,
-                                        width: tile_w,
-                                        height: tile_h,
-                                    },
-                                    Arc::clone(hdr_source),
-                                    ui.ctx().clone(),
-                                    is_primary_visible,
-                                ) {
-                                    hdr_pending_count += 1;
+                                ) && tm
+                                    .pending_tiles
+                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Hdr))
+                                {
+                                    self.loader.request_hdr_tile(
+                                        self.current_index,
+                                        tm.generation,
+                                        (tile_visits.len() - idx) as f32,
+                                        Arc::clone(hdr_source),
+                                        coord.col,
+                                        coord.row,
+                                    );
                                     hdr_scheduled_this_frame += 1;
                                 }
                                 continue;
@@ -843,7 +672,8 @@ impl ImageViewerApp {
                                     coord.col,
                                     coord.row,
                                 );
-                                tm.pending_tiles.insert(*coord);
+                                tm.pending_tiles
+                                    .insert(PendingTileKey::new(*coord, TilePixelKind::Sdr));
                             }
                         }
                     }
@@ -899,15 +729,13 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_HDR_TILE_GENERATIONS, PENDING_HDR_TILE_EXTRACTS, PendingHdrTileExtract,
-        clipped_hdr_tile_plane, format_hdr_tile_log, hdr_tile_extract_frame_schedule_cap,
+        clipped_hdr_tile_plane, hdr_tile_extract_frame_schedule_cap,
         hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
-        hdr_tile_plane_rect_for_sdr_tile, is_stale_hdr_tile_extract, is_tiled_plane_active,
-        pending_hdr_tile_extract_count, remember_active_hdr_tile_generation,
-        rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
-        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
-        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
-        should_schedule_hdr_tile_extract, tiled_plane_threshold,
+        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
+        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
+        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
+        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
+        tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -1032,96 +860,6 @@ mod tests {
         assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 512), 16);
         assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 1024), 8);
         assert_eq!(hdr_tile_extract_frame_schedule_cap(0, 512), 2);
-    }
-
-    #[test]
-    fn hdr_tile_pending_key_keeps_generations_distinct() {
-        let older = PendingHdrTileExtract {
-            index: 7,
-            generation: 41,
-            x: 1024,
-            y: 2048,
-            width: 512,
-            height: 512,
-        };
-        let newer = PendingHdrTileExtract {
-            generation: 42,
-            ..older
-        };
-
-        assert_ne!(older.pending_key(), newer.pending_key());
-    }
-
-    #[test]
-    fn hdr_tile_pending_count_ignores_stale_generations() {
-        let older = PendingHdrTileExtract {
-            index: 7,
-            generation: 41,
-            x: 1024,
-            y: 2048,
-            width: 512,
-            height: 512,
-        };
-        {
-            let mut pending = PENDING_HDR_TILE_EXTRACTS
-                .lock()
-                .expect("lock pending HDR extracts");
-            pending.clear();
-            pending.insert(older.pending_key());
-        }
-
-        assert_eq!(pending_hdr_tile_extract_count(older.index, 42), 0);
-
-        PENDING_HDR_TILE_EXTRACTS
-            .lock()
-            .expect("lock pending HDR extracts")
-            .clear();
-    }
-
-    #[test]
-    fn hdr_tile_extract_is_stale_when_generation_was_replaced() {
-        let old = PendingHdrTileExtract {
-            index: 7,
-            generation: 41,
-            x: 1024,
-            y: 2048,
-            width: 512,
-            height: 512,
-        };
-        let current = PendingHdrTileExtract {
-            generation: 42,
-            ..old
-        };
-
-        remember_active_hdr_tile_generation(7, 42);
-
-        assert!(is_stale_hdr_tile_extract(&old));
-        assert!(!is_stale_hdr_tile_extract(&current));
-
-        ACTIVE_HDR_TILE_GENERATIONS
-            .lock()
-            .expect("lock active HDR generations")
-            .clear();
-    }
-
-    #[test]
-    fn hdr_tile_timing_log_includes_file_name() {
-        let key = PendingHdrTileExtract {
-            index: 226,
-            generation: 24,
-            x: 14848,
-            y: 5632,
-            width: 512,
-            height: 512,
-        };
-
-        let message =
-            format_hdr_tile_log("decoded", "sundowner_overlook_24k.hdr", &key, true, 87.82);
-
-        assert_eq!(
-            message,
-            "[HDR][tile] decoded file=\"sundowner_overlook_24k.hdr\" index=226 generation=24 primary=true coord=(14848, 5632) size=512x512 elapsed_ms=87.82"
-        );
     }
 
     #[test]

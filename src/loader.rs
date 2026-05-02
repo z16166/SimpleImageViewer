@@ -282,8 +282,52 @@ pub struct LoadResult {
 
 pub struct TileResult {
     pub index: usize,
+    pub generation: u64,
     pub col: u32,
     pub row: u32,
+    pub pixel_kind: TilePixelKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TilePixelKind {
+    Sdr,
+    Hdr,
+}
+
+#[derive(Clone)]
+enum TileDecodeSource {
+    Sdr(Arc<dyn TiledImageSource>),
+    Hdr(Arc<dyn crate::hdr::tiled::HdrTiledSource>),
+}
+
+impl TileDecodeSource {
+    fn pixel_kind(&self) -> TilePixelKind {
+        match self {
+            Self::Sdr(_) => TilePixelKind::Sdr,
+            Self::Hdr(_) => TilePixelKind::Hdr,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TileInFlightKey {
+    index: usize,
+    generation: u64,
+    col: u32,
+    row: u32,
+    pixel_kind: TilePixelKind,
+}
+
+impl TileInFlightKey {
+    fn new(index: usize, generation: u64, col: u32, row: u32, pixel_kind: TilePixelKind) -> Self {
+        Self {
+            index,
+            generation,
+            col,
+            row,
+            pixel_kind,
+        }
+    }
 }
 
 pub struct PreviewResult {
@@ -314,7 +358,7 @@ struct TileRequest {
     index: usize,
     col: u32,
     row: u32,
-    source: Arc<dyn TiledImageSource>,
+    source: TileDecodeSource,
 }
 
 impl PartialEq for TileRequest {
@@ -499,7 +543,7 @@ impl ImageLoader {
         let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
             Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
         // Shared set of tiles currently being decoded — prevents duplicate work across workers
-        let in_flight: Arc<Mutex<std::collections::HashSet<(usize, u32, u32)>>> =
+        let in_flight: Arc<Mutex<std::collections::HashSet<TileInFlightKey>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
 
         // Spawn dedicated tile worker threads.
@@ -545,24 +589,50 @@ impl ImageLoader {
                             continue;
                         }
 
-                        let tile_key = (request.index, request.col, request.row);
+                        let pixel_kind = request.source.pixel_kind();
+                        let tile_key = TileInFlightKey::new(
+                            request.index,
+                            request.generation,
+                            request.col,
+                            request.row,
+                            pixel_kind,
+                        );
 
-                        // Skip if already in CPU cache (another worker finished it first)
-                        {
-                            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                if cache
-                                    .get(
-                                        request.index,
-                                        crate::tile_cache::TileCoord {
-                                            col: request.col,
-                                            row: request.row,
-                                        },
-                                    )
-                                    .is_some()
-                                {
-                                    continue;
+                        let tile_size = crate::tile_cache::get_tile_size();
+                        let x = request.col * tile_size;
+                        let y = request.row * tile_size;
+
+                        let already_cached = match &request.source {
+                            TileDecodeSource::Sdr(_) => {
+                                if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                                    cache
+                                        .get(
+                                            request.index,
+                                            crate::tile_cache::TileCoord {
+                                                col: request.col,
+                                                row: request.row,
+                                            },
+                                        )
+                                        .is_some()
+                                } else {
+                                    false
                                 }
                             }
+                            TileDecodeSource::Hdr(source) => {
+                                let tw = tile_size.min(source.width() - x);
+                                let th = tile_size.min(source.height() - y);
+                                source.cached_tile_rgba32f_arc(x, y, tw, th).is_some()
+                            }
+                        };
+                        if already_cached {
+                            let _ = tx.send(LoaderOutput::Tile(TileResult {
+                                index: request.index,
+                                generation: request.generation,
+                                col: request.col,
+                                row: request.row,
+                                pixel_kind,
+                            }));
+                            continue;
                         }
 
                         // Claim this tile — skip if another worker is already decoding it
@@ -573,42 +643,91 @@ impl ImageLoader {
                             }
                         }
 
-                        let tile_size = crate::tile_cache::get_tile_size();
-                        let x = request.col * tile_size;
-                        let y = request.row * tile_size;
-                        let tw = tile_size.min(request.source.width() - x);
-                        let th = tile_size.min(request.source.height() - y);
+                        match request.source {
+                            TileDecodeSource::Sdr(source) => {
+                                let tw = tile_size.min(source.width() - x);
+                                let th = tile_size.min(source.height() - y);
 
-                        #[cfg(feature = "tile-debug")]
-                        let t0 = std::time::Instant::now();
-                        let pixels = request.source.extract_tile(x, y, tw, th);
-                        #[cfg(feature = "tile-debug")]
-                        {
-                            let decode_ms = t0.elapsed().as_millis();
-                            if decode_ms > 50 {
-                                log::info!(
-                                    "[tile-worker-{}] decode tile ({},{}) {}x{} took {}ms",
-                                    i,
-                                    request.col,
-                                    request.row,
-                                    tw,
-                                    th,
-                                    decode_ms
-                                );
+                                #[cfg(feature = "tile-debug")]
+                                let t0 = std::time::Instant::now();
+                                let pixels = source.extract_tile(x, y, tw, th);
+                                #[cfg(feature = "tile-debug")]
+                                {
+                                    let decode_ms = t0.elapsed().as_millis();
+                                    if decode_ms > 50 {
+                                        log::info!(
+                                            "[tile-worker-{}] decode tile ({},{}) {}x{} took {}ms",
+                                            i,
+                                            request.col,
+                                            request.row,
+                                            tw,
+                                            th,
+                                            decode_ms
+                                        );
+                                    }
+                                }
+
+                                // Insert into PIXEL_CACHE immediately from the worker thread.
+                                // This MUST happen BEFORE removing from in_flight to close the
+                                // race window: without this, another worker could see the tile as
+                                // "not cached AND not in-flight" and start a redundant decode.
+                                {
+                                    let coord = crate::tile_cache::TileCoord {
+                                        col: request.col,
+                                        row: request.row,
+                                    };
+                                    if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+                                        cache.insert(request.index, coord, pixels);
+                                    }
+                                }
                             }
-                        }
-
-                        // Insert into PIXEL_CACHE immediately from the worker thread.
-                        // This MUST happen BEFORE removing from in_flight to close the
-                        // race window: without this, another worker could see the tile as
-                        // "not cached AND not in-flight" and start a redundant decode.
-                        {
-                            let coord = crate::tile_cache::TileCoord {
-                                col: request.col,
-                                row: request.row,
-                            };
-                            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                cache.insert(request.index, coord, pixels);
+                            TileDecodeSource::Hdr(source) => {
+                                let tw = tile_size.min(source.width() - x);
+                                let th = tile_size.min(source.height() - y);
+                                #[cfg(feature = "tile-debug")]
+                                let t0 = std::time::Instant::now();
+                                let result = source.extract_tile_rgba32f_arc(x, y, tw, th);
+                                #[cfg(feature = "tile-debug")]
+                                {
+                                    let decode_ms = t0.elapsed().as_millis();
+                                    if decode_ms > 50 {
+                                        log::info!(
+                                            "[tile-worker-{}] decode HDR tile file=\"{}\" index={} generation={} coord=({},{}) size={}x{} took {}ms",
+                                            i,
+                                            source.source_name(),
+                                            request.index,
+                                            request.generation,
+                                            request.col,
+                                            request.row,
+                                            tw,
+                                            th,
+                                            decode_ms
+                                        );
+                                    }
+                                }
+                                if let Err(err) = result {
+                                    log::warn!(
+                                        "[tile-worker-{}] HDR tile decode failed file=\"{}\" index={} generation={} coord=({},{}): {}",
+                                        i,
+                                        source.source_name(),
+                                        request.index,
+                                        request.generation,
+                                        request.col,
+                                        request.row,
+                                        err
+                                    );
+                                    let mut set = flight.lock().unwrap();
+                                    set.remove(&tile_key);
+                                    drop(set);
+                                    let _ = tx.send(LoaderOutput::Tile(TileResult {
+                                        index: request.index,
+                                        generation: request.generation,
+                                        col: request.col,
+                                        row: request.row,
+                                        pixel_kind,
+                                    }));
+                                    continue;
+                                }
                             }
                         }
 
@@ -621,8 +740,10 @@ impl ImageLoader {
                         // Notify main thread that tile is ready for GPU upload
                         let _ = tx.send(LoaderOutput::Tile(TileResult {
                             index: request.index,
+                            generation: request.generation,
                             col: request.col,
                             row: request.row,
+                            pixel_kind,
                         }));
                     }
                 })
@@ -1003,7 +1124,29 @@ impl ImageLoader {
             index,
             col,
             row,
-            source,
+            source: TileDecodeSource::Sdr(source),
+        });
+        cvar.notify_one();
+    }
+
+    pub fn request_hdr_tile(
+        &self,
+        index: usize,
+        generation: u64,
+        priority: f32,
+        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+        col: u32,
+        row: u32,
+    ) {
+        let (lock, cvar) = &*self.tile_queue;
+        let mut heap = lock.lock().unwrap();
+        heap.push(TileRequest {
+            generation,
+            priority,
+            index,
+            col,
+            row,
+            source: TileDecodeSource::Hdr(source),
         });
         cvar.notify_one();
     }
@@ -2039,6 +2182,205 @@ mod tests {
         let image_data = make_hdr_image_data_for_limit(hdr, fallback, 4096);
 
         assert!(matches!(image_data, ImageData::HdrTiled { .. }));
+    }
+
+    #[test]
+    fn tile_inflight_keys_distinguish_sdr_and_hdr_outputs() {
+        let sdr = TileInFlightKey::new(7, 11, 3, 4, TilePixelKind::Sdr);
+        let hdr = TileInFlightKey::new(7, 11, 3, 4, TilePixelKind::Hdr);
+
+        assert_ne!(sdr, hdr);
+    }
+
+    #[test]
+    fn tile_inflight_keys_distinguish_generations() {
+        let older = TileInFlightKey::new(7, 11, 3, 4, TilePixelKind::Hdr);
+        let newer = TileInFlightKey::new(7, 12, 3, 4, TilePixelKind::Hdr);
+
+        assert_ne!(older, newer);
+    }
+
+    #[test]
+    fn tile_decode_source_reports_output_kind() {
+        let sdr_source: Arc<dyn TiledImageSource> =
+            Arc::new(MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])));
+        let hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+            })
+            .expect("build HDR tiled source"),
+        );
+
+        assert_eq!(
+            TileDecodeSource::Sdr(sdr_source).pixel_kind(),
+            TilePixelKind::Sdr
+        );
+        assert_eq!(
+            TileDecodeSource::Hdr(hdr_source).pixel_kind(),
+            TilePixelKind::Hdr
+        );
+    }
+
+    #[test]
+    fn request_hdr_tile_decodes_into_hdr_source_cache_and_reports_hdr_ready() {
+        let loader = ImageLoader::new();
+        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
+                width: crate::tile_cache::get_tile_size(),
+                height: crate::tile_cache::get_tile_size(),
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(vec![
+                    0.25;
+                    crate::tile_cache::get_tile_size() as usize
+                        * crate::tile_cache::get_tile_size() as usize
+                        * 4
+                ]),
+            })
+            .expect("build HDR tiled source"),
+        );
+
+        loader.request_hdr_tile(3, 0, 1.0, Arc::clone(&source), 0, 0);
+
+        let output = loader
+            .rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("HDR tile ready result");
+        match output {
+            LoaderOutput::Tile(tile) => {
+                assert_eq!(tile.index, 3);
+                assert_eq!(tile.generation, 0);
+                assert_eq!(tile.col, 0);
+                assert_eq!(tile.row, 0);
+                assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);
+            }
+            _ => panic!("expected HDR tile-ready output"),
+        }
+
+        assert!(
+            source
+                .cached_tile_rgba32f_arc(
+                    0,
+                    0,
+                    crate::tile_cache::get_tile_size(),
+                    crate::tile_cache::get_tile_size(),
+                )
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn request_hdr_tile_reports_ready_when_tile_is_already_cached() {
+        let loader = ImageLoader::new();
+        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
+                width: crate::tile_cache::get_tile_size(),
+                height: crate::tile_cache::get_tile_size(),
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                rgba_f32: Arc::new(vec![
+                    0.25;
+                    crate::tile_cache::get_tile_size() as usize
+                        * crate::tile_cache::get_tile_size() as usize
+                        * 4
+                ]),
+            })
+            .expect("build HDR tiled source"),
+        );
+        source
+            .extract_tile_rgba32f_arc(
+                0,
+                0,
+                crate::tile_cache::get_tile_size(),
+                crate::tile_cache::get_tile_size(),
+            )
+            .expect("seed HDR tile cache");
+
+        loader.request_hdr_tile(3, 9, 1.0, source, 0, 0);
+
+        let output = loader
+            .rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("HDR cached tile ready result");
+        match output {
+            LoaderOutput::Tile(tile) => {
+                assert_eq!(tile.index, 3);
+                assert_eq!(tile.generation, 9);
+                assert_eq!(tile.col, 0);
+                assert_eq!(tile.row, 0);
+                assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);
+            }
+            _ => panic!("expected HDR tile-ready output"),
+        }
+    }
+
+    struct FailingHdrTiledSource;
+
+    impl crate::hdr::tiled::HdrTiledSource for FailingHdrTiledSource {
+        fn source_kind(&self) -> crate::hdr::tiled::HdrTiledSourceKind {
+            crate::hdr::tiled::HdrTiledSourceKind::DiskBacked
+        }
+
+        fn width(&self) -> u32 {
+            crate::tile_cache::get_tile_size()
+        }
+
+        fn height(&self) -> u32 {
+            crate::tile_cache::get_tile_size()
+        }
+
+        fn color_space(&self) -> HdrColorSpace {
+            HdrColorSpace::LinearSrgb
+        }
+
+        fn generate_hdr_preview(&self, _max_w: u32, _max_h: u32) -> Result<HdrImageBuffer, String> {
+            Err("preview failed".to_string())
+        }
+
+        fn generate_sdr_preview(
+            &self,
+            _max_w: u32,
+            _max_h: u32,
+        ) -> Result<(u32, u32, Vec<u8>), String> {
+            Err("preview failed".to_string())
+        }
+
+        fn extract_tile_rgba32f_arc(
+            &self,
+            _x: u32,
+            _y: u32,
+            _width: u32,
+            _height: u32,
+        ) -> Result<Arc<crate::hdr::tiled::HdrTileBuffer>, String> {
+            Err("decode failed".to_string())
+        }
+    }
+
+    #[test]
+    fn request_hdr_tile_reports_ready_when_hdr_decode_fails() {
+        let loader = ImageLoader::new();
+        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(FailingHdrTiledSource);
+
+        loader.request_hdr_tile(5, 13, 1.0, source, 0, 0);
+
+        let output = loader
+            .rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("HDR failed tile ready result");
+        match output {
+            LoaderOutput::Tile(tile) => {
+                assert_eq!(tile.index, 5);
+                assert_eq!(tile.generation, 13);
+                assert_eq!(tile.col, 0);
+                assert_eq!(tile.row, 0);
+                assert_eq!(tile.pixel_kind, TilePixelKind::Hdr);
+            }
+            _ => panic!("expected HDR tile-ready output"),
+        }
     }
 
     #[test]

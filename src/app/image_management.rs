@@ -2,9 +2,11 @@ use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
-use crate::loader::{DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TileResult};
+use crate::loader::{
+    DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewResult, TilePixelKind, TileResult,
+};
 use crate::scanner::{self, ScanMessage};
-use crate::tile_cache::{TileCoord, TileManager};
+use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
 use eframe::egui::{self, ColorImage, TextureOptions, Vec2};
 use rand::seq::SliceRandom;
 use rust_i18n::t;
@@ -1268,13 +1270,15 @@ impl ImageViewerApp {
             row: tile_result.row,
         };
 
-        // Pixels are already in PIXEL_CACHE (inserted by the worker thread).
-        // We only need to mark as no longer pending and trigger repaint for GPU upload.
+        // SDR pixels are already in PIXEL_CACHE; HDR pixels are already in the
+        // HdrTiledSource cache. Either way, clear the shared pending marker.
         if let Some(ref mut tm) = self.tile_manager {
-            if tm.image_index == tile_result.index {
-                tm.pending_tiles.remove(&coord);
-                // Trigger repaint so the next frame uploads this to GPU immediately
-                _ctx.request_repaint();
+            if tm.image_index == tile_result.index && tm.generation == tile_result.generation {
+                tm.pending_tiles
+                    .remove(&PendingTileKey::new(coord, tile_result.pixel_kind));
+                match tile_result.pixel_kind {
+                    TilePixelKind::Sdr | TilePixelKind::Hdr => _ctx.request_repaint(),
+                }
             }
         }
     }
