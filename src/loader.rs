@@ -295,7 +295,7 @@ pub enum TilePixelKind {
 }
 
 #[derive(Clone)]
-enum TileDecodeSource {
+pub enum TileDecodeSource {
     Sdr(Arc<dyn TiledImageSource>),
     Hdr(Arc<dyn crate::hdr::tiled::HdrTiledSource>),
 }
@@ -1112,7 +1112,7 @@ impl ImageLoader {
         index: usize,
         generation: u64,
         priority: f32,
-        source: std::sync::Arc<dyn TiledImageSource>,
+        source: TileDecodeSource,
         col: u32,
         row: u32,
     ) {
@@ -1124,29 +1124,7 @@ impl ImageLoader {
             index,
             col,
             row,
-            source: TileDecodeSource::Sdr(source),
-        });
-        cvar.notify_one();
-    }
-
-    pub fn request_hdr_tile(
-        &self,
-        index: usize,
-        generation: u64,
-        priority: f32,
-        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-        col: u32,
-        row: u32,
-    ) {
-        let (lock, cvar) = &*self.tile_queue;
-        let mut heap = lock.lock().unwrap();
-        heap.push(TileRequest {
-            generation,
-            priority,
-            index,
-            col,
-            row,
-            source: TileDecodeSource::Hdr(source),
+            source,
         });
         cvar.notify_one();
     }
@@ -2228,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn request_hdr_tile_decodes_into_hdr_source_cache_and_reports_hdr_ready() {
+    fn request_tile_decodes_hdr_source_into_hdr_cache_and_reports_hdr_ready() {
         let loader = ImageLoader::new();
         let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
             crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
@@ -2246,7 +2224,7 @@ mod tests {
             .expect("build HDR tiled source"),
         );
 
-        loader.request_hdr_tile(3, 0, 1.0, Arc::clone(&source), 0, 0);
+        loader.request_tile(3, 0, 1.0, TileDecodeSource::Hdr(Arc::clone(&source)), 0, 0);
 
         let output = loader
             .rx
@@ -2276,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    fn request_hdr_tile_reports_ready_when_tile_is_already_cached() {
+    fn request_tile_reports_ready_when_hdr_tile_is_already_cached() {
         let loader = ImageLoader::new();
         let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
             crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
@@ -2302,7 +2280,7 @@ mod tests {
             )
             .expect("seed HDR tile cache");
 
-        loader.request_hdr_tile(3, 9, 1.0, source, 0, 0);
+        loader.request_tile(3, 9, 1.0, TileDecodeSource::Hdr(source), 0, 0);
 
         let output = loader
             .rx
@@ -2363,11 +2341,11 @@ mod tests {
     }
 
     #[test]
-    fn request_hdr_tile_reports_ready_when_hdr_decode_fails() {
+    fn request_tile_reports_ready_when_hdr_decode_fails() {
         let loader = ImageLoader::new();
         let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(FailingHdrTiledSource);
 
-        loader.request_hdr_tile(5, 13, 1.0, source, 0, 0);
+        loader.request_tile(5, 13, 1.0, TileDecodeSource::Hdr(source), 0, 0);
 
         let output = loader
             .rx

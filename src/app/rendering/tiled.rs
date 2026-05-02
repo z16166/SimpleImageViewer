@@ -19,7 +19,7 @@ use crate::app::rendering::plane::{
     select_tiled_plane_backend,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
-use crate::loader::TilePixelKind;
+use crate::loader::{TileDecodeSource, TilePixelKind};
 use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashSet;
@@ -557,11 +557,11 @@ impl ImageViewerApp {
                                     .pending_tiles
                                     .insert(PendingTileKey::new(*coord, TilePixelKind::Hdr))
                                 {
-                                    self.loader.request_hdr_tile(
+                                    self.loader.request_tile(
                                         self.current_index,
                                         tm.generation,
                                         (tile_visits.len() - idx) as f32,
-                                        Arc::clone(hdr_source),
+                                        TileDecodeSource::Hdr(Arc::clone(hdr_source)),
                                         coord.col,
                                         coord.row,
                                     );
@@ -645,7 +645,7 @@ impl ImageViewerApp {
                                     self.current_index,
                                     generation,
                                     priority,
-                                    source,
+                                    TileDecodeSource::Sdr(source),
                                     coord.col,
                                     coord.row,
                                 );
