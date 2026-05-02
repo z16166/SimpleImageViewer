@@ -191,6 +191,60 @@ fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usi
     worker_threads.max(1) * scale
 }
 
+struct TileRequestBudget {
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    frame_schedule_cap: usize,
+    scheduled_this_frame: usize,
+}
+
+impl TileRequestBudget {
+    fn new(visible_count: usize, tile_size: u32, worker_threads: usize) -> Self {
+        Self {
+            pending_cap: tile_request_pending_cap(visible_count, tile_size),
+            hard_pending_cap: tile_request_hard_pending_cap(tile_size),
+            frame_schedule_cap: tile_request_frame_schedule_cap(worker_threads, tile_size),
+            scheduled_this_frame: 0,
+        }
+    }
+
+    fn should_schedule(
+        &self,
+        is_cached: bool,
+        pending_count: usize,
+        is_primary_visible: bool,
+    ) -> bool {
+        should_schedule_tile_request(
+            is_cached,
+            pending_count,
+            self.pending_cap,
+            self.hard_pending_cap,
+            self.scheduled_this_frame,
+            self.frame_schedule_cap,
+            is_primary_visible,
+        )
+    }
+
+    fn record_scheduled(&mut self) {
+        self.scheduled_this_frame += 1;
+    }
+
+    #[cfg(test)]
+    fn pending_cap(&self) -> usize {
+        self.pending_cap
+    }
+
+    #[cfg(test)]
+    fn hard_pending_cap(&self) -> usize {
+        self.hard_pending_cap
+    }
+
+    #[cfg(test)]
+    fn frame_schedule_cap(&self) -> usize {
+        self.frame_schedule_cap
+    }
+}
+
 fn hdr_tile_cache_key_for_coord(
     source: &dyn crate::hdr::tiled::HdrTiledSource,
     coord: TileCoord,
@@ -577,15 +631,11 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
-            let tile_pending_cap =
-                tile_request_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
-            let tile_hard_pending_cap =
-                tile_request_hard_pending_cap(crate::tile_cache::get_tile_size());
-            let tile_frame_schedule_cap = tile_request_frame_schedule_cap(
-                rayon::current_num_threads(),
+            let mut tile_request_budget = TileRequestBudget::new(
+                tile_visits.len(),
                 crate::tile_cache::get_tile_size(),
+                rayon::current_num_threads(),
             );
-            let mut tile_scheduled_this_frame = 0;
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
@@ -607,13 +657,9 @@ impl ImageViewerApp {
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
                                 let hdr_pending_count = tm.pending_tiles.len();
-                                if should_schedule_tile_request(
+                                if tile_request_budget.should_schedule(
                                     false,
                                     hdr_pending_count,
-                                    tile_pending_cap,
-                                    tile_hard_pending_cap,
-                                    tile_scheduled_this_frame,
-                                    tile_frame_schedule_cap,
                                     is_primary_visible,
                                 ) && tm
                                     .pending_tiles
@@ -627,7 +673,7 @@ impl ImageViewerApp {
                                         coord.col,
                                         coord.row,
                                     );
-                                    tile_scheduled_this_frame += 1;
+                                    tile_request_budget.record_scheduled();
                                 }
                                 continue;
                             };
@@ -697,13 +743,9 @@ impl ImageViewerApp {
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
-                                if !should_schedule_tile_request(
+                                if !tile_request_budget.should_schedule(
                                     false,
                                     tm.pending_tiles.len(),
-                                    tile_pending_cap,
-                                    tile_hard_pending_cap,
-                                    tile_scheduled_this_frame,
-                                    tile_frame_schedule_cap,
                                     is_primary_visible,
                                 ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
@@ -724,7 +766,7 @@ impl ImageViewerApp {
                                         coord.col,
                                         coord.row,
                                     );
-                                    tile_scheduled_this_frame += 1;
+                                    tile_request_budget.record_scheduled();
                                 }
                             }
                         }
@@ -790,7 +832,7 @@ mod tests {
         should_schedule_tile_request, tile_kind_uses_shared_schedule_policy,
         tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_rect_for_tile,
         tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
-        tile_visits_for_backend, tiled_plane_threshold,
+        tile_visits_for_backend, tiled_plane_threshold, TileRequestBudget,
     };
     use crate::app::rendering::plane::PlaneBackendKind;
     use crate::app::TransitionStyle;
@@ -999,6 +1041,23 @@ mod tests {
         assert_eq!(tile_request_frame_schedule_cap(8, 512), 16);
         assert_eq!(tile_request_frame_schedule_cap(8, 1024), 8);
         assert_eq!(tile_request_frame_schedule_cap(0, 512), 2);
+    }
+
+    #[test]
+    fn tile_request_budget_centralizes_caps_and_frame_counter() {
+        let mut budget = TileRequestBudget::new(60, 512, 8);
+
+        assert_eq!(budget.pending_cap(), 64);
+        assert_eq!(budget.hard_pending_cap(), 192);
+        assert_eq!(budget.frame_schedule_cap(), 16);
+        assert!(budget.should_schedule(false, 64, true));
+        assert!(!budget.should_schedule(false, 64, false));
+
+        for _ in 0..16 {
+            assert!(budget.should_schedule(false, 0, true));
+            budget.record_scheduled();
+        }
+        assert!(!budget.should_schedule(false, 0, true));
     }
 
     #[test]
