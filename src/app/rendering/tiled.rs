@@ -186,7 +186,7 @@ fn hdr_tile_cache_key_for_coord(
     (tile_x, tile_y, tile_w, tile_h)
 }
 
-fn prioritize_hdr_tile_visits(
+fn prioritize_tile_visits(
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
@@ -473,7 +473,7 @@ impl ImageViewerApp {
             let tile_visits = if draw_sdr_tiles {
                 visible.clone()
             } else {
-                prioritize_hdr_tile_visits(&primary_visible, &visible)
+                prioritize_tile_visits(&primary_visible, &visible)
             };
             let primary_visible_coords = primary_visible
                 .iter()
@@ -844,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tile_visit_order_prioritizes_primary_visible_before_lookahead() {
+    fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
         let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
         let padded = vec![
             tile_visit(2, 3),
@@ -853,7 +853,7 @@ mod tests {
             tile_visit(5, 3),
         ];
 
-        let ordered = super::prioritize_hdr_tile_visits(&primary, &padded);
+        let ordered = super::prioritize_tile_visits(&primary, &padded);
         let ordered_coords = ordered
             .iter()
             .map(|(coord, _, _)| *coord)
