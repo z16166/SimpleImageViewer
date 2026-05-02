@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::hdr::tiled::{
-    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
+    configured_hdr_tile_cache_max_bytes, validate_tile_bounds, HdrTileBuffer, HdrTileCache,
+    HdrTiledSource, HdrTiledSourceKind,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -160,12 +160,12 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             height,
         )?;
 
-        let tile = Arc::new(HdrTileBuffer {
+        let tile = Arc::new(HdrTileBuffer::new(
             width,
             height,
-            color_space: HdrColorSpace::LinearSrgb,
-            rgba_f32: Arc::new(rgba),
-        });
+            HdrColorSpace::LinearSrgb,
+            Arc::new(rgba),
+        ));
 
         if let Ok(mut cache) = self.tile_cache.lock() {
             cache.insert(key, Arc::clone(&tile));

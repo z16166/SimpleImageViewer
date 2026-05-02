@@ -785,9 +785,9 @@ struct HdrImageKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct HdrTileKey {
+    cache_id: u64,
     width: u32,
     height: u32,
-    rgba_ptr: usize,
     rgba_len: usize,
     uv_min_bits: [u32; 2],
     uv_max_bits: [u32; 2],
@@ -804,9 +804,9 @@ impl HdrTileKey {
 
     fn from_tile_with_uv(tile: &crate::hdr::tiled::HdrTileBuffer, uv_rect: egui::Rect) -> Self {
         Self {
+            cache_id: tile.cache_id,
             width: tile.width,
             height: tile.height,
-            rgba_ptr: Arc::as_ptr(&tile.rgba_f32) as usize,
             rgba_len: tile.rgba_f32.len(),
             uv_min_bits: [uv_rect.min.x.to_bits(), uv_rect.min.y.to_bits()],
             uv_max_bits: [uv_rect.max.x.to_bits(), uv_rect.max.y.to_bits()],
@@ -1490,6 +1490,18 @@ mod tests {
     }
 
     #[test]
+    fn hdr_tile_keys_distinguish_logical_tiles_even_when_rgba_allocation_matches() {
+        let rgba = Arc::new(vec![1.0, 0.0, 0.0, 1.0]);
+        let first = HdrTileBuffer::new(1, 1, HdrColorSpace::LinearSrgb, Arc::clone(&rgba));
+        let second = HdrTileBuffer::new(1, 1, HdrColorSpace::LinearSrgb, rgba);
+
+        assert_ne!(
+            HdrTileKey::from_tile(&first),
+            HdrTileKey::from_tile(&second)
+        );
+    }
+
+    #[test]
     fn hdr_tile_keys_distinguish_uv_subrects() {
         let tile = hdr_tile(2, 2, vec![1.0; 2 * 2 * 4]);
         let full = HdrTileKey::from_tile_with_uv(
@@ -1705,11 +1717,11 @@ mod tests {
     }
 
     fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
-        HdrTileBuffer {
+        HdrTileBuffer::new(
             width,
             height,
-            color_space: HdrColorSpace::LinearSrgb,
-            rgba_f32: Arc::new(rgba_f32),
-        }
+            HdrColorSpace::LinearSrgb,
+            Arc::new(rgba_f32),
+        )
     }
 }

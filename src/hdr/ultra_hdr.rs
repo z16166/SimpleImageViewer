@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::cell::Cell;
 
 use crate::hdr::tiled::{
-    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
+    configured_hdr_tile_cache_max_bytes, validate_tile_bounds, HdrTileBuffer, HdrTileCache,
+    HdrTiledSource, HdrTiledSourceKind,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 
@@ -346,12 +346,12 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let tile = Arc::new(HdrTileBuffer {
+        let tile = Arc::new(HdrTileBuffer::new(
             width,
             height,
-            color_space: HdrColorSpace::LinearSrgb,
-            rgba_f32: Arc::new(rgba_f32),
-        });
+            HdrColorSpace::LinearSrgb,
+            Arc::new(rgba_f32),
+        ));
 
         if let Ok(mut cache) = self.tile_cache.lock() {
             cache.insert(key, Arc::clone(&tile));

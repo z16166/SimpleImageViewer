@@ -144,12 +144,12 @@ impl ExrTiledImageSource {
             }
             tiles.push((
                 (tile_x, tile_y, tile_width, tile_height),
-                Arc::new(HdrTileBuffer {
-                    width: tile_width,
-                    height: tile_height,
-                    color_space: self.color_space,
-                    rgba_f32: Arc::new(rgba),
-                }),
+                Arc::new(HdrTileBuffer::new(
+                    tile_width,
+                    tile_height,
+                    self.color_space,
+                    Arc::new(rgba),
+                )),
             ));
         }
 
@@ -229,12 +229,12 @@ impl HdrTiledSource for ExrTiledImageSource {
             self.context
                 .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height)
         })?;
-        let tile = Arc::new(HdrTileBuffer {
-            width: tile.width,
-            height: tile.height,
-            color_space: self.color_space,
-            rgba_f32: Arc::new(tile.rgba),
-        });
+        let tile = Arc::new(HdrTileBuffer::new(
+            tile.width,
+            tile.height,
+            self.color_space,
+            Arc::new(tile.rgba),
+        ));
 
         if let Ok(mut cache) = self.tile_cache.lock() {
             cache.insert(key, Arc::clone(&tile));

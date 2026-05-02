@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -27,16 +27,35 @@ const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HDR_TILE_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024 * 1024;
 pub static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(initial_hdr_tile_cache_max_bytes());
+static NEXT_HDR_TILE_CACHE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) type HdrTileCacheKey = (u32, u32, u32, u32);
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct HdrTileBuffer {
+    pub cache_id: u64,
     pub width: u32,
     pub height: u32,
     pub color_space: HdrColorSpace,
     pub rgba_f32: Arc<Vec<f32>>,
+}
+
+impl HdrTileBuffer {
+    pub(crate) fn new(
+        width: u32,
+        height: u32,
+        color_space: HdrColorSpace,
+        rgba_f32: Arc<Vec<f32>>,
+    ) -> Self {
+        Self {
+            cache_id: NEXT_HDR_TILE_CACHE_ID.fetch_add(1, Ordering::Relaxed),
+            width,
+            height,
+            color_space,
+            rgba_f32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,12 +247,12 @@ impl HdrTiledSource for HdrTiledImageSource {
             tile.extend_from_slice(&self.image.rgba_f32[start..end]);
         }
 
-        let tile = Arc::new(HdrTileBuffer {
+        let tile = Arc::new(HdrTileBuffer::new(
             width,
             height,
-            color_space: self.image.color_space,
-            rgba_f32: Arc::new(tile),
-        });
+            self.image.color_space,
+            Arc::new(tile),
+        ));
 
         if let Ok(mut cache) = self.tile_cache.lock() {
             cache.insert(key, Arc::clone(&tile));
@@ -839,12 +858,12 @@ mod tests {
     }
 
     fn hdr_tile(width: u32, height: u32, value: f32) -> super::HdrTileBuffer {
-        super::HdrTileBuffer {
+        super::HdrTileBuffer::new(
             width,
             height,
-            color_space: HdrColorSpace::LinearSrgb,
-            rgba_f32: Arc::new(vec![value; width as usize * height as usize * 4]),
-        }
+            HdrColorSpace::LinearSrgb,
+            Arc::new(vec![value; width as usize * height as usize * 4]),
+        )
     }
 
     struct RecordingDiskBackedSource {
@@ -907,12 +926,12 @@ mod tests {
                 .lock()
                 .expect("record requested row")
                 .push(y);
-            Ok(Arc::new(HdrTileBuffer {
+            Ok(Arc::new(HdrTileBuffer::new(
                 width,
                 height,
-                color_space: HdrColorSpace::LinearSrgb,
-                rgba_f32: Arc::new(vec![y as f32, y as f32, y as f32, 1.0]),
-            }))
+                HdrColorSpace::LinearSrgb,
+                Arc::new(vec![y as f32, y as f32, y as f32, 1.0]),
+            )))
         }
     }
 }
