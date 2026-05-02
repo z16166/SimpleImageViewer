@@ -46,6 +46,16 @@ pub(crate) fn should_draw_tiled_preview_transition(
         )
 }
 
+fn should_draw_tiled_preview_transition_for_backend(
+    plane_backend: PlaneBackendKind,
+    transition: TransitionStyle,
+    is_animating: bool,
+    has_preview_texture: bool,
+) -> bool {
+    plane_backend == PlaneBackendKind::Sdr
+        && should_draw_tiled_preview_transition(transition, is_animating, has_preview_texture)
+}
+
 fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     let rot = egui::emath::Rot2::from_angle(angle);
     let corners = [
@@ -267,6 +277,13 @@ fn should_draw_hdr_tiles_for_tiled_backend(
     plane_backend == PlaneBackendKind::Hdr && has_cached_tile
 }
 
+fn should_repaint_for_ready_tiles_for_backend(
+    plane_backend: PlaneBackendKind,
+    has_ready_to_upload: bool,
+) -> bool {
+    plane_backend == PlaneBackendKind::Sdr && has_ready_to_upload
+}
+
 fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
     if preview_scale >= fit_scale {
         (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
@@ -341,13 +358,12 @@ impl ImageViewerApp {
             .tile_manager
             .as_ref()
             .and_then(|tm| tm.preview_texture.clone());
-        if draw_sdr_tiles
-            && should_draw_tiled_preview_transition(
-                self.active_transition,
-                tp.is_animating,
-                preview_for_transition.is_some(),
-            )
-        {
+        if should_draw_tiled_preview_transition_for_backend(
+            plane_backend,
+            self.active_transition,
+            tp.is_animating,
+            preview_for_transition.is_some(),
+        ) {
             if let Some(preview) = preview_for_transition {
                 self.draw_complex_transition(
                     ui,
@@ -738,12 +754,13 @@ impl ImageViewerApp {
             // ANTI-STALL LOGIC:
             // If we uploaded tiles this frame, OR if there are more ready to upload in CPU cache,
             // request another repaint immediately to keep the pipeline moving.
-            let has_more_ready = self
-                .tile_manager
-                .as_ref()
-                .unwrap()
-                .has_ready_to_upload(&visible_coords)
-                && draw_sdr_tiles;
+            let has_more_ready = should_repaint_for_ready_tiles_for_backend(
+                plane_backend,
+                self.tile_manager
+                    .as_ref()
+                    .unwrap()
+                    .has_ready_to_upload(&visible_coords),
+            );
             if newly_uploaded > 0 || has_more_ready {
                 ui.ctx().request_repaint();
             }
@@ -756,8 +773,9 @@ mod tests {
     use super::{
         clipped_tile_plane, is_tiled_plane_active, rotated_axis_aligned_rect,
         should_draw_hdr_preview_for_tiled_backend, should_draw_hdr_tiles_for_tiled_backend,
-        should_draw_sdr_preview_for_tiled_backend, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_schedule_tile_request,
+        should_draw_sdr_preview_for_tiled_backend,
+        should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
+        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
         should_schedule_tile_request_for_pixel_kind,
         tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
         tile_request_pending_cap, tile_visits_for_backend, tiled_plane_threshold,
@@ -770,34 +788,66 @@ mod tests {
 
     #[test]
     fn tiled_preview_supports_complex_transitions() {
-        assert!(should_draw_tiled_preview_transition(
+        assert!(super::should_draw_tiled_preview_transition(
             TransitionStyle::Curtain,
             true,
             true
         ));
-        assert!(should_draw_tiled_preview_transition(
+        assert!(super::should_draw_tiled_preview_transition(
             TransitionStyle::PageFlip,
             true,
             true
         ));
-        assert!(should_draw_tiled_preview_transition(
+        assert!(super::should_draw_tiled_preview_transition(
             TransitionStyle::Ripple,
             true,
             true
         ));
-        assert!(!should_draw_tiled_preview_transition(
+        assert!(!super::should_draw_tiled_preview_transition(
             TransitionStyle::Fade,
             true,
             true
         ));
-        assert!(!should_draw_tiled_preview_transition(
+        assert!(!super::should_draw_tiled_preview_transition(
             TransitionStyle::Curtain,
             false,
             true
         ));
-        assert!(!should_draw_tiled_preview_transition(
+        assert!(!super::should_draw_tiled_preview_transition(
             TransitionStyle::Curtain,
             true,
+            false
+        ));
+    }
+
+    #[test]
+    fn tiled_preview_transition_is_selected_by_backend() {
+        assert!(should_draw_tiled_preview_transition_for_backend(
+            PlaneBackendKind::Sdr,
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+        assert!(!should_draw_tiled_preview_transition_for_backend(
+            PlaneBackendKind::Hdr,
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn ready_tile_repaint_is_selected_by_backend() {
+        assert!(should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Sdr,
+            true
+        ));
+        assert!(!should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Hdr,
+            true
+        ));
+        assert!(!should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Sdr,
             false
         ));
     }
