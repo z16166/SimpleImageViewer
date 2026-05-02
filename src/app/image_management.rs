@@ -25,6 +25,26 @@ fn preserve_current_tile_manager_for_navigation(
     }
 }
 
+fn should_upload_tiled_bootstrap_preview(
+    cache_contains_index: bool,
+    cached_preview_max_side: Option<u32>,
+    bootstrap_max_side: u32,
+) -> bool {
+    !cache_contains_index
+        || cached_preview_max_side.map_or(true, |cached_max| bootstrap_max_side > cached_max)
+}
+
+fn build_tiled_manager_with_best_preview(
+    index: usize,
+    generation: u64,
+    source: Arc<dyn crate::loader::TiledImageSource>,
+    cached_handle: Option<egui::TextureHandle>,
+) -> TileManager {
+    let mut tm = TileManager::with_source(index, generation, source);
+    tm.preview_texture = cached_handle;
+    tm
+}
+
 impl ImageViewerApp {
     pub(crate) fn effective_ultra_hdr_decode_capacity(&self) -> f32 {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
@@ -1037,50 +1057,31 @@ impl ImageViewerApp {
                 }
                 // Upload preview into texture_cache so it persists across navigations.
                 // Without this, flipping away and back would re-trigger a 300ms+ load.
-                if let Some(preview) = load_result.preview.as_ref() {
-                    // Stage-1 bootstrap (EXIF or small generate_preview): only upload if there is no
-                    // cache entry, or this bootstrap is strictly larger than the cached preview texture.
-                    // Never replace a stage-2 HQ preview (larger uploaded texture) with a smaller LQ one.
-                    let bootstrap_max = preview.width.max(preview.height);
-                    let allow_sync_preview = !self.texture_cache.contains(idx)
-                        || self
-                            .texture_cache
-                            .cached_preview_max_side(idx)
-                            .map_or(true, |cached_max| bootstrap_max > cached_max);
-
-                    if allow_sync_preview {
-                        let color_image = ColorImage::from_rgba_unmultiplied(
-                            [preview.width as usize, preview.height as usize],
-                            preview.rgba(),
-                        );
-                        let name = format!("img_preview_{}", idx);
-                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                        if let Some(evicted_idx) = self.texture_cache.insert(
-                            idx,
-                            handle,
-                            source.width(),
-                            source.height(),
-                            true,
-                            self.current_index,
-                            self.image_files.len(),
-                        ) {
-                            self.handle_texture_cache_eviction(evicted_idx);
-                        }
-                    }
-                }
+                self.upload_tiled_bootstrap_preview(
+                    ctx,
+                    idx,
+                    load_result.preview.as_ref(),
+                    source.width(),
+                    source.height(),
+                );
 
                 if idx == self.current_index {
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm =
-                        TileManager::with_source(idx, load_result.generation, Arc::clone(&source));
+                    let mut tm = build_tiled_manager_with_best_preview(
+                        idx,
+                        load_result.generation,
+                        Arc::clone(&source),
+                        self.texture_cache.get(idx).cloned(),
+                    );
 
                     // Prefer existing cached texture (might be HQ) over the initial low-res preview
-                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
-                        tm.preview_texture = Some(cached_handle);
-                    } else if let Some(preview) = load_result.preview.as_ref() {
-                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
-                    }
+                    self.attach_initial_preview_if_needed(
+                        ctx,
+                        idx,
+                        &mut tm,
+                        load_result.preview.as_ref(),
+                    );
 
                     self.tile_manager = Some(tm);
                     self.animation = None;
@@ -1100,15 +1101,20 @@ impl ImageViewerApp {
                     // Preloading: create the TileManager and store it in prefetched_tiles
                     // so that when the user switches to this image, the source (and its
                     // background refined RAW data) is immediately available!
-                    let mut tm =
-                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    let mut tm = build_tiled_manager_with_best_preview(
+                        idx,
+                        load_result.generation,
+                        Arc::clone(source),
+                        self.texture_cache.get(idx).cloned(),
+                    );
 
                     // Prefer existing cached texture (might be HQ) over the initial low-res preview
-                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
-                        tm.preview_texture = Some(cached_handle);
-                    } else if let Some(preview) = load_result.preview.as_ref() {
-                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
-                    }
+                    self.attach_initial_preview_if_needed(
+                        ctx,
+                        idx,
+                        &mut tm,
+                        load_result.preview.as_ref(),
+                    );
                     self.prefetched_tiles.insert(idx, tm);
                 }
             }
@@ -1126,34 +1132,13 @@ impl ImageViewerApp {
 
                 let source = fallback;
                 // Upload preview into texture_cache so it persists across navigations.
-                if let Some(preview) = load_result.preview.as_ref() {
-                    let bootstrap_max = preview.width.max(preview.height);
-                    let allow_sync_preview = !self.texture_cache.contains(idx)
-                        || self
-                            .texture_cache
-                            .cached_preview_max_side(idx)
-                            .map_or(true, |cached_max| bootstrap_max > cached_max);
-
-                    if allow_sync_preview {
-                        let color_image = ColorImage::from_rgba_unmultiplied(
-                            [preview.width as usize, preview.height as usize],
-                            preview.rgba(),
-                        );
-                        let name = format!("img_preview_{}", idx);
-                        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                        if let Some(evicted_idx) = self.texture_cache.insert(
-                            idx,
-                            handle,
-                            source.width(),
-                            source.height(),
-                            true,
-                            self.current_index,
-                            self.image_files.len(),
-                        ) {
-                            self.handle_texture_cache_eviction(evicted_idx);
-                        }
-                    }
-                }
+                self.upload_tiled_bootstrap_preview(
+                    ctx,
+                    idx,
+                    load_result.preview.as_ref(),
+                    source.width(),
+                    source.height(),
+                );
 
                 if idx == self.current_index {
                     self.current_hdr_tiled_image =
@@ -1165,14 +1150,19 @@ impl ImageViewerApp {
                         .map(|preview| crate::app::CurrentHdrImage::new(idx, preview));
                     self.current_image_res = Some((source.width(), source.height()));
                     crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
-                    let mut tm =
-                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    let mut tm = build_tiled_manager_with_best_preview(
+                        idx,
+                        load_result.generation,
+                        Arc::clone(source),
+                        self.texture_cache.get(idx).cloned(),
+                    );
 
-                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
-                        tm.preview_texture = Some(cached_handle);
-                    } else if let Some(preview) = load_result.preview.as_ref() {
-                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
-                    }
+                    self.attach_initial_preview_if_needed(
+                        ctx,
+                        idx,
+                        &mut tm,
+                        load_result.preview.as_ref(),
+                    );
 
                     self.tile_manager = Some(tm);
                     self.animation = None;
@@ -1186,14 +1176,19 @@ impl ImageViewerApp {
                     }
                     source.request_refinement(idx, self.generation);
                 } else {
-                    let mut tm =
-                        TileManager::with_source(idx, load_result.generation, Arc::clone(source));
+                    let mut tm = build_tiled_manager_with_best_preview(
+                        idx,
+                        load_result.generation,
+                        Arc::clone(source),
+                        self.texture_cache.get(idx).cloned(),
+                    );
 
-                    if let Some(cached_handle) = self.texture_cache.get(idx).cloned() {
-                        tm.preview_texture = Some(cached_handle);
-                    } else if let Some(preview) = load_result.preview.as_ref() {
-                        self.setup_tile_manager(ctx, idx, &mut tm, preview.clone());
-                    }
+                    self.attach_initial_preview_if_needed(
+                        ctx,
+                        idx,
+                        &mut tm,
+                        load_result.preview.as_ref(),
+                    );
                     self.prefetched_tiles.insert(idx, tm);
                 }
             }
@@ -1401,6 +1396,60 @@ impl ImageViewerApp {
         );
         tm.preview_texture = Some(preview_handle);
     }
+
+    fn upload_tiled_bootstrap_preview(
+        &mut self,
+        ctx: &egui::Context,
+        idx: usize,
+        preview: Option<&DecodedImage>,
+        full_width: u32,
+        full_height: u32,
+    ) {
+        let Some(preview) = preview else {
+            return;
+        };
+
+        let bootstrap_max = preview.width.max(preview.height);
+        if !should_upload_tiled_bootstrap_preview(
+            self.texture_cache.contains(idx),
+            self.texture_cache.cached_preview_max_side(idx),
+            bootstrap_max,
+        ) {
+            return;
+        }
+
+        let color_image = ColorImage::from_rgba_unmultiplied(
+            [preview.width as usize, preview.height as usize],
+            preview.rgba(),
+        );
+        let name = format!("img_preview_{}", idx);
+        let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+        if let Some(evicted_idx) = self.texture_cache.insert(
+            idx,
+            handle,
+            full_width,
+            full_height,
+            true,
+            self.current_index,
+            self.image_files.len(),
+        ) {
+            self.handle_texture_cache_eviction(evicted_idx);
+        }
+    }
+
+    fn attach_initial_preview_if_needed(
+        &self,
+        ctx: &egui::Context,
+        idx: usize,
+        tm: &mut TileManager,
+        preview: Option<&DecodedImage>,
+    ) {
+        if tm.preview_texture.is_none() {
+            if let Some(preview) = preview {
+                self.setup_tile_manager(ctx, idx, tm, preview.clone());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1454,5 +1503,29 @@ mod tests {
         assert!(tile_manager.is_none());
         assert!(prefetched_tiles.contains_key(&7));
         assert_eq!(prefetched_tiles.get(&7).unwrap().generation, 42);
+    }
+
+    #[test]
+    fn tiled_bootstrap_preview_replaces_only_missing_or_smaller_cached_preview() {
+        assert!(should_upload_tiled_bootstrap_preview(false, None, 512));
+        assert!(should_upload_tiled_bootstrap_preview(true, None, 512));
+        assert!(should_upload_tiled_bootstrap_preview(true, Some(128), 512));
+        assert!(!should_upload_tiled_bootstrap_preview(true, Some(1024), 512));
+        assert!(!should_upload_tiled_bootstrap_preview(true, Some(512), 512));
+    }
+
+    #[test]
+    fn tiled_manager_install_helper_preserves_source_and_generation() {
+        let source: Arc<dyn crate::loader::TiledImageSource> = Arc::new(DummyTiledSource {
+            width: 1024,
+            height: 768,
+        });
+
+        let tm = build_tiled_manager_with_best_preview(9, 17, source, None);
+
+        assert_eq!(tm.image_index, 9);
+        assert_eq!(tm.generation, 17);
+        assert_eq!(tm.full_width, 1024);
+        assert_eq!(tm.full_height, 768);
     }
 }
