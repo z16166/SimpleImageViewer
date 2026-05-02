@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::cell::Cell;
 
 use crate::hdr::tiled::{
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds, HdrTileBuffer, HdrTileCache,
-    HdrTiledSource, HdrTiledSourceKind,
+    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
+    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 

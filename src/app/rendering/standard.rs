@@ -15,10 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::geometry::PlaneLayout;
+use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -98,7 +98,8 @@ impl ImageViewerApp {
             .and_then(|current| current.image_for_index(self.current_index))
             .cloned();
         let render_plan = self.build_render_plan(RenderShape::Static, hdr_image.is_some());
-        if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating) {
+        if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating)
+        {
             self.transition_start = None;
             self.prev_texture = None;
             tp = crate::app::rendering::transitions::TransitionParams::default();
@@ -577,7 +578,11 @@ mod tests {
             false
         ));
         assert!(!should_draw_static_hdr_immediately(
-            &static_plan(false, Some(wgpu::TextureFormat::Rgba16Float), HdrRenderOutputMode::NativeHdr),
+            &static_plan(
+                false,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
             TransitionStyle::None,
             false
         ));

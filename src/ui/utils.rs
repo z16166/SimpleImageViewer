@@ -71,7 +71,8 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
             hover_base_color.b(),
             20, // Very airy
         );
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent); // The text turns indigo
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+        // The text turns indigo
     }
 
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.widget_border_hover);

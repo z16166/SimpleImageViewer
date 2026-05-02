@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::app::rendering::plan::RenderShape;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::loader::{TileDecodeSource, TilePixelKind};
 use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
@@ -426,7 +426,8 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.source_for_index(self.current_index))
             .cloned();
-        let render_plan = self.build_render_plan(RenderShape::Tiled, hdr_source_for_frame.is_some());
+        let render_plan =
+            self.build_render_plan(RenderShape::Tiled, hdr_source_for_frame.is_some());
         let plane_backend = render_plan.backend;
 
         let tp = self.compute_transition_params();
@@ -634,7 +635,8 @@ impl ImageViewerApp {
             let burst_upload_max = (BURST_UPLOAD_MAX_512 / tile_size_scale).max(1);
             let is_interacting = canvas_resp.dragged() || self.last_mouse_wheel_nav.abs() > 0.01;
             let tile_upload_quota = if !is_interacting {
-                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(burst_upload_max) // Burst mode
+                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(burst_upload_max)
+            // Burst mode
             } else {
                 self.tile_upload_quota.min(burst_upload_max) // Stable mode also capped
             };
@@ -842,15 +844,15 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        TileRequestBudget, TiledPlaneKind, is_tiled_plane_active,
-        rotated_axis_aligned_rect, should_draw_tiled_preview_for_backend,
-        should_draw_tiled_preview_transition_for_backend, should_draw_tiled_tile_plane_for_backend,
-        should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
-        should_schedule_tile_request, tile_decode_source_for_backend,
-        tile_kind_uses_shared_schedule_policy, tile_pending_key_for_backend,
-        tile_pixel_kind_for_backend, tile_plane_kind_for_backend, tile_plane_rect_for_tile,
-        tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
-        tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
+        TileRequestBudget, TiledPlaneKind, is_tiled_plane_active, rotated_axis_aligned_rect,
+        should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
+        should_draw_tiled_tile_plane_for_backend, should_invalidate_tile_requests_on_pan_drag,
+        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
+        tile_decode_source_for_backend, tile_kind_uses_shared_schedule_policy,
+        tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_kind_for_backend,
+        tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
+        tile_request_pending_cap, tile_request_priority, tile_visits_for_backend,
+        tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
@@ -1057,8 +1059,7 @@ mod tests {
         let tile_rect = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(50.0, 110.0));
         let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
 
-        let (rect, uv) =
-            clipped_plane_rect_and_uv(tile_rect, clip).expect("visible clipped tile");
+        let (rect, uv) = clipped_plane_rect_and_uv(tile_rect, clip).expect("visible clipped tile");
 
         assert_eq!(
             rect,

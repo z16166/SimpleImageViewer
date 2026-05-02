@@ -15,9 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
@@ -650,8 +650,7 @@ mod tests {
         assert_eq!(
             preview.rgba_f32.as_slice(),
             &[
-                0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0, 1.0, 8.0, 8.0, 8.0, 1.0, 11.0, 11.0, 11.0,
-                1.0,
+                0.0, 0.0, 0.0, 1.0, 3.0, 3.0, 3.0, 1.0, 8.0, 8.0, 8.0, 1.0, 11.0, 11.0, 11.0, 1.0,
             ]
         );
     }

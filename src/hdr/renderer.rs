@@ -1717,11 +1717,6 @@ mod tests {
     }
 
     fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
-        HdrTileBuffer::new(
-            width,
-            height,
-            HdrColorSpace::LinearSrgb,
-            Arc::new(rgba_f32),
-        )
+        HdrTileBuffer::new(width, height, HdrColorSpace::LinearSrgb, Arc::new(rgba_f32))
     }
 }

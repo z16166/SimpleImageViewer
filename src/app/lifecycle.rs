@@ -1,5 +1,5 @@
 use crate::app::ImageViewerApp;
-use crate::app::{compute_preload_budgets, HardwareTier, CACHE_SIZE};
+use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -8,8 +8,8 @@ use crate::theme::SystemThemeCache;
 use crate::ui::utils::{get_system_font_families, setup_fonts, setup_visuals};
 use eframe::egui::{self, Vec2};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 impl ImageViewerApp {

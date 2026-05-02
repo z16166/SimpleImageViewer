@@ -1,5 +1,5 @@
-use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::ImageViewerApp;
+use crate::app::rendering::plane::PlaneBackendKind;
 use crate::hdr::monitor::HdrMonitorSelection;
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::loader::PixelPlaneKind;
@@ -64,11 +64,7 @@ pub(crate) fn build_render_plan_for_state(
 }
 
 impl ImageViewerApp {
-    pub(crate) fn build_render_plan(
-        &self,
-        shape: RenderShape,
-        has_hdr_plane: bool,
-    ) -> RenderPlan {
+    pub(crate) fn build_render_plan(&self, shape: RenderShape, has_hdr_plane: bool) -> RenderPlan {
         build_render_plan_for_state(
             shape,
             has_hdr_plane,
@@ -90,10 +86,7 @@ pub(crate) fn select_render_backend(
     }
 }
 
-fn transition_policy_for(
-    shape: RenderShape,
-    backend: PlaneBackendKind,
-) -> RenderTransitionPolicy {
+fn transition_policy_for(shape: RenderShape, backend: PlaneBackendKind) -> RenderTransitionPolicy {
     match (shape, backend) {
         (_, PlaneBackendKind::Sdr) => RenderTransitionPolicy::SdrOnly,
         (RenderShape::Static, PlaneBackendKind::Hdr) => {

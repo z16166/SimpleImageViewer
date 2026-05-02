@@ -16,8 +16,8 @@
 
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 #[cfg(target_os = "windows")]

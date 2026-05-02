@@ -19,8 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use crate::hdr::tiled::{
+    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, hdr_preview_from_tiled_source_nearest,
-    sdr_preview_from_hdr_preview, HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
+    sdr_preview_from_hdr_preview,
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
 

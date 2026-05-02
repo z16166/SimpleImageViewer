@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::rendering::plan::{RenderShape, build_render_plan_for_state};
+use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
 use crate::hdr::types::HdrColorSpace;
@@ -124,7 +124,9 @@ fn hdr_render_path_for_viewer_plan(
     if plan.backend == PlaneBackendKind::Hdr {
         return match shape {
             RenderShape::Tiled => Some(HdrRenderPath::FloatTilePlane),
-            RenderShape::Static if !complex_transition_active => Some(HdrRenderPath::FloatImagePlane),
+            RenderShape::Static if !complex_transition_active => {
+                Some(HdrRenderPath::FloatImagePlane)
+            }
             RenderShape::Static => Some(HdrRenderPath::SdrFallback),
         };
     }
