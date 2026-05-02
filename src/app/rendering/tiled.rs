@@ -158,29 +158,6 @@ fn should_schedule_tile_request(
         && (is_primary_visible || pending_count < pending_cap)
 }
 
-fn should_schedule_tile_request_for_pixel_kind(
-    pixel_kind: TilePixelKind,
-    is_cached: bool,
-    pending_count: usize,
-    pending_cap: usize,
-    hard_pending_cap: usize,
-    scheduled_this_frame: usize,
-    frame_schedule_cap: usize,
-    is_primary_visible: bool,
-) -> bool {
-    match pixel_kind {
-        TilePixelKind::Sdr | TilePixelKind::Hdr => should_schedule_tile_request(
-            is_cached,
-            pending_count,
-            pending_cap,
-            hard_pending_cap,
-            scheduled_this_frame,
-            frame_schedule_cap,
-            is_primary_visible,
-        ),
-    }
-}
-
 fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind {
     match plane_backend {
         PlaneBackendKind::Sdr => TilePixelKind::Sdr,
@@ -311,6 +288,28 @@ fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> 
 
 fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
     effective_scale >= threshold
+}
+
+#[cfg(test)]
+fn tile_kind_uses_shared_schedule_policy(
+    _pixel_kind: TilePixelKind,
+    is_cached: bool,
+    pending_count: usize,
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    scheduled_this_frame: usize,
+    frame_schedule_cap: usize,
+    is_primary_visible: bool,
+) -> bool {
+    should_schedule_tile_request(
+        is_cached,
+        pending_count,
+        pending_cap,
+        hard_pending_cap,
+        scheduled_this_frame,
+        frame_schedule_cap,
+        is_primary_visible,
+    )
 }
 
 impl ImageViewerApp {
@@ -608,8 +607,7 @@ impl ImageViewerApp {
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
                                 let hdr_pending_count = tm.pending_tiles.len();
-                                if should_schedule_tile_request_for_pixel_kind(
-                                    tile_pixel_kind_for_backend(plane_backend),
+                                if should_schedule_tile_request(
                                     false,
                                     hdr_pending_count,
                                     tile_pending_cap,
@@ -699,8 +697,7 @@ impl ImageViewerApp {
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
                                 let is_primary_visible = primary_visible_coords.contains(coord);
-                                if !should_schedule_tile_request_for_pixel_kind(
-                                    tile_pixel_kind_for_backend(plane_backend),
+                                if !should_schedule_tile_request(
                                     false,
                                     tm.pending_tiles.len(),
                                     tile_pending_cap,
@@ -790,7 +787,7 @@ mod tests {
         should_draw_sdr_preview_for_tiled_backend,
         should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
         should_process_hdr_tiles_for_backend, should_repaint_for_ready_tiles_for_backend,
-        should_schedule_tile_request, should_schedule_tile_request_for_pixel_kind,
+        should_schedule_tile_request, tile_kind_uses_shared_schedule_policy,
         tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_rect_for_tile,
         tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
         tile_visits_for_backend, tiled_plane_threshold,
@@ -960,7 +957,7 @@ mod tests {
 
     #[test]
     fn sdr_tile_request_uses_shared_primary_visible_overcommit_policy() {
-        assert!(should_schedule_tile_request_for_pixel_kind(
+        assert!(tile_kind_uses_shared_schedule_policy(
             TilePixelKind::Sdr,
             false,
             96,
@@ -970,7 +967,7 @@ mod tests {
             32,
             true
         ));
-        assert!(should_schedule_tile_request_for_pixel_kind(
+        assert!(tile_kind_uses_shared_schedule_policy(
             TilePixelKind::Hdr,
             false,
             96,
