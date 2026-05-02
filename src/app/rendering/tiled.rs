@@ -137,7 +137,7 @@ fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot: Option<eg
     }
 }
 
-fn should_schedule_hdr_tile_extract(
+fn should_schedule_tile_request(
     is_cached: bool,
     pending_count: usize,
     pending_cap: usize,
@@ -152,7 +152,7 @@ fn should_schedule_hdr_tile_extract(
         && (is_primary_visible || pending_count < pending_cap)
 }
 
-fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
+fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 2 } else { 1 };
     if visible_count > 1000 {
         24 / scale
@@ -165,11 +165,11 @@ fn hdr_tile_extract_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     }
 }
 
-fn hdr_tile_extract_hard_pending_cap(tile_size: u32) -> usize {
+fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
     if tile_size >= 1024 { 96 } else { 192 }
 }
 
-fn hdr_tile_extract_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
+fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 1 } else { 2 };
     worker_threads.max(1) * scale
 }
@@ -519,11 +519,11 @@ impl ImageViewerApp {
             };
 
             let mut newly_uploaded = 0;
-            let hdr_pending_cap =
-                hdr_tile_extract_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
-            let hdr_hard_pending_cap =
-                hdr_tile_extract_hard_pending_cap(crate::tile_cache::get_tile_size());
-            let hdr_frame_schedule_cap = hdr_tile_extract_frame_schedule_cap(
+            let tile_pending_cap =
+                tile_request_pending_cap(tile_visits.len(), crate::tile_cache::get_tile_size());
+            let tile_hard_pending_cap =
+                tile_request_hard_pending_cap(crate::tile_cache::get_tile_size());
+            let tile_frame_schedule_cap = tile_request_frame_schedule_cap(
                 rayon::current_num_threads(),
                 crate::tile_cache::get_tile_size(),
             );
@@ -549,13 +549,13 @@ impl ImageViewerApp {
                                 hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
                             else {
                                 let hdr_pending_count = tm.pending_tiles.len();
-                                if should_schedule_hdr_tile_extract(
+                                if should_schedule_tile_request(
                                     false,
                                     hdr_pending_count,
-                                    hdr_pending_cap,
-                                    hdr_hard_pending_cap,
+                                    tile_pending_cap,
+                                    tile_hard_pending_cap,
                                     hdr_scheduled_this_frame,
-                                    hdr_frame_schedule_cap,
+                                    tile_frame_schedule_cap,
                                     is_primary_visible,
                                 ) && tm
                                     .pending_tiles
@@ -641,23 +641,7 @@ impl ImageViewerApp {
                         }
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
-                                // Dynamic pending cap: scale inversely with visible tile count.
-                                // At high zoom (few tiles visible), load fast.
-                                // At low zoom (many visible), allow enough to keep worker threads busy.
-                                // Scale down for larger tiles to keep memory bounded.
-                                let visible_count = visible.len();
-                                let ts = crate::tile_cache::get_tile_size();
-                                let scale = if ts >= 1024 { 2 } else { 1 }; // halve caps for 1024 tiles
-                                let max_pending = if visible_count > 1000 {
-                                    24 / scale
-                                } else if visible_count > 200 {
-                                    48 / scale
-                                } else if visible_count > 50 {
-                                    64 / scale
-                                } else {
-                                    96 / scale
-                                };
-                                if tm.pending_tiles.len() >= max_pending {
+                                if tm.pending_tiles.len() >= tile_pending_cap {
                                     continue; // Don't break — still need to draw already-Ready tiles below
                                 }
                                 let source = tm.get_source();
@@ -729,13 +713,12 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        clipped_hdr_tile_plane, hdr_tile_extract_frame_schedule_cap,
-        hdr_tile_extract_hard_pending_cap, hdr_tile_extract_pending_cap,
-        hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active, rotated_axis_aligned_rect,
-        should_draw_hdr_preview_for_tiled_mode, should_draw_hdr_tiles_for_tiled_mode,
-        should_draw_sdr_preview_for_tiled_mode, should_draw_tiled_preview_transition,
-        should_invalidate_tile_requests_on_pan_drag, should_schedule_hdr_tile_extract,
-        tiled_plane_threshold,
+        clipped_hdr_tile_plane, hdr_tile_plane_rect_for_sdr_tile, is_tiled_plane_active,
+        rotated_axis_aligned_rect, should_draw_hdr_preview_for_tiled_mode,
+        should_draw_hdr_tiles_for_tiled_mode, should_draw_sdr_preview_for_tiled_mode,
+        should_draw_tiled_preview_transition, should_invalidate_tile_requests_on_pan_drag,
+        should_schedule_tile_request, tile_request_frame_schedule_cap,
+        tile_request_hard_pending_cap, tile_request_pending_cap, tiled_plane_threshold,
     };
     use crate::app::TransitionStyle;
     use crate::tile_cache::TileCoord;
@@ -819,47 +802,45 @@ mod tests {
     }
 
     #[test]
-    fn hdr_tile_extract_scheduling_is_budgeted() {
-        assert!(!should_schedule_hdr_tile_extract(
-            true, 0, 96, 192, 0, 32, true
-        ));
-        assert!(should_schedule_hdr_tile_extract(
+    fn tile_request_scheduling_is_budgeted() {
+        assert!(!should_schedule_tile_request(true, 0, 96, 192, 0, 32, true));
+        assert!(should_schedule_tile_request(
             false, 2, 96, 192, 0, 32, false
         ));
-        assert!(!should_schedule_hdr_tile_extract(
+        assert!(!should_schedule_tile_request(
             false, 96, 96, 192, 0, 32, false
         ));
-        assert!(should_schedule_hdr_tile_extract(
+        assert!(should_schedule_tile_request(
             false, 96, 96, 192, 0, 32, true
         ));
-        assert!(!should_schedule_hdr_tile_extract(
+        assert!(!should_schedule_tile_request(
             false, 192, 96, 192, 0, 32, true
         ));
-        assert!(!should_schedule_hdr_tile_extract(
+        assert!(!should_schedule_tile_request(
             false, 2, 96, 192, 32, 32, true
         ));
     }
 
     #[test]
-    fn hdr_tile_extract_pending_cap_scales_like_sdr_tile_queue() {
-        assert_eq!(hdr_tile_extract_pending_cap(10, 512), 96);
-        assert_eq!(hdr_tile_extract_pending_cap(60, 512), 64);
-        assert_eq!(hdr_tile_extract_pending_cap(201, 512), 48);
-        assert_eq!(hdr_tile_extract_pending_cap(1001, 512), 24);
-        assert_eq!(hdr_tile_extract_pending_cap(60, 1024), 32);
+    fn tile_request_pending_cap_scales_like_sdr_tile_queue() {
+        assert_eq!(tile_request_pending_cap(10, 512), 96);
+        assert_eq!(tile_request_pending_cap(60, 512), 64);
+        assert_eq!(tile_request_pending_cap(201, 512), 48);
+        assert_eq!(tile_request_pending_cap(1001, 512), 24);
+        assert_eq!(tile_request_pending_cap(60, 1024), 32);
     }
 
     #[test]
-    fn hdr_tile_extract_hard_pending_cap_bounds_primary_overcommit() {
-        assert_eq!(hdr_tile_extract_hard_pending_cap(512), 192);
-        assert_eq!(hdr_tile_extract_hard_pending_cap(1024), 96);
+    fn tile_request_hard_pending_cap_bounds_primary_overcommit() {
+        assert_eq!(tile_request_hard_pending_cap(512), 192);
+        assert_eq!(tile_request_hard_pending_cap(1024), 96);
     }
 
     #[test]
-    fn hdr_tile_extract_frame_schedule_cap_limits_queue_bursts() {
-        assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 512), 16);
-        assert_eq!(hdr_tile_extract_frame_schedule_cap(8, 1024), 8);
-        assert_eq!(hdr_tile_extract_frame_schedule_cap(0, 512), 2);
+    fn tile_request_frame_schedule_cap_limits_queue_bursts() {
+        assert_eq!(tile_request_frame_schedule_cap(8, 512), 16);
+        assert_eq!(tile_request_frame_schedule_cap(8, 1024), 8);
+        assert_eq!(tile_request_frame_schedule_cap(0, 512), 2);
     }
 
     #[test]
