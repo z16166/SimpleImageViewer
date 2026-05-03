@@ -15,6 +15,8 @@ pub type ExrConstContext = *const c_void;
 pub const EXR_ERR_SUCCESS: ExrResult = 0;
 pub const EXR_STORAGE_SCANLINE: c_int = 0;
 pub const EXR_STORAGE_TILED: c_int = 1;
+pub const EXR_STORAGE_DEEP_SCANLINE: c_int = 2;
+pub const EXR_STORAGE_DEEP_TILED: c_int = 3;
 pub const EXR_PIXEL_FLOAT: u16 = 2;
 
 #[repr(C)]
@@ -278,6 +280,23 @@ unsafe extern "C" {
         ctxt: ExrConstContext,
         decode: *mut ExrDecodePipeline,
     ) -> ExrResult;
+
+    /// Flatten a single-part deep scanline RGBAZ image to RGBA32F (Imf C++ path).
+    /// Returns 0 on success; negative on failure. `out_len` must be >= width*height*4 floats.
+    pub fn siv_imf_deep_scanline_flatten_rgba(
+        path: *const c_char,
+        out_rgba: *mut f32,
+        out_len: usize,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    ) -> c_int;
+
+    /// Read `chromaticities` from file header via Imf::InputFile (works for scanline and deep headers).
+    /// Returns 0 on success (8 floats: Rxy, Gxy, Bxy, Wxy), -2 if attribute missing, -3 on other failure.
+    pub fn siv_imf_input_file_chromaticities_f32(
+        path: *const c_char,
+        out_rg_bw_xy: *mut f32,
+    ) -> c_int;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -70,6 +70,10 @@ impl ExrTiledImageSource {
             .channels
             .iter()
             .any(|channel| channel.x_sampling != 1 || channel.y_sampling != 1);
+        let color_space =
+            crate::hdr::openexr_core_backend::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(
+                path,
+            );
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -78,7 +82,7 @@ impl ExrTiledImageSource {
             height: part.height,
             part_index,
             storage: part.storage,
-            color_space: HdrColorSpace::Unknown,
+            color_space,
             has_subsampled_channels,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
         })
@@ -370,23 +374,25 @@ pub(crate) fn exr_dimensions_unvalidated(path: &Path) -> Result<(u32, u32), Stri
 }
 
 pub(crate) fn decode_deep_exr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let (width, height) = exr_dimensions_unvalidated(path)?;
-    let pixel_count = width
-        .checked_mul(height)
-        .ok_or_else(|| format!("Deep EXR dimensions overflow: {width}x{height}"))?;
-    let mut rgba_f32 = vec![0.0_f32; pixel_count as usize * 4];
-    for pixel in rgba_f32.chunks_exact_mut(4) {
-        pixel[0] = 0.18;
-        pixel[1] = 0.18;
-        pixel[2] = 0.18;
-        pixel[3] = 1.0;
-    }
+    let context = crate::hdr::openexr_core_backend::OpenExrCoreReadContext::open(path)?;
+    let parts = exr_part_infos_from_context(&context)?;
+    let part_index = default_display_part_index(&parts).unwrap_or(0);
+    let part = context.part(part_index)?;
+    let color_space =
+        crate::hdr::openexr_core_backend::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(
+            path,
+        );
+    let rgba_f32 = crate::hdr::openexr_core_backend::deep_scanline_flatten_rgba_via_imf(
+        path,
+        part.width,
+        part.height,
+    )?;
     Ok(HdrImageBuffer {
-        width,
-        height,
+        width: part.width,
+        height: part.height,
         format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::Unknown,
-        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::Unknown),
+        color_space,
+        metadata: HdrImageMetadata::from_color_space(color_space),
         rgba_f32: Arc::new(rgba_f32),
     })
 }

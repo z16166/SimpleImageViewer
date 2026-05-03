@@ -9,7 +9,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Condvar, Mutex};
@@ -47,6 +47,66 @@ pub(crate) struct OpenExrCoreReadContext {
 // for concurrent chunk requests when each thread uses its own decode pipeline.
 unsafe impl Send for OpenExrCoreReadContext {}
 unsafe impl Sync for OpenExrCoreReadContext {}
+
+fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> {
+    let filename = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    let mut out = [0.0_f32; 8];
+    let code = unsafe {
+        sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr())
+    };
+    (code == 0).then_some(out)
+}
+
+fn hdr_color_space_from_chromaticities_xy(ch: &[f32; 8]) -> crate::hdr::types::HdrColorSpace {
+    if chromaticities_looks_like_aces_ap0(ch) {
+        crate::hdr::types::HdrColorSpace::Aces2065_1
+    } else {
+        crate::hdr::types::HdrColorSpace::LinearSrgb
+    }
+}
+
+/// Heuristic match for ACES 2065-1 / AP0-style primaries (e.g. OpenEXR `Carrots.exr`).
+fn chromaticities_looks_like_aces_ap0(ch: &[f32; 8]) -> bool {
+    let (rx, ry, gx, gy, bx, by) = (ch[0], ch[1], ch[2], ch[3], ch[4], ch[5]);
+    let green_on_spectral_locus = gy > 0.85 && gx.abs() < 0.06;
+    let red_to_the_right = rx > 0.55 && ry < 0.45;
+    let blue_slot = (bx < 0.2 && by.abs() < 0.25) || (bx.abs() < 0.05 && by < 0.15);
+    green_on_spectral_locus && red_to_the_right && blue_slot
+}
+
+pub(crate) fn deep_scanline_flatten_rgba_via_imf(
+    path: &Path,
+    expected_w: u32,
+    expected_h: u32,
+) -> Result<Vec<f32>, String> {
+    let filename = CString::new(path.to_string_lossy().as_bytes())
+        .map_err(|_| format!("EXR path contains an interior NUL: {}", path.display()))?;
+    let mut rgba = vec![0.0_f32; expected_w as usize * expected_h as usize * 4];
+    let mut w = 0u32;
+    let mut h = 0u32;
+    let code = unsafe {
+        sys::siv_imf_deep_scanline_flatten_rgba(
+            filename.as_ptr(),
+            rgba.as_mut_ptr(),
+            rgba.len(),
+            &mut w,
+            &mut h,
+        )
+    };
+    if code != 0 {
+        return Err(format!(
+            "IMF deep scanline flatten failed (code {code}) for {}",
+            path.display()
+        ));
+    }
+    if w != expected_w || h != expected_h {
+        return Err(format!(
+            "IMF deep flatten size mismatch: got {w}x{h}, expected {expected_w}x{expected_h} for {}",
+            path.display()
+        ));
+    }
+    Ok(rgba)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenExrCorePartInfo {
@@ -227,6 +287,13 @@ impl OpenExrCoreReadContext {
             )),
             decoded_chunk_ready: Condvar::new(),
         })
+    }
+
+    pub(crate) fn infer_exr_display_color_space_for_path(path: &Path) -> crate::hdr::types::HdrColorSpace {
+        match imf_exr_chromaticities_from_path(path) {
+            Some(ch) => hdr_color_space_from_chromaticities_xy(&ch),
+            None => crate::hdr::types::HdrColorSpace::LinearSrgb,
+        }
     }
 
     pub(crate) fn part_count(&self) -> usize {
@@ -1443,6 +1510,28 @@ fn exr_result(result: sys::ExrResult) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::hdr::types::HdrColorSpace;
+
+    #[test]
+    fn aces_ap0_chromaticities_heuristic_triggers() {
+        let ap0 = [0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767];
+        assert!(super::chromaticities_looks_like_aces_ap0(&ap0));
+        assert_eq!(
+            super::hdr_color_space_from_chromaticities_xy(&ap0),
+            HdrColorSpace::Aces2065_1
+        );
+    }
+
+    #[test]
+    fn rec709_like_chromaticities_stays_linear_srgb() {
+        let rec709 = [0.64_f32, 0.33, 0.3, 0.6, 0.15, 0.06, 0.3127, 0.3290];
+        assert!(!super::chromaticities_looks_like_aces_ap0(&rec709));
+        assert_eq!(
+            super::hdr_color_space_from_chromaticities_xy(&rec709),
+            HdrColorSpace::LinearSrgb
+        );
+    }
+
     #[test]
     fn luma_chroma_ratio_decode_round_trips_rec709_weights() {
         let wr = 0.2126_f32;

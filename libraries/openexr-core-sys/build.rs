@@ -32,11 +32,12 @@ fn main() {
     let mut config = vcpkg::Config::new();
     config.cargo_metadata(true);
 
-    match config.find_package("openexr") {
+    let include_dirs = match config.find_package("openexr") {
         Ok(lib) => {
-            for include in lib.include_paths {
+            for include in &lib.include_paths {
                 println!("cargo:include={}", include.display());
             }
+            lib.include_paths.clone()
         }
         Err(e) => {
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
@@ -73,6 +74,31 @@ fn main() {
                     println!("cargo:rustc-link-lib=dylib=m");
                 }
             }
+            vec![include_dir]
+        }
+    };
+
+    let cpp = manifest_dir.join("src/deep_flatten.cpp");
+    println!("cargo:rerun-if-changed={}", cpp.display());
+    let mut build = cc::Build::new();
+    build.cpp(true);
+    build.file(&cpp);
+    for inc in &include_dirs {
+        build.include(inc);
+        let imath = inc.join("Imath");
+        if imath.exists() {
+            build.include(imath);
+        }
+        let openexr = inc.join("OpenEXR");
+        if openexr.exists() {
+            build.include(openexr);
         }
     }
+    if target_os == "windows" {
+        build.flag("/std:c++17");
+        build.flag("/EHsc");
+    } else {
+        build.flag("-std=c++17");
+    }
+    build.compile("siv_openexr_deep_flatten");
 }
