@@ -118,8 +118,13 @@ fn hdr_render_path_for_viewer_plan(
     } else {
         has_hdr_image
     };
-    let plan =
-        build_render_plan_for_state(shape, has_hdr_plane, hdr_target_format, monitor_selection);
+    let plan = build_render_plan_for_state(
+        shape,
+        has_hdr_plane,
+        has_sdr_fallback,
+        hdr_target_format,
+        monitor_selection,
+    );
 
     if plan.backend == PlaneBackendKind::Hdr {
         return match shape {

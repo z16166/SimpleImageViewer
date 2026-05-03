@@ -2800,6 +2800,11 @@ mod tests {
                 .dimensions(),
             (2, 1)
         );
+        // HDR refinement results carry HDR pixels only — the SDR fallback plane is derived
+        // lazily at render time by `select_render_backend`'s HDR-plane fallback (and the
+        // HDR image plane shader's `SdrToneMapped` output mode). Keeping the loader side
+        // HDR-only avoids tone-mapping a 4K HQ preview on systems that will only present
+        // it through the native scRGB pipeline.
         assert!(update.preview_bundle.sdr().is_none());
     }
 

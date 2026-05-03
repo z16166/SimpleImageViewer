@@ -450,8 +450,23 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.source_for_index(self.current_index))
             .cloned();
-        let render_plan =
-            self.build_render_plan(RenderShape::Tiled, hdr_source_for_frame.is_some());
+        // `has_sdr_fallback` tracks whether the tile manager already carries an SDR preview
+        // texture that the `PlaneBackendKind::Sdr` fast path can blit. When absent — e.g. an
+        // HDR-only tiled source (subsampled / luminance-chroma EXR such as `Flowers.exr`) on
+        // an SDR panel — `select_render_backend` upgrades the plan to `Hdr` so the HDR
+        // image-plane shader tone-maps the frame through `SdrToneMapped` instead of leaving
+        // the canvas blank. We deliberately do **not** pre-synthesize an SDR preview in the
+        // loader for HDR content: that memory is pure waste on systems (or usage modes) that
+        // never reach the SDR pipeline.
+        let has_sdr_fallback = self
+            .tile_manager
+            .as_ref()
+            .is_some_and(|tm| tm.preview_texture.is_some());
+        let render_plan = self.build_render_plan(
+            RenderShape::Tiled,
+            hdr_source_for_frame.is_some(),
+            has_sdr_fallback,
+        );
         let plane_backend = render_plan.backend;
 
         let tp = self.compute_transition_params();
