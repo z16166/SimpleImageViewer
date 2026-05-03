@@ -240,6 +240,20 @@ impl<'a> ImageInstallPlan<'a> {
 }
 
 impl ImageViewerApp {
+    /// True when the active tile pyramid belongs to the image at [`Self::current_index`].
+    ///
+    /// If [`Self::tile_manager`] is `Some` but its [`TileManager::image_index`] does not
+    /// match the current folder index, the pyramid is stale (e.g. a late install race or
+    /// a path that forgot to drop tiles). The UI may still draw via the standard/animation
+    /// path using `texture_cache`, but HDR OSD and render-plan routing must treat the view
+    /// as non-tiled — otherwise `current_hdr_render_path` returns `None` and the HDR/SDR
+    /// status line disappears until the stale manager is cleared.
+    pub(crate) fn tiled_canvas_matches_current_index(&self) -> bool {
+        self.tile_manager
+            .as_ref()
+            .is_some_and(|tm| tm.image_index == self.current_index)
+    }
+
     pub(crate) fn invalidate_tile_requests_for_view_change(&mut self) {
         if invalidate_tile_manager_requests_for_view_change(&mut self.tile_manager) {
             self.loader.flush_tile_queue();
@@ -1302,6 +1316,7 @@ impl ImageViewerApp {
         self.upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
             self.current_image_res = Some((decoded.width, decoded.height));
+            self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
         }
     }
@@ -1394,6 +1409,7 @@ impl ImageViewerApp {
             self.upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
             if idx == self.current_index {
                 self.current_image_res = Some((first.width, first.height));
+                self.tile_manager = None;
             }
         }
 

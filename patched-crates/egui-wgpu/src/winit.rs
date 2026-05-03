@@ -384,6 +384,94 @@ impl Painter {
         state.resizing = resizing;
     }
 
+    /// Apply a pending runtime swap-chain format change request, if any.
+    ///
+    /// Downstream patch on top of upstream egui-wgpu. The application writes a
+    /// new desired surface format into
+    /// [`crate::WgpuConfiguration::requested_target_format`] (e.g. when the
+    /// window has moved to a monitor with different HDR capabilities) and we
+    /// pick it up here at the start of every frame:
+    ///
+    /// 1. Validate that the surface actually supports the requested format
+    ///    (via `get_capabilities`); if not, log + drop the request.
+    /// 2. Hot-swap the egui pipeline format on the existing
+    ///    [`crate::RenderState::renderer`] (preserves textures + buffers).
+    /// 3. Update [`crate::RenderState::target_format`] and the cached
+    ///    [`crate::WgpuConfiguration::preferred_target_format`] so future
+    ///    `configure_surface` calls and downstream consumers
+    ///    (`Frame::wgpu_render_state()`) see the new format.
+    /// 4. Reconfigure the swap chain immediately and rebuild the MSAA / depth
+    ///    texture views to match the new format.
+    fn try_apply_runtime_target_format_switch(&mut self, viewport_id: ViewportId) {
+        let Some(requested_format) = self.configuration.requested_target_format.take() else {
+            return;
+        };
+        let Some(render_state) = self.render_state.as_mut() else {
+            return;
+        };
+        if requested_format == render_state.target_format {
+            return;
+        }
+        let Some(surface_state) = self.surfaces.get(&viewport_id) else {
+            return;
+        };
+        let caps = surface_state
+            .surface
+            .get_capabilities(&render_state.adapter);
+        if !caps.formats.contains(&requested_format) {
+            log::warn!(
+                "egui-wgpu: ignoring runtime surface format request {:?}; \
+                 surface only supports {:?}",
+                requested_format,
+                caps.formats
+            );
+            return;
+        }
+        log::info!(
+            "egui-wgpu: hot-swapping surface target format {:?} -> {:?}",
+            render_state.target_format,
+            requested_format
+        );
+        {
+            let mut renderer = render_state.renderer.write();
+            renderer.recreate_pipeline_for_target_format(
+                &render_state.device,
+                requested_format,
+            );
+        }
+        render_state.target_format = requested_format;
+        self.configuration.preferred_target_format = Some(requested_format);
+        // Publish the new active format on the reverse-direction mailbox so
+        // the application can observe it via `frame.wgpu_render_state()`-
+        // independent path. `RenderState` derives `Clone` and eframe stores a
+        // clone in `Frame`, so the line above only updates the painter's copy
+        // — without this `set` the application's `frame.wgpu_render_state()
+        // .target_format` keeps returning the original startup format
+        // forever, causing the OSD / shader-mode logic to lock onto the
+        // initial mode after the very first runtime hot-swap.
+        self.configuration
+            .active_target_format
+            .set(requested_format);
+
+        // Reconfigure the swap chain right now so the very next
+        // `get_current_texture()` returns a frame in the new format. This also
+        // rebuilds the MSAA / depth texture views via
+        // `resize_and_generate_depth_texture_view_and_msaa_view` (called from
+        // `on_window_resized`-style path). We reuse the cached width/height
+        // since the window dimensions did not change — only the format did.
+        let (width, height) = {
+            let s = self.surfaces.get(&viewport_id).expect("surface exists");
+            (s.width, s.height)
+        };
+        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, w, h);
+        } else if let Some(s) = self.surfaces.get_mut(&viewport_id) {
+            // Window currently has no usable size (minimised); defer the
+            // surface reconfigure until paint time as usual.
+            s.needs_reconfigure = true;
+        }
+    }
+
     pub fn on_window_resized(
         &mut self,
         viewport_id: ViewportId,
@@ -447,8 +535,15 @@ impl Painter {
         let capture = !capture_data.is_empty();
         let mut vsync_sec = 0.0;
 
+        // Wrap the rendering body in a labelled block so that all of the
+        // mutable borrows of `self.render_state` / `self.surfaces` are
+        // released BEFORE we invoke `try_apply_runtime_target_format_switch`
+        // at the end of the function. Early-exits inside the block use
+        // `break 'render` rather than `return` so that the deferred swap
+        // chain hot-swap still gets a chance to run after the frame.
+        'render: {
         let Some(render_state) = self.render_state.as_mut() else {
-            return vsync_sec;
+            break 'render;
         };
 
         let mut render_queue_guard = RendererQueueGuard {
@@ -457,7 +552,7 @@ impl Painter {
         };
 
         let Some(surface_state) = self.surfaces.get_mut(&viewport_id) else {
-            return vsync_sec;
+            break 'render;
         };
 
         let mut encoder =
@@ -520,7 +615,7 @@ impl Painter {
                     }
                     SurfaceErrorAction::SkipFrame => {}
                 }
-                return vsync_sec;
+                break 'render;
             }
         };
 
@@ -661,6 +756,35 @@ impl Painter {
             output_frame.present();
             vsync_sec += start.elapsed().as_secs_f32();
         }
+        } // 'render block — releases the mutable borrows of `self.render_state` /
+          //                  `self.surfaces` so the deferred swap-chain switch
+          //                  below can take a fresh `&mut self`.
+
+        // ----- runtime swap-chain target-format switch (deferred to end-of-frame) -----
+        //
+        // Downstream patch: if the application has posted a request through
+        // `WgpuConfiguration::requested_target_format` (typically because the
+        // window moved between an HDR and an SDR monitor), validate it against
+        // the surface's actual capabilities and, if supported, hot-swap the
+        // egui render pipeline + reconfigure the swap chain + rebuild the MSAA
+        // texture. We `take()` regardless to clear the mailbox; if the format
+        // is unsupported we just log and drop the request rather than
+        // thrashing every frame.
+        //
+        // This MUST run AFTER `output_frame.present()` rather than at the
+        // start of the frame: by the time we get here, the application has
+        // ALREADY built its `eframe`/egui paint callbacks for the current
+        // frame and those callbacks captured the old `target_format` from
+        // `frame.wgpu_render_state()`. Swapping the surface format mid-frame
+        // would cause a `RenderPipeline targets are incompatible with render
+        // pass` panic on the application's own pipelines (e.g. the HDR image
+        // plane pipeline) because the live render-pass attachments would no
+        // longer match what the callbacks built. Doing the swap here lets the
+        // current frame complete cleanly with the old format end-to-end and
+        // makes the *next* frame observe the new format from
+        // `frame.wgpu_render_state().target_format`, so all downstream
+        // pipelines rebuild in sync.
+        self.try_apply_runtime_target_format_switch(viewport_id);
 
         vsync_sec
     }

@@ -40,7 +40,7 @@ impl ImageViewerApp {
             );
 
         hdr_render_path_for_viewer_plan(
-            self.tile_manager.is_some(),
+            self.tiled_canvas_matches_current_index(),
             has_hdr_tiled_source,
             has_hdr_image,
             has_sdr_fallback,

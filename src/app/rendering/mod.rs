@@ -122,7 +122,7 @@ impl ImageViewerApp {
                 }
 
                 // ── Rendering dispatch ────────────────────────────────────────
-                if self.tile_manager.is_some() {
+                if self.tiled_canvas_matches_current_index() {
                     // Large-image tiled path → tiled.rs
                     self.draw_tiled_image(ui, screen_rect, &canvas_resp);
                 } else if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
@@ -157,10 +157,12 @@ impl ImageViewerApp {
                     let mut res_h = 0u32;
                     let mut mode_tag = "STATIC";
 
-                    if let Some(tm) = &self.tile_manager {
-                        res_w = tm.full_width;
-                        res_h = tm.full_height;
-                        mode_tag = "TILED";
+                    if self.tiled_canvas_matches_current_index() {
+                        if let Some(tm) = &self.tile_manager {
+                            res_w = tm.full_width;
+                            res_h = tm.full_height;
+                            mode_tag = "TILED";
+                        }
                     } else if let Some((w, h)) = self.current_image_res {
                         res_w = w;
                         res_h = h;

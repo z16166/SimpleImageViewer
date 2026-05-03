@@ -254,6 +254,17 @@ pub enum FileOpResult {
     Wallpaper(Option<String>),
 }
 
+/// Window placement we mirror from `egui::ViewportInfo` each frame and persist
+/// to `siv_settings.yaml` on `on_exit`. The whole struct is filled in only
+/// when `outer_rect` is known (otherwise we don't have a stable position to
+/// remember).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CachedWindowPlacement {
+    pub outer_position: [i32; 2],
+    pub inner_size: [u32; 2],
+    pub maximized: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct CurrentHdrImage {
     index: usize,
@@ -310,6 +321,29 @@ pub struct ImageViewerApp {
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
+    /// Last observed viewport placement (`outer_rect`, `inner_size`,
+    /// `maximized`). Refreshed each frame from `egui::ViewportInfo` and
+    /// flushed into [`Settings::window_outer_position`],
+    /// [`Settings::window_inner_size`] and [`Settings::window_maximized`] on
+    /// `on_exit` so the next session can place the window onto the same
+    /// monitor (and re-pick `Rgba16Float` vs `Bgra8Unorm` accordingly).
+    pub(crate) cached_window_placement: Option<CachedWindowPlacement>,
+    /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
+    /// swap-chain target format whenever the active monitor's HDR capability
+    /// changes. The same mailbox is registered with `WgpuConfiguration`, so
+    /// writes here are picked up on the very next paint call.
+    pub(crate) requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
+    /// Reverse-direction mailbox: the painter publishes the **live** active
+    /// swap-chain target format here after every successful runtime hot-swap.
+    /// The application reads from this mailbox in `logic()` instead of trusting
+    /// `frame.wgpu_render_state().target_format`, because `egui_wgpu::RenderState`
+    /// derives `Clone` and eframe stores a clone in `Frame` — the painter's
+    /// post-swap mutation of `RenderState.target_format` is therefore never
+    /// observable through `wgpu_render_state()`. Without this side channel the
+    /// OSD freezes on the very first runtime swap (e.g. moving the window from
+    /// HDR to SDR shows the new mode once, but moving back to HDR never
+    /// updates).
+    pub(crate) active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
@@ -465,6 +499,15 @@ impl eframe::App for ImageViewerApp {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
         }
+        // Persist the last-known window placement. The HDR backend selection
+        // (Rgba16Float vs Bgra8Unorm) is locked at swap-chain creation, so
+        // remembering which monitor we closed on is what lets the user keep
+        // testing HDR by simply reopening the app.
+        if let Some(placement) = self.cached_window_placement {
+            self.settings.window_outer_position = Some(placement.outer_position);
+            self.settings.window_inner_size = Some(placement.inner_size);
+            self.settings.window_maximized = placement.maximized;
+        }
         // Shut down the async saver thread first: dropping the sender closes the
         // channel, causing the saver's `recv()` loop to exit after finishing any
         // in-progress write. This eliminates the race between the saver and our
@@ -496,7 +539,54 @@ impl eframe::App for ImageViewerApp {
 
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
-    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+        // Cache window placement (outer position, inner size, maximized) so
+        // `on_exit` can persist it without needing a `ctx`. egui exposes the
+        // OS-level outer rect via `ViewportInfo::outer_rect`; on multi-monitor
+        // systems this is what determines which monitor the next session
+        // spawns onto, and therefore whether `Rgba16Float` or `Bgra8Unorm` is
+        // selected for the swap chain.
+        if let Some(placement) = ctx.input(|i| {
+            let viewport = i.viewport();
+            let outer_rect = viewport.outer_rect?;
+            let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+            Some(CachedWindowPlacement {
+                outer_position: [
+                    outer_rect.min.x.round() as i32,
+                    outer_rect.min.y.round() as i32,
+                ],
+                inner_size: [
+                    inner_size.x.round().max(1.0) as u32,
+                    inner_size.y.round().max(1.0) as u32,
+                ],
+                maximized: viewport.maximized.unwrap_or(false),
+            })
+        }) {
+            // Diagnostic: log the FIRST time we observe a placement, then
+            // only on subsequent changes at debug level. If the first-time
+            // log never appears, `viewport.outer_rect` is `None` on this
+            // build and we have no position to persist — that would explain
+            // why the saved-position recall does nothing on a fresh install.
+            let was_unset = self.cached_window_placement.is_none();
+            let changed = self.cached_window_placement != Some(placement);
+            self.cached_window_placement = Some(placement);
+            if was_unset {
+                log::info!(
+                    "[Window] first placement observed: outer_position={:?} inner_size={:?} maximized={}",
+                    placement.outer_position,
+                    placement.inner_size,
+                    placement.maximized,
+                );
+            } else if changed {
+                log::debug!(
+                    "[Window] placement updated: outer_position={:?} inner_size={:?} maximized={}",
+                    placement.outer_position,
+                    placement.inner_size,
+                    placement.maximized,
+                );
+            }
+        }
+
         // Global mouse activity detection to wake up Music HUD
         if ctx.input(|i| i.pointer.delta().length_sq() > 0.0) {
             self.music_hud_last_activity = Instant::now();
@@ -659,6 +749,27 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
+        // Pull the live swap-chain target format every frame so all downstream
+        // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,
+        // etc.) base their decisions on the actually-active format.
+        //
+        // Crucially: we must NOT read from `frame.wgpu_render_state()` after
+        // the first runtime hot-swap. `egui_wgpu::RenderState` derives `Clone`
+        // and eframe stores a CLONE in `Frame`; the painter's post-swap
+        // mutation of `render_state.target_format` only updates the painter's
+        // copy, so `wgpu_render_state().target_format` permanently returns the
+        // startup format. The painter therefore publishes the live format on
+        // a dedicated reverse-direction mailbox (`active_target_format`),
+        // which we read first; we only fall back to `wgpu_render_state()` for
+        // the *initial* format before any runtime swap has happened.
+        let live_target_format = self
+            .active_target_format
+            .get()
+            .or_else(|| frame.wgpu_render_state().map(|s| s.target_format));
+        if let Some(format) = live_target_format {
+            self.hdr_target_format = Some(format);
+        }
+
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         self.hdr_monitor_state
             .refresh_from_viewport(ctx, now, hdr_content_visible);
@@ -667,6 +778,48 @@ impl eframe::App for ImageViewerApp {
             self.hdr_monitor_state.selection(),
         );
         self.hdr_capabilities.output_mode = output_mode;
+
+        // If the active monitor's HDR capability disagrees with the current
+        // swap-chain target format, ask the Painter to hot-swap. This is what
+        // makes `Rgba16Float` ↔ `Bgra8Unorm` follow the user as they drag the
+        // window between an HDR monitor and an SDR monitor at runtime.
+        //
+        // `desired_target_format_for_active_monitor` returns `None` when the
+        // per-frame monitor probe has not produced positive evidence yet
+        // (transient DXGI hand-off, brief `EnumWindows` hiccups, the very
+        // first frames before the first probe has completed). We MUST treat
+        // that as "no opinion / keep current format" rather than blindly
+        // demoting to `Bgra8Unorm` — otherwise we would request a swap-chain
+        // demotion every frame the probe was pending, defeating the
+        // spawn-time HDR detection that already chose the correct initial
+        // format.
+        if let Some(desired_format) =
+            crate::hdr::surface::desired_target_format_for_active_monitor(
+                self.settings.hdr_native_surface_enabled,
+                self.hdr_monitor_state.selection(),
+            )
+            && Some(desired_format) != self.hdr_target_format
+        {
+            // Log every time we *issue* a new request (not every frame); the
+            // Painter logs separately when it accepts or rejects it. This is
+            // the diagnostic chain we use to debug the cross-monitor
+            // hot-swap end-to-end.
+            log::info!(
+                "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
+                 monitor={:?} hdr_supported={:?} native_surface_enabled={}",
+                self.hdr_target_format,
+                desired_format,
+                self.hdr_monitor_state
+                    .selection()
+                    .map(|s| s.label.as_str()),
+                self.hdr_monitor_state
+                    .selection()
+                    .map(|s| s.hdr_supported),
+                self.settings.hdr_native_surface_enabled,
+            );
+            self.requested_target_format.request(desired_format);
+            ctx.request_repaint();
+        }
         self.hdr_capabilities.available =
             output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;

@@ -21,6 +21,33 @@ use eframe::egui;
 use super::renderer::HdrRenderOutputMode;
 use super::types::HdrOutputMode;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
+};
+
+/// Whether a DXGI output is currently in active HDR signaling.
+///
+/// The decisive signal on Windows is the per-output `ColorSpace` (PQ /
+/// `G2084_NONE_P2020`): when the user has HDR enabled in Windows Settings,
+/// the desktop is composed and presented in PQ to the panel **regardless of
+/// whether the physical panel is 8-bit-with-dithering or native 10-bit**.
+///
+/// We deliberately do NOT also gate on `BitsPerColor > 8` here. That's a
+/// panel-link attribute (DisplayPort HBR2 / HDMI 2.0 bandwidth-constrained
+/// links can force Windows down to 8 BPC + temporal dithering even with HDR
+/// active), and using it as an HDR gate erroneously rejects perfectly valid
+/// HDR configurations — see the LC49G95T regression where Windows reported
+/// `BitsPerColor=8 ColorSpace=G2084_NONE_P2020` and we mis-classified it as
+/// SDR, locking the swap chain into `Bgra8Unorm`.
+///
+/// Reference: <https://github.com/microsoft/DirectX-Graphics-Samples> (the
+/// `D3D12HDR` sample uses the same single-condition check).
+#[cfg(target_os = "windows")]
+fn dxgi_output_hdr_active(colorspace: DXGI_COLOR_SPACE_TYPE) -> bool {
+    colorspace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+}
+
 const HDR_MONITOR_PROBE_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +93,10 @@ pub struct HdrMonitorState {
     last_signature: Option<HdrMonitorSignature>,
     last_probe_at: Option<Instant>,
     selection: Option<HdrMonitorSelection>,
+    /// Sticky flag so we only `warn!` on the first failure in a streak of
+    /// consecutive failures (avoid log spam at 1.33 Hz). Cleared the moment
+    /// any probe succeeds.
+    last_probe_failed: bool,
 }
 
 impl Default for HdrMonitorState {
@@ -74,6 +105,7 @@ impl Default for HdrMonitorState {
             last_signature: None,
             last_probe_at: None,
             selection: None,
+            last_probe_failed: false,
         }
     }
 }
@@ -112,8 +144,28 @@ impl HdrMonitorState {
                 self.selection = Some(selection);
             }
             Err(err) => {
-                log::debug!("[HDR] active monitor HDR probe unavailable: {err}");
+                // Promoted from debug → warn so it's visible at the default
+                // log level: when the runtime active-monitor probe never
+                // succeeds, the cross-monitor swap-chain hot-swap chain is
+                // dead in the water (we have no `selection`, so
+                // `desired_target_format_for_active_monitor` always returns
+                // `Bgra8Unorm` and mismatches never fire). The first failure
+                // is what we need to see in user logs to diagnose.
+                if !self.last_probe_failed {
+                    log::warn!(
+                        "[HDR] active monitor HDR probe FAILED: {err} \
+                         (will retry on next viewport change / 750ms; \
+                         dynamic HDR↔SDR swap-chain switching is disabled \
+                         until probe succeeds)"
+                    );
+                    self.last_probe_failed = true;
+                } else {
+                    log::debug!("[HDR] active monitor HDR probe still failing: {err}");
+                }
             }
+        }
+        if self.selection.is_some() {
+            self.last_probe_failed = false;
         }
         self.selection.as_ref()
     }
@@ -254,7 +306,6 @@ fn finite_positive_capacity(value: f32) -> Option<f32> {
 #[cfg(target_os = "windows")]
 fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
     };
@@ -305,13 +356,22 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
         process_id: std::process::id(),
         hwnd: None,
     };
-    unsafe {
+    // NOTE: We deliberately discard the `Result` returned by `EnumWindows`.
+    // Per Microsoft's documentation, when the enumeration callback returns
+    // `FALSE` to terminate enumeration early — which is exactly what we do
+    // the moment we find our top-level window — `EnumWindows` itself returns
+    // 0 / FALSE, and the `windows` crate maps that to `Err(ERROR_SUCCESS)`
+    // ("操作成功完成", `0x00000000`). Treating that as a failure was the
+    // cause of `[HDR] active monitor HDR probe FAILED: 操作成功完成。`
+    // appearing on every probe attempt, which silently disabled the entire
+    // dynamic HDR↔SDR swap-chain switching path. The single source of truth
+    // for "did we succeed" is therefore `state.hwnd.is_some()`.
+    let _ = unsafe {
         EnumWindows(
             Some(enum_process_windows),
             LPARAM((&mut state as *mut EnumWindowState) as isize),
         )
-        .map_err(|err| err.to_string())?;
-    }
+    };
     let hwnd = state
         .hwnd
         .ok_or_else(|| "Simple Image Viewer window handle was not found".to_string())?;
@@ -319,6 +379,9 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     if monitor.is_invalid() {
         return Err("active window monitor was not found".to_string());
     }
+    log::debug!(
+        "[HDR] active-monitor probe: hwnd={hwnd:?} monitor_handle={monitor:?}"
+    );
 
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|err| err.to_string())?;
     let mut adapter_index = 0_u32;
@@ -338,10 +401,17 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
             };
             if let Ok(output6) = output.cast::<IDXGIOutput6>() {
                 let desc = unsafe { output6.GetDesc1() }.map_err(|err| err.to_string())?;
-                if desc.Monitor == monitor {
-                    let device_name = monitor_device_name(&desc.DeviceName);
-                    let hdr_supported = desc.BitsPerColor > 8
-                        && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                let device_name = monitor_device_name(&desc.DeviceName);
+                let matches = desc.Monitor == monitor;
+                let hdr_supported = dxgi_output_hdr_active(desc.ColorSpace);
+                log::debug!(
+                    "[HDR] DXGI output#{adapter_index}/{output_index}: device={device_name} \
+                     bits_per_color={} colorspace={:?} hdr_active={hdr_supported} \
+                     matches_active_monitor={matches}",
+                    desc.BitsPerColor,
+                    desc.ColorSpace,
+                );
+                if matches {
                     return Ok(HdrMonitorSelection {
                         hdr_supported,
                         label: if device_name.is_empty() {
@@ -458,17 +528,22 @@ pub struct SpawnMonitorHdrProbe {
 /// can introduce subtle HDR-style processing. Probing the spawn monitor lets us
 /// pick `Bgra8Unorm` directly and bypass DWM conversion entirely.
 ///
-/// Spawn point selection:
-/// 1. `GetCursorPos` — the user's cursor monitor. The window typically opens on
+/// Spawn point selection priority:
+/// 1. `saved_window_top_left` — the persisted outer-rect top-left from the
+///    previous session. When the app remembered that the window closed on the
+///    HDR monitor, we want to spawn into the same HDR swap chain regardless of
+///    where the cursor currently sits.
+/// 2. `GetCursorPos` — the user's cursor monitor. The window typically opens on
 ///    the same display as where the user double-clicked / launched the shortcut.
-/// 2. Fallback: `MONITOR_DEFAULTTOPRIMARY` (Windows primary monitor).
+/// 3. Fallback: `MONITOR_DEFAULTTOPRIMARY` (Windows primary monitor).
 ///
 /// Returns `Err(...)` when DXGI enumeration fails or the platform does not
 /// support this probing path; callers should fall back to the platform default.
 #[cfg(target_os = "windows")]
-pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
+pub fn spawn_monitor_hdr_status(
+    saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
     use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
     };
@@ -476,20 +551,35 @@ pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     use windows::core::Interface;
 
-    let mut cursor = POINT::default();
-    let (monitor, origin) = match unsafe { GetCursorPos(&mut cursor) } {
-        Ok(()) => (
-            unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY) },
-            "cursor",
-        ),
-        Err(_) => (
-            unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) },
-            "primary",
-        ),
+    let (monitor, origin) = if let Some([x, y]) = saved_window_top_left {
+        // Bias the monitor lookup ~20px inside the saved frame so that we don't
+        // accidentally land on the *neighbouring* monitor when the window's
+        // exact top-left pixel sits on a monitor boundary.
+        (
+            unsafe { MonitorFromPoint(POINT { x: x + 20, y: y + 20 }, MONITOR_DEFAULTTOPRIMARY) },
+            "saved_window_position",
+        )
+    } else {
+        let mut cursor = POINT::default();
+        match unsafe { GetCursorPos(&mut cursor) } {
+            Ok(()) => (
+                unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY) },
+                "cursor",
+            ),
+            Err(_) => (
+                unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) },
+                "primary",
+            ),
+        }
     };
     if monitor.is_invalid() {
         return Err("spawn monitor handle was not found".to_string());
     }
+
+    log::info!(
+        "[HDR] spawn-monitor probe: origin={origin} monitor_handle={monitor:?} \
+         saved_window_top_left={saved_window_top_left:?}"
+    );
 
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|err| err.to_string())?;
     let mut adapter_index = 0_u32;
@@ -509,16 +599,32 @@ pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
             };
             if let Ok(output6) = output.cast::<IDXGIOutput6>()
                 && let Ok(desc) = unsafe { output6.GetDesc1() }
-                && desc.Monitor == monitor
             {
-                let hdr_supported = desc.BitsPerColor > 8
-                    && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
                 let label = monitor_device_name(&desc.DeviceName);
-                return Ok(SpawnMonitorHdrProbe {
-                    hdr_supported,
-                    label,
-                    origin,
-                });
+                let matches = desc.Monitor == monitor;
+                let hdr_supported = dxgi_output_hdr_active(desc.ColorSpace);
+                // Verbose every-output diagnostic so users can see exactly
+                // which physical monitor each `\\.\DISPLAYn` GDI name maps
+                // to, what bit depth / colour space DXGI reports for it,
+                // and which one actually matched the spawn-point lookup.
+                log::info!(
+                    "[HDR] DXGI output#{adapter_index}/{output_index}: device={label} \
+                     bits_per_color={} colorspace={:?} hdr_active={hdr_supported} \
+                     desktop_coords=[{},{},{},{}] matches_spawn_monitor={matches}",
+                    desc.BitsPerColor,
+                    desc.ColorSpace,
+                    desc.DesktopCoordinates.left,
+                    desc.DesktopCoordinates.top,
+                    desc.DesktopCoordinates.right,
+                    desc.DesktopCoordinates.bottom,
+                );
+                if matches {
+                    return Ok(SpawnMonitorHdrProbe {
+                        hdr_supported,
+                        label,
+                        origin,
+                    });
+                }
             }
             output_index += 1;
         }
@@ -530,7 +636,9 @@ pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
+pub fn spawn_monitor_hdr_status(
+    _saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
     Err("spawn-monitor HDR probing is only implemented on Windows".to_string())
 }
 
@@ -670,6 +778,34 @@ fn monitor_device_name(name: &[u16; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dxgi_output_hdr_active_only_gates_on_pq_colorspace_not_bit_depth() {
+        // Regression: the LC49G95T (5120×1440 HDR ultrawide) reports
+        // `BitsPerColor=8 ColorSpace=G2084_NONE_P2020` when Windows HDR is
+        // enabled and the DP / HDMI link runs at 8-bit + dithering. The
+        // previous probe required `BitsPerColor > 8` and therefore declared
+        // such monitors SDR, which silently locked the swap chain into
+        // `Bgra8Unorm` and disabled the entire HDR rendering path. Only the
+        // `ColorSpace` may be used to decide whether HDR is active.
+        assert!(
+            super::dxgi_output_hdr_active(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020),
+            "G2084 / PQ output must always be classified as HDR-active even \
+             when the panel link is at 8 BPC + dithering"
+        );
+        assert!(
+            !super::dxgi_output_hdr_active(DXGI_COLOR_SPACE_TYPE(0)),
+            "sRGB G22 (DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 = 0) must NOT \
+             be classified as HDR-active"
+        );
+        assert!(
+            !super::dxgi_output_hdr_active(DXGI_COLOR_SPACE_TYPE(1)),
+            "linear scRGB (DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 = 1) is \
+             commonly used during HDR composition but NOT as the panel \
+             output colour space; do not classify as HDR-active here"
+        );
+    }
 
     #[test]
     fn monitor_probe_runs_first_time_and_only_after_signature_change_with_throttle() {

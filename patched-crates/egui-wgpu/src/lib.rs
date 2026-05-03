@@ -288,6 +288,120 @@ pub enum SurfaceErrorAction {
     RecreateSurface,
 }
 
+/// Shared mailbox used by the application to request that the egui-wgpu
+/// `Painter` change its surface (swap-chain) target format **at runtime**.
+///
+/// This is a downstream patch on top of upstream egui 0.34: vanilla egui-wgpu
+/// only honours [`WgpuConfiguration::preferred_target_format`] at startup and
+/// locks the swap-chain into that format for the lifetime of the
+/// `RenderState`. We need the format to follow the active monitor's HDR
+/// capability (`Rgba16Float` on HDR, `Bgra8Unorm` on SDR) when the user
+/// drags the window across monitors, so the [`crate::winit::Painter`] checks
+/// this mailbox at the start of every `paint_and_update_textures` call and,
+/// if a different but surface-supported format has been requested, hot-swaps
+/// the egui pipeline format and triggers a swap-chain reconfigure.
+///
+/// `None` means "do not request a format change". `Some(format)` is consumed
+/// (taken out) by the painter once the change has been applied.
+#[derive(Clone, Default)]
+pub struct RequestedSurfaceFormat {
+    inner: Arc<std::sync::Mutex<Option<wgpu::TextureFormat>>>,
+}
+
+impl std::fmt::Debug for RequestedSurfaceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestedSurfaceFormat")
+            .field("pending", &self.peek())
+            .finish()
+    }
+}
+
+impl RequestedSurfaceFormat {
+    /// Create a new mailbox with no pending request.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the painter to switch to `format` on its next paint. Replaces any
+    /// previous pending request (we only ever care about the latest one).
+    pub fn request(&self, format: wgpu::TextureFormat) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(format);
+        }
+    }
+
+    /// Clear any pending request.
+    pub fn clear(&self) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = None;
+        }
+    }
+
+    /// Peek the current request without consuming it. Used by tests and
+    /// diagnostics.
+    pub fn peek(&self) -> Option<wgpu::TextureFormat> {
+        self.inner.lock().ok().and_then(|s| *s)
+    }
+
+    /// Consume any pending request. Returns `Some(format)` exactly once per
+    /// `request()` call.
+    pub fn take(&self) -> Option<wgpu::TextureFormat> {
+        self.inner.lock().ok().and_then(|mut s| s.take())
+    }
+}
+
+/// Reverse-direction mailbox that the painter uses to publish the **current
+/// active** swap-chain target format back to the application.
+///
+/// This exists because vanilla [`RenderState`] derives `Clone`, and eframe
+/// stores a `RenderState` clone in `Frame` (see `wgpu_integration.rs`:
+/// `wgpu_render_state.clone()`). Mutating `painter.render_state.target_format`
+/// in [`crate::winit::Painter::try_apply_runtime_target_format_switch`]
+/// updates only the painter's copy — `frame.wgpu_render_state().target_format`
+/// in the application keeps returning the original startup format forever,
+/// which made the OSD / shader-mode logic believe the swap chain was still
+/// `Rgba16Float` even after a runtime hot-swap to `Bgra8Unorm` (and vice
+/// versa).
+///
+/// The contract is the dual of [`RequestedSurfaceFormat`]:
+/// * The painter `set(...)`s the new active format every time it successfully
+///   applies a runtime swap.
+/// * The application `get()`s the latest published format every frame.
+/// * `None` means the painter hasn't published anything yet; callers should
+///   fall back to `RenderState::target_format` for the initial format.
+#[derive(Clone, Default)]
+pub struct ActiveSurfaceFormat {
+    inner: Arc<std::sync::Mutex<Option<wgpu::TextureFormat>>>,
+}
+
+impl std::fmt::Debug for ActiveSurfaceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActiveSurfaceFormat")
+            .field("active", &self.get())
+            .finish()
+    }
+}
+
+impl ActiveSurfaceFormat {
+    /// Create a new mailbox with no published format.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Painter-side: publish the format that the swap chain is now using.
+    pub fn set(&self, format: wgpu::TextureFormat) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(format);
+        }
+    }
+
+    /// Application-side: read the latest published format. Returns `None`
+    /// until the painter has published at least once.
+    pub fn get(&self) -> Option<wgpu::TextureFormat> {
+        self.inner.lock().ok().and_then(|s| *s)
+    }
+}
+
 /// Configuration for using wgpu with eframe or the egui-wgpu winit feature.
 #[derive(Clone)]
 pub struct WgpuConfiguration {
@@ -311,6 +425,26 @@ pub struct WgpuConfiguration {
     /// format preference.
     pub preferred_target_format: Option<wgpu::TextureFormat>,
 
+    /// Mailbox the application can use to ask the painter to swap to a
+    /// different surface target format **at runtime** (e.g. when the window
+    /// is dragged from an SDR monitor onto an HDR monitor or vice versa).
+    ///
+    /// The painter polls this on every frame. See [`RequestedSurfaceFormat`]
+    /// for the full contract. When unused (`Default::default()` / not
+    /// written to), the painter behaves identically to upstream egui-wgpu.
+    pub requested_target_format: RequestedSurfaceFormat,
+
+    /// Reverse-direction observer the painter writes the **current active**
+    /// swap-chain target format into after every successful runtime hot-swap.
+    ///
+    /// Required because `RenderState` derives `Clone` and eframe stores a
+    /// clone in `Frame`, so mutating the painter's `RenderState.target_format`
+    /// is not visible through `frame.wgpu_render_state().target_format`. The
+    /// application must read the live format from this mailbox to keep its
+    /// OSD / shader-mode state in sync after cross-monitor drags.
+    /// See [`ActiveSurfaceFormat`] for the contract.
+    pub active_target_format: ActiveSurfaceFormat,
+
     /// How to create the wgpu adapter & device
     pub wgpu_setup: WgpuSetup,
 
@@ -331,12 +465,137 @@ fn wgpu_config_impl_send_sync() {
     assert_send_sync::<WgpuConfiguration>();
 }
 
+#[cfg(test)]
+mod requested_surface_format_tests {
+    use super::RequestedSurfaceFormat;
+
+    #[test]
+    fn defaults_to_no_pending_request() {
+        let mailbox = RequestedSurfaceFormat::new();
+        assert_eq!(mailbox.peek(), None);
+        assert_eq!(mailbox.take(), None);
+    }
+
+    #[test]
+    fn request_writes_a_pending_format_that_take_returns_exactly_once() {
+        let mailbox = RequestedSurfaceFormat::new();
+        mailbox.request(wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(mailbox.peek(), Some(wgpu::TextureFormat::Rgba16Float));
+        assert_eq!(mailbox.take(), Some(wgpu::TextureFormat::Rgba16Float));
+        assert_eq!(
+            mailbox.take(),
+            None,
+            "subsequent takes must yield None until the next request()"
+        );
+    }
+
+    #[test]
+    fn last_request_overwrites_a_pending_one() {
+        let mailbox = RequestedSurfaceFormat::new();
+        mailbox.request(wgpu::TextureFormat::Rgba16Float);
+        mailbox.request(wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(
+            mailbox.take(),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+            "only the most-recent request matters; we never queue stale formats"
+        );
+    }
+
+    #[test]
+    fn clear_drops_a_pending_request() {
+        let mailbox = RequestedSurfaceFormat::new();
+        mailbox.request(wgpu::TextureFormat::Rgba16Float);
+        mailbox.clear();
+        assert_eq!(mailbox.take(), None);
+    }
+
+    #[test]
+    fn clones_share_the_same_mailbox() {
+        // The painter and the application hold separate clones; writes from
+        // one side must be visible to the other so the painter actually picks
+        // up monitor-change requests.
+        let writer = RequestedSurfaceFormat::new();
+        let reader = writer.clone();
+        writer.request(wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(reader.take(), Some(wgpu::TextureFormat::Rgba16Float));
+        assert_eq!(writer.peek(), None);
+    }
+
+    #[test]
+    fn requested_surface_format_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RequestedSurfaceFormat>();
+    }
+}
+
+#[cfg(test)]
+mod active_surface_format_tests {
+    use super::ActiveSurfaceFormat;
+
+    #[test]
+    fn defaults_to_no_published_format() {
+        let mailbox = ActiveSurfaceFormat::new();
+        assert_eq!(
+            mailbox.get(),
+            None,
+            "before the painter has hot-swapped, the mailbox is empty and \
+             the application should fall back to RenderState::target_format"
+        );
+    }
+
+    #[test]
+    fn set_publishes_a_format_that_get_returns_repeatedly() {
+        // Regression: this is the dual of `RequestedSurfaceFormat::take` —
+        // unlike a request mailbox, the active-format mailbox must keep
+        // returning the latest format on every read so the application's
+        // per-frame `update()` can poll it without losing the value.
+        let mailbox = ActiveSurfaceFormat::new();
+        mailbox.set(wgpu::TextureFormat::Rgba16Float);
+        for _ in 0..3 {
+            assert_eq!(mailbox.get(), Some(wgpu::TextureFormat::Rgba16Float));
+        }
+    }
+
+    #[test]
+    fn last_set_overwrites_a_previously_published_one() {
+        let mailbox = ActiveSurfaceFormat::new();
+        mailbox.set(wgpu::TextureFormat::Rgba16Float);
+        mailbox.set(wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(
+            mailbox.get(),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+            "the mailbox always reflects the most-recent painter swap"
+        );
+    }
+
+    #[test]
+    fn clones_share_the_same_mailbox() {
+        // Critical: the painter and the application hold separate clones —
+        // `WgpuConfiguration` is itself `Clone` and `main.rs` clones the
+        // mailbox into both the configuration handed to eframe AND the
+        // application struct. Painter writes must be visible to the
+        // application reader, otherwise the OSD never updates.
+        let painter_side = ActiveSurfaceFormat::new();
+        let app_side = painter_side.clone();
+        painter_side.set(wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(app_side.get(), Some(wgpu::TextureFormat::Bgra8Unorm));
+    }
+
+    #[test]
+    fn active_surface_format_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ActiveSurfaceFormat>();
+    }
+}
+
 impl std::fmt::Debug for WgpuConfiguration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             present_mode,
             desired_maximum_frame_latency,
             preferred_target_format,
+            requested_target_format,
+            active_target_format,
             wgpu_setup,
             on_surface_status: _,
         } = self;
@@ -348,6 +607,8 @@ impl std::fmt::Debug for WgpuConfiguration {
             )
             .field("wgpu_setup", &wgpu_setup)
             .field("preferred_target_format", &preferred_target_format)
+            .field("requested_target_format", &requested_target_format)
+            .field("active_target_format", &active_target_format)
             .finish_non_exhaustive()
     }
 }
@@ -358,6 +619,8 @@ impl Default for WgpuConfiguration {
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: None,
             preferred_target_format: None,
+            requested_target_format: RequestedSurfaceFormat::new(),
+            active_target_format: ActiveSurfaceFormat::new(),
             // No display handle available at this point — callers should replace this with
             // `WgpuSetup::from_display_handle(...)` before creating the instance if one is available.
             wgpu_setup: WgpuSetup::without_display_handle(),

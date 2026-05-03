@@ -15,7 +15,7 @@ impl ImageViewerApp {
             return;
         }
 
-        let is_tiled = self.tile_manager.is_some();
+        let is_tiled = self.tiled_canvas_matches_current_index();
         let mut crop_rect_pixels = None;
         let mut tile_pixel_buffer = None;
         let mut tile_full_width = 0u32;

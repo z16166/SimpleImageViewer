@@ -178,6 +178,17 @@ pub struct Settings {
     pub enable_log_file: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    // Window placement (persisted so the app reopens on the same monitor it
+    // last closed on — important on multi-monitor systems where the user has
+    // mixed HDR + SDR displays and wants to control which one HDR rendering
+    // is exercised on).
+    #[serde(default)]
+    pub window_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub window_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub window_maximized: bool,
 }
 
 fn default_interval() -> f32 {
@@ -252,6 +263,9 @@ impl Default for Settings {
             theme: AppTheme::Dark,
             enable_log_file: true,
             log_level: default_log_level(),
+            window_outer_position: None,
+            window_inner_size: None,
+            window_maximized: false,
         }
     }
 }

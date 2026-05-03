@@ -23,6 +23,8 @@ impl ImageViewerApp {
         settings: Settings,
         initial_image: Option<PathBuf>,
         ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
+        requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
+        active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
     ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
@@ -204,6 +206,9 @@ impl ImageViewerApp {
             hdr_renderer,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
+            cached_window_placement: None,
+            requested_target_format,
+            active_target_format,
             ultra_hdr_decode_capacity,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),

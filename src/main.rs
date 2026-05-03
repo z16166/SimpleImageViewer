@@ -448,13 +448,24 @@ fn main() -> eframe::Result {
 
     let fullscreen = settings.fullscreen;
 
-    let viewport = egui::ViewportBuilder::default()
+    let saved_inner_size = settings
+        .window_inner_size
+        .map(|[w, h]| [w as f32, h as f32])
+        .unwrap_or([1280.0, 800.0]);
+    let saved_outer_position = settings.window_outer_position.map(|[x, y]| [x as f32, y as f32]);
+    let saved_maximized = settings.window_maximized;
+
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("app.title").to_string())
-        .with_inner_size([1280.0, 800.0])
+        .with_inner_size(saved_inner_size)
         .with_min_inner_size([400.0, 300.0])
         .with_decorations(true)
         .with_fullscreen(fullscreen)
+        .with_maximized(saved_maximized)
         .with_icon(load_icon());
+    if let Some(pos) = saved_outer_position {
+        viewport = viewport.with_position(pos);
+    }
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
@@ -523,6 +534,7 @@ fn main() -> eframe::Result {
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
             settings.hdr_native_surface_enabled,
+            settings.window_outer_position,
         );
     for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
         settings.hdr_native_surface_enabled,
@@ -532,13 +544,37 @@ fn main() -> eframe::Result {
     }
     log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
 
+    // Shared mailbox the app writes into when the active monitor's HDR
+    // capability changes (drag between HDR and SDR monitor); the patched
+    // egui-wgpu Painter polls it every frame and hot-swaps the swap-chain
+    // target format.
+    let requested_target_format = eframe::egui_wgpu::RequestedSurfaceFormat::new();
+
+    // Reverse-direction mailbox: the painter publishes the live active
+    // swap-chain format here after every successful runtime hot-swap. We
+    // need this because `egui_wgpu::RenderState` derives `Clone` and eframe
+    // stores a CLONE in `Frame`, so mutating the painter's
+    // `render_state.target_format` is invisible to the app via
+    // `frame.wgpu_render_state()`. Without this mailbox the OSD freezes on
+    // the very first runtime swap.
+    let active_target_format = eframe::egui_wgpu::ActiveSurfaceFormat::new();
+
+    // Centering must NOT compete with the saved outer-position recall: when
+    // the user previously closed the window on (e.g.) the HDR monitor we want
+    // to reopen there, not snap back to the primary monitor's centre. eframe
+    // applies `centered=true` AFTER `with_position(...)` in winit setup, so
+    // leaving it on silently overrides our recall.
+    let center_window_on_open = saved_outer_position.is_none();
+
     let native_options = eframe::NativeOptions {
         viewport,
-        centered: true,
+        centered: center_window_on_open,
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
             preferred_target_format: preferred_hdr_target_format,
+            requested_target_format: requested_target_format.clone(),
+            active_target_format: active_target_format.clone(),
             ..Default::default()
         },
         // Dithering assumes SDR gamma-space output. Leave it off when we ask
@@ -556,6 +592,8 @@ fn main() -> eframe::Result {
                 settings,
                 initial_image,
                 ipc_rx,
+                requested_target_format,
+                active_target_format,
             )) as Box<dyn eframe::App>)
         }),
     );

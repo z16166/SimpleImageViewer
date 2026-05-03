@@ -251,12 +251,21 @@ impl Default for RendererOptions {
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
 
+    /// The format the current `pipeline` is compiled against. We need this so
+    /// [`Renderer::recreate_pipeline_for_target_format`] can short-circuit on
+    /// no-op requests.
+    output_color_format: wgpu::TextureFormat,
+
     index_buffer: SlicedBuffer,
     vertex_buffer: SlicedBuffer,
 
     uniform_buffer: wgpu::Buffer,
     previous_uniform_buffer_content: UniformBuffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// Persisted so the egui pipeline can be rebuilt for a new target format
+    /// at runtime (HDR ↔ SDR monitor switch) without dropping the rest of
+    /// the renderer state (textures, samplers, callback resources).
+    uniform_bind_group_layout: wgpu::BindGroupLayout,
     texture_bind_group_layout: wgpu::BindGroupLayout,
 
     /// Map of egui texture IDs to textures and their associated bindgroups (texture view +
@@ -285,15 +294,6 @@ impl Renderer {
         options: RendererOptions,
     ) -> Self {
         profiling::function_scope!();
-
-        let shader = wgpu::ShaderModuleDescriptor {
-            label: Some("egui"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("egui.wgsl"))),
-        };
-        let module = {
-            profiling::scope!("create_shader_module");
-            device.create_shader_module(shader)
-        };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("egui_uniform_buffer"),
@@ -363,85 +363,13 @@ impl Renderer {
             })
         };
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("egui_pipeline_layout"),
-            bind_group_layouts: &[
-                Some(&uniform_bind_group_layout),
-                Some(&texture_bind_group_layout),
-            ],
-            immediate_size: 0,
-        });
-
-        let depth_stencil = options
-            .depth_stencil_format
-            .map(|format| wgpu::DepthStencilState {
-                format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            });
-
-        let pipeline = {
-            profiling::scope!("create_render_pipeline");
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("egui_pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    entry_point: Some("vs_main"),
-                    module: &module,
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 5 * 4,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        // 0: vec2 position
-                        // 1: vec2 texture coordinates
-                        // 2: uint color
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32],
-                    }],
-                    compilation_options: wgpu::PipelineCompilationOptions::default()
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    unclipped_depth: false,
-                    conservative: false,
-                    cull_mode: None,
-                    front_face: wgpu::FrontFace::default(),
-                    polygon_mode: wgpu::PolygonMode::default(),
-                    strip_index_format: None,
-                },
-                depth_stencil,
-                multisample: wgpu::MultisampleState {
-                    alpha_to_coverage_enabled: false,
-                    count: options.msaa_samples.max(1),
-                    mask: !0,
-                },
-
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(egui_framebuffer_shader_entry_point(output_color_format)),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: output_color_format,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default()
-                }),
-                multiview_mask: None,
-                cache: None,
-            }
-        )
-        };
+        let pipeline = create_egui_pipeline(
+            device,
+            output_color_format,
+            &options,
+            &uniform_bind_group_layout,
+            &texture_bind_group_layout,
+        );
 
         const VERTEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
             (std::mem::size_of::<Vertex>() * 1024) as _;
@@ -450,6 +378,7 @@ impl Renderer {
 
         Self {
             pipeline,
+            output_color_format,
             vertex_buffer: SlicedBuffer {
                 buffer: create_vertex_buffer(device, VERTEX_BUFFER_START_CAPACITY),
                 slices: Vec::with_capacity(64),
@@ -464,6 +393,7 @@ impl Renderer {
             // Buffers on wgpu are zero initialized, so this is indeed its current state!
             previous_uniform_buffer_content: UniformBuffer::zeroed(),
             uniform_bind_group,
+            uniform_bind_group_layout,
             texture_bind_group_layout,
             textures: HashMap::default(),
             next_user_texture_id: 0,
@@ -471,6 +401,44 @@ impl Renderer {
             options,
             callback_resources: CallbackResources::default(),
         }
+    }
+
+    /// Hot-swap the egui render pipeline to a new surface target format.
+    ///
+    /// This is a downstream patch on top of upstream egui-wgpu that lets the
+    /// painter rebuild *only* the pipeline (and the cached output color
+    /// format) when the application asks for a different surface format at
+    /// runtime — typically because the window moved between an HDR and an
+    /// SDR monitor and the swap chain needs to switch between
+    /// `Rgba16Float` and `Bgra8Unorm`.
+    ///
+    /// All non-pipeline state (textures, samplers, vertex/index buffers,
+    /// uniform buffer, callback resources) is preserved, so already-uploaded
+    /// egui textures (fonts, UI atlases) survive the swap and the next frame
+    /// only needs to push delta updates as usual.
+    ///
+    /// No-op when `output_color_format` already matches the current pipeline.
+    pub fn recreate_pipeline_for_target_format(
+        &mut self,
+        device: &wgpu::Device,
+        output_color_format: wgpu::TextureFormat,
+    ) {
+        if self.output_color_format == output_color_format {
+            return;
+        }
+        self.pipeline = create_egui_pipeline(
+            device,
+            output_color_format,
+            &self.options,
+            &self.uniform_bind_group_layout,
+            &self.texture_bind_group_layout,
+        );
+        self.output_color_format = output_color_format;
+    }
+
+    /// The surface target format the current pipeline is compiled against.
+    pub fn output_color_format(&self) -> wgpu::TextureFormat {
+        self.output_color_format
     }
 
     /// Executes the egui renderer onto an existing wgpu renderpass.
@@ -1122,6 +1090,106 @@ fn create_index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         size,
         mapped_at_creation: false,
+    })
+}
+
+/// Build the egui render pipeline for a given surface target format.
+///
+/// Factored out of [`Renderer::new`] so [`Renderer::recreate_pipeline_for_target_format`]
+/// can rebuild only the pipeline at runtime (HDR ↔ SDR swap-chain switch)
+/// without reconstructing bind-group layouts, textures, or buffers.
+fn create_egui_pipeline(
+    device: &wgpu::Device,
+    output_color_format: wgpu::TextureFormat,
+    options: &RendererOptions,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    profiling::function_scope!();
+
+    let shader = wgpu::ShaderModuleDescriptor {
+        label: Some("egui"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("egui.wgsl"))),
+    };
+    let module = {
+        profiling::scope!("create_shader_module");
+        device.create_shader_module(shader)
+    };
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("egui_pipeline_layout"),
+        bind_group_layouts: &[
+            Some(uniform_bind_group_layout),
+            Some(texture_bind_group_layout),
+        ],
+        immediate_size: 0,
+    });
+
+    let depth_stencil = options
+        .depth_stencil_format
+        .map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        });
+
+    profiling::scope!("create_render_pipeline");
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("egui_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            entry_point: Some("vs_main"),
+            module: &module,
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: 5 * 4,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                // 0: vec2 position
+                // 1: vec2 texture coordinates
+                // 2: uint color
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Uint32],
+            }],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            unclipped_depth: false,
+            conservative: false,
+            cull_mode: None,
+            front_face: wgpu::FrontFace::default(),
+            polygon_mode: wgpu::PolygonMode::default(),
+            strip_index_format: None,
+        },
+        depth_stencil,
+        multisample: wgpu::MultisampleState {
+            alpha_to_coverage_enabled: false,
+            count: options.msaa_samples.max(1),
+            mask: !0,
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(egui_framebuffer_shader_entry_point(output_color_format)),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: output_color_format,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
     })
 }
 
