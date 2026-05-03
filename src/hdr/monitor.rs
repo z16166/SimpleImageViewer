@@ -111,6 +111,18 @@ impl Default for HdrMonitorState {
 }
 
 impl HdrMonitorState {
+    /// Same as [`Default::default`], but starts with a known DXGI spawn outcome so
+    /// [`crate::hdr::monitor::effective_capability_output_mode`] matches the swap chain
+    /// from frame zero (see [`crate::hdr::surface::initial_monitor_selection_from_environment_probe`]).
+    pub fn with_initial_selection(selection: Option<HdrMonitorSelection>) -> Self {
+        Self {
+            last_signature: None,
+            last_probe_at: None,
+            selection,
+            last_probe_failed: false,
+        }
+    }
+
     pub fn selection(&self) -> Option<&HdrMonitorSelection> {
         self.selection.as_ref()
     }
@@ -128,7 +140,7 @@ impl HdrMonitorState {
 
         self.last_signature = Some(signature);
         self.last_probe_at = Some(now);
-        match active_monitor_hdr_status() {
+        match active_monitor_hdr_status(signature.outer_rect) {
             Ok(selection) => {
                 if self.selection.as_ref() != Some(&selection) {
                     log::info!(
@@ -196,9 +208,29 @@ impl HdrMonitorState {
             None => true,
         };
         if self.last_signature == Some(signature) {
-            return hdr_content_visible
-                && self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
-                && interval_elapsed;
+            if supports_current_edr_reprobe {
+                return hdr_content_visible
+                    && self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
+                    && interval_elapsed;
+            }
+            // Windows (and other non-macOS): `HdrMonitorSignature` can stay identical for
+            // many frames while the native frame is dragged between monitors because
+            // `egui::ViewportInfo::outer_rect` may not update until the move ends. The DXGI
+            // monitor bound to the main HWND still changes; without a timer reprobe,
+            // `active_monitor_hdr_status` never runs again and HDR↔SDR swap-chain switching
+            // appears permanently stuck.
+            //
+            // Windows uses a shorter poll than `HDR_MONITOR_PROBE_INTERVAL` so cross-monitor
+            // drags do not wait ~750ms after the outer rect stops changing.
+            if cfg!(target_os = "windows") {
+                return match self.last_probe_at {
+                    Some(last_probe_at) => {
+                        now.duration_since(last_probe_at) >= Duration::from_millis(200)
+                    }
+                    None => true,
+                };
+            }
+            return interval_elapsed;
         }
 
         interval_elapsed
@@ -253,18 +285,29 @@ pub fn effective_capability_output_mode(
     }
 }
 
+/// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for
+/// probe scheduling / signature only). On Windows the DXGI monitor is resolved from the
+/// process **largest** visible top-level `HWND` via `MonitorFromWindow`, with periodic
+/// reprobes when the signature is unchanged so cross-monitor drags still update after
+/// `outer_rect` lag.
 #[cfg(target_os = "windows")]
-pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
-    windows_active_monitor_hdr_status()
+pub fn active_monitor_hdr_status(
+    viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
+    windows_active_monitor_hdr_status(viewport_outer_rect_screen_px)
 }
 
 #[cfg(target_os = "macos")]
-pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
+pub fn active_monitor_hdr_status(
+    _viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
     macos_active_monitor_hdr_status()
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
+pub fn active_monitor_hdr_status(
+    _viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
     Err("active monitor HDR probing is not implemented on this platform".to_string())
 }
 
@@ -304,84 +347,13 @@ fn finite_positive_capacity(value: f32) -> Option<f32> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+fn dxgi_hdr_selection_for_monitor_handle(
+    monitor: windows::Win32::Graphics::Gdi::HMONITOR,
+) -> Result<HdrMonitorSelection, String> {
     use windows::Win32::Graphics::Dxgi::{
         CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
     };
-    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetWindow, GetWindowThreadProcessId,
-        IsWindowVisible,
-    };
     use windows::core::Interface;
-
-    unsafe extern "system" fn enum_process_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        // Pick the first visible top-level window owned by the current process. We avoid
-        // matching by window title because the egui main window is localized (e.g. Chinese
-        // builds use "简易图片查看器"); any title-substring filter would silently fail on
-        // non-English locales and the HDR monitor probe would never populate `selection`,
-        // leaving the renderer to optimistically pick scRGB native HDR on physically SDR
-        // displays.
-        let state = unsafe { &mut *(lparam.0 as *mut EnumWindowState) };
-        let mut process_id = 0_u32;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-        }
-        if process_id != state.process_id {
-            return true.into();
-        }
-        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            return true.into();
-        }
-        // Skip child / owned windows so we land on the actual application top-level frame
-        // rather than a transient tooltip / IME window that may belong to the same process.
-        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
-            return true.into();
-        }
-        if !unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default().is_invalid() {
-            return true.into();
-        }
-
-        state.hwnd = Some(hwnd);
-        false.into()
-    }
-
-    struct EnumWindowState {
-        process_id: u32,
-        hwnd: Option<HWND>,
-    }
-
-    let mut state = EnumWindowState {
-        process_id: std::process::id(),
-        hwnd: None,
-    };
-    // NOTE: We deliberately discard the `Result` returned by `EnumWindows`.
-    // Per Microsoft's documentation, when the enumeration callback returns
-    // `FALSE` to terminate enumeration early — which is exactly what we do
-    // the moment we find our top-level window — `EnumWindows` itself returns
-    // 0 / FALSE, and the `windows` crate maps that to `Err(ERROR_SUCCESS)`
-    // ("操作成功完成", `0x00000000`). Treating that as a failure was the
-    // cause of `[HDR] active monitor HDR probe FAILED: 操作成功完成。`
-    // appearing on every probe attempt, which silently disabled the entire
-    // dynamic HDR↔SDR swap-chain switching path. The single source of truth
-    // for "did we succeed" is therefore `state.hwnd.is_some()`.
-    let _ = unsafe {
-        EnumWindows(
-            Some(enum_process_windows),
-            LPARAM((&mut state as *mut EnumWindowState) as isize),
-        )
-    };
-    let hwnd = state
-        .hwnd
-        .ok_or_else(|| "Simple Image Viewer window handle was not found".to_string())?;
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    if monitor.is_invalid() {
-        return Err("active window monitor was not found".to_string());
-    }
-    log::debug!(
-        "[HDR] active-monitor probe: hwnd={hwnd:?} monitor_handle={monitor:?}"
-    );
 
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|err| err.to_string())?;
     let mut adapter_index = 0_u32;
@@ -435,6 +407,115 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     }
 
     Err("active DXGI output was not found".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_screen_rect_area(rect: &windows::Win32::Foundation::RECT) -> i64 {
+    i64::from(rect.right.saturating_sub(rect.left))
+        * i64::from(rect.bottom.saturating_sub(rect.top))
+}
+
+/// Collect visible root unowned top-level HWNDs for this process (Z-order: front to back).
+#[cfg(target_os = "windows")]
+fn windows_collect_process_tl_hwnds() -> Vec<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetWindow, GetWindowThreadProcessId,
+        IsWindowVisible,
+    };
+
+    struct CollectState {
+        process_id: u32,
+        hwnds: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn enum_collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = unsafe { &mut *(lparam.0 as *mut CollectState) };
+        let mut process_id = 0_u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        }
+        if process_id != state.process_id {
+            return true.into();
+        }
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return true.into();
+        }
+        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
+            return true.into();
+        }
+        if !unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default().is_invalid() {
+            return true.into();
+        }
+        state.hwnds.push(hwnd);
+        true.into()
+    }
+
+    let mut state = CollectState {
+        process_id: std::process::id(),
+        hwnds: Vec::new(),
+    };
+    let _ = unsafe {
+        EnumWindows(
+            Some(enum_collect),
+            LPARAM((&mut state as *mut CollectState) as isize),
+        )
+    };
+    state.hwnds
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pick_tl_hwnd_largest_screen_area(
+    candidates: &[windows::Win32::Foundation::HWND],
+) -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut best: Option<(HWND, i64)> = None;
+    for &hwnd in candidates {
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+            continue;
+        }
+        let area = windows_screen_rect_area(&rect);
+        if area <= 0 {
+            continue;
+        }
+        if best.map_or(true, |(_, a)| area > a) {
+            best = Some((hwnd, area));
+        }
+    }
+    best.map(|(hwnd, _)| hwnd)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_active_monitor_hdr_status(
+    viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+
+    let _ = viewport_outer_rect_screen_px;
+
+    let candidates = windows_collect_process_tl_hwnds();
+    if candidates.is_empty() {
+        return Err("Simple Image Viewer window handle was not found".to_string());
+    }
+
+    // Pick the process top-level HWND with the largest screen area — the main egui frame
+    // — then `MonitorFromWindow`. Z-order's first visible TL window can be an IME-sized
+    // utility; `outer_rect` can also lag during drags. The native `GetWindowRect` for the
+    // largest TL window tracks the compositor across monitors; this pairs with
+    // [`HdrMonitorState::should_probe_for_platform`] timer reprobes on Windows.
+    let hwnd = windows_pick_tl_hwnd_largest_screen_area(&candidates).unwrap_or(candidates[0]);
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        return Err("active window monitor was not found".to_string());
+    }
+    log::debug!(
+        "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} monitor_handle={monitor:?}"
+    );
+
+    dxgi_hdr_selection_for_monitor_handle(monitor)
 }
 
 #[cfg(target_os = "windows")]
@@ -824,7 +905,14 @@ mod tests {
         assert!(state.should_probe(first, start, false));
         state.last_signature = Some(first);
         state.last_probe_at = Some(start);
-        assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
+        if cfg!(target_os = "macos") {
+            // Same signature: macOS only re-probes for EDR capacity, gated on `hdr_content_visible`.
+            assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
+        } else {
+            // Windows: timer reprobe even when the viewport signature is unchanged (outer rect
+            // can lag during native drags).
+            assert!(state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
+        }
         assert!(!state.should_probe(moved, start + Duration::from_millis(100), false));
         assert!(state.should_probe(moved, start + HDR_MONITOR_PROBE_INTERVAL, false));
     }
@@ -865,7 +953,9 @@ mod tests {
             false,
             true
         ));
-        assert!(!state.should_probe_for_platform(
+        // `supports_current_edr_reprobe == false` is the Windows/Linux call shape: same
+        // signature still schedules DXGI refresh on the timer (see `should_probe_for_platform`).
+        assert!(state.should_probe_for_platform(
             signature,
             start + HDR_MONITOR_PROBE_INTERVAL,
             true,

@@ -101,6 +101,42 @@ pub enum HdrEnvironmentProbe {
 /// lands on whichever monitor that point falls inside, ignoring the cursor —
 /// so a window that closed on the HDR monitor reopens with HDR even if the
 /// user moved the cursor to the SDR monitor before launching.
+/// Seed [`crate::hdr::monitor::HdrMonitorState`] so the first frames after startup use the same
+/// HDR/SDR output decision as the pre-window DXGI spawn probe.
+///
+/// Without this, `hdr_monitor_state.selection` stays `None` until the first per-frame
+/// `active_monitor_hdr_status` succeeds; [`crate::hdr::monitor::effective_capability_output_mode`]
+/// treats a missing selection as fail-closed `SdrToneMapped`, which **overwrites**
+/// `hdr_capabilities.output_mode` every frame and forces the SDR tone-mapped renderer even when
+/// `preferred_target_format` is already `Rgba16Float` from a successful `SpawnMonitorHdr` probe.
+pub fn initial_monitor_selection_from_environment_probe(
+    probe: &HdrEnvironmentProbe,
+) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
+    match probe {
+        HdrEnvironmentProbe::SpawnMonitorHdr { label, .. } => {
+            Some(crate::hdr::monitor::HdrMonitorSelection {
+                hdr_supported: true,
+                label: label.clone(),
+                max_luminance_nits: None,
+                max_full_frame_luminance_nits: None,
+                max_hdr_capacity: None,
+                hdr_capacity_source: Some("spawn DXGI probe"),
+            })
+        }
+        HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
+            Some(crate::hdr::monitor::HdrMonitorSelection {
+                hdr_supported: false,
+                label: label.clone(),
+                max_luminance_nits: None,
+                max_full_frame_luminance_nits: None,
+                max_hdr_capacity: None,
+                hdr_capacity_source: None,
+            })
+        }
+        HdrEnvironmentProbe::ProbeUnavailable => None,
+    }
+}
+
 pub fn preferred_native_hdr_target_format_for_environment(
     native_surface_enabled: bool,
     saved_window_top_left: Option<[i32; 2]>,
@@ -216,8 +252,9 @@ pub fn native_hdr_surface_blocker(format: Option<wgpu::TextureFormat>) -> Option
 mod tests {
     use crate::hdr::monitor::HdrMonitorSelection;
     use crate::hdr::surface::{
-        HdrSurfaceSelection, choose_native_hdr_surface_format,
-        desired_target_format_for_active_monitor, native_hdr_surface_blocker,
+        HdrEnvironmentProbe, HdrSurfaceSelection, choose_native_hdr_surface_format,
+        desired_target_format_for_active_monitor,
+        initial_monitor_selection_from_environment_probe, native_hdr_surface_blocker,
     };
 
     fn hdr_selection() -> HdrMonitorSelection {
@@ -250,6 +287,33 @@ mod tests {
             Some(wgpu::TextureFormat::Bgra8Unorm),
             "user opt-out of native HDR must override even an HDR monitor"
         );
+    }
+
+    #[test]
+    fn spawn_hdr_probe_seeds_initial_monitor_selection() {
+        let probe = HdrEnvironmentProbe::SpawnMonitorHdr {
+            label: r"\\.\DISPLAY1".to_string(),
+            origin: "saved_window_position",
+        };
+        let sel = initial_monitor_selection_from_environment_probe(&probe).expect("seed");
+        assert!(sel.hdr_supported);
+        assert_eq!(sel.label, r"\\.\DISPLAY1");
+        assert_eq!(sel.hdr_capacity_source, Some("spawn DXGI probe"));
+    }
+
+    #[test]
+    fn spawn_sdr_probe_seeds_non_hdr_selection() {
+        let probe = HdrEnvironmentProbe::SpawnMonitorSdr {
+            label: r"\\.\DISPLAY2".to_string(),
+            origin: "cursor",
+        };
+        let sel = initial_monitor_selection_from_environment_probe(&probe).expect("seed");
+        assert!(!sel.hdr_supported);
+    }
+
+    #[test]
+    fn probe_unavailable_yields_no_seed() {
+        assert!(initial_monitor_selection_from_environment_probe(&HdrEnvironmentProbe::ProbeUnavailable).is_none());
     }
 
     #[test]

@@ -25,6 +25,7 @@ impl ImageViewerApp {
         ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
         requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
         active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+        initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
     ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
@@ -98,11 +99,14 @@ impl ImageViewerApp {
         let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
         hdr_renderer.tone_map = settings.hdr_tone_map_settings();
         let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
-        let initial_hdr_output_mode = hdr_capabilities.output_mode;
+        let initial_hdr_output_mode = crate::hdr::monitor::effective_capability_output_mode(
+            hdr_target_format,
+            initial_hdr_monitor_selection.as_ref(),
+        );
         let ultra_hdr_decode_capacity = crate::app::ultra_hdr_decode_capacity_for_output_mode(
             settings.hdr_tone_map_settings(),
             initial_hdr_output_mode,
-            None,
+            initial_hdr_monitor_selection.as_ref(),
         );
         for diagnostic in crate::hdr::renderer::hdr_render_output_diagnostics(hdr_target_format) {
             log::info!("{diagnostic}");
@@ -205,7 +209,9 @@ impl ImageViewerApp {
             hdr_capabilities,
             hdr_renderer,
             hdr_target_format,
-            hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
+            hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(
+                initial_hdr_monitor_selection,
+            ),
             cached_window_placement: None,
             requested_target_format,
             active_target_format,

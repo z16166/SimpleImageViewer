@@ -536,6 +536,10 @@ fn main() -> eframe::Result {
             settings.hdr_native_surface_enabled,
             settings.window_outer_position,
         );
+    let initial_hdr_monitor_selection =
+        crate::hdr::surface::initial_monitor_selection_from_environment_probe(
+            &hdr_environment_probe,
+        );
     for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
         settings.hdr_native_surface_enabled,
         preferred_hdr_target_format,
@@ -594,6 +598,7 @@ fn main() -> eframe::Result {
                 ipc_rx,
                 requested_target_format,
                 active_target_format,
+                initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)
         }),
     );
