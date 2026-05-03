@@ -294,9 +294,9 @@ pub fn effective_capability_output_mode(
 
 /// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for
 /// probe scheduling / signature only). On Windows the DXGI monitor is resolved from the
-/// process **largest** visible top-level `HWND` via `MonitorFromWindow`, with periodic
-/// reprobes when the signature is unchanged so cross-monitor drags still update after
-/// `outer_rect` lag.
+/// process **largest** visible top-level `HWND` via `GetWindowRect` center +
+/// `MonitorFromPoint`, with periodic reprobes when the signature is unchanged so
+/// cross-monitor drags still update after `outer_rect` lag.
 #[cfg(target_os = "windows")]
 pub fn active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
@@ -499,7 +499,9 @@ fn windows_pick_tl_hwnd_largest_screen_area(
 fn windows_active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
 ) -> Result<HdrMonitorSelection, String> {
-    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     let _ = viewport_outer_rect_screen_px;
 
@@ -508,19 +510,37 @@ fn windows_active_monitor_hdr_status(
         return Err("Simple Image Viewer window handle was not found".to_string());
     }
 
-    // Pick the process top-level HWND with the largest screen area — the main egui frame
-    // — then `MonitorFromWindow`. Z-order's first visible TL window can be an IME-sized
-    // utility; `outer_rect` can also lag during drags. The native `GetWindowRect` for the
-    // largest TL window tracks the compositor across monitors; this pairs with
-    // [`HdrMonitorState::should_probe_for_platform`] timer reprobes on Windows.
+    // Pick the process top-level HWND with the largest screen area — the main egui frame.
+    //
+    // **Do not** use `MonitorFromWindow(hwnd, …)` for HDR vs SDR policy: it returns the
+    // monitor with the *largest intersection area* with the window rect. During cross-monitor
+    // drags a wide window can keep most of its area on the HDR display while the user's focus
+    // (and the majority of pixels they care about) has already moved to the SDR display — logs
+    // then show `hdr_supported=true` + `Rgba16Float` for thousands of frames until the rect
+    // finally tips, producing scRGB→SDR tonemap "washed" chrome and late swap-chain demotion.
+    //
+    // `MonitorFromPoint` at the window **center** matches common OS "which monitor is this
+    // window on?" behaviour and updates as soon as the center crosses the boundary.
     let hwnd = windows_pick_tl_hwnd_largest_screen_area(&candidates).unwrap_or(candidates[0]);
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut rect = RECT::default();
+    let monitor = if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+        let cx = (rect.left + rect.right) / 2;
+        let cy = (rect.top + rect.bottom) / 2;
+        let m = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };
+        log::debug!(
+            "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} center_screen=({cx},{cy}) monitor_handle={m:?}"
+        );
+        m
+    } else {
+        let m = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        log::debug!(
+            "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} monitor_handle={m:?} (GetWindowRect failed; used MonitorFromWindow)"
+        );
+        m
+    };
     if monitor.is_invalid() {
         return Err("active window monitor was not found".to_string());
     }
-    log::debug!(
-        "[HDR] active-monitor probe: origin=largest_tl_hwnd hwnd={hwnd:?} monitor_handle={monitor:?}"
-    );
 
     dxgi_hdr_selection_for_monitor_handle(monitor)
 }
