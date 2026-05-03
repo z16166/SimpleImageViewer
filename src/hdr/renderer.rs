@@ -88,6 +88,8 @@ const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
+/// Must match `HdrColorSpace::DisplayP3Linear as u32`.
+const INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR: u32 = 6u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
 const INPUT_TRANSFER_PQ: u32 = 2u;
 const INPUT_TRANSFER_HLG: u32 = 3u;
@@ -131,6 +133,14 @@ fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
         1.6605 * rgb.r - 0.5876 * rgb.g - 0.0728 * rgb.b,
         -0.1246 * rgb.r + 1.1329 * rgb.g - 0.0083 * rgb.b,
         -0.0182 * rgb.r - 0.1006 * rgb.g + 1.1187 * rgb.b,
+    );
+}
+
+fn display_p3_linear_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        1.2249401 * rgb.r - 0.2249402 * rgb.g,
+        -0.0420569 * rgb.r + 1.0420571 * rgb.g,
+        -0.0196376 * rgb.r - 0.0786507 * rgb.g + 1.0982884 * rgb.b,
     );
 }
 
@@ -194,6 +204,9 @@ fn decode_input_transfer(rgb: vec3<f32>, input_transfer_function: u32, settings:
 fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<f32> {
     if input_color_space == INPUT_COLOR_SPACE_REC2020_LINEAR {
         return rec2020_to_linear_srgb(rgb);
+    }
+    if input_color_space == INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR {
+        return display_p3_linear_to_linear_srgb(rgb);
     }
     if input_color_space == INPUT_COLOR_SPACE_ACES2065_1 {
         return aces2065_1_to_linear_srgb(rgb);
@@ -265,11 +278,12 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
 }
 
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // scRGB / Rgba16Float / Rgba32Float native HDR is **linear** (1.0 = SDR white reference).
+    // The OS compositor (Windows scRGB, macOS EDR) maps linear values to the display's actual
+    // luminance. Applying γ2.2 here lifts shadows ~3.4× and washes contrast on physically
+    // non-HDR panels advertising HDR support (conformance `bench_oriented_brg`).
     let exposure_scale = exp2(settings.exposure_ev);
-    let exposed = sanitize_hdr_rgb(rgb * exposure_scale);
-    let mapped = reinhard_tone_map(exposed);
-    let sdr_base = pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
-    return max(sdr_base, exposed);
+    return sanitize_hdr_rgb(rgb * exposure_scale);
 }
 
 @vertex
@@ -1791,6 +1805,7 @@ mod tests {
     #[test]
     fn shader_converts_rec2020_input_to_linear_srgb() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_REC2020_LINEAR"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn convert_input_to_linear_srgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("1.6605"));
     }
@@ -1824,14 +1839,24 @@ mod tests {
         assert!(
             HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR")
         );
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp(hdr.a, 0.0, 1.0) * tone_map.alpha"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("let src_a = clamp(hdr.a, 0.0, 1.0)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("a_out * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
     }
 
     #[test]
-    fn native_hdr_shader_keeps_low_linear_exr_values_display_visible() {
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("let sdr_base ="));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("return max(sdr_base, exposed);"));
+    fn native_hdr_shader_outputs_linear_scrgb_without_gamma_encoding() {
+        // scRGB native HDR is linear; γ2.2 inflates shadows and destroys SDR contrast on
+        // physically SDR displays advertising HDR support (conformance `bench_oriented_brg`).
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr"));
+        assert!(
+            !HDR_IMAGE_PLANE_SHADER.contains("let sdr_base ="),
+            "encode_native_hdr must not γ-encode for scRGB output"
+        );
+        assert!(
+            !HDR_IMAGE_PLANE_SHADER.contains("return max(sdr_base, exposed);"),
+            "encode_native_hdr must return exposed linear value, no γ-blend"
+        );
     }
 
     #[test]

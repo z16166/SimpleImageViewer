@@ -215,6 +215,8 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             .hdr_max_display_nits
             .max(app.settings.hdr_sdr_white_nits);
         app.hdr_renderer.tone_map = app.settings.hdr_tone_map_settings();
+        app.loader
+            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
         app.refresh_ultra_hdr_decode_capacity(ui.ctx());
         app.queue_save();
         ui.ctx().request_repaint();

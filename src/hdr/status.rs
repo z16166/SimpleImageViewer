@@ -87,6 +87,7 @@ fn hdr_color_space_label(color_space: HdrColorSpace) -> String {
         HdrColorSpace::Rec2020Linear => t!("hdr.color_space.rec2020_linear").to_string(),
         HdrColorSpace::Aces2065_1 => t!("hdr.color_space.aces2065_1").to_string(),
         HdrColorSpace::Xyz => t!("hdr.color_space.xyz").to_string(),
+        HdrColorSpace::DisplayP3Linear => t!("hdr.color_space.display_p3_linear").to_string(),
         HdrColorSpace::Unknown => t!("hdr.color_space.unknown").to_string(),
     }
 }

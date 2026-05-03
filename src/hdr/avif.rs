@@ -22,8 +22,10 @@ pub(crate) fn avif_cicp_to_metadata(
     matrix_coefficients: u16,
     full_range: bool,
 ) -> HdrImageMetadata {
+    // ITU-T H.273 CICP transfer characteristics (not libjxl enums).
     let transfer_function = match transfer_characteristics {
-        1 | 13 => HdrTransferFunction::Srgb,
+        8 => HdrTransferFunction::Linear,
+        13 => HdrTransferFunction::Srgb,
         16 => HdrTransferFunction::Pq,
         18 => HdrTransferFunction::Hlg,
         _ => HdrTransferFunction::Unknown,

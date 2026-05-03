@@ -279,6 +279,8 @@ impl ImageViewerApp {
         }
         app.loader
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
+        app.loader
+            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits

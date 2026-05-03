@@ -141,10 +141,23 @@ fn hdr_render_path_for_viewer_plan(
 #[cfg(test)]
 mod tests {
     use super::hdr_render_path_for_viewer_plan;
+    use crate::hdr::monitor::HdrMonitorSelection;
     use crate::hdr::status::HdrRenderPath;
+
+    fn hdr_capable_monitor() -> HdrMonitorSelection {
+        HdrMonitorSelection {
+            hdr_supported: true,
+            label: "HDR".to_string(),
+            max_luminance_nits: Some(1000.0),
+            max_full_frame_luminance_nits: Some(500.0),
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("test"),
+        }
+    }
 
     #[test]
     fn hdr_tiled_source_reports_tile_plane_before_sdr_fallback() {
+        let monitor = hdr_capable_monitor();
         assert_eq!(
             hdr_render_path_for_viewer_plan(
                 true,
@@ -153,7 +166,7 @@ mod tests {
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
-                None,
+                Some(&monitor),
             ),
             Some(HdrRenderPath::FloatTilePlane)
         );
@@ -169,6 +182,7 @@ mod tests {
 
     #[test]
     fn complex_transition_keeps_full_image_hdr_on_sdr_fallback() {
+        let monitor = hdr_capable_monitor();
         assert_eq!(
             hdr_render_path_for_viewer_plan(
                 false,
@@ -177,7 +191,7 @@ mod tests {
                 false,
                 Some(wgpu::TextureFormat::Rgba16Float),
                 true,
-                None,
+                Some(&monitor),
             ),
             Some(HdrRenderPath::SdrFallback)
         );
@@ -200,7 +214,31 @@ mod tests {
     }
 
     #[test]
+    fn unknown_monitor_capability_falls_back_to_sdr_on_hdr_target() {
+        // Defense-in-depth: when the OS-side HDR probe has not yet populated `selection`
+        // (e.g. probe failed silently because the egui main window title was localized
+        // and the legacy substring lookup for "Simple Image Viewer" missed it), the plan
+        // must NOT optimistically pick the scRGB native HDR path on what may actually be
+        // an SDR panel — that would route SDR-grade JXL content through the float plane
+        // shader and Windows scRGB compositor, which on physically SDR monitors visibly
+        // washes out shadow contrast (`bench_oriented_brg`).
+        assert_eq!(
+            hdr_render_path_for_viewer_plan(
+                false,
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                false,
+                None,
+            ),
+            Some(HdrRenderPath::SdrFallback)
+        );
+    }
+
+    #[test]
     fn hdr_render_path_matrix_aligns_with_render_plan() {
+        let monitor = hdr_capable_monitor();
         let cases = [
             (
                 "static HDR native target",
@@ -210,6 +248,7 @@ mod tests {
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
+                Some(&monitor),
                 Some(HdrRenderPath::FloatImagePlane),
             ),
             (
@@ -220,6 +259,7 @@ mod tests {
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
+                Some(&monitor),
                 Some(HdrRenderPath::FloatTilePlane),
             ),
             (
@@ -230,6 +270,7 @@ mod tests {
                 true,
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
+                Some(&monitor),
                 Some(HdrRenderPath::SdrFallback),
             ),
             (
@@ -240,6 +281,7 @@ mod tests {
                 true,
                 None,
                 false,
+                Some(&monitor),
                 Some(HdrRenderPath::SdrFallback),
             ),
         ];
@@ -252,6 +294,7 @@ mod tests {
             has_sdr_fallback,
             hdr_target_format,
             complex_transition_active,
+            monitor_selection,
             expected,
         ) in cases
         {
@@ -263,7 +306,7 @@ mod tests {
                     has_sdr_fallback,
                     hdr_target_format,
                     complex_transition_active,
-                    None,
+                    monitor_selection,
                 ),
                 expected,
                 "{label}"

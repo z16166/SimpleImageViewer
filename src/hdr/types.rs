@@ -34,6 +34,8 @@ pub enum HdrColorSpace {
     Aces2065_1 = 3,
     Xyz = 4,
     Unknown = 5,
+    /// Display P3 primaries, D65 white, linear light (matches CICP colour primaries 11).
+    DisplayP3Linear = 6,
 }
 
 #[allow(dead_code)]
@@ -122,6 +124,12 @@ impl HdrImageMetadata {
             HdrColorProfile::Cicp {
                 color_primaries: 9, ..
             } => HdrColorSpace::Rec2020Linear,
+            HdrColorProfile::Cicp {
+                color_primaries: 11, ..
+            } => HdrColorSpace::DisplayP3Linear,
+            HdrColorProfile::Cicp {
+                color_primaries: 1, ..
+            } => HdrColorSpace::LinearSrgb,
             _ => HdrColorSpace::Unknown,
         }
     }
@@ -239,8 +247,8 @@ impl TilePixelBuffer {
 #[cfg(test)]
 mod tests {
     use super::{
-        HdrColorProfile, HdrGainMapMetadata, HdrImageMetadata, HdrReference, HdrToneMapSettings,
-        HdrTransferFunction, TilePixelBuffer, TilePixelFormat,
+        HdrColorProfile, HdrColorSpace, HdrGainMapMetadata, HdrImageMetadata, HdrReference,
+        HdrToneMapSettings, HdrTransferFunction, TilePixelBuffer, TilePixelFormat,
     };
     use std::sync::Arc;
 
@@ -303,6 +311,21 @@ mod tests {
         };
 
         assert_eq!(metadata.transfer_short_label(), "PQ");
+    }
+
+    #[test]
+    fn cicp_color_primaries_1_maps_to_linear_srgb_hint() {
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 1,
+                transfer_characteristics: 8,
+                matrix_coefficients: 0,
+                full_range: true,
+            },
+            ..HdrImageMetadata::default()
+        };
+
+        assert_eq!(metadata.color_space_hint(), HdrColorSpace::LinearSrgb);
     }
 
     #[test]

@@ -68,7 +68,9 @@ bytemuck = "1.25.0"
 miniz_oxide = "0.8.9"
 
 [features]
-default = ["openexr-core"]
+# OpenEXR + AVIF/HEIF/JPEG XL native HDR paths are on by default so CI and release
+# builds exercise the full format set without extra --features flags.
+default = ["openexr-core", "hdr-modern-formats"]
 # Feature for Windows 7 compatibility (ANGLE bridge)
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 # Diagnostic tools for tiled rendering (green borders and OSD stats)

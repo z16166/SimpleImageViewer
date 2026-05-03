@@ -24,7 +24,10 @@ use image::{ImageReader, Limits};
 
 use crate::hdr::tiled::HdrTiledSource;
 
-use super::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+use super::types::{
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrToneMapSettings,
+    HdrTransferFunction,
+};
 
 const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
 const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;
@@ -35,6 +38,7 @@ const MAX_HDR_FALLBACK_DECODE_BYTES: u64 = MAX_HDR_FALLBACK_PIXELS * HDR_RGBA32F
 const MAX_HDR_FALLBACK_TOTAL_BYTES: u64 =
     MAX_HDR_FALLBACK_PIXELS * HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR;
 const MAX_HDR_TONE_MAP_INPUT: f32 = f32::MAX;
+const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 
 pub fn is_hdr_candidate_ext(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("exr") || ext.eq_ignore_ascii_case("hdr")
@@ -231,7 +235,32 @@ fn is_radiance_hdr_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("hdr"))
 }
 
+/// Tone-map HDR float RGBA to 8-bit sRGB for SDR displays. Uses [`HdrImageMetadata`]
+/// transfer function (PQ / HLG / sRGB / linear) and color space similarly to the
+/// HDR image-plane WGSL path, so PQ/HLG wide-gamut sources are not misinterpreted
+/// as scene-linear sRGB (which previously washed out detail). Scene-linear EXR /
+/// Radiance-style buffers (`HdrTransferFunction::Linear`) keep the prior Reinhard
+/// curve without an extra peak-luminance scaler so existing still-HDR behavior stays
+/// predictable.
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {
+    let mut tone = HdrToneMapSettings::default();
+    if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
+        if max.is_finite() && max > tone.sdr_white_nits {
+            tone.max_display_nits = max;
+        }
+    }
+    hdr_to_sdr_rgba8_with_tone_settings(buffer, exposure_ev, &tone)
+}
+
+/// Same as [`hdr_to_sdr_rgba8`] but uses explicit SDR white / peak display nits
+/// (e.g. from user tone-map settings) for PQ/HLG peak scaling. Caller-supplied
+/// `max_display_nits` is raised by [`HdrImageMetadata::luminance::mastering_max_nits`]
+/// when that hint exceeds it (content peak vs display capability).
+pub fn hdr_to_sdr_rgba8_with_tone_settings(
+    buffer: &HdrImageBuffer,
+    exposure_ev: f32,
+    tone: &HdrToneMapSettings,
+) -> Result<Vec<u8>, String> {
     let expected_len = buffer
         .width
         .checked_mul(buffer.height)
@@ -254,21 +283,167 @@ pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec
         ));
     }
 
-    let exposure_scale = 2.0_f32.powf(exposure_ev);
-    let mut pixels = Vec::with_capacity(expected_len);
-
-    for pixel in buffer.rgba_f32.chunks_exact(4) {
-        for channel in &pixel[..3] {
-            let exposed = clamp_hdr_tone_map_input(sanitize_hdr_rgb(*channel) * exposure_scale);
-            let mapped = exposed / (1.0 + exposed);
-            let encoded = mapped.powf(1.0 / 2.2).clamp(0.0, 1.0);
-            pixels.push(float_to_u8(encoded));
+    let mut tone = *tone;
+    if let Some(max) = buffer.metadata.luminance.mastering_max_nits {
+        if max.is_finite() && max > tone.sdr_white_nits {
+            tone.max_display_nits = tone.max_display_nits.max(max);
         }
-
-        pixels.push(float_to_u8(pixel[3].clamp(0.0, 1.0)));
     }
 
+    let tf = buffer.metadata.transfer_function;
+    let apply_peak_scaler = matches!(
+        tf,
+        HdrTransferFunction::Pq | HdrTransferFunction::Hlg
+    );
+    let exposure_scale = 2.0_f32.powf(exposure_ev);
+    let peak_scale = if apply_peak_scaler {
+        tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits)
+    } else {
+        1.0
+    };
+
+    let mut pixels = Vec::with_capacity(expected_len);
+    for pixel in buffer.rgba_f32.chunks_exact(4) {
+        let rgb_in = [pixel[0], pixel[1], pixel[2]];
+        let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
+        let linear_srgb = linear_primary_to_linear_srgb(decoded, buffer.color_space, &buffer.metadata);
+        let encoded = encode_sdr_rgb8(linear_srgb, exposure_scale, peak_scale);
+        pixels.extend_from_slice(&[encoded[0], encoded[1], encoded[2], float_to_u8(pixel[3].clamp(0.0, 1.0))]);
+    }
     Ok(pixels)
+}
+
+fn decode_transfer_to_display_linear(rgb: [f32; 3], tf: HdrTransferFunction, sdr_white_nits: f32) -> [f32; 3] {
+    let clamp01 = |v: f32| v.clamp(0.0, 1.0);
+    match tf {
+        HdrTransferFunction::Linear => rgb,
+        HdrTransferFunction::Srgb => [
+            srgb_nonlinear_channel_to_linear(rgb[0]),
+            srgb_nonlinear_channel_to_linear(rgb[1]),
+            srgb_nonlinear_channel_to_linear(rgb[2]),
+        ],
+        HdrTransferFunction::Pq => [
+            pq_nonlinear_to_display_linear(clamp01(rgb[0]), sdr_white_nits),
+            pq_nonlinear_to_display_linear(clamp01(rgb[1]), sdr_white_nits),
+            pq_nonlinear_to_display_linear(clamp01(rgb[2]), sdr_white_nits),
+        ],
+        HdrTransferFunction::Hlg => [
+            hlg_nonlinear_to_scene_linear(clamp01(rgb[0])),
+            hlg_nonlinear_to_scene_linear(clamp01(rgb[1])),
+            hlg_nonlinear_to_scene_linear(clamp01(rgb[2])),
+        ],
+        HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => rgb,
+    }
+}
+
+fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// BT.2100 PQ EOTF, then scale to display-linear relative units (matches HDR plane shader).
+fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let code_m2 = code.powf(1.0 / m2);
+    let numerator = (code_m2 - c1).max(0.0);
+    let denominator = (c2 - c3 * code_m2).max(0.000001);
+    let absolute_nits = 10000.0 * (numerator / denominator).powf(1.0 / m1);
+    absolute_nits / sdr_white_nits.max(1.0)
+}
+
+/// BT.2100 HLG OETF inverse (scene linear), matching `hlg_to_scene_linear` in `renderer.rs`.
+fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
+    let a = 0.17883277_f32;
+    let b = 0.28466892_f32;
+    let c = 0.55991073_f32;
+    if e_prime <= 0.5 {
+        (e_prime * e_prime) / 3.0
+    } else {
+        (((e_prime - c).max(0.0) / a).exp() + b) / 12.0
+    }
+}
+
+pub(crate) fn linear_primary_to_linear_srgb(rgb: [f32; 3], color_space: HdrColorSpace, meta: &HdrImageMetadata) -> [f32; 3] {
+    match color_space {
+        HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb => rgb,
+        HdrColorSpace::Rec2020Linear => rec2020_linear_to_linear_srgb(rgb),
+        HdrColorSpace::DisplayP3Linear => display_p3_linear_to_linear_srgb(rgb),
+        HdrColorSpace::Aces2065_1 => aces2065_1_linear_to_linear_srgb(rgb),
+        HdrColorSpace::Xyz => xyz_to_linear_srgb(rgb),
+        HdrColorSpace::Unknown => {
+            if matches!(
+                meta.color_profile,
+                HdrColorProfile::Cicp {
+                    color_primaries: 9,
+                    ..
+                }
+            ) {
+                rec2020_linear_to_linear_srgb(rgb)
+            } else if matches!(
+                meta.color_profile,
+                HdrColorProfile::Cicp {
+                    color_primaries: 11,
+                    ..
+                }
+            ) {
+                display_p3_linear_to_linear_srgb(rgb)
+            } else {
+                rgb
+            }
+        }
+    }
+}
+
+/// Display P3 (D65) linear RGB → linear sRGB (same white point; matrix from Skia/CSS pipelines).
+fn display_p3_linear_to_linear_srgb(rgb: [f32; 3]) -> [f32; 3] {
+    [
+        1.2249401 * rgb[0] - 0.2249402 * rgb[1],
+        -0.0420569 * rgb[0] + 1.0420571 * rgb[1],
+        -0.0196376 * rgb[0] - 0.0786507 * rgb[1] + 1.0982884 * rgb[2],
+    ]
+}
+
+fn rec2020_linear_to_linear_srgb(rgb: [f32; 3]) -> [f32; 3] {
+    [
+        1.6605 * rgb[0] - 0.5876 * rgb[1] - 0.0728 * rgb[2],
+        -0.1246 * rgb[0] + 1.1329 * rgb[1] - 0.0083 * rgb[2],
+        -0.0182 * rgb[0] - 0.1006 * rgb[1] + 1.1187 * rgb[2],
+    ]
+}
+
+fn aces2065_1_linear_to_linear_srgb(rgb: [f32; 3]) -> [f32; 3] {
+    [
+        2.5216 * rgb[0] - 1.1369 * rgb[1] - 0.3849 * rgb[2],
+        -0.2762 * rgb[0] + 1.3697 * rgb[1] - 0.0935 * rgb[2],
+        -0.0159 * rgb[0] - 0.1478 * rgb[1] + 1.1638 * rgb[2],
+    ]
+}
+
+fn xyz_to_linear_srgb(xyz: [f32; 3]) -> [f32; 3] {
+    [
+        3.2404 * xyz[0] - 1.5371 * xyz[1] - 0.4985 * xyz[2],
+        -0.9692 * xyz[0] + 1.8760 * xyz[1] + 0.0415 * xyz[2],
+        0.0556 * xyz[0] - 0.2040 * xyz[1] + 1.0572 * xyz[2],
+    ]
+}
+
+fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
+    let mut out = [0_u8; 3];
+    for i in 0..3 {
+        let exposed = clamp_hdr_tone_map_input(sanitize_hdr_rgb(linear_srgb[i]) * exposure_scale * peak_scale);
+        let mapped = exposed / (1.0 + exposed);
+        let encoded = mapped.powf(INVERSE_DISPLAY_GAMMA).clamp(0.0, 1.0);
+        out[i] = float_to_u8(encoded);
+    }
+    out
 }
 
 fn validate_hdr_fallback_budget(width: u32, height: u32) -> Result<(), String> {
@@ -317,7 +492,10 @@ fn float_to_u8(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat};
+    use crate::hdr::types::{
+        HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrToneMapSettings,
+        HdrTransferFunction,
+    };
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -409,6 +587,71 @@ mod tests {
         let sdr = hdr_to_sdr_rgba8(&buffer, 16.0).expect("tone map extreme finite buffer");
 
         assert_eq!(sdr, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn pq_transfer_eotf_and_rec2020_matrix_produce_reasonable_sdr_fallback() {
+        let mut meta = HdrImageMetadata::default();
+        meta.transfer_function = HdrTransferFunction::Pq;
+        meta.color_profile = HdrColorProfile::Cicp {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 0,
+            full_range: true,
+        };
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: meta,
+            rgba_f32: Arc::new(vec![0.45, 0.45, 0.45, 1.0]),
+        };
+        let sdr = hdr_to_sdr_rgba8(&buffer, 0.0).expect("pq tone map");
+
+        assert!(
+            sdr[0] > 8 && sdr[0] < 250 && sdr[1] > 8 && sdr[1] < 250 && sdr[2] > 8 && sdr[2] < 250,
+            "unexpected PQ SDR fallback RGB {:?}",
+            &sdr[..3]
+        );
+        assert_eq!(sdr[3], 255);
+    }
+
+    #[test]
+    fn hdr_to_sdr_rgba8_with_tone_settings_respects_max_display_nits() {
+        let mut meta = HdrImageMetadata::default();
+        meta.transfer_function = HdrTransferFunction::Pq;
+        meta.color_profile = HdrColorProfile::Cicp {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 0,
+            full_range: true,
+        };
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: meta,
+            rgba_f32: Arc::new(vec![0.6, 0.6, 0.6, 1.0]),
+        };
+        // Smaller max_display_nits → larger peak_scale → brighter SDR after PQ decode + Reinhard.
+        let narrow_peak = HdrToneMapSettings {
+            max_display_nits: 600.0,
+            ..HdrToneMapSettings::default()
+        };
+        let wide_peak = HdrToneMapSettings {
+            max_display_nits: 4000.0,
+            ..HdrToneMapSettings::default()
+        };
+        let brighter = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &narrow_peak).expect("tone map");
+        let darker = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &wide_peak).expect("tone map");
+        let sum_brighter: u32 = brighter[..3].iter().map(|&b| b as u32).sum();
+        let sum_darker: u32 = darker[..3].iter().map(|&b| b as u32).sum();
+        assert!(
+            sum_brighter > sum_darker,
+            "PQ SDR fallback should brighten when max_display_nits is lower: {sum_brighter} vs {sum_darker}"
+        );
     }
 
     #[test]

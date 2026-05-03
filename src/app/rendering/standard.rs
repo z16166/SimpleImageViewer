@@ -30,6 +30,28 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
     !is_animating || !matches!(transition, TransitionStyle::Ripple)
 }
 
+/// Decide whether to render this static draw via the HDR float-image-plane shader.
+///
+/// Returning `true` means the per-pixel float buffer is uploaded to a `Rgba16Float`
+/// texture and dispatched through `HDR_IMAGE_PLANE_SHADER` (`encode_native_hdr` for
+/// scRGB / EDR output, or `encode_sdr` with Reinhard otherwise).
+///
+/// Returning `false` falls through to the cached SDR fallback texture path (the same
+/// path used for ordinary 8-bit images — egui's `fs_main_*_framebuffer`), which is
+/// what we want when `RenderPlan::backend == Sdr`. Routing SDR-grade JXL content
+/// (`bench_oriented_brg`, `intensity_target=255`) through the HDR plane shader's
+/// `encode_sdr` Reinhard branch lifts shadows ~3.4× and visibly washes contrast on
+/// physically SDR displays — even when `output_mode == SdrToneMapped` is selected,
+/// because `target_format` stays locked to `Rgba16Float` from startup.
+pub(crate) fn should_route_through_hdr_plane(
+    plan: &RenderPlan,
+    transition: TransitionStyle,
+    is_animating: bool,
+) -> bool {
+    plan.backend == PlaneBackendKind::Hdr
+        && should_use_hdr_callback(transition, is_animating)
+}
+
 pub(crate) fn should_draw_static_hdr_immediately(
     plan: &RenderPlan,
     transition: TransitionStyle,
@@ -126,6 +148,7 @@ impl ImageViewerApp {
                 self.active_transition,
                 TransitionStyle::PageFlip | TransitionStyle::Curtain
             )
+            && render_plan.backend == PlaneBackendKind::Hdr
         {
             if let (Some(hdr_image), Some(target_format)) =
                 (hdr_image.clone(), self.hdr_target_format)
@@ -151,7 +174,10 @@ impl ImageViewerApp {
         // Static HDR images draw through egui-wgpu so the float buffer reaches the shader.
         // Ripple remains on the SDR texture path because its circular mesh cannot be expressed
         // by the current rectangular HDR image-plane callback.
-        if should_use_hdr_callback(self.active_transition, tp.is_animating) {
+        // The plan's backend must be `Hdr`; otherwise (e.g. monitor probed as SDR-only, or
+        // probe failed and the conservative gate kicked in) the cached SDR fallback texture
+        // is the correct visual source — see `should_route_through_hdr_plane`.
+        if should_route_through_hdr_plane(&render_plan, self.active_transition, tp.is_animating) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 if tp.is_animating {
                     if let Some(prev) = &self.prev_texture.clone() {
@@ -552,6 +578,57 @@ mod tests {
         ] {
             assert!(should_use_hdr_callback(style, true));
         }
+    }
+
+    #[test]
+    fn hdr_plane_routing_requires_hdr_backend_even_when_target_format_is_float() {
+        // Regression: even though `target_format` stays locked to `Rgba16Float` from
+        // startup (so we can switch into NativeHdr at runtime if a probe later proves
+        // the monitor supports HDR), the HDR float-image-plane shader must NOT be used
+        // when the plan resolved its backend to `Sdr`. Otherwise SDR-grade JXL content
+        // is routed through the plane shader's `encode_sdr` Reinhard branch which lifts
+        // shadows and visibly washes contrast on physically SDR displays
+        // (`bench_oriented_brg/input.jxl`).
+        let sdr_plan = static_plan(
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::SdrToneMapped,
+        );
+        assert_eq!(sdr_plan.backend, PlaneBackendKind::Sdr);
+        assert!(
+            !should_route_through_hdr_plane(&sdr_plan, TransitionStyle::None, false),
+            "Sdr backend must keep static draws on the cached SDR fallback texture path"
+        );
+
+        let hdr_plan = static_plan(
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::NativeHdr,
+        );
+        assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
+        assert!(
+            should_route_through_hdr_plane(&hdr_plan, TransitionStyle::None, false),
+            "Hdr backend must continue to stream the float buffer through the plane shader"
+        );
+    }
+
+    #[test]
+    fn hdr_plane_routing_still_skips_ripple_animation_on_hdr_backend() {
+        let hdr_plan = static_plan(
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::NativeHdr,
+        );
+        assert!(!should_route_through_hdr_plane(
+            &hdr_plan,
+            TransitionStyle::Ripple,
+            true
+        ));
+        assert!(should_route_through_hdr_plane(
+            &hdr_plan,
+            TransitionStyle::Ripple,
+            false
+        ));
     }
 
     #[test]

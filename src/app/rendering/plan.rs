@@ -157,6 +157,14 @@ mod tests {
             max_hdr_capacity: None,
             hdr_capacity_source: None,
         };
+        let hdr_monitor = crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: "HDR monitor".to_string(),
+            max_luminance_nits: Some(1000.0),
+            max_full_frame_luminance_nits: Some(500.0),
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("test"),
+        };
 
         let sdr_plan = super::build_render_plan_for_state(
             super::RenderShape::Static,
@@ -174,7 +182,7 @@ mod tests {
             super::RenderShape::Static,
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
-            None,
+            Some(&hdr_monitor),
         );
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
@@ -186,12 +194,28 @@ mod tests {
             super::RenderShape::Tiled,
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
-            None,
+            Some(&hdr_monitor),
         );
         assert_eq!(tiled_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             tiled_plan.transition_policy,
             super::RenderTransitionPolicy::TiledHdrWithSdrPreviewFallback
+        );
+
+        // Defense-in-depth: when the monitor capability hasn't been probed yet (e.g. the
+        // OS-side enumeration silently failed because the egui main window title was
+        // localized), default to the SDR plane rather than optimistically routing through
+        // the scRGB native HDR pipeline on a possibly SDR-only display.
+        let unknown_monitor_plan = super::build_render_plan_for_state(
+            super::RenderShape::Static,
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            None,
+        );
+        assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Sdr);
+        assert_eq!(
+            unknown_monitor_plan.transition_policy,
+            super::RenderTransitionPolicy::SdrOnly
         );
     }
 }

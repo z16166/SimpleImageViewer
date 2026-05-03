@@ -520,8 +520,8 @@ fn main() -> eframe::Result {
         }
     }
 
-    let preferred_hdr_target_format =
-        crate::hdr::surface::preferred_native_hdr_target_format_for_settings(
+    let (preferred_hdr_target_format, hdr_environment_probe) =
+        crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
             settings.hdr_native_surface_enabled,
         );
     for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
@@ -530,6 +530,7 @@ fn main() -> eframe::Result {
     ) {
         log::info!("{diagnostic}");
     }
+    log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
 
     let native_options = eframe::NativeOptions {
         viewport,

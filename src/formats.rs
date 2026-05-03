@@ -52,6 +52,7 @@ impl FormatRegistry {
 
         let builtin_standard = [
             ("png", "PNG Image"),
+            ("apng", "Animated PNG Image"),
             ("jpg", "JPEG Image"),
             ("jpeg", "JPEG Image"),
             ("gif", "GIF Image"),

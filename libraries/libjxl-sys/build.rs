@@ -12,6 +12,12 @@ fn main() {
             for include in lib.include_paths {
                 println!("cargo:include={}", include.display());
             }
+            // Pick up Little CMS 2 alongside libjxl. Per vcpkg, libjxl does not
+            // declare lcms2 as a dependency, but lcms2 is present in the same
+            // installed dir (typically as a transitive dep of libheif/libavif).
+            // We need it for the CMYK→sRGB transform path on JXL files with a
+            // black extra channel.
+            let _ = config.find_package("lcms2");
         }
         Err(err) => {
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
@@ -29,6 +35,12 @@ fn main() {
             println!("cargo:rustc-link-lib=static=brotlidec");
             println!("cargo:rustc-link-lib=static=brotlienc");
             println!("cargo:rustc-link-lib=static=brotlicommon");
+            // Little CMS 2 — used for CMYK→sRGB conversion of JPEG-XL files whose
+            // source has a `JXL_CHANNEL_BLACK` extra channel. libjxl's bundled CMS
+            // does not auto-convert non-XYB CMYK output; per libjxl PR #237 the
+            // proper path is to apply the embedded CMYK ICC profile externally
+            // with a 4-channel CMYK input.
+            println!("cargo:rustc-link-lib=static=lcms2");
         }
     }
 }

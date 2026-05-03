@@ -169,7 +169,15 @@ pub fn effective_render_output_mode(
     let Some(target_format) = target_format else {
         return HdrRenderOutputMode::SdrToneMapped;
     };
-    if selection.is_some_and(|selection| !selection.hdr_supported) {
+    // Conservative fail-closed gate: only enable native scRGB / EDR presentation when we
+    // have an explicit, positive confirmation that the active monitor supports HDR. When
+    // the probe has not yet completed, failed silently, or reports `hdr_supported = false`
+    // (e.g. Windows Settings says "不支持" / "not supported"), composit through the SDR
+    // tone-mapped path so γ encoding for the actual SDR panel is correct.
+    let Some(selection) = selection else {
+        return HdrRenderOutputMode::SdrToneMapped;
+    };
+    if !selection.hdr_supported {
         return HdrRenderOutputMode::SdrToneMapped;
     }
     HdrRenderOutputMode::for_target_format(target_format)
@@ -252,11 +260,18 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
     };
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetWindow, GetWindowThreadProcessId,
+        IsWindowVisible,
     };
     use windows::core::Interface;
 
     unsafe extern "system" fn enum_process_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // Pick the first visible top-level window owned by the current process. We avoid
+        // matching by window title because the egui main window is localized (e.g. Chinese
+        // builds use "简易图片查看器"); any title-substring filter would silently fail on
+        // non-English locales and the HDR monitor probe would never populate `selection`,
+        // leaving the renderer to optimistically pick scRGB native HDR on physically SDR
+        // displays.
         let state = unsafe { &mut *(lparam.0 as *mut EnumWindowState) };
         let mut process_id = 0_u32;
         unsafe {
@@ -268,14 +283,12 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
         if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
             return true.into();
         }
-
-        let mut title = [0_u16; 256];
-        let title_len = unsafe { GetWindowTextW(hwnd, &mut title) };
-        if title_len <= 0 {
+        // Skip child / owned windows so we land on the actual application top-level frame
+        // rather than a transient tooltip / IME window that may belong to the same process.
+        if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
             return true.into();
         }
-        let title = String::from_utf16_lossy(&title[..title_len as usize]);
-        if !title.contains("Simple Image Viewer") {
+        if !unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default().is_invalid() {
             return true.into();
         }
 
@@ -357,6 +370,168 @@ fn windows_active_monitor_hdr_status() -> Result<HdrMonitorSelection, String> {
 #[cfg(target_os = "windows")]
 fn finite_positive_luminance(value: f32) -> Option<f32> {
     (value.is_finite() && value > 0.0).then_some(value)
+}
+
+/// Pre-window-creation HDR availability probe.
+///
+/// Returns:
+/// - `Ok(true)` if any DXGI output reports active HDR signaling
+///   (BitsPerColor > 8 AND ColorSpace == G2084_NONE_P2020)
+/// - `Ok(false)` if no output advertises HDR — the window's swap chain should NOT
+///   request `Rgba16Float` because the Windows compositor will route scRGB linear
+///   values through HDR-style processing on physically SDR panels (visibly washing
+///   out shadow contrast — see `bench_oriented_brg/input.jxl`)
+/// - `Err(...)` if probing failed; callers should treat this as "unknown" and may
+///   choose either policy. On Linux this returns `Err` unconditionally.
+///
+/// Kept available as a fallback strategy for future code that wants to know about
+/// system-wide HDR availability (vs. the spawn-monitor probe, which is what the
+/// current swap-chain selector uses).
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub fn any_active_output_supports_hdr() -> Result<bool, String> {
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
+    };
+    use windows::core::Interface;
+
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|err| err.to_string())?;
+    let mut adapter_index = 0_u32;
+    loop {
+        let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+            Ok(adapter) => adapter,
+            Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(err) => return Err(err.to_string()),
+        };
+
+        let mut output_index = 0_u32;
+        loop {
+            let output = match unsafe { adapter.EnumOutputs(output_index) } {
+                Ok(output) => output,
+                Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(err) => return Err(err.to_string()),
+            };
+            if let Ok(output6) = output.cast::<IDXGIOutput6>()
+                && let Ok(desc) = unsafe { output6.GetDesc1() }
+                && desc.BitsPerColor > 8
+                && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+            {
+                return Ok(true);
+            }
+            output_index += 1;
+        }
+
+        adapter_index += 1;
+    }
+
+    Ok(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+pub fn any_active_output_supports_hdr() -> Result<bool, String> {
+    Err("pre-creation HDR availability probing is only implemented on Windows".to_string())
+}
+
+/// Outcome of probing the monitor where the application window will spawn.
+#[derive(Debug, Clone)]
+pub struct SpawnMonitorHdrProbe {
+    /// True when the monitor where we expect the window to appear advertises HDR
+    /// (BitsPerColor > 8 AND ColorSpace == G2084_NONE_P2020 from DXGI).
+    pub hdr_supported: bool,
+    /// Friendly DXGI device name for the matched monitor (e.g. `"\\.\DISPLAY1"`).
+    /// Empty when the cursor / primary fallback could not be matched to any
+    /// enumerated DXGI output (e.g. headless test runners).
+    pub label: String,
+    /// Where the probe got the "spawn point" from, for logging:
+    /// `"cursor"` — `GetCursorPos` (mouse cursor is on this monitor),
+    /// `"primary"` — fell back to `MonitorFromPoint(0, 0, MONITOR_DEFAULTTOPRIMARY)`.
+    pub origin: &'static str,
+}
+
+/// Probe HDR support of the **monitor where the window is most likely to spawn**
+/// rather than "any output". On a mixed-monitor system (one HDR + one SDR) the
+/// any-output probe always returns `Ok(true)` because the HDR display exists,
+/// which then locks the swap chain into `Rgba16Float`. When the user actually
+/// starts the app on the SDR monitor, Windows DWM has to convert scRGB → SDR and
+/// can introduce subtle HDR-style processing. Probing the spawn monitor lets us
+/// pick `Bgra8Unorm` directly and bypass DWM conversion entirely.
+///
+/// Spawn point selection:
+/// 1. `GetCursorPos` — the user's cursor monitor. The window typically opens on
+///    the same display as where the user double-clicked / launched the shortcut.
+/// 2. Fallback: `MONITOR_DEFAULTTOPRIMARY` (Windows primary monitor).
+///
+/// Returns `Err(...)` when DXGI enumeration fails or the platform does not
+/// support this probing path; callers should fall back to the platform default.
+#[cfg(target_os = "windows")]
+pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, IDXGIFactory1, IDXGIOutput6,
+    };
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use windows::core::Interface;
+
+    let mut cursor = POINT::default();
+    let (monitor, origin) = match unsafe { GetCursorPos(&mut cursor) } {
+        Ok(()) => (
+            unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY) },
+            "cursor",
+        ),
+        Err(_) => (
+            unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) },
+            "primary",
+        ),
+    };
+    if monitor.is_invalid() {
+        return Err("spawn monitor handle was not found".to_string());
+    }
+
+    let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(|err| err.to_string())?;
+    let mut adapter_index = 0_u32;
+    loop {
+        let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
+            Ok(adapter) => adapter,
+            Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(err) => return Err(err.to_string()),
+        };
+
+        let mut output_index = 0_u32;
+        loop {
+            let output = match unsafe { adapter.EnumOutputs(output_index) } {
+                Ok(output) => output,
+                Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
+                Err(err) => return Err(err.to_string()),
+            };
+            if let Ok(output6) = output.cast::<IDXGIOutput6>()
+                && let Ok(desc) = unsafe { output6.GetDesc1() }
+                && desc.Monitor == monitor
+            {
+                let hdr_supported = desc.BitsPerColor > 8
+                    && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                let label = monitor_device_name(&desc.DeviceName);
+                return Ok(SpawnMonitorHdrProbe {
+                    hdr_supported,
+                    label,
+                    origin,
+                });
+            }
+            output_index += 1;
+        }
+
+        adapter_index += 1;
+    }
+
+    Err("spawn monitor was not matched to any DXGI output".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn spawn_monitor_hdr_status() -> Result<SpawnMonitorHdrProbe, String> {
+    Err("spawn-monitor HDR probing is only implemented on Windows".to_string())
 }
 
 #[cfg(target_os = "macos")]

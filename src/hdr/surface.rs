@@ -43,6 +43,7 @@ pub fn preferred_native_hdr_target_format_for_platform() -> Option<wgpu::Texture
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn preferred_native_hdr_target_format_for_settings(
     native_surface_enabled: bool,
 ) -> Option<wgpu::TextureFormat> {
@@ -50,6 +51,72 @@ pub fn preferred_native_hdr_target_format_for_settings(
         preferred_native_hdr_target_format_for_platform()
     } else {
         None
+    }
+}
+
+/// Outcome of checking the *spawn monitor* (cursor / primary) for HDR support
+/// before window creation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HdrEnvironmentProbe {
+    /// The monitor where the window is expected to spawn reports active HDR
+    /// signaling — keep the `Rgba16Float` swap chain so we can drive scRGB
+    /// native presentation.
+    SpawnMonitorHdr {
+        label: String,
+        origin: &'static str,
+    },
+    /// The monitor where the window is expected to spawn is SDR (HDR disabled in
+    /// Windows Settings, or physically SDR panel) — force
+    /// `preferred_target_format` to `None` so eframe selects an SDR
+    /// (`Bgra8Unorm` / `Rgba8Unorm`) swap chain. This bypasses Windows DWM's
+    /// scRGB → SDR conversion entirely. **Trade-off**: if the user later drags
+    /// the window onto an HDR monitor, native-HDR presentation is disabled
+    /// until the next launch (we do not currently recreate the swap chain).
+    SpawnMonitorSdr {
+        label: String,
+        origin: &'static str,
+    },
+    /// Probe failed (DXGI error, non-Windows platform, etc.) — keep whatever the
+    /// caller-supplied policy decided. The runtime monitor probe will still
+    /// gate the rendering path correctly, this just leaves the swap-chain
+    /// format untouched.
+    ProbeUnavailable,
+}
+
+/// Combine the user setting with a startup-time DXGI HDR probe of the **spawn
+/// monitor** (cursor location → primary monitor fallback) to decide whether to
+/// request a float swap chain. This MUST run before window creation because
+/// the surface format is locked at swap-chain creation time.
+///
+/// On mixed-monitor systems (one HDR + one SDR), this picks the swap-chain
+/// format that matches the display the user is *actually* about to use, rather
+/// than blanket-enabling Rgba16Float because *any* display happens to be HDR.
+pub fn preferred_native_hdr_target_format_for_environment(
+    native_surface_enabled: bool,
+) -> (Option<wgpu::TextureFormat>, HdrEnvironmentProbe) {
+    if !native_surface_enabled {
+        return (None, HdrEnvironmentProbe::ProbeUnavailable);
+    }
+    let candidate = preferred_native_hdr_target_format_for_platform();
+    if candidate.is_none() {
+        return (None, HdrEnvironmentProbe::ProbeUnavailable);
+    }
+    match crate::hdr::monitor::spawn_monitor_hdr_status() {
+        Ok(probe) if probe.hdr_supported => (
+            candidate,
+            HdrEnvironmentProbe::SpawnMonitorHdr {
+                label: probe.label,
+                origin: probe.origin,
+            },
+        ),
+        Ok(probe) => (
+            None,
+            HdrEnvironmentProbe::SpawnMonitorSdr {
+                label: probe.label,
+                origin: probe.origin,
+            },
+        ),
+        Err(_) => (candidate, HdrEnvironmentProbe::ProbeUnavailable),
     }
 }
 
@@ -176,5 +243,53 @@ mod tests {
                 "[HDR] preferred_target_format=Some(Rgba16Float)",
             ]
         );
+    }
+
+    #[test]
+    fn environment_probe_skips_when_setting_is_disabled() {
+        let (format, probe) = super::preferred_native_hdr_target_format_for_environment(false);
+        assert_eq!(format, None);
+        assert_eq!(probe, super::HdrEnvironmentProbe::ProbeUnavailable);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn environment_probe_runs_on_windows_when_enabled() {
+        // We can't assert the exact outcome (depends on the test machine), but we can assert
+        // the probe yields one of the well-defined variants and the format follows the variant.
+        let (format, probe) = super::preferred_native_hdr_target_format_for_environment(true);
+        match &probe {
+            super::HdrEnvironmentProbe::SpawnMonitorHdr { origin, .. } => {
+                assert_eq!(format, Some(wgpu::TextureFormat::Rgba16Float));
+                assert!(
+                    *origin == "cursor" || *origin == "primary",
+                    "origin must be a known spawn-point label, got {origin:?}"
+                );
+            }
+            super::HdrEnvironmentProbe::SpawnMonitorSdr { origin, .. } => {
+                assert_eq!(
+                    format, None,
+                    "spawn monitor is SDR — must NOT request a float swap chain on Windows"
+                );
+                assert!(*origin == "cursor" || *origin == "primary");
+            }
+            super::HdrEnvironmentProbe::ProbeUnavailable => {
+                // DXGI probing failed (CI / headless / virtualized GPU); we keep the platform
+                // default so HDR still works on real user systems where probing later succeeds
+                // via the per-window monitor probe + conservative render gate.
+                assert_eq!(format, Some(wgpu::TextureFormat::Rgba16Float));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn environment_probe_keeps_platform_default_on_non_windows() {
+        let (format, probe) = super::preferred_native_hdr_target_format_for_environment(true);
+        // macOS keeps the float swap chain because the EDR layer always handles SDR-only
+        // displays cleanly (1.0 = SDR white, no scRGB-style brightening). Linux returns
+        // None already from `preferred_native_hdr_target_format_for_platform`.
+        assert_eq!(format, super::preferred_native_hdr_target_format_for_platform());
+        assert_eq!(probe, super::HdrEnvironmentProbe::ProbeUnavailable);
     }
 }

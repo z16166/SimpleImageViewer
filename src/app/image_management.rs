@@ -264,6 +264,8 @@ impl ImageViewerApp {
         let previous_capacity = self.ultra_hdr_decode_capacity;
         self.ultra_hdr_decode_capacity = next_capacity;
         self.loader.set_hdr_target_capacity(next_capacity);
+        self.loader
+            .set_hdr_tone_map_settings(self.settings.hdr_tone_map_settings());
         log::info!(
             "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}",
             previous_capacity,

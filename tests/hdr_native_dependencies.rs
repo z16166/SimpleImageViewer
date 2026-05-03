@@ -21,6 +21,11 @@ fn cargo_declares_native_hdr_codec_wrappers_and_features() {
             "Cargo.toml should declare feature {feature}"
         );
     }
+    assert!(
+        cargo.contains("default = [\"openexr-core\", \"hdr-modern-formats\"]")
+            || cargo.contains("default = ['openexr-core', 'hdr-modern-formats']"),
+        "default features should include openexr-core and hdr-modern-formats so plain cargo build/CI get full codec coverage"
+    );
 }
 
 #[test]
@@ -80,8 +85,11 @@ fn native_hdr_backends_are_wired_past_initial_stubs() {
         );
     }
     assert!(
-        loader.contains("hdr_to_sdr_rgba8")
+        loader.contains("hdr_to_sdr_rgba8_with_tone_settings")
+            || loader.contains("hdr_to_sdr_rgba8")
+            || heif.contains("hdr_to_sdr_rgba8_with_tone_settings")
             || heif.contains("hdr_to_sdr_rgba8")
+            || jxl.contains("hdr_to_sdr_rgba8_with_tone_settings")
             || jxl.contains("hdr_to_sdr_rgba8"),
         "native HDR formats should provide SDR fallbacks from HDR pixels"
     );

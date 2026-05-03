@@ -2,7 +2,7 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat};
+use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
@@ -22,8 +22,10 @@ pub(crate) fn heif_nclx_to_metadata(
     matrix_coefficients: u16,
     full_range: bool,
 ) -> HdrImageMetadata {
+    // ITU-T H.273 CICP transfer characteristics (not libjxl enums).
     let transfer_function = match transfer_characteristics {
-        1 | 13 => HdrTransferFunction::Srgb,
+        8 => HdrTransferFunction::Linear,
+        13 => HdrTransferFunction::Srgb,
         16 => HdrTransferFunction::Pq,
         18 => HdrTransferFunction::Hlg,
         _ => HdrTransferFunction::Unknown,
@@ -49,9 +51,16 @@ pub(crate) fn heif_nclx_to_metadata(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn load_heif_hdr(path: &std::path::Path) -> Result<crate::loader::ImageData, String> {
+pub(crate) fn load_heif_hdr(
+    path: &std::path::Path,
+    tone_map: HdrToneMapSettings,
+) -> Result<crate::loader::ImageData, String> {
     let hdr = decode_heif_hdr(path)?;
-    let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+    let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+        &hdr,
+        tone_map.exposure_ev,
+        &tone_map,
+    )?;
     let fallback = crate::loader::DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
 
     Ok(crate::loader::ImageData::Hdr { hdr, fallback })
