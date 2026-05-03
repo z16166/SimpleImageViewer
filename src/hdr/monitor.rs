@@ -233,7 +233,14 @@ impl HdrMonitorState {
             return interval_elapsed;
         }
 
-        interval_elapsed
+        // Viewport signature changed (outer rect, reported monitor size, or PPP). This almost
+        // always means a cross-monitor move or resize that can change DXGI `ColorSpace` / EDR
+        // while the swap-chain format is being hot-swapped. We must **not** gate on the generic
+        // 750 ms interval here: until `selection` catches up, `effective_render_output_mode` can
+        // pair `Rgba16Float` with stale `hdr_supported = false`, which runs `encode_sdr` (γ
+        // encoded for 8-bit) into a linear scRGB buffer — lifted blacks on SDR and visible color
+        // skew when switching to HDR. Always probe immediately on signature change.
+        true
     }
 
     fn should_reprobe_current_edr_capacity(&self, supports_current_edr_reprobe: bool) -> bool {
@@ -889,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn monitor_probe_runs_first_time_and_only_after_signature_change_with_throttle() {
+    fn monitor_probe_runs_first_time_immediately_on_signature_change() {
         let start = Instant::now();
         let first = HdrMonitorSignature {
             outer_rect: Some([0, 0, 100, 100]),
@@ -913,8 +920,9 @@ mod tests {
             // can lag during native drags).
             assert!(state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
         }
-        assert!(!state.should_probe(moved, start + Duration::from_millis(100), false));
-        assert!(state.should_probe(moved, start + HDR_MONITOR_PROBE_INTERVAL, false));
+        // Cross-monitor style rect change must not wait 750 ms — swap-chain format may already
+        // differ from `selection` within the same second.
+        assert!(state.should_probe(moved, start + Duration::from_millis(100), false));
     }
 
     #[test]
