@@ -39,6 +39,8 @@ pub(crate) struct OpenExrCoreReadContext {
     path: PathBuf,
     raw: sys::ExrContext,
     part_count: usize,
+    /// `Y = w[0]*R + w[1]*G + w[2]*B` weights from `chromaticities` (OpenEXR `computeYw`), else Rec.709.
+    exr_luma_weights: [f32; 3],
     decoded_chunks: Mutex<OpenExrCoreDecodedChunkCache>,
     decoded_chunk_ready: Condvar,
 }
@@ -63,6 +65,56 @@ fn hdr_color_space_from_chromaticities_xy(ch: &[f32; 8]) -> crate::hdr::types::H
     } else {
         crate::hdr::types::HdrColorSpace::LinearSrgb
     }
+}
+
+/// OpenEXR `Imf::RGBtoXYZ` + `RgbaYca::computeYw`: weights for `Y = wr*R + wg*G + wb*B` from file
+/// `chromaticities` (xy for R, G, B, white). Required for correct Y/Ry/By → RGB when primaries ≠ Rec.709.
+fn openexr_luminance_weights_from_chromaticities_xy(ch: &[f32; 8]) -> Option<[f32; 3]> {
+    let (rx, ry) = (ch[0], ch[1]);
+    let (gx, gy) = (ch[2], ch[3]);
+    let (bx, by) = (ch[4], ch[5]);
+    let (wx, wy) = (ch[6], ch[7]);
+    let y_white = 1.0_f32;
+
+    if wy.abs() <= 1.0 && (wx * y_white).abs() >= wy.abs() * f32::MAX {
+        return None;
+    }
+
+    let x = wx * y_white / wy;
+    let z = (1.0 - wx - wy) * y_white / wy;
+
+    let d = rx * (by - gy) + bx * (gy - ry) + gx * (ry - by);
+
+    let sr_n = x * (by - gy)
+        - gx * (y_white * (by - 1.0) + by * (x + z))
+        + bx * (y_white * (gy - 1.0) + gy * (x + z));
+    let sg_n = x * (ry - by)
+        + rx * (y_white * (by - 1.0) + by * (x + z))
+        - bx * (y_white * (ry - 1.0) + ry * (x + z));
+    let sb_n = x * (gy - ry)
+        - rx * (y_white * (gy - 1.0) + gy * (x + z))
+        + gx * (y_white * (ry - 1.0) + ry * (x + z));
+
+    if d.abs() < 1.0
+        && (sr_n.abs() >= d.abs() * f32::MAX
+            || sg_n.abs() >= d.abs() * f32::MAX
+            || sb_n.abs() >= d.abs() * f32::MAX)
+    {
+        return None;
+    }
+
+    let sr = sr_n / d;
+    let sg = sg_n / d;
+    let sb = sb_n / d;
+
+    let m01 = sr * ry;
+    let m11 = sg * gy;
+    let m21 = sb * by;
+    let sum = m01 + m11 + m21;
+    if !sum.is_finite() || sum.abs() < f32::EPSILON {
+        return None;
+    }
+    Some([m01 / sum, m11 / sum, m21 / sum])
 }
 
 /// Heuristic match for ACES 2065-1 / AP0-style primaries (e.g. OpenEXR `Carrots.exr`).
@@ -278,10 +330,16 @@ impl OpenExrCoreReadContext {
         let part_count = usize::try_from(part_count)
             .map_err(|_| "OpenEXRCore reported a negative part count".to_string())?;
 
+        let exr_luma_weights = imf_exr_chromaticities_from_path(path)
+            .as_ref()
+            .and_then(|ch| openexr_luminance_weights_from_chromaticities_xy(ch))
+            .unwrap_or([0.2126_f32, 0.7152_f32, 0.0722_f32]);
+
         Ok(Self {
             path: path.to_path_buf(),
             raw,
             part_count,
+            exr_luma_weights,
             decoded_chunks: Mutex::new(OpenExrCoreDecodedChunkCache::new(
                 configured_decoded_chunk_cache_max_bytes(),
             )),
@@ -959,12 +1017,11 @@ impl OpenExrCoreReadContext {
                     col_u,
                     row_u,
                 );
-                let wr = 0.2126_f32;
-                let wg = 0.7152_f32;
-                let wb = 0.0722_f32;
+                let [wr, wg, wb] = self.exr_luma_weights;
                 let r = y * (1.0 + ry_ratio);
                 let b = y * (1.0 + by_ratio);
-                let g = y * (1.0 - (wr * ry_ratio + wb * by_ratio) / wg);
+                // Same as OpenEXR `RgbaYca::YCAtoRGBA`: g = (Y - r*yw.x - b*yw.z) / yw.y
+                let g = (y - wr * r - wb * b) / wg;
 
                 rgba[dest] = r;
                 rgba[dest + 1] = g;
@@ -1513,6 +1570,40 @@ mod tests {
     use crate::hdr::types::HdrColorSpace;
 
     #[test]
+    fn carrots_exr_chromaticities_and_preview_stats_when_corpus_present() {
+        let path = std::path::Path::new(r"F:\HDR\openexr-images\ScanLines\Carrots.exr");
+        if !path.exists() {
+            return;
+        }
+        let ch = super::imf_exr_chromaticities_from_path(path);
+        let cs = super::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(path);
+        let ctx = super::OpenExrCoreReadContext::open(path).expect("openexr core");
+        let preview = ctx
+            .extract_scanline_rgba32f_preview_nearest(0, 64, 64)
+            .expect("preview");
+        let mut max_rgb = [0.0_f32; 3];
+        let mut max_a = 0.0_f32;
+        let mut min_a = f32::INFINITY;
+        for px in preview.rgba.chunks_exact(4) {
+            for i in 0..3 {
+                max_rgb[i] = max_rgb[i].max(px[i]);
+            }
+            max_a = max_a.max(px[3]);
+            min_a = min_a.min(px[3]);
+        }
+        eprintln!(
+            "Carrots: chroma_ok={} ch={ch:?} color_space={cs:?} max_rgb={max_rgb:?} min_a={min_a} max_a={max_a}",
+            ch.is_some()
+        );
+        assert!(
+            ch.is_some(),
+            "Imf should read chromaticities from Carrots.exr header"
+        );
+        assert_eq!(cs, HdrColorSpace::Aces2065_1);
+        assert!(max_rgb[0] > 0.01 || max_rgb[1] > 0.01 || max_rgb[2] > 0.01, "rgb should not be flat black");
+    }
+
+    #[test]
     fn aces_ap0_chromaticities_heuristic_triggers() {
         let ap0 = [0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767];
         assert!(super::chromaticities_looks_like_aces_ap0(&ap0));
@@ -1545,10 +1636,19 @@ mod tests {
         let by = (b0 - y) / y;
         let r = y * (1.0 + ry);
         let b = y * (1.0 + by);
-        let g = y * (1.0 - (wr * ry + wb * by) / wg);
+        let g = (y - wr * r - wb * b) / wg;
         assert!((r - r0).abs() < 1e-4);
         assert!((g - g0).abs() < 1e-4);
         assert!((b - b0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn openexr_luminance_weights_match_rec709_chromaticities() {
+        let rec709 = [0.64_f32, 0.33, 0.3, 0.6, 0.15, 0.06, 0.3127, 0.3290];
+        let w = super::openexr_luminance_weights_from_chromaticities_xy(&rec709).expect("yw");
+        assert!((w[0] - 0.212639).abs() < 0.002);
+        assert!((w[1] - 0.715169).abs() < 0.002);
+        assert!((w[2] - 0.072192).abs() < 0.002);
     }
 
     #[test]

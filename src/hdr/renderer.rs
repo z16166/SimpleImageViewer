@@ -305,10 +305,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         rgb = encode_sdr(source_rgb, tone_map);
     }
-    return vec4<f32>(
-        rgb,
-        clamp(hdr.a, 0.0, 1.0) * tone_map.alpha,
-    );
+    // Many OpenEXR camera plates store A=0 even when RGB is valid (no matte). Treat as opaque
+    // when there is scene signal after color conversion (e.g. openexr-images Carrots.exr).
+    let src_a = clamp(hdr.a, 0.0, 1.0);
+    let has_linear_signal = max(max(abs(source_rgb.r), abs(source_rgb.g)), abs(source_rgb.b)) > 1e-6;
+    let a_out = select(src_a, 1.0, src_a == 0.0 && has_linear_signal);
+    return vec4<f32>(rgb, a_out * tone_map.alpha);
 }
 "#;
 
