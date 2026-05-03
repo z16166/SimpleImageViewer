@@ -81,6 +81,8 @@ enum ChannelRole {
     Blue,
     Luma,
     Alpha,
+    Ry,
+    By,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -756,28 +758,46 @@ impl OpenExrCoreReadContext {
             pipeline: &mut pipeline,
         };
 
-        let (roles, buffers) = {
+        let (roles, buffers, channel_layouts) = {
             let channels = decode_pipeline_channels(&mut pipeline)?;
-            let roles: Vec<_> = channels
-                .iter()
-                .map(|channel| channel_name_to_role(channel.channel_name))
-                .collect();
+            let roles = assign_channel_roles(&channels);
             let mut buffers = vec![Vec::<f32>::new(); channels.len()];
+            let mut channel_layouts = vec![None; channels.len()];
             for (index, channel) in channels.iter_mut().enumerate() {
                 if roles[index].is_none() {
                     channel.decode_to_ptr = ptr::null_mut();
                     continue;
                 }
 
-                buffers[index] = vec![0.0_f32; sample_count];
+                let ch_w = usize::try_from(channel.width)
+                    .map_err(|_| "OpenEXRCore channel width is invalid".to_string())?;
+                let ch_h = usize::try_from(channel.height)
+                    .map_err(|_| "OpenEXRCore channel height is invalid".to_string())?;
+                let ch_samples = ch_w
+                    .checked_mul(ch_h)
+                    .ok_or_else(|| "OpenEXRCore channel sample count overflowed".to_string())?;
+                if ch_samples == 0 {
+                    return Err(format!(
+                        "OpenEXRCore channel has zero samples (width={}, height={})",
+                        channel.width, channel.height
+                    ));
+                }
+
+                buffers[index] = vec![0.0_f32; ch_samples];
+                channel_layouts[index] = Some(OpenExrCoreChannelChunkLayout {
+                    width: channel.width,
+                    height: channel.height,
+                    x_samples: channel.x_samples,
+                    y_samples: channel.y_samples,
+                });
                 channel.user_bytes_per_element = 4;
                 channel.user_data_type = sys::EXR_PIXEL_FLOAT;
                 channel.user_pixel_stride = 4;
-                channel.user_line_stride = i32::try_from(chunk_width * 4)
-                    .map_err(|_| "OpenEXRCore chunk line stride exceeds i32".to_string())?;
+                channel.user_line_stride = i32::try_from(ch_w * 4)
+                    .map_err(|_| "OpenEXRCore channel line stride exceeds i32".to_string())?;
                 channel.decode_to_ptr = buffers[index].as_mut_ptr().cast::<u8>();
             }
-            (roles, buffers)
+            (roles, buffers, channel_layouts)
         };
 
         exr_result(unsafe {
@@ -797,25 +817,144 @@ impl OpenExrCoreReadContext {
         for alpha in rgba.chunks_exact_mut(4).map(|pixel| &mut pixel[3]) {
             *alpha = 1.0;
         }
-        for (channel_index, role) in roles.iter().enumerate() {
-            let Some(role) = role else {
-                continue;
-            };
-            let buffer = &buffers[channel_index];
-            for sample_index in 0..sample_count {
-                let dest = sample_index * 4;
-                let sample = buffer[sample_index];
-                match *role {
-                    ChannelRole::Red => rgba[dest] = sample,
-                    ChannelRole::Green => rgba[dest + 1] = sample,
-                    ChannelRole::Blue => rgba[dest + 2] = sample,
-                    ChannelRole::Luma => {
-                        rgba[dest] = sample;
-                        rgba[dest + 1] = sample;
-                        rgba[dest + 2] = sample;
-                    }
-                    ChannelRole::Alpha => rgba[dest + 3] = sample,
-                }
+
+        let mut r_idx = None;
+        let mut g_idx = None;
+        let mut b_idx = None;
+        let mut a_idx = None;
+        let mut y_idx = None;
+        let mut ry_idx = None;
+        let mut by_idx = None;
+
+        for (i, role) in roles.iter().enumerate() {
+            match role {
+                Some(ChannelRole::Red) => r_idx = Some(i),
+                Some(ChannelRole::Green) => g_idx = Some(i),
+                Some(ChannelRole::Blue) => b_idx = Some(i),
+                Some(ChannelRole::Alpha) => a_idx = Some(i),
+                Some(ChannelRole::Luma) => y_idx = Some(i),
+                Some(ChannelRole::Ry) => ry_idx = Some(i),
+                Some(ChannelRole::By) => by_idx = Some(i),
+                None => {}
+            }
+        }
+
+        let is_yryby = y_idx.is_some()
+            && ry_idx.is_some()
+            && by_idx.is_some()
+            && r_idx.is_none()
+            && g_idx.is_none()
+            && b_idx.is_none();
+
+        for sample_index in 0..sample_count {
+            let dest = sample_index * 4;
+            let row_u = (sample_index / chunk_width) as u32;
+            let col_u = (sample_index % chunk_width) as u32;
+
+            rgba[dest + 3] = a_idx
+                .map(|i| {
+                    channel_sample_f32(
+                        &buffers,
+                        &channel_layouts,
+                        i,
+                        chunk_origin,
+                        col_u,
+                        row_u,
+                    )
+                })
+                .unwrap_or(1.0);
+
+            if is_yryby {
+                let y = channel_sample_f32(
+                    &buffers,
+                    &channel_layouts,
+                    y_idx.unwrap(),
+                    chunk_origin,
+                    col_u,
+                    row_u,
+                );
+                // OpenEXR luminance/chroma stores RY=(R−Y)/Y and BY=(B−Y)/Y, not plain R−Y / B−Y
+                // (Technical Introduction → Luminance/Chroma Images). Inverting with Y=wR·R+wG·G+wB·B
+                // and default Rec.709 weights when `chromaticities` is omitted yields:
+                let ry_ratio = channel_sample_f32(
+                    &buffers,
+                    &channel_layouts,
+                    ry_idx.unwrap(),
+                    chunk_origin,
+                    col_u,
+                    row_u,
+                );
+                let by_ratio = channel_sample_f32(
+                    &buffers,
+                    &channel_layouts,
+                    by_idx.unwrap(),
+                    chunk_origin,
+                    col_u,
+                    row_u,
+                );
+                let wr = 0.2126_f32;
+                let wg = 0.7152_f32;
+                let wb = 0.0722_f32;
+                let r = y * (1.0 + ry_ratio);
+                let b = y * (1.0 + by_ratio);
+                let g = y * (1.0 - (wr * ry_ratio + wb * by_ratio) / wg);
+
+                rgba[dest] = r;
+                rgba[dest + 1] = g;
+                rgba[dest + 2] = b;
+            } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
+                rgba[dest] = r_idx
+                    .map(|i| {
+                        channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            i,
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        )
+                    })
+                    .unwrap_or(0.0);
+                rgba[dest + 1] = g_idx
+                    .map(|i| {
+                        channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            i,
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        )
+                    })
+                    .unwrap_or(0.0);
+                rgba[dest + 2] = b_idx
+                    .map(|i| {
+                        channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            i,
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        )
+                    })
+                    .unwrap_or(0.0);
+            } else if y_idx.is_some() {
+                let y = channel_sample_f32(
+                    &buffers,
+                    &channel_layouts,
+                    y_idx.unwrap(),
+                    chunk_origin,
+                    col_u,
+                    row_u,
+                );
+                rgba[dest] = y;
+                rgba[dest + 1] = y;
+                rgba[dest + 2] = y;
+            } else {
+                rgba[dest] = 0.0;
+                rgba[dest + 1] = 0.0;
+                rgba[dest + 2] = 0.0;
             }
         }
         let rgba = Arc::new(rgba);
@@ -1059,6 +1198,61 @@ fn budgeted_scanline_preview_source_y(
     crate::hdr::tiled::preview_sample_coord(representative_preview_y, preview_height, source_height)
 }
 
+/// Per-channel dimensions and sampling for one decoded chunk (filled by OpenEXRCore on init).
+#[derive(Clone, Copy, Debug)]
+struct OpenExrCoreChannelChunkLayout {
+    width: i32,
+    height: i32,
+    x_samples: i32,
+    y_samples: i32,
+}
+
+/// Map a full-resolution chunk pixel to the flat index in that channel's planar buffer.
+fn sampled_channel_flat_index(
+    layout: OpenExrCoreChannelChunkLayout,
+    chunk_origin: (u32, u32),
+    col: u32,
+    row: u32,
+) -> Option<usize> {
+    let w = usize::try_from(layout.width).ok()?;
+    let h = usize::try_from(layout.height).ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let xs = layout.x_samples.max(1) as u32;
+    let ys = layout.y_samples.max(1) as u32;
+    let sub_x = (chunk_origin.0 + col) / xs;
+    let sub_y = (chunk_origin.1 + row) / ys;
+    let base_x = chunk_origin.0 / xs;
+    let base_y = chunk_origin.1 / ys;
+    let lx = sub_x.checked_sub(base_x)? as usize;
+    let ly = sub_y.checked_sub(base_y)? as usize;
+    if lx >= w || ly >= h {
+        return None;
+    }
+    Some(ly * w + lx)
+}
+
+fn channel_sample_f32(
+    buffers: &[Vec<f32>],
+    layouts: &[Option<OpenExrCoreChannelChunkLayout>],
+    channel_index: usize,
+    chunk_origin: (u32, u32),
+    col: u32,
+    row: u32,
+) -> f32 {
+    let Some(layout) = layouts[channel_index] else {
+        return 0.0;
+    };
+    let Some(sample_index) = sampled_channel_flat_index(layout, chunk_origin, col, row) else {
+        return 0.0;
+    };
+    buffers[channel_index]
+        .get(sample_index)
+        .copied()
+        .unwrap_or(0.0)
+}
+
 fn decode_pipeline_channels(
     pipeline: &mut sys::ExrDecodePipeline,
 ) -> Result<&mut [sys::ExrCodingChannelInfo], String> {
@@ -1103,24 +1297,80 @@ fn compression_name(compression: u8) -> &'static str {
     }
 }
 
-fn channel_name_to_role(name: *const c_char) -> Option<ChannelRole> {
-    if name.is_null() {
-        return None;
+fn assign_channel_roles(channels: &[sys::ExrCodingChannelInfo]) -> Vec<Option<ChannelRole>> {
+    let mut roles = vec![None; channels.len()];
+
+    let mut has_r = false;
+    let mut has_g = false;
+    let mut has_b = false;
+    let mut has_y = false;
+    let mut has_ry = false;
+    let mut has_by = false;
+    let mut has_a = false;
+
+    // First pass: exact matches
+    for (i, ch) in channels.iter().enumerate() {
+        if ch.channel_name.is_null() {
+            continue;
+        }
+        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
+        if name.eq_ignore_ascii_case("R") && !has_r {
+            roles[i] = Some(ChannelRole::Red);
+            has_r = true;
+        } else if name.eq_ignore_ascii_case("G") && !has_g {
+            roles[i] = Some(ChannelRole::Green);
+            has_g = true;
+        } else if name.eq_ignore_ascii_case("B") && !has_b {
+            roles[i] = Some(ChannelRole::Blue);
+            has_b = true;
+        } else if name.eq_ignore_ascii_case("Y") && !has_y {
+            roles[i] = Some(ChannelRole::Luma);
+            has_y = true;
+        } else if name.eq_ignore_ascii_case("RY") && !has_ry {
+            roles[i] = Some(ChannelRole::Ry);
+            has_ry = true;
+        } else if name.eq_ignore_ascii_case("BY") && !has_by {
+            roles[i] = Some(ChannelRole::By);
+            has_by = true;
+        } else if name.eq_ignore_ascii_case("A") && !has_a {
+            roles[i] = Some(ChannelRole::Alpha);
+            has_a = true;
+        }
     }
-    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    if name.eq_ignore_ascii_case("R") {
-        Some(ChannelRole::Red)
-    } else if name.eq_ignore_ascii_case("G") {
-        Some(ChannelRole::Green)
-    } else if name.eq_ignore_ascii_case("B") {
-        Some(ChannelRole::Blue)
-    } else if name.eq_ignore_ascii_case("Y") {
-        Some(ChannelRole::Luma)
-    } else if name.eq_ignore_ascii_case("A") {
-        Some(ChannelRole::Alpha)
-    } else {
-        None
+
+    // Second pass: suffix matches if exact not found
+    for (i, ch) in channels.iter().enumerate() {
+        if roles[i].is_some() || ch.channel_name.is_null() {
+            continue;
+        }
+        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
+        let base = name.rsplit('.').next().unwrap_or(&name);
+
+        if base.eq_ignore_ascii_case("R") && !has_r {
+            roles[i] = Some(ChannelRole::Red);
+            has_r = true;
+        } else if base.eq_ignore_ascii_case("G") && !has_g {
+            roles[i] = Some(ChannelRole::Green);
+            has_g = true;
+        } else if base.eq_ignore_ascii_case("B") && !has_b {
+            roles[i] = Some(ChannelRole::Blue);
+            has_b = true;
+        } else if base.eq_ignore_ascii_case("Y") && !has_y {
+            roles[i] = Some(ChannelRole::Luma);
+            has_y = true;
+        } else if base.eq_ignore_ascii_case("RY") && !has_ry {
+            roles[i] = Some(ChannelRole::Ry);
+            has_ry = true;
+        } else if base.eq_ignore_ascii_case("BY") && !has_by {
+            roles[i] = Some(ChannelRole::By);
+            has_by = true;
+        } else if base.eq_ignore_ascii_case("A") && !has_a {
+            roles[i] = Some(ChannelRole::Alpha);
+            has_a = true;
+        }
     }
+
+    roles
 }
 
 fn copy_channels(chlist: *const sys::ExrAttrChlist) -> Result<Vec<OpenExrCoreChannelInfo>, String> {
@@ -1193,6 +1443,56 @@ fn exr_result(result: sys::ExrResult) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn luma_chroma_ratio_decode_round_trips_rec709_weights() {
+        let wr = 0.2126_f32;
+        let wg = 0.7152_f32;
+        let wb = 0.0722_f32;
+        let r0 = 0.3_f32;
+        let g0 = 0.4_f32;
+        let b0 = 0.35_f32;
+        let y = wr * r0 + wg * g0 + wb * b0;
+        let ry = (r0 - y) / y;
+        let by = (b0 - y) / y;
+        let r = y * (1.0 + ry);
+        let b = y * (1.0 + by);
+        let g = y * (1.0 - (wr * ry + wb * by) / wg);
+        assert!((r - r0).abs() < 1e-4);
+        assert!((g - g0).abs() < 1e-4);
+        assert!((b - b0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sampled_channel_flat_index_matches_half_res_chroma() {
+        let layout = super::OpenExrCoreChannelChunkLayout {
+            width: 3,
+            height: 2,
+            x_samples: 2,
+            y_samples: 2,
+        };
+        let origin = (0u32, 0u32);
+        assert_eq!(
+            super::sampled_channel_flat_index(layout, origin, 0, 0),
+            Some(0)
+        );
+        assert_eq!(
+            super::sampled_channel_flat_index(layout, origin, 1, 0),
+            Some(0)
+        );
+        assert_eq!(
+            super::sampled_channel_flat_index(layout, origin, 2, 0),
+            Some(1)
+        );
+        assert_eq!(
+            super::sampled_channel_flat_index(layout, origin, 4, 0),
+            Some(2)
+        );
+        assert_eq!(
+            super::sampled_channel_flat_index(layout, origin, 0, 2),
+            Some(3)
+        );
+    }
+
     #[test]
     fn decoded_chunk_cache_reuses_native_chunk_across_horizontal_tiles() {
         let key = super::OpenExrCoreDecodedChunkKey {
