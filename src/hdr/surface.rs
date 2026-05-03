@@ -163,7 +163,13 @@ pub fn preferred_native_hdr_target_format_for_environment(
                 origin: probe.origin,
             },
         ),
-        Err(_) => (candidate, HdrEnvironmentProbe::ProbeUnavailable),
+        // Fail closed to SDR (`preferred_target_format = None`): without a successful spawn-time
+        // DXGI / monitor classification we must not request `Rgba16Float`. On Windows, a float
+        // swap chain on an SDR display (or before the first per-frame probe) is composited through
+        // scRGB→SDR heuristics and **lifts blacks / washes the whole UI** compared to main's
+        // `Bgra8Unorm` path. HDR still activates once [`desired_target_format_for_active_monitor`]
+        // sees `hdr_supported = true` and the egui-wgpu mailbox hot-swaps the surface to float.
+        Err(_) => (None, HdrEnvironmentProbe::ProbeUnavailable),
     }
 }
 
@@ -490,23 +496,23 @@ mod tests {
                 );
             }
             super::HdrEnvironmentProbe::ProbeUnavailable => {
-                // DXGI probing failed (CI / headless / virtualized GPU); we keep the platform
-                // default so HDR still works on real user systems where probing later succeeds
-                // via the per-window monitor probe + conservative render gate.
-                assert_eq!(format, Some(wgpu::TextureFormat::Rgba16Float));
+                // Spawn-time probe failed — do not prefer float; match main-branch SDR until the
+                // per-frame monitor probe can classify the display and hot-swap to float on HDR.
+                assert_eq!(format, None);
             }
         }
     }
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn environment_probe_keeps_platform_default_on_non_windows() {
+    fn environment_probe_unavailable_does_not_prefer_float_without_spawn_classification() {
         let (format, probe) =
             super::preferred_native_hdr_target_format_for_environment(true, None);
-        // macOS keeps the float swap chain because the EDR layer always handles SDR-only
-        // displays cleanly (1.0 = SDR white, no scRGB-style brightening). Linux returns
-        // None already from `preferred_native_hdr_target_format_for_platform`.
-        assert_eq!(format, super::preferred_native_hdr_target_format_for_platform());
-        assert_eq!(probe, super::HdrEnvironmentProbe::ProbeUnavailable);
+        if probe == super::HdrEnvironmentProbe::ProbeUnavailable {
+            assert_eq!(
+                format, None,
+                "without spawn-time HDR/SDR classification, never prefer float — SDR panels must match main's Bgra8 path until runtime probe upgrades"
+            );
+        }
     }
 }
