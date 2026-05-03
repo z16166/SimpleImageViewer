@@ -1,0 +1,36 @@
+# Cursor index / AI search: skip huge or binary-heavy trees
+
+# Rust
+target/
+**/target/
+
+# vcpkg / C++ deps
+vcpkg_installed/
+**/vcpkg_installed/
+
+# Third-party
+3rdparty/
+**/3rdparty/
+
+# Local scratch
+scratch/
+.worktrees/
+
+# IDE
+.vscode/
+.idea/
+
+# Binaries & archives
+*.zip
+*.tar.gz
+*.7z
+*.msi
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.a
+
+*.log
