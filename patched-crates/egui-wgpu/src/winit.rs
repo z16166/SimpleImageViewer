@@ -120,6 +120,20 @@ impl Painter {
         surface_state
             .surface
             .configure(&render_state.device, &surf_config);
+
+        // Windows: keep the DXGI swap-chain color space in sync with the
+        // configured format. wgpu-hal uses `IDXGISwapChain::ResizeBuffers`
+        // to apply format changes, and ResizeBuffers does **not** touch the
+        // color-space attribute of the swap chain. That means after a
+        // hot-swap from `Rgba16Float` (scRGB linear) to `Bgra8Unorm` (sRGB)
+        // -- or vice versa -- the compositor still interprets the back
+        // buffer as the *old* color space, which is what makes the app
+        // appear to use "tone-map rendering" after dragging from HDR to SDR
+        // (浅黑 background) and makes HDR content look blue-tinted after
+        // dragging from SDR to HDR. Calling `SetColorSpace1` after every
+        // configure restores the expected behavior.
+        #[cfg(target_os = "windows")]
+        windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
     }
 
     /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`]
@@ -642,6 +656,18 @@ impl Painter {
                     (texture_view, Some(&target_view))
                 });
 
+            // Translate eframe's sRGB-gamma `clear_color` into the color
+            // space expected by the currently-bound swap-chain format so the
+            // raw `LoadOp::Clear` matches what the egui fragment shader
+            // writes for regular UI geometry. Without this, the ~12/255
+            // sRGB panel background renders as ~3.76 nits on a
+            // Windows scRGB `Rgba16Float` HDR swap chain (blown-out grey)
+            // instead of ~0.3 nits (charcoal black). See
+            // `clear_color_for_framebuffer_format`.
+            let framebuffer_clear_color = renderer::clear_color_for_framebuffer_format(
+                clear_color,
+                output_frame.texture.format(),
+            );
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui_render"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -649,10 +675,10 @@ impl Painter {
                     resolve_target,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear_color[0] as f64,
-                            g: clear_color[1] as f64,
-                            b: clear_color[2] as f64,
-                            a: clear_color[3] as f64,
+                            r: framebuffer_clear_color[0] as f64,
+                            g: framebuffer_clear_color[1] as f64,
+                            b: framebuffer_clear_color[2] as f64,
+                            a: framebuffer_clear_color[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -814,5 +840,158 @@ impl Painter {
     #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
     pub fn destroy(&mut self) {
         // TODO(emilk): something here?
+    }
+}
+
+/// Map a `wgpu::TextureFormat` to the DXGI color space the Windows
+/// compositor should interpret the swap-chain back buffer with.
+///
+/// * `Rgba16Float` / `Rgba32Float` -> `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
+///   (scRGB linear with Rec.709 primaries; the standard float HDR
+///   color space on Windows).
+/// * sRGB-aware 8-bit formats -> `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709`
+///   (sRGB gamma with Rec.709 primaries; the default SDR color space).
+/// * Other formats -> `None`, leaving whatever color space is currently
+///   set on the swap chain untouched.
+#[cfg(target_os = "windows")]
+fn desired_dxgi_color_space_for_format(
+    format: wgpu::TextureFormat,
+) -> Option<windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE> {
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    };
+    match format {
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => {
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        }
+        fmt if fmt.is_srgb() => Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm => {
+            // 8-bit UNORM swap chains are treated as sRGB by DWM even
+            // without the sRGB suffix (see
+            // <https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range>).
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[cfg(test)]
+mod color_space_tests {
+    use super::desired_dxgi_color_space_for_format;
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    };
+
+    #[test]
+    fn float_formats_map_to_scrgb_linear() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba16Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba32Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn bgra8_unorm_maps_to_srgb_default() {
+        // Bgra8Unorm (without explicit `_srgb_` suffix) is treated as an
+        // sRGB-gamma SDR surface by Windows DWM. Must NOT stay on
+        // whatever scRGB color space a previous HDR swap chain had left
+        // on the IDXGISwapChain when `ResizeBuffers` changed the format.
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn srgb_formats_map_to_srgb_color_space() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn exotic_formats_return_none() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::R8Unorm),
+            None
+        );
+    }
+}
+
+/// Apply `IDXGISwapChain3::SetColorSpace1` to the DX12 swap chain backing
+/// the provided wgpu surface, so the compositor interprets the back
+/// buffer as the color space that matches the configured format.
+///
+/// Called after every `surface.configure` on Windows. No-op when:
+/// * the adapter backend is not DX12;
+/// * we cannot reach the hal surface / swap chain (e.g. off-screen
+///   rendering, headless CI, other hal backend); or
+/// * DXGI reports that the requested color space is not supported on
+///   the current display path (we log and leave the previous state).
+#[cfg(target_os = "windows")]
+fn windows_sync_swap_chain_color_space(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+) {
+    if adapter.get_info().backend != wgpu::Backend::Dx12 {
+        return;
+    }
+    let Some(desired) = desired_dxgi_color_space_for_format(format) else {
+        return;
+    };
+
+    use windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT;
+
+    // SAFETY: we use `as_hal` to borrow the DX12 hal `Surface`. The
+    // returned `swap_chain()` clones a COM pointer whose methods are
+    // all safe to call from a single thread while the hal surface is
+    // alive. We do not retain the pointer beyond this call.
+    let result: Result<(), String> = unsafe {
+        surface
+            .as_hal::<wgpu::hal::api::Dx12>()
+            .ok_or_else(|| "wgpu::Surface::as_hal<Dx12> returned None".to_string())
+            .and_then(|hal_surface| {
+                let swap_chain = hal_surface
+                    .swap_chain()
+                    .ok_or_else(|| "DX12 hal surface has no swap chain".to_string())?;
+                let support = swap_chain
+                    .CheckColorSpaceSupport(desired)
+                    .map_err(|err| format!("CheckColorSpaceSupport failed: {err}"))?;
+                if support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32 == 0 {
+                    return Err(format!(
+                        "DXGI reports color space {desired:?} is not supported for presentation \
+                         on the current swap chain"
+                    ));
+                }
+                swap_chain
+                    .SetColorSpace1(desired)
+                    .map_err(|err| format!("SetColorSpace1({desired:?}) failed: {err}"))?;
+                Ok(())
+            })
+    };
+    match result {
+        Ok(()) => {
+            log::debug!(
+                "egui-wgpu: DXGI swap-chain color space synced to {desired:?} for format {format:?}"
+            );
+        }
+        Err(reason) => {
+            log::debug!("egui-wgpu: could not sync DXGI swap-chain color space ({reason})");
+        }
     }
 }

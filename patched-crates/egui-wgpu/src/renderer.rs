@@ -9,15 +9,81 @@ use wgpu::util::DeviceExt as _;
 pub fn egui_framebuffer_shader_entry_point(
     output_color_format: wgpu::TextureFormat,
 ) -> &'static str {
-    if output_color_format.is_srgb()
+    if egui_framebuffer_expects_linear_writes(output_color_format) {
+        "fs_main_linear_framebuffer"
+    } else {
+        "fs_main_gamma_framebuffer"
+    }
+}
+
+/// Returns `true` when the supplied swap-chain/framebuffer format expects
+/// colors to be written in linear color space (i.e. the `egui` fragment
+/// shader variant that converts gamma sRGB inputs to linear will be bound).
+///
+/// This is the case for:
+/// * any sRGB-aware format (e.g. `Bgra8UnormSrgb`) — the hardware gamma
+///   encoder applies `linear → sRGB` on store, so shaders and clear values
+///   must be linear.
+/// * floating-point formats used for Windows scRGB HDR swap chains
+///   (`Rgba16Float`, `Rgba32Float`) — DWM interprets stored values directly
+///   as scRGB linear, so shaders and clear values must be linear.
+///
+/// For plain `Bgra8Unorm` / `Rgba8Unorm` etc., the framebuffer is treated
+/// as gamma-encoded by the display compositor, so gamma-encoded values are
+/// written as-is.
+pub fn egui_framebuffer_expects_linear_writes(output_color_format: wgpu::TextureFormat) -> bool {
+    output_color_format.is_srgb()
         || matches!(
             output_color_format,
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
         )
-    {
-        "fs_main_linear_framebuffer"
+}
+
+/// Converts a single sRGB-gamma channel value in `[0, 1]` to its linear
+/// counterpart using the canonical sRGB EOTF. Values outside `[0, 1]` are
+/// passed through unchanged so scRGB HDR over-brights (e.g. from a user
+/// supplying `clear_color = [2.0, 2.0, 2.0, 1.0]` for an in-game flash) are
+/// preserved.
+///
+/// Matches `linear_from_gamma_rgb()` in `egui.wgsl` so the color of a raw
+/// `LoadOp::Clear` on a linear/float framebuffer matches colors that went
+/// through the egui fragment shader.
+#[inline]
+pub fn srgb_gamma_channel_to_linear(x: f32) -> f32 {
+    if !x.is_finite() {
+        return x;
+    }
+    if x < 0.0 || x > 1.0 {
+        return x;
+    }
+    if x <= 0.040_449_937 {
+        x / 12.92
     } else {
-        "fs_main_gamma_framebuffer"
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Transforms the `clear_color` that `eframe` supplies (sRGB gamma RGB +
+/// straight alpha) into the color space expected by the current swap-chain
+/// format, matching the conversion the egui fragment shader performs for
+/// regular UI geometry. Without this, a `LoadOp::Clear` on an `Rgba16Float`
+/// (scRGB) swap chain would write gamma-encoded values as if they were
+/// linear, making the panel background ~8× too bright on Windows HDR
+/// displays.
+#[inline]
+pub fn clear_color_for_framebuffer_format(
+    clear_color: [f32; 4],
+    output_color_format: wgpu::TextureFormat,
+) -> [f32; 4] {
+    if egui_framebuffer_expects_linear_writes(output_color_format) {
+        [
+            srgb_gamma_channel_to_linear(clear_color[0]),
+            srgb_gamma_channel_to_linear(clear_color[1]),
+            srgb_gamma_channel_to_linear(clear_color[2]),
+            clear_color[3],
+        ]
+    } else {
+        clear_color
     }
 }
 
@@ -1255,4 +1321,81 @@ fn hdr_float_target_uses_linear_framebuffer_shader_for_sdr_ui() {
         egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Bgra8Unorm),
         "fs_main_gamma_framebuffer"
     );
+}
+
+#[cfg(test)]
+mod clear_color_tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 1e-5
+    }
+
+    #[test]
+    fn linear_target_receives_linearized_clear_color() {
+        // Default eframe panel background: sRGB (12, 12, 12, 180).
+        let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
+        let linear = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgba16Float);
+
+        // 12/255 ≈ 0.0471 sRGB-gamma; canonical sRGB EOTF ((x+0.055)/1.055)^2.4
+        // ≈ 0.003676 linear. That is ~13× dimmer than the 0.0471 raw value
+        // that DWM would otherwise interpret as linear on an scRGB HDR swap
+        // chain — i.e. exactly the "lighter black" (浅黑) the user saw when
+        // the window ended up on an HDR monitor.
+        assert!(
+            approx_eq(linear[0], 0.003_676_5),
+            "r={} expected 0.003676",
+            linear[0]
+        );
+        assert!(approx_eq(linear[1], 0.003_676_5));
+        assert!(approx_eq(linear[2], 0.003_676_5));
+        // Alpha is a coverage/compositor weight — never gamma-encoded.
+        assert_eq!(linear[3], gamma[3]);
+    }
+
+    #[test]
+    fn srgb_target_receives_linearized_clear_color() {
+        let gamma = [0.5, 0.5, 0.5, 1.0];
+        let linear =
+            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8UnormSrgb);
+        // sRGB 0.5 ≈ linear 0.214
+        assert!(approx_eq(linear[0], 0.214_041_13));
+        assert!(approx_eq(linear[1], 0.214_041_13));
+        assert!(approx_eq(linear[2], 0.214_041_13));
+        assert_eq!(linear[3], 1.0);
+    }
+
+    #[test]
+    fn gamma_target_preserves_clear_color() {
+        let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
+        let out = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!(out, gamma);
+    }
+
+    #[test]
+    fn zero_and_one_round_trip_on_linear_target() {
+        let zero = clear_color_for_framebuffer_format(
+            [0.0, 0.0, 0.0, 1.0],
+            wgpu::TextureFormat::Rgba16Float,
+        );
+        assert_eq!(zero, [0.0, 0.0, 0.0, 1.0]);
+        let one = clear_color_for_framebuffer_format(
+            [1.0, 1.0, 1.0, 1.0],
+            wgpu::TextureFormat::Rgba16Float,
+        );
+        assert!(approx_eq(one[0], 1.0));
+        assert!(approx_eq(one[1], 1.0));
+        assert!(approx_eq(one[2], 1.0));
+    }
+
+    #[test]
+    fn scrgb_over_bright_clear_color_is_preserved_on_linear_target() {
+        // Over-brights (scRGB > 1.0) should flow through untouched so apps that
+        // use clear_color to drive HDR highlights keep their extended range.
+        let over = clear_color_for_framebuffer_format(
+            [3.5, 3.5, 3.5, 1.0],
+            wgpu::TextureFormat::Rgba16Float,
+        );
+        assert_eq!(over, [3.5, 3.5, 3.5, 1.0]);
+    }
 }

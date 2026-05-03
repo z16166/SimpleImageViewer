@@ -120,8 +120,31 @@ version = "29.0.1"
 features = [
     "std",
     "wgsl",
+    # Enable DX12 HAL access so the patched Windows-only code in `winit.rs`
+    # can reach into the DXGI swap chain via `wgpu::Surface::as_hal` to
+    # update the swap-chain color space after a format hot-swap. The `dx12`
+    # feature compiles to a no-op on non-Windows targets, so keeping it
+    # unconditional keeps the patched crate portable.
+    "dx12",
 ]
 default-features = false
+
+# Windows-only: we need raw DXGI access (IDXGISwapChain3::SetColorSpace1) to
+# keep the swap-chain color space in sync with its format whenever the app
+# hot-swaps between an SDR `Bgra8Unorm` and an HDR scRGB `Rgba16Float`
+# surface. `ResizeBuffers` inside wgpu-hal does not update the color space,
+# so we do it here by reaching into the DX12 hal surface.
+[target.'cfg(windows)'.dependencies.windows]
+# Must match the `windows` major version that `wgpu-hal` uses internally, so
+# that the `IDXGISwapChain3` COM pointer returned by `hal_surface.swap_chain()`
+# speaks the same type system as the `DXGI_COLOR_SPACE_TYPE` we pass to it.
+# `wgpu-hal 29.0.1` depends on `windows = "0.62"`.
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+]
 
 [dependencies.winit]
 version = "0.30.13"
