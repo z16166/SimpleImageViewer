@@ -193,8 +193,9 @@ pub(crate) fn avif_cicp_to_metadata(
 #[cfg(feature = "avif-native")]
 #[allow(dead_code)]
 pub(crate) fn decode_avif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes(&bytes)
+    let mmap = crate::mmap_util::map_file(path)
+        .map_err(|err| format!("Failed to read AVIF: {err}"))?;
+    decode_avif_hdr_bytes(&mmap[..])
 }
 
 #[cfg(feature = "avif-native")]
@@ -212,8 +213,9 @@ pub(crate) fn decode_avif_hdr_with_target_capacity(
     path: &std::path::Path,
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
-    decode_avif_hdr_bytes_with_target_capacity(&bytes, target_hdr_capacity)
+    let mmap = crate::mmap_util::map_file(path)
+        .map_err(|err| format!("Failed to read AVIF: {err}"))?;
+    decode_avif_hdr_bytes_with_target_capacity(&mmap[..], target_hdr_capacity)
 }
 
 #[cfg(feature = "avif-native")]

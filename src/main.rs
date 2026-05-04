@@ -36,6 +36,7 @@ mod loader;
 #[cfg(target_os = "macos")]
 mod macos_image_io;
 mod metadata_utils;
+mod mmap_util;
 pub mod print;
 mod psb_reader;
 mod raw_processor;
@@ -286,6 +287,8 @@ fn log_env_info() -> String {
 }
 
 /// Set up a global panic hook to capture and report crashes across all threads.
+/// Decoder paths that use `catch_exr_panic` increment a thread-local so this hook skips
+/// dialog/exit — otherwise `process::exit(1)` would run before `catch_unwind` can handle the panic.
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
         if crate::hdr::exr_tiled::is_exr_panic_hook_suppressed() {

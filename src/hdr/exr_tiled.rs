@@ -25,6 +25,8 @@ use crate::hdr::tiled::{
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
+// `std::panic::set_hook` runs on the thread that panicked. Suppression must be thread-local so a
+// decoder panic on e.g. `siv-psd-v1` is gated by that thread's depth, not the Rayon parent.
 thread_local! {
     static SUPPRESS_EXR_PANIC_HOOK_DEPTH: Cell<u32> = const { Cell::new(0) };
 }

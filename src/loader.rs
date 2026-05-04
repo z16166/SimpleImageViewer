@@ -2068,9 +2068,10 @@ fn load_avif_with_target_capacity(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "avif-native")]
     {
-        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+        let mmap = crate::mmap_util::map_file(path)
+            .map_err(|e| format!("Failed to read AVIF: {e}"))?;
 
-        match crate::hdr::avif::try_decode_avif_image_sequence_sdr(&bytes) {
+        match crate::hdr::avif::try_decode_avif_image_sequence_sdr(&mmap[..]) {
             Ok(Some(raw)) if raw.len() > 1 => {
                 let frames: Vec<AnimationFrame> = raw
                     .into_iter()
@@ -2093,7 +2094,7 @@ fn load_avif_with_target_capacity(
         }
 
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(&bytes, decode_capacity) {
+        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(&mmap[..], decode_capacity) {
             Ok(hdr) => {
                 let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
@@ -2481,34 +2482,59 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
     } else {
-        // PSD v1: use the psd crate (reads entire file into memory).
-        // Some real-world PSDs trigger index panics inside `Psd::rgba()` (psd_channel.rs); treat as Err.
-        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
-        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let psd_file =
-                psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {e}"))?;
-            let w = psd_file.width();
-            let h = psd_file.height();
-            let pixels = psd_file.rgba();
-            Ok::<_, String>((w, h, pixels))
-        }));
+        // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
+        // Decode on a dedicated thread: `join()` turns any unwinding panic into `Err`, which is
+        // more reliable than `catch_unwind` alone when the loader runs on worker pools / mixed stacks.
+        let mmap = crate::mmap_util::map_file(path)
+            .map_err(|e| format!("Failed to read PSD: {e}"))?;
 
-        match decoded {
+        let handle = std::thread::Builder::new()
+            .name("siv-psd-v1".to_string())
+            .spawn(move || {
+                // Must use the same panic-hook suppression as EXR: `setup_panic_hook` calls
+                // `process::exit(1)` on every panic; without suppression, a caught decoder panic
+                // still runs the hook and terminates before `join()` can turn it into `Err`.
+                crate::hdr::exr_tiled::catch_exr_panic("PSD v1 decode", || {
+                    let psd_file = psd::Psd::from_bytes(&mmap[..])
+                        .map_err(|e| format!("Failed to parse PSD: {e}"))?;
+                    let w = psd_file.width();
+                    let h = psd_file.height();
+                    let pixels = psd_file.rgba();
+                    Ok((w, h, pixels))
+                })
+            })
+            .map_err(|e| format!("Failed to spawn PSD decoder thread: {e}"))?;
+
+        match handle.join() {
             Ok(Ok((w, h, pixels))) => {
                 let img = DecodedImage::new(w, h, pixels);
                 Ok(make_image_data(img))
             }
-            Ok(Err(e)) => Err(e),
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            Ok(Err(e)) => {
+                const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";
+                if let Some(msg) = e.strip_prefix(PSD_DECODE_PANIC_PREFIX) {
+                    log::error!(
+                        "[Loader] PSD decoder panicked for {}: {}",
+                        path.display(),
+                        msg
+                    );
+                    Err(format!(
+                        "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+            Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
                     (*s).to_string()
-                } else if let Some(s) = payload.downcast_ref::<String>() {
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
                     s.clone()
                 } else {
-                    "unknown panic in psd crate".to_string()
+                    "unknown panic in psd decode thread".to_string()
                 };
                 log::error!(
-                    "[Loader] PSD decoder panicked for {}: {}",
+                    "[Loader] PSD decode thread panicked for {}: {}",
                     path.display(),
                     msg
                 );

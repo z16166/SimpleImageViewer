@@ -52,16 +52,15 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
         return decode_radiance_hdr_image(path);
     }
 
-    let (width, height) = ImageReader::open(path)
-        .map_err(|e| e.to_string())?
+    let mmap = crate::mmap_util::map_file(path)?;
+    let (width, height) = ImageReader::new(std::io::Cursor::new(&mmap[..]))
         .with_guessed_format()
         .map_err(|e| e.to_string())?
         .into_dimensions()
         .map_err(|e| e.to_string())?;
     validate_hdr_fallback_budget(width, height)?;
 
-    let mut decoder = ImageReader::open(path)
-        .map_err(|e| e.to_string())?
+    let mut decoder = ImageReader::new(std::io::Cursor::new(&mmap[..]))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     let mut limits = Limits::default();

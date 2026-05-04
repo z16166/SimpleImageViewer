@@ -68,8 +68,9 @@ pub(crate) fn load_heif_hdr(
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_heif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-    decode_heif_hdr_bytes(&bytes)
+    let mmap = crate::mmap_util::map_file(path)
+        .map_err(|err| format!("Failed to read HEIF: {err}"))?;
+    decode_heif_hdr_bytes(&mmap[..])
 }
 
 #[cfg(feature = "heif-native")]
