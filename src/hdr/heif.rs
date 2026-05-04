@@ -796,30 +796,115 @@ fn hdr_buffer_from_planar_rgb444(
 }
 
 #[cfg(feature = "heif-native")]
-fn ycbcr_matrix_is_bt601(metadata: &HdrImageMetadata) -> bool {
-    matches!(
-        metadata.color_profile,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeifYcbcrMatrix {
+    Bt601,
+    Bt709,
+    /// Rec. ITU-R BT.2020 Y'Cb'Cr' to R'G'B' via non-constant luminance Kr/Kb (CICP 9 and 10). True
+    /// constant-luminance coding for MC=9 only is not split out; stills usually match the NCL matrix.
+    Bt2020Ncl,
+    /// CICP matrix_coefficients 0 — no colour difference; replicate luma.
+    Monochrome,
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_ycbcr_matrix_from_nclx(metadata: &HdrImageMetadata) -> HeifYcbcrMatrix {
+    match &metadata.color_profile {
         HdrColorProfile::Cicp {
-            matrix_coefficients: 5 | 6,
+            matrix_coefficients: mc,
+            ..
+        } => match *mc {
+            0 => HeifYcbcrMatrix::Monochrome,
+            5 | 6 => HeifYcbcrMatrix::Bt601,
+            9 | 10 => HeifYcbcrMatrix::Bt2020Ncl,
+            _ => HeifYcbcrMatrix::Bt709,
+        },
+        _ => HeifYcbcrMatrix::Bt709,
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn bt2020_ncl_chroma_derived_constants() -> (f32, f32, f32, f32) {
+    let kr = 0.2627_f32;
+    let kb = 0.0593_f32;
+    let kg = 1.0_f32 - kr - kb;
+    let k_rr = 2.0_f32 * (1.0_f32 - kr);
+    let k_bb = 2.0_f32 * (1.0_f32 - kb);
+    let k_gr = -2.0_f32 * kr * (1.0_f32 - kr) / kg;
+    let k_gb = -2.0_f32 * kb * (1.0_f32 - kb) / kg;
+    (k_rr, k_bb, k_gr, k_gb)
+}
+
+/// Converts **electrical** Y′ and centred chroma (**Pb/Pr**, i.e. Cb−mid / Cr−mid in normalized space —
+/// JPEG full-pack uses `Cb_norm - 0.5`; narrow-range uses studio `Epb`/`Epr`) to non‑linear R′G′B′.
+#[cfg(feature = "heif-native")]
+fn ycbcr_linear_to_rgb(ey: f32, pb: f32, pr: f32, matrix: HeifYcbcrMatrix) -> [f32; 3] {
+    match matrix {
+        HeifYcbcrMatrix::Monochrome => [ey, ey, ey],
+        HeifYcbcrMatrix::Bt601 => {
+            let r = ey + 1.402_f32 * pr;
+            let g = ey - 0.344_136_f32 * pb - 0.714_136_f32 * pr;
+            let b = ey + 1.772_f32 * pb;
+            [r, g, b]
+        }
+        HeifYcbcrMatrix::Bt709 => {
+            let r = ey + 1.5748_f32 * pr;
+            let g = ey - 0.187_324_f32 * pb - 0.468_124_f32 * pr;
+            let b = ey + 1.8556_f32 * pb;
+            [r, g, b]
+        }
+        HeifYcbcrMatrix::Bt2020Ncl => {
+            let (k_rr, k_bb, k_gr, k_gb) = bt2020_ncl_chroma_derived_constants();
+            let r = ey + k_rr * pr;
+            let g = ey + k_gb * pb + k_gr * pr;
+            let b = ey + k_bb * pb;
+            [r, g, b]
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn nclx_limited_range_from_metadata(metadata: &HdrImageMetadata) -> bool {
+    matches!(
+        &metadata.color_profile,
+        HdrColorProfile::Cicp {
+            full_range: false,
             ..
         }
     )
 }
 
+/// Limited-range studio swing: Ey = (Y - 16·2^(n-8)) / (219·2^(n-8)), Epb/Epr = (C - 128·2^(n-8)) / (224·2^(n-8)).
 #[cfg(feature = "heif-native")]
-fn ycbcr_to_rgb_full_range(y: f32, cb: f32, cr: f32, bt601: bool) -> [f32; 3] {
-    let cb_ = cb - 0.5;
-    let cr_ = cr - 0.5;
-    if bt601 {
-        let r = y + 1.402_f32 * cr_;
-        let g = y - 0.344_136_f32 * cb_ - 0.714_136_f32 * cr_;
-        let b = y + 1.772_f32 * cb_;
-        [r, g, b]
+fn studio_digital_sample_to_normalized(
+    code: u32,
+    semantic_bits: i32,
+    is_luma: bool,
+) -> Result<f32, String> {
+    let d = semantic_bits.clamp(8, 16);
+    let shift = (d - 8).clamp(0, 8) as u32;
+    let y_floor = (16_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio Y offset shift".to_string())?) as f32;
+    let y_span = (219_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio Y span shift".to_string())?) as f32;
+    let c_mid = (128_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio chroma midpoint shift".to_string())?) as f32;
+    let c_span = (224_i32
+        .checked_shl(shift)
+        .ok_or_else(|| "studio chroma span shift".to_string())?) as f32;
+
+    if is_luma {
+        if y_span <= 0.0 {
+            return Err("invalid studio Y span".to_string());
+        }
+        Ok((code as f32 - y_floor) / y_span)
+    } else if c_span <= 0.0 {
+        Err("invalid studio chroma span".to_string())
     } else {
-        let r = y + 1.5748_f32 * cr_;
-        let g = y - 0.187_324_f32 * cb_ - 0.468_124_f32 * cr_;
-        let b = y + 1.8556_f32 * cb_;
-        [r, g, b]
+        Ok((code as f32 - c_mid) / c_span)
     }
 }
 
@@ -846,6 +931,9 @@ fn chroma_row_index(y_px: usize, chroma: libheif_sys::heif_chroma, chroma_plane_
 }
 
 #[cfg(feature = "heif-native")]
+/// Planar YCbCr from libheif. NCLX `full_range: false` uses studio swing; full-pack path uses
+/// `Cb/Cr` normalized to `[0, 1]` minus `0.5`. Matrix from CICP: 0 mono, 5/6 BT.601, 9/10 BT.2020 NCL,
+/// else BT.709; ICC-only defaults to BT.709.
 fn hdr_buffer_from_ycbcr(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
@@ -906,6 +994,11 @@ fn hdr_buffer_from_ycbcr(
     let scale_cr =
         planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cr)?);
 
+    let sem_y = planar_semantic_depth_bits(image, handle, heif_channel_Y)?;
+    let sem_cb = planar_semantic_depth_bits(image, handle, heif_channel_Cb)?;
+    let sem_cr = planar_semantic_depth_bits(image, handle, heif_channel_Cr)?;
+    let nclx_studio_swing = nclx_limited_range_from_metadata(metadata);
+
     let span_alpha = if alpha_valid {
         planar_storage_span_bytes(image, heif_channel_Alpha)
     } else {
@@ -917,7 +1010,7 @@ fn hdr_buffer_from_ycbcr(
         1.0
     };
 
-    let bt601 = ycbcr_matrix_is_bt601(metadata);
+    let yuv_matrix = heif_ycbcr_matrix_from_nclx(metadata);
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -943,16 +1036,22 @@ fn hdr_buffer_from_ycbcr(
         let row_alpha = alpha_valid.then(|| unsafe { alpha_ptr.byte_add(y_px * alpha_stride) });
 
         for x_px in 0..y_w {
-            let yv =
-                planar_read_sample(row_y, x_px, stride_y, span_y)? as f32 / scale_y.max(1.0);
-
+            let y_raw = planar_read_sample(row_y, x_px, stride_y, span_y)?;
             let xc = chroma_column_index(x_px, chroma, cb_w);
-            let cbv =
-                planar_read_sample(row_cb, xc, stride_cb, span_cb)? as f32 / scale_cb.max(1.0);
-            let crv =
-                planar_read_sample(row_cr, xc, stride_cr, span_cr)? as f32 / scale_cr.max(1.0);
+            let cb_raw = planar_read_sample(row_cb, xc, stride_cb, span_cb)?;
+            let cr_raw = planar_read_sample(row_cr, xc, stride_cr, span_cr)?;
 
-            let [r_, g_, b_] = ycbcr_to_rgb_full_range(yv, cbv, crv, bt601);
+            let [r_, g_, b_] = if nclx_studio_swing {
+                let ey = studio_digital_sample_to_normalized(y_raw, sem_y, true)?;
+                let ecb = studio_digital_sample_to_normalized(cb_raw, sem_cb, false)?;
+                let ecr = studio_digital_sample_to_normalized(cr_raw, sem_cr, false)?;
+                ycbcr_linear_to_rgb(ey, ecb, ecr, yuv_matrix)
+            } else {
+                let yv = y_raw as f32 / scale_y.max(1.0);
+                let cbv = cb_raw as f32 / scale_cb.max(1.0);
+                let crv = cr_raw as f32 / scale_cr.max(1.0);
+                ycbcr_linear_to_rgb(yv, cbv - 0.5, crv - 0.5, yuv_matrix)
+            };
 
             rgba_f32.push(r_.clamp(0.0, 1.0));
             rgba_f32.push(g_.clamp(0.0, 1.0));
@@ -1200,6 +1299,88 @@ mod tests {
         assert_eq!(
             classify_heif_auxiliary_type("urn:mpeg:mpegB:cicp:systems:auxiliary:depth"),
             HeifAuxiliaryClassification::Unknown
+        );
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_studio_swing_8bit_neutral_gray_bt709() {
+        use super::{studio_digital_sample_to_normalized, HeifYcbcrMatrix, ycbcr_linear_to_rgb};
+
+        let ey = studio_digital_sample_to_normalized(110, 8, true).unwrap();
+        assert!((ey - 94.0 / 219.0).abs() < 1e-5);
+
+        let ecb = studio_digital_sample_to_normalized(128, 8, false).unwrap();
+        let ecr = studio_digital_sample_to_normalized(128, 8, false).unwrap();
+        assert!(ecb.abs() < 1e-5 && ecr.abs() < 1e-5);
+
+        let [r, g, b] = ycbcr_linear_to_rgb(ey, ecb, ecr, HeifYcbcrMatrix::Bt709);
+        assert!(
+            (r - g).abs() < 2e-4 && (g - b).abs() < 2e-4,
+            "neutral chroma should yield R≈G≈B, got ({r},{g},{b})"
+        );
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_ycbcr_bt2020_neutral_chroma_gray_axis() {
+        use super::{HeifYcbcrMatrix, ycbcr_linear_to_rgb};
+        let ey = 0.4123_f32;
+        let [r, g, b] = ycbcr_linear_to_rgb(ey, 0.0, 0.0, HeifYcbcrMatrix::Bt2020Ncl);
+        assert!((r - ey).abs() < 1e-5);
+        assert!((g - ey).abs() < 1e-5);
+        assert!((b - ey).abs() < 1e-5);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_ycbcr_monochrome_replicates_y() {
+        use super::{HeifYcbcrMatrix, ycbcr_linear_to_rgb};
+        let [r, g, b] =
+            ycbcr_linear_to_rgb(0.42, 0.9, -0.3, HeifYcbcrMatrix::Monochrome);
+        assert!((r - 0.42).abs() < 1e-6 && r == g && g == b);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_nclx_maps_matrix_coefficients_to_ycbcr_matrix() {
+        use super::{heif_ycbcr_matrix_from_nclx, HeifYcbcrMatrix};
+        use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
+
+        fn meta(mc: u16) -> HdrImageMetadata {
+            HdrImageMetadata {
+                color_profile: HdrColorProfile::Cicp {
+                    color_primaries: 1,
+                    transfer_characteristics: 1,
+                    matrix_coefficients: mc,
+                    full_range: true,
+                },
+                ..Default::default()
+            }
+        }
+
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(0)),
+            HeifYcbcrMatrix::Monochrome
+        );
+        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(5)), HeifYcbcrMatrix::Bt601);
+        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(6)), HeifYcbcrMatrix::Bt601);
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(9)),
+            HeifYcbcrMatrix::Bt2020Ncl
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(10)),
+            HeifYcbcrMatrix::Bt2020Ncl
+        );
+        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(1)), HeifYcbcrMatrix::Bt709);
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(255)),
+            HeifYcbcrMatrix::Bt709
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default()),
+            HeifYcbcrMatrix::Bt709
         );
     }
 }
