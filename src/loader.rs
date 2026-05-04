@@ -2255,6 +2255,25 @@ fn load_avif_with_target_capacity(
                     "[Loader] libavif decode failed for {}: {err}",
                     path.display()
                 );
+                #[cfg(all(feature = "avif-native", feature = "heif-native"))]
+                {
+                    let lower = err.to_ascii_lowercase();
+                    if lower.contains("invalid ftyp")
+                        || lower.contains("ftyp")
+                        || lower.contains("file type box")
+                    {
+                        log::info!(
+                            "[Loader] libavif rejected container/brands — trying libheif for {}",
+                            path.display()
+                        );
+                        return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map)
+                            .map_err(|heif_err| {
+                                format!(
+                                    "[Loader] libavif failed ({err}); HEIF fallback also failed ({heif_err})"
+                                )
+                            });
+                    }
+                }
                 Err(err)
             }
         }

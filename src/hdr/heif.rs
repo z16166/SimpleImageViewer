@@ -67,6 +67,52 @@ pub(crate) fn heif_nclx_to_metadata(
 }
 
 #[cfg(feature = "heif-native")]
+fn append_heif_unci_build_hint(msg: String) -> String {
+    let lower = msg.to_lowercase();
+    let unci_related = lower.contains("unci")
+        || lower.contains("23001-17")
+        || lower.contains("uncompressed image type");
+    let brotli_unc = lower.contains("brotli") && (unci_related || lower.contains("generic compression"));
+
+    if brotli_unc {
+        return format!(
+            "{msg} UNC with Brotli needs libheif built with ISO 23001-17 plus Brotli: feature `iso23001-17` pulls `zlib` + `brotli` and the CMake lock must allow `find_package(Brotli)` (`VCPKG_LOCK_FIND_PACKAGE_Brotli`). Re-run `vcpkg install`, then `cargo clean -p libheif-sys`."
+        );
+    }
+    if unci_related {
+        return format!(
+            "{msg} For UNCI / ISO 23001-17 HEIFs, enable libheif feature `iso23001-17` (then `vcpkg install` / rebuild)."
+        );
+    }
+    msg
+}
+
+/// Low-overhead / `mini` ISOBMFF (libheif overlay `experimental-mini`). Upstream corpora such as
+/// `tests/data/simple_osm_tile_meta.avif` are **valid** reference tiles; without `mini` support,
+/// `read_from_memory` may report `iloc`/extent past EOF even when the blob is intact.
+#[cfg(feature = "heif-native")]
+fn append_mini_format_read_hint(action: &str, msg: String) -> String {
+    let lower = msg.to_ascii_lowercase();
+    if action != "read HEIF from memory" {
+        return msg;
+    }
+    if lower.contains("iloc")
+        || lower.contains("extent")
+        || lower.contains("outside of file bounds")
+    {
+        return format!(
+            "{msg} Compact mini/low-overhead containers (libheif overlay `experimental-mini`, e.g. `simple_osm_tile_*.avif` in upstream `tests/data`) need libheif built with that overlay; without it, `iloc`/extent errors may appear on intact reference blobs. Rule out truncation too (size/checksum vs repo), then `cargo clean -p libheif-sys` after rebuilding libheif."
+        );
+    }
+    if lower.contains("insufficient") {
+        return format!(
+            "{msg} Experimental mini / low-overhead HEIF/AVIF needs overlay `experimental-mini`; rebuild libheif, then `cargo clean -p libheif-sys`."
+        );
+    }
+    msg
+}
+
+#[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(
     path: &std::path::Path,
     hdr_target_capacity: f32,
@@ -113,13 +159,6 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         }
     }
 
-    struct HeifImage(*mut libheif_sys::heif_image);
-    impl Drop for HeifImage {
-        fn drop(&mut self) {
-            unsafe { libheif_sys::heif_image_release(self.0) };
-        }
-    }
-
     fn heif_error_to_string(err: libheif_sys::heif_error) -> String {
         if err.message.is_null() {
             return format!("libheif error code {} subcode {}", err.code, err.subcode);
@@ -133,8 +172,26 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         if err.code == libheif_sys::heif_error_Ok {
             Ok(())
         } else {
-            Err(format!("Failed to {action}: {}", heif_error_to_string(err)))
+            let raw = format!("Failed to {action}: {}", heif_error_to_string(err));
+            let expanded = append_heif_unci_build_hint(raw);
+            let expanded = append_mini_format_read_hint(action, expanded);
+            Err(expanded)
         }
+    }
+
+    // Confirms which libheif binary is actually linked (helps debug stale vcpkg / wrong triplet).
+    {
+        use std::sync::Once;
+        static LOG_VERSION: Once = Once::new();
+        LOG_VERSION.call_once(|| unsafe {
+            let p = libheif_sys::heif_get_version();
+            if !p.is_null() {
+                log::debug!(
+                    "[HEIF] linked libheif version: {}",
+                    CStr::from_ptr(p).to_string_lossy()
+                );
+            }
+        });
     }
 
     let context = HeifContext(unsafe { libheif_sys::heif_context_alloc() });
@@ -168,53 +225,306 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
     if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle.0) {
         metadata.gain_map = Some(diagnostic);
     }
-    let mut image_ptr = std::ptr::null_mut();
-    ensure_heif_ok(
-        unsafe {
-            libheif_sys::heif_decode_image(
-                handle.0,
-                &mut image_ptr,
-                libheif_sys::heif_colorspace_RGB,
-                libheif_sys::heif_chroma_interleaved_RRGGBBAA_LE,
-                std::ptr::null(),
-            )
-        },
-        "decode HEIF image as 16-bit RGBA",
-    )?;
-    if image_ptr.is_null() {
-        return Err("libheif returned a null decoded image".to_string());
-    }
-    let image = HeifImage(image_ptr);
 
-    let width = unsafe { libheif_sys::heif_image_get_primary_width(image.0) };
-    let height = unsafe { libheif_sys::heif_image_get_primary_height(image.0) };
-    if width <= 0 || height <= 0 {
+    decode_primary_heif_to_hdr(handle.0, metadata)
+}
+
+/// Decode the primary HEIF tile to HDR float RGBA. Tries interleaved 16-bit RGBA first, then other
+/// interleaved layouts, YCbCr (`4:2:2` / `4:4:4` / `4:2:0`), planar RGB, and 8-bit interleaved fallbacks.
+#[cfg(feature = "heif-native")]
+fn decode_primary_heif_to_hdr(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let interleaved_aa = match decode_primary_interleaved_rrggbbaa_le(handle, &metadata) {
+        Ok(img) => return Ok(img),
+        Err(e) => e,
+    };
+
+    let interleaved_rgb16 = match decode_primary_interleaved_rrggbbe_le(handle, &metadata) {
+        Ok(img) => return Ok(img),
+        Err(e) => e,
+    };
+
+    let y422 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_422) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    let y444 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_444) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    let y420 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_420) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    let planar = match decode_primary_planar_rgb444(handle, &metadata) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    let rgba8 = match decode_primary_interleaved_rgba8(handle, &metadata) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    let rgb8 = match decode_primary_interleaved_rgb8(handle, &metadata) {
+        Ok(b) => return Ok(b),
+        Err(e) => e,
+    };
+
+    Err(append_heif_unci_build_hint(format!(
+        "decode HEIF (all targets failed): RGBA16 interleaved: {interleaved_aa}; RGB16 interleaved RRGGBB LE: {interleaved_rgb16}; YCbCr 422: {y422}; YCbCr 444: {y444}; YCbCr 420: {y420}; planar RGB444: {planar}; RGBA8 interleaved: {rgba8}; RGB8 interleaved: {rgb8}"
+    )))
+}
+
+#[cfg(feature = "heif-native")]
+struct RawHeifImage(pub *mut libheif_sys::heif_image);
+
+#[cfg(feature = "heif-native")]
+impl Drop for RawHeifImage {
+    fn drop(&mut self) {
+        unsafe { libheif_sys::heif_image_release(self.0) };
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_try_decode_into(
+    handle: *const libheif_sys::heif_image_handle,
+    cs: libheif_sys::heif_colorspace,
+    chroma: libheif_sys::heif_chroma,
+    _detail: &'static str,
+) -> Result<RawHeifImage, libheif_sys::heif_error> {
+    let mut image_ptr = std::ptr::null_mut();
+    let err = unsafe {
+        libheif_sys::heif_decode_image(
+            handle,
+            &mut image_ptr,
+            cs,
+            chroma,
+            std::ptr::null(),
+        )
+    };
+    if err.code != libheif_sys::heif_error_Ok {
+        return Err(err);
+    }
+    if image_ptr.is_null() {
+        return Err(libheif_sys::heif_error {
+            code: -1,
+            subcode: 0,
+            message: std::ptr::null(),
+        });
+    }
+    Ok(RawHeifImage(image_ptr))
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_err_to_plain(err: libheif_sys::heif_error) -> String {
+    use std::ffi::CStr;
+    if err.message.is_null() {
+        return format!("libheif error code {} subcode {}", err.code, err.subcode);
+    }
+    unsafe { CStr::from_ptr(err.message) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_interleaved_rrggbbaa_le(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_RGB,
+        libheif_sys::heif_chroma_interleaved_RRGGBBAA_LE,
+        "RGBA16",
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as interleaved 16-bit RGBA ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.0, 4)
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_interleaved_rrggbbe_le(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_RGB,
+        libheif_sys::heif_chroma_interleaved_RRGGBB_LE,
+        "RGB16 triple",
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as interleaved 16-bit RRGGBB LE ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_interleaved_rgb16_le(handle, metadata, img.0, 3)
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_interleaved_rgba8(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_RGB,
+        libheif_sys::heif_chroma_interleaved_RGBA,
+        "RGBA8",
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as interleaved RGBA8 ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.0, 4)
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_interleaved_rgb8(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_RGB,
+        libheif_sys::heif_chroma_interleaved_RGB,
+        "RGB8",
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as interleaved RGB8 ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_interleaved_rgb8_packed(handle, metadata, img.0, 3)
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_planar_rgb444(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_RGB,
+        libheif_sys::heif_chroma_444,
+        "RGB444 planar",
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as planar RGB444 ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_planar_rgb444(handle, metadata, img.0)
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_primary_ycbcr(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+    chroma: libheif_sys::heif_chroma,
+) -> Result<HdrImageBuffer, String> {
+    let chroma_detail = chroma_plane_label(chroma);
+    let img = match heif_try_decode_into(
+        handle,
+        libheif_sys::heif_colorspace_YCbCr,
+        chroma,
+        chroma_detail,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            return Err(format!(
+                "Failed to decode HEIF image as YCbCr ({chroma_detail}) ({})",
+                heif_err_to_plain(e),
+            ));
+        }
+    };
+
+    hdr_buffer_from_ycbcr(handle, metadata, img.0, chroma)
+}
+
+#[cfg(feature = "heif-native")]
+fn chroma_plane_label(chroma: libheif_sys::heif_chroma) -> &'static str {
+    match chroma {
+        c if c == libheif_sys::heif_chroma_420 => "420",
+        c if c == libheif_sys::heif_chroma_422 => "422",
+        c if c == libheif_sys::heif_chroma_444 => "444",
+        _ => "YCbCr",
+    }
+}
+
+
+
+#[cfg(feature = "heif-native")]
+fn hdr_buffer_from_interleaved_rgb16_le(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+    image: *const libheif_sys::heif_image,
+    components: u8,
+) -> Result<HdrImageBuffer, String> {
+    if components != 3 && components != 4 {
+        return Err(format!(
+            "unsupported interleaved 16-bit component count ({components}); expected 3 (RGB) or 4 (RGBA)"
+        ));
+    }
+
+    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image) };
+    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image) };
+    if width_i <= 0 || height_i <= 0 {
         return Err("libheif decoded zero-sized image".to_string());
     }
-
     let mut stride = 0_usize;
     let plane = unsafe {
         libheif_sys::heif_image_get_plane_readonly2(
-            image.0,
+            image,
             libheif_sys::heif_channel_interleaved,
             &mut stride,
         )
     };
     if plane.is_null() {
-        return Err("libheif did not expose an interleaved RGBA plane".to_string());
+        return Err("libheif did not expose an interleaved RGB/RGBA plane".to_string());
     }
 
-    let width = width as u32;
-    let height = height as u32;
-    let bytes_per_pixel = 4 * std::mem::size_of::<u16>();
+    let width = width_i as u32;
+    let height = height_i as u32;
+    let bytes_per_pixel = (components as usize) * std::mem::size_of::<u16>();
     let row_bytes = width as usize * bytes_per_pixel;
     if stride < row_bytes {
         return Err(format!(
-            "libheif row stride too small: got {stride}, expected at least {row_bytes}"
+            "libheif row stride too small: got {stride}, expected at least {row_bytes}",
         ));
     }
 
-    let bit_depth = heif_sample_bit_depth(image.0, handle.0)?;
+    let bit_depth = heif_sample_bit_depth(image, handle)?;
     let scale = ((1_u32 << bit_depth.min(16)) - 1) as f32;
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
@@ -223,7 +533,11 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
             rgba_f32.push(u16::from_le_bytes([px[0], px[1]]) as f32 / scale);
             rgba_f32.push(u16::from_le_bytes([px[2], px[3]]) as f32 / scale);
             rgba_f32.push(u16::from_le_bytes([px[4], px[5]]) as f32 / scale);
-            rgba_f32.push(u16::from_le_bytes([px[6], px[7]]) as f32 / scale);
+            if components == 4 {
+                rgba_f32.push(u16::from_le_bytes([px[6], px[7]]) as f32 / scale);
+            } else {
+                rgba_f32.push(1.0);
+            }
         }
     }
 
@@ -233,7 +547,434 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space,
-        metadata,
+        metadata: metadata.clone(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+#[cfg(feature = "heif-native")]
+fn hdr_buffer_from_interleaved_rgb8_packed(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+    image: *const libheif_sys::heif_image,
+    components: u8,
+) -> Result<HdrImageBuffer, String> {
+    if components != 3 && components != 4 {
+        return Err(format!(
+            "unsupported interleaved 8-bit component count ({components}); expected 3 (RGB) or 4 (RGBA)"
+        ));
+    }
+
+    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image) };
+    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image) };
+    if width_i <= 0 || height_i <= 0 {
+        return Err("libheif decoded zero-sized image".to_string());
+    }
+    let mut stride = 0_usize;
+    let plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image,
+            libheif_sys::heif_channel_interleaved,
+            &mut stride,
+        )
+    };
+    if plane.is_null() {
+        return Err("libheif did not expose an interleaved RGB/RGBA plane".to_string());
+    }
+
+    let width = width_i as u32;
+    let height = height_i as u32;
+    let bytes_per_pixel = components as usize;
+    let row_bytes = width as usize * bytes_per_pixel;
+    if stride < row_bytes {
+        return Err(format!(
+            "libheif row stride too small: got {stride}, expected at least {row_bytes}",
+        ));
+    }
+
+    let bit_depth = heif_sample_bit_depth(image, handle)?.min(8).max(1);
+    let scale = ((1_u32 << bit_depth as u32) - 1) as f32;
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height as usize {
+        let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
+        for px in row.chunks_exact(bytes_per_pixel) {
+            rgba_f32.push(px[0] as f32 / scale);
+            rgba_f32.push(px[1] as f32 / scale);
+            rgba_f32.push(px[2] as f32 / scale);
+            if components == 4 {
+                rgba_f32.push(px[3] as f32 / scale);
+            } else {
+                rgba_f32.push(1.0);
+            }
+        }
+    }
+
+    let color_space = metadata.color_space_hint();
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space,
+        metadata: metadata.clone(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+#[cfg(feature = "heif-native")]
+fn planar_storage_span_bytes(
+    image: *const libheif_sys::heif_image,
+    channel: libheif_sys::heif_channel,
+) -> usize {
+    let bpp = unsafe { libheif_sys::heif_image_get_bits_per_pixel(image, channel).max(8) };
+    ((bpp + 7) / 8) as usize
+}
+
+#[cfg(feature = "heif-native")]
+fn planar_semantic_depth_bits(
+    image: *const libheif_sys::heif_image,
+    handle: *const libheif_sys::heif_image_handle,
+    channel: libheif_sys::heif_channel,
+) -> Result<i32, String> {
+    let decoded_range =
+        unsafe { libheif_sys::heif_image_get_bits_per_pixel_range(image, channel) };
+    let luma = unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) };
+    let chroma =
+        unsafe { libheif_sys::heif_image_handle_get_chroma_bits_per_pixel(handle) };
+    let per_ch = decoded_range.max(luma).max(chroma).max(8);
+    Ok(per_ch.min(32))
+}
+
+#[cfg(feature = "heif-native")]
+fn planar_scale_from_depth(semantic_bits: i32) -> f32 {
+    let d = semantic_bits.clamp(1, 32);
+    let maxv = (1_u64 << d as u32).saturating_sub(1).max(1);
+    maxv as f32
+}
+
+#[cfg(feature = "heif-native")]
+fn planar_read_sample(
+    row_base: *const u8,
+    x: usize,
+    stride_bytes: usize,
+    storage_span: usize,
+) -> Result<u32, String> {
+    let offset = x
+        .checked_mul(storage_span)
+        .ok_or_else(|| "planar sample offset overflow".to_string())?;
+    if offset + storage_span > stride_bytes {
+        return Err("planar sample read past row stride".to_string());
+    }
+    unsafe {
+        match storage_span {
+            1 => Ok(*row_base.add(offset) as u32),
+            2 => {
+                let bytes = std::slice::from_raw_parts(row_base.add(offset), 2);
+                Ok(u16::from_le_bytes([bytes[0], bytes[1]]) as u32)
+            }
+            4 => {
+                let bytes = std::slice::from_raw_parts(row_base.add(offset), 4);
+                Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            }
+            n => Err(format!(
+                "unsupported planar sample storage width ({n}); extend reader for this HEIF variant"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn hdr_buffer_from_planar_rgb444(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+    image: *const libheif_sys::heif_image,
+) -> Result<HdrImageBuffer, String> {
+    use libheif_sys::{heif_channel_Alpha, heif_channel_B, heif_channel_G, heif_channel_R};
+
+    for ch in [heif_channel_R, heif_channel_G, heif_channel_B] {
+        if unsafe { libheif_sys::heif_image_has_channel(image, ch) } == 0 {
+            return Err("planar RGB444: missing R/G/B channel".to_string());
+        }
+    }
+
+    let width_i = unsafe { libheif_sys::heif_image_get_width(image, heif_channel_R) };
+    let height_i = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_R) };
+    if width_i <= 0 || height_i <= 0 {
+        return Err("planar RGB: zero-sized plane".to_string());
+    }
+    let w = width_i as usize;
+    let h = height_i as usize;
+
+    let has_alpha = unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Alpha) != 0 };
+
+    let mut stride_r = 0usize;
+    let ptr_r = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_R, &mut stride_r)
+    };
+    let mut stride_g = 0usize;
+    let ptr_g = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_G, &mut stride_g)
+    };
+    let mut stride_b = 0usize;
+    let ptr_b = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_B, &mut stride_b)
+    };
+    let alpha_pack = if has_alpha {
+        let mut stride_a = 0usize;
+        let ptr_a =
+            unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Alpha, &mut stride_a) };
+        if ptr_a.is_null() || stride_a == 0 {
+            None
+        } else {
+            let span_a_val = planar_storage_span_bytes(image, heif_channel_Alpha);
+            let scale_a_val = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Alpha)?);
+            Some((ptr_a, stride_a, span_a_val, scale_a_val))
+        }
+    } else {
+        None
+    };
+
+    if ptr_r.is_null() || ptr_g.is_null() || ptr_b.is_null() {
+        return Err("planar RGB: null plane pointer".to_string());
+    }
+
+    let span_r = planar_storage_span_bytes(image, heif_channel_R);
+    let span_g = planar_storage_span_bytes(image, heif_channel_G);
+    let span_b = planar_storage_span_bytes(image, heif_channel_B);
+
+    let scale_r = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_R)?);
+    let scale_g = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_G)?);
+    let scale_b = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_B)?);
+
+    let mut rgba_f32 = Vec::with_capacity(w * h * 4);
+
+    for y in 0..h {
+        let row_r = unsafe { ptr_r.byte_add(y * stride_r) };
+        let row_g = unsafe { ptr_g.byte_add(y * stride_g) };
+        let row_b = unsafe { ptr_b.byte_add(y * stride_b) };
+
+        let min_stride_need_r = span_r * w.max(1);
+        let min_stride_need_g = span_g * w.max(1);
+        let min_stride_need_b = span_b * w.max(1);
+        if stride_r < min_stride_need_r || stride_g < min_stride_need_g || stride_b < min_stride_need_b {
+            return Err("planar RGB: stride inconsistent with dimensions".to_string());
+        }
+
+        if let Some((_, alpha_stride_px, alpha_span_px, _)) = alpha_pack
+            && alpha_stride_px < alpha_span_px * w.max(1)
+        {
+            return Err("planar RGB: alpha stride inconsistent".to_string());
+        }
+
+        for x_px in 0..w {
+            let rn = planar_read_sample(row_r, x_px, stride_r, span_r)?;
+            let gn = planar_read_sample(row_g, x_px, stride_g, span_g)?;
+            let bn = planar_read_sample(row_b, x_px, stride_b, span_b)?;
+
+            rgba_f32.push(rn as f32 / scale_r.max(1.0));
+            rgba_f32.push(gn as f32 / scale_g.max(1.0));
+            rgba_f32.push(bn as f32 / scale_b.max(1.0));
+
+            if let Some((ap_base, sar, spam_a_px, scl_a)) = alpha_pack {
+                let row_a = unsafe { ap_base.byte_add(y * sar) };
+                let an = planar_read_sample(row_a, x_px, sar, spam_a_px)?;
+                rgba_f32.push((an as f32 / scl_a.max(1.0)).clamp(0.0, 1.0));
+            } else {
+                rgba_f32.push(1.0);
+            }
+        }
+    }
+
+    let color_space = metadata.color_space_hint();
+    Ok(HdrImageBuffer {
+        width: width_i as u32,
+        height: height_i as u32,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space,
+        metadata: metadata.clone(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+#[cfg(feature = "heif-native")]
+fn ycbcr_matrix_is_bt601(metadata: &HdrImageMetadata) -> bool {
+    matches!(
+        metadata.color_profile,
+        HdrColorProfile::Cicp {
+            matrix_coefficients: 5 | 6,
+            ..
+        }
+    )
+}
+
+#[cfg(feature = "heif-native")]
+fn ycbcr_to_rgb_full_range(y: f32, cb: f32, cr: f32, bt601: bool) -> [f32; 3] {
+    let cb_ = cb - 0.5;
+    let cr_ = cr - 0.5;
+    if bt601 {
+        let r = y + 1.402_f32 * cr_;
+        let g = y - 0.344_136_f32 * cb_ - 0.714_136_f32 * cr_;
+        let b = y + 1.772_f32 * cb_;
+        [r, g, b]
+    } else {
+        let r = y + 1.5748_f32 * cr_;
+        let g = y - 0.187_324_f32 * cb_ - 0.468_124_f32 * cr_;
+        let b = y + 1.8556_f32 * cb_;
+        [r, g, b]
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn chroma_column_index(x: usize, chroma: libheif_sys::heif_chroma, chroma_plane_w: usize) -> usize {
+    let subsamp_h = chroma != libheif_sys::heif_chroma_444;
+    let ix = if subsamp_h {
+        x / 2
+    } else {
+        x
+    };
+    ix.min(chroma_plane_w.saturating_sub(1))
+}
+
+#[cfg(feature = "heif-native")]
+fn chroma_row_index(y_px: usize, chroma: libheif_sys::heif_chroma, chroma_plane_h: usize) -> usize {
+    let subsamp_v = chroma == libheif_sys::heif_chroma_420;
+    let iy = if subsamp_v {
+        y_px / 2
+    } else {
+        y_px
+    };
+    iy.min(chroma_plane_h.saturating_sub(1))
+}
+
+#[cfg(feature = "heif-native")]
+fn hdr_buffer_from_ycbcr(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &HdrImageMetadata,
+    image: *const libheif_sys::heif_image,
+    chroma: libheif_sys::heif_chroma,
+) -> Result<HdrImageBuffer, String> {
+    use libheif_sys::{heif_channel_Alpha, heif_channel_Cb, heif_channel_Cr, heif_channel_Y};
+
+    if unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Y) } == 0 {
+        return Err("YCbCr decode: missing luma".to_string());
+    }
+    if unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Cb) } == 0
+        || unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Cr) } == 0
+    {
+        return Err("YCbCr decode: missing chroma plane".to_string());
+    }
+
+    let y_w = unsafe { libheif_sys::heif_image_get_width(image, heif_channel_Y) } as usize;
+    let y_h = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_Y) } as usize;
+    if y_w == 0 || y_h == 0 {
+        return Err("YCbCr: zero-sized luma".to_string());
+    }
+
+    let cb_w = unsafe { libheif_sys::heif_image_get_width(image, heif_channel_Cb) } as usize;
+    let cb_h = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_Cb) } as usize;
+
+    let mut stride_y = 0usize;
+    let ptr_y =
+        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Y, &mut stride_y) };
+    let mut stride_cb = 0usize;
+    let ptr_cb =
+        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cb, &mut stride_cb) };
+    let mut stride_cr = 0usize;
+    let ptr_cr =
+        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cr, &mut stride_cr) };
+
+    let has_alpha_channel =
+        unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Alpha) != 0 };
+    let mut alpha_stride = 0usize;
+    let alpha_ptr = if has_alpha_channel {
+        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Alpha, &mut alpha_stride) }
+    } else {
+        std::ptr::null()
+    };
+    let alpha_valid = has_alpha_channel && !alpha_ptr.is_null() && alpha_stride > 0;
+
+    if ptr_y.is_null() || ptr_cb.is_null() || ptr_cr.is_null() {
+        return Err("YCbCr: null plane".to_string());
+    }
+
+    let span_y = planar_storage_span_bytes(image, heif_channel_Y);
+    let span_cb = planar_storage_span_bytes(image, heif_channel_Cb);
+    let span_cr = planar_storage_span_bytes(image, heif_channel_Cr);
+
+    let scale_y = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
+    let scale_cb =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cb)?);
+    let scale_cr =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cr)?);
+
+    let span_alpha = if alpha_valid {
+        planar_storage_span_bytes(image, heif_channel_Alpha)
+    } else {
+        0
+    };
+    let scale_alpha = if alpha_valid {
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Alpha)?)
+    } else {
+        1.0
+    };
+
+    let bt601 = ycbcr_matrix_is_bt601(metadata);
+
+    let min_y_need = span_y * y_w.max(1);
+    if stride_y < min_y_need {
+        return Err("YCbCr: luma stride too small".to_string());
+    }
+    let min_cb_w = cb_w.max(1);
+    if stride_cb < span_cb * min_cb_w || stride_cr < span_cr * min_cb_w {
+        return Err("YCbCr: chroma stride too small".to_string());
+    }
+    if alpha_valid && alpha_stride < span_alpha * y_w.max(1) {
+        return Err("YCbCr: alpha stride too small".to_string());
+    }
+
+    let mut rgba_f32 = Vec::with_capacity(y_w * y_h * 4);
+
+    for y_px in 0..y_h {
+        let row_y = unsafe { ptr_y.byte_add(y_px * stride_y) };
+
+        let yc = chroma_row_index(y_px, chroma, cb_h);
+        let row_cb = unsafe { ptr_cb.byte_add(yc * stride_cb) };
+        let row_cr = unsafe { ptr_cr.byte_add(yc * stride_cr) };
+
+        let row_alpha = alpha_valid.then(|| unsafe { alpha_ptr.byte_add(y_px * alpha_stride) });
+
+        for x_px in 0..y_w {
+            let yv =
+                planar_read_sample(row_y, x_px, stride_y, span_y)? as f32 / scale_y.max(1.0);
+
+            let xc = chroma_column_index(x_px, chroma, cb_w);
+            let cbv =
+                planar_read_sample(row_cb, xc, stride_cb, span_cb)? as f32 / scale_cb.max(1.0);
+            let crv =
+                planar_read_sample(row_cr, xc, stride_cr, span_cr)? as f32 / scale_cr.max(1.0);
+
+            let [r_, g_, b_] = ycbcr_to_rgb_full_range(yv, cbv, crv, bt601);
+
+            rgba_f32.push(r_.clamp(0.0, 1.0));
+            rgba_f32.push(g_.clamp(0.0, 1.0));
+            rgba_f32.push(b_.clamp(0.0, 1.0));
+
+            if let Some(ar) = row_alpha {
+                let av =
+                    planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32 / scale_alpha.max(1.0);
+                rgba_f32.push(av.clamp(0.0, 1.0));
+            } else {
+                rgba_f32.push(1.0);
+            }
+        }
+    }
+
+    let color_space = metadata.color_space_hint();
+    Ok(HdrImageBuffer {
+        width: y_w as u32,
+        height: y_h as u32,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space,
+        metadata: metadata.clone(),
         rgba_f32: Arc::new(rgba_f32),
     })
 }

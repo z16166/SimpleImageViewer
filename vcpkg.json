@@ -31,7 +31,17 @@
       ]
     },
     "dav1d",
-    "libheif",
+    {
+      "name": "libheif",
+      "features": [
+        "iso23001-17",
+        "jpeg",
+        "openjpeg",
+        "dav1d",
+        "h264-decoder",
+        "experimental-mini"
+      ]
+    },
     "libde265",
     "libjxl",
     "zlib"

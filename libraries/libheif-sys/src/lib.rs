@@ -13,8 +13,25 @@ pub type heif_matrix_coefficients = libc::c_int;
 pub type heif_item_id = u32;
 
 pub const heif_error_Ok: heif_error_code = 0;
+/// Matches `enum heif_colorspace` / `enum heif_chroma` / `enum heif_channel` in upstream `heif_image.h`.
+pub const heif_colorspace_YCbCr: heif_colorspace = 0;
 pub const heif_colorspace_RGB: heif_colorspace = 1;
+pub const heif_chroma_420: heif_chroma = 1;
+pub const heif_chroma_422: heif_chroma = 2;
+pub const heif_chroma_444: heif_chroma = 3;
+pub const heif_chroma_interleaved_RGB: heif_chroma = 10;
+pub const heif_chroma_interleaved_RGBA: heif_chroma = 11;
+pub const heif_chroma_interleaved_RRGGBB_BE: heif_chroma = 12;
+pub const heif_chroma_interleaved_RRGGBBAA_BE: heif_chroma = 13;
+pub const heif_chroma_interleaved_RRGGBB_LE: heif_chroma = 14;
 pub const heif_chroma_interleaved_RRGGBBAA_LE: heif_chroma = 15;
+pub const heif_channel_Y: heif_channel = 0;
+pub const heif_channel_Cb: heif_channel = 1;
+pub const heif_channel_Cr: heif_channel = 2;
+pub const heif_channel_R: heif_channel = 3;
+pub const heif_channel_G: heif_channel = 4;
+pub const heif_channel_B: heif_channel = 5;
+pub const heif_channel_Alpha: heif_channel = 6;
 pub const heif_channel_interleaved: heif_channel = 10;
 
 #[repr(C)]
@@ -124,6 +141,13 @@ unsafe extern "C" {
     pub fn heif_image_get_primary_width(image: *const heif_image) -> libc::c_int;
     pub fn heif_image_get_primary_height(image: *const heif_image) -> libc::c_int;
     pub fn heif_image_get_bits_per_pixel_range(
+        image: *const heif_image,
+        channel: heif_channel,
+    ) -> libc::c_int;
+    pub fn heif_image_has_channel(image: *const heif_image, channel: heif_channel) -> libc::c_int;
+    pub fn heif_image_get_width(image: *const heif_image, channel: heif_channel) -> libc::c_int;
+    pub fn heif_image_get_height(image: *const heif_image, channel: heif_channel) -> libc::c_int;
+    pub fn heif_image_get_bits_per_pixel(
         image: *const heif_image,
         channel: heif_channel,
     ) -> libc::c_int;
