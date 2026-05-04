@@ -3651,6 +3651,7 @@ fn load_by_image_format(
         | image::ImageFormat::Dds
         | image::ImageFormat::Farbfeld
         | image::ImageFormat::Qoi => load_static(path, hdr_tone_map),
+        // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
         image::ImageFormat::Avif => load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::Hdr => load_hdr(path, hdr_tone_map),
         image::ImageFormat::OpenExr => load_detected_exr(path, hdr_tone_map),

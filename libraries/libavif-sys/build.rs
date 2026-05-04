@@ -31,6 +31,8 @@ fn main() {
         }
     }
 
+    println!("cargo:rerun-if-changed=src/libavif_shims.c");
+
     let mut build = cc::Build::new();
     build.file("src/libavif_shims.c");
     for include in include_paths {

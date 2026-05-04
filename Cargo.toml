@@ -21,6 +21,7 @@ eframe = { version = "0.34", default-features = false, features = [
 ] }
 rust-i18n = "3"
 egui_extras = "0.34"
+# AVIF decode/encode: use libavif (`avif-native`), not `image`'s `avif` (ravif — bloated, encode-only there).
 image = { version = "0.25", default-features = false, features = [
     "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
 ] }

@@ -18,16 +18,25 @@ pub type avifChromaDownsampling = libc::c_int;
 pub type avifImageContentTypeFlags = u32;
 
 pub const AVIF_RESULT_OK: avifResult = 0;
+pub const AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA: u32 = (1 << 0) | (1 << 1);
+pub const AVIF_IMAGE_CONTENT_GAIN_MAP: u32 = 1 << 2;
+pub const AVIF_IMAGE_CONTENT_ALL: u32 =
+    AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA | AVIF_IMAGE_CONTENT_GAIN_MAP;
+
+// `avifStrictFlags` / `avifStrictFlag` (libavif `avif.h`). Default is `AVIF_STRICT_ENABLED`;
+// viewers often set `strictFlags` to 0 after `avifDecoderCreate()` for maximum compatibility.
+pub const AVIF_STRICT_DISABLED: u32 = 0;
+pub const AVIF_STRICT_PIXI_REQUIRED: u32 = 1 << 0;
+pub const AVIF_STRICT_CLAP_VALID: u32 = 1 << 1;
+pub const AVIF_STRICT_ALPHA_ISPE_REQUIRED: u32 = 1 << 2;
+pub const AVIF_STRICT_ENABLED: u32 =
+    AVIF_STRICT_PIXI_REQUIRED | AVIF_STRICT_CLAP_VALID | AVIF_STRICT_ALPHA_ISPE_REQUIRED;
 pub const AVIF_RGB_FORMAT_RGBA: avifRGBFormat = 1;
 pub const AVIF_COLOR_PRIMARIES_BT709: avifColorPrimaries = 1;
 pub const AVIF_TRANSFER_CHARACTERISTICS_LINEAR: avifTransferCharacteristics = 8;
 /// SMPTE ST 2084 (PQ). libavif's `linearToGamma` for PQ encodes "extended SDR" linear
 /// (1.0 = SDR white = 203 nits) into [0,1] without the `LINEAR` clamp — preserves HDR.
 pub const AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084: avifTransferCharacteristics = 16;
-pub const AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA: avifImageContentTypeFlags = (1 << 0) | (1 << 1);
-pub const AVIF_IMAGE_CONTENT_GAIN_MAP: avifImageContentTypeFlags = 1 << 2;
-pub const AVIF_IMAGE_CONTENT_ALL: avifImageContentTypeFlags =
-    AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA | AVIF_IMAGE_CONTENT_GAIN_MAP;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -216,4 +225,6 @@ unsafe extern "C" {
         diag: *mut avifDiagnostics,
     ) -> avifResult;
     pub fn siv_avif_decoder_decode_all_content(decoder: *mut avifDecoder);
+    pub fn siv_avif_decoder_set_image_content_flags(decoder: *mut avifDecoder, flags: u32);
+    pub fn siv_avif_decoder_set_strict_flags(decoder: *mut avifDecoder, flags: u32);
 }

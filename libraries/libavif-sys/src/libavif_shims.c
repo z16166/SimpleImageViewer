@@ -6,3 +6,18 @@ void siv_avif_decoder_decode_all_content(avifDecoder * decoder)
         decoder->imageContentToDecode = AVIF_IMAGE_CONTENT_ALL;
     }
 }
+
+void siv_avif_decoder_set_image_content_flags(avifDecoder * decoder, avifImageContentTypeFlags flags)
+{
+    if (decoder) {
+        decoder->imageContentToDecode = flags;
+    }
+}
+
+/* Same as C: after avifDecoderCreate(), set decoder->strictFlags for viewer-style leniency. */
+void siv_avif_decoder_set_strict_flags(avifDecoder * decoder, avifStrictFlags flags)
+{
+    if (decoder) {
+        decoder->strictFlags = flags;
+    }
+}

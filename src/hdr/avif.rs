@@ -96,13 +96,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         }
     }
 
-    struct AvifDecoder(*mut libavif_sys::avifDecoder);
-    impl Drop for AvifDecoder {
-        fn drop(&mut self) {
-            unsafe { libavif_sys::avifDecoderDestroy(self.0) };
-        }
-    }
-
     fn result_to_string(result: libavif_sys::avifResult) -> String {
         unsafe {
             let ptr = libavif_sys::avifResultToString(result);
@@ -113,26 +106,72 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         }
     }
 
-    let decoder = AvifDecoder(unsafe { libavif_sys::avifDecoderCreate() });
-    if decoder.0.is_null() {
-        return Err("Failed to create libavif decoder".to_string());
-    }
-    unsafe { libavif_sys::siv_avif_decoder_decode_all_content(decoder.0) };
-    let image = AvifImage(unsafe { libavif_sys::avifImageCreateEmpty() });
-    if image.0.is_null() {
-        return Err("Failed to create libavif image".to_string());
+    // Universal-viewer policy: immediately after each `avifDecoderCreate()`, force
+    // `decoder->strictFlags = AVIF_STRICT_DISABLED` (0) — same as idiomatic C/C++ — so every
+    // strictFlags-gated check in libavif is off (legacy encoders, missing alpha `ispe`, etc.).
+    // Note: a few BMFF paths still fail without consulting `strictFlags`.
+    let strict_flags = libavif_sys::AVIF_STRICT_DISABLED;
+
+    // Request gain-map items first (`AVIF_IMAGE_CONTENT_ALL`). Some inputs fail when the decoder
+    // walks optional gain-map associations; retry with color+alpha only.
+    let content_flag_attempts: [(u32, &'static str); 2] = [
+        (
+            libavif_sys::AVIF_IMAGE_CONTENT_ALL,
+            "color+alpha+gainmap",
+        ),
+        (
+            libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
+            "color+alpha",
+        ),
+    ];
+
+    let mut image_ptr: *mut libavif_sys::avifImage = std::ptr::null_mut();
+    let mut last_err: Option<String> = None;
+    for (attempt_idx, &(flags, label)) in content_flag_attempts.iter().enumerate() {
+        let decoder = unsafe { libavif_sys::avifDecoderCreate() };
+        if decoder.is_null() {
+            return Err("Failed to create libavif decoder".to_string());
+        }
+        unsafe {
+            libavif_sys::siv_avif_decoder_set_strict_flags(decoder, strict_flags);
+            libavif_sys::siv_avif_decoder_set_image_content_flags(decoder, flags);
+        }
+        let img = unsafe { libavif_sys::avifImageCreateEmpty() };
+        if img.is_null() {
+            unsafe { libavif_sys::avifDecoderDestroy(decoder) };
+            return Err("Failed to create libavif image".to_string());
+        }
+        let result = unsafe {
+            libavif_sys::avifDecoderReadMemory(decoder, img, bytes.as_ptr(), bytes.len())
+        };
+        unsafe { libavif_sys::avifDecoderDestroy(decoder) };
+
+        if result == libavif_sys::AVIF_RESULT_OK {
+            if attempt_idx > 0 {
+                log::debug!(
+                    "[AVIF] decoded with imageContentToDecode={label} after first attempt failed"
+                );
+            }
+            image_ptr = img;
+            break;
+        }
+
+        unsafe { libavif_sys::avifImageDestroy(img) };
+        let msg = result_to_string(result);
+        if attempt_idx == 0 {
+            log::debug!(
+                "[AVIF] libavif decode with {} failed ({msg}); retrying with color+alpha only",
+                content_flag_attempts[0].1
+            );
+        }
+        last_err = Some(format!("libavif decode failed: {msg}"));
     }
 
-    let result = unsafe {
-        libavif_sys::avifDecoderReadMemory(decoder.0, image.0, bytes.as_ptr(), bytes.len())
-    };
-    if result != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!(
-            "libavif decode failed: {}",
-            result_to_string(result)
-        ));
+    if image_ptr.is_null() {
+        return Err(last_err.unwrap_or_else(|| "libavif decode failed".to_string()));
     }
 
+    let image = AvifImage(image_ptr);
     let image_ref = unsafe { &*image.0 };
     if image_ref.width == 0 || image_ref.height == 0 {
         return Err("libavif decoded zero-sized image".to_string());
