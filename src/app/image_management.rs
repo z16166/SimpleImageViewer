@@ -405,6 +405,10 @@ impl ImageViewerApp {
         self.prev_texture = None;
         self.transition_start = None;
         self.tile_manager = None;
+        self.prefetched_tiles.clear();
+        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+            cache.clear();
+        }
         self.current_image_res = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;

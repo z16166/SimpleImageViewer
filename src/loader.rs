@@ -1505,8 +1505,7 @@ impl ImageLoader {
                 LoaderOutput::Preview(p) => p.generation == keep_generation,
                 LoaderOutput::HdrSdrFallback(h) => h.generation == keep_generation,
                 LoaderOutput::Refined(_, g) => *g == keep_generation,
-                // Tile notifications carry no generation; keep to avoid breaking in-flight uploads.
-                LoaderOutput::Tile(_) => true,
+                LoaderOutput::Tile(t) => t.generation == keep_generation,
             }
         };
 
