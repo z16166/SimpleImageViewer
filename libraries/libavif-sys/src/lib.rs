@@ -288,3 +288,80 @@ unsafe extern "C" {
         out_timing: *mut avifImageTiming,
     );
 }
+
+// ---------------------------------------------------------------------------
+// RAII for libavif handles created through this crate’s FFI.
+// ---------------------------------------------------------------------------
+
+/// Owns `avifDecoder*`; calls `avifDecoderDestroy` on drop unless released via [`Self::into_raw`].
+pub struct AvifDecoderOwned {
+    ptr: *mut avifDecoder,
+}
+
+impl AvifDecoderOwned {
+    pub fn new() -> Option<Self> {
+        let ptr = unsafe { avifDecoderCreate() };
+        (!ptr.is_null()).then_some(Self { ptr })
+    }
+
+    pub fn as_ptr(&self) -> *mut avifDecoder {
+        self.ptr
+    }
+
+    /// Returns the raw pointer and skips `avifDecoderDestroy` in `Drop`.
+    pub fn into_raw(mut self) -> *mut avifDecoder {
+        let p = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        p
+    }
+}
+
+impl Drop for AvifDecoderOwned {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                avifDecoderDestroy(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+/// Owns `avifImage*`; calls `avifImageDestroy` on drop unless released via [`Self::into_raw`].
+pub struct AvifImageOwned {
+    ptr: *mut avifImage,
+}
+
+impl AvifImageOwned {
+    pub fn create_empty() -> Option<Self> {
+        let ptr = unsafe { avifImageCreateEmpty() };
+        (!ptr.is_null()).then_some(Self { ptr })
+    }
+
+    pub fn as_ptr(&self) -> *mut avifImage {
+        self.ptr
+    }
+
+    pub fn into_raw(mut self) -> *mut avifImage {
+        let p = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        p
+    }
+
+    /// Takes ownership of a decoder-produced image. Debug-asserts non-null.
+    pub fn from_raw_non_null(ptr: *mut avifImage) -> Self {
+        debug_assert!(!ptr.is_null());
+        Self { ptr }
+    }
+}
+
+impl Drop for AvifImageOwned {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                avifImageDestroy(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}

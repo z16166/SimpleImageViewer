@@ -375,48 +375,33 @@ fn apply_cmyk_to_srgb_via_lcms(
     }
 
     let mut rgba_out = vec![0.0_f32; pixel_count * 4];
-    unsafe {
-        let in_profile = libjxl_sys::cmsOpenProfileFromMem(
-            source_icc.as_ptr().cast(),
-            source_icc.len() as u32,
+    let Some(in_profile) = libjxl_sys::CmsProfile::open_from_mem(source_icc) else {
+        log::warn!("[JXL] lcms2 could not parse embedded CMYK ICC; skipping CMS transform");
+        return false;
+    };
+    let Some(out_profile) = libjxl_sys::CmsProfile::new_srgb() else {
+        log::warn!("[JXL] lcms2 could not build sRGB profile; skipping CMS transform");
+        return false;
+    };
+    let Some(transform) = libjxl_sys::CmsTransform::new(
+        &in_profile,
+        libjxl_sys::LCMS_TYPE_CMYK_FLT,
+        &out_profile,
+        libjxl_sys::LCMS_TYPE_RGBA_FLT,
+        libjxl_sys::LCMS_INTENT_PERCEPTUAL,
+        0,
+    ) else {
+        log::warn!(
+            "[JXL] lcms2 could not build CMYK→sRGB transform from {}-byte ICC; skipping",
+            source_icc.len()
         );
-        if in_profile.is_null() {
-            log::warn!("[JXL] lcms2 could not parse embedded CMYK ICC; skipping CMS transform");
-            return false;
-        }
-        let out_profile = libjxl_sys::cmsCreate_sRGBProfile();
-        if out_profile.is_null() {
-            libjxl_sys::cmsCloseProfile(in_profile);
-            log::warn!("[JXL] lcms2 could not build sRGB profile; skipping CMS transform");
-            return false;
-        }
-        let transform = libjxl_sys::cmsCreateTransform(
-            in_profile,
-            libjxl_sys::LCMS_TYPE_CMYK_FLT,
-            out_profile,
-            libjxl_sys::LCMS_TYPE_RGBA_FLT,
-            libjxl_sys::LCMS_INTENT_PERCEPTUAL,
-            0,
-        );
-        if transform.is_null() {
-            libjxl_sys::cmsCloseProfile(in_profile);
-            libjxl_sys::cmsCloseProfile(out_profile);
-            log::warn!(
-                "[JXL] lcms2 could not build CMYK→sRGB transform from {}-byte ICC; skipping",
-                source_icc.len()
-            );
-            return false;
-        }
-        libjxl_sys::cmsDoTransform(
-            transform,
-            cmyk.as_ptr().cast(),
-            rgba_out.as_mut_ptr().cast(),
-            pixel_count as u32,
-        );
-        libjxl_sys::cmsDeleteTransform(transform);
-        libjxl_sys::cmsCloseProfile(in_profile);
-        libjxl_sys::cmsCloseProfile(out_profile);
-    }
+        return false;
+    };
+    transform.do_transform(
+        cmyk.as_ptr().cast(),
+        rgba_out.as_mut_ptr().cast(),
+        pixel_count as u32,
+    );
 
     for (i, (dst, src)) in rgba
         .chunks_exact_mut(4)
@@ -2453,36 +2438,26 @@ mod tests {
         }
 
         let mut rgba_out = vec![0.0_f32; n_pixels as usize * 4];
-        unsafe {
-            let in_profile = libjxl_sys::cmsOpenProfileFromMem(
-                source_icc.as_ptr().cast(),
-                source_icc.len() as u32,
-            );
-            assert!(!in_profile.is_null(), "lcms could not parse CMYK ICC");
-            let out_profile = libjxl_sys::cmsCreate_sRGBProfile();
-            assert!(!out_profile.is_null(), "lcms could not build sRGB profile");
-            // djxl converts CMYK→sRGB with the destination's rendering intent.
-            // For its `ColorEncoding::SRGB(false)` target the default intent is
-            // perceptual (matches `INTENT_PERCEPTUAL = 0`).
-            let transform = libjxl_sys::cmsCreateTransform(
-                in_profile,
-                libjxl_sys::LCMS_TYPE_CMYK_FLT,
-                out_profile,
-                libjxl_sys::LCMS_TYPE_RGBA_FLT,
-                libjxl_sys::LCMS_INTENT_PERCEPTUAL,
-                0,
-            );
-            assert!(!transform.is_null(), "lcms could not build CMYK→sRGB transform");
-            libjxl_sys::cmsDoTransform(
-                transform,
-                cmyk_input.as_ptr().cast(),
-                rgba_out.as_mut_ptr().cast(),
-                n_pixels,
-            );
-            libjxl_sys::cmsDeleteTransform(transform);
-            libjxl_sys::cmsCloseProfile(in_profile);
-            libjxl_sys::cmsCloseProfile(out_profile);
-        }
+        let in_profile = libjxl_sys::CmsProfile::open_from_mem(&source_icc)
+            .expect("lcms could not parse CMYK ICC");
+        let out_profile = libjxl_sys::CmsProfile::new_srgb().expect("lcms could not build sRGB profile");
+        // djxl converts CMYK→sRGB with the destination's rendering intent.
+        // For its `ColorEncoding::SRGB(false)` target the default intent is
+        // perceptual (matches `INTENT_PERCEPTUAL = 0`).
+        let transform = libjxl_sys::CmsTransform::new(
+            &in_profile,
+            libjxl_sys::LCMS_TYPE_CMYK_FLT,
+            &out_profile,
+            libjxl_sys::LCMS_TYPE_RGBA_FLT,
+            libjxl_sys::LCMS_INTENT_PERCEPTUAL,
+            0,
+        )
+        .expect("lcms could not build CMYK→sRGB transform");
+        transform.do_transform(
+            cmyk_input.as_ptr().cast(),
+            rgba_out.as_mut_ptr().cast(),
+            n_pixels,
+        );
 
         composed.reserve(n_pixels as usize * 4);
         for (i, px) in rgba_out.chunks_exact(4).enumerate() {

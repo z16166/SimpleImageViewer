@@ -74,25 +74,17 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         }
     }
 
-    let decoder = unsafe { libavif_sys::avifDecoderCreate() };
-    if decoder.is_null() {
+    let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
         return Err("Failed to create libavif decoder".to_string());
-    }
-
-    struct DecoderDrop(*mut libavif_sys::avifDecoder);
-    impl Drop for DecoderDrop {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                unsafe { libavif_sys::avifDecoderDestroy(self.0) };
-            }
-        }
-    }
-    let _dec = DecoderDrop(decoder);
+    };
 
     unsafe {
-        libavif_sys::siv_avif_decoder_set_strict_flags(decoder, libavif_sys::AVIF_STRICT_DISABLED);
+        libavif_sys::siv_avif_decoder_set_strict_flags(
+            decoder.as_ptr(),
+            libavif_sys::AVIF_STRICT_DISABLED,
+        );
         libavif_sys::siv_avif_decoder_set_image_content_flags(
-            decoder,
+            decoder.as_ptr(),
             libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
         );
     }
@@ -100,7 +92,10 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
     if let Some(major) = avif_ftyp_major_brand(bytes) {
         if &major == b"avis" {
             let r = unsafe {
-                libavif_sys::avifDecoderSetSource(decoder, libavif_sys::AVIF_DECODER_SOURCE_TRACKS)
+                libavif_sys::avifDecoderSetSource(
+                    decoder.as_ptr(),
+                    libavif_sys::AVIF_DECODER_SOURCE_TRACKS,
+                )
             };
             if r != libavif_sys::AVIF_RESULT_OK {
                 return Err(format!(
@@ -112,19 +107,19 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
     }
 
     let r = unsafe {
-        libavif_sys::avifDecoderSetIOMemory(decoder, bytes.as_ptr(), bytes.len())
+        libavif_sys::avifDecoderSetIOMemory(decoder.as_ptr(), bytes.as_ptr(), bytes.len())
     };
     if r != libavif_sys::AVIF_RESULT_OK {
         return Err(format!("libavif SetIOMemory: {}", result_to_string(r)));
     }
 
-    let r = unsafe { libavif_sys::avifDecoderParse(decoder) };
+    let r = unsafe { libavif_sys::avifDecoderParse(decoder.as_ptr()) };
     if r != libavif_sys::AVIF_RESULT_OK {
         return Ok(None);
     }
 
-    let seq = unsafe { libavif_sys::siv_avif_decoder_image_sequence_track_present(decoder) };
-    let count = unsafe { libavif_sys::siv_avif_decoder_get_image_count(decoder) };
+    let seq = unsafe { libavif_sys::siv_avif_decoder_image_sequence_track_present(decoder.as_ptr()) };
+    let count = unsafe { libavif_sys::siv_avif_decoder_get_image_count(decoder.as_ptr()) };
     if seq == 0 || count <= 1 {
         return Ok(None);
     }
@@ -133,18 +128,18 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
 
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
-        let r = unsafe { libavif_sys::avifDecoderNextImage(decoder) };
+        let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
         if r != libavif_sys::AVIF_RESULT_OK {
             return Err(format!("libavif NextImage: {}", result_to_string(r)));
         }
 
         let mut timing = std::mem::MaybeUninit::<libavif_sys::avifImageTiming>::zeroed();
         unsafe {
-            libavif_sys::siv_avif_decoder_copy_image_timing(decoder, timing.as_mut_ptr());
+            libavif_sys::siv_avif_decoder_copy_image_timing(decoder.as_ptr(), timing.as_mut_ptr());
         }
         let timing = unsafe { timing.assume_init() };
 
-        let img_ptr = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder) };
+        let img_ptr = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
         if img_ptr.is_null() {
             return Err("libavif decoder image is null".to_string());
         }
@@ -239,13 +234,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    struct AvifImage(*mut libavif_sys::avifImage);
-    impl Drop for AvifImage {
-        fn drop(&mut self) {
-            unsafe { libavif_sys::avifImageDestroy(self.0) };
-        }
-    }
-
     fn result_to_string(result: libavif_sys::avifResult) -> String {
         unsafe {
             let ptr = libavif_sys::avifResultToString(result);
@@ -278,23 +266,24 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     let mut image_ptr: *mut libavif_sys::avifImage = std::ptr::null_mut();
     let mut last_err: Option<String> = None;
     for (attempt_idx, &(flags, label)) in content_flag_attempts.iter().enumerate() {
-        let decoder = unsafe { libavif_sys::avifDecoderCreate() };
-        if decoder.is_null() {
+        let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
             return Err("Failed to create libavif decoder".to_string());
-        }
-        unsafe {
-            libavif_sys::siv_avif_decoder_set_strict_flags(decoder, strict_flags);
-            libavif_sys::siv_avif_decoder_set_image_content_flags(decoder, flags);
-        }
-        let img = unsafe { libavif_sys::avifImageCreateEmpty() };
-        if img.is_null() {
-            unsafe { libavif_sys::avifDecoderDestroy(decoder) };
-            return Err("Failed to create libavif image".to_string());
-        }
-        let result = unsafe {
-            libavif_sys::avifDecoderReadMemory(decoder, img, bytes.as_ptr(), bytes.len())
         };
-        unsafe { libavif_sys::avifDecoderDestroy(decoder) };
+        unsafe {
+            libavif_sys::siv_avif_decoder_set_strict_flags(decoder.as_ptr(), strict_flags);
+            libavif_sys::siv_avif_decoder_set_image_content_flags(decoder.as_ptr(), flags);
+        }
+        let Some(img) = libavif_sys::AvifImageOwned::create_empty() else {
+            return Err("Failed to create libavif image".to_string());
+        };
+        let result = unsafe {
+            libavif_sys::avifDecoderReadMemory(
+                decoder.as_ptr(),
+                img.as_ptr(),
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        };
 
         if result == libavif_sys::AVIF_RESULT_OK {
             if attempt_idx > 0 {
@@ -302,11 +291,10 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                     "[AVIF] decoded with imageContentToDecode={label} after first attempt failed"
                 );
             }
-            image_ptr = img;
+            image_ptr = img.into_raw();
             break;
         }
 
-        unsafe { libavif_sys::avifImageDestroy(img) };
         let msg = result_to_string(result);
         if attempt_idx == 0 {
             log::debug!(
@@ -321,8 +309,8 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         return Err(last_err.unwrap_or_else(|| "libavif decode failed".to_string()));
     }
 
-    let image = AvifImage(image_ptr);
-    let image_ref = unsafe { &*image.0 };
+    let image = libavif_sys::AvifImageOwned::from_raw_non_null(image_ptr);
+    let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.width == 0 || image_ref.height == 0 {
         return Err("libavif decoded zero-sized image".to_string());
     }
@@ -351,7 +339,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         if let Ok(gain_metadata) = avif_gain_map_to_metadata(gain_map_ref) {
             let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
             match avif_image_tone_map_pq_rgba32f(
-                image.0,
+                image.as_ptr(),
                 image_ref.gainMap,
                 target_hdr_capacity,
                 &result_to_string,
@@ -417,7 +405,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     }
 
     let (rgba_u16, rgb_out_depth) =
-        decode_avif_image_rgba_u16(image.0, image_ref, &result_to_string)?;
+        decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &result_to_string)?;
 
     // Software fallback (e.g. ICC + gain map: `avifImageApplyGainMap` returns NOT_IMPLEMENTED).
     // Base RGB from `avifImageYUVToRGB` uses the image CICP transfer before ISO gain-map recovery.
@@ -582,56 +570,38 @@ fn apply_icc_to_srgb_via_lcms(rgba: &mut [f32], source_icc: &[u8]) -> bool {
     }
 
     let mut output = vec![0.0_f32; rgba.len()];
-    let ok = unsafe {
-        let in_profile = libjxl_sys::cmsOpenProfileFromMem(
-            source_icc.as_ptr().cast(),
-            source_icc.len() as u32,
+    let Some(in_profile) = libjxl_sys::CmsProfile::open_from_mem(source_icc) else {
+        log::warn!(
+            "[AVIF] lcms2 could not parse embedded ICC ({} bytes); falling back to CICP",
+            source_icc.len()
         );
-        if in_profile.is_null() {
-            log::warn!(
-                "[AVIF] lcms2 could not parse embedded ICC ({} bytes); falling back to CICP",
-                source_icc.len()
-            );
-            return false;
-        }
-        let out_profile = libjxl_sys::cmsCreate_sRGBProfile();
-        if out_profile.is_null() {
-            libjxl_sys::cmsCloseProfile(in_profile);
-            log::warn!("[AVIF] lcms2 could not build sRGB profile; falling back to CICP");
-            return false;
-        }
-        let transform = libjxl_sys::cmsCreateTransform(
-            in_profile,
-            libjxl_sys::LCMS_TYPE_RGBA_FLT,
-            out_profile,
-            libjxl_sys::LCMS_TYPE_RGBA_FLT,
-            libjxl_sys::LCMS_INTENT_PERCEPTUAL,
-            0,
-        );
-        let built = !transform.is_null();
-        if built {
-            libjxl_sys::cmsDoTransform(
-                transform,
-                rgba.as_ptr().cast(),
-                output.as_mut_ptr().cast(),
-                pixel_count as u32,
-            );
-            libjxl_sys::cmsDeleteTransform(transform);
-        } else {
-            log::warn!(
-                "[AVIF] lcms2 could not build ICC→sRGB transform from {}-byte profile; falling back to CICP",
-                source_icc.len()
-            );
-        }
-        libjxl_sys::cmsCloseProfile(in_profile);
-        libjxl_sys::cmsCloseProfile(out_profile);
-        built
+        return false;
     };
-
-    if ok {
-        rgba.copy_from_slice(&output);
-    }
-    ok
+    let Some(out_profile) = libjxl_sys::CmsProfile::new_srgb() else {
+        log::warn!("[AVIF] lcms2 could not build sRGB profile; falling back to CICP");
+        return false;
+    };
+    let Some(transform) = libjxl_sys::CmsTransform::new(
+        &in_profile,
+        libjxl_sys::LCMS_TYPE_RGBA_FLT,
+        &out_profile,
+        libjxl_sys::LCMS_TYPE_RGBA_FLT,
+        libjxl_sys::LCMS_INTENT_PERCEPTUAL,
+        0,
+    ) else {
+        log::warn!(
+            "[AVIF] lcms2 could not build ICC→sRGB transform from {}-byte profile; falling back to CICP",
+            source_icc.len()
+        );
+        return false;
+    };
+    transform.do_transform(
+        rgba.as_ptr().cast(),
+        output.as_mut_ptr().cast(),
+        pixel_count as u32,
+    );
+    rgba.copy_from_slice(&output);
+    true
 }
 
 /// Stub used for builds that exclude `jpegxl` (lcms2 isn't statically linked then). Always returns
@@ -677,6 +647,21 @@ fn libavif_diag_cstring(diag: &libavif_sys::avifDiagnostics) -> String {
         .into_owned()
 }
 
+/// Frees libavif-allocated `avifRGBImage` pixel storage on drop.
+#[cfg(feature = "avif-native")]
+struct AvifRgbImageAllocatedPixels(libavif_sys::avifRGBImage);
+
+#[cfg(feature = "avif-native")]
+impl Drop for AvifRgbImageAllocatedPixels {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.pixels.is_null() {
+                libavif_sys::avifRGBImageFreePixels(&mut self.0);
+            }
+        }
+    }
+}
+
 /// Tone-mapped **PQ BT.709** RGBA, same as `avifImageApplyGainMap` but with the PQ output transfer
 /// instead of LINEAR. Critical: libavif's `LINEAR` `linearToGamma` is `AVIF_CLAMP(x, 0, 1)` which
 /// drops HDR highlights to white. PQ losslessly encodes libavif's "extended SDR" linear range
@@ -689,11 +674,11 @@ fn avif_image_tone_map_pq_rgba32f(
     target_hdr_capacity: f32,
     result_to_string: &impl Fn(libavif_sys::avifResult) -> String,
 ) -> Result<Vec<f32>, String> {
-    let mut tone_mapped: libavif_sys::avifRGBImage = unsafe { std::mem::zeroed() };
-    tone_mapped.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
-    tone_mapped.depth = 16;
-    tone_mapped.isFloat = 1;
-    tone_mapped.maxThreads = 0;
+    let mut tone_mapped = AvifRgbImageAllocatedPixels(unsafe { std::mem::zeroed() });
+    tone_mapped.0.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
+    tone_mapped.0.depth = 16;
+    tone_mapped.0.isFloat = 1;
+    tone_mapped.0.maxThreads = 0;
 
     let hdr_headroom = target_hdr_capacity.max(1.0).log2();
     let mut diag: libavif_sys::avifDiagnostics = unsafe { std::mem::zeroed() };
@@ -705,18 +690,13 @@ fn avif_image_tone_map_pq_rgba32f(
             hdr_headroom,
             libavif_sys::AVIF_COLOR_PRIMARIES_BT709,
             libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084,
-            &mut tone_mapped,
+            &mut tone_mapped.0,
             std::ptr::null_mut(),
             &mut diag,
         )
     };
 
     if result != libavif_sys::AVIF_RESULT_OK {
-        unsafe {
-            if !tone_mapped.pixels.is_null() {
-                libavif_sys::avifRGBImageFreePixels(&mut tone_mapped);
-            }
-        }
         return Err(format!(
             "{} — {}",
             result_to_string(result),
@@ -724,11 +704,7 @@ fn avif_image_tone_map_pq_rgba32f(
         ));
     }
 
-    let out = copy_avif_tone_mapped_rgbaf16_to_rgba32f(&tone_mapped)?;
-    unsafe {
-        libavif_sys::avifRGBImageFreePixels(&mut tone_mapped);
-    }
-    Ok(out)
+    copy_avif_tone_mapped_rgbaf16_to_rgba32f(&tone_mapped.0)
 }
 
 #[cfg(feature = "avif-native")]

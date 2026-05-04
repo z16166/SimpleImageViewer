@@ -504,3 +504,96 @@ unsafe extern "C" {
     pub fn cmsCloseProfile(profile: cmsHPROFILE) -> i32;
     pub fn cmsDeleteTransform(transform: cmsHTRANSFORM);
 }
+
+// ---------------------------------------------------------------------------
+// lcms2 RAII — profiles must stay valid for the lifetime of any transform built
+// from them. Declare [`CmsTransform`] after both profiles so it is dropped first.
+// ---------------------------------------------------------------------------
+
+/// Owned lcms2 profile handle (`cmsHPROFILE`).
+pub struct CmsProfile(cmsHPROFILE);
+
+impl CmsProfile {
+    /// Parse ICC bytes; returns `None` when lcms rejects the profile.
+    pub fn open_from_mem(bytes: &[u8]) -> Option<Self> {
+        let p = unsafe {
+            cmsOpenProfileFromMem(bytes.as_ptr().cast(), bytes.len() as cmsUInt32Number)
+        };
+        (!p.is_null()).then_some(Self(p))
+    }
+
+    /// Standard sRGB display profile.
+    pub fn new_srgb() -> Option<Self> {
+        let p = unsafe { cmsCreate_sRGBProfile() };
+        (!p.is_null()).then_some(Self(p))
+    }
+
+    pub fn as_ptr(&self) -> cmsHPROFILE {
+        self.0
+    }
+}
+
+impl Drop for CmsProfile {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                cmsCloseProfile(self.0);
+            }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+/// Owned lcms2 transform (`cmsHTRANSFORM`). Destroy before closing the profiles
+/// that were used to create it — call sites should hold transforms in an inner
+/// scope or declare this field after the profile fields in a struct.
+pub struct CmsTransform(cmsHTRANSFORM);
+
+impl CmsTransform {
+    pub fn new(
+        input: &CmsProfile,
+        in_format: cmsUInt32Number,
+        output: &CmsProfile,
+        out_format: cmsUInt32Number,
+        intent: cmsUInt32Number,
+        flags: cmsUInt32Number,
+    ) -> Option<Self> {
+        let p = unsafe {
+            cmsCreateTransform(
+                input.as_ptr(),
+                in_format,
+                output.as_ptr(),
+                out_format,
+                intent,
+                flags,
+            )
+        };
+        (!p.is_null()).then_some(Self(p))
+    }
+
+    pub fn as_ptr(&self) -> cmsHTRANSFORM {
+        self.0
+    }
+
+    pub fn do_transform(
+        &self,
+        input: *const libc::c_void,
+        output: *mut libc::c_void,
+        num_pixels: cmsUInt32Number,
+    ) {
+        unsafe {
+            cmsDoTransform(self.0, input, output, num_pixels);
+        }
+    }
+}
+
+impl Drop for CmsTransform {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                cmsDeleteTransform(self.0);
+            }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
