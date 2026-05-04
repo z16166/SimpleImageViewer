@@ -1063,8 +1063,9 @@ mod tests {
             gamma: [1.0; 3],
             offset_sdr: [0.0; 3],
             offset_hdr: [0.0; 3],
+            // Ratios 2^0 .. 2^2 so log₂ headroom interpolates like libavif `avifGetGainMapWeight`.
             hdr_capacity_min: 1.0,
-            hdr_capacity_max: 3.0,
+            hdr_capacity_max: 4.0,
         };
 
         assert_eq!(gain_map_weight(metadata, 0.5), 0.0);
@@ -1080,14 +1081,14 @@ mod tests {
             gamma: [1.0; 3],
             offset_sdr: [0.0; 3],
             offset_hdr: [0.0; 3],
-            hdr_capacity_min: 0.0,
-            hdr_capacity_max: 2.0,
+            hdr_capacity_min: 1.0,
+            hdr_capacity_max: 4.0,
         };
         let sdr = [255, 255, 255, 255];
 
-        let low = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 0.0);
-        let mid = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 1.0);
-        let high = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 2.0);
+        let low = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 1.0);
+        let mid = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 2.0);
+        let high = recover_hdr_channel_from_sdr_and_gain(255, 1.0, metadata, 0, 4.0);
 
         assert!((low - 1.0).abs() < 0.001);
         assert!(mid > low && mid < high);
@@ -1095,7 +1096,7 @@ mod tests {
 
         let mut rgba = Vec::new();
         append_hdr_pixel_from_sdr_and_gain(&mut rgba, &sdr, [1.0; 3], metadata, 2.0);
-        assert!((rgba[0] - high).abs() < 0.001);
+        assert!((rgba[0] - mid).abs() < 0.001);
     }
 
     #[test]
@@ -1106,8 +1107,8 @@ mod tests {
             gamma: [1.0; 3],
             offset_sdr: [0.0; 3],
             offset_hdr: [0.0; 3],
-            hdr_capacity_min: 0.0,
-            hdr_capacity_max: 3.0,
+            hdr_capacity_min: 1.0,
+            hdr_capacity_max: 8.0,
         };
         let mut rgba = Vec::new();
 
@@ -1116,7 +1117,7 @@ mod tests {
             &[255, 255, 255, 255],
             [1.0; 3],
             metadata,
-            3.0,
+            8.0,
         );
 
         assert!((rgba[0] - 2.0).abs() < 0.001);

@@ -22,7 +22,7 @@ eframe = { version = "0.34", default-features = false, features = [
 rust-i18n = "3"
 egui_extras = "0.34"
 image = { version = "0.25", default-features = false, features = [
-    "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "avif", "qoi",
+    "png", "gif", "bmp", "tga", "webp", "ico", "pnm", "hdr", "qoi",
 ] }
 parking_lot = "0.12"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
@@ -48,7 +48,6 @@ interprocess = "2.4.0"
 trash = "5"
 psd = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
-heic = "0.1"
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
 wgpu = { version = "29", default-features = false, features = ["dx12", "vulkan", "metal", "wgsl"] }

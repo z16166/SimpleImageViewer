@@ -1644,6 +1644,18 @@ fn load_image_file(
             return crate::libtiff_loader::load_via_libtiff(path);
         }
 
+        if ext == "avif" || ext == "avifs" {
+            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+        }
+
+        if ext == "jxl" {
+            return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+        }
+
+        if ext == "heif" || ext == "heic" || ext == "hif" {
+            return load_heif_hdr_aware(path, hdr_tone_map);
+        }
+
         if is_system_native && !is_maybe_animated(&ext) {
             #[cfg(target_os = "windows")]
             if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
@@ -1659,11 +1671,6 @@ fn load_image_file(
             "gif" => load_gif(path, hdr_tone_map),
             "png" | "apng" => load_png(path, hdr_tone_map),
             "webp" => load_webp(path, hdr_tone_map),
-            "avif" | "avis" => {
-                load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
-            }
-            "jxl" => load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
-            "heif" | "heic" => load_heif_hdr_aware(path, hdr_tone_map),
             "jpg" | "jpeg" => load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
             _ => load_static(path, hdr_tone_map),
         };
@@ -1929,12 +1936,13 @@ fn load_jpeg_with_target_capacity(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
+    let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let orientation = crate::metadata_utils::get_exif_orientation(path);
     if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
         &mmap,
-        hdr_target_capacity,
+        decode_capacity,
     ) {
         let pixel_count = hdr.width as u64 * hdr.height as u64;
         let tiled_limit =
@@ -1953,7 +1961,7 @@ fn load_jpeg_with_target_capacity(
                 crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
                     path.clone(),
                     orientation,
-                    hdr_target_capacity,
+                    decode_capacity,
                 )
             {
                 let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
@@ -2017,7 +2025,7 @@ fn load_static(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<Image
 fn is_avif_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("avif") || ext.eq_ignore_ascii_case("avis"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("avif") || ext.eq_ignore_ascii_case("avifs"))
 }
 
 #[allow(dead_code)]
@@ -2042,44 +2050,62 @@ fn is_hdr_capable_modern_format_path(path: &Path) -> bool {
     is_avif_path(path) || is_heif_path(path) || is_jxl_path(path)
 }
 
+/// Linear luminance ratio (peak / SDR white) used when **decoding** ISO gain maps (JPEG_R,
+/// AVIF, JXL). Probed monitor headroom can exceed [`HdrToneMapSettings::max_display_nits`];
+/// using the larger value applies more gain-map weight than the same settings use for SDR
+/// previews and Reinhard tone mapping, so the HDR float plane appears too bright.
+fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_map: &HdrToneMapSettings) -> f32 {
+    hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
+}
+
 fn load_avif_with_target_capacity(
     path: &PathBuf,
-    _hdr_target_capacity: f32,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "avif-native")]
     {
-        match crate::hdr::avif::decode_avif_hdr_with_target_capacity(path, _hdr_target_capacity) {
+        let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
+        match crate::hdr::avif::decode_avif_hdr_with_target_capacity(path, decode_capacity) {
             Ok(hdr) => {
                 let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
-                return Ok(make_hdr_image_data(hdr, fallback));
+                Ok(make_hdr_image_data(hdr, fallback))
             }
             Err(err) => {
                 log::warn!(
-                    "[Loader] Native AVIF HDR decode failed for {}: {err}; falling back to image-rs",
+                    "[Loader] libavif decode failed for {}: {err}",
                     path.display()
                 );
+                Err(err)
             }
         }
     }
 
-    load_static(path, hdr_tone_map)
+    #[cfg(not(feature = "avif-native"))]
+    {
+        let _ = (path, hdr_target_capacity, hdr_tone_map);
+        Err(
+            "AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats)."
+                .to_string(),
+        )
+    }
 }
 
 fn load_jxl_with_target_capacity(
     path: &PathBuf,
-    _hdr_target_capacity: f32,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     #[cfg(feature = "jpegxl")]
     {
-        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(path, _hdr_target_capacity, hdr_tone_map)
+        let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
+        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(path, decode_capacity, hdr_tone_map)
     }
 
     #[cfg(not(feature = "jpegxl"))]
     {
-        let _ = (path, hdr_tone_map);
+        let _ = (path, hdr_target_capacity, hdr_tone_map);
         Err("JPEG XL support requires the jpegxl feature".to_string())
     }
 }
@@ -2088,20 +2114,25 @@ fn load_heif_hdr_aware(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Resu
     #[cfg(feature = "heif-native")]
     {
         match crate::hdr::heif::load_heif_hdr(path, hdr_tone_map) {
-            Ok(image) => return Ok(image),
+            Ok(image) => Ok(image),
             Err(err) => {
                 log::warn!(
-                    "[Loader] Native HEIF HDR decode failed for {}: {err}; falling back to RGBA8 HEIC",
+                    "[Loader] libheif decode failed for {}: {err}",
                     path.display()
                 );
+                Err(err)
             }
         }
     }
 
     #[cfg(not(feature = "heif-native"))]
-    let _ = hdr_tone_map;
-
-    load_heic(path)
+    {
+        let _ = (path, hdr_tone_map);
+        Err(
+            "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
+                .to_string(),
+        )
+    }
 }
 
 fn load_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
@@ -2423,16 +2454,42 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         let arc_source = std::sync::Arc::new(source);
         Ok(ImageData::Tiled(arc_source))
     } else {
-        // PSD v1: use the psd crate (reads entire file into memory)
+        // PSD v1: use the psd crate (reads entire file into memory).
+        // Some real-world PSDs trigger index panics inside `Psd::rgba()` (psd_channel.rs); treat as Err.
         let bytes = std::fs::read(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
-        let psd_file =
-            psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {e}"))?;
-        let w = psd_file.width();
-        let h = psd_file.height();
-        let pixels = psd_file.rgba();
+        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let psd_file =
+                psd::Psd::from_bytes(&bytes).map_err(|e| format!("Failed to parse PSD: {e}"))?;
+            let w = psd_file.width();
+            let h = psd_file.height();
+            let pixels = psd_file.rgba();
+            Ok::<_, String>((w, h, pixels))
+        }));
 
-        let img = DecodedImage::new(w, h, pixels);
-        Ok(make_image_data(img))
+        match decoded {
+            Ok(Ok((w, h, pixels))) => {
+                let img = DecodedImage::new(w, h, pixels);
+                Ok(make_image_data(img))
+            }
+            Ok(Err(e)) => Err(e),
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic in psd crate".to_string()
+                };
+                log::error!(
+                    "[Loader] PSD decoder panicked for {}: {}",
+                    path.display(),
+                    msg
+                );
+                Err(format!(
+                    "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
+                ))
+            }
+        }
     }
 }
 
@@ -2440,25 +2497,6 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
 /// via image-rs or the native codec path to preserve animations (GIF, WebP, APNG, JPEG XL).
 fn is_maybe_animated(ext: &str) -> bool {
     matches!(ext, "gif" | "webp" | "apng" | "png" | "jxl")
-}
-
-// ---------------------------------------------------------------------------
-// HEIF / HEIC (High Efficiency Image Format)
-// ---------------------------------------------------------------------------
-
-fn load_heic(path: &PathBuf) -> Result<ImageData, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read HEIC file: {e}"))?;
-
-    // Decode directly to RGBA8
-    let output = heic::DecoderConfig::new()
-        .decode(&bytes, heic::PixelLayout::Rgba8)
-        .map_err(|e| format!("Failed to decode HEIC: {e:?}"))?;
-
-    let width = output.width;
-    let height = output.height;
-    let rgba = output.data;
-
-    Ok(make_image_data(DecodedImage::new(width, height, rgba)))
 }
 
 /// Helper to create ImageData that respects GPU texture limits.
@@ -3362,7 +3400,13 @@ mod tests {
 
         let low = load_jpeg_with_target_capacity(&path, 1.0, HdrToneMapSettings::default())
             .expect("load low-capacity Ultra HDR JPEG_R sample");
-        let high = load_jpeg_with_target_capacity(&path, 8.0, HdrToneMapSettings::default())
+        // `hdr_gain_map_decode_capacity` clamps to `HdrToneMapSettings::target_hdr_capacity()`;
+        // raise the configured peak so an 8× probe survives the min() and exercises strong gain.
+        let high_tone = HdrToneMapSettings {
+            max_display_nits: HdrToneMapSettings::default().sdr_white_nits * 8.0,
+            ..HdrToneMapSettings::default()
+        };
+        let high = load_jpeg_with_target_capacity(&path, 8.0, high_tone)
             .expect("load high-capacity Ultra HDR JPEG_R sample");
 
         let ImageData::Hdr { hdr: low, .. } = low else {
@@ -3533,10 +3577,53 @@ mod tests {
     #[test]
     fn modern_hdr_format_path_helpers_detect_supported_extensions() {
         assert!(is_avif_path(Path::new("sample.avif")));
+        assert!(is_avif_path(Path::new("sample.avifs")));
         assert!(is_heif_path(Path::new("sample.HEIC")));
         assert!(is_jxl_path(Path::new("sample.jxl")));
         assert!(is_hdr_capable_modern_format_path(Path::new("sample.heif")));
         assert!(!is_hdr_capable_modern_format_path(Path::new("sample.png")));
+    }
+
+    /// Set `SIV_PSD_SAMPLES_DIR` to a folder that contains `colors.psd` and `seine.psd`
+    /// (for example `…/libavif/tests/data/sources`) to regression-test the `psd` crate composite
+    /// path: it must not unwind (historical `psd_channel` index OOB panics).
+    ///
+    /// When the variable is unset or files are missing, this test is a no-op so CI stays green.
+    #[test]
+    fn optional_psd_libavif_sources_load_without_panic() {
+        let Some(dir) = std::env::var("SIV_PSD_SAMPLES_DIR")
+            .ok()
+            .filter(|p| Path::new(p).is_dir())
+        else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        for name in ["colors.psd", "seine.psd"] {
+            let path = dir.join(name);
+            if !path.is_file() {
+                continue;
+            }
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_psd(&path)));
+            assert!(
+                outcome.is_ok(),
+                "load_psd must not panic for {}",
+                path.display()
+            );
+            match outcome.unwrap() {
+                Ok(data) => match &data {
+                    ImageData::Static(img) => {
+                        assert!(img.width > 0 && img.height > 0, "{name}: static dims");
+                    }
+                    ImageData::Tiled(src) => {
+                        assert!(src.width() > 0 && src.height() > 0, "{name}: tiled dims");
+                    }
+                    _ => panic!("{name}: unexpected PSD ImageData shape"),
+                },
+                Err(_msg) => {
+                    // OOM guard, `psd` parse error, or composite `Err` after catch_unwind — all OK.
+                }
+            }
+        }
     }
 }
 

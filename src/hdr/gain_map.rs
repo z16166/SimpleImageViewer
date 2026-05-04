@@ -183,17 +183,26 @@ pub(crate) fn recover_hdr_channel_from_sdr_and_gain(
         .max(0.0)
 }
 
+/// Maps display **linear luminance ratio** (peak nits / SDR white, e.g. `HdrToneMapSettings::target_hdr_capacity`)
+/// to the gain-map application weight.
+///
+/// AOMedia **libavif** (`avifGetGainMapWeight`) and ISO 21496-1 interpolate in **log₂ headroom** space
+/// using the metadata headrooms stored as ratios `2^log2` in [`GainMapMetadata::hdr_capacity_*`].
+/// Interpolating in linear ratio space is **not** equivalent and skews brightness mid-range.
 pub(crate) fn gain_map_weight(metadata: GainMapMetadata, target_hdr_capacity: f32) -> f32 {
-    let capacity_range = metadata.hdr_capacity_max - metadata.hdr_capacity_min;
-    if capacity_range <= f32::EPSILON {
-        return if target_hdr_capacity >= metadata.hdr_capacity_max {
-            1.0
-        } else {
-            0.0
-        };
+    let base_log2 = metadata.hdr_capacity_min.max(f32::MIN_POSITIVE).log2();
+    let alt_log2 = metadata.hdr_capacity_max.max(f32::MIN_POSITIVE).log2();
+    let denom = alt_log2 - base_log2;
+    if denom.abs() <= 1e-5 {
+        return 0.0;
     }
-
-    ((target_hdr_capacity - metadata.hdr_capacity_min) / capacity_range).clamp(0.0, 1.0)
+    let display_log2 = target_hdr_capacity.max(f32::MIN_POSITIVE).log2();
+    let w = ((display_log2 - base_log2) / denom).clamp(0.0, 1.0);
+    if alt_log2 < base_log2 {
+        -w
+    } else {
+        w
+    }
 }
 
 pub(crate) fn sample_gain_map_rgb(

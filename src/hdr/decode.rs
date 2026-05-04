@@ -313,7 +313,13 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     Ok(pixels)
 }
 
-fn decode_transfer_to_display_linear(rgb: [f32; 3], tf: HdrTransferFunction, sdr_white_nits: f32) -> [f32; 3] {
+/// Decode full-range RGB **code values** (0–1) per CICP transfer to **display-linear**
+/// channels in the same primary space as the codes (matches libavif `gammaToLinear` input).
+pub(crate) fn decode_transfer_to_display_linear(
+    rgb: [f32; 3],
+    tf: HdrTransferFunction,
+    sdr_white_nits: f32,
+) -> [f32; 3] {
     let clamp01 = |v: f32| v.clamp(0.0, 1.0);
     match tf {
         HdrTransferFunction::Linear => rgb,
@@ -334,6 +340,17 @@ fn decode_transfer_to_display_linear(rgb: [f32; 3], tf: HdrTransferFunction, sdr
         ],
         HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => rgb,
     }
+}
+
+/// Linear sRGB / extended linear where 1.0 is SDR white → nonlinear sRGB 8-bit (ISO gain-map SDR base).
+pub(crate) fn linear_srgb_linear_to_srgb_u8(linear: f32) -> u8 {
+    let linear = linear.clamp(0.0, 1.0);
+    let encoded = if linear <= 0.0031308 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {

@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::{
-    HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrReference, HdrToneMapSettings,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference, HdrToneMapSettings,
     HdrTransferFunction,
 };
 use eframe::{
@@ -100,6 +100,8 @@ struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
     max_display_nits: f32,
+    /// 1.0 except libavif tone-mapped display-referred linear (matches `encode_sdr` peak scaler).
+    native_display_scale: f32,
     rotation_steps: u32,
     alpha: f32,
     output_mode: u32,
@@ -107,6 +109,8 @@ struct ToneMapSettings {
     input_transfer_function: u32,
     input_reference: u32,
     _pad0: u32,
+    /// WGSL aligns `vec2<f32>` to 8 bytes; implicit padding before `uv_min` (Rust needs it explicit).
+    _wgsl_pad_before_uv: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
 };
@@ -283,7 +287,7 @@ fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     // luminance. Applying γ2.2 here lifts shadows ~3.4× and washes contrast on physically
     // non-HDR panels advertising HDR support (conformance `bench_oriented_brg`).
     let exposure_scale = exp2(settings.exposure_ev);
-    return sanitize_hdr_rgb(rgb * exposure_scale);
+    return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
 }
 
 @vertex
@@ -556,6 +560,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
 
+        let native_display_scale = libavif_tone_map_native_display_scale(
+            &self.image.metadata,
+            self.image.color_space,
+            &self.tone_map,
+        );
         let uniform = image_tone_map_uniform(
             self.tone_map,
             self.rotation_steps,
@@ -565,6 +574,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.image.metadata.transfer_function,
             self.image.metadata.reference,
             self.uv_rect,
+            native_display_scale,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -665,6 +675,11 @@ impl CallbackTrait for HdrTilePlaneCallback {
             return Vec::new();
         };
 
+        let native_display_scale = libavif_tone_map_native_display_scale(
+            &self.tile.metadata,
+            self.tile.color_space,
+            &self.tone_map,
+        );
         let uniform = tile_tone_map_uniform(
             self.tone_map,
             self.rotation_steps,
@@ -674,6 +689,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.tile.metadata.transfer_function,
             self.tile.metadata.reference,
             self.uv_rect,
+            native_display_scale,
         );
 
         let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
@@ -766,6 +782,7 @@ struct ToneMapUniform {
     exposure_ev: f32,
     sdr_white_nits: f32,
     max_display_nits: f32,
+    native_display_scale: f32,
     rotation_steps: u32,
     alpha: f32,
     output_mode: u32,
@@ -773,12 +790,16 @@ struct ToneMapUniform {
     input_transfer_function: u32,
     input_reference: u32,
     _pad0: u32,
+    /// Matches WGSL uniform layout: `uv_min` starts at byte 48 (8-byte aligned).
+    _wgsl_pad_before_uv: u32,
     uv_min: [f32; 2],
     uv_max: [f32; 2],
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
 unsafe impl bytemuck::Pod for ToneMapUniform {}
+
+const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 64);
 
 impl ToneMapUniform {
     fn from_settings(
@@ -790,11 +811,13 @@ impl ToneMapUniform {
         input_transfer_function: HdrTransferFunction,
         input_reference: HdrReference,
         uv_rect: egui::Rect,
+        native_display_scale: f32,
     ) -> Self {
         Self {
             exposure_ev: settings.exposure_ev,
             sdr_white_nits: settings.sdr_white_nits,
             max_display_nits: settings.max_display_nits,
+            native_display_scale: native_display_scale.clamp(0.0, f32::MAX),
             rotation_steps: rotation_steps % 4,
             alpha: alpha.clamp(0.0, 1.0),
             output_mode: output_mode as u32,
@@ -802,10 +825,33 @@ impl ToneMapUniform {
             input_transfer_function: input_transfer_function as u32,
             input_reference: input_reference as u32,
             _pad0: 0,
+            _wgsl_pad_before_uv: 0,
             uv_min: [uv_rect.min.x, uv_rect.min.y],
             uv_max: [uv_rect.max.x, uv_rect.max.y],
         }
     }
+}
+
+/// Peak scaler for **libavif** `avifImageApplyGainMap` output: display-referred linear in ~0–1,
+/// same factor as the first step of `encode_sdr` so Native HDR is not hotter than the SDR path.
+fn libavif_tone_map_native_display_scale(
+    metadata: &HdrImageMetadata,
+    color_space: HdrColorSpace,
+    tone: &HdrToneMapSettings,
+) -> f32 {
+    let capped = metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(|g| g.capped_display_referred);
+    if !capped {
+        return 1.0;
+    }
+    if metadata.transfer_function != HdrTransferFunction::Linear
+        || color_space != HdrColorSpace::LinearSrgb
+    {
+        return 1.0;
+    }
+    tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits)
 }
 
 fn tile_tone_map_uniform(
@@ -817,6 +863,7 @@ fn tile_tone_map_uniform(
     input_transfer_function: HdrTransferFunction,
     input_reference: HdrReference,
     uv_rect: egui::Rect,
+    native_display_scale: f32,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
@@ -827,6 +874,7 @@ fn tile_tone_map_uniform(
         input_transfer_function,
         input_reference,
         uv_rect,
+        native_display_scale,
     )
 }
 
@@ -839,6 +887,7 @@ fn image_tone_map_uniform(
     input_transfer_function: HdrTransferFunction,
     input_reference: HdrReference,
     uv_rect: egui::Rect,
+    native_display_scale: f32,
 ) -> ToneMapUniform {
     ToneMapUniform::from_settings(
         settings,
@@ -849,6 +898,7 @@ fn image_tone_map_uniform(
         input_transfer_function,
         input_reference,
         uv_rect,
+        native_display_scale,
     )
 }
 
@@ -1003,6 +1053,7 @@ fn create_callback_resources(
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -1374,8 +1425,8 @@ mod tests {
     use super::*;
     use crate::hdr::tiled::HdrTileBuffer;
     use crate::hdr::types::{
-        HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
-        HdrTransferFunction,
+        HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+        HdrReference, HdrToneMapSettings, HdrTransferFunction,
     };
     use std::sync::Arc;
 
@@ -1490,6 +1541,33 @@ mod tests {
     }
 
     #[test]
+    fn tone_map_uniform_byte_size_matches_wgpu_shader() {
+        assert_eq!(std::mem::size_of::<ToneMapUniform>(), 64);
+    }
+
+    #[test]
+    fn libavif_tone_map_native_display_scale_matches_encode_sdr_peak_scaler() {
+        let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "AVIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: true,
+        });
+        let tone = HdrToneMapSettings {
+            sdr_white_nits: 203.0,
+            max_display_nits: 1000.0,
+            ..HdrToneMapSettings::default()
+        };
+        let s = libavif_tone_map_native_display_scale(
+            &metadata,
+            HdrColorSpace::LinearSrgb,
+            &tone,
+        );
+        assert!((s - 203.0 / 1000.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn tile_tone_map_uniform_carries_rotation() {
         let uniform = tile_tone_map_uniform(
             HdrToneMapSettings::default(),
@@ -1500,6 +1578,7 @@ mod tests {
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         );
 
         assert_eq!(uniform.rotation_steps, 2);
@@ -1518,6 +1597,7 @@ mod tests {
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::new(0.25, 0.5), egui::Pos2::new(0.75, 1.0)),
+            1.0,
         );
 
         assert_eq!(uniform.uv_min, [0.25, 0.5]);
@@ -1541,6 +1621,7 @@ mod tests {
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         );
         let tile_uniform = tile_tone_map_uniform(
             settings,
@@ -1551,6 +1632,7 @@ mod tests {
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         );
 
         assert_eq!(image_uniform.rotation_steps, tile_uniform.rotation_steps);
@@ -1752,6 +1834,7 @@ mod tests {
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         );
 
         assert_eq!(uniform.rotation_steps, 1);
@@ -1785,6 +1868,7 @@ mod tests {
             HdrTransferFunction::Pq,
             HdrReference::DisplayReferred,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            1.0,
         );
 
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);

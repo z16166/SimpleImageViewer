@@ -60,6 +60,7 @@ impl FormatRegistry {
             ("webp", "WebP Image"),
             ("ico", "Icon Image"),
             ("avif", "AVIF Image"),
+            ("avifs", "AVIF Image Sequence"),
         ];
 
         let builtin_pro = [
@@ -77,6 +78,7 @@ impl FormatRegistry {
             ("pnm", "PNM Image"),
             ("heif", "HEIF Image"),
             ("heic", "HEIC Image"),
+            ("jxl", "JPEG XL Image"),
         ];
 
         for (ext, desc) in builtin_standard {

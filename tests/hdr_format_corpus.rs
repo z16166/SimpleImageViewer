@@ -13,6 +13,7 @@ fn hdr_format_corpus_environment_gates_are_recognized() {
         "SIV_HEIF_HDR_SAMPLES_DIR",
         "SIV_JXL_HDR_SAMPLES_DIR",
         "SIV_RAW_HDR_SAMPLES_DIR",
+        "SIV_PSD_SAMPLES_DIR",
     ] {
         let _ = configured_sample_dir(var);
     }

@@ -19,7 +19,11 @@ pub type avifImageContentTypeFlags = u32;
 
 pub const AVIF_RESULT_OK: avifResult = 0;
 pub const AVIF_RGB_FORMAT_RGBA: avifRGBFormat = 1;
+pub const AVIF_COLOR_PRIMARIES_BT709: avifColorPrimaries = 1;
 pub const AVIF_TRANSFER_CHARACTERISTICS_LINEAR: avifTransferCharacteristics = 8;
+/// SMPTE ST 2084 (PQ). libavif's `linearToGamma` for PQ encodes "extended SDR" linear
+/// (1.0 = SDR white = 203 nits) into [0,1] without the `LINEAR` clamp — preserves HDR.
+pub const AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084: avifTransferCharacteristics = 16;
 pub const AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA: avifImageContentTypeFlags = (1 << 0) | (1 << 1);
 pub const AVIF_IMAGE_CONTENT_GAIN_MAP: avifImageContentTypeFlags = 1 << 2;
 pub const AVIF_IMAGE_CONTENT_ALL: avifImageContentTypeFlags =
@@ -141,6 +145,12 @@ pub struct avifImage {
     pub alphaRowBytes: u32,
     pub imageOwnsAlphaPlane: avifBool,
     pub alphaPremultiplied: avifBool,
+    /// `avifImage.icc` from `avif.h`. **Must** appear between `alphaPremultiplied` and the CICP
+    /// fields — omitting it shifts every later field by 16 bytes, causing `colorPrimaries` to read
+    /// the low half of the `icc.data` pointer (garbage for ICC-bearing files; lucky 0 for
+    /// ICC-less files because `avifImageCreateEmpty` zero-inits and the NULL pointer's low bits
+    /// happen to land on `AVIF_COLOR_PRIMARIES_UNKNOWN`).
+    pub icc: avifRWData,
     pub colorPrimaries: avifColorPrimaries,
     pub transferCharacteristics: avifTransferCharacteristics,
     pub matrixCoefficients: avifMatrixCoefficients,
@@ -193,6 +203,7 @@ unsafe extern "C" {
         size: usize,
     ) -> avifResult;
     pub fn avifRGBImageSetDefaults(rgb: *mut avifRGBImage, image: *const avifImage);
+    pub fn avifRGBImageFreePixels(rgb: *mut avifRGBImage);
     pub fn avifImageYUVToRGB(image: *const avifImage, rgb: *mut avifRGBImage) -> avifResult;
     pub fn avifImageApplyGainMap(
         baseImage: *const avifImage,

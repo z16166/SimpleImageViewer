@@ -323,6 +323,7 @@ fn inspect_heif_gain_map_auxiliaries(
         source: "HEIF",
         target_hdr_capacity: None,
         diagnostic,
+        capped_display_referred: false,
     })
 }
 

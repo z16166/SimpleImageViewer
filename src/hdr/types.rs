@@ -98,6 +98,9 @@ pub struct HdrGainMapMetadata {
     pub source: &'static str,
     pub target_hdr_capacity: Option<f32>,
     pub diagnostic: String,
+    /// True when RGB is **display-referred linear** in about 0–1 (e.g. libavif `avifImageApplyGainMap`).
+    /// False for scene-linear / extended recovery (`append_hdr_pixel_from_sdr_and_gain`, JXL jhgm, …).
+    pub capped_display_referred: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -335,6 +338,7 @@ mod tests {
                 source: "AVIF",
                 target_hdr_capacity: Some(4.0),
                 diagnostic: "GainMapMax=[2.000,2.000,2.000]".to_string(),
+                capped_display_referred: false,
             }),
             ..HdrImageMetadata::default()
         };
