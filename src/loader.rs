@@ -1618,10 +1618,9 @@ fn load_image_file(
             }
         }
 
+        // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
         if ext == "psd" || ext == "psb" {
-            if let Ok(item) = load_psd(path) {
-                return Ok(item);
-            }
+            return load_psd(path);
         }
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
