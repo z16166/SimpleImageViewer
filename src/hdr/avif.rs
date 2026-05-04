@@ -309,7 +309,9 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         return Err(last_err.unwrap_or_else(|| "libavif decode failed".to_string()));
     }
 
-    let image = libavif_sys::AvifImageOwned::from_raw_non_null(image_ptr);
+    // SAFETY: `image_ptr` is only set from `AvifImageOwned::into_raw()` after
+    // `avifDecoderReadMemory` succeeds — caller-owned empty image, not `siv_avif_decoder_get_image`.
+    let image = unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) };
     let image_ref = unsafe { &*image.as_ptr() };
     if image_ref.width == 0 || image_ref.height == 0 {
         return Err("libavif decoded zero-sized image".to_string());

@@ -348,8 +348,15 @@ impl AvifImageOwned {
         p
     }
 
-    /// Takes ownership of a decoder-produced image. Debug-asserts non-null.
-    pub fn from_raw_non_null(ptr: *mut avifImage) -> Self {
+    /// Re-wrap an `avifImage*` that the caller **already owns** (e.g. released from
+    /// [`Self::into_raw`] after [`Self::create_empty`]).  
+    ///
+    /// # Safety
+    /// `ptr` must be non-null and must point to an image the caller has exclusive ownership
+    /// of — typically from `avifImageCreateEmpty` or similar. **Never** pass pointers returned
+    /// by `siv_avif_decoder_get_image` or other decoder-owned borrows: those are destroyed with
+    /// the decoder and must not be wrapped here (double-free / UAF).
+    pub unsafe fn from_owned_raw_non_null(ptr: *mut avifImage) -> Self {
         debug_assert!(!ptr.is_null());
         Self { ptr }
     }
