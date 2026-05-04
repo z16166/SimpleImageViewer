@@ -24,6 +24,9 @@ test_large.bmp
 scratch/
 .worktrees/
 
+# Local test fixtures / corpora (not versioned)
+tests/data/
+
 # External Dependencies
 /3rdparty/
 /vcpkg_installed/

@@ -117,7 +117,11 @@ fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     assert!(gain_map.contains("parse_iso_gain_map_metadata"));
     assert!(gain_map.contains("append_hdr_pixel_from_sdr_and_gain"));
     assert!(avif.contains("avif_gain_map_to_metadata"));
-    assert!(avif.contains("siv_avif_decoder_decode_all_content"));
+    assert!(
+        avif.contains("siv_avif_decoder_set_image_content_flags")
+            || avif.contains("siv_avif_decoder_decode_all_content"),
+        "AVIF backend should configure decoder content flags (libavif shims)"
+    );
     assert!(jxl.contains("read_jxl_gain_map_bundle"));
     assert!(jxl.contains("JXL_DEC_BOX"));
     assert!(heif.contains("classify_heif_auxiliary_type"));

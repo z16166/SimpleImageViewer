@@ -1940,6 +1940,10 @@ fn load_jpeg_with_target_capacity(
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
     let orientation = crate::metadata_utils::get_exif_orientation(path);
+    // Apply EXIF Orientation per TIFF/EXIF rules (same transform family as Pillow `exif_transpose`).
+    // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
+    // looks like a normal landscape before correction; the tag still requests transpose, so the
+    // result can differ from viewers that ignore the tag or use heuristics.
     if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
         &mmap,
         decode_capacity,
@@ -2065,8 +2069,32 @@ fn load_avif_with_target_capacity(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "avif-native")]
     {
+        let bytes = std::fs::read(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
+
+        match crate::hdr::avif::try_decode_avif_image_sequence_sdr(&bytes) {
+            Ok(Some(raw)) if raw.len() > 1 => {
+                let frames: Vec<AnimationFrame> = raw
+                    .into_iter()
+                    .map(|(delay, w, h, px)| AnimationFrame::new(w, h, px, delay))
+                    .collect();
+                log::info!(
+                    "[Loader] AVIF image sequence: {} frames (SDR RGBA8) — {}",
+                    frames.len(),
+                    path.display()
+                );
+                return Ok(ImageData::Animated(frames));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log::debug!(
+                    "[Loader] AVIF sequence decode failed for {} ({e}); trying static HDR path",
+                    path.display()
+                );
+            }
+        }
+
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        match crate::hdr::avif::decode_avif_hdr_with_target_capacity(path, decode_capacity) {
+        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(&bytes, decode_capacity) {
             Ok(hdr) => {
                 let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
@@ -2623,6 +2651,33 @@ mod tests {
         TILED_THRESHOLD_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// `tests/data/paris_exif_orientation_5.jpg` from libavif: stored SOF 403×302, EXIF Orientation 5.
+    /// Correct viewing swaps to 302×403 (same as Pillow `ImageOps.exif_transpose`).
+    #[test]
+    fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/paris_exif_orientation_5.jpg");
+        if !path.is_file() {
+            eprintln!("skip: tests/data/paris_exif_orientation_5.jpg missing");
+            return;
+        }
+        assert_eq!(crate::metadata_utils::get_exif_orientation(&path), 5);
+        let image_data = load_jpeg_with_target_capacity(
+            &path,
+            HdrToneMapSettings::default().target_hdr_capacity(),
+            HdrToneMapSettings::default(),
+        )
+        .expect("load paris EXIF orientation 5 JPEG");
+        let ImageData::Static(decoded) = image_data else {
+            panic!("expected static image data for paris_exif_orientation_5.jpg");
+        };
+        assert_eq!(
+            (decoded.width, decoded.height),
+            (302, 403),
+            "EXIF 5 should transpose 403×302 stored raster to 302×403 display"
+        );
     }
 
     #[test]

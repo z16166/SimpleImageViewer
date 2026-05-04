@@ -996,7 +996,17 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
     let mut result = Vec::new();
     for f in exif.fields() {
         let tag = format!("{}", f.tag);
-        let val = format!("{}", f.display_value().with_unit(&exif));
+        // Numeric value first: kamadak-exif's prose for 1 vs 5 both mention row/column edges and is easy to misread.
+        let val = if f.tag == exif::Tag::Orientation {
+            match f.value.get_uint(0) {
+                Some(n) if (1..=8).contains(&n) => {
+                    format!("{} — {}", n, f.display_value().with_unit(&exif))
+                }
+                _ => format!("{}", f.display_value().with_unit(&exif)),
+            }
+        } else {
+            format!("{}", f.display_value().with_unit(&exif))
+        };
         result.push((tag, val));
     }
 

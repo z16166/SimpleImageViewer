@@ -81,6 +81,8 @@ impl ImageViewerApp {
             if anim.image_index == self.current_index && !anim.textures.is_empty() {
                 let elapsed = anim.frame_start.elapsed();
                 if elapsed >= anim.delays[anim.current_frame] {
+                    // Infinite loop for all animated formats here (GIF/WebP/APNG/AVIF sequence, etc.);
+                    // container metadata such as AVIF `repetitionCount` is intentionally ignored.
                     anim.current_frame = (anim.current_frame + 1) % anim.textures.len();
                     anim.frame_start = Instant::now();
                 }

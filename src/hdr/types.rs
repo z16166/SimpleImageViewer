@@ -124,6 +124,13 @@ impl HdrImageMetadata {
         match self.color_profile {
             HdrColorProfile::LinearSrgb => HdrColorSpace::LinearSrgb,
             HdrColorProfile::ColorSpace(color_space) => color_space,
+            // **Matrix coefficients** 9/10 are BT.2020 NCL/CL: libavif YUV→RGB produces **Rec.2020**
+            // display-referred RGB. Some AVIF (incl. bad conformance tags) declare **colour_primaries 1**
+            // with matrix 10; matching `primaries 1` first would skip WGSL Rec.2020→linear-sRGB → blue.
+            HdrColorProfile::Cicp {
+                matrix_coefficients: 9 | 10,
+                ..
+            } => HdrColorSpace::Rec2020Linear,
             HdrColorProfile::Cicp {
                 color_primaries: 9, ..
             } => HdrColorSpace::Rec2020Linear,
@@ -329,6 +336,36 @@ mod tests {
         };
 
         assert_eq!(metadata.color_space_hint(), HdrColorSpace::LinearSrgb);
+    }
+
+    #[test]
+    fn cicp_unspecified_primaries_bt2020_matrix_maps_to_rec2020_linear_hint() {
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 2,
+                transfer_characteristics: 16,
+                matrix_coefficients: 9,
+                full_range: true,
+            },
+            ..HdrImageMetadata::default()
+        };
+
+        assert_eq!(metadata.color_space_hint(), HdrColorSpace::Rec2020Linear);
+    }
+
+    #[test]
+    fn cicp_bt709_primaries_bt2020_matrix_prefers_rec2020_hint() {
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 1,
+                transfer_characteristics: 16,
+                matrix_coefficients: 10,
+                full_range: true,
+            },
+            ..HdrImageMetadata::default()
+        };
+
+        assert_eq!(metadata.color_space_hint(), HdrColorSpace::Rec2020Linear);
     }
 
     #[test]

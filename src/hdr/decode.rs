@@ -362,8 +362,11 @@ fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
     }
 }
 
-/// BT.2100 PQ EOTF, then scale to display-linear relative units (matches HDR plane shader).
-fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
+/// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).
+///
+/// Normative: **ITU-R BT.2100-3** Table 4 (PQ system reference EOTF); same rational coefficients as
+/// **SMPTE ST 2084** and the HDR plane WGSL in `renderer.rs`.
+pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
     let m1 = 2610.0 / 16384.0;
     let m2 = 2523.0 / 32.0;
     let c1 = 3424.0 / 4096.0;

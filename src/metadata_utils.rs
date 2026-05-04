@@ -24,8 +24,10 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
         let exifreader = exif::Reader::new();
         if let Ok(exif_data) = exifreader.read_from_container(&mut reader) {
             if let Some(field) = exif_data.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-                if let exif::Value::Short(ref v) = field.value {
-                    if let Some(&o) = v.first() {
+                // Some writers store Orientation as BYTE or LONG; Short is most common.
+                if let Some(o) = field.value.get_uint(0) {
+                    let o = o as u16;
+                    if (1..=8).contains(&o) {
                         return o;
                     }
                 }
