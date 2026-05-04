@@ -465,7 +465,7 @@ fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) 
     out
 }
 
-fn validate_hdr_fallback_budget(width: u32, height: u32) -> Result<(), String> {
+pub(crate) fn validate_hdr_fallback_budget(width: u32, height: u32) -> Result<(), String> {
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| format!("HDR image dimensions overflow: {width}x{height}"))?;

@@ -34,7 +34,9 @@ pub enum HdrColorSpace {
     Aces2065_1 = 3,
     Xyz = 4,
     Unknown = 5,
-    /// Display P3 primaries, D65 white, linear light (matches CICP colour primaries 11).
+    /// Display P3 primaries, D65 white, linear light. CICP colour primaries **11** (SMPTE 431 /
+    /// DCI‑P3 family) and **12** (SMPTE EG 432‑1 / **Display P3**, common in AV1/AVIF e.g. libavif
+    /// `*p3pq*` test assets).
     DisplayP3Linear = 6,
 }
 
@@ -135,7 +137,7 @@ impl HdrImageMetadata {
                 color_primaries: 9, ..
             } => HdrColorSpace::Rec2020Linear,
             HdrColorProfile::Cicp {
-                color_primaries: 11, ..
+                color_primaries: 11 | 12, ..
             } => HdrColorSpace::DisplayP3Linear,
             HdrColorProfile::Cicp {
                 color_primaries: 1, ..
@@ -366,6 +368,40 @@ mod tests {
         };
 
         assert_eq!(metadata.color_space_hint(), HdrColorSpace::Rec2020Linear);
+    }
+
+    #[test]
+    fn cicp_color_primaries_12_display_p3_maps_to_display_p3_linear_hint() {
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 12,
+                transfer_characteristics: 16,
+                matrix_coefficients: 0,
+                full_range: true,
+            },
+            ..HdrImageMetadata::default()
+        };
+
+        assert_eq!(
+            metadata.color_space_hint(),
+            HdrColorSpace::DisplayP3Linear,
+            "AV1/AVIF Display P3 is primaries=12 (SMPTE EG 432-1), not 11"
+        );
+    }
+
+    #[test]
+    fn cicp_color_primaries_11_still_maps_to_display_p3_linear_hint() {
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Cicp {
+                color_primaries: 11,
+                transfer_characteristics: 16,
+                matrix_coefficients: 0,
+                full_range: true,
+            },
+            ..HdrImageMetadata::default()
+        };
+
+        assert_eq!(metadata.color_space_hint(), HdrColorSpace::DisplayP3Linear);
     }
 
     #[test]

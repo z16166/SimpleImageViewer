@@ -146,6 +146,7 @@ pub(crate) fn load_jxl_hdr(path: &std::path::Path) -> Result<ImageData, String> 
     decode_jxl_bytes_to_image_data(
         &bytes,
         crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+        crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
         crate::hdr::types::HdrToneMapSettings::default(),
     )
 }
@@ -168,11 +169,17 @@ pub(crate) fn decode_jxl_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Strin
 #[cfg(feature = "jpegxl")]
 pub(crate) fn load_jxl_hdr_with_target_capacity(
     path: &std::path::Path,
-    target_hdr_capacity: f32,
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let bytes = std::fs::read(path).map_err(|err| format!("Failed to read JPEG XL: {err}"))?;
-    decode_jxl_bytes_to_image_data(&bytes, target_hdr_capacity, tone_map)
+    decode_jxl_bytes_to_image_data(
+        &bytes,
+        decode_target_hdr_capacity,
+        display_hdr_target_capacity,
+        tone_map,
+    )
 }
 
 #[cfg(feature = "jpegxl")]
@@ -515,6 +522,7 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
     match decode_jxl_bytes_to_image_data(
         bytes,
         target_hdr_capacity,
+        target_hdr_capacity,
         crate::hdr::types::HdrToneMapSettings::default(),
     )? {
         ImageData::Hdr { hdr, .. } => Ok(hdr),
@@ -534,7 +542,8 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
 #[cfg(feature = "jpegxl")]
 pub(crate) fn decode_jxl_bytes_to_image_data(
     bytes: &[u8],
-    target_hdr_capacity: f32,
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let probe_len = bytes.len().min(16).max(2);
@@ -670,7 +679,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         let mut frame_metadata = meta_base.clone();
                         apply_jxl_jhgm_gain_map_if_present(
                             jhgm_box.as_deref(),
-                            target_hdr_capacity,
+                            decode_target_hdr_capacity,
                             &mut buf,
                             info.xsize,
                             info.ysize,
@@ -690,11 +699,20 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                                 metadata: frame_metadata,
                                 rgba_f32: Arc::new(buf),
                             };
-                            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                                &hdr,
-                                tone_map.exposure_ev,
-                                &tone_map,
-                            )?
+                            if crate::loader::hdr_display_requests_sdr_preview(
+                                display_hdr_target_capacity,
+                            ) {
+                                crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+                                    &hdr,
+                                    tone_map.exposure_ev,
+                                    &tone_map,
+                                )?
+                            } else {
+                                crate::loader::cheap_hdr_sdr_placeholder_rgba8(
+                                    hdr.width,
+                                    hdr.height,
+                                )?
+                            }
                         };
                         let delay_ms = jxl_frame_ticks_to_delay_ms(&info, ticks);
                         animation.push(AnimationFrame::new(
@@ -741,7 +759,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 apply_jxl_jhgm_gain_map_if_present(
                     jhgm_box.as_deref(),
-                    target_hdr_capacity,
+                    decode_target_hdr_capacity,
                     &mut rgba,
                     info.xsize,
                     info.ysize,
@@ -760,11 +778,19 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 };
                 let fallback_pixels = match sdr_grade_fallback {
                     Some(px) => px,
-                    None => crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                        &hdr,
-                        tone_map.exposure_ev,
-                        &tone_map,
-                    )?,
+                    None => {
+                        if crate::loader::hdr_display_requests_sdr_preview(
+                            display_hdr_target_capacity,
+                        ) {
+                            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+                                &hdr,
+                                tone_map.exposure_ev,
+                                &tone_map,
+                            )?
+                        } else {
+                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+                        }
+                    }
                 };
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
                 return Ok(ImageData::Hdr { hdr, fallback });
@@ -1933,6 +1959,7 @@ mod tests {
         let got = super::decode_jxl_bytes_to_image_data(
             &bytes,
             tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
             tone,
         );
         assert!(
@@ -2025,6 +2052,7 @@ mod tests {
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
             tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
             tone,
         )
         .expect("decode");
@@ -2075,6 +2103,7 @@ mod tests {
         let tone = HdrToneMapSettings::default();
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
+            tone.target_hdr_capacity(),
             tone.target_hdr_capacity(),
             tone,
         )
@@ -2763,7 +2792,12 @@ mod tests {
         let bytes = std::fs::read(jxl_path).expect("read cmyk_layers/input.jxl");
         let tone = HdrToneMapSettings::default();
         let img =
-            super::decode_jxl_bytes_to_image_data(&bytes, tone.target_hdr_capacity(), tone)
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                tone.target_hdr_capacity(),
+                tone.target_hdr_capacity(),
+                tone,
+            )
                 .expect("decode cmyk_layers");
         let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
             panic!("expected ImageData::Hdr");
@@ -2852,6 +2886,7 @@ mod tests {
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
             HdrToneMapSettings::default().target_hdr_capacity(),
+            HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default(),
         )
         .expect("decode jxl");
@@ -2925,6 +2960,7 @@ mod tests {
         let bytes = std::fs::read(jxl_path).expect("read jxl");
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
+            HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default(),
         )
@@ -3046,6 +3082,7 @@ mod tests {
         let bytes = std::fs::read(jxl_path).expect("read jxl");
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
+            HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default(),
         )
@@ -3172,7 +3209,12 @@ mod tests {
         }
 
         let tone = HdrToneMapSettings::default();
-        let img = match super::decode_jxl_bytes_to_image_data(&bytes, tone.target_hdr_capacity(), tone) {
+        let img = match super::decode_jxl_bytes_to_image_data(
+            &bytes,
+            tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
+            tone,
+        ) {
             Ok(img) => img,
             Err(e) => { eprintln!("[{name}] decode failed: {e}"); return; }
         };
@@ -3304,6 +3346,7 @@ mod tests {
         let bytes = std::fs::read(jxl_path).expect("read jxl");
         let img = super::decode_jxl_bytes_to_image_data(
             &bytes,
+            HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default().target_hdr_capacity(),
             HdrToneMapSettings::default(),
         ).expect("decode");

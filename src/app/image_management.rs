@@ -1137,6 +1137,28 @@ impl ImageViewerApp {
                     // Metadata-only notification — no load_texture call here.
                     self.handle_refined_notification(idx, gen_id, ctx);
                 }
+
+                LoaderOutput::HdrSdrFallback(update) => {
+                    let is_current = update.index == self.current_index;
+                    if update.generation != self.generation {
+                        continue;
+                    }
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader
+                            .repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    self.handle_hdr_sdr_fallback_update(update, ctx);
+                    uploads_this_frame += 1;
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::ImageLoaded,
+                        is_current,
+                        false,
+                    ) {
+                        ctx.request_repaint();
+                    }
+                }
             }
 
             // Secondary quota check after each processed item.
@@ -1343,6 +1365,23 @@ impl ImageViewerApp {
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
         }
+    }
+
+    fn handle_hdr_sdr_fallback_update(
+        &mut self,
+        update: crate::loader::HdrSdrFallbackResult,
+        ctx: &egui::Context,
+    ) {
+        let idx = update.index;
+        if !self.hdr_image_cache.contains_key(&idx) {
+            return;
+        }
+        self.upload_static_sdr_texture(
+            idx,
+            &update.fallback,
+            format!("img_hdr_fallback_{idx}"),
+            ctx,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

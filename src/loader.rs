@@ -428,6 +428,18 @@ pub struct LoadResult {
     pub result: Result<ImageData, String>,
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
+    /// True when [`ImageData::Hdr`] used a cheap SDR placeholder because the display HDR target
+    /// capacity indicated native HDR output; a follow-up [`LoaderOutput::HdrSdrFallback`] may
+    /// replace the texture with a tone-mapped fallback for SDR-only draw paths (e.g. Ripple).
+    pub sdr_fallback_is_placeholder: bool,
+}
+
+/// Refined full-resolution SDR RGBA8 for a static HDR image that initially loaded with a
+/// placeholder fallback (see [`LoadResult::sdr_fallback_is_placeholder`]).
+pub struct HdrSdrFallbackResult {
+    pub index: usize,
+    pub generation: u64,
+    pub fallback: DecodedImage,
 }
 
 pub struct TileResult {
@@ -545,6 +557,8 @@ pub enum LoaderOutput {
     Image(LoadResult),
     Tile(TileResult),
     Preview(PreviewResult),
+    /// Tone-mapped SDR fallback for static HDR (after native-HDR placeholder load).
+    HdrSdrFallback(HdrSdrFallbackResult),
     /// Background refinement finished (e.g. LibRaw demosaic)
     Refined(usize, u64),
 }
@@ -1292,6 +1306,7 @@ impl ImageLoader {
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
+                sdr_fallback_is_placeholder: false,
             }
         });
 
@@ -1436,12 +1451,26 @@ impl ImageLoader {
                     });
                 }
                 (None, None) => {
+                    spawn_hdr_sdr_fallback_if_placeholder(
+                        &load_result,
+                        generation,
+                        &tx,
+                        &current_gen,
+                        hdr_tone_map,
+                    );
                     let _ = tx.send(LoaderOutput::Image(load_result));
                     return;
                 }
             }
         }
 
+        spawn_hdr_sdr_fallback_if_placeholder(
+            &load_result,
+            generation,
+            &tx,
+            &current_gen,
+            hdr_tone_map,
+        );
         let _ = tx.send(LoaderOutput::Image(load_result));
     }
 
@@ -1474,6 +1503,7 @@ impl ImageLoader {
             match output {
                 LoaderOutput::Image(r) => r.generation == keep_generation,
                 LoaderOutput::Preview(p) => p.generation == keep_generation,
+                LoaderOutput::HdrSdrFallback(h) => h.generation == keep_generation,
                 LoaderOutput::Refined(_, g) => *g == keep_generation,
                 // Tile notifications carry no generation; keep to avoid breaking in-flight uploads.
                 LoaderOutput::Tile(_) => true,
@@ -1574,6 +1604,104 @@ fn hdr_to_sdr_with_user_tone(
     crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone)
 }
 
+/// Display-referred peak headroom used by the loader: values `<= 1.0` (plus epsilon) mean SDR or
+/// SDR tone-mapped output where an eager full-frame SDR fallback is appropriate.
+#[inline]
+pub(crate) fn hdr_display_requests_sdr_preview(hdr_target_capacity: f32) -> bool {
+    const MAX_SDR: f32 = 1.0;
+    const EPS: f32 = 0.001;
+    hdr_target_capacity <= MAX_SDR + EPS
+}
+
+pub(crate) fn cheap_hdr_sdr_placeholder_rgba8(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    crate::hdr::decode::validate_hdr_fallback_budget(width, height)?;
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| format!("HDR SDR placeholder dimension overflow: {width}x{height}"))?;
+    let byte_len = pixels
+        .checked_mul(4)
+        .ok_or_else(|| format!("HDR SDR placeholder byte overflow: {width}x{height}"))?;
+    let mut out = vec![0_u8; byte_len as usize];
+    for px in out.chunks_exact_mut(4) {
+        px[3] = 255;
+    }
+    Ok(out)
+}
+
+fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
+    hdr: &crate::hdr::types::HdrImageBuffer,
+    hdr_target_capacity: f32,
+    tone: &HdrToneMapSettings,
+) -> Result<Vec<u8>, String> {
+    if hdr_display_requests_sdr_preview(hdr_target_capacity) {
+        hdr_to_sdr_with_user_tone(hdr, tone)
+    } else {
+        cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)
+    }
+}
+
+fn spawn_hdr_sdr_fallback_if_placeholder(
+    load_result: &LoadResult,
+    generation: u64,
+    tx: &Sender<LoaderOutput>,
+    current_gen: &Arc<std::sync::atomic::AtomicU64>,
+    tone: HdrToneMapSettings,
+) {
+    if !load_result.sdr_fallback_is_placeholder {
+        return;
+    }
+    let Ok(ImageData::Hdr { hdr, .. }) = &load_result.result else {
+        return;
+    };
+    let index = load_result.index;
+    let hdr = hdr.clone();
+    let tx = tx.clone();
+    let gen_ref = Arc::clone(current_gen);
+    REFINEMENT_POOL.spawn(move || {
+        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) != generation {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        let _com = crate::wic::ComGuard::new();
+
+        let started_at = std::time::Instant::now();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hdr_to_sdr_with_user_tone(&hdr, &tone)
+        }));
+        match r {
+            Ok(Ok(pixels)) => {
+                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                    log::info!(
+                        "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={generation}"
+                    );
+                    return;
+                }
+                log::info!(
+                    "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={generation} elapsed={:?}",
+                    started_at.elapsed()
+                );
+                let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+                let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
+                    index,
+                    generation,
+                    fallback,
+                }));
+            }
+            Ok(Err(e)) => {
+                log::warn!(
+                    "[Loader] HDR SDR fallback refinement failed: index={index} generation={generation}: {e}"
+                );
+            }
+            Err(payload) => {
+                log::error!(
+                    "[Loader] HDR SDR fallback refinement panicked: index={index} generation={generation}: {:?}",
+                    payload
+                );
+            }
+        }
+    });
+}
+
 fn load_image_file(
     generation: u64,
     index: usize,
@@ -1602,11 +1730,11 @@ fn load_image_file(
         };
 
         if ext == "exr" {
-            return load_hdr(path, hdr_tone_map);
+            return load_hdr(path, hdr_target_capacity, hdr_tone_map);
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
-            match load_hdr(path, hdr_tone_map) {
+            match load_hdr(path, hdr_target_capacity, hdr_tone_map) {
                 Ok(img) => return Ok(img),
                 Err(e) => {
                     log::debug!(
@@ -1632,6 +1760,7 @@ fn load_image_file(
                 path,
                 refine_tx.clone(),
                 high_quality,
+                hdr_target_capacity,
                 hdr_tone_map,
             );
         }
@@ -1652,7 +1781,7 @@ fn load_image_file(
         }
 
         if ext == "heif" || ext == "heic" || ext == "hif" {
-            return load_heif_hdr_aware(path, hdr_tone_map);
+            return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map);
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
@@ -1667,11 +1796,11 @@ fn load_image_file(
         }
 
         let result = match ext.as_str() {
-            "gif" => load_gif(path, hdr_tone_map),
-            "png" | "apng" => load_png(path, hdr_tone_map),
-            "webp" => load_webp(path, hdr_tone_map),
+            "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
+            "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
+            "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
             "jpg" | "jpeg" => load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
-            _ => load_static(path, hdr_tone_map),
+            _ => load_static(path, hdr_target_capacity, hdr_tone_map),
         };
         if result.is_err() {
             #[cfg(target_os = "windows")]
@@ -1900,21 +2029,31 @@ fn load_image_file(
     let preview_bundle =
         PreviewBundle::from_planes(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
 
+    let sdr_fallback_is_placeholder = matches!(&final_result, Ok(ImageData::Hdr { .. }))
+        && !hdr_display_requests_sdr_preview(hdr_target_capacity);
+
     LoadResult {
         index,
         generation,
         ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
         preview_bundle,
+        sdr_fallback_is_placeholder,
     }
 }
 
 fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {
-    let is_jpeg = path
+    let ext = path
         .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"));
-    (is_jpeg || is_hdr_capable_modern_format_path(path))
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    let is_jpeg = ext == "jpg" || ext == "jpeg";
+    let is_raw = crate::raw_processor::is_raw_extension(&ext);
+    (is_jpeg
+        || is_hdr_capable_modern_format_path(path)
+        || crate::hdr::decode::is_hdr_candidate_ext(&ext)
+        || is_raw)
         && matches!(
             result,
             Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. })
@@ -1981,7 +2120,11 @@ fn load_jpeg_with_target_capacity(
         }
 
         let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
-        let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+        let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            &hdr,
+            hdr_target_capacity,
+            &hdr_tone_map,
+        )?;
         let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
         return Ok(make_hdr_image_data(hdr, fallback));
     }
@@ -2001,11 +2144,15 @@ fn load_jpeg_with_target_capacity(
 
 // Centralized in metadata_utils.rs
 
-fn load_static(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_static(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     use image::ImageReader;
 
     if is_exr_path(path) {
-        return load_hdr(path, hdr_tone_map);
+        return load_hdr(path, hdr_target_capacity, hdr_tone_map);
     }
 
     let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
@@ -2096,7 +2243,11 @@ fn load_avif_with_target_capacity(
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(&mmap[..], decode_capacity) {
             Ok(hdr) => {
-                let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+                let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                )?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
                 Ok(make_hdr_image_data(hdr, fallback))
             }
@@ -2128,7 +2279,12 @@ fn load_jxl_with_target_capacity(
     #[cfg(feature = "jpegxl")]
     {
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(path, decode_capacity, hdr_tone_map)
+        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
+            path,
+            decode_capacity,
+            hdr_target_capacity,
+            hdr_tone_map,
+        )
     }
 
     #[cfg(not(feature = "jpegxl"))]
@@ -2138,10 +2294,14 @@ fn load_jxl_with_target_capacity(
     }
 }
 
-fn load_heif_hdr_aware(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_heif_hdr_aware(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     #[cfg(feature = "heif-native")]
     {
-        match crate::hdr::heif::load_heif_hdr(path, hdr_tone_map) {
+        match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map) {
             Ok(image) => Ok(image),
             Err(err) => {
                 log::warn!(
@@ -2155,7 +2315,7 @@ fn load_heif_hdr_aware(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Resu
 
     #[cfg(not(feature = "heif-native"))]
     {
-        let _ = (path, hdr_tone_map);
+        let _ = (path, hdr_target_capacity, hdr_tone_map);
         Err(
             "HEIF/HEIC decoding requires the heif-native feature (e.g. hdr-modern-formats)."
                 .to_string(),
@@ -2163,9 +2323,13 @@ fn load_heif_hdr_aware(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Resu
     }
 }
 
-fn load_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_hdr(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     if is_exr_path(path) {
-        return load_detected_exr(path, hdr_tone_map);
+        return load_detected_exr(path, hdr_target_capacity, hdr_tone_map);
     } else if let Some(image_data) = try_load_disk_backed_radiance_hdr(path, hdr_tone_map)? {
         return Ok(image_data);
     }
@@ -2177,11 +2341,15 @@ fn load_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, 
                 "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return load_deep_exr(path, hdr_tone_map);
+            return load_deep_exr(path, hdr_target_capacity, hdr_tone_map);
         }
         Err(err) => return Err(err),
     };
-    let pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+        &hdr,
+        hdr_target_capacity,
+        &hdr_tone_map,
+    )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
 
     Ok(make_hdr_image_data(hdr, fallback))
@@ -2193,7 +2361,11 @@ fn is_exr_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exr"))
 }
 
-fn try_load_disk_backed_exr_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<Option<ImageData>, String> {
+fn try_load_disk_backed_exr_hdr(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<Option<ImageData>, String> {
     let source = match crate::hdr::exr_tiled::ExrTiledImageSource::open(path) {
         Ok(source) => source,
         Err(err) if is_exr_disk_backed_probe_fallback_error(&err) => {
@@ -2221,7 +2393,7 @@ fn try_load_disk_backed_exr_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -
             return Ok(Some(ImageData::HdrTiled { hdr, fallback }));
         }
         if source.requires_disk_backed_decode() {
-            return exr_tiled_source_to_static_hdr(path, source, hdr_tone_map).map(Some);
+            return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map).map(Some);
         }
         return Ok(None);
     }
@@ -2240,6 +2412,7 @@ fn try_load_disk_backed_exr_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -
 fn exr_tiled_source_to_static_hdr(
     path: &Path,
     source: crate::hdr::exr_tiled::ExrTiledImageSource,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let tile = source.extract_tile_rgba32f_arc(0, 0, source.width(), source.height())?;
@@ -2251,7 +2424,11 @@ fn exr_tiled_source_to_static_hdr(
         metadata: tile.metadata.clone(),
         rgba_f32: Arc::clone(&tile.rgba_f32),
     };
-    let pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+        &hdr,
+        hdr_target_capacity,
+        &hdr_tone_map,
+    )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
     log::info!(
         "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
@@ -2292,10 +2469,18 @@ fn is_exr_deep_data_unsupported_error(err: &str) -> bool {
     err.contains("deep data not supported yet")
 }
 
-fn load_deep_exr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_deep_exr(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     match crate::hdr::exr_tiled::decode_deep_exr_image(path) {
         Ok(hdr) => {
-            let pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+            let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                &hdr,
+                hdr_target_capacity,
+                &hdr_tone_map,
+            )?;
             let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
             Ok(make_hdr_image_data(hdr, fallback))
         }
@@ -2342,10 +2527,11 @@ fn make_deep_exr_placeholder(path: &Path) -> Result<ImageData, String> {
 fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
     path: &PathBuf,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     if raw_frames.len() <= 1 {
-        return load_static(path, hdr_tone_map);
+        return load_static(path, hdr_target_capacity, hdr_tone_map);
     }
 
     let frames: Vec<AnimationFrame> = raw_frames
@@ -2377,7 +2563,7 @@ fn process_animation_frames(
     Ok(ImageData::Animated(frames))
 }
 
-fn load_gif(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_gif(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
     use std::io::BufReader;
@@ -2390,10 +2576,10 @@ fn load_gif(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageDat
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_tone_map)
+    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
 }
 
-fn load_png(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_png(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::png::PngDecoder;
     use std::io::BufReader;
@@ -2403,7 +2589,7 @@ fn load_png(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageDat
     let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
 
     if !decoder.is_apng().map_err(|e| e.to_string())? {
-        return load_static(path, hdr_tone_map);
+        return load_static(path, hdr_target_capacity, hdr_tone_map);
     }
 
     let raw_frames = decoder
@@ -2413,14 +2599,14 @@ fn load_png(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageDat
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_tone_map)
+    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
 // Animated WebP
 // ---------------------------------------------------------------------------
 
-fn load_webp(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+fn load_webp(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::webp::WebPDecoder;
     use std::io::BufReader;
@@ -2433,7 +2619,7 @@ fn load_webp(path: &PathBuf, hdr_tone_map: HdrToneMapSettings) -> Result<ImageDa
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_tone_map)
+    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
 }
 
 // ---------------------------------------------------------------------------
@@ -2816,6 +3002,7 @@ mod tests {
             result: Ok(ImageData::Static(sdr_preview.clone())),
             preview_bundle: bundle,
             ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
         };
 
         assert_eq!(result.preview_bundle.stage(), PreviewStage::Initial);
@@ -3117,7 +3304,7 @@ mod tests {
         std::fs::write(&path, bytes).expect("write test HDR");
         let _threshold_override = TiledThresholdOverride::set(1);
 
-        let image_data = load_hdr(&path, HdrToneMapSettings::default()).expect("load tiny HDR");
+        let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load tiny HDR");
 
         let ImageData::HdrTiled { hdr, fallback } = image_data else {
             panic!("expected Radiance HDR to route to HDR tiled image data");
@@ -3148,7 +3335,7 @@ mod tests {
         let _threshold_override = TiledThresholdOverride::set(u64::MAX);
 
         let image_data =
-            load_hdr(&path, HdrToneMapSettings::default()).expect("load tiny Radiance HDR");
+            load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load tiny Radiance HDR");
 
         let ImageData::Hdr { hdr, fallback } = image_data else {
             panic!("expected small Radiance HDR to route to static HDR image data");
@@ -3179,7 +3366,7 @@ mod tests {
             path.display()
         );
 
-        let image_data = load_hdr(&path, HdrToneMapSettings::default())
+        let image_data = load_hdr(&path, 1.0, HdrToneMapSettings::default())
             .unwrap_or_else(|err| panic!("load {}: {err}", path.display()));
         let (hdr_max_rgb, fallback_pixels) = match image_data {
             ImageData::Hdr { hdr, fallback } => (
@@ -3269,7 +3456,7 @@ mod tests {
         let failures: Vec<String> = files
             .iter()
             .filter_map(|path| {
-                load_hdr(path, HdrToneMapSettings::default()).err().map(|err| {
+                load_hdr(path, 1.0, HdrToneMapSettings::default()).err().map(|err| {
                     let relative = path.strip_prefix(&root).unwrap_or(path);
                     format!("{}: {err}", relative.display())
                 })
@@ -3345,7 +3532,7 @@ mod tests {
         }
 
         let image_data =
-            load_hdr(&path, HdrToneMapSettings::default()).expect("load deep OpenEXR sample");
+            load_hdr(&path, 1.0, HdrToneMapSettings::default()).expect("load deep OpenEXR sample");
         let ImageData::Hdr { hdr, .. } = image_data else {
             panic!("unexpected deep EXR image data");
         };
@@ -3371,7 +3558,7 @@ mod tests {
             return;
         }
 
-        let image_data = try_load_disk_backed_exr_hdr(&path, HdrToneMapSettings::default())
+        let image_data = try_load_disk_backed_exr_hdr(&path, 1.0, HdrToneMapSettings::default())
             .expect("probe should load subsampled YC EXR");
 
         assert!(matches!(image_data, Some(ImageData::HdrTiled { .. })));
@@ -3716,9 +3903,9 @@ fn load_by_image_format(
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     match format {
-        image::ImageFormat::Png => load_png(path, hdr_tone_map),
-        image::ImageFormat::Gif => load_gif(path, hdr_tone_map),
-        image::ImageFormat::WebP => load_webp(path, hdr_tone_map),
+        image::ImageFormat::Png => load_png(path, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::Gif => load_gif(path, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::WebP => load_webp(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(path),
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => {
@@ -3730,11 +3917,11 @@ fn load_by_image_format(
         | image::ImageFormat::Tga
         | image::ImageFormat::Dds
         | image::ImageFormat::Farbfeld
-        | image::ImageFormat::Qoi => load_static(path, hdr_tone_map),
+        | image::ImageFormat::Qoi => load_static(path, hdr_target_capacity, hdr_tone_map),
         // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
         image::ImageFormat::Avif => load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Hdr => load_hdr(path, hdr_tone_map),
-        image::ImageFormat::OpenExr => load_detected_exr(path, hdr_tone_map),
+        image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::OpenExr => load_detected_exr(path, hdr_target_capacity, hdr_tone_map),
         _ => Err(rust_i18n::t!(
             "error.unsupported_detected_format",
             format = format!("{:?}", format)
@@ -3743,8 +3930,14 @@ fn load_by_image_format(
     }
 }
 
-fn load_detected_exr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
-    if let Some(image_data) = try_load_disk_backed_exr_hdr(path, hdr_tone_map)? {
+fn load_detected_exr(
+    path: &Path,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    if let Some(image_data) =
+        try_load_disk_backed_exr_hdr(path, hdr_target_capacity, hdr_tone_map)?
+    {
         return Ok(image_data);
     }
 
@@ -3755,11 +3948,15 @@ fn load_detected_exr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<Im
                 "[Loader] Deep EXR data needs custom compositing for {}; using deep decoder",
                 path.display()
             );
-            return load_deep_exr(path, hdr_tone_map);
+            return load_deep_exr(path, hdr_target_capacity, hdr_tone_map);
         }
         Err(err) => return Err(err),
     };
-    let pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+        &hdr,
+        hdr_target_capacity,
+        &hdr_tone_map,
+    )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
     Ok(make_hdr_image_data(hdr, fallback))
 }
@@ -3793,7 +3990,7 @@ fn load_via_content_detection(
             return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
         }
         if crate::hdr::heif::is_heif_brand(sub) {
-            return load_heif_hdr_aware(path, hdr_tone_map);
+            return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map);
         }
     }
 
@@ -4112,6 +4309,7 @@ fn load_raw(
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
     high_quality: bool,
+    hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     // 1. Initialize LibRaw Processor and attempt to open the file header.
@@ -4283,7 +4481,11 @@ fn load_raw(
                     path
                 );
             } else {
-                let fallback_pixels = hdr_to_sdr_with_user_tone(&hdr, &hdr_tone_map)?;
+                let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    hdr_target_capacity,
+                    &hdr_tone_map,
+                )?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
                 return Ok(make_hdr_image_data(hdr, fallback));
             }

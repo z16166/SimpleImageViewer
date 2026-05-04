@@ -69,14 +69,20 @@ pub(crate) fn heif_nclx_to_metadata(
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(
     path: &std::path::Path,
+    hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<crate::loader::ImageData, String> {
     let hdr = decode_heif_hdr(path)?;
-    let fallback_pixels = crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-        &hdr,
-        tone_map.exposure_ev,
-        &tone_map,
-    )?;
+    let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
+    {
+        crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+            &hdr,
+            tone_map.exposure_ev,
+            &tone_map,
+        )?
+    } else {
+        crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+    };
     let fallback = crate::loader::DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
 
     Ok(crate::loader::ImageData::Hdr { hdr, fallback })
