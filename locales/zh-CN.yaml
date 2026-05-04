@@ -85,6 +85,9 @@ hdr.output.native_hdr: "原生 HDR"
 hdr.candidate.windows_dx12_scrgb: "Windows DX12 scRGB 候选"
 hdr.candidate.macos_metal_edr: "macOS Metal EDR 候选"
 hdr.candidate.none: "无原生 HDR 候选"
+hdr.osd.tag_with_color: "HDR · %{color} · %{render} · %{output}"
+hdr.osd.tag_without_color: "HDR · %{render} · %{output}"
+hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 
 # Scale mode
 scale.fit: "适应窗口"

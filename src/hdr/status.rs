@@ -43,11 +43,18 @@ pub fn hdr_osd_tag(
     let output = hdr_output_label(capabilities);
 
     let mut parts = match color {
-        Some(color) => format!("HDR: source | {color} | {render} | {output}"),
-        None => format!("HDR: source | {render} | {output}"),
+        Some(color) => t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string(),
+        None => t!("hdr.osd.tag_without_color", render = render, output = output).to_string(),
     };
     if let Some(capacity) = ultra_hdr_decode_capacity {
-        parts.push_str(&format!(" | JPEG_R cap {capacity:.2}x"));
+        let capacity = format!("{capacity:.2}");
+        parts.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = capacity));
     }
     if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
         parts.push_str(" | ");
@@ -97,9 +104,14 @@ mod tests {
     use crate::hdr::capabilities::HdrCapabilities;
     use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
     use crate::hdr::types::HdrColorSpace;
+    use rust_i18n::t;
 
     #[test]
     fn hdr_osd_tag_names_float_plane_and_sdr_output() {
+        rust_i18n::set_locale("en");
+        let render = t!("hdr.render_path.float_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let expected = t!("hdr.osd.tag_without_color", render = render, output = output).to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -110,14 +122,15 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some("HDR: source | plane | SDR tone-mapped")
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_names_float_tile_plane() {
+        rust_i18n::set_locale("en");
+        let render = t!("hdr.render_path.float_tile_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let expected = t!("hdr.osd.tag_without_color", render = render, output = output).to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -128,14 +141,23 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some("HDR: source | tile plane | SDR tone-mapped")
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_includes_known_input_color_space() {
+        rust_i18n::set_locale("en");
+        let color = t!("hdr.color_space.rec2020_linear").to_string();
+        let render = t!("hdr.render_path.float_tile_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let expected =
+            t!(
+                "hdr.osd.tag_with_color",
+                color = color,
+                render = render,
+                output = output
+            )
+            .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -146,14 +168,24 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some("HDR: source | Rec.2020 linear | tile plane | SDR tone-mapped")
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_includes_ultra_hdr_capacity_and_monitor() {
+        rust_i18n::set_locale("en");
+        let color = t!("hdr.color_space.rec2020_linear").to_string();
+        let render = t!("hdr.render_path.float_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let mut expected = t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string();
+        expected.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = "5.50"));
+        expected.push_str(" | DISPLAY1");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -164,16 +196,23 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some(
-                "HDR: source | Rec.2020 linear | plane | SDR tone-mapped | JPEG_R cap 5.50x | DISPLAY1"
-            )
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_includes_metadata_diagnostic_label() {
+        rust_i18n::set_locale("en");
+        let color = t!("hdr.color_space.linear_srgb").to_string();
+        let render = t!("hdr.render_path.float_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let mut expected = t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string();
+        expected.push_str(" | metadata: EXR chromaticities");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -184,16 +223,23 @@ mod tests {
             Some("metadata: EXR chromaticities"),
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some(
-                "HDR: source | linear sRGB | plane | SDR tone-mapped | metadata: EXR chromaticities"
-            )
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_warns_for_unknown_input_color_space() {
+        rust_i18n::set_locale("en");
+        let color = t!("hdr.color_space.unknown").to_string();
+        let render = t!("hdr.render_path.float_plane").to_string();
+        let output = t!("hdr.output.sdr_tone_mapped").to_string();
+        let expected =
+            t!(
+                "hdr.osd.tag_with_color",
+                color = color,
+                render = render,
+                output = output
+            )
+            .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -204,14 +250,12 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            tag.as_deref(),
-            Some("HDR: source | unknown color | plane | SDR tone-mapped")
-        );
+        assert_eq!(tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
     fn hdr_osd_tag_is_hidden_for_non_hdr_images() {
+        rust_i18n::set_locale("en");
         let tag = hdr_osd_tag(
             false,
             HdrRenderPath::SdrFallback,

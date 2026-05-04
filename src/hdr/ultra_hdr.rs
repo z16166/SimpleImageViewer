@@ -15,7 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -290,16 +292,13 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Option<Arc<HdrTileBuffer>> {
-        self.tile_cache
-            .lock()
-            .ok()
-            .and_then(|mut cache| cache.get((x, y, width, height)))
+        self.tile_cache.lock().get((x, y, width, height))
     }
 
     fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.set_protected_keys(tiles.iter().copied());
-        }
+        self.tile_cache
+            .lock()
+            .set_protected_keys(tiles.iter().copied());
     }
 
     fn extract_tile_rgba32f_arc(
@@ -311,7 +310,8 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     ) -> Result<Arc<HdrTileBuffer>, String> {
         validate_tile_bounds(self.width, self.height, x, y, width, height)?;
         let key = (x, y, width, height);
-        if let Ok(mut cache) = self.tile_cache.lock() {
+        {
+            let mut cache = self.tile_cache.lock();
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
             }
@@ -358,9 +358,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             Arc::new(rgba_f32),
         ));
 
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.insert(key, Arc::clone(&tile));
-        }
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
 
         Ok(tile)
     }
