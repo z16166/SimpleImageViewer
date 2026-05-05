@@ -48,8 +48,32 @@ if [[ "$installed" -ne 1 ]]; then
   exit 1
 fi
 
+dump_vcpkg_build_logs() {
+  echo "::group::vcpkg build log tails (under /vcpkg/buildtrees)"
+  mapfile -t _logs < <(find /vcpkg/buildtrees -type f \( \
+    -name 'install-*-out.log' -o -name 'install-*-err.log' \
+    -o -name 'config-*-out.log' -o -name 'config-*-err.log' \
+    \) 2>/dev/null | sort -u | head -n 80) || true
+  if [[ "${#_logs[@]}" -eq 0 ]]; then
+    echo "(no matching *.log files found)"
+  else
+    for f in "${_logs[@]}"; do
+      echo "----- $f (last 200 lines) -----"
+      tail -n 200 "$f" 2>/dev/null || true
+    done
+  fi
+  echo "::endgroup::"
+}
+
+set +e
 /vcpkg/vcpkg install \
   "--triplet=${VCPKG_DEFAULT_TRIPLET}" \
   --overlay-ports=/work/vcpkg-overlays
+_vcpkg_rc=$?
+set -e
+if [[ "$_vcpkg_rc" -ne 0 ]]; then
+  dump_vcpkg_build_logs
+  exit "$_vcpkg_rc"
+fi
 
 chmod -R 777 /work/vcpkg_installed

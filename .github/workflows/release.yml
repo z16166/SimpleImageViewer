@@ -151,6 +151,36 @@ jobs:
             vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays"
           fi
 
+      - name: Collect vcpkg failure logs (Linux)
+        if: failure() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p vcpkg-failure-logs
+          root="${VCPKG_ROOT:-}"
+          if [[ -z "$root" || ! -d "$root/buildtrees" ]]; then
+            echo "No VCPKG_ROOT or buildtrees (skipping artifact staging)"
+            exit 0
+          fi
+          n=0
+          while IFS= read -r -d '' f; do
+            rel="${f#"$root/buildtrees/"}"
+            safe="${rel//\//_}"
+            cp -f "$f" "vcpkg-failure-logs/${n}_${safe}" || true
+            n=$((n + 1))
+          done < <(find "$root/buildtrees" -type f \( \
+            -name 'install-*-out.log' -o -name 'install-*-err.log' \
+            -o -name 'config-*-out.log' -o -name 'config-*-err.log' \
+            \) -print0 2>/dev/null)
+          ls -la vcpkg-failure-logs || true
+
+      - name: Upload vcpkg failure logs (Linux)
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs-${{ matrix.target }}
+          path: vcpkg-failure-logs/
+          if-no-files-found: ignore
+
       - name: Cache vcpkg artifacts
         uses: actions/cache@v4
         with:
