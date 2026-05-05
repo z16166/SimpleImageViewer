@@ -32,12 +32,13 @@ printf '%s\n' \
 # dav1d / libavif stack expects NASM; vcpkg runs only inside this image, not on the GitHub host.
 PKG=(
   curl zip unzip tar pkg-config build-essential cmake ninja-build clang nasm
-  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv
+  tzdata git python3 python3-venv
 )
 
-# arm64-linux vcpkg: cross GCC 10 (focal); libyuv overlay strips cc1 i8mm/SVE2 marches — see vcpkg-overlays/libyuv.
+# arm64-linux: do NOT install gcc-aarch64-linux-gnu meta (GCC 9 @ /usr/bin/aarch64-linux-gnu-g++);
+# vcpkg resolves that instead of gcc-10. x64-linux in this image needs no aarch64 cross packages.
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
-  PKG+=( gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu )
+  PKG+=( gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu binutils-aarch64-linux-gnu )
 fi
 
 installed=0

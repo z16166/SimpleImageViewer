@@ -7,8 +7,8 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# Ubuntu focal cross gcc-10: cc1 rejects '+i8mm' in -march; GNU as still needs +i8mm for Neon usdot
-# (see linux-arm64-libyuv-as.cmake). SVE2 row_sve.cc needs GCC 11+ / sve2 march — use LIBYUV_DISABLE_SVE.
+# Focal cross: cc1 rejects '+i8mm' in -march; NEON64 usdot/sudot also needs a newer GNU as than focal ships.
+# Overlay injects LIBYUV_DISABLE_NEON / LIBYUV_DISABLE_SVE — see linux-arm64-libyuv-as.cmake.
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
     file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
     string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
@@ -22,7 +22,9 @@ endif()
 set(libyuv_extra_cmake_opts "")
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
     list(APPEND libyuv_extra_cmake_opts
-        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake")
+        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake"
+        "-DCMAKE_C_COMPILER=/usr/bin/aarch64-linux-gnu-gcc-10"
+        "-DCMAKE_CXX_COMPILER=/usr/bin/aarch64-linux-gnu-g++-10")
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
