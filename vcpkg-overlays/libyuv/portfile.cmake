@@ -7,6 +7,22 @@ vcpkg_from_git(
         cmake.diff
 )
 
+# Ubuntu focal cross gcc-9/10: cc1plus rejects '+i8mm' in -march (needs GCC 11+). Upstream uses
+# +dotprod+i8mm and SVE/SME strings we must simplify; CMAKE_PROJECT_YUV_INCLUDE adds -Wa for udot/as.
+if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+    file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
+    string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
+    string(REPLACE "+i8mm+sve2" "+sve2" _ly_cml "${_ly_cml}")
+    string(REGEX REPLACE "-march=armv9-a\\+i8mm\\+sme" "-march=armv8.5-a+sve2" _ly_cml "${_ly_cml}")
+    file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
+endif()
+
+set(libyuv_extra_cmake_opts "")
+if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+    list(APPEND libyuv_extra_cmake_opts
+        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake")
+endif()
+
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         tools BUILD_TOOLS
@@ -16,6 +32,7 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
+        ${libyuv_extra_cmake_opts}
     OPTIONS_DEBUG
         -DBUILD_TOOLS=OFF
 )

@@ -5,9 +5,17 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 export TZ=Etc/UTC
-export CC=clang
-export CXX=clang++
 export VCPKG_ROOT=/vcpkg
+
+# x64-linux: clang matches existing vcpkg/linux ports. arm64-linux: must use the cross GCC or cc1plus
+# invokes the wrong driver (aarch64-linux-gnu-g++ 9) and ignores +i8mm / SVE fixes.
+if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
+  export CC=aarch64-linux-gnu-gcc-10
+  export CXX=aarch64-linux-gnu-g++-10
+else
+  export CC=clang
+  export CXX=clang++
+fi
 
 if [[ -z "${VCPKG_CHAINLOAD_TOOLCHAIN_FILE:-}" ]]; then
   unset VCPKG_CHAINLOAD_TOOLCHAIN_FILE
