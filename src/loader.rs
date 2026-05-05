@@ -1768,7 +1768,11 @@ fn load_image_file(
             return load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
         }
         if ext == "tif" || ext == "tiff" {
-            return crate::libtiff_loader::load_via_libtiff(path);
+            return crate::libtiff_loader::load_via_libtiff(
+                path,
+                hdr_target_capacity,
+                hdr_tone_map,
+            );
         }
 
         if ext == "avif" || ext == "avifs" {
@@ -3924,7 +3928,11 @@ fn load_by_image_format(
         image::ImageFormat::Png => load_png(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::Gif => load_gif(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::WebP => load_webp(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(path),
+        image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(
+            path,
+            hdr_target_capacity,
+            hdr_tone_map,
+        ),
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => {
             load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)

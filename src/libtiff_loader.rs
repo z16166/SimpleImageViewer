@@ -14,6 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
+use crate::hdr::types::{
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+    HdrReference, HdrToneMapSettings, HdrTransferFunction,
+};
 use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use libtiff_viewer as lib;
 use memmap2::Mmap;
@@ -1218,7 +1223,404 @@ fn to_srgb_8(linear: f32) -> u8 {
     (s * 255.0) as u8
 }
 
-pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
+fn tiff_ieee_scene_linear_eligible(
+    sample_format: u16,
+    bps: u16,
+    photo: u16,
+    spp: u16,
+) -> bool {
+    if sample_format != lib::SAMPLEFORMAT_IEEEFP || !matches!(bps, 16 | 32 | 64) {
+        return false;
+    }
+    match photo {
+        PHOTO_RGB => spp == 3 || spp == 4,
+        PHOTO_MINISBLACK | PHOTO_MINISWHITE => spp == 1,
+        _ => false,
+    }
+}
+
+#[inline]
+fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
+    let v = match bps {
+        16 => {
+            let bits = unsafe {
+                std::ptr::read_unaligned(buf.as_ptr().add(sample_index * 2) as *const u16)
+            };
+            half::f16::from_bits(bits).to_f32()
+        }
+        32 => unsafe {
+            f32::from_bits(std::ptr::read_unaligned(
+                buf.as_ptr().add(sample_index * 4) as *const u32,
+            ))
+        },
+        64 => unsafe {
+            f64::from_bits(std::ptr::read_unaligned(
+                buf.as_ptr().add(sample_index * 8) as *const u64,
+            )) as f32
+        },
+        _ => 0.0_f32,
+    };
+    if v.is_finite() { v } else { 0.0 }
+}
+
+/// Scene-linear RGBA (`HdrImageMetadata` linear / scene) from IEEE float TIFF samples. libtiff returns
+/// multi-byte samples in **native** byte order — no endian swap here (matches `get_sample_value` rule).
+fn decode_ieee_scene_linear_rgba32f(
+    tif: *mut lib::TIFF,
+    width: u32,
+    height: u32,
+    bps: u16,
+    mut spp: u16,
+    photo: u16,
+    config: u16,
+) -> Result<Vec<f32>, String> {
+    if spp == 0 {
+        spp = 1;
+    }
+    if !matches!(bps, 16 | 32 | 64) {
+        return Err(format!("IEEE TIFF: unsupported BitsPerSample {bps}"));
+    }
+    let bytes_per_sample = (bps / 8) as usize;
+
+    let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
+    if scanline_size <= 0 {
+        return Err("IEEE TIFF: invalid scanline size".to_string());
+    }
+    let mut buf = vec![0u8; scanline_size as usize];
+
+    let mut out = vec![0.0_f32; width as usize * height as usize * 4];
+
+    if config == CONFIG_CONTIG {
+        for y in 0..height {
+            if unsafe {
+                lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0)
+            } <= 0
+            {
+                return Err(format!("IEEE TIFF: TIFFReadScanline failed at row {y}"));
+            }
+            let row_off = y as usize * width as usize * 4;
+            let row = &mut out[row_off..row_off + width as usize * 4];
+            match photo {
+                PHOTO_RGB => {
+                    for x in 0..width as usize {
+                        let dst = x * 4;
+                        let base = x * spp as usize;
+                        row[dst] = read_ieee_sample_f32(&buf, base, bps);
+                        row[dst + 1] = read_ieee_sample_f32(&buf, base + 1, bps);
+                        row[dst + 2] = read_ieee_sample_f32(&buf, base + 2, bps);
+                        row[dst + 3] = if spp >= 4 {
+                            read_ieee_sample_f32(&buf, base + 3, bps)
+                        } else {
+                            1.0
+                        };
+                    }
+                }
+                PHOTO_MINISBLACK => {
+                    for x in 0..width as usize {
+                        let dst = x * 4;
+                        let v = read_ieee_sample_f32(&buf, x, bps);
+                        row[dst] = v;
+                        row[dst + 1] = v;
+                        row[dst + 2] = v;
+                        row[dst + 3] = 1.0;
+                    }
+                }
+                PHOTO_MINISWHITE => {
+                    // Smaller sample values are lighter — invert using a per-scanline reference when possible.
+                    let mut row_max = f32::MIN;
+                    for x in 0..width as usize {
+                        let v = read_ieee_sample_f32(&buf, x, bps);
+                        row_max = row_max.max(v);
+                    }
+                    let pivot = if row_max.is_finite() && row_max > 0.0 {
+                        row_max
+                    } else {
+                        1.0
+                    };
+                    for x in 0..width as usize {
+                        let dst = x * 4;
+                        let v = read_ieee_sample_f32(&buf, x, bps);
+                        let g = (pivot - v).max(0.0);
+                        row[dst] = g;
+                        row[dst + 1] = g;
+                        row[dst + 2] = g;
+                        row[dst + 3] = 1.0;
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "IEEE TIFF: unsupported PhotometricInterpretation {photo}"
+                    ));
+                }
+            }
+        }
+    } else if config == CONFIG_SEPARATE {
+        // One component per TIFFReadScanline sample index (R then G then B, …).
+        let comp_count = match photo {
+            PHOTO_RGB => spp.min(4) as usize,
+            PHOTO_MINISBLACK | PHOTO_MINISWHITE => 1,
+            _ => {
+                return Err(format!(
+                    "IEEE TIFF: planar unsupported for PhotometricInterpretation {photo}"
+                ));
+            }
+        };
+        for c in 0..comp_count {
+            for y in 0..height {
+                if unsafe {
+                    lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, c as u16)
+                } <= 0
+                {
+                    return Err(format!(
+                        "IEEE TIFF: TIFFReadScanline failed plane {c} row {y}"
+                    ));
+                }
+                let row_off = y as usize * width as usize * 4;
+                let row = &mut out[row_off..row_off + width as usize * 4];
+                match photo {
+                    PHOTO_RGB => {
+                        for x in 0..width as usize {
+                            let dst = x * 4 + c;
+                            row[dst] = read_ieee_sample_f32(&buf, x, bps);
+                        }
+                    }
+                    PHOTO_MINISBLACK => {
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            row[dst + c] = v;
+                        }
+                    }
+                    PHOTO_MINISWHITE => {
+                        let mut row_max = f32::MIN;
+                        for x in 0..width as usize {
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            row_max = row_max.max(v);
+                        }
+                        let pivot = if row_max.is_finite() && row_max > 0.0 {
+                            row_max
+                        } else {
+                            1.0
+                        };
+                        for x in 0..width as usize {
+                            let dst = x * 4;
+                            let v = read_ieee_sample_f32(&buf, x, bps);
+                            let g = (pivot - v).max(0.0);
+                            row[dst + c] = g;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        if photo == PHOTO_RGB && spp < 4 {
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let i = (y * width as usize + x) * 4 + 3;
+                    out[i] = 1.0;
+                }
+            }
+        }
+        if matches!(photo, PHOTO_MINISBLACK | PHOTO_MINISWHITE) {
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let i = (y * width as usize + x) * 4;
+                    let r = out[i];
+                    out[i + 1] = r;
+                    out[i + 2] = r;
+                    out[i + 3] = 1.0;
+                }
+            }
+        }
+    } else {
+        return Err(format!(
+            "IEEE TIFF: unsupported PlanarConfiguration {config}"
+        ));
+    }
+
+    let expected_min = width as usize * spp as usize * bytes_per_sample;
+    if (photo == PHOTO_RGB || photo == PHOTO_MINISBLACK || photo == PHOTO_MINISWHITE)
+        && (scanline_size as usize) < expected_min
+    {
+        log::warn!(
+            "[libtiff_loader] IEEE HDR: TIFFScanlineSize={} smaller than width*spp*bps ({}) — file may be malformed",
+            scanline_size,
+            expected_min
+        );
+    }
+
+    Ok(out)
+}
+
+fn tiff_logl_logluv_hdr_eligible(photo: u16, planar: u16) -> bool {
+    matches!(photo, PHOTO_LOGL | PHOTO_LOGLUV) && planar == CONFIG_CONTIG
+}
+
+fn decode_logl_logluv_scene_linear_rgba32f(
+    tif: *mut lib::TIFF,
+    width: u32,
+    height: u32,
+    photo: u16,
+    compression: u16,
+    bps: u16,
+    spp: u16,
+    sample_format: u16,
+) -> Result<Vec<f32>, String> {
+    let mut out = vec![0.0_f32; width as usize * height as usize * 4];
+    let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
+    if scanline_size <= 0 {
+        return Err("LogL/LogLuv: invalid TIFFScanlineSize".to_string());
+    }
+    let mut scanline = vec![0u8; scanline_size as usize];
+
+    if photo == PHOTO_LOGLUV {
+        if spp != 1 {
+            return Err(format!("LogLuv HDR: expected SamplesPerPixel=1, got {spp}"));
+        }
+        if bps != 32 {
+            return Err(format!("LogLuv HDR: expected BitsPerSample=32, got {bps}"));
+        }
+        let row_bytes = width as usize * 4;
+        if (scanline_size as usize) < row_bytes {
+            return Err(format!(
+                "LogLuv HDR: scanline too short ({} < {})",
+                scanline_size, row_bytes
+            ));
+        }
+        for y in 0..height {
+            if unsafe {
+                lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
+            } <= 0
+            {
+                return Err(format!("LogLuv HDR: TIFFReadScanline failed at row {y}"));
+            }
+            let row_base = y as usize * width as usize * 4;
+            for x in 0..width as usize {
+                let word = u32::from_ne_bytes([
+                    scanline[x * 4],
+                    scanline[x * 4 + 1],
+                    scanline[x * 4 + 2],
+                    scanline[x * 4 + 3],
+                ]);
+                let rgba = crate::hdr::logluv_decode::logluv_word_to_linear_rgba(compression, word);
+                let o = row_base + x * 4;
+                out[o..o + 4].copy_from_slice(&rgba);
+            }
+        }
+        return Ok(out);
+    }
+
+    if photo == PHOTO_LOGL {
+        if spp != 1 {
+            return Err(format!("LogL HDR: expected SamplesPerPixel=1, got {spp}"));
+        }
+        if bps == 16 {
+            let row_bytes = width as usize * 2;
+            if (scanline_size as usize) < row_bytes {
+                return Err(format!(
+                    "LogL HDR: 16-bit scanline too short ({} < {})",
+                    scanline_size, row_bytes
+                ));
+            }
+            for y in 0..height {
+                if unsafe {
+                    lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
+                } <= 0
+                {
+                    return Err(format!("LogL HDR: TIFFReadScanline failed at row {y}"));
+                }
+                let row_base = y as usize * width as usize * 4;
+                for x in 0..width as usize {
+                    let le = i16::from_ne_bytes([scanline[x * 2], scanline[x * 2 + 1]]);
+                    let rgba = crate::hdr::logluv_decode::logl_i16_to_linear_rgba(le);
+                    let o = row_base + x * 4;
+                    out[o..o + 4].copy_from_slice(&rgba);
+                }
+            }
+            return Ok(out);
+        }
+        if bps == 32 && sample_format == lib::SAMPLEFORMAT_IEEEFP {
+            let row_bytes = width as usize * 4;
+            if (scanline_size as usize) < row_bytes {
+                return Err(format!(
+                    "LogL HDR: float scanline too short ({} < {})",
+                    scanline_size, row_bytes
+                ));
+            }
+            for y in 0..height {
+                if unsafe {
+                    lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
+                } <= 0
+                {
+                    return Err(format!("LogL HDR: TIFFReadScanline failed at row {y}"));
+                }
+                let row_base = y as usize * width as usize * 4;
+                for x in 0..width as usize {
+                    let yv = f32::from_ne_bytes([
+                        scanline[x * 4],
+                        scanline[x * 4 + 1],
+                        scanline[x * 4 + 2],
+                        scanline[x * 4 + 3],
+                    ]);
+                    let rgba = crate::hdr::logluv_decode::logl_f32_y_to_linear_rgba(yv);
+                    let o = row_base + x * 4;
+                    out[o..o + 4].copy_from_slice(&rgba);
+                }
+            }
+            return Ok(out);
+        }
+        return Err(format!(
+            "LogL HDR: unsupported bps={bps} SampleFormat={sample_format}"
+        ));
+    }
+
+    Err("not LogL/LogLuv photometric".to_string())
+}
+
+pub(crate) fn apply_orientation_buffer_f32(
+    pixels: Vec<f32>,
+    w: u32,
+    h: u32,
+    orientation: u16,
+) -> (u32, u32, Vec<f32>) {
+    if orientation <= 1 {
+        return (w, h, pixels);
+    }
+
+    let (out_w, out_h) = if orientation >= 5 && orientation <= 8 {
+        (h, w)
+    } else {
+        (w, h)
+    };
+    let mut out = vec![0.0_f32; (out_w * out_h * 4) as usize];
+
+    for y in 0..h {
+        for x in 0..w {
+            let (nx, ny) = match orientation {
+                2 => (w - 1 - x, y),
+                3 => (w - 1 - x, h - 1 - y),
+                4 => (x, h - 1 - y),
+                5 => (y, x),
+                6 => (h - 1 - y, x),
+                7 => (h - 1 - y, w - 1 - x),
+                8 => (y, w - 1 - x),
+                _ => (x, y),
+            };
+            let src_idx = (y * w + x) as usize * 4;
+            let dst_idx = (ny * out_w + nx) as usize * 4;
+            if dst_idx + 4 <= out.len() && src_idx + 4 <= pixels.len() {
+                out[dst_idx..dst_idx + 4].copy_from_slice(&pixels[src_idx..src_idx + 4]);
+            }
+        }
+    }
+    (out_w, out_h, out)
+}
+
+pub fn load_via_libtiff(
+    path: &Path,
+    hdr_target_capacity: f32,
+    tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = Arc::new(unsafe { Mmap::map(&file).map_err(|e| e.to_string())? });
 
@@ -1278,9 +1680,145 @@ pub fn load_via_libtiff(path: &Path) -> Result<ImageData, String> {
         lib::TIFFGetField(handle.ptr, lib::TIFFTAG_COMPRESSION, &mut compression);
         lib::TIFFGetField(handle.ptr, lib::TIFFTAG_ORIENTATION, &mut orientation);
 
+        let mut sample_format: u16 = lib::SAMPLEFORMAT_UINT;
+        lib::TIFFGetField(
+            handle.ptr,
+            lib::TIFFTAG_SAMPLEFORMAT,
+            &mut sample_format,
+        );
+        let mut spp: u16 = 0;
+        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
+        let mut planar_config: u16 = CONFIG_CONTIG;
+        lib::TIFFGetField(
+            handle.ptr,
+            lib::TIFFTAG_PLANARCONFIG,
+            &mut planar_config,
+        );
+
+        let pixel_count_pre = width as u64 * height as u64;
+        if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp)
+            && pixel_count_pre <= 256 * 1024 * 1024
+        {
+            let spp_use = if spp == 0 { 1 } else { spp };
+            match decode_ieee_scene_linear_rgba32f(
+                handle.ptr,
+                width,
+                height,
+                bps,
+                spp_use,
+                photo,
+                planar_config,
+            ) {
+                Ok(mut rgba_f32) => {
+                    let mut w = width;
+                    let mut h = height;
+                    if orientation > 1 {
+                        let (ow, oh, opix) =
+                            apply_orientation_buffer_f32(rgba_f32, w, h, orientation);
+                        w = ow;
+                        h = oh;
+                        rgba_f32 = opix;
+                    }
+                    let hdr = HdrImageBuffer {
+                        width: w,
+                        height: h,
+                        format: HdrPixelFormat::Rgba32Float,
+                        color_space: HdrColorSpace::LinearSrgb,
+                        metadata: HdrImageMetadata {
+                            transfer_function: HdrTransferFunction::Linear,
+                            reference: HdrReference::SceneLinear,
+                            color_profile: HdrColorProfile::LinearSrgb,
+                            ..Default::default()
+                        },
+                        rgba_f32: Arc::new(rgba_f32),
+                    };
+                    let fallback_pixels =
+                        if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
+                            hdr_to_sdr_rgba8_with_tone_settings(
+                                &hdr,
+                                tone_map.exposure_ev,
+                                &tone_map,
+                            )?
+                        } else {
+                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+                        };
+                    let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                    return Ok(ImageData::Hdr { hdr, fallback });
+                }
+                Err(err) => {
+                    log::debug!(
+                        "[libtiff_loader] IEEE float HDR path skipped ({}), using standard decode",
+                        err
+                    );
+                }
+            }
+        } else if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp) {
+            log::warn!(
+                "[libtiff_loader] IEEE float TIFF exceeds static decode cap — falling back to 8-bit / tiled path"
+            );
+        }
+
+        if tiff_logl_logluv_hdr_eligible(photo, planar_config)
+            && pixel_count_pre <= 256 * 1024 * 1024
+        {
+            match decode_logl_logluv_scene_linear_rgba32f(
+                handle.ptr,
+                width,
+                height,
+                photo,
+                compression,
+                bps,
+                spp,
+                sample_format,
+            ) {
+                Ok(mut rgba_f32) => {
+                    let mut w = width;
+                    let mut h = height;
+                    if orientation > 1 {
+                        let (ow, oh, opix) =
+                            apply_orientation_buffer_f32(rgba_f32, w, h, orientation);
+                        w = ow;
+                        h = oh;
+                        rgba_f32 = opix;
+                    }
+                    let hdr = HdrImageBuffer {
+                        width: w,
+                        height: h,
+                        format: HdrPixelFormat::Rgba32Float,
+                        color_space: HdrColorSpace::LinearSrgb,
+                        metadata: HdrImageMetadata {
+                            transfer_function: HdrTransferFunction::Linear,
+                            reference: HdrReference::SceneLinear,
+                            color_profile: HdrColorProfile::LinearSrgb,
+                            ..Default::default()
+                        },
+                        rgba_f32: Arc::new(rgba_f32),
+                    };
+                    let fallback_pixels =
+                        if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
+                            hdr_to_sdr_rgba8_with_tone_settings(
+                                &hdr,
+                                tone_map.exposure_ev,
+                                &tone_map,
+                            )?
+                        } else {
+                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+                        };
+                    let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                    return Ok(ImageData::Hdr { hdr, fallback });
+                }
+                Err(err) => {
+                    log::debug!(
+                        "[libtiff_loader] LogL/LogLuv HDR path skipped ({}), using standard decode",
+                        err
+                    );
+                }
+            }
+        }
+
         // Intercept formats that libtiff's RGBA interface fails to handle natively
         // 24/32/64-bit, 16-bit Grayscale, ThunderScan
-        // Note: We leave CMYK (photo=PHOTO_SEPARATED) and LogL/LogLuv (PHOTO_LOGL/PHOTO_LOGLUV) to libtiff natively!
+        // LogL / LogLuv: scene-linear HDR path above when contiguous.
         let mut force_static = (bps != 8 && bps != 16)
             || (bps == 16 && (photo == PHOTO_MINISWHITE || photo == PHOTO_MINISBLACK))
             || (compression == COMPRESSION_THUNDERSCAN);
@@ -1437,7 +1975,7 @@ pub(crate) fn apply_orientation_buffer(
 mod tests {
     use super::*;
     use std::ffi::CStr;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use walkdir::WalkDir;
 
     unsafe extern "C" fn tiff_error_handler(
@@ -1481,6 +2019,67 @@ mod tests {
     }
 
     #[test]
+    fn ieee_scene_linear_detection_smoke() {
+        assert!(tiff_ieee_scene_linear_eligible(
+            lib::SAMPLEFORMAT_IEEEFP,
+            32,
+            PHOTO_RGB,
+            3
+        ));
+        assert!(!tiff_ieee_scene_linear_eligible(
+            lib::SAMPLEFORMAT_UINT,
+            32,
+            PHOTO_RGB,
+            3
+        ));
+        assert!(tiff_ieee_scene_linear_eligible(
+            lib::SAMPLEFORMAT_IEEEFP,
+            16,
+            PHOTO_RGB,
+            3
+        ));
+        assert!(!tiff_ieee_scene_linear_eligible(
+            lib::SAMPLEFORMAT_UINT,
+            16,
+            PHOTO_RGB,
+            3
+        ));
+    }
+
+    /// Requires `tests/data/hdr_ieee_rgb_*bit.tif` from `scripts/generate_hdr_float_tiff_samples.py`.
+    #[test]
+    fn ieee_float_sample_assets_load_as_hdr() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for name in [
+            "hdr_ieee_rgb_16bit.tif",
+            "hdr_ieee_rgb_32bit.tif",
+            "hdr_ieee_rgb_64bit.tif",
+        ] {
+            let path = root.join("tests").join("data").join(name);
+            assert!(
+                path.is_file(),
+                "missing {} — run: python scripts/generate_hdr_float_tiff_samples.py",
+                path.display()
+            );
+            let tone = crate::hdr::types::HdrToneMapSettings::default();
+            let img = load_via_libtiff(&path, 1.0, tone)
+                .unwrap_or_else(|e| panic!("load {name}: {e}"));
+            match &img {
+                ImageData::Hdr { hdr, .. } => {
+                    assert_eq!(hdr.width, 64, "{name}");
+                    assert_eq!(hdr.height, 64, "{name}");
+                }
+                ImageData::Static(_) => panic!("{name}: expected ImageData::Hdr, got Static"),
+                ImageData::Tiled(_) => panic!("{name}: expected ImageData::Hdr, got Tiled"),
+                ImageData::Animated(_) => panic!("{name}: expected ImageData::Hdr, got Animated"),
+                ImageData::HdrTiled { .. } => {
+                    panic!("{name}: expected ImageData::Hdr, got HdrTiled");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tiff_stress_test() {
         unsafe {
             lib::TIFFSetErrorHandler(Some(tiff_error_handler));
@@ -1509,7 +2108,11 @@ mod tests {
                     .to_lowercase();
                 if ext == "tif" || ext == "tiff" {
                     total += 1;
-                    match load_via_libtiff(path) {
+                    match load_via_libtiff(
+                        path,
+                        1.0,
+                        crate::hdr::types::HdrToneMapSettings::default(),
+                    ) {
                         Ok(_) => {
                             // println!("OK: {}", path.display());
                         }

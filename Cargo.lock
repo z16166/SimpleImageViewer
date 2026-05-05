@@ -4545,6 +4545,7 @@ dependencies = [
  "flexi_logger",
  "font-kit",
  "foreign-types",
+ "half",
  "image",
  "interprocess",
  "jwalk",

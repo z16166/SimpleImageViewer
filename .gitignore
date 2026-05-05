@@ -25,7 +25,13 @@ scratch/
 .worktrees/
 
 # Local test fixtures / corpora (not versioned)
-tests/data/
+tests/data/*
+!tests/data/hdr_ieee_rgb_16bit.tif
+!tests/data/hdr_ieee_rgb_32bit.tif
+!tests/data/hdr_ieee_rgb_64bit.tif
+
+# Optional local copy of libtiff uvcode.h used only to regenerate `logluv_uv_row.rs`
+/third_party/
 
 # External Dependencies
 /3rdparty/

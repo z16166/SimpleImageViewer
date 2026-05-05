@@ -65,6 +65,7 @@ libavif-sys = { path = "libraries/libavif-sys", optional = true }
 libheif-sys = { path = "libraries/libheif-sys", optional = true }
 libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
+half = { version = "2.6", default-features = false }
 miniz_oxide = "0.8.9"
 
 [features]

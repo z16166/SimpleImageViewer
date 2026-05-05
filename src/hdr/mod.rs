@@ -30,3 +30,4 @@ pub mod surface;
 pub mod tiled;
 pub mod types;
 pub mod ultra_hdr;
+pub(crate) mod logluv_decode;
