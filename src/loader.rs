@@ -1675,7 +1675,7 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
                     );
                     return;
                 }
-                log::info!(
+                log::debug!(
                     "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={generation} elapsed={:?}",
                     started_at.elapsed()
                 );

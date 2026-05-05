@@ -4,12 +4,24 @@ on:
   push:
     tags:
       - "v*"
+  # Manually retry the full pipeline (e.g. after transient vcpkg/network failures).
+  # Leave "Release tag" empty to only build artifacts for the selected branch.
+  # Set it to e.g. v2.0.0 to build that tag and create/update the GitHub Release.
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Create GitHub Release for this tag (e.g. v2.0.0). Leave empty for build-only."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 env:
+  # When dispatching manually with release_tag set, checkout and release use that tag; otherwise use the triggering ref.
+  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   MONKEY_SDK_VERSION: "1270"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
@@ -57,6 +69,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Setup NASM
         uses: ilammy/setup-nasm@v1
@@ -118,8 +132,17 @@ jobs:
             # Change permissions so Docker doesn't create root-owned cache files that fail later steps
             mkdir -p vcpkg_installed
             chmod -R 777 vcpkg_installed
-            
-            docker run --rm -v ${{ github.workspace }}:/work -v $VCPKG_ROOT:/vcpkg -w /work ubuntu:20.04 /bin/bash -c "export DEBIAN_FRONTEND=noninteractive && export TZ=Etc/UTC && apt-get update && apt-get install -y curl zip unzip tar pkg-config build-essential cmake ninja-build clang gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv && export CC=clang && export CXX=clang++ && export VCPKG_DEFAULT_TRIPLET=$VCPKG_DEFAULT_TRIPLET && export VCPKG_CHAINLOAD_TOOLCHAIN_FILE=$DOCKER_TOOLCHAIN && export VCPKG_ROOT=/vcpkg && /vcpkg/vcpkg install --triplet=$VCPKG_DEFAULT_TRIPLET --overlay-ports=/work/vcpkg-overlays && chmod -R 777 /work/vcpkg_installed"
+
+            # APT needs focal-updates + focal-security; transient mirror failures omit those repos and yield fake "broken packages".
+            # Logic lives in scripts/ci/vcpkg_inner_focal.sh (retries + fail on partial "Failed to fetch").
+            docker run --rm \
+              -v "${{ github.workspace }}:/work" \
+              -v "$VCPKG_ROOT:/vcpkg" \
+              -w /work \
+              -e "VCPKG_DEFAULT_TRIPLET=${VCPKG_DEFAULT_TRIPLET}" \
+              -e "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${DOCKER_TOOLCHAIN}" \
+              ubuntu:20.04 \
+              bash /work/scripts/ci/vcpkg_inner_focal.sh
           else
             echo "DEBUG: Current PWD is $(pwd)"
             echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
@@ -287,6 +310,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Setup NASM
         uses: ilammy/setup-nasm@v1
@@ -427,18 +452,19 @@ jobs:
     name: Create Release
     needs: [build, build-legacy-win7]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Extract Release Notes
         shell: bash
         run: |
           # Get version without 'v' prefix
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           echo "Extracting notes for version [$VERSION]"
           
           # Extract section between the current version header and the next ## header
@@ -459,9 +485,10 @@ jobs:
       - name: Create or Update Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
-          gh release create ${{ github.ref_name }} release-artifacts/* \
-            --title "${{ github.ref_name }}" \
+          gh release create "${RELEASE_TAG}" release-artifacts/* \
+            --title "${RELEASE_TAG}" \
             --notes-file RELEASE_NOTES.md || \
-          (gh release edit ${{ github.ref_name }} --notes-file RELEASE_NOTES.md && \
-           gh release upload ${{ github.ref_name }} release-artifacts/* --clobber)
+          (gh release edit "${RELEASE_TAG}" --notes-file RELEASE_NOTES.md && \
+           gh release upload "${RELEASE_TAG}" release-artifacts/* --clobber)
