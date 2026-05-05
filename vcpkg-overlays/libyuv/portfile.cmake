@@ -7,25 +7,6 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# Ubuntu focal cross (gcc 9): +i8mm and armv8.9 sme/sve strings are rejected by cc1plus; upstream libyuv enables them
-# on AArch64 Neon/SVE targets. Strip/downgrade so CMake still emits dotprod (udot) without i8mm/sme.
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
-    string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv8.5-a+i8mm+sve2" "-march=armv8.2-a+dotprod" _ly_cml "${_ly_cml}")
-    string(REGEX REPLACE "-march=armv9-a\\+i8mm\\+sme" "-march=armv8.2-a+dotprod" _ly_cml "${_ly_cml}")
-    file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
-endif()
-
-set(libyuv_extra_cmake_opts "")
-# Cross-build to arm64 on Ubuntu focal: GCC emits dot-product Neon ops but GNU as used a
-# default -march that rejects udot/usdot/sudot. Teach the assembler the same ISA
-# (CMAKE_PROJECT_<NAME>_INCLUDE runs with project(YUV)).
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    list(APPEND libyuv_extra_cmake_opts
-        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake")
-endif()
-
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         tools BUILD_TOOLS
@@ -35,7 +16,6 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
-        ${libyuv_extra_cmake_opts}
     OPTIONS_DEBUG
         -DBUILD_TOOLS=OFF
 )
