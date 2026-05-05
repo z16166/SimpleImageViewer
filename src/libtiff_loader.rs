@@ -1263,6 +1263,71 @@ fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
+/// `TIFFTAG_SMAXSAMPLEVALUE` when stored as `double` (typical for float/extended-range TIFF).
+unsafe fn tiff_tag_smax_sample_value_f64(tif: *mut lib::TIFF) -> Option<f64> {
+    let mut p: *mut f64 = std::ptr::null_mut();
+    unsafe {
+        if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut p) != 0 && !p.is_null() {
+            let v = *p;
+            if v.is_finite() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Full-image maximum of gray IEEE samples (one sample per column). Used for `PHOTO_MINISWHITE`
+/// when `SMaxSampleValue` is absent, so inversion uses one file-consistent reference (not per-row).
+fn ieee_grayscale_float_global_max_sample(
+    tif: *mut lib::TIFF,
+    width: u32,
+    height: u32,
+    bps: u16,
+    buf: &mut [u8],
+) -> Result<f32, String> {
+    let mut gmax = f32::NEG_INFINITY;
+    for y in 0..height {
+        if unsafe {
+            lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0)
+        } <= 0
+        {
+            return Err(format!(
+                "IEEE TIFF (white-ref scan): TIFFReadScanline failed at row {y}"
+            ));
+        }
+        for x in 0..width as usize {
+            let v = read_ieee_sample_f32(buf, x, bps);
+            if v.is_finite() {
+                gmax = gmax.max(v);
+            }
+        }
+    }
+    Ok(if gmax.is_finite() && gmax > 0.0 {
+        gmax
+    } else {
+        1.0
+    })
+}
+
+fn resolve_miniswhite_float_white_reference(
+    tif: *mut lib::TIFF,
+    width: u32,
+    height: u32,
+    bps: u16,
+    buf: &mut Vec<u8>,
+) -> Result<f32, String> {
+    if let Some(mx) = unsafe { tiff_tag_smax_sample_value_f64(tif) } {
+        if mx > 0.0 {
+            return Ok(mx as f32);
+        }
+    }
+    log::debug!(
+        "[libtiff_loader] IEEE MINISWHITE float: SMaxSampleValue unset or non-positive; using image-wide maximum as white reference"
+    );
+    ieee_grayscale_float_global_max_sample(tif, width, height, bps, buf)
+}
+
 /// Scene-linear RGBA (`HdrImageMetadata` linear / scene) from IEEE float TIFF samples. libtiff returns
 /// multi-byte samples in **native** byte order — no endian swap here (matches `get_sample_value` rule).
 fn decode_ieee_scene_linear_rgba32f(
@@ -1287,6 +1352,14 @@ fn decode_ieee_scene_linear_rgba32f(
         return Err("IEEE TIFF: invalid scanline size".to_string());
     }
     let mut buf = vec![0u8; scanline_size as usize];
+
+    let miniswhite_ref: Option<f32> = if photo == PHOTO_MINISWHITE {
+        Some(resolve_miniswhite_float_white_reference(
+            tif, width, height, bps, &mut buf,
+        )?)
+    } else {
+        None
+    };
 
     let mut out = vec![0.0_f32; width as usize * height as usize * 4];
 
@@ -1326,17 +1399,8 @@ fn decode_ieee_scene_linear_rgba32f(
                     }
                 }
                 PHOTO_MINISWHITE => {
-                    // Smaller sample values are lighter — invert using a per-scanline reference when possible.
-                    let mut row_max = f32::MIN;
-                    for x in 0..width as usize {
-                        let v = read_ieee_sample_f32(&buf, x, bps);
-                        row_max = row_max.max(v);
-                    }
-                    let pivot = if row_max.is_finite() && row_max > 0.0 {
-                        row_max
-                    } else {
-                        1.0
-                    };
+                    let pivot = miniswhite_ref
+                        .expect("IEEE HDR: MINISWHITE white reference must be resolved");
                     for x in 0..width as usize {
                         let dst = x * 4;
                         let v = read_ieee_sample_f32(&buf, x, bps);
@@ -1392,16 +1456,8 @@ fn decode_ieee_scene_linear_rgba32f(
                         }
                     }
                     PHOTO_MINISWHITE => {
-                        let mut row_max = f32::MIN;
-                        for x in 0..width as usize {
-                            let v = read_ieee_sample_f32(&buf, x, bps);
-                            row_max = row_max.max(v);
-                        }
-                        let pivot = if row_max.is_finite() && row_max > 0.0 {
-                            row_max
-                        } else {
-                            1.0
-                        };
+                        let pivot = miniswhite_ref
+                            .expect("IEEE HDR: MINISWHITE white reference must be resolved");
                         for x in 0..width as usize {
                             let dst = x * 4;
                             let v = read_ieee_sample_f32(&buf, x, bps);
