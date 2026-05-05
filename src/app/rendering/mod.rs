@@ -1,5 +1,7 @@
 pub(crate) mod file_ops;
 pub(crate) mod geometry;
+pub(crate) mod plan;
+pub(crate) mod plane;
 pub(crate) mod standard;
 pub(crate) mod tiled;
 pub(crate) mod transitions;
@@ -120,7 +122,7 @@ impl ImageViewerApp {
                 }
 
                 // ── Rendering dispatch ────────────────────────────────────────
-                if self.tile_manager.is_some() {
+                if self.tiled_canvas_matches_current_index() {
                     // Large-image tiled path → tiled.rs
                     self.draw_tiled_image(ui, screen_rect, &canvas_resp);
                 } else if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
@@ -155,10 +157,12 @@ impl ImageViewerApp {
                     let mut res_h = 0u32;
                     let mut mode_tag = "STATIC";
 
-                    if let Some(tm) = &self.tile_manager {
-                        res_w = tm.full_width;
-                        res_h = tm.full_height;
-                        mode_tag = "TILED";
+                    if self.tiled_canvas_matches_current_index() {
+                        if let Some(tm) = &self.tile_manager {
+                            res_w = tm.full_width;
+                            res_h = tm.full_height;
+                            mode_tag = "TILED";
+                        }
                     } else if let Some((w, h)) = self.current_image_res {
                         res_w = w;
                         res_h = h;
@@ -182,6 +186,7 @@ impl ImageViewerApp {
                             current_pos_ms: self.audio.get_pos_ms(),
                             total_duration_ms: self.audio.get_duration_ms(),
                             cue_markers: self.audio.get_cue_markers(),
+                            hdr_status: self.current_hdr_osd_tag(),
                         };
                         let fname = self.image_files[self.current_index]
                             .file_name()
@@ -204,10 +209,11 @@ impl ImageViewerApp {
 
                     if !self.show_settings {
                         ui.painter().text(
-                            screen_rect.right_bottom() + Vec2::new(-12.0, -12.0),
+                            screen_rect.right_bottom()
+                                + Vec2::new(-crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN),
                             Align2::RIGHT_BOTTOM,
                             t!("hint.keyboard").to_string(),
-                            FontId::proportional(13.0),
+                            FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE),
                             self.cached_palette.osd_hint,
                         );
                     }

@@ -299,7 +299,7 @@ impl AudioPlayer {
     }
 
     pub fn list_devices(&self) -> Vec<String> {
-        use ::rodio::cpal::traits::{DeviceTrait, HostTrait};
+        use rodio::cpal::traits::{DeviceTrait, HostTrait};
         match ::rodio::cpal::default_host().output_devices() {
             Ok(devices) => devices
                 .filter_map(|d| {
@@ -1333,7 +1333,7 @@ impl AudioLoopState {
 
         let selected_device = slots.device_slot.lock().unwrap().clone();
         let sink_result = if let Some(ref name) = selected_device {
-            use ::rodio::cpal::traits::{DeviceTrait, HostTrait};
+            use rodio::cpal::traits::{DeviceTrait, HostTrait};
             ::rodio::cpal::default_host()
                 .output_devices()
                 .ok()

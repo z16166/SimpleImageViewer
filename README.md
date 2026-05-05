@@ -80,6 +80,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
+| `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
 | `Alt+F4` | Quit (Windows) |
 

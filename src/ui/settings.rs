@@ -20,10 +20,11 @@ use crate::ui::utils::{
     styled_button_widget,
 };
 use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
+use eframe::Frame;
 use rust_i18n::t;
 use std::time::Instant;
 
-pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
+pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
     // The settings layout uses nested UI elements to achieve responsive alignment.
     // Specifically, path_display_box and certain groupings require fixed widths or
@@ -91,13 +92,13 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         });
 
     if open_dir {
-        app.open_directory_dialog();
+        app.open_directory_dialog(frame);
     }
     if open_music_file {
-        app.open_music_file_dialog();
+        app.open_music_file_dialog(frame);
     }
     if open_music_dir {
-        app.open_music_dir_dialog();
+        app.open_music_dir_dialog(frame);
     }
     if fullscreen_changed {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(app.settings.fullscreen));
@@ -147,6 +148,79 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     }
     if old_auto_switch != app.settings.auto_switch {
         app.queue_save();
+    }
+}
+
+fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.label(
+        RichText::new(t!("section.hdr"))
+            .color(app.cached_palette.accent2)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    if ui
+        .checkbox(
+            &mut app.settings.hdr_native_surface_enabled,
+            t!("hdr.native_surface_enabled"),
+        )
+        .on_hover_text(t!("hdr.native_surface_restart_hint"))
+        .changed()
+    {
+        app.queue_save();
+    }
+
+    let old = (
+        app.settings.hdr_exposure_ev,
+        app.settings.hdr_sdr_white_nits,
+        app.settings.hdr_max_display_nits,
+    );
+
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.exposure_ev"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_exposure_ev, -8.0..=8.0)
+                .step_by(0.1)
+                .suffix(" EV"),
+        )
+        .on_hover_text(t!("hdr.exposure_hint"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.sdr_white_nits"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
+                .step_by(1.0)
+                .suffix(" nits"),
+        )
+        .on_hover_text(t!("hdr.sdr_white_hint"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("hdr.max_display_nits"));
+        ui.add(
+            egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
+                .logarithmic(true)
+                .suffix(" nits"),
+        )
+        .on_hover_text(t!("hdr.max_display_hint"));
+    });
+
+    if old
+        != (
+            app.settings.hdr_exposure_ev,
+            app.settings.hdr_sdr_white_nits,
+            app.settings.hdr_max_display_nits,
+        )
+    {
+        app.settings.hdr_max_display_nits = app
+            .settings
+            .hdr_max_display_nits
+            .max(app.settings.hdr_sdr_white_nits);
+        app.hdr_renderer.tone_map = app.settings.hdr_tone_map_settings();
+        app.loader
+            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
+        app.refresh_ultra_hdr_decode_capacity(ui.ctx());
+        app.queue_save();
+        ui.ctx().request_repaint();
     }
 }
 
@@ -424,10 +498,8 @@ fn draw_settings_left_col(
             });
         }
 
-        if app.settings.play_music {
-            ui.add_space(8.0);
-            draw_slideshow_section(app, ui);
-        }
+        ui.add_space(8.0);
+        draw_slideshow_section(app, ui);
     });
 }
 
@@ -440,11 +512,6 @@ fn draw_settings_right_col(
     music_enabled_changed: &mut bool,
 ) {
     ui.vertical(|ui| {
-        if !app.settings.play_music {
-            draw_slideshow_section(app, ui);
-            ui.add_space(8.0);
-        }
-
         // ── Music ──────────────────────────────────────────────────
         ui.label(
             RichText::new(t!("section.music"))
@@ -957,6 +1024,9 @@ fn draw_settings_right_col(
                 app.queue_save();
             }
         });
+
+        ui.add_space(8.0);
+        draw_hdr_section(app, ui);
     });
 }
 

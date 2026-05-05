@@ -21,6 +21,43 @@ use eframe::egui::{
 use rust_i18n::t;
 use std::time::Instant;
 
+/// Match `hint.keyboard` in `rendering/mod.rs` (FontId::proportional(13.0)).
+const OSD_KEYBOARD_HINT_FONT_PX: f32 = 13.0;
+
+fn text_width(ui: &egui::Ui, text: &str, font_id: FontId) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font_id, Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+fn truncate_to_width(ui: &egui::Ui, text: &str, font_id: FontId, max_width: f32) -> String {
+    let ellipsis = "…";
+    if max_width <= 0.0 {
+        return ellipsis.to_string();
+    }
+    if text_width(ui, text, font_id.clone()) <= max_width {
+        return text.to_string();
+    }
+    let n = text.chars().count();
+    let mut lo = 0usize;
+    let mut hi = n;
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let prefix: String = text.chars().take(mid).collect();
+        let candidate = format!("{prefix}{ellipsis}");
+        if text_width(ui, &candidate, font_id.clone()) <= max_width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        return ellipsis.to_string();
+    }
+    format!("{}{ellipsis}", text.chars().take(lo).collect::<String>())
+}
+
 /// Parameters that affect the OSD status text.
 #[derive(PartialEq, Clone)]
 pub struct OsdState {
@@ -35,10 +72,12 @@ pub struct OsdState {
     pub current_pos_ms: u64,
     pub total_duration_ms: u64,
     pub cue_markers: Vec<u64>,
+    pub hdr_status: Option<String>,
 }
 
 pub struct OsdRenderer {
     cached_hud: Option<String>,
+    cached_hdr_line: Option<String>,
     last_state: Option<OsdState>,
 }
 
@@ -46,6 +85,7 @@ impl OsdRenderer {
     pub fn new() -> Self {
         Self {
             cached_hud: None,
+            cached_hdr_line: None,
             last_state: None,
         }
     }
@@ -64,7 +104,7 @@ impl OsdRenderer {
         save_error: &Option<(String, Instant)>,
     ) {
         if self.last_state.as_ref() != Some(state) {
-            let hud = format!(
+            let main = format!(
                 "{} / {}    {}    {}%    {}×{}    [{}]",
                 state.index + 1,
                 state.total,
@@ -74,30 +114,60 @@ impl OsdRenderer {
                 state.res.1,
                 state.mode,
             );
-
-            self.cached_hud = Some(hud);
+            let hdr = state.hdr_status.clone();
+            self.cached_hud = Some(main);
+            self.cached_hdr_line = hdr;
             self.last_state = Some(state.clone());
         }
 
-        if let Some(hud) = &self.cached_hud {
-            let hud_pos = screen_rect.left_bottom()
+        let font = FontId::proportional(crate::constants::OSD_TEXT_SIZE);
+        let hint_font = FontId::proportional(OSD_KEYBOARD_HINT_FONT_PX);
+        let hint_w = text_width(ui, &t!("hint.keyboard").to_string(), hint_font);
+        let max_w = (screen_rect.width()
+            - crate::constants::OSD_MARGIN * 2.0
+            - hint_w
+            - crate::constants::OSD_HINT_GAP)
+            .max(64.0);
+
+        if let Some(main) = &self.cached_hud {
+            let main_trunc = truncate_to_width(ui, main, font.clone(), max_w);
+            let base_pos = screen_rect.left_bottom()
                 + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
             ui.painter().text(
-                hud_pos,
+                base_pos,
                 Align2::LEFT_BOTTOM,
-                hud,
-                FontId::proportional(crate::constants::OSD_TEXT_SIZE),
+                main_trunc,
+                font.clone(),
                 palette.osd_text,
             );
+
+            if let Some(hdr) = &self.cached_hdr_line {
+                let hdr_line = format!("[{hdr}]");
+                let hdr_trunc = truncate_to_width(ui, &hdr_line, font.clone(), max_w);
+                let hdr_pos = base_pos
+                    + Vec2::new(
+                        0.0,
+                        -(crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP),
+                    );
+                ui.painter().text(
+                    hdr_pos,
+                    Align2::LEFT_BOTTOM,
+                    hdr_trunc,
+                    font,
+                    palette.osd_text,
+                );
+            }
         }
 
         // Display persistence error if active
         if let Some((err, _)) = save_error {
+            let err_offset_y = if self.cached_hdr_line.is_some() {
+                crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE
+            } else {
+                crate::constants::OSD_ERROR_OFFSET
+            };
             let err_pos = screen_rect.left_bottom()
-                + Vec2::new(
-                    crate::constants::OSD_MARGIN,
-                    -crate::constants::OSD_ERROR_OFFSET,
-                );
+                + Vec2::new(crate::constants::OSD_MARGIN, -err_offset_y);
             ui.painter().text(
                 err_pos,
                 Align2::LEFT_BOTTOM,

@@ -15,13 +15,15 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
+pub(crate) mod hdr_status;
 pub(crate) mod image_management;
 pub(crate) mod input;
 pub(crate) mod lifecycle;
 pub(crate) mod media;
+pub(crate) mod rfd_parent;
 pub(crate) mod rendering;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -48,6 +50,76 @@ pub(crate) const MAX_PRELOAD_FORWARD: usize = 5;
 pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
+
+pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
+    settings: crate::hdr::types::HdrToneMapSettings,
+    output_mode: crate::hdr::types::HdrOutputMode,
+    monitor: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+) -> f32 {
+    if output_mode == crate::hdr::types::HdrOutputMode::SdrToneMapped {
+        1.0
+    } else if let Some(max_hdr_capacity) = monitor
+        .and_then(|selection| selection.max_hdr_capacity)
+        .filter(|value| *value > 0.0)
+    {
+        max_hdr_capacity
+    } else if let Some(max_luminance_nits) = monitor
+        .and_then(|selection| selection.max_luminance_nits)
+        .filter(|value| *value > 0.0)
+    {
+        max_luminance_nits / settings.sdr_white_nits.max(1.0)
+    } else {
+        settings.target_hdr_capacity()
+    }
+}
+
+pub(crate) fn collect_ultra_hdr_capacity_sensitive_indices(
+    static_hdr: &HashSet<usize>,
+    hdr_tiled: &HashSet<usize>,
+    hdr_fallback: &HashSet<usize>,
+) -> Vec<usize> {
+    let mut indices = std::collections::BTreeSet::new();
+    indices.extend(static_hdr.iter().copied());
+    indices.extend(hdr_tiled.iter().copied());
+    indices.extend(hdr_fallback.iter().copied());
+    indices.into_iter().collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UltraHdrCapacityRefresh {
+    pub(crate) indices_to_invalidate: Vec<usize>,
+    pub(crate) reload_current: bool,
+}
+
+pub(crate) fn plan_ultra_hdr_capacity_refresh(
+    current_index: usize,
+    static_hdr: &HashSet<usize>,
+    hdr_tiled: &HashSet<usize>,
+    hdr_fallback: &HashSet<usize>,
+    ultra_hdr: &HashSet<usize>,
+) -> UltraHdrCapacityRefresh {
+    let hdr_indices =
+        collect_ultra_hdr_capacity_sensitive_indices(static_hdr, hdr_tiled, hdr_fallback);
+    let indices_to_invalidate = hdr_indices
+        .into_iter()
+        .filter(|index| ultra_hdr.contains(index))
+        .collect::<Vec<_>>();
+    let reload_current = indices_to_invalidate.binary_search(&current_index).is_ok();
+    UltraHdrCapacityRefresh {
+        indices_to_invalidate,
+        reload_current,
+    }
+}
+
+pub(crate) fn capacity_refresh_should_cancel_loads(refresh: &UltraHdrCapacityRefresh) -> bool {
+    !refresh.indices_to_invalidate.is_empty()
+}
+
+pub(crate) fn capacity_refresh_should_reschedule_preloads(
+    refresh: &UltraHdrCapacityRefresh,
+) -> bool {
+    !refresh.indices_to_invalidate.is_empty()
+}
 
 /// Compute preload byte budgets based on total system RAM.
 /// Forward budget = total_ram / 32, backward = total_ram / 64, both clamped.
@@ -125,6 +197,14 @@ impl HardwareTier {
         }
     }
 
+    pub fn hdr_tile_cache_mb(&self) -> usize {
+        match self {
+            Self::Low => 256,
+            Self::Medium => 512,
+            Self::High => 1024,
+        }
+    }
+
     pub fn tiled_threshold_pixels(&self) -> u64 {
         64_000_000 // Reverted to 64MP for all tiers as requested
     }
@@ -138,11 +218,90 @@ impl HardwareTier {
     }
 }
 
+pub(crate) fn memory_aware_tile_cache_budgets_mb(
+    tier: HardwareTier,
+    available_memory_mb: u64,
+) -> (usize, usize) {
+    const MIN_CPU_CACHE_MB: usize = 256;
+    const MIN_HDR_CACHE_MB: usize = 256;
+
+    let desired_cpu = tier.cpu_cache_mb();
+    let desired_hdr = tier.hdr_tile_cache_mb();
+    let max_combined = (available_memory_mb / 4) as usize;
+    if max_combined >= desired_cpu + desired_hdr {
+        return (desired_cpu, desired_hdr);
+    }
+
+    let available_after_mins = max_combined.saturating_sub(MIN_CPU_CACHE_MB + MIN_HDR_CACHE_MB);
+    let desired_extra_cpu = desired_cpu.saturating_sub(MIN_CPU_CACHE_MB);
+    let desired_extra_hdr = desired_hdr.saturating_sub(MIN_HDR_CACHE_MB);
+    let desired_extra_total = desired_extra_cpu + desired_extra_hdr;
+    if desired_extra_total == 0 {
+        return (MIN_CPU_CACHE_MB, MIN_HDR_CACHE_MB);
+    }
+
+    let cpu_extra = available_after_mins * desired_extra_cpu / desired_extra_total;
+    let hdr_extra = available_after_mins.saturating_sub(cpu_extra);
+    (
+        (MIN_CPU_CACHE_MB + cpu_extra).min(desired_cpu),
+        (MIN_HDR_CACHE_MB + hdr_extra).min(desired_hdr),
+    )
+}
+
 pub enum FileOpResult {
     Delete(PathBuf, usize, Result<(), String>),
     Exif(PathBuf, Option<Vec<(String, String)>>),
     Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
     Wallpaper(Option<String>),
+}
+
+/// Window placement we mirror from `egui::ViewportInfo` each frame and persist
+/// to `siv_settings.yaml` on `on_exit`. The whole struct is filled in only
+/// when `outer_rect` is known (otherwise we don't have a stable position to
+/// remember).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CachedWindowPlacement {
+    pub outer_position: [i32; 2],
+    pub inner_size: [u32; 2],
+    pub maximized: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct CurrentHdrImage {
+    index: usize,
+    image: Arc<crate::hdr::types::HdrImageBuffer>,
+}
+
+impl CurrentHdrImage {
+    pub(crate) fn new(index: usize, image: Arc<crate::hdr::types::HdrImageBuffer>) -> Self {
+        Self { index, image }
+    }
+
+    pub(crate) fn image_for_index(
+        &self,
+        index: usize,
+    ) -> Option<&Arc<crate::hdr::types::HdrImageBuffer>> {
+        (self.index == index).then_some(&self.image)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CurrentHdrTiledImage {
+    index: usize,
+    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+}
+
+impl CurrentHdrTiledImage {
+    pub(crate) fn new(index: usize, source: Arc<dyn crate::hdr::tiled::HdrTiledSource>) -> Self {
+        Self { index, source }
+    }
+
+    pub(crate) fn source_for_index(
+        &self,
+        index: usize,
+    ) -> Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>> {
+        (self.index == index).then_some(&self.source)
+    }
 }
 
 pub struct ImageViewerApp {
@@ -159,6 +318,42 @@ pub struct ImageViewerApp {
     // Image loading
     pub(crate) loader: ImageLoader,
     pub(crate) texture_cache: TextureCache,
+    pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
+    pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
+    pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
+    pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
+    /// Last observed viewport placement (`outer_rect`, `inner_size`,
+    /// `maximized`). Refreshed each frame from `egui::ViewportInfo` and
+    /// flushed into [`Settings::window_outer_position`],
+    /// [`Settings::window_inner_size`] and [`Settings::window_maximized`] on
+    /// `on_exit` so the next session can place the window onto the same
+    /// monitor (and re-pick `Rgba16Float` vs `Bgra8Unorm` accordingly).
+    pub(crate) cached_window_placement: Option<CachedWindowPlacement>,
+    /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
+    /// swap-chain target format whenever the active monitor's HDR capability
+    /// changes. The same mailbox is registered with `WgpuConfiguration`, so
+    /// writes here are picked up on the very next paint call.
+    pub(crate) requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
+    /// Reverse-direction mailbox: the painter publishes the **live** active
+    /// swap-chain target format here after every successful runtime hot-swap.
+    /// The application reads from this mailbox in `logic()` instead of trusting
+    /// `frame.wgpu_render_state().target_format`, because `egui_wgpu::RenderState`
+    /// derives `Clone` and eframe stores a clone in `Frame` — the painter's
+    /// post-swap mutation of `RenderState.target_format` is therefore never
+    /// observable through `wgpu_render_state()`. Without this side channel the
+    /// OSD freezes on the very first runtime swap (e.g. moving the window from
+    /// HDR to SDR shows the new mode once, but moving back to HDR never
+    /// updates).
+    pub(crate) active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+    pub(crate) ultra_hdr_decode_capacity: f32,
+    pub(crate) current_hdr_image: Option<CurrentHdrImage>,
+    pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
+    pub(crate) hdr_tiled_source_cache: HashMap<usize, Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+    pub(crate) current_hdr_tiled_preview: Option<CurrentHdrImage>,
+    pub(crate) hdr_tiled_preview_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
+    pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
 
@@ -305,6 +500,15 @@ impl eframe::App for ImageViewerApp {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
             self.settings.last_viewed_image = Some(self.image_files[self.current_index].clone());
         }
+        // Persist the last-known window placement. The HDR backend selection
+        // (Rgba16Float vs Bgra8Unorm) is locked at swap-chain creation, so
+        // remembering which monitor we closed on is what lets the user keep
+        // testing HDR by simply reopening the app.
+        if let Some(placement) = self.cached_window_placement {
+            self.settings.window_outer_position = Some(placement.outer_position);
+            self.settings.window_inner_size = Some(placement.inner_size);
+            self.settings.window_maximized = placement.maximized;
+        }
         // Shut down the async saver thread first: dropping the sender closes the
         // channel, causing the saver's `recv()` loop to exit after finishing any
         // in-progress write. This eliminates the race between the saver and our
@@ -336,7 +540,54 @@ impl eframe::App for ImageViewerApp {
 
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
-    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+        // Cache window placement (outer position, inner size, maximized) so
+        // `on_exit` can persist it without needing a `ctx`. egui exposes the
+        // OS-level outer rect via `ViewportInfo::outer_rect`; on multi-monitor
+        // systems this is what determines which monitor the next session
+        // spawns onto, and therefore whether `Rgba16Float` or `Bgra8Unorm` is
+        // selected for the swap chain.
+        if let Some(placement) = ctx.input(|i| {
+            let viewport = i.viewport();
+            let outer_rect = viewport.outer_rect?;
+            let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+            Some(CachedWindowPlacement {
+                outer_position: [
+                    outer_rect.min.x.round() as i32,
+                    outer_rect.min.y.round() as i32,
+                ],
+                inner_size: [
+                    inner_size.x.round().max(1.0) as u32,
+                    inner_size.y.round().max(1.0) as u32,
+                ],
+                maximized: viewport.maximized.unwrap_or(false),
+            })
+        }) {
+            // Diagnostic: log the FIRST time we observe a placement, then
+            // only on subsequent changes at debug level. If the first-time
+            // log never appears, `viewport.outer_rect` is `None` on this
+            // build and we have no position to persist — that would explain
+            // why the saved-position recall does nothing on a fresh install.
+            let was_unset = self.cached_window_placement.is_none();
+            let changed = self.cached_window_placement != Some(placement);
+            self.cached_window_placement = Some(placement);
+            if was_unset {
+                log::info!(
+                    "[Window] first placement observed: outer_position={:?} inner_size={:?} maximized={}",
+                    placement.outer_position,
+                    placement.inner_size,
+                    placement.maximized,
+                );
+            } else if changed {
+                log::debug!(
+                    "[Window] placement updated: outer_position={:?} inner_size={:?} maximized={}",
+                    placement.outer_position,
+                    placement.inner_size,
+                    placement.maximized,
+                );
+            }
+        }
+
         // Global mouse activity detection to wake up Music HUD
         if ctx.input(|i| i.pointer.delta().length_sq() > 0.0) {
             self.music_hud_last_activity = Instant::now();
@@ -499,6 +750,81 @@ impl eframe::App for ImageViewerApp {
             ctx.request_repaint();
         }
 
+        // Pull the live swap-chain target format every frame so all downstream
+        // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,
+        // etc.) base their decisions on the actually-active format.
+        //
+        // Crucially: we must NOT read from `frame.wgpu_render_state()` after
+        // the first runtime hot-swap. `egui_wgpu::RenderState` derives `Clone`
+        // and eframe stores a CLONE in `Frame`; the painter's post-swap
+        // mutation of `render_state.target_format` only updates the painter's
+        // copy, so `wgpu_render_state().target_format` permanently returns the
+        // startup format. The painter therefore publishes the live format on
+        // a dedicated reverse-direction mailbox (`active_target_format`),
+        // which we read first; we only fall back to `wgpu_render_state()` for
+        // the *initial* format before any runtime swap has happened.
+        let live_target_format = self
+            .active_target_format
+            .get()
+            .or_else(|| frame.wgpu_render_state().map(|s| s.target_format));
+        if let Some(format) = live_target_format {
+            self.hdr_target_format = Some(format);
+        }
+
+        let hdr_content_visible = self.current_hdr_render_path().is_some();
+        self.hdr_monitor_state
+            .refresh_from_viewport(ctx, now, hdr_content_visible);
+        let output_mode = crate::hdr::monitor::effective_capability_output_mode(
+            self.hdr_target_format,
+            self.hdr_monitor_state.selection(),
+        );
+        self.hdr_capabilities.output_mode = output_mode;
+
+        // If the active monitor's HDR capability disagrees with the current
+        // swap-chain target format, ask the Painter to hot-swap. This is what
+        // makes `Rgba16Float` ↔ `Bgra8Unorm` follow the user as they drag the
+        // window between an HDR monitor and an SDR monitor at runtime.
+        //
+        // `desired_target_format_for_active_monitor` returns `None` when the
+        // per-frame monitor probe has not produced positive evidence yet
+        // (transient DXGI hand-off, brief `EnumWindows` hiccups, the very
+        // first frames before the first probe has completed). We MUST treat
+        // that as "no opinion / keep current format" rather than blindly
+        // demoting to `Bgra8Unorm` — otherwise we would request a swap-chain
+        // demotion every frame the probe was pending, defeating the
+        // spawn-time HDR detection that already chose the correct initial
+        // format.
+        if let Some(desired_format) =
+            crate::hdr::surface::desired_target_format_for_active_monitor(
+                self.settings.hdr_native_surface_enabled,
+                self.hdr_monitor_state.selection(),
+            )
+            && Some(desired_format) != self.hdr_target_format
+        {
+            // Log every time we *issue* a new request (not every frame); the
+            // Painter logs separately when it accepts or rejects it. This is
+            // the diagnostic chain we use to debug the cross-monitor
+            // hot-swap end-to-end.
+            log::info!(
+                "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
+                 monitor={:?} hdr_supported={:?} native_surface_enabled={}",
+                self.hdr_target_format,
+                desired_format,
+                self.hdr_monitor_state
+                    .selection()
+                    .map(|s| s.label.as_str()),
+                self.hdr_monitor_state
+                    .selection()
+                    .map(|s| s.hdr_supported),
+                self.settings.hdr_native_surface_enabled,
+            );
+            self.requested_target_format.request(desired_format);
+            ctx.request_repaint();
+        }
+        self.hdr_capabilities.available =
+            output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
+        self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
+        self.refresh_ultra_hdr_decode_capacity(ctx);
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
 
         // Automatic theme refresh (for System theme trailing detection)
@@ -588,7 +914,7 @@ impl eframe::App for ImageViewerApp {
 
     /// Draw the UI. In eframe 0.34 this is the required method; `ui` is called
     /// with the root `Ui` for the window's central area.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         // Draw image canvas (fills the central area)
@@ -632,7 +958,7 @@ impl eframe::App for ImageViewerApp {
         // receiving input) while a dialog is on screen.
         let modal_open = self.active_modal.is_some();
         if self.show_settings && !modal_open {
-            self.draw_settings_panel(&ctx);
+            self.draw_settings_panel(&ctx, frame);
         } else if !self.show_settings {
             self.last_show_settings = false;
         }
@@ -671,7 +997,17 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
     let mut result = Vec::new();
     for f in exif.fields() {
         let tag = format!("{}", f.tag);
-        let val = format!("{}", f.display_value().with_unit(&exif));
+        // Numeric value first: kamadak-exif's prose for 1 vs 5 both mention row/column edges and is easy to misread.
+        let val = if f.tag == exif::Tag::Orientation {
+            match f.value.get_uint(0) {
+                Some(n) if (1..=8).contains(&n) => {
+                    format!("{} — {}", n, f.display_value().with_unit(&exif))
+                }
+                _ => format!("{}", f.display_value().with_unit(&exif)),
+            }
+        } else {
+            format!("{}", f.display_value().with_unit(&exif))
+        };
         result.push((tag, val));
     }
 
@@ -792,5 +1128,202 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
         None
     } else {
         Some((final_data, xml_str))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+
+    #[test]
+    fn current_hdr_image_only_matches_its_source_index() {
+        let image = Arc::new(HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        });
+        let current = CurrentHdrImage::new(7, Arc::clone(&image));
+
+        assert!(current.image_for_index(6).is_none());
+        assert!(Arc::ptr_eq(current.image_for_index(7).unwrap(), &image));
+    }
+
+    #[test]
+    fn current_hdr_tiled_image_only_matches_its_source_index() {
+        let image = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+        };
+        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(image).expect("valid HDR tiled source"),
+        );
+        let current = CurrentHdrTiledImage::new(7, Arc::clone(&source));
+
+        assert!(current.source_for_index(6).is_none());
+        assert!(Arc::ptr_eq(current.source_for_index(7).unwrap(), &source));
+    }
+
+    #[test]
+    fn hardware_tier_scales_hdr_tile_cache_budget() {
+        assert_eq!(HardwareTier::Low.hdr_tile_cache_mb(), 256);
+        assert_eq!(HardwareTier::Medium.hdr_tile_cache_mb(), 512);
+        assert_eq!(HardwareTier::High.hdr_tile_cache_mb(), 1024);
+    }
+
+    #[test]
+    fn memory_aware_tile_cache_budgets_keep_tier_defaults_when_memory_is_available() {
+        assert_eq!(
+            memory_aware_tile_cache_budgets_mb(HardwareTier::High, 16 * 1024),
+            (2048, 1024)
+        );
+    }
+
+    #[test]
+    fn memory_aware_tile_cache_budgets_shrink_when_available_memory_is_low() {
+        let (cpu_mb, hdr_mb) = memory_aware_tile_cache_budgets_mb(HardwareTier::High, 2048);
+
+        assert!(cpu_mb < HardwareTier::High.cpu_cache_mb());
+        assert!(hdr_mb < HardwareTier::High.hdr_tile_cache_mb());
+        assert!(cpu_mb + hdr_mb <= 512);
+        assert!(cpu_mb >= 256);
+        assert!(hdr_mb >= 256);
+    }
+
+    #[test]
+    fn sdr_output_mode_uses_sdr_ultra_hdr_decode_capacity() {
+        let settings = crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::SdrToneMapped,
+                None
+            ),
+            1.0
+        );
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::WindowsScRgb,
+                None
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn native_output_uses_monitor_peak_luminance_for_ultra_hdr_capacity() {
+        let settings = crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+        let monitor = crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: "HDR".to_string(),
+            max_luminance_nits: Some(1200.0),
+            max_full_frame_luminance_nits: Some(600.0),
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+        };
+
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::WindowsScRgb,
+                Some(&monitor)
+            ),
+            6.0
+        );
+    }
+
+    #[test]
+    fn native_output_uses_monitor_hdr_capacity_multiplier_before_peak_nits() {
+        let settings = crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: 0.0,
+            sdr_white_nits: 200.0,
+            max_display_nits: 1000.0,
+        };
+        let monitor = crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: "macOS EDR".to_string(),
+            max_luminance_nits: Some(1200.0),
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: Some(2.5),
+            hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        };
+
+        assert_eq!(
+            ultra_hdr_decode_capacity_for_output_mode(
+                settings,
+                crate::hdr::types::HdrOutputMode::MacOsEdr,
+                Some(&monitor)
+            ),
+            2.5
+        );
+    }
+
+    #[test]
+    fn capacity_refresh_targets_all_hdr_cache_indices() {
+        let static_hdr = HashSet::from([1_usize, 4]);
+        let hdr_tiled = HashSet::from([2_usize, 4]);
+        let hdr_fallback = HashSet::from([3_usize, 4]);
+
+        assert_eq!(
+            collect_ultra_hdr_capacity_sensitive_indices(&static_hdr, &hdr_tiled, &hdr_fallback),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn capacity_refresh_reloads_current_when_current_is_hdr() {
+        let static_hdr = HashSet::from([7_usize]);
+        let hdr_tiled = HashSet::new();
+        let hdr_fallback = HashSet::new();
+        let ultra_hdr = HashSet::from([7_usize]);
+
+        let refresh =
+            plan_ultra_hdr_capacity_refresh(7, &static_hdr, &hdr_tiled, &hdr_fallback, &ultra_hdr);
+
+        assert_eq!(refresh.indices_to_invalidate, vec![7]);
+        assert!(refresh.reload_current);
+        assert!(capacity_refresh_should_cancel_loads(&refresh));
+    }
+
+    #[test]
+    fn capacity_refresh_ignores_non_ultra_hdr_caches() {
+        let static_hdr = HashSet::from([7_usize]);
+        let hdr_tiled = HashSet::from([8_usize]);
+        let hdr_fallback = HashSet::from([9_usize]);
+        let ultra_hdr = HashSet::new();
+
+        let refresh =
+            plan_ultra_hdr_capacity_refresh(7, &static_hdr, &hdr_tiled, &hdr_fallback, &ultra_hdr);
+
+        assert!(refresh.indices_to_invalidate.is_empty());
+        assert!(!refresh.reload_current);
+        assert!(!capacity_refresh_should_cancel_loads(&refresh));
+    }
+
+    #[test]
+    fn empty_capacity_refresh_does_not_reschedule_preloads() {
+        let refresh = UltraHdrCapacityRefresh {
+            indices_to_invalidate: Vec::new(),
+            reload_current: false,
+        };
+
+        assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
     }
 }

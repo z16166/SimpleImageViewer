@@ -1,0 +1,997 @@
+#![expect(clippy::missing_errors_doc)]
+#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::unwrap_used)] // TODO(emilk): avoid unwraps
+#![expect(unsafe_code)]
+
+use crate::{RenderState, SurfaceErrorAction, WgpuConfiguration, renderer};
+use crate::{
+    RendererOptions,
+    capture::{CaptureReceiver, CaptureSender, CaptureState, capture_channel},
+};
+use egui::{Context, Event, UserData, ViewportId, ViewportIdMap, ViewportIdSet};
+use std::{num::NonZeroU32, sync::Arc};
+
+struct SurfaceState {
+    surface: wgpu::Surface<'static>,
+    alpha_mode: wgpu::CompositeAlphaMode,
+    width: u32,
+    height: u32,
+    resizing: bool,
+    needs_reconfigure: bool,
+}
+
+/// Everything you need to paint egui with [`wgpu`] on [`winit`].
+///
+/// Alternatively you can use [`crate::Renderer`] directly.
+///
+/// NOTE: all egui viewports share the same painter.
+pub struct Painter {
+    context: Context,
+    configuration: WgpuConfiguration,
+    options: RendererOptions,
+    support_transparent_backbuffer: bool,
+    screen_capture_state: Option<CaptureState>,
+
+    instance: wgpu::Instance,
+    render_state: Option<RenderState>,
+
+    // Per viewport/window:
+    depth_texture_view: ViewportIdMap<wgpu::TextureView>,
+    msaa_texture_view: ViewportIdMap<wgpu::TextureView>,
+    surfaces: ViewportIdMap<SurfaceState>,
+    capture_tx: CaptureSender,
+    capture_rx: CaptureReceiver,
+}
+
+impl Painter {
+    /// Manages [`wgpu`] state, including surface state, required to render egui.
+    ///
+    /// Only the [`wgpu::Instance`] is initialized here. Device selection and the initialization
+    /// of render + surface state is deferred until the painter is given its first window target
+    /// via [`set_window()`](Self::set_window). (Ensuring that a device that's compatible with the
+    /// native window is chosen)
+    ///
+    /// Before calling [`paint_and_update_textures()`](Self::paint_and_update_textures) a
+    /// [`wgpu::Surface`] must be initialized (and corresponding render state) by calling
+    /// [`set_window()`](Self::set_window) once you have
+    /// a [`winit::window::Window`] with a valid `.raw_window_handle()`
+    /// associated.
+    pub async fn new(
+        context: Context,
+        configuration: WgpuConfiguration,
+        support_transparent_backbuffer: bool,
+        options: RendererOptions,
+    ) -> Self {
+        let (capture_tx, capture_rx) = capture_channel();
+        let instance = configuration.wgpu_setup.new_instance().await;
+
+        Self {
+            context,
+            configuration,
+            options,
+            support_transparent_backbuffer,
+            screen_capture_state: None,
+
+            instance,
+            render_state: None,
+
+            depth_texture_view: Default::default(),
+            surfaces: Default::default(),
+            msaa_texture_view: Default::default(),
+
+            capture_tx,
+            capture_rx,
+        }
+    }
+
+    /// Get the [`RenderState`].
+    ///
+    /// Will return [`None`] if the render state has not been initialized yet.
+    pub fn render_state(&self) -> Option<RenderState> {
+        self.render_state.clone()
+    }
+
+    fn configure_surface(
+        surface_state: &SurfaceState,
+        render_state: &RenderState,
+        config: &WgpuConfiguration,
+    ) {
+        profiling::function_scope!();
+
+        let width = surface_state.width;
+        let height = surface_state.height;
+
+        let mut surf_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: render_state.target_format,
+            present_mode: config.present_mode,
+            alpha_mode: surface_state.alpha_mode,
+            view_formats: vec![render_state.target_format],
+            ..surface_state
+                .surface
+                .get_default_config(&render_state.adapter, width, height)
+                .expect("The surface isn't supported by this adapter")
+        };
+
+        if let Some(desired_maximum_frame_latency) = config.desired_maximum_frame_latency {
+            surf_config.desired_maximum_frame_latency = desired_maximum_frame_latency;
+        }
+
+        surface_state
+            .surface
+            .configure(&render_state.device, &surf_config);
+
+        // Windows: keep the DXGI swap-chain color space in sync with the
+        // configured format. wgpu-hal uses `IDXGISwapChain::ResizeBuffers`
+        // to apply format changes, and ResizeBuffers does **not** touch the
+        // color-space attribute of the swap chain. That means after a
+        // hot-swap from `Rgba16Float` (scRGB linear) to `Bgra8Unorm` (sRGB)
+        // -- or vice versa -- the compositor still interprets the back
+        // buffer as the *old* color space, which is what makes the app
+        // appear to use "tone-map rendering" after dragging from HDR to SDR
+        // (浅黑 background) and makes HDR content look blue-tinted after
+        // dragging from SDR to HDR. Calling `SetColorSpace1` after every
+        // configure restores the expected behavior.
+        #[cfg(target_os = "windows")]
+        windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
+    }
+
+    /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`]
+    ///
+    /// This creates a [`wgpu::Surface`] for the given Window (as well as initializing render
+    /// state if needed) that is used for egui rendering.
+    ///
+    /// This must be called before trying to render via
+    /// [`paint_and_update_textures`](Self::paint_and_update_textures)
+    ///
+    /// # Portability
+    ///
+    /// _In particular it's important to note that on Android a it's only possible to create
+    /// a window surface between `Resumed` and `Paused` lifecycle events, and Winit will panic on
+    /// attempts to query the raw window handle while paused._
+    ///
+    /// On Android [`set_window`](Self::set_window) should be called with `Some(window)` for each
+    /// `Resumed` event and `None` for each `Paused` event. Currently, on all other platforms
+    /// [`set_window`](Self::set_window) may be called with `Some(window)` as soon as you have a
+    /// valid [`winit::window::Window`].
+    ///
+    /// # Errors
+    /// If the provided wgpu configuration does not match an available device.
+    pub async fn set_window(
+        &mut self,
+        viewport_id: ViewportId,
+        window: Option<Arc<winit::window::Window>>,
+    ) -> Result<(), crate::WgpuError> {
+        profiling::scope!("Painter::set_window"); // profile_function gives bad names for async functions
+
+        if let Some(window) = window {
+            let size = window.inner_size();
+            if !self.surfaces.contains_key(&viewport_id) {
+                let surface = self.instance.create_surface(window)?;
+                self.add_surface(surface, viewport_id, size).await?;
+            }
+        } else {
+            log::warn!("No window - clearing all surfaces");
+            self.surfaces.clear();
+        }
+        Ok(())
+    }
+
+    /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`] without taking ownership of the window.
+    ///
+    /// Like [`set_window`](Self::set_window) except:
+    ///
+    /// # Safety
+    /// The user is responsible for ensuring that the window is alive for as long as it is set.
+    pub async unsafe fn set_window_unsafe(
+        &mut self,
+        viewport_id: ViewportId,
+        window: Option<&winit::window::Window>,
+    ) -> Result<(), crate::WgpuError> {
+        profiling::scope!("Painter::set_window_unsafe"); // profile_function gives bad names for async functions
+
+        if let Some(window) = window {
+            let size = window.inner_size();
+            if !self.surfaces.contains_key(&viewport_id) {
+                let surface = unsafe {
+                    self.instance
+                        .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&window)?)?
+                };
+                self.add_surface(surface, viewport_id, size).await?;
+            }
+        } else {
+            log::warn!("No window - clearing all surfaces");
+            self.surfaces.clear();
+        }
+        Ok(())
+    }
+
+    async fn add_surface(
+        &mut self,
+        surface: wgpu::Surface<'static>,
+        viewport_id: ViewportId,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> Result<(), crate::WgpuError> {
+        let render_state = if let Some(render_state) = &self.render_state {
+            render_state
+        } else {
+            let render_state = RenderState::create(
+                &self.configuration,
+                &self.instance,
+                Some(&surface),
+                self.options,
+            )
+            .await?;
+            self.render_state.get_or_insert(render_state)
+        };
+        let alpha_mode = if self.support_transparent_backbuffer {
+            let supported_alpha_modes = surface.get_capabilities(&render_state.adapter).alpha_modes;
+
+            // Prefer pre multiplied over post multiplied!
+            if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                wgpu::CompositeAlphaMode::PreMultiplied
+            } else if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+                wgpu::CompositeAlphaMode::PostMultiplied
+            } else {
+                log::warn!(
+                    "Transparent window was requested, but the active wgpu surface does not support a `CompositeAlphaMode` with transparency."
+                );
+                wgpu::CompositeAlphaMode::Auto
+            }
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        self.surfaces.insert(
+            viewport_id,
+            SurfaceState {
+                surface,
+                width: size.width,
+                height: size.height,
+                alpha_mode,
+                resizing: false,
+                needs_reconfigure: false,
+            },
+        );
+        let Some(width) = NonZeroU32::new(size.width) else {
+            log::debug!("The window width was zero; skipping generate textures");
+            return Ok(());
+        };
+        let Some(height) = NonZeroU32::new(size.height) else {
+            log::debug!("The window height was zero; skipping generate textures");
+            return Ok(());
+        };
+        self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, width, height);
+        Ok(())
+    }
+
+    /// Returns the maximum texture dimension supported if known
+    ///
+    /// This API will only return a known dimension after `set_window()` has been called
+    /// at least once, since the underlying device and render state are initialized lazily
+    /// once we have a window (that may determine the choice of adapter/device).
+    pub fn max_texture_side(&self) -> Option<usize> {
+        self.render_state
+            .as_ref()
+            .map(|rs| rs.device.limits().max_texture_dimension_2d as usize)
+    }
+
+    fn resize_and_generate_depth_texture_view_and_msaa_view(
+        &mut self,
+        viewport_id: ViewportId,
+        width_in_pixels: NonZeroU32,
+        height_in_pixels: NonZeroU32,
+    ) {
+        profiling::function_scope!();
+
+        let width = width_in_pixels.get();
+        let height = height_in_pixels.get();
+
+        let render_state = self.render_state.as_ref().unwrap();
+        let surface_state = self.surfaces.get_mut(&viewport_id).unwrap();
+
+        surface_state.width = width;
+        surface_state.height = height;
+
+        Self::configure_surface(surface_state, render_state, &self.configuration);
+
+        if let Some(depth_format) = self.options.depth_stencil_format {
+            self.depth_texture_view.insert(
+                viewport_id,
+                render_state
+                    .device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("egui_depth_texture"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: self.options.msaa_samples.max(1),
+                        dimension: wgpu::TextureDimension::D2,
+                        format: depth_format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[depth_format],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
+            );
+        }
+
+        if let Some(render_state) = (self.options.msaa_samples > 1)
+            .then_some(self.render_state.as_ref())
+            .flatten()
+        {
+            let texture_format = render_state.target_format;
+            self.msaa_texture_view.insert(
+                viewport_id,
+                render_state
+                    .device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("egui_msaa_texture"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: self.options.msaa_samples.max(1),
+                        dimension: wgpu::TextureDimension::D2,
+                        format: texture_format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[texture_format],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
+            );
+        }
+    }
+
+    /// Handles changes of the resizing state.
+    ///
+    /// Should be called prior to the first [`Painter::on_window_resized`] call and after the last in
+    /// the chain. Used to apply platform-specific logic, e.g. OSX Metal window resize jitter fix.
+    pub fn on_window_resize_state_change(&mut self, viewport_id: ViewportId, resizing: bool) {
+        profiling::function_scope!();
+
+        let Some(state) = self.surfaces.get_mut(&viewport_id) else {
+            return;
+        };
+        if state.resizing == resizing {
+            if resizing {
+                log::debug!(
+                    "Painter::on_window_resize_state_change() redundant call while resizing"
+                );
+            } else {
+                log::debug!(
+                    "Painter::on_window_resize_state_change() redundant call after resizing"
+                );
+            }
+            return;
+        }
+
+        // Resizing is a bit tricky on macOS.
+        // It requires enabling ["present_with_transaction"](https://developer.apple.com/documentation/quartzcore/cametallayer/presentswithtransaction)
+        // flag to avoid jittering during the resize. Even though resize jittering on macOS
+        // is common across rendering backends, the solution for wgpu/metal is known.
+        //
+        // See https://github.com/emilk/egui/issues/903
+        #[cfg(all(target_os = "macos", feature = "macos-window-resize-jitter-fix"))]
+        {
+            // SAFETY: The cast is checked with if condition. If the used backend is not metal
+            // it gracefully fails.
+            unsafe {
+                if let Some(hal_surface) = state.surface.as_hal::<wgpu::hal::api::Metal>() {
+                    hal_surface
+                        .render_layer()
+                        .lock()
+                        .setPresentsWithTransaction(resizing);
+
+                    Self::configure_surface(
+                        state,
+                        self.render_state.as_ref().unwrap(),
+                        &self.configuration,
+                    );
+                }
+            }
+        }
+
+        state.resizing = resizing;
+    }
+
+    /// Apply a pending runtime swap-chain format change request, if any.
+    ///
+    /// Downstream patch on top of upstream egui-wgpu. The application writes a
+    /// new desired surface format into
+    /// [`crate::WgpuConfiguration::requested_target_format`] (e.g. when the
+    /// window has moved to a monitor with different HDR capabilities) and we
+    /// pick it up here at the start of every frame:
+    ///
+    /// 1. Validate that the surface actually supports the requested format
+    ///    (via `get_capabilities`); if not, log + drop the request.
+    /// 2. Hot-swap the egui pipeline format on the existing
+    ///    [`crate::RenderState::renderer`] (preserves textures + buffers).
+    /// 3. Update [`crate::RenderState::target_format`] and the cached
+    ///    [`crate::WgpuConfiguration::preferred_target_format`] so future
+    ///    `configure_surface` calls and downstream consumers
+    ///    (`Frame::wgpu_render_state()`) see the new format.
+    /// 4. Reconfigure the swap chain immediately and rebuild the MSAA / depth
+    ///    texture views to match the new format.
+    fn try_apply_runtime_target_format_switch(&mut self, viewport_id: ViewportId) {
+        let Some(requested_format) = self.configuration.requested_target_format.take() else {
+            return;
+        };
+        let Some(render_state) = self.render_state.as_mut() else {
+            return;
+        };
+        if requested_format == render_state.target_format {
+            return;
+        }
+        let Some(surface_state) = self.surfaces.get(&viewport_id) else {
+            return;
+        };
+        let caps = surface_state
+            .surface
+            .get_capabilities(&render_state.adapter);
+        if !caps.formats.contains(&requested_format) {
+            log::warn!(
+                "egui-wgpu: ignoring runtime surface format request {:?}; \
+                 surface only supports {:?}",
+                requested_format,
+                caps.formats
+            );
+            return;
+        }
+        log::info!(
+            "egui-wgpu: hot-swapping surface target format {:?} -> {:?}",
+            render_state.target_format,
+            requested_format
+        );
+        {
+            let mut renderer = render_state.renderer.write();
+            renderer.recreate_pipeline_for_target_format(
+                &render_state.device,
+                requested_format,
+            );
+        }
+        render_state.target_format = requested_format;
+        self.configuration.preferred_target_format = Some(requested_format);
+        // Publish the new active format on the reverse-direction mailbox so
+        // the application can observe it via `frame.wgpu_render_state()`-
+        // independent path. `RenderState` derives `Clone` and eframe stores a
+        // clone in `Frame`, so the line above only updates the painter's copy
+        // — without this `set` the application's `frame.wgpu_render_state()
+        // .target_format` keeps returning the original startup format
+        // forever, causing the OSD / shader-mode logic to lock onto the
+        // initial mode after the very first runtime hot-swap.
+        self.configuration
+            .active_target_format
+            .set(requested_format);
+
+        // Reconfigure the swap chain right now so the very next
+        // `get_current_texture()` returns a frame in the new format. This also
+        // rebuilds the MSAA / depth texture views via
+        // `resize_and_generate_depth_texture_view_and_msaa_view` (called from
+        // `on_window_resized`-style path). We reuse the cached width/height
+        // since the window dimensions did not change — only the format did.
+        let (width, height) = {
+            let s = self.surfaces.get(&viewport_id).expect("surface exists");
+            (s.width, s.height)
+        };
+        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, w, h);
+        } else if let Some(s) = self.surfaces.get_mut(&viewport_id) {
+            // Window currently has no usable size (minimised); defer the
+            // surface reconfigure until paint time as usual.
+            s.needs_reconfigure = true;
+        }
+    }
+
+    pub fn on_window_resized(
+        &mut self,
+        viewport_id: ViewportId,
+        width_in_pixels: NonZeroU32,
+        height_in_pixels: NonZeroU32,
+    ) {
+        profiling::function_scope!();
+
+        if self.surfaces.contains_key(&viewport_id) {
+            self.resize_and_generate_depth_texture_view_and_msaa_view(
+                viewport_id,
+                width_in_pixels,
+                height_in_pixels,
+            );
+        } else {
+            log::warn!(
+                "Ignoring window resize notification with no surface created via Painter::set_window()"
+            );
+        }
+    }
+
+    /// Returns two things:
+    ///
+    /// The approximate number of seconds spent on vsync-waiting (if any),
+    /// and the captures captured screenshot if it was requested.
+    ///
+    /// If `capture_data` isn't empty, a screenshot will be captured.
+    pub fn paint_and_update_textures(
+        &mut self,
+        viewport_id: ViewportId,
+        pixels_per_point: f32,
+        clear_color: [f32; 4],
+        clipped_primitives: &[epaint::ClippedPrimitive],
+        textures_delta: &epaint::textures::TexturesDelta,
+        capture_data: Vec<UserData>,
+    ) -> f32 {
+        profiling::function_scope!();
+
+        /// Guard to ensure that commands are always submitted to the renderer queue
+        /// so that calls to [`write_buffer()`](https://docs.rs/wgpu/latest/wgpu/struct.Queue.html#method.write_buffer)
+        /// are completed even if we take a codepath which doesn't submit commands and avoids
+        /// internal buffers growing indefinitely.
+        ///
+        /// This may happen, for example, if no output frame is resolved.
+        /// See <https://github.com/emilk/egui/pull/7928> for full context.
+        struct RendererQueueGuard<'q> {
+            queue: &'q wgpu::Queue,
+            commands_submitted: bool,
+        }
+
+        impl Drop for RendererQueueGuard<'_> {
+            fn drop(&mut self) {
+                // Only submit an empty command buffer array if no commands were
+                // explicitly submitted.
+                if !self.commands_submitted {
+                    self.queue.submit([]);
+                }
+            }
+        }
+
+        let capture = !capture_data.is_empty();
+        let mut vsync_sec = 0.0;
+
+        // Wrap the rendering body in a labelled block so that all of the
+        // mutable borrows of `self.render_state` / `self.surfaces` are
+        // released BEFORE we invoke `try_apply_runtime_target_format_switch`
+        // at the end of the function. Early-exits inside the block use
+        // `break 'render` rather than `return` so that the deferred swap
+        // chain hot-swap still gets a chance to run after the frame.
+        'render: {
+        let Some(render_state) = self.render_state.as_mut() else {
+            break 'render;
+        };
+
+        let mut render_queue_guard = RendererQueueGuard {
+            queue: &render_state.queue,
+            commands_submitted: false,
+        };
+
+        let Some(surface_state) = self.surfaces.get_mut(&viewport_id) else {
+            break 'render;
+        };
+
+        let mut encoder =
+            render_state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("encoder"),
+                });
+
+        // Upload all resources for the GPU.
+        let screen_descriptor = renderer::ScreenDescriptor {
+            size_in_pixels: [surface_state.width, surface_state.height],
+            pixels_per_point,
+        };
+
+        let user_cmd_bufs = {
+            let mut renderer = render_state.renderer.write();
+            for (id, image_delta) in &textures_delta.set {
+                renderer.update_texture(
+                    &render_state.device,
+                    &render_state.queue,
+                    *id,
+                    image_delta,
+                );
+            }
+
+            renderer.update_buffers(
+                &render_state.device,
+                &render_state.queue,
+                &mut encoder,
+                clipped_primitives,
+                &screen_descriptor,
+            )
+        };
+
+        if surface_state.needs_reconfigure {
+            Self::configure_surface(surface_state, render_state, &self.configuration);
+            surface_state.needs_reconfigure = false;
+        }
+
+        let output_frame = {
+            profiling::scope!("get_current_texture");
+            // This is what vsync-waiting happens on my Mac.
+            let start = web_time::Instant::now();
+            let output_frame = surface_state.surface.get_current_texture();
+            vsync_sec += start.elapsed().as_secs_f32();
+            output_frame
+        };
+
+        let output_frame = match output_frame {
+            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                surface_state.needs_reconfigure = true;
+                frame
+            }
+            other => {
+                match (*self.configuration.on_surface_status)(&other) {
+                    SurfaceErrorAction::RecreateSurface => {
+                        Self::configure_surface(surface_state, render_state, &self.configuration);
+                    }
+                    SurfaceErrorAction::SkipFrame => {}
+                }
+                break 'render;
+            }
+        };
+
+        let mut capture_buffer = None;
+        {
+            let renderer = render_state.renderer.read();
+
+            let target_texture = if capture {
+                let capture_state = self.screen_capture_state.get_or_insert_with(|| {
+                    CaptureState::new(&render_state.device, &output_frame.texture)
+                });
+                capture_state.update(&render_state.device, &output_frame.texture);
+
+                &capture_state.texture
+            } else {
+                &output_frame.texture
+            };
+            let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let (view, resolve_target) = (self.options.msaa_samples > 1)
+                .then_some(self.msaa_texture_view.get(&viewport_id))
+                .flatten()
+                .map_or((&target_view, None), |texture_view| {
+                    (texture_view, Some(&target_view))
+                });
+
+            // Translate eframe's sRGB-gamma `clear_color` into the color
+            // space expected by the currently-bound swap-chain format so the
+            // raw `LoadOp::Clear` matches what the egui fragment shader
+            // writes for regular UI geometry. Without this, the ~12/255
+            // sRGB panel background renders as ~3.76 nits on a
+            // Windows scRGB `Rgba16Float` HDR swap chain (blown-out grey)
+            // instead of ~0.3 nits (charcoal black). See
+            // `clear_color_for_framebuffer_format`.
+            let framebuffer_clear_color = renderer::clear_color_for_framebuffer_format(
+                clear_color,
+                output_frame.texture.format(),
+            );
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui_render"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: framebuffer_clear_color[0] as f64,
+                            g: framebuffer_clear_color[1] as f64,
+                            b: framebuffer_clear_color[2] as f64,
+                            a: framebuffer_clear_color[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: self.depth_texture_view.get(&viewport_id).map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: self
+                            .options
+                            .depth_stencil_format
+                            .is_some_and(|depth_stencil_format| {
+                                depth_stencil_format.has_depth_aspect()
+                            })
+                            .then_some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                // It is very unlikely that the depth buffer is needed after egui finished rendering
+                                // so no need to store it. (this can improve performance on tiling GPUs like mobile chips or Apple Silicon)
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                        stencil_ops: self
+                            .options
+                            .depth_stencil_format
+                            .is_some_and(|depth_stencil_format| {
+                                depth_stencil_format.has_stencil_aspect()
+                            })
+                            .then_some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                    }
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            // Forgetting the pass' lifetime means that we are no longer compile-time protected from
+            // runtime errors caused by accessing the parent encoder before the render pass is dropped.
+            // Since we don't pass it on to the renderer, we should be perfectly safe against this mistake here!
+            renderer.render(
+                &mut render_pass.forget_lifetime(),
+                clipped_primitives,
+                &screen_descriptor,
+            );
+
+            if capture && let Some(capture_state) = &mut self.screen_capture_state {
+                capture_buffer = Some(capture_state.copy_textures(
+                    &render_state.device,
+                    &output_frame,
+                    &mut encoder,
+                ));
+            }
+        }
+
+        let encoded = {
+            profiling::scope!("CommandEncoder::finish");
+            encoder.finish()
+        };
+
+        // Submit the commands: both the main buffer and user-defined ones.
+        {
+            profiling::scope!("Queue::submit");
+            // wgpu doesn't document where vsync can happen. Maybe here?
+            let start = web_time::Instant::now();
+            render_state
+                .queue
+                .submit(user_cmd_bufs.into_iter().chain([encoded]));
+            vsync_sec += start.elapsed().as_secs_f32();
+        };
+
+        // Ensure that the queue guard does not do unnecessary work when dropped
+        render_queue_guard.commands_submitted = true;
+
+        // Free textures marked for destruction **after** queue submit since they might still be used in the current frame.
+        // Calling `wgpu::Texture::destroy` on a texture that is still in use would invalidate the command buffer(s) it is used in.
+        // However, once we called `wgpu::Queue::submit`, it is up for wgpu to determine how long the underlying gpu resource has to live.
+        {
+            let mut renderer = render_state.renderer.write();
+            for id in &textures_delta.free {
+                renderer.free_texture(id);
+            }
+        }
+
+        if let Some(capture_buffer) = capture_buffer
+            && let Some(screen_capture_state) = &mut self.screen_capture_state
+        {
+            screen_capture_state.read_screen_rgba(
+                self.context.clone(),
+                capture_buffer,
+                capture_data,
+                self.capture_tx.clone(),
+                viewport_id,
+            );
+        }
+
+        {
+            profiling::scope!("present");
+            // wgpu doesn't document where vsync can happen. Maybe here?
+            let start = web_time::Instant::now();
+            output_frame.present();
+            vsync_sec += start.elapsed().as_secs_f32();
+        }
+        } // 'render block — releases the mutable borrows of `self.render_state` /
+          //                  `self.surfaces` so the deferred swap-chain switch
+          //                  below can take a fresh `&mut self`.
+
+        // ----- runtime swap-chain target-format switch (deferred to end-of-frame) -----
+        //
+        // Downstream patch: if the application has posted a request through
+        // `WgpuConfiguration::requested_target_format` (typically because the
+        // window moved between an HDR and an SDR monitor), validate it against
+        // the surface's actual capabilities and, if supported, hot-swap the
+        // egui render pipeline + reconfigure the swap chain + rebuild the MSAA
+        // texture. We `take()` regardless to clear the mailbox; if the format
+        // is unsupported we just log and drop the request rather than
+        // thrashing every frame.
+        //
+        // This MUST run AFTER `output_frame.present()` rather than at the
+        // start of the frame: by the time we get here, the application has
+        // ALREADY built its `eframe`/egui paint callbacks for the current
+        // frame and those callbacks captured the old `target_format` from
+        // `frame.wgpu_render_state()`. Swapping the surface format mid-frame
+        // would cause a `RenderPipeline targets are incompatible with render
+        // pass` panic on the application's own pipelines (e.g. the HDR image
+        // plane pipeline) because the live render-pass attachments would no
+        // longer match what the callbacks built. Doing the swap here lets the
+        // current frame complete cleanly with the old format end-to-end and
+        // makes the *next* frame observe the new format from
+        // `frame.wgpu_render_state().target_format`, so all downstream
+        // pipelines rebuild in sync.
+        self.try_apply_runtime_target_format_switch(viewport_id);
+
+        vsync_sec
+    }
+
+    /// Call this at the beginning of each frame to receive the requested screenshots.
+    pub fn handle_screenshots(&self, events: &mut Vec<Event>) {
+        for (viewport_id, user_data, screenshot) in self.capture_rx.try_iter() {
+            let screenshot = Arc::new(screenshot);
+            for data in user_data {
+                events.push(Event::Screenshot {
+                    viewport_id,
+                    user_data: data,
+                    image: Arc::clone(&screenshot),
+                });
+            }
+        }
+    }
+
+    pub fn gc_viewports(&mut self, active_viewports: &ViewportIdSet) {
+        self.surfaces.retain(|id, _| active_viewports.contains(id));
+        self.depth_texture_view
+            .retain(|id, _| active_viewports.contains(id));
+        self.msaa_texture_view
+            .retain(|id, _| active_viewports.contains(id));
+    }
+
+    #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
+    pub fn destroy(&mut self) {
+        // TODO(emilk): something here?
+    }
+}
+
+/// Map a `wgpu::TextureFormat` to the DXGI color space the Windows
+/// compositor should interpret the swap-chain back buffer with.
+///
+/// * `Rgba16Float` / `Rgba32Float` -> `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
+///   (scRGB linear with Rec.709 primaries; the standard float HDR
+///   color space on Windows).
+/// * sRGB-aware 8-bit formats -> `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709`
+///   (sRGB gamma with Rec.709 primaries; the default SDR color space).
+/// * Other formats -> `None`, leaving whatever color space is currently
+///   set on the swap chain untouched.
+#[cfg(target_os = "windows")]
+fn desired_dxgi_color_space_for_format(
+    format: wgpu::TextureFormat,
+) -> Option<windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE> {
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    };
+    match format {
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => {
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        }
+        fmt if fmt.is_srgb() => Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm => {
+            // 8-bit UNORM swap chains are treated as sRGB by DWM even
+            // without the sRGB suffix (see
+            // <https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range>).
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[cfg(test)]
+mod color_space_tests {
+    use super::desired_dxgi_color_space_for_format;
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    };
+
+    #[test]
+    fn float_formats_map_to_scrgb_linear() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba16Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba32Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn bgra8_unorm_maps_to_srgb_default() {
+        // Bgra8Unorm (without explicit `_srgb_` suffix) is treated as an
+        // sRGB-gamma SDR surface by Windows DWM. Must NOT stay on
+        // whatever scRGB color space a previous HDR swap chain had left
+        // on the IDXGISwapChain when `ResizeBuffers` changed the format.
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn srgb_formats_map_to_srgb_color_space() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn exotic_formats_return_none() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::R8Unorm),
+            None
+        );
+    }
+}
+
+/// Apply `IDXGISwapChain3::SetColorSpace1` to the DX12 swap chain backing
+/// the provided wgpu surface, so the compositor interprets the back
+/// buffer as the color space that matches the configured format.
+///
+/// Called after every `surface.configure` on Windows. No-op when:
+/// * the adapter backend is not DX12;
+/// * we cannot reach the hal surface / swap chain (e.g. off-screen
+///   rendering, headless CI, other hal backend); or
+/// * DXGI reports that the requested color space is not supported on
+///   the current display path (we log and leave the previous state).
+#[cfg(target_os = "windows")]
+fn windows_sync_swap_chain_color_space(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    format: wgpu::TextureFormat,
+) {
+    if adapter.get_info().backend != wgpu::Backend::Dx12 {
+        return;
+    }
+    let Some(desired) = desired_dxgi_color_space_for_format(format) else {
+        return;
+    };
+
+    use windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT;
+
+    // SAFETY: we use `as_hal` to borrow the DX12 hal `Surface`. The
+    // returned `swap_chain()` clones a COM pointer whose methods are
+    // all safe to call from a single thread while the hal surface is
+    // alive. We do not retain the pointer beyond this call.
+    let result: Result<(), String> = unsafe {
+        surface
+            .as_hal::<wgpu::hal::api::Dx12>()
+            .ok_or_else(|| "wgpu::Surface::as_hal<Dx12> returned None".to_string())
+            .and_then(|hal_surface| {
+                let swap_chain = hal_surface
+                    .swap_chain()
+                    .ok_or_else(|| "DX12 hal surface has no swap chain".to_string())?;
+                let support = swap_chain
+                    .CheckColorSpaceSupport(desired)
+                    .map_err(|err| format!("CheckColorSpaceSupport failed: {err}"))?;
+                if support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32 == 0 {
+                    return Err(format!(
+                        "DXGI reports color space {desired:?} is not supported for presentation \
+                         on the current swap chain"
+                    ));
+                }
+                swap_chain
+                    .SetColorSpace1(desired)
+                    .map_err(|err| format!("SetColorSpace1({desired:?}) failed: {err}"))?;
+                Ok(())
+            })
+    };
+    match result {
+        Ok(()) => {
+            log::debug!(
+                "egui-wgpu: DXGI swap-chain color space synced to {desired:?} for format {format:?}"
+            );
+        }
+        Err(reason) => {
+            log::debug!("egui-wgpu: could not sync DXGI swap-chain color space ({reason})");
+        }
+    }
+}

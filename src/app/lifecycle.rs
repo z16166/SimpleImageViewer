@@ -23,6 +23,9 @@ impl ImageViewerApp {
         settings: Settings,
         initial_image: Option<PathBuf>,
         ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
+        requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
+        active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+        initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
     ) -> Self {
         if settings.fullscreen {
             cc.egui_ctx
@@ -91,6 +94,27 @@ impl ImageViewerApp {
             max_texture_side_hw
         );
 
+        let hdr_capabilities =
+            crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
+        let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
+        hdr_renderer.tone_map = settings.hdr_tone_map_settings();
+        let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
+        let initial_hdr_output_mode = crate::hdr::monitor::effective_capability_output_mode(
+            hdr_target_format,
+            initial_hdr_monitor_selection.as_ref(),
+        );
+        let ultra_hdr_decode_capacity = crate::app::ultra_hdr_decode_capacity_for_output_mode(
+            settings.hdr_tone_map_settings(),
+            initial_hdr_output_mode,
+            initial_hdr_monitor_selection.as_ref(),
+        );
+        for diagnostic in crate::hdr::renderer::hdr_render_output_diagnostics(hdr_target_format) {
+            log::info!("{diagnostic}");
+        }
+        for diagnostic in crate::hdr::renderer::hdr_egui_overlay_diagnostics(hdr_target_format) {
+            log::info!("{diagnostic}");
+        }
+
         crate::tile_cache::MAX_TEXTURE_SIDE
             .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
 
@@ -153,9 +177,22 @@ impl ImageViewerApp {
             tier.max_preview_size(),
             std::sync::atomic::Ordering::Relaxed,
         );
+        let available_ram_mb = sys.available_memory() / (1024 * 1024);
+        let (cpu_cache_mb, hdr_tile_cache_mb) =
+            crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
         if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.set_max_mb(tier.cpu_cache_mb());
+            cache.set_max_mb(cpu_cache_mb);
         }
+        crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
+            hdr_tile_cache_mb * 1024 * 1024,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        log::info!(
+            "Tile cache budgets: SDR={} MB, HDR={} MB (available RAM={} MB)",
+            cpu_cache_mb,
+            hdr_tile_cache_mb,
+            available_ram_mb
+        );
 
         let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
 
@@ -169,6 +206,24 @@ impl ImageViewerApp {
             scanning: false,
             loader: ImageLoader::new(),
             texture_cache: TextureCache::new(CACHE_SIZE),
+            hdr_capabilities,
+            hdr_renderer,
+            hdr_target_format,
+            hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(
+                initial_hdr_monitor_selection,
+            ),
+            cached_window_placement: None,
+            requested_target_format,
+            active_target_format,
+            ultra_hdr_decode_capacity,
+            current_hdr_image: None,
+            hdr_image_cache: std::collections::HashMap::new(),
+            current_hdr_tiled_image: None,
+            hdr_tiled_source_cache: std::collections::HashMap::new(),
+            current_hdr_tiled_preview: None,
+            hdr_tiled_preview_cache: std::collections::HashMap::new(),
+            hdr_sdr_fallback_indices: std::collections::HashSet::new(),
+            ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,
             pan_offset: Vec2::ZERO,
             zoom_factor: 1.0,
@@ -230,6 +285,17 @@ impl ImageViewerApp {
             music_hud_drag_offset: Vec2::ZERO,
             settings,
         };
+        for diagnostic in app.hdr_capabilities.startup_diagnostics() {
+            log::info!("{diagnostic}");
+        }
+        app.loader
+            .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
+        app.loader
+            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
+        log::info!(
+            "[HDR] tone_map_sdr_white_nits={}",
+            app.hdr_renderer.tone_map.sdr_white_nits
+        );
         log::info!(
             "[Core] RAW engine initialized: {}",
             crate::raw_processor::version()

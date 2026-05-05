@@ -120,12 +120,18 @@ pub const SETTINGS_WINDOW_MAX_WIDTH: f32 = 800.0;
 
 /// Margin for standard OSD elements.
 pub const OSD_MARGIN: f32 = 12.0;
+/// Gap between measured right-side keyboard hint and the left OSD block.
+pub const OSD_HINT_GAP: f32 = 16.0;
+/// Pixels between main OSD line and optional HDR line (above main, toward image).
+pub const OSD_HDR_LINE_GAP: f32 = 3.0;
 /// Text size for OSD status information.
 pub const OSD_TEXT_SIZE: f32 = 12.0;
 /// Text size for OSD error messages.
 pub const OSD_ERROR_TEXT_SIZE: f32 = 13.0;
 /// Vertical offset for OSD error messages (to avoid overlapping status text).
 pub const OSD_ERROR_OFFSET: f32 = 32.0;
+/// Extra offset when a second (HDR) OSD line is present.
+pub const OSD_ERROR_EXTRA_WHEN_HDR_LINE: f32 = 16.0;
 
 /// Width deduction for the progress slider in the OSD/HUD to account for labels.
 pub const SLIDER_WIDTH_LABEL_OFFSET: f32 = 40.0;

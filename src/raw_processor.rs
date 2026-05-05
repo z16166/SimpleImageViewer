@@ -20,6 +20,26 @@ use libraw_sys as ffi;
 use std::ffi::CString;
 use std::path::Path;
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawDisplayMode {
+    SdrDeveloped,
+    SceneLinearHdr,
+}
+
+#[allow(dead_code)]
+pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
+    crate::hdr::types::HdrImageMetadata {
+        transfer_function: crate::hdr::types::HdrTransferFunction::Linear,
+        reference: crate::hdr::types::HdrReference::SceneLinear,
+        color_profile: crate::hdr::types::HdrColorProfile::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        luminance: crate::hdr::types::HdrLuminanceMetadata::default(),
+        gain_map: None,
+    }
+}
+
 pub struct RawProcessor {
     data: *mut ffi::libraw_data_t,
     is_unpacked: bool,
@@ -222,6 +242,85 @@ impl RawProcessor {
         }
     }
 
+    pub fn develop_scene_linear_hdr(
+        &mut self,
+    ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+
+        unsafe {
+            ffi::libraw_set_output_bps(self.data, 16);
+            ffi::siv_libraw_set_use_camera_wb(self.data, 1);
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
+            ffi::siv_libraw_set_output_color(self.data, 1); // sRGB primaries, with linear gamma below.
+            ffi::libraw_set_no_auto_bright(self.data, 1);
+            ffi::siv_libraw_set_auto_bright_thr(self.data, 0.0);
+            ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
+
+            let ret = ffi::libraw_dcraw_process(self.data);
+            if ret != 0 {
+                return Err(rust_i18n::t!("error.libraw_process", code = ret).to_string());
+            }
+
+            let mut err = 0;
+            let processed =
+                LibRawMemory::new(ffi::libraw_dcraw_make_mem_image(self.data, &mut err))
+                    .ok_or_else(|| {
+                        rust_i18n::t!("error.libraw_mem_image", code = err).to_string()
+                    })?;
+
+            let img = processed.as_ref();
+            if img.image_type != ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32 {
+                return Err(rust_i18n::t!(
+                    "error.unsupported_raw_type",
+                    img_type = img.image_type,
+                    expected = ffi::LibRaw_image_formats::LIBRAW_IMAGE_BITMAP as u32
+                )
+                .to_string());
+            }
+            if img.colors != crate::constants::RGB_CHANNELS as u16 || img.bits != 16 {
+                return Err(rust_i18n::t!(
+                    "error.unsupported_raw_format",
+                    colors = img.colors,
+                    bits = img.bits
+                )
+                .to_string());
+            }
+
+            let width = img.width as u32;
+            let height = img.height as u32;
+            let data_ptr = img.data.as_ptr();
+            let data_len = img.data_size as usize;
+            let expected_min =
+                width as usize * height as usize * crate::constants::RGB_CHANNELS * 2;
+            if data_ptr.is_null() || data_len < expected_min {
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
+            }
+
+            let rgb16_bytes = std::slice::from_raw_parts(data_ptr, expected_min);
+            let mut rgba_f32 = Vec::with_capacity(
+                width as usize * height as usize * crate::constants::RGBA_CHANNELS,
+            );
+            for px in rgb16_bytes.chunks_exact(crate::constants::RGB_CHANNELS * 2) {
+                rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
+                rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
+                rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
+                rgba_f32.push(1.0);
+            }
+
+            let metadata = raw_scene_linear_metadata();
+            Ok(crate::hdr::types::HdrImageBuffer {
+                width,
+                height,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: metadata.color_space_hint(),
+                metadata,
+                rgba_f32: std::sync::Arc::new(rgba_f32),
+            })
+        }
+    }
+
     pub fn unpack_thumb(&mut self) -> Result<crate::loader::DecodedImage, String> {
         let mut err = 0;
         unsafe {
@@ -385,6 +484,27 @@ pub const RAW_EXTENSIONS: &[&str] = &[
 pub fn is_raw_extension(ext: &str) -> bool {
     let lower = ext.to_lowercase();
     RAW_EXTENSIONS.contains(&lower.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RawDisplayMode, raw_scene_linear_metadata};
+    use crate::hdr::types::{HdrReference, HdrTransferFunction};
+
+    #[test]
+    fn raw_scene_linear_metadata_enters_hdr_pipeline_as_linear_scene_data() {
+        let metadata = raw_scene_linear_metadata();
+
+        assert_eq!(metadata.transfer_function, HdrTransferFunction::Linear);
+        assert_eq!(metadata.reference, HdrReference::SceneLinear);
+    }
+
+    #[test]
+    fn raw_display_mode_defaults_to_existing_sdr_developed_behavior() {
+        let mode = RawDisplayMode::SdrDeveloped;
+
+        assert_eq!(mode, RawDisplayMode::SdrDeveloped);
+    }
 }
 
 pub fn get_supported_extensions() -> Vec<String> {

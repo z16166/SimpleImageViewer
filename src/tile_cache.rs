@@ -68,6 +68,18 @@ pub struct TileCoord {
     pub row: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PendingTileKey {
+    pub coord: TileCoord,
+    pub pixel_kind: crate::loader::TilePixelKind,
+}
+
+impl PendingTileKey {
+    pub fn new(coord: TileCoord, pixel_kind: crate::loader::TilePixelKind) -> Self {
+        Self { coord, pixel_kind }
+    }
+}
+
 /// Global cache for decoded tile pixels (CPU RAM).
 /// Each tile (512x512 RGBA) is exactly 1MB.
 pub struct TilePixelCache {
@@ -169,6 +181,76 @@ impl TilePixelCache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummyTileSource {
+        width: u32,
+        height: u32,
+    }
+
+    impl crate::loader::TiledImageSource for DummyTileSource {
+        fn width(&self) -> u32 {
+            self.width
+        }
+
+        fn height(&self) -> u32 {
+            self.height
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; w as usize * h as usize * 4])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    #[test]
+    fn retain_pending_tiles_drops_offscreen_entries() {
+        let source = Arc::new(DummyTileSource {
+            width: 4096,
+            height: 4096,
+        });
+        let mut manager = TileManager::with_source(0, 1, source);
+        manager.pending_tiles.insert(PendingTileKey::new(
+            TileCoord { col: 0, row: 0 },
+            crate::loader::TilePixelKind::Sdr,
+        ));
+        manager.pending_tiles.insert(PendingTileKey::new(
+            TileCoord { col: 4, row: 4 },
+            crate::loader::TilePixelKind::Sdr,
+        ));
+
+        manager.retain_pending_tiles(&[TileCoord { col: 0, row: 0 }]);
+
+        assert!(manager.pending_tiles.contains(&PendingTileKey::new(
+            TileCoord { col: 0, row: 0 },
+            crate::loader::TilePixelKind::Sdr,
+        )));
+        assert!(!manager.pending_tiles.contains(&PendingTileKey::new(
+            TileCoord { col: 4, row: 4 },
+            crate::loader::TilePixelKind::Sdr,
+        )));
+    }
+
+    #[test]
+    fn pending_tile_keys_distinguish_sdr_and_hdr_for_same_coord() {
+        let coord = TileCoord { col: 1, row: 2 };
+
+        assert_ne!(
+            PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr),
+            PendingTileKey::new(coord, crate::loader::TilePixelKind::Hdr)
+        );
+    }
+}
+
 /// The global tile pixel cache instance.
 pub static PIXEL_CACHE: LazyLock<Mutex<TilePixelCache>> = LazyLock::new(|| {
     Mutex::new(TilePixelCache::new(512)) // Default 512MB, will be updated by settings
@@ -194,7 +276,7 @@ pub struct TileManager {
     tiles: HashMap<TileCoord, TextureHandle>,
 
     /// Tiles currently being decoded in the background.
-    pub pending_tiles: HashSet<TileCoord>,
+    pub pending_tiles: HashSet<PendingTileKey>,
 
     /// LRU ordering: most recently used tiles at the back.
     lru_order: Vec<TileCoord>,
@@ -237,6 +319,11 @@ impl TileManager {
 
     pub fn get_source(&self) -> Arc<dyn crate::loader::TiledImageSource> {
         Arc::clone(&self.source)
+    }
+
+    pub fn retain_pending_tiles(&mut self, visible_coords: &[TileCoord]) {
+        self.pending_tiles
+            .retain(|key| visible_coords.contains(&key.coord));
     }
 
     /// Returns counts for the current visible set using a non-blocking try_lock: (gpu, cpu_ready, pending)
@@ -386,7 +473,10 @@ impl TileManager {
                 self.ready_times.insert(coord, now);
 
                 // Remove from pending if it was there
-                self.pending_tiles.remove(&coord);
+                self.pending_tiles.remove(&PendingTileKey::new(
+                    coord,
+                    crate::loader::TilePixelKind::Sdr,
+                ));
 
                 return (TileStatus::Ready(handle, Some(now)), true);
             }
@@ -397,7 +487,10 @@ impl TileManager {
         }
 
         // If we reach here, it's not in GPU and not in CPU cache.
-        let needs_request = !self.pending_tiles.contains(&coord);
+        let needs_request = !self.pending_tiles.contains(&PendingTileKey::new(
+            coord,
+            crate::loader::TilePixelKind::Sdr,
+        ));
         (TileStatus::Pending(needs_request), false)
     }
 

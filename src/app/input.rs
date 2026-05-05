@@ -112,16 +112,30 @@ impl ImageViewerApp {
             }
         }
 
-        // Special case for asterisk which comes via Text event in some egui versions
+        // Some keyboard layouts report zoom keys as text input rather than plain key presses.
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
-                if text == "*" {
-                    return Some(AppAction::ZoomReset);
+                match text.as_str() {
+                    "+" => return Some(AppAction::ZoomIn),
+                    "-" => return Some(AppAction::ZoomOut),
+                    "*" => return Some(AppAction::ZoomReset),
+                    _ => {}
                 }
             }
         }
 
         None
+    }
+
+    fn adjust_hdr_exposure_by_ev(&mut self, delta_ev: f32, ctx: &Context) {
+        self.settings.hdr_exposure_ev =
+            (self.settings.hdr_exposure_ev + delta_ev).clamp(-8.0, 8.0);
+        let tone = self.settings.hdr_tone_map_settings();
+        self.hdr_renderer.tone_map = tone;
+        self.loader.set_hdr_tone_map_settings(tone);
+        self.refresh_ultra_hdr_decode_capacity(ctx);
+        self.queue_save();
+        ctx.request_repaint();
     }
 
     fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
@@ -152,16 +166,16 @@ impl ImageViewerApp {
             AppAction::Last => self.navigate_last(),
             AppAction::ZoomIn => {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomOut => {
                 self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomReset => {
                 self.zoom_factor = 1.0;
                 self.pan_offset = Vec2::ZERO;
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ToggleSettings => self.show_settings = !self.show_settings,
             AppAction::ToggleFullscreen => {
@@ -181,6 +195,14 @@ impl ImageViewerApp {
             }
             AppAction::RotateCCW => self.apply_rotation_with_tracking(false, ctx),
             AppAction::RotateCW => self.apply_rotation_with_tracking(true, ctx),
+            AppAction::HdrExposureUp => {
+                const STEP_EV: f32 = 0.5;
+                self.adjust_hdr_exposure_by_ev(STEP_EV, ctx);
+            }
+            AppAction::HdrExposureDown => {
+                const STEP_EV: f32 = 0.5;
+                self.adjust_hdr_exposure_by_ev(-STEP_EV, ctx);
+            }
             AppAction::Delete => self.delete_current_image(false),
             AppAction::PermanentDelete => self.delete_current_image(true),
             AppAction::Print => self.print_image(ctx, crate::print::PrintMode::FullImage),
@@ -215,16 +237,6 @@ impl ImageViewerApp {
         }
     }
 
-    fn update_loader_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
-        if let Some(tm) = &mut self.tile_manager {
-            tm.generation = self.generation;
-            tm.pending_tiles.clear();
-        }
-        self.loader.flush_tile_queue();
-    }
-
     fn handle_mouse_input(
         &mut self,
         ctx: &Context,
@@ -253,7 +265,7 @@ impl ImageViewerApp {
                     let d = mouse - screen_center;
                     self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
                 }
-                self.update_loader_generation();
+                self.invalidate_tile_requests_for_view_change();
             }
         } else if scroll_delta.y.abs() > 0.0 {
             // Navigation with mouse wheel
@@ -292,8 +304,8 @@ impl ImageViewerApp {
     // UI: Settings panel
     // ------------------------------------------------------------------
 
-    pub(crate) fn draw_settings_panel(&mut self, ctx: &egui::Context) {
-        ui_settings::draw(self, ctx);
+    pub(crate) fn draw_settings_panel(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        ui_settings::draw(self, ctx, frame);
     }
 
     /// Dispatch rendering for the currently active modal dialog, and process
@@ -545,6 +557,8 @@ pub(crate) enum AppAction {
     ToggleOSD,
     RotateCW,
     RotateCCW,
+    HdrExposureUp,
+    HdrExposureDown,
     Delete,
     PermanentDelete,
     Print,
@@ -599,6 +613,16 @@ const HOTKEY_MAP: &[HotkeyBinding] = &[
         modifiers: M_CTRL,
         key: egui::Key::ArrowRight,
         action: AppAction::RotateCW,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowUp,
+        action: AppAction::HdrExposureUp,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowDown,
+        action: AppAction::HdrExposureDown,
     },
     HotkeyBinding {
         modifiers: M_CTRL,

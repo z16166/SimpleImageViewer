@@ -29,12 +29,14 @@ use eframe::egui;
 mod audio;
 mod constants;
 mod formats;
+mod hdr;
 mod ipc;
 mod libtiff_loader;
 mod loader;
 #[cfg(target_os = "macos")]
 mod macos_image_io;
 mod metadata_utils;
+mod mmap_util;
 pub mod print;
 mod psb_reader;
 mod raw_processor;
@@ -285,8 +287,14 @@ fn log_env_info() -> String {
 }
 
 /// Set up a global panic hook to capture and report crashes across all threads.
+/// Decoder paths that use `catch_exr_panic` increment a thread-local so this hook skips
+/// dialog/exit — otherwise `process::exit(1)` would run before `catch_unwind` can handle the panic.
 fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|panic_info| {
+        if crate::hdr::exr_tiled::is_exr_panic_hook_suppressed() {
+            return;
+        }
+
         let location = panic_info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
@@ -356,6 +364,7 @@ fn setup_panic_hook() {
             );
         }
 
+        // No `set_parent`: the crash hook can run when no egui window exists.
         // Use rfd for a system native dialog
         rfd::MessageDialog::new()
             .set_title(&title)
@@ -415,6 +424,7 @@ fn main() -> eframe::Result {
     let mut settings = settings::Settings::load();
     init_logging(&settings);
     let env_info = log_env_info();
+    hdr::tiled::configure_hdr_tile_cache_budget_from_system_memory();
 
     #[cfg(target_os = "windows")]
     {
@@ -442,13 +452,24 @@ fn main() -> eframe::Result {
 
     let fullscreen = settings.fullscreen;
 
-    let viewport = egui::ViewportBuilder::default()
+    let saved_inner_size = settings
+        .window_inner_size
+        .map(|[w, h]| [w as f32, h as f32])
+        .unwrap_or([1280.0, 800.0]);
+    let saved_outer_position = settings.window_outer_position.map(|[x, y]| [x as f32, y as f32]);
+    let saved_maximized = settings.window_maximized;
+
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("app.title").to_string())
-        .with_inner_size([1280.0, 800.0])
+        .with_inner_size(saved_inner_size)
         .with_min_inner_size([400.0, 300.0])
         .with_decorations(true)
         .with_fullscreen(fullscreen)
+        .with_maximized(saved_maximized)
         .with_icon(load_icon());
+    if let Some(pos) = saved_outer_position {
+        viewport = viewport.with_position(pos);
+    }
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
@@ -514,14 +535,59 @@ fn main() -> eframe::Result {
         }
     }
 
+    let (preferred_hdr_target_format, hdr_environment_probe) =
+        crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
+            settings.hdr_native_surface_enabled,
+            settings.window_outer_position,
+        );
+    let initial_hdr_monitor_selection =
+        crate::hdr::surface::initial_monitor_selection_from_environment_probe(
+            &hdr_environment_probe,
+        );
+    for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
+        settings.hdr_native_surface_enabled,
+        preferred_hdr_target_format,
+    ) {
+        log::info!("{diagnostic}");
+    }
+    log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
+
+    // Shared mailbox the app writes into when the active monitor's HDR
+    // capability changes (drag between HDR and SDR monitor); the patched
+    // egui-wgpu Painter polls it every frame and hot-swaps the swap-chain
+    // target format.
+    let requested_target_format = eframe::egui_wgpu::RequestedSurfaceFormat::new();
+
+    // Reverse-direction mailbox: the painter publishes the live active
+    // swap-chain format here after every successful runtime hot-swap. We
+    // need this because `egui_wgpu::RenderState` derives `Clone` and eframe
+    // stores a CLONE in `Frame`, so mutating the painter's
+    // `render_state.target_format` is invisible to the app via
+    // `frame.wgpu_render_state()`. Without this mailbox the OSD freezes on
+    // the very first runtime swap.
+    let active_target_format = eframe::egui_wgpu::ActiveSurfaceFormat::new();
+
+    // Centering must NOT compete with the saved outer-position recall: when
+    // the user previously closed the window on (e.g.) the HDR monitor we want
+    // to reopen there, not snap back to the primary monitor's centre. eframe
+    // applies `centered=true` AFTER `with_position(...)` in winit setup, so
+    // leaving it on silently overrides our recall.
+    let center_window_on_open = saved_outer_position.is_none();
+
     let native_options = eframe::NativeOptions {
         viewport,
-        centered: true,
+        centered: center_window_on_open,
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
+            preferred_target_format: preferred_hdr_target_format,
+            requested_target_format: requested_target_format.clone(),
+            active_target_format: active_target_format.clone(),
             ..Default::default()
         },
+        // Dithering assumes SDR gamma-space output. Leave it off when we ask
+        // for a float HDR target; egui-wgpu falls back safely if unsupported.
+        dithering: preferred_hdr_target_format.is_none(),
         ..Default::default()
     };
 
@@ -534,6 +600,9 @@ fn main() -> eframe::Result {
                 settings,
                 initial_image,
                 ipc_rx,
+                requested_target_format,
+                active_target_format,
+                initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)
         }),
     );
@@ -593,8 +662,8 @@ fn main() -> eframe::Result {
             )
         };
 
+        // No `set_parent`: `run_native` failed before a main window was created.
         rfd::MessageDialog::new()
-            .set_title(rust_i18n::t!("dialog.startup_error_title").to_string())
             .set_description(&dialog_msg)
             .set_level(rfd::MessageLevel::Error)
             .show();

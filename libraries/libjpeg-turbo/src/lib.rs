@@ -11,6 +11,9 @@ use libc::{c_int, c_uchar, c_ulong, c_void};
 #[allow(non_camel_case_types)]
 type tjhandle = *mut c_void;
 
+/// `tjGetErrorCode` — warning vs fatal (libjpeg-turbo ≥ 1.6). See `turbojpeg.h` `enum TJERR`.
+const TJERR_WARNING: c_int = 0;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TJPF {
@@ -64,10 +67,29 @@ unsafe extern "C" {
     ) -> c_int;
     fn tjDestroy(handle: tjhandle) -> c_int;
     fn tjGetErrorStr2(handle: tjhandle) -> *const libc::c_char;
+    /// Distinguishes warning (non-fatal) from fatal after `tjDecompress*` / `tjDecompressHeader*` returns -1.
+    fn tjGetErrorCode(handle: tjhandle) -> c_int;
 }
 
 pub struct Decompressor {
     handle: tjhandle,
+}
+
+/// TurboJPEG returns `0` on full success and `-1` on failure **or** on recoverable warning (e.g. unknown
+/// marker `0x9d`). In the latter case `tjGetErrorCode` returns `0` (`TJERR_WARNING` in `turbojpeg.h`) and the output is still valid.
+/// Do not use `TJFLAG_STOPONWARNING` on decompress flags — that turns warnings into hard failures.
+fn turbo_jpeg_ok(handle: tjhandle, res: c_int) -> Result<(), String> {
+    if res == 0 {
+        return Ok(());
+    }
+    unsafe {
+        let code = tjGetErrorCode(handle);
+        if code == TJERR_WARNING {
+            return Ok(());
+        }
+        let err = std::ffi::CStr::from_ptr(tjGetErrorStr2(handle));
+        Err(err.to_string_lossy().into_owned())
+    }
 }
 
 impl Decompressor {
@@ -97,10 +119,7 @@ impl Decompressor {
             )
         };
 
-        if res != 0 {
-            let err = unsafe { std::ffi::CStr::from_ptr(tjGetErrorStr2(self.handle)) };
-            return Err(err.to_string_lossy().into_owned());
-        }
+        turbo_jpeg_ok(self.handle, res)?;
 
         let subsamp_enum = match subsamp {
             0 => TJSAMP::SAMP_444,
@@ -145,10 +164,7 @@ impl Decompressor {
             )
         };
 
-        if res != 0 {
-            let err = unsafe { std::ffi::CStr::from_ptr(tjGetErrorStr2(self.handle)) };
-            return Err(err.to_string_lossy().into_owned());
-        }
+        turbo_jpeg_ok(self.handle, res)?;
 
         Ok(dst_buf)
     }

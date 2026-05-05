@@ -1,7 +1,7 @@
 {
   "name": "simple-image-viewer",
   "version-string": "1.5.1",
-  "builtin-baseline": "b781af668027bbf77f2f827f47b5c6cd8d825c08",
+  "builtin-baseline": "ec3ad1c0b013c51116b7eed2ae25bcfc38e639e9",
   "dependencies": [
     {
       "name": "tiff",
@@ -23,6 +23,27 @@
         "x3f"
       ]
     },
+    "openexr",
+    {
+      "name": "libavif",
+      "features": [
+        "dav1d"
+      ]
+    },
+    "dav1d",
+    {
+      "name": "libheif",
+      "features": [
+        "iso23001-17",
+        "jpeg",
+        "openjpeg",
+        "dav1d",
+        "h264-decoder",
+        "experimental-mini"
+      ]
+    },
+    "libde265",
+    "libjxl",
     "zlib"
   ]
 }

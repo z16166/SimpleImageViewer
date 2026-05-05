@@ -155,6 +155,16 @@ pub struct Settings {
     #[serde(default)]
     pub raw_high_quality: bool,
 
+    // HDR tone mapping
+    #[serde(default = "default_true")]
+    pub hdr_native_surface_enabled: bool,
+    #[serde(default)]
+    pub hdr_exposure_ev: f32,
+    #[serde(default = "default_hdr_sdr_white_nits")]
+    pub hdr_sdr_white_nits: f32,
+    #[serde(default = "default_hdr_max_display_nits")]
+    pub hdr_max_display_nits: f32,
+
     // Language (locale code: "en", "zh-CN", "zh-HK")
     #[serde(default)]
     pub language: String,
@@ -168,6 +178,17 @@ pub struct Settings {
     pub enable_log_file: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    // Window placement (persisted so the app reopens on the same monitor it
+    // last closed on — important on multi-monitor systems where the user has
+    // mixed HDR + SDR displays and wants to control which one HDR rendering
+    // is exercised on).
+    #[serde(default)]
+    pub window_outer_position: Option<[i32; 2]>,
+    #[serde(default)]
+    pub window_inner_size: Option<[u32; 2]>,
+    #[serde(default)]
+    pub window_maximized: bool,
 }
 
 fn default_interval() -> f32 {
@@ -190,6 +211,12 @@ fn default_transition_style() -> TransitionStyle {
 }
 fn default_transition_ms() -> u32 {
     800
+}
+fn default_hdr_sdr_white_nits() -> f32 {
+    crate::hdr::types::DEFAULT_SDR_WHITE_NITS
+}
+fn default_hdr_max_display_nits() -> f32 {
+    crate::hdr::types::DEFAULT_MAX_DISPLAY_NITS
 }
 fn default_log_level() -> String {
     "info".to_string()
@@ -228,10 +255,17 @@ impl Default for Settings {
             last_music_cue_track: None,
             audio_device: None,
             raw_high_quality: false,
+            hdr_native_surface_enabled: true,
+            hdr_exposure_ev: 0.0,
+            hdr_sdr_white_nits: default_hdr_sdr_white_nits(),
+            hdr_max_display_nits: default_hdr_max_display_nits(),
             language: String::new(),
             theme: AppTheme::Dark,
             enable_log_file: true,
             log_level: default_log_level(),
+            window_outer_position: None,
+            window_inner_size: None,
+            window_maximized: false,
         }
     }
 }
@@ -306,16 +340,34 @@ pub fn settings_path() -> PathBuf {
 }
 
 impl Settings {
+    pub fn hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
+        crate::hdr::types::HdrToneMapSettings {
+            exposure_ev: self.hdr_exposure_ev,
+            sdr_white_nits: self.hdr_sdr_white_nits,
+            max_display_nits: self
+                .hdr_max_display_nits
+                .max(self.hdr_sdr_white_nits.max(1.0)),
+        }
+    }
+
     pub fn load() -> Self {
         let path = settings_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
             match serde_yaml::from_str::<Self>(&text) {
                 Ok(s) => {
+                    let hdr_sdr_white_nits = s.hdr_sdr_white_nits.clamp(80.0, 400.0);
+                    let hdr_max_display_nits = s
+                        .hdr_max_display_nits
+                        .clamp(100.0, 10_000.0)
+                        .max(hdr_sdr_white_nits);
                     return Self {
                         auto_switch_interval: s.auto_switch_interval.clamp(0.5, 300.0),
                         volume: s.volume.clamp(0.0, 1.0),
                         font_size: s.font_size.clamp(12.0, 72.0),
                         transition_ms: s.transition_ms.clamp(50, 5000),
+                        hdr_exposure_ev: s.hdr_exposure_ev.clamp(-8.0, 8.0),
+                        hdr_sdr_white_nits,
+                        hdr_max_display_nits,
                         ..s
                     };
                 }
@@ -331,5 +383,61 @@ impl Settings {
             Ok(text) => std::fs::write(&path, text).map_err(|e| e.to_string()),
             Err(e) => Err(format!("[settings] serialize error: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn default_settings_expose_hdr_tone_map_controls() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.hdr_exposure_ev, 0.0);
+        assert_eq!(
+            settings.hdr_sdr_white_nits,
+            crate::hdr::types::DEFAULT_SDR_WHITE_NITS
+        );
+        assert_eq!(
+            settings.hdr_max_display_nits,
+            crate::hdr::types::DEFAULT_MAX_DISPLAY_NITS
+        );
+    }
+
+    #[test]
+    fn default_settings_enable_native_hdr_surface_request() {
+        let settings = Settings::default();
+
+        assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn missing_native_hdr_surface_setting_defaults_to_enabled() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn explicit_native_hdr_surface_setting_can_disable_request() {
+        let settings: Settings =
+            serde_yaml::from_str("hdr_native_surface_enabled: false").expect("deserialize setting");
+
+        assert!(!settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn hdr_tone_map_settings_keep_display_nits_at_least_sdr_white() {
+        let settings = Settings {
+            hdr_sdr_white_nits: 300.0,
+            hdr_max_display_nits: 200.0,
+            ..Settings::default()
+        };
+
+        let tone_map = settings.hdr_tone_map_settings();
+
+        assert_eq!(tone_map.sdr_white_nits, 300.0);
+        assert_eq!(tone_map.max_display_nits, 300.0);
     }
 }

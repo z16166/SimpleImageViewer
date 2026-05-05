@@ -147,6 +147,24 @@ fn process_print_job(job: PrintJob) -> Result<(), String> {
         } else {
             flatten_alpha_to_white(&rgba_img)
         }
+    } else if ext == "exr" {
+        let hdr = crate::hdr::decode::decode_hdr_image(&job.original_path)?;
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&hdr, 0.0)?;
+        let rgba_img = RgbaImage::from_raw(hdr.width, hdr.height, pixels)
+            .ok_or_else(|| rust_i18n::t!("print.err_buffer").to_string())?;
+
+        if job.mode == PrintMode::VisibleArea && job.crop_rect_pixels.is_some() {
+            let [x, y, w, h] = job.crop_rect_pixels.unwrap();
+            let (iw, ih) = rgba_img.dimensions();
+            let x = x.min(iw.saturating_sub(1));
+            let y = y.min(ih.saturating_sub(1));
+            let w = w.min(iw - x);
+            let h = h.min(ih - y);
+            let cropped_img = image::imageops::crop_imm(&rgba_img, x, y, w, h).to_image();
+            flatten_alpha_to_white(&cropped_img)
+        } else {
+            flatten_alpha_to_white(&rgba_img)
+        }
     } else {
         // Standard (non-tiled) load
         let img = image::open(&job.original_path).map_err(|e| e.to_string())?;
@@ -211,7 +229,7 @@ fn encode_jpeg_to_memory<W: std::io::Write + std::io::Seek>(
     writer: W,
     quality: u8,
 ) -> Result<(), String> {
-    use ::image::codecs::jpeg::JpegEncoder;
+    use image::codecs::jpeg::JpegEncoder;
     let mut encoder = JpegEncoder::new_with_quality(writer, quality);
     encoder
         .encode(

@@ -14,17 +14,402 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::ImageViewerApp;
-use crate::tile_cache::{TileCoord, TileStatus};
+use crate::app::rendering::plan::RenderShape;
+use crate::app::rendering::plane::{
+    PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
+};
+use crate::app::{ImageViewerApp, TransitionStyle};
+use crate::loader::{TileDecodeSource, TilePixelKind};
+use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use std::collections::HashSet;
+use std::sync::Arc;
 
 const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
 const FIT_SCALE_BUFFER: f32 = 1.05;
+const HDR_TILE_MIN_SCREEN_PX: f32 = 192.0;
 const BURST_UPLOAD_MULT: usize = 4;
 /// Hard per-frame upload cap for 512px tiles (each tile = 1MB RGBA).
 /// 16 × 1MB = 16MB per frame — safe for all GPU tiers.
 const BURST_UPLOAD_MAX_512: usize = 16;
+
+pub(crate) fn should_draw_tiled_preview_transition(
+    transition: TransitionStyle,
+    is_animating: bool,
+    has_preview_texture: bool,
+) -> bool {
+    is_animating
+        && has_preview_texture
+        && matches!(
+            transition,
+            TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
+        )
+}
+
+fn should_draw_tiled_preview_transition_for_backend(
+    plane_backend: PlaneBackendKind,
+    transition: TransitionStyle,
+    is_animating: bool,
+    has_preview_texture: bool,
+) -> bool {
+    plane_backend == PlaneBackendKind::Sdr
+        && should_draw_tiled_preview_transition(transition, is_animating, has_preview_texture)
+}
+
+fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ]
+    .map(|p| pivot + rot * (p - pivot));
+    let min_x = corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|p| p.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let max_y = corners
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
+}
+
+fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps: i32) -> Rect {
+    let rotation_steps = rotation_steps.rem_euclid(4);
+    if rotation_steps == 0 {
+        tile_screen_rect
+    } else {
+        rotated_axis_aligned_rect(
+            tile_screen_rect,
+            pivot,
+            rotation_steps as f32 * (std::f32::consts::PI / 2.0),
+        )
+    }
+}
+
+#[cfg(feature = "tile-debug")]
+fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot: Option<egui::emath::Rot2>) {
+    if let Some(r) = rot {
+        let p1 = pivot + r * (rect.left_top() - pivot);
+        let p2 = pivot + r * (rect.right_top() - pivot);
+        let p3 = pivot + r * (rect.right_bottom() - pivot);
+        let p4 = pivot + r * (rect.left_bottom() - pivot);
+        ui.painter().line_segment(
+            [p1, p2],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p2, p3],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p3, p4],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+        ui.painter().line_segment(
+            [p4, p1],
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+        );
+    } else {
+        ui.painter().rect(
+            rect,
+            0.0,
+            Color32::TRANSPARENT,
+            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn should_schedule_tile_request(
+    is_cached: bool,
+    pending_count: usize,
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    scheduled_this_frame: usize,
+    frame_schedule_cap: usize,
+    is_primary_visible: bool,
+) -> bool {
+    !is_cached
+        && pending_count < hard_pending_cap
+        && scheduled_this_frame < frame_schedule_cap
+        && (is_primary_visible || pending_count < pending_cap)
+}
+
+fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind {
+    match plane_backend {
+        PlaneBackendKind::Sdr => TilePixelKind::Sdr,
+        PlaneBackendKind::Hdr => TilePixelKind::Hdr,
+    }
+}
+
+fn tile_pending_key_for_backend(
+    coord: TileCoord,
+    plane_backend: PlaneBackendKind,
+) -> PendingTileKey {
+    PendingTileKey::new(coord, tile_pixel_kind_for_backend(plane_backend))
+}
+
+fn tile_decode_source_for_backend(
+    plane_backend: PlaneBackendKind,
+    sdr_source: Option<Arc<dyn crate::loader::TiledImageSource>>,
+    hdr_source: Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+) -> Option<TileDecodeSource> {
+    match plane_backend {
+        PlaneBackendKind::Sdr => sdr_source.map(TileDecodeSource::Sdr),
+        PlaneBackendKind::Hdr => hdr_source.map(|source| TileDecodeSource::Hdr(Arc::clone(source))),
+    }
+}
+
+fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
+    let scale = if tile_size >= 1024 { 2 } else { 1 };
+    if visible_count > 1000 {
+        24 / scale
+    } else if visible_count > 200 {
+        48 / scale
+    } else if visible_count > 50 {
+        64 / scale
+    } else {
+        96 / scale
+    }
+}
+
+fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
+    if tile_size >= 1024 { 96 } else { 192 }
+}
+
+fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
+    let scale = if tile_size >= 1024 { 1 } else { 2 };
+    worker_threads.max(1) * scale
+}
+
+struct TileRequestBudget {
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    frame_schedule_cap: usize,
+    scheduled_this_frame: usize,
+}
+
+impl TileRequestBudget {
+    fn new(visible_count: usize, tile_size: u32, worker_threads: usize) -> Self {
+        Self {
+            pending_cap: tile_request_pending_cap(visible_count, tile_size),
+            hard_pending_cap: tile_request_hard_pending_cap(tile_size),
+            frame_schedule_cap: tile_request_frame_schedule_cap(worker_threads, tile_size),
+            scheduled_this_frame: 0,
+        }
+    }
+
+    fn should_schedule(
+        &self,
+        is_cached: bool,
+        pending_count: usize,
+        is_primary_visible: bool,
+    ) -> bool {
+        should_schedule_tile_request(
+            is_cached,
+            pending_count,
+            self.pending_cap,
+            self.hard_pending_cap,
+            self.scheduled_this_frame,
+            self.frame_schedule_cap,
+            is_primary_visible,
+        )
+    }
+
+    fn record_scheduled(&mut self) {
+        self.scheduled_this_frame += 1;
+    }
+
+    fn try_mark_pending(
+        &mut self,
+        pending_tiles: &mut HashSet<PendingTileKey>,
+        pending_key: PendingTileKey,
+        is_primary_visible: bool,
+    ) -> bool {
+        if !self.should_schedule(false, pending_tiles.len(), is_primary_visible) {
+            return false;
+        }
+        if !pending_tiles.insert(pending_key) {
+            return false;
+        }
+        self.record_scheduled();
+        true
+    }
+
+    #[cfg(test)]
+    fn pending_cap(&self) -> usize {
+        self.pending_cap
+    }
+
+    #[cfg(test)]
+    fn hard_pending_cap(&self) -> usize {
+        self.hard_pending_cap
+    }
+
+    #[cfg(test)]
+    fn frame_schedule_cap(&self) -> usize {
+        self.frame_schedule_cap
+    }
+}
+
+fn hdr_tile_cache_key_for_coord(
+    source: &dyn crate::hdr::tiled::HdrTiledSource,
+    coord: TileCoord,
+) -> (u32, u32, u32, u32) {
+    let ts = crate::tile_cache::get_tile_size();
+    let tile_x = coord.col * ts;
+    let tile_y = coord.row * ts;
+    let tile_w = ts.min(source.width() - tile_x);
+    let tile_h = ts.min(source.height() - tile_y);
+    (tile_x, tile_y, tile_w, tile_h)
+}
+
+fn prioritize_tile_visits(
+    primary_visible: &[(TileCoord, Rect, Rect)],
+    padded_visible: &[(TileCoord, Rect, Rect)],
+) -> Vec<(TileCoord, Rect, Rect)> {
+    let mut ordered = primary_visible.to_vec();
+    let primary_coords = primary_visible
+        .iter()
+        .map(|(coord, _, _)| *coord)
+        .collect::<HashSet<_>>();
+    ordered.extend(
+        padded_visible
+            .iter()
+            .filter(|(coord, _, _)| !primary_coords.contains(coord))
+            .copied(),
+    );
+    ordered
+}
+
+fn tile_visits_for_backend(
+    plane_backend: PlaneBackendKind,
+    primary_visible: &[(TileCoord, Rect, Rect)],
+    padded_visible: &[(TileCoord, Rect, Rect)],
+) -> Vec<(TileCoord, Rect, Rect)> {
+    match plane_backend {
+        PlaneBackendKind::Sdr => padded_visible.to_vec(),
+        PlaneBackendKind::Hdr => prioritize_tile_visits(primary_visible, padded_visible),
+    }
+}
+
+fn tile_request_priority(tile_visit_count: usize, visit_idx: usize) -> f32 {
+    tile_visit_count.saturating_sub(visit_idx) as f32
+}
+
+fn tiled_lookahead_padding(hardware_padding: f32, tile_size: u32) -> f32 {
+    hardware_padding.min(tile_size as f32 * 2.0)
+}
+
+fn should_invalidate_tile_requests_on_pan_drag() -> bool {
+    false
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TiledPlaneKind {
+    Sdr,
+    Hdr,
+}
+
+fn tile_plane_kind_for_backend(plane_backend: PlaneBackendKind) -> TiledPlaneKind {
+    match plane_backend {
+        PlaneBackendKind::Sdr => TiledPlaneKind::Sdr,
+        PlaneBackendKind::Hdr => TiledPlaneKind::Hdr,
+    }
+}
+
+fn should_draw_tiled_preview_for_backend(
+    plane_backend: PlaneBackendKind,
+    preview_kind: TiledPlaneKind,
+) -> bool {
+    tile_plane_kind_for_backend(plane_backend) == preview_kind
+}
+
+fn should_draw_tiled_tile_plane_for_backend(
+    plane_backend: PlaneBackendKind,
+    tile_plane_kind: TiledPlaneKind,
+    has_cached_tile: bool,
+) -> bool {
+    tile_plane_kind_for_backend(plane_backend) == tile_plane_kind && has_cached_tile
+}
+
+fn should_repaint_for_ready_tiles_for_backend(
+    plane_backend: PlaneBackendKind,
+    has_ready_to_upload: bool,
+) -> bool {
+    match plane_backend {
+        PlaneBackendKind::Sdr | PlaneBackendKind::Hdr => has_ready_to_upload,
+    }
+}
+
+fn has_pending_visible_tiles_for_backend(
+    plane_backend: PlaneBackendKind,
+    pending_tiles: &HashSet<PendingTileKey>,
+    visible_coords: &[TileCoord],
+) -> bool {
+    if plane_backend != PlaneBackendKind::Hdr {
+        return false;
+    }
+
+    pending_tiles
+        .iter()
+        .any(|key| key.pixel_kind == TilePixelKind::Hdr && visible_coords.contains(&key.coord))
+}
+
+fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
+    if preview_scale >= fit_scale {
+        (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
+    } else {
+        let min_tile_screen_px = 64.0;
+        let tile_scale_min = min_tile_screen_px / tile_size as f32;
+        tile_scale_min.max(fit_scale * FIT_SCALE_BUFFER)
+    }
+}
+
+fn tiled_plane_threshold_for_backend(
+    plane_backend: PlaneBackendKind,
+    preview_scale: f32,
+    fit_scale: f32,
+    tile_size: u32,
+) -> f32 {
+    let base = tiled_plane_threshold(preview_scale, fit_scale, tile_size);
+    match plane_backend {
+        PlaneBackendKind::Sdr => base,
+        PlaneBackendKind::Hdr => base.max(HDR_TILE_MIN_SCREEN_PX / tile_size.max(1) as f32),
+    }
+}
+
+fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
+    effective_scale >= threshold
+}
+
+#[cfg(test)]
+fn tile_kind_uses_shared_schedule_policy(
+    _pixel_kind: TilePixelKind,
+    is_cached: bool,
+    pending_count: usize,
+    pending_cap: usize,
+    hard_pending_cap: usize,
+    scheduled_this_frame: usize,
+    frame_schedule_cap: usize,
+    is_primary_visible: bool,
+) -> bool {
+    should_schedule_tile_request(
+        is_cached,
+        pending_count,
+        pending_cap,
+        hard_pending_cap,
+        scheduled_this_frame,
+        frame_schedule_cap,
+        is_primary_visible,
+    )
+}
 
 impl ImageViewerApp {
     /// Draw the tiled (large-image) rendering path.
@@ -38,60 +423,79 @@ impl ImageViewerApp {
     ) {
         if canvas_resp.dragged() {
             self.pan_offset += canvas_resp.drag_delta();
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-            if let Some(tm) = &mut self.tile_manager {
-                tm.generation = self.generation;
-                tm.pending_tiles.clear();
+            if should_invalidate_tile_requests_on_pan_drag() {
+                self.invalidate_tile_requests_for_view_change();
             }
-            self.loader.flush_tile_queue();
         }
 
         // Rotation logic
         let rotation = self.current_rotation;
-        let needs_swap = rotation % 2 != 0;
         let angle = rotation as f32 * (std::f32::consts::PI / 2.0);
 
-        // Extract immutable data first (avoids borrow conflict with compute_display_rect)
-        let tm_ref = self.tile_manager.as_ref().unwrap();
-        let img_size = Vec2::new(tm_ref.full_width as f32, tm_ref.full_height as f32);
-
-        let rotated_img_size = if needs_swap {
-            Vec2::new(img_size.y, img_size.x)
-        } else {
-            img_size
+        // Extract dimensions first; transition handling below needs mutable access to self.
+        let (full_width, full_height) = {
+            let tm = self.tile_manager.as_ref().unwrap();
+            (tm.full_width, tm.full_height)
         };
-        let dest = self.compute_display_rect(rotated_img_size, screen_rect);
+        let img_size = Vec2::new(full_width as f32, full_height as f32);
+        let layout = self.compute_plane_layout(img_size, screen_rect);
+        let rotated_img_size = layout.rotated_image_size;
+        let dest = layout.dest;
 
         // The painter transform will handle the actual rotation.
         // We need to draw the UNROTATED image into a rect that, when rotated, matches 'dest'.
-        let unrotated_size = if needs_swap {
-            Vec2::new(dest.height(), dest.width())
-        } else {
-            dest.size()
-        };
-        let unrotated_dest = Rect::from_center_size(dest.center(), unrotated_size);
+        let unrotated_dest = layout.unrotated_dest;
+        let hdr_source_for_frame = self
+            .current_hdr_tiled_image
+            .as_ref()
+            .and_then(|current| current.source_for_index(self.current_index))
+            .cloned();
+        // `has_sdr_fallback` tracks whether the tile manager already carries an SDR preview
+        // texture that the `PlaneBackendKind::Sdr` fast path can blit. When absent — e.g. an
+        // HDR-only tiled source (subsampled / luminance-chroma EXR such as `Flowers.exr`) on
+        // an SDR panel — `select_render_backend` upgrades the plan to `Hdr` so the HDR
+        // image-plane shader tone-maps the frame through `SdrToneMapped` instead of leaving
+        // the canvas blank. We deliberately do **not** pre-synthesize an SDR preview in the
+        // loader for HDR content: that memory is pure waste on systems (or usage modes) that
+        // never reach the SDR pipeline.
+        let has_sdr_fallback = self
+            .tile_manager
+            .as_ref()
+            .is_some_and(|tm| tm.preview_texture.is_some());
+        let render_plan = self.build_render_plan(
+            RenderShape::Tiled,
+            hdr_source_for_frame.is_some(),
+            has_sdr_fallback,
+        );
+        let plane_backend = render_plan.backend;
 
-        // 1. Draw preview texture as blurry background
-        if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
-            let mut mesh = egui::Mesh::with_texture(preview.id());
-            let color = Color32::WHITE;
-            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-            mesh.add_rect_with_uv(unrotated_dest, uv, color);
-
-            if rotation != 0 {
-                let pivot = dest.center();
-                let rot = egui::emath::Rot2::from_angle(angle);
-                for v in &mut mesh.vertices {
-                    v.pos = pivot + rot * (v.pos - pivot);
-                }
+        let tp = self.compute_transition_params();
+        let preview_for_transition = self
+            .tile_manager
+            .as_ref()
+            .and_then(|tm| tm.preview_texture.clone());
+        if should_draw_tiled_preview_transition_for_backend(
+            plane_backend,
+            self.active_transition,
+            tp.is_animating,
+            preview_for_transition.is_some(),
+        ) {
+            if let Some(preview) = preview_for_transition {
+                self.draw_complex_transition(
+                    ui,
+                    screen_rect,
+                    &preview,
+                    dest,
+                    unrotated_dest,
+                    rotation,
+                    angle,
+                    tp.alpha,
+                );
+                return;
             }
-            ui.painter()
-                .with_clip_rect(screen_rect)
-                .add(egui::Shape::mesh(mesh));
         }
 
-        // 2. Render high-res tiles.
+        // Render high-res tiles.
         // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size).
         // For giant images, we also only trigger tiling when the effective scale exceeds
         // the preview scale, ensuring we don't thrash VRAM for no visual gain.
@@ -102,32 +506,68 @@ impl ImageViewerApp {
         // preview_scale: ratio of preview texture resolution to the ORIGINAL image resolution.
         // This tells us at what display scale the preview's native pixels would be 1:1.
         // Above this scale, tiles provide higher quality than the preview.
-        let preview_scale = if let Some(ref p) = tm_ref.preview_texture {
+        let preview_scale = if let Some(ref p) = self.tile_manager.as_ref().unwrap().preview_texture
+        {
             p.size()[0] as f32 / rotated_img_size.x.max(1.0)
         } else {
             FALLBACK_PREVIEW_SCALE // Fallback
         };
 
-        // Trigger tiling when the display resolution exceeds the preview's native resolution.
-        // Two scenarios:
-        // 1. HQ preview available (preview_scale >= fit_scale): tile when zoomed past preview quality
-        // 2. LQ bootstrap preview (preview_scale < fit_scale): use conservative threshold to avoid
-        //    flooding the queue with thousands of tiles before HQ preview arrives
-        let threshold = if preview_scale >= fit_scale {
-            // Tile when zoomed sufficiently past preview's native resolution.
-            // At preview_scale * 1.0, tiles offer no visible improvement over the preview.
-            // At 1.2x, tiles are noticeably sharper while keeping tile count manageable.
-            (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
-        } else {
-            // LQ bootstrap: require tiles to render at >= 64 screen pixels before loading
-            let min_tile_screen_px = 64.0;
-            let tile_scale_min = min_tile_screen_px / crate::tile_cache::get_tile_size() as f32;
-            tile_scale_min.max(fit_scale * FIT_SCALE_BUFFER)
-        };
+        let threshold = tiled_plane_threshold_for_backend(
+            plane_backend,
+            preview_scale,
+            fit_scale,
+            crate::tile_cache::get_tile_size(),
+        );
 
         let effective_scale = dest.width() / rotated_img_size.x;
 
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Hdr) {
+            if let Some(hdr_preview) = self
+                .current_hdr_tiled_preview
+                .as_ref()
+                .and_then(|current| current.image_for_index(self.current_index))
+            {
+                draw_plane(
+                    ui,
+                    screen_rect,
+                    hdr_image_plane_rect(&layout),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    &layout,
+                    PlaneDrawSource::HdrImage {
+                        image: Arc::clone(hdr_preview),
+                        tone_map: self.hdr_renderer.tone_map,
+                        target_format: render_plan
+                            .target_format
+                            .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                        output_mode: render_plan.output_mode,
+                        rotation_steps: rotation as u32,
+                        alpha: 1.0,
+                    },
+                );
+            }
+        }
+
+        // Draw the preview that matches the active tiled plane backend.
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr) {
+            if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                draw_plane(
+                    ui,
+                    screen_rect,
+                    unrotated_dest,
+                    uv,
+                    &layout,
+                    PlaneDrawSource::SdrTexture {
+                        texture_id: preview.id(),
+                        color: Color32::WHITE,
+                    },
+                );
+            }
+        }
+
         // Log threshold diagnostics once per image load
+        #[cfg(feature = "tile-debug")]
         {
             use std::sync::atomic::{AtomicU64, Ordering};
             static LAST_LOGGED_SCALE: AtomicU64 = AtomicU64::new(0);
@@ -154,16 +594,19 @@ impl ImageViewerApp {
             }
         }
 
-        if effective_scale >= threshold {
+        if is_tiled_plane_active(effective_scale, threshold) {
             // Compute visible tiles using the UNROTATED destination rect.
             // When rotation is active, we must inverse-rotate the screen clip
             // region into unrotated coordinate space. Otherwise, for extremely
             // tall/narrow images rotated 90°/270°, the unrotated rect is narrow
             // and its intersection with screen_rect only covers the center tiles.
-            let padding = self.hardware_tier.look_ahead_padding();
+            let padding = tiled_lookahead_padding(
+                self.hardware_tier.look_ahead_padding(),
+                crate::tile_cache::get_tile_size(),
+            );
             let tile_clip = if rotation != 0 {
                 let inv_rot = egui::emath::Rot2::from_angle(-angle);
-                let pivot = dest.center();
+                let pivot = layout.pivot;
                 let corners = [
                     screen_rect.left_top(),
                     screen_rect.right_top(),
@@ -191,7 +634,27 @@ impl ImageViewerApp {
                 tile_clip,
                 padding,
             );
+            let primary_visible =
+                self.tile_manager
+                    .as_ref()
+                    .unwrap()
+                    .visible_tiles(unrotated_dest, tile_clip, 0.0);
+            let tile_visits = tile_visits_for_backend(plane_backend, &primary_visible, &visible);
+            let primary_visible_coords = primary_visible
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<HashSet<_>>();
             let visible_coords: Vec<TileCoord> = visible.iter().map(|(c, _, _)| *c).collect();
+            if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                let protected_keys: Vec<_> = primary_visible
+                    .iter()
+                    .map(|(coord, _, _)| hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord))
+                    .collect();
+                hdr_source.protect_cached_tiles(&protected_keys);
+            }
+            if let Some(tm) = &mut self.tile_manager {
+                tm.retain_pending_tiles(&visible_coords);
+            }
 
             // ANTI-THRASHING: We no longer truncate 'visible' here.
             // Eviction logic is now handled in get_or_create_tile to prevent circular holes.
@@ -215,23 +678,102 @@ impl ImageViewerApp {
             let burst_upload_max = (BURST_UPLOAD_MAX_512 / tile_size_scale).max(1);
             let is_interacting = canvas_resp.dragged() || self.last_mouse_wheel_nav.abs() > 0.01;
             let tile_upload_quota = if !is_interacting {
-                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(burst_upload_max) // Burst mode
+                (self.tile_upload_quota * BURST_UPLOAD_MULT).min(burst_upload_max)
+            // Burst mode
             } else {
                 self.tile_upload_quota.min(burst_upload_max) // Stable mode also capped
             };
 
             let mut newly_uploaded = 0;
+            let mut tile_request_budget = TileRequestBudget::new(
+                tile_visits.len(),
+                crate::tile_cache::get_tile_size(),
+                rayon::current_num_threads(),
+            );
 
             {
                 let tm = self.tile_manager.as_mut().unwrap();
                 let pivot = dest.center();
+                #[cfg(feature = "tile-debug")]
                 let rot = if rotation != 0 {
                     Some(egui::emath::Rot2::from_angle(angle))
                 } else {
                     None
                 };
 
-                for (idx, (coord, tile_screen_rect, uv)) in visible.iter().enumerate() {
+                for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
+                    if tile_plane_kind_for_backend(plane_backend) == TiledPlaneKind::Hdr {
+                        if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
+                            let is_primary_visible = primary_visible_coords.contains(coord);
+                            let (tile_x, tile_y, tile_w, tile_h) =
+                                hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord);
+                            let Some(hdr_tile) =
+                                hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
+                            else {
+                                if tile_request_budget.try_mark_pending(
+                                    &mut tm.pending_tiles,
+                                    tile_pending_key_for_backend(*coord, plane_backend),
+                                    is_primary_visible,
+                                ) {
+                                    if let Some(source) = tile_decode_source_for_backend(
+                                        plane_backend,
+                                        None,
+                                        Some(hdr_source),
+                                    ) {
+                                        self.loader.request_tile(
+                                            self.current_index,
+                                            tm.generation,
+                                            tile_request_priority(tile_visits.len(), idx),
+                                            source,
+                                            coord.col,
+                                            coord.row,
+                                        );
+                                    }
+                                }
+                                continue;
+                            };
+                            if !should_draw_tiled_tile_plane_for_backend(
+                                plane_backend,
+                                TiledPlaneKind::Hdr,
+                                true,
+                            ) {
+                                continue;
+                            }
+
+                            let unclipped_hdr_rect =
+                                tile_plane_rect_for_tile(*tile_screen_rect, pivot, rotation);
+                            draw_plane(
+                                ui,
+                                screen_rect,
+                                unclipped_hdr_rect,
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                &layout,
+                                PlaneDrawSource::HdrTile {
+                                    tile: hdr_tile,
+                                    tone_map: self.hdr_renderer.tone_map,
+                                    target_format: render_plan
+                                        .target_format
+                                        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+                                    output_mode: render_plan.output_mode,
+                                    rotation_steps: rotation as u32,
+                                    alpha: 1.0,
+                                },
+                            );
+
+                            #[cfg(feature = "tile-debug")]
+                            if self.settings.show_osd {
+                                use crate::app::rendering::plane::clipped_plane_rect_and_uv;
+
+                                if let Some((hdr_rect, _)) =
+                                    clipped_plane_rect_and_uv(unclipped_hdr_rect, screen_rect)
+                                {
+                                    draw_tile_debug_border(ui, hdr_rect, pivot, None);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
                     let allow_upload = newly_uploaded < tile_upload_quota;
                     let (status, just_uploaded) =
                         tm.get_or_create_tile(*coord, &ctx_ref, allow_upload, &visible_coords);
@@ -246,88 +788,49 @@ impl ImageViewerApp {
                             // No fade-in: the preview texture is always rendered underneath,
                             // so tile pop-in is not jarring. Fade caused continuous repaints
                             // that wasted CPU/GPU cycles even when the user was not interacting.
-                            let mut mesh = egui::Mesh::with_texture(handle.id());
-                            mesh.add_rect_with_uv(*tile_screen_rect, *uv, Color32::WHITE);
-                            if let Some(r) = rot {
-                                for v in &mut mesh.vertices {
-                                    v.pos = pivot + r * (v.pos - pivot);
-                                }
-                            }
-                            ui.painter()
-                                .with_clip_rect(screen_rect)
-                                .add(egui::Shape::mesh(mesh));
+                            draw_sdr_texture_plane(
+                                ui,
+                                screen_rect,
+                                handle.id(),
+                                *tile_screen_rect,
+                                *uv,
+                                Color32::WHITE,
+                                &layout,
+                            );
 
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
                             if self.settings.show_osd {
-                                let debug_rect = *tile_screen_rect;
-                                if let Some(r) = rot {
-                                    // Approximate rotation of rect for border
-                                    let p1 = pivot + r * (debug_rect.left_top() - pivot);
-                                    let p2 = pivot + r * (debug_rect.right_top() - pivot);
-                                    let p3 = pivot + r * (debug_rect.right_bottom() - pivot);
-                                    let p4 = pivot + r * (debug_rect.left_bottom() - pivot);
-                                    ui.painter().line_segment(
-                                        [p1, p2],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p2, p3],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p3, p4],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                    ui.painter().line_segment(
-                                        [p4, p1],
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                    );
-                                } else {
-                                    ui.painter().rect(
-                                        debug_rect,
-                                        0.0,
-                                        Color32::TRANSPARENT,
-                                        egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
+                                draw_tile_debug_border(ui, *tile_screen_rect, pivot, rot);
                             }
                         }
                         TileStatus::Pending(needs_request) => {
                             if needs_request {
-                                // Dynamic pending cap: scale inversely with visible tile count.
-                                // At high zoom (few tiles visible), load fast.
-                                // At low zoom (many visible), allow enough to keep worker threads busy.
-                                // Scale down for larger tiles to keep memory bounded.
-                                let visible_count = visible.len();
-                                let ts = crate::tile_cache::get_tile_size();
-                                let scale = if ts >= 1024 { 2 } else { 1 }; // halve caps for 1024 tiles
-                                let max_pending = if visible_count > 1000 {
-                                    24 / scale
-                                } else if visible_count > 200 {
-                                    48 / scale
-                                } else if visible_count > 50 {
-                                    64 / scale
-                                } else {
-                                    96 / scale
-                                };
-                                if tm.pending_tiles.len() >= max_pending {
+                                let is_primary_visible = primary_visible_coords.contains(coord);
+                                if !tile_request_budget.try_mark_pending(
+                                    &mut tm.pending_tiles,
+                                    tile_pending_key_for_backend(*coord, plane_backend),
+                                    is_primary_visible,
+                                ) {
                                     continue; // Don't break — still need to draw already-Ready tiles below
                                 }
                                 let source = tm.get_source();
                                 let generation = tm.generation;
-                                // visible list is already sorted by distance to center
-                                let priority = (visible.len() - idx) as f32;
-                                self.loader.request_tile(
-                                    self.current_index,
-                                    generation,
-                                    priority,
-                                    source,
-                                    coord.col,
-                                    coord.row,
-                                );
-                                tm.pending_tiles.insert(*coord);
+                                let priority = tile_request_priority(tile_visits.len(), idx);
+                                if let Some(source) = tile_decode_source_for_backend(
+                                    plane_backend,
+                                    Some(source),
+                                    hdr_source_for_frame.as_ref(),
+                                ) {
+                                    self.loader.request_tile(
+                                        self.current_index,
+                                        generation,
+                                        priority,
+                                        source,
+                                        coord.col,
+                                        coord.row,
+                                    );
+                                }
                             }
                         }
                     }
@@ -367,14 +870,528 @@ impl ImageViewerApp {
             // ANTI-STALL LOGIC:
             // If we uploaded tiles this frame, OR if there are more ready to upload in CPU cache,
             // request another repaint immediately to keep the pipeline moving.
-            let has_more_ready = self
-                .tile_manager
-                .as_ref()
-                .unwrap()
-                .has_ready_to_upload(&visible_coords);
+            let has_more_ready = should_repaint_for_ready_tiles_for_backend(
+                plane_backend,
+                self.tile_manager
+                    .as_ref()
+                    .unwrap()
+                    .has_ready_to_upload(&visible_coords)
+                    || has_pending_visible_tiles_for_backend(
+                        plane_backend,
+                        &self.tile_manager.as_ref().unwrap().pending_tiles,
+                        &visible_coords,
+                    ),
+            );
             if newly_uploaded > 0 || has_more_ready {
                 ui.ctx().request_repaint();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        TileRequestBudget, TiledPlaneKind, has_pending_visible_tiles_for_backend,
+        is_tiled_plane_active, rotated_axis_aligned_rect, should_draw_tiled_preview_for_backend,
+        should_draw_tiled_preview_transition_for_backend, should_draw_tiled_tile_plane_for_backend,
+        should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
+        should_schedule_tile_request, tile_decode_source_for_backend,
+        tile_kind_uses_shared_schedule_policy, tile_pending_key_for_backend,
+        tile_pixel_kind_for_backend, tile_plane_kind_for_backend, tile_plane_rect_for_tile,
+        tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
+        tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
+        tiled_plane_threshold_for_backend,
+    };
+    use crate::app::TransitionStyle;
+    use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
+    use crate::loader::{TileDecodeSource, TilePixelKind, TiledImageSource};
+    use crate::tile_cache::TileCoord;
+    use eframe::egui::{Pos2, Rect};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    #[test]
+    fn tiled_preview_supports_complex_transitions() {
+        assert!(super::should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+        assert!(super::should_draw_tiled_preview_transition(
+            TransitionStyle::PageFlip,
+            true,
+            true
+        ));
+        assert!(super::should_draw_tiled_preview_transition(
+            TransitionStyle::Ripple,
+            true,
+            true
+        ));
+        assert!(!super::should_draw_tiled_preview_transition(
+            TransitionStyle::Fade,
+            true,
+            true
+        ));
+        assert!(!super::should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            false,
+            true
+        ));
+        assert!(!super::should_draw_tiled_preview_transition(
+            TransitionStyle::Curtain,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn tiled_preview_transition_is_selected_by_backend() {
+        assert!(should_draw_tiled_preview_transition_for_backend(
+            PlaneBackendKind::Sdr,
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+        assert!(!should_draw_tiled_preview_transition_for_backend(
+            PlaneBackendKind::Hdr,
+            TransitionStyle::Curtain,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn ready_tile_repaint_is_selected_by_backend() {
+        assert!(should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Sdr,
+            true
+        ));
+        assert!(should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Hdr,
+            true
+        ));
+        assert!(!should_repaint_for_ready_tiles_for_backend(
+            PlaneBackendKind::Sdr,
+            false
+        ));
+    }
+
+    #[test]
+    fn visible_pending_hdr_tiles_continue_repaint_until_ready() {
+        let visible = vec![TileCoord { col: 3, row: 5 }];
+        let pending = HashSet::from([crate::tile_cache::PendingTileKey::new(
+            TileCoord { col: 3, row: 5 },
+            TilePixelKind::Hdr,
+        )]);
+
+        assert!(has_pending_visible_tiles_for_backend(
+            PlaneBackendKind::Hdr,
+            &pending,
+            &visible
+        ));
+        assert!(!has_pending_visible_tiles_for_backend(
+            PlaneBackendKind::Sdr,
+            &pending,
+            &visible
+        ));
+    }
+
+    #[test]
+    fn tiled_tile_plane_is_selected_by_backend() {
+        assert_eq!(
+            tile_plane_kind_for_backend(PlaneBackendKind::Sdr),
+            TiledPlaneKind::Sdr
+        );
+        assert_eq!(
+            tile_plane_kind_for_backend(PlaneBackendKind::Hdr),
+            TiledPlaneKind::Hdr
+        );
+    }
+
+    #[test]
+    fn tiled_backend_selects_matching_pixel_kind_and_pending_key() {
+        let coord = TileCoord { col: 2, row: 3 };
+
+        assert_eq!(
+            tile_pixel_kind_for_backend(PlaneBackendKind::Sdr),
+            TilePixelKind::Sdr
+        );
+        assert_eq!(
+            tile_pixel_kind_for_backend(PlaneBackendKind::Hdr),
+            TilePixelKind::Hdr
+        );
+        assert_eq!(
+            tile_pending_key_for_backend(coord, PlaneBackendKind::Sdr),
+            crate::tile_cache::PendingTileKey::new(coord, TilePixelKind::Sdr)
+        );
+        assert_eq!(
+            tile_pending_key_for_backend(coord, PlaneBackendKind::Hdr),
+            crate::tile_cache::PendingTileKey::new(coord, TilePixelKind::Hdr)
+        );
+    }
+
+    struct TestTiledSource;
+
+    impl TiledImageSource for TestTiledSource {
+        fn width(&self) -> u32 {
+            1
+        }
+
+        fn height(&self) -> u32 {
+            1
+        }
+
+        fn extract_tile(&self, _x: u32, _y: u32, _w: u32, _h: u32) -> Arc<Vec<u8>> {
+            Arc::new(vec![0, 0, 0, 255])
+        }
+
+        fn generate_preview(&self, _max_w: u32, _max_h: u32) -> (u32, u32, Vec<u8>) {
+            (1, 1, vec![0, 0, 0, 255])
+        }
+
+        fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
+            None
+        }
+    }
+
+    fn test_hdr_source() -> Arc<dyn crate::hdr::tiled::HdrTiledSource> {
+        Arc::new(
+            crate::hdr::tiled::HdrTiledImageSource::new(crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                    crate::hdr::types::HdrColorSpace::LinearSrgb,
+                ),
+                rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0]),
+            })
+            .expect("build HDR tiled source"),
+        )
+    }
+
+    #[test]
+    fn tile_decode_source_is_selected_by_backend() {
+        let sdr_source: Arc<dyn TiledImageSource> = Arc::new(TestTiledSource);
+        let hdr_source = test_hdr_source();
+
+        assert!(matches!(
+            tile_decode_source_for_backend(
+                PlaneBackendKind::Sdr,
+                Some(Arc::clone(&sdr_source)),
+                Some(&hdr_source)
+            ),
+            Some(TileDecodeSource::Sdr(_))
+        ));
+        assert!(matches!(
+            tile_decode_source_for_backend(
+                PlaneBackendKind::Hdr,
+                Some(Arc::clone(&sdr_source)),
+                Some(&hdr_source)
+            ),
+            Some(TileDecodeSource::Hdr(_))
+        ));
+        assert!(
+            tile_decode_source_for_backend(PlaneBackendKind::Sdr, None, Some(&hdr_source))
+                .is_none()
+        );
+        assert!(
+            tile_decode_source_for_backend(PlaneBackendKind::Hdr, Some(sdr_source), None).is_none()
+        );
+    }
+
+    #[test]
+    fn rotated_axis_aligned_rect_swaps_size_for_quarter_turns() {
+        let rect = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 60.0));
+        let pivot = Pos2::new(20.0, 40.0);
+
+        let rotated = rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2);
+
+        assert_eq!(rotated.width(), rect.height());
+        assert_eq!(rotated.height(), rect.width());
+        assert_eq!(rotated.center(), rect.center());
+    }
+
+    #[test]
+    fn tile_plane_rect_handles_rotation_like_sdr_tiles() {
+        let rect = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 60.0));
+        let pivot = Pos2::new(20.0, 40.0);
+
+        assert_eq!(tile_plane_rect_for_tile(rect, pivot, 0), rect);
+
+        let rotated = tile_plane_rect_for_tile(rect, pivot, 1);
+        assert_eq!(
+            rotated,
+            rotated_axis_aligned_rect(rect, pivot, std::f32::consts::FRAC_PI_2)
+        );
+    }
+
+    #[test]
+    fn clipped_plane_rect_matches_tile_clipping_semantics() {
+        let tile_rect = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(50.0, 110.0));
+        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
+
+        let (rect, uv) = clipped_plane_rect_and_uv(tile_rect, clip).expect("visible clipped tile");
+
+        assert_eq!(
+            rect,
+            Rect::from_min_max(Pos2::new(0.0, 10.0), Pos2::new(50.0, 100.0))
+        );
+        assert_eq!(
+            uv,
+            Rect::from_min_max(Pos2::new(0.5, 0.0), Pos2::new(1.0, 0.9))
+        );
+    }
+
+    #[test]
+    fn tile_request_scheduling_is_budgeted() {
+        assert!(!should_schedule_tile_request(true, 0, 96, 192, 0, 32, true));
+        assert!(should_schedule_tile_request(
+            false, 2, 96, 192, 0, 32, false
+        ));
+        assert!(!should_schedule_tile_request(
+            false, 96, 96, 192, 0, 32, false
+        ));
+        assert!(should_schedule_tile_request(
+            false, 96, 96, 192, 0, 32, true
+        ));
+        assert!(!should_schedule_tile_request(
+            false, 192, 96, 192, 0, 32, true
+        ));
+        assert!(!should_schedule_tile_request(
+            false, 2, 96, 192, 32, 32, true
+        ));
+    }
+
+    #[test]
+    fn sdr_tile_request_uses_shared_primary_visible_overcommit_policy() {
+        assert!(tile_kind_uses_shared_schedule_policy(
+            TilePixelKind::Sdr,
+            false,
+            96,
+            96,
+            192,
+            0,
+            32,
+            true
+        ));
+        assert!(tile_kind_uses_shared_schedule_policy(
+            TilePixelKind::Hdr,
+            false,
+            96,
+            96,
+            192,
+            0,
+            32,
+            true
+        ));
+    }
+
+    #[test]
+    fn tile_request_pending_cap_scales_like_sdr_tile_queue() {
+        assert_eq!(tile_request_pending_cap(10, 512), 96);
+        assert_eq!(tile_request_pending_cap(60, 512), 64);
+        assert_eq!(tile_request_pending_cap(201, 512), 48);
+        assert_eq!(tile_request_pending_cap(1001, 512), 24);
+        assert_eq!(tile_request_pending_cap(60, 1024), 32);
+    }
+
+    #[test]
+    fn tile_request_hard_pending_cap_bounds_primary_overcommit() {
+        assert_eq!(tile_request_hard_pending_cap(512), 192);
+        assert_eq!(tile_request_hard_pending_cap(1024), 96);
+    }
+
+    #[test]
+    fn tile_request_frame_schedule_cap_limits_queue_bursts() {
+        assert_eq!(tile_request_frame_schedule_cap(8, 512), 16);
+        assert_eq!(tile_request_frame_schedule_cap(8, 1024), 8);
+        assert_eq!(tile_request_frame_schedule_cap(0, 512), 2);
+    }
+
+    #[test]
+    fn tile_request_budget_centralizes_caps_and_frame_counter() {
+        let mut budget = TileRequestBudget::new(60, 512, 8);
+
+        assert_eq!(budget.pending_cap(), 64);
+        assert_eq!(budget.hard_pending_cap(), 192);
+        assert_eq!(budget.frame_schedule_cap(), 16);
+        assert!(budget.should_schedule(false, 64, true));
+        assert!(!budget.should_schedule(false, 64, false));
+
+        for _ in 0..16 {
+            assert!(budget.should_schedule(false, 0, true));
+            budget.record_scheduled();
+        }
+        assert!(!budget.should_schedule(false, 0, true));
+    }
+
+    #[test]
+    fn tile_request_budget_marks_pending_once_and_records_schedule() {
+        let mut budget = TileRequestBudget::new(10, 512, 8);
+        let coord = TileCoord { col: 2, row: 3 };
+        let key = tile_pending_key_for_backend(coord, PlaneBackendKind::Sdr);
+        let mut pending = std::collections::HashSet::new();
+
+        assert!(budget.try_mark_pending(&mut pending, key, true));
+        assert!(!budget.try_mark_pending(&mut pending, key, true));
+        assert_eq!(pending.len(), 1);
+
+        for row in 0..15 {
+            let key =
+                tile_pending_key_for_backend(TileCoord { col: 9, row }, PlaneBackendKind::Sdr);
+            assert!(budget.try_mark_pending(&mut pending, key, true));
+        }
+        let key =
+            tile_pending_key_for_backend(TileCoord { col: 10, row: 0 }, PlaneBackendKind::Sdr);
+        assert!(!budget.try_mark_pending(&mut pending, key, true));
+    }
+
+    #[test]
+    fn tile_request_priority_is_derived_from_shared_visit_order() {
+        assert_eq!(tile_request_priority(4, 0), 4.0);
+        assert_eq!(tile_request_priority(4, 3), 1.0);
+        assert_eq!(tile_request_priority(0, 0), 0.0);
+        assert_eq!(tile_request_priority(2, 7), 0.0);
+    }
+
+    #[test]
+    fn tile_visit_order_prioritizes_primary_visible_before_lookahead() {
+        let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
+        let padded = vec![
+            tile_visit(2, 3),
+            tile_visit(3, 3),
+            tile_visit(4, 3),
+            tile_visit(5, 3),
+        ];
+
+        let ordered = super::prioritize_tile_visits(&primary, &padded);
+        let ordered_coords = ordered
+            .iter()
+            .map(|(coord, _, _)| *coord)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered_coords,
+            vec![
+                TileCoord { col: 3, row: 3 },
+                TileCoord { col: 4, row: 3 },
+                TileCoord { col: 2, row: 3 },
+                TileCoord { col: 5, row: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_visit_order_is_selected_by_backend() {
+        let primary = vec![tile_visit(3, 3), tile_visit(4, 3)];
+        let padded = vec![
+            tile_visit(2, 3),
+            tile_visit(3, 3),
+            tile_visit(4, 3),
+            tile_visit(5, 3),
+        ];
+
+        let sdr_ordered = tile_visits_for_backend(PlaneBackendKind::Sdr, &primary, &padded);
+        let hdr_ordered = tile_visits_for_backend(PlaneBackendKind::Hdr, &primary, &padded);
+
+        assert_eq!(sdr_ordered, padded);
+        assert_eq!(
+            hdr_ordered
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<Vec<_>>(),
+            vec![
+                TileCoord { col: 3, row: 3 },
+                TileCoord { col: 4, row: 3 },
+                TileCoord { col: 2, row: 3 },
+                TileCoord { col: 5, row: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn tiled_lookahead_padding_is_capped_to_two_tile_widths() {
+        assert_eq!(super::tiled_lookahead_padding(2048.0, 512), 1024.0);
+        assert_eq!(super::tiled_lookahead_padding(1024.0, 1024), 1024.0);
+    }
+
+    #[test]
+    fn pan_drag_keeps_tile_generation_and_worker_queue_alive() {
+        assert!(!should_invalidate_tile_requests_on_pan_drag());
+    }
+
+    #[test]
+    fn tiled_preview_base_plane_is_selected_by_backend() {
+        assert!(should_draw_tiled_preview_for_backend(
+            PlaneBackendKind::Sdr,
+            TiledPlaneKind::Sdr
+        ));
+        assert!(!should_draw_tiled_preview_for_backend(
+            PlaneBackendKind::Hdr,
+            TiledPlaneKind::Sdr
+        ));
+        assert!(should_draw_tiled_preview_for_backend(
+            PlaneBackendKind::Hdr,
+            TiledPlaneKind::Hdr
+        ));
+        assert!(!should_draw_tiled_preview_for_backend(
+            PlaneBackendKind::Sdr,
+            TiledPlaneKind::Hdr
+        ));
+    }
+
+    #[test]
+    fn tiled_tile_plane_drawing_requires_matching_backend_and_ready_tile() {
+        assert!(!should_draw_tiled_tile_plane_for_backend(
+            PlaneBackendKind::Hdr,
+            TiledPlaneKind::Hdr,
+            false
+        ));
+        assert!(should_draw_tiled_tile_plane_for_backend(
+            PlaneBackendKind::Hdr,
+            TiledPlaneKind::Hdr,
+            true
+        ));
+        assert!(!should_draw_tiled_tile_plane_for_backend(
+            PlaneBackendKind::Sdr,
+            TiledPlaneKind::Hdr,
+            true
+        ));
+        assert!(should_draw_tiled_tile_plane_for_backend(
+            PlaneBackendKind::Sdr,
+            TiledPlaneKind::Sdr,
+            true
+        ));
+    }
+
+    #[test]
+    fn tiled_plane_threshold_matches_preview_quality_policy() {
+        assert_eq!(tiled_plane_threshold(0.5, 0.25, 512), 0.6);
+        assert_eq!(tiled_plane_threshold(0.05, 0.25, 512), 0.2625);
+        assert!(!is_tiled_plane_active(0.59, 0.6));
+        assert!(is_tiled_plane_active(0.6, 0.6));
+    }
+
+    #[test]
+    fn hdr_tile_plane_threshold_waits_until_tiles_are_visually_meaningful() {
+        let sdr_threshold =
+            tiled_plane_threshold_for_backend(PlaneBackendKind::Sdr, 4096.0 / 24576.0, 0.05, 512);
+        let hdr_threshold =
+            tiled_plane_threshold_for_backend(PlaneBackendKind::Hdr, 4096.0 / 24576.0, 0.05, 512);
+
+        assert!(sdr_threshold < 0.25);
+        assert_eq!(hdr_threshold, 0.375);
+        assert!(!is_tiled_plane_active(0.25, hdr_threshold));
+        assert!(is_tiled_plane_active(0.375, hdr_threshold));
+    }
+
+    fn tile_visit(col: u32, row: u32) -> (TileCoord, Rect, Rect) {
+        (
+            TileCoord { col, row },
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        )
     }
 }
