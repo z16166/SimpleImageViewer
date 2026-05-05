@@ -521,8 +521,8 @@ jobs:
           VC_LTL: ${{ env.VC_LTL }}
           YY_THUNKS: ${{ env.YY_THUNKS }}
         run: |
-          $env:RUSTFLAGS = "-C target-feature=+crt-static -C link-arg=/SUBSYSTEM:WINDOWS"
-          thunk --os win7 --arch x64 -- --release --features legacy_win7
+          $env:RUSTFLAGS = "-C target-feature=+crt-static"
+          thunk --os win7 --arch x64 --subsystem windows -- --release --features legacy_win7
 
 
 
