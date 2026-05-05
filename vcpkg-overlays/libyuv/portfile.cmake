@@ -11,10 +11,15 @@ vcpkg_from_git(
 # that `as` then rejects (`selected processor does not support`). Baseline AArch64 avoids that (vcpkg #44260).
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
     file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
+    # Match upstream variants (dotprod / sve / sme) for gcc-9 cross + binutils (vcpkg #44260).
     string(REPLACE "-march=armv8.2-a+dotprod+i8mm" "-march=armv8-a" _ly_cml "${_ly_cml}")
     string(REPLACE "-march=armv8-a+dotprod+i8mm" "-march=armv8-a" _ly_cml "${_ly_cml}")
+    string(REPLACE "-march=armv8.2-a+dotprod" "-march=armv8-a" _ly_cml "${_ly_cml}")
+    string(REPLACE "-march=armv8-a+dotprod" "-march=armv8-a" _ly_cml "${_ly_cml}")
     string(REPLACE "-march=armv8.5-a+i8mm+sve2" "-march=armv8-a" _ly_cml "${_ly_cml}")
     string(REPLACE "-march=armv9-a+i8mm+sme" "-march=armv8-a" _ly_cml "${_ly_cml}")
+    string(REGEX REPLACE "-march=armv8\\.2-a\\+dotprod[^ )]+" "-march=armv8-a" _ly_cml "${_ly_cml}")
+    string(REGEX REPLACE "-march=armv8-a\\+dotprod[^ )]+" "-march=armv8-a" _ly_cml "${_ly_cml}")
     file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
 endif()
 
