@@ -25,7 +25,7 @@ sed -i 's/^FROM ubuntu:20.04 AS cross-base/FROM ubuntu:22.04 AS cross-base/' "$D
 # Use a wildcard kernel so bullseye still resolves an available linux-image-*-arm64 (same idea as armv7).
 LINUX_IMG_SH="$TMP/docker/linux-image.sh"
 if grep -Fq 'kernel="${kversion}-arm64"' "$LINUX_IMG_SH"; then
-  sed -i 's/kernel="\${kversion}-arm64"/kernel='"'"'5.*-arm64'"'"'/' "$LINUX_IMG_SH"
+  sed -i 's/kernel="${kversion}-arm64"/kernel='"'"'5.*-arm64'"'"'/' "$LINUX_IMG_SH"
 else
   echo 'expected aarch64 kernel="${kversion}-arm64" in linux-image.sh; cross-rs may have changed'
   exit 1
