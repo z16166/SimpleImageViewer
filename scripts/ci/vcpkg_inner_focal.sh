@@ -7,7 +7,7 @@ export DEBIAN_FRONTEND=noninteractive
 export TZ=Etc/UTC
 export VCPKG_ROOT=/vcpkg
 
-# x64-linux: host clang for vcpkg. arm64-linux: pin GCC 10 for most ports; libyuv alone uses clang-15 (see overlay + llvm.sh below).
+# x64-linux: host clang for vcpkg. arm64-linux: pin GCC 10 for most ports; libyuv alone uses Clang 15 (apt.llvm.org, see below).
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
   # Unversioned aarch64-linux-gnu-g++ is typically GCC 9 on focal; vcpkg must not resolve to that.
   export CC=/usr/bin/aarch64-linux-gnu-gcc-10
@@ -62,18 +62,32 @@ if [[ "$installed" -ne 1 ]]; then
   exit 1
 fi
 
-# arm64-linux: libyuv vcpkg port builds with Clang 15 (+ integrated assembler); install from apt.llvm.org.
+# arm64-linux: libyuv vcpkg port uses Clang 15 (integrated aarch64 assembler).
+# llvm.sh requires lsb_release; add apt.llvm.org and install clang-15 directly.
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
-  set +e
-  wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-  wget_rc="${PIPESTATUS[0]}"
-  set -e
-  if [[ "$wget_rc" -ne 0 ]]; then
-    echo "[llvm] failed to download llvm.sh (exit ${wget_rc})"
-    exit 1
-  fi
-  chmod +x /tmp/llvm.sh
-  NONINTERACTIVE=1 /tmp/llvm.sh 15 || { echo "[llvm] llvm.sh 15 failed"; exit 1; }
+  install_clang15_from_llvm_apt() {
+    mkdir -p /usr/share/keyrings
+    wget -qO /tmp/llvm-archive.key https://apt.llvm.org/llvm-snapshot.gpg.key
+    gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg < /tmp/llvm-archive.key
+    echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] https://apt.llvm.org/focal/ llvm-toolchain-focal-15 main" \
+      >/etc/apt/sources.list.d/llvm-toolchain-focal-15.list
+    apt-get update
+    apt-get install -y --no-install-recommends clang-15
+    clang-15 --version | head -n 1
+  }
+  retry=0
+  while true; do
+    if install_clang15_from_llvm_apt; then
+      break
+    fi
+    retry=$((retry + 1))
+    if [[ "$retry" -ge 8 ]]; then
+      echo "[llvm] failed to install clang-15 after ${retry} attempts"
+      exit 1
+    fi
+    echo "[llvm] install attempt failed; retry in 25s..."
+    sleep 25
+  done
 fi
 
 dump_vcpkg_build_logs() {
