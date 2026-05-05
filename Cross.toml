@@ -1,4 +1,7 @@
 [target.aarch64-unknown-linux-gnu]
+# Built in CI by scripts/ci/build_cross_aarch64_jammy_image.sh (Ubuntu 22.04 base) so glibc matches Jammy vcpkg artifacts.
+# Local: run that script once, or remove this `image =` line to use cross-rs default (older glibc).
+image = "cross-aarch64-jammy:local"
 # Use pre-build to install dependencies for ARM64 inside the cross container
 pre-build = [
     "dpkg --add-architecture arm64",

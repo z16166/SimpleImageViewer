@@ -26,7 +26,9 @@ env:
   MONKEY_SDK_VERSION: "1270"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
   MACOSX_DEPLOYMENT_TARGET: "11.0"
-  # vcpkg configuration is handled via vcpkg.json and vcpkg-configuration.json
+  # Pinned for reproducibility (branch or full SHA). Must match `cargo install cross --rev` below.
+  CROSS_GIT_REF: main
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -37,31 +39,37 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            vcpkg_cache_suffix: focal-glibc231
             binary_name: SimpleImageViewer
             archive_ext: .tar.gz
             use_cross: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            vcpkg_cache_suffix: jammy-glibc235
             binary_name: SimpleImageViewer
             archive_ext: .tar.gz
             use_cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            vcpkg_cache_suffix: na
             binary_name: SimpleImageViewer.exe
             archive_ext: .zip
             use_cross: false
           - os: windows-latest
             target: aarch64-pc-windows-msvc
+            vcpkg_cache_suffix: na
             binary_name: SimpleImageViewer.exe
             archive_ext: .zip
             use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            vcpkg_cache_suffix: na
             binary_name: SimpleImageViewer
             archive_ext: .zip
             use_cross: false
           - os: macos-latest
             target: x86_64-apple-darwin
+            vcpkg_cache_suffix: na
             binary_name: SimpleImageViewer
             archive_ext: .zip
             use_cross: false
@@ -124,7 +132,18 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            echo "Running vcpkg install inside ubuntu:22.04 (GCC 12 cross for arm64-linux; jammy glibc baseline)..."
+            if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
+              echo "vcpkg in ubuntu:20.04 — matches cross-rs glibc (glibc 2.31) for x64-linux static libs"
+              IMG=ubuntu:20.04
+              INNER=/work/scripts/ci/vcpkg_inner_focal_x64.sh
+            elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+              echo "vcpkg in ubuntu:22.04 + GCC 12 cross for arm64-linux"
+              IMG=ubuntu:22.04
+              INNER=/work/scripts/ci/vcpkg_inner_jammy.sh
+            else
+              echo "unexpected Linux target: ${{ matrix.target }}"
+              exit 1
+            fi
             # Adjust the toolchain file path for the container
             # Do not rely on GITHUB_ENV here; always mount the same path the workflow step wrote.
             DOCKER_TOOLCHAIN=""
@@ -143,8 +162,8 @@ jobs:
               -w /work \
               -e "VCPKG_DEFAULT_TRIPLET=${VCPKG_DEFAULT_TRIPLET}" \
               -e "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${DOCKER_TOOLCHAIN}" \
-              ubuntu:22.04 \
-              bash /work/scripts/ci/vcpkg_inner_jammy.sh
+              "${IMG}" \
+              bash "${INNER}"
           else
             echo "DEBUG: Current PWD is $(pwd)"
             echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
@@ -189,9 +208,9 @@ jobs:
           path: |
             vcpkg_installed
             ${{ github.workspace }}/vcpkg_installed
-          key: vcpkg-${{ matrix.target }}-jammy-glibc235-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
-            vcpkg-${{ matrix.target }}-jammy-glibc235-
+            vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-
 
       - name: Setup Monkey's Audio SDK (Windows)
         if: runner.os == 'Windows'
@@ -239,10 +258,20 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Build cross aarch64 Jammy image (match vcpkg / glibc)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        env:
+          CROSS_GIT_REF: ${{ env.CROSS_GIT_REF }}
+        run: bash scripts/ci/build_cross_aarch64_jammy_image.sh
+
       - name: Build Release (Cross)
         if: matrix.use_cross
+        shell: bash
+        env:
+          CROSS_GIT_REF: ${{ env.CROSS_GIT_REF }}
         run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+          cargo install cross --git https://github.com/cross-rs/cross --rev "$CROSS_GIT_REF"
           cross build --release --target ${{ matrix.target }}
 
       - name: Build Release (Native)
