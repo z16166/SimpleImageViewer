@@ -89,8 +89,9 @@ jobs:
             if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-linux" >> $GITHUB_ENV;
             elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then 
               echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> $GITHUB_ENV;
-              echo "CC=aarch64-linux-gnu-gcc-10" >> $GITHUB_ENV;
-              echo "CXX=aarch64-linux-gnu-g++-10" >> $GITHUB_ENV;
+              # Focal’s unversioned aarch64-linux-gnu-g++ is often GCC 9; pin absolute gcc-10 binaries.
+              echo "CC=/usr/bin/aarch64-linux-gnu-gcc-10" >> $GITHUB_ENV;
+              echo "CXX=/usr/bin/aarch64-linux-gnu-g++-10" >> $GITHUB_ENV;
             fi
           fi
 
@@ -106,8 +107,8 @@ jobs:
           cat <<EOF > arm64-toolchain.cmake
           set(CMAKE_SYSTEM_NAME Linux)
           set(CMAKE_SYSTEM_PROCESSOR aarch64)
-          set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc-10)
-          set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++-10)
+          set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc-10)
+          set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++-10)
           EOF
           echo "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/arm64-toolchain.cmake" >> $GITHUB_ENV
 
