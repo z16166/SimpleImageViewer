@@ -9,8 +9,8 @@ export VCPKG_ROOT=/vcpkg
 
 # x64-linux: default to host clang so vcpkg / CMake find a sane native compiler for host tooling.
 # arm64-linux: do NOT set CC/CXX to the cross compiler — vcpkg probes x64-linux (host triplet)
-# before arm64-linux, and aarch64-* in CXX breaks that. Cross compilers come from GHA's
-# VCPKG_CHAINLOAD_TOOLCHAIN_FILE (/work/arm64-toolchain.cmake) instead.
+# before arm64-linux, and aarch64-* in CXX breaks that. Cross compilers come from
+# triplets/chainload-aarch64-gcc10.cmake (overlay) and/or vcpkg linux.cmake + symlinks below.
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" != "arm64-linux" ]]; then
   export CC=clang
   export CXX=clang++
@@ -59,6 +59,16 @@ done
 if [[ "$installed" -ne 1 ]]; then
   echo "[apt] all attempts exhausted"
   exit 1
+fi
+
+# vcpkg scripts/toolchains/linux.cmake sets CMAKE_*_COMPILER to aarch64-linux-gnu-gcc/g++
+# (no -10). We only install gcc-10-aarch64-linux-gnu, so those basenames are missing.
+# Put symlinks on PATH before /usr/bin so CMake finds a real driver for detect_compiler.
+if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
+  mkdir -p /usr/local/bin
+  ln -sf /usr/bin/aarch64-linux-gnu-gcc-10 /usr/local/bin/aarch64-linux-gnu-gcc
+  ln -sf /usr/bin/aarch64-linux-gnu-g++-10 /usr/local/bin/aarch64-linux-gnu-g++
+  export PATH="/usr/local/bin:${PATH}"
 fi
 
 # arm64-linux: libyuv vcpkg port uses Clang 15 (integrated aarch64 assembler).

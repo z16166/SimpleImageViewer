@@ -126,8 +126,9 @@ jobs:
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             echo "Running vcpkg install inside ubuntu:20.04 container to ensure low glibc requirement..."
             # Adjust the toolchain file path for the container
+            # Do not rely on GITHUB_ENV here; always mount the same path the workflow step wrote.
             DOCKER_TOOLCHAIN=""
-            if [[ -n "$VCPKG_CHAINLOAD_TOOLCHAIN_FILE" ]]; then
+            if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
               DOCKER_TOOLCHAIN="/work/arm64-toolchain.cmake"
             fi
             
