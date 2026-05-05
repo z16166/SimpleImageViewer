@@ -5,7 +5,7 @@ on:
     tags:
       - "v*"
   # Manually retry the full pipeline (e.g. after transient vcpkg/network failures).
-  # Leave "Release tag" empty to only build artifacts for the selected branch.
+  # Leave "Release tag" empty for build-only. Use "Which artifact to build" to run a single Rust target / Win7 legacy (saves CI time).
   # Set it to e.g. v2.0.0 to build that tag and create/update the GitHub Release.
   workflow_dispatch:
     inputs:
@@ -14,6 +14,20 @@ on:
         required: false
         default: ""
         type: string
+      build_target:
+        description: "Which artifact to build (manual runs only; tag pushes always build the full matrix)."
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - legacy-win7
 
 permissions:
   contents: write
@@ -30,6 +44,8 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    if: |-
+      ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -361,6 +377,8 @@ jobs:
 
   build-legacy-win7:
     name: Build (Win7 x64)
+    if: |-
+      ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'legacy-win7' }}
     runs-on: windows-latest
     steps:
       - name: Checkout repository
