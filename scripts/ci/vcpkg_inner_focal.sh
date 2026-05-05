@@ -20,8 +20,9 @@ printf '%s\n' \
   'Acquire::ftp::Timeout "120";' \
   > /etc/apt/apt.conf.d/80-ci-retries
 
+# dav1d / libavif stack expects NASM; vcpkg runs only inside this image, not on the GitHub host.
 PKG=(
-  curl zip unzip tar pkg-config build-essential cmake ninja-build clang
+  curl zip unzip tar pkg-config build-essential cmake ninja-build clang nasm
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv
 )
 
