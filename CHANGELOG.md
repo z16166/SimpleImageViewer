@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 
-## [1.6.0] - 2026-05-04
+## [2.0.0] - 2026-05-05
 
 ### Added
 - **HDR viewing & tone mapping**: Scene-linear HDR pipeline with adjustable exposure (EV), PQ/HLG and scRGB-style paths where supported, tiled HDR for large images, and on-screen HDR status where applicable.
