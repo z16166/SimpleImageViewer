@@ -7,24 +7,6 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# Ubuntu focal cross gcc-10: cc1 rejects '+i8mm' in -march; GNU as still needs +i8mm for Neon usdot
-# (see linux-arm64-libyuv-as.cmake). SVE2 row_sve.cc needs GCC 11+ / sve2 march — use LIBYUV_DISABLE_SVE.
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
-    string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
-    # Use [[ ]] so ${ly_lib_name} is not expanded by the portfile's CMake (variable is in libyuv's CMakeLists only).
-    string(REPLACE [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8.5-a+i8mm+sve2)]]
-                   [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8-a)]] _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv9-a+i8mm+sme" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
-endif()
-
-set(libyuv_extra_cmake_opts "")
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    list(APPEND libyuv_extra_cmake_opts
-        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake")
-endif()
-
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         tools BUILD_TOOLS
@@ -34,7 +16,6 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
-        ${libyuv_extra_cmake_opts}
     OPTIONS_DEBUG
         -DBUILD_TOOLS=OFF
 )
