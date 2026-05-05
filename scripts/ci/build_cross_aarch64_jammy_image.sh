@@ -21,15 +21,15 @@ fi
 # Bump base to Jammy to match vcpkg Jammy artifacts.
 sed -i 's/^FROM ubuntu:20.04 AS cross-base/FROM ubuntu:22.04 AS cross-base/' "$DF"
 
-# linux-image.sh pins linux-image-5.10.0-34-arm64; that Debian package rotates off mirrors.
-# Use a wildcard kernel so bullseye still resolves an available linux-image-*-arm64 (same idea as armv7).
-LINUX_IMG_SH="$TMP/docker/linux-image.sh"
-if grep -Fq 'kernel="${kversion}-arm64"' "$LINUX_IMG_SH"; then
-  sed -i 's/kernel="${kversion}-arm64"/kernel='"'"'5.*-arm64'"'"'/' "$LINUX_IMG_SH"
-else
-  echo 'expected aarch64 kernel="${kversion}-arm64" in linux-image.sh; cross-rs may have changed'
-  exit 1
-fi
+# Skip cross-rs RUN /linux-image.sh aarch64:
+# - That script points APT at Debian bullseye while the image still has Ubuntu Jammy ncurses-base
+#   installed (6.3-2ubuntu0.1), so "apt-get download ncurses-base" pins a version that Debian
+#   never publishes → build fails after a long prefetch.
+# - Default cross aarch64-from-x86_64 runs binaries with qemu-*-user (/linux-runner), not qemu-system;
+#   kernel/initrd under /qemu are only for qemu-system + dropbear SSH. Cargo build/link and typical
+#   cross tests (e.g. user-mode QEMU) do not require them — see docker/linux-runner in cross-rs.
+
+sed -i 's|^RUN /linux-image.sh aarch64$|RUN mkdir -p /qemu \&\& touch /qemu/kernel /qemu/initrd.gz|' "$DF"
 
 docker build -t "$IMAGE_TAG" -f "$DF" "$TMP/docker"
 
