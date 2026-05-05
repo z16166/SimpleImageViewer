@@ -12,6 +12,7 @@ set(libyuv_extra_cmake_opts "")
 # Ubuntu 20.04 cross: GNU as in binutils is too old for libyuv's NEON i8mm (usdot/sudot); GCC rejects +i8mm in places.
 # Clang's integrated AArch64 assembler tracks the ISA closely. Other vcpkg ports still build with GCC from the toolchain.
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+    # --gcc-toolchain is Clang-only; our triplet chainload ends up selecting GCC for most ports — do not mix.
     list(APPEND libyuv_extra_cmake_opts
         "-DCMAKE_C_COMPILER=clang-15"
         "-DCMAKE_CXX_COMPILER=clang++-15"
@@ -19,9 +20,6 @@ if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
         "-DCMAKE_C_COMPILER_TARGET=aarch64-linux-gnu"
         "-DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-gnu"
         "-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-gnu"
-        "-DCMAKE_C_FLAGS_INIT=--gcc-toolchain=/usr"
-        "-DCMAKE_CXX_FLAGS_INIT=--gcc-toolchain=/usr"
-        "-DCMAKE_ASM_FLAGS_INIT=--gcc-toolchain=/usr"
     )
 endif()
 

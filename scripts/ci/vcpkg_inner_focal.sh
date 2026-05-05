@@ -10,7 +10,7 @@ export VCPKG_ROOT=/vcpkg
 # x64-linux: default to host clang so vcpkg / CMake find a sane native compiler for host tooling.
 # arm64-linux: do NOT set CC/CXX to the cross compiler — vcpkg probes x64-linux (host triplet)
 # before arm64-linux, and aarch64-* in CXX breaks that. Cross compilers come from
-# triplets/chainload-aarch64-gcc10.cmake (overlay) and/or vcpkg linux.cmake + symlinks below.
+# triplets/chainload-aarch64-linux.cmake + symlinks below (no global CC/CXX aarch64).
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" != "arm64-linux" ]]; then
   export CC=clang
   export CXX=clang++
