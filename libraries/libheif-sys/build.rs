@@ -17,11 +17,20 @@ fn main() {
             let names = &lib.found_names;
             let has_openjp2 = names.iter().any(|n| n.eq_ignore_ascii_case("openjp2"));
             let has_dav1d = names.iter().any(|n| n.eq_ignore_ascii_case("dav1d"));
+            let has_brotli_enc = names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("brotlienc"));
             let has_brotli = names
                 .iter()
-                .any(|n| n.eq_ignore_ascii_case("brotlidec") || n.to_lowercase().contains("brotli"));
+                .any(|n| {
+                    let l = n.to_lowercase();
+                    l.contains("brotli")
+                });
             if !(has_openjp2 && has_dav1d && has_brotli) {
                 println_libheif_optional_codec_libs_static(&installed_dir, &vcpkg_triplet);
+            } else if !has_brotli_enc {
+                // UNCI compressor uses encoder API (BrotliEncoder*); manifest-mode libs often omit brotlienc.
+                println!("cargo:rustc-link-lib=static=brotlienc");
             }
         }
         Err(err) => {
@@ -76,6 +85,7 @@ fn println_libheif_optional_codec_libs_static(installed_dir: &std::path::Path, v
     println!("cargo:rustc-link-lib=static=openjp2");
     println!("cargo:rustc-link-lib=static=jpeg");
     println!("cargo:rustc-link-lib=static=dav1d");
+    println!("cargo:rustc-link-lib=static=brotlienc");
     println!("cargo:rustc-link-lib=static=brotlidec");
     println!("cargo:rustc-link-lib=static=brotlicommon");
     println_static_zlib_for_vcpkg_installed(installed_dir, vcpkg_triplet);
