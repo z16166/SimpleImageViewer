@@ -7,13 +7,15 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# Ubuntu focal cross gcc-9/10: cc1plus rejects '+i8mm' in -march (needs GCC 11+). Upstream uses
-# +dotprod+i8mm and SVE/SME strings we must simplify; CMAKE_PROJECT_YUV_INCLUDE adds -Wa for udot/as.
+# Ubuntu focal cross gcc-10: cc1 rejects '+i8mm' in -march; GNU as still needs +i8mm for Neon usdot
+# (see linux-arm64-libyuv-as.cmake). SVE2 row_sve.cc needs GCC 11+ / sve2 march — use LIBYUV_DISABLE_SVE.
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
     file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
     string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
-    string(REPLACE "+i8mm+sve2" "+sve2" _ly_cml "${_ly_cml}")
-    string(REGEX REPLACE "-march=armv9-a\\+i8mm\\+sme" "-march=armv8.5-a+sve2" _ly_cml "${_ly_cml}")
+    # Use [[ ]] so ${ly_lib_name} is not expanded by the portfile's CMake (variable is in libyuv's CMakeLists only).
+    string(REPLACE [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8.5-a+i8mm+sve2)]]
+                   [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8-a)]] _ly_cml "${_ly_cml}")
+    string(REPLACE "-march=armv9-a+i8mm+sme" "-march=armv8-a" _ly_cml "${_ly_cml}")
     file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
 endif()
 

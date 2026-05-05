@@ -7,11 +7,12 @@ export DEBIAN_FRONTEND=noninteractive
 export TZ=Etc/UTC
 export VCPKG_ROOT=/vcpkg
 
-# x64-linux: clang matches existing vcpkg/linux ports. arm64-linux: must use the cross GCC or cc1plus
-# invokes the wrong driver (aarch64-linux-gnu-g++ 9) and ignores +i8mm / SVE fixes.
+# x64-linux: clang matches existing vcpkg/linux ports. arm64-linux: must use GCC 10 explicitly
+# (/usr/bin/aarch64-linux-gnu-g++ without -10 is often GCC 9; cc1 rejects +i8mm and breaks libyuv Neon).
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
-  export CC=aarch64-linux-gnu-gcc-10
-  export CXX=aarch64-linux-gnu-g++-10
+  # Unversioned aarch64-linux-gnu-g++ is typically GCC 9 on focal; vcpkg must not resolve to that.
+  export CC=/usr/bin/aarch64-linux-gnu-gcc-10
+  export CXX=/usr/bin/aarch64-linux-gnu-g++-10
 else
   export CC=clang
   export CXX=clang++
@@ -34,7 +35,7 @@ PKG=(
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv
 )
 
-# arm64-linux vcpkg: libyuv needs gcc>=10 for +i8mm / SVE march tokens; focal's default cross is gcc 9.
+# arm64-linux vcpkg: cross GCC 10 (focal); libyuv overlay strips cc1 i8mm/SVE2 marches — see vcpkg-overlays/libyuv.
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
   PKG+=( gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu )
 fi
