@@ -7,8 +7,7 @@ export DEBIAN_FRONTEND=noninteractive
 export TZ=Etc/UTC
 export VCPKG_ROOT=/vcpkg
 
-# x64-linux: clang matches existing vcpkg/linux ports. arm64-linux: must use GCC 10 explicitly
-# (/usr/bin/aarch64-linux-gnu-g++ without -10 is often GCC 9; cc1 rejects +i8mm and breaks libyuv Neon).
+# x64-linux: host clang for vcpkg. arm64-linux: pin GCC 10 for most ports; libyuv alone uses clang-15 (see overlay + llvm.sh below).
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
   # Unversioned aarch64-linux-gnu-g++ is typically GCC 9 on focal; vcpkg must not resolve to that.
   export CC=/usr/bin/aarch64-linux-gnu-gcc-10
@@ -31,7 +30,7 @@ printf '%s\n' \
 
 # dav1d / libavif stack expects NASM; vcpkg runs only inside this image, not on the GitHub host.
 PKG=(
-  curl zip unzip tar pkg-config build-essential cmake ninja-build clang nasm
+  curl wget zip unzip tar pkg-config build-essential cmake ninja-build clang nasm
   tzdata git python3 python3-venv
 )
 
@@ -61,6 +60,20 @@ done
 if [[ "$installed" -ne 1 ]]; then
   echo "[apt] all attempts exhausted"
   exit 1
+fi
+
+# arm64-linux: libyuv vcpkg port builds with Clang 15 (+ integrated assembler); install from apt.llvm.org.
+if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
+  set +e
+  wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+  wget_rc="${PIPESTATUS[0]}"
+  set -e
+  if [[ "$wget_rc" -ne 0 ]]; then
+    echo "[llvm] failed to download llvm.sh (exit ${wget_rc})"
+    exit 1
+  fi
+  chmod +x /tmp/llvm.sh
+  NONINTERACTIVE=1 /tmp/llvm.sh 15 || { echo "[llvm] llvm.sh 15 failed"; exit 1; }
 fi
 
 dump_vcpkg_build_logs() {

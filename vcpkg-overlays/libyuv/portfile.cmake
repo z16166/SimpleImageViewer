@@ -7,24 +7,22 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# Focal cross: cc1 rejects '+i8mm' in -march; NEON64 usdot/sudot also needs a newer GNU as than focal ships.
-# Overlay injects LIBYUV_DISABLE_NEON / LIBYUV_DISABLE_SVE — see linux-arm64-libyuv-as.cmake.
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
-    string(REPLACE "+dotprod+i8mm" "+dotprod" _ly_cml "${_ly_cml}")
-    # Use [[ ]] so ${ly_lib_name} is not expanded by the portfile's CMake (variable is in libyuv's CMakeLists only).
-    string(REPLACE [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8.5-a+i8mm+sve2)]]
-                   [[target_compile_options(${ly_lib_name}_sve PRIVATE -march=armv8-a)]] _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv9-a+i8mm+sme" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
-endif()
-
 set(libyuv_extra_cmake_opts "")
+
+# Ubuntu 20.04 cross: GNU as in binutils is too old for libyuv's NEON i8mm (usdot/sudot); GCC rejects +i8mm in places.
+# Clang's integrated AArch64 assembler tracks the ISA closely. Other vcpkg ports still build with GCC from the toolchain.
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
     list(APPEND libyuv_extra_cmake_opts
-        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake"
-        "-DCMAKE_C_COMPILER=/usr/bin/aarch64-linux-gnu-gcc-10"
-        "-DCMAKE_CXX_COMPILER=/usr/bin/aarch64-linux-gnu-g++-10")
+        "-DCMAKE_C_COMPILER=clang-15"
+        "-DCMAKE_CXX_COMPILER=clang++-15"
+        "-DCMAKE_ASM_COMPILER=clang-15"
+        "-DCMAKE_C_COMPILER_TARGET=aarch64-linux-gnu"
+        "-DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-gnu"
+        "-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-gnu"
+        "-DCMAKE_C_FLAGS_INIT=--gcc-toolchain=/usr"
+        "-DCMAKE_CXX_FLAGS_INIT=--gcc-toolchain=/usr"
+        "-DCMAKE_ASM_FLAGS_INIT=--gcc-toolchain=/usr"
+    )
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
