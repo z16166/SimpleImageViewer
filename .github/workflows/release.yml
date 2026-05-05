@@ -89,9 +89,9 @@ jobs:
             if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-linux" >> $GITHUB_ENV;
             elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then 
               echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> $GITHUB_ENV;
-              # Focal’s unversioned aarch64-linux-gnu-g++ is often GCC 9; pin absolute gcc-10 binaries.
-              echo "CC=/usr/bin/aarch64-linux-gnu-gcc-10" >> $GITHUB_ENV;
-              echo "CXX=/usr/bin/aarch64-linux-gnu-g++-10" >> $GITHUB_ENV;
+              # Pin GCC 12 cross compiler (matches ubuntu:22.04 vcpkg container + arm64-toolchain.cmake).
+              echo "CC=/usr/bin/aarch64-linux-gnu-gcc-12" >> $GITHUB_ENV;
+              echo "CXX=/usr/bin/aarch64-linux-gnu-g++-12" >> $GITHUB_ENV;
             fi
           fi
 
@@ -99,8 +99,8 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          # Noble: gcc-aarch64-linux-gnu pulls gcc-13; we only need gcc-10 (matches focal docker + toolchain).
-          sudo apt-get install -y gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          # Noble default cross is often newer; pin GCC 12 to match ubuntu:22.04 vcpkg Docker build.
+          sudo apt-get install -y gcc-12-aarch64-linux-gnu g++-12-aarch64-linux-gnu binutils-aarch64-linux-gnu
           
       - name: Configure CMake Toolchain (ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -108,8 +108,8 @@ jobs:
           cat <<EOF > arm64-toolchain.cmake
           set(CMAKE_SYSTEM_NAME Linux)
           set(CMAKE_SYSTEM_PROCESSOR aarch64)
-          set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc-10)
-          set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++-10)
+          set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc-12)
+          set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++-12)
           EOF
           echo "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/arm64-toolchain.cmake" >> $GITHUB_ENV
 
@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            echo "Running vcpkg install inside ubuntu:20.04 container to ensure low glibc requirement..."
+            echo "Running vcpkg install inside ubuntu:22.04 (GCC 12 cross for arm64-linux; jammy glibc baseline)..."
             # Adjust the toolchain file path for the container
             # Do not rely on GITHUB_ENV here; always mount the same path the workflow step wrote.
             DOCKER_TOOLCHAIN=""
@@ -136,16 +136,15 @@ jobs:
             mkdir -p vcpkg_installed
             chmod -R 777 vcpkg_installed
 
-            # APT needs focal-updates + focal-security; transient mirror failures omit those repos and yield fake "broken packages".
-            # Logic lives in scripts/ci/vcpkg_inner_focal.sh (retries + fail on partial "Failed to fetch").
+            # Transient mirror failures can yield fake "broken packages"; retries + fail on partial "Failed to fetch" in inner script.
             docker run --rm \
               -v "${{ github.workspace }}:/work" \
               -v "$VCPKG_ROOT:/vcpkg" \
               -w /work \
               -e "VCPKG_DEFAULT_TRIPLET=${VCPKG_DEFAULT_TRIPLET}" \
               -e "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${DOCKER_TOOLCHAIN}" \
-              ubuntu:20.04 \
-              bash /work/scripts/ci/vcpkg_inner_focal.sh
+              ubuntu:22.04 \
+              bash /work/scripts/ci/vcpkg_inner_jammy.sh
           else
             echo "DEBUG: Current PWD is $(pwd)"
             echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
@@ -190,9 +189,9 @@ jobs:
           path: |
             vcpkg_installed
             ${{ github.workspace }}/vcpkg_installed
-          key: vcpkg-${{ matrix.target }}-glibc231-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ matrix.target }}-jammy-glibc235-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
-            vcpkg-${{ matrix.target }}-glibc231-
+            vcpkg-${{ matrix.target }}-jammy-glibc235-
 
       - name: Setup Monkey's Audio SDK (Windows)
         if: runner.os == 'Windows'

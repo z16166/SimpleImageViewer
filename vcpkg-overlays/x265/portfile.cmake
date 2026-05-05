@@ -33,13 +33,6 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
     list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
 endif()
 
-# Linux aarch64 cross (e.g. x86_64 host -> arm64): vcpkg's compiler-target.diff prepends
-# --target=${CMAKE_CXX_COMPILER_TARGET} for ARM asm; GCC rejects that flag. NEON asm also
-# hits old GNU as on ubuntu:20.04. Disable asm (same rationale as static x86 Linux in block above).
-if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
-endif()
-
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ENABLE_SHARED)
 
 vcpkg_cmake_configure(

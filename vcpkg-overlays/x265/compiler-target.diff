@@ -1,14 +1,16 @@
 diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
-index ab5ddfe..e99c4d8 100755
 --- a/source/CMakeLists.txt
 +++ b/source/CMakeLists.txt
-@@ -570,6 +570,9 @@ if((MSVC_IDE OR XCODE OR GCC) AND ENABLE_ASSEMBLY)
+@@ -722,7 +722,12 @@ else()
+     else()
          set(SUFFIX o)
      endif()
  
-+    if(CMAKE_CXX_COMPILER_TARGET)
++    # GCC rejects --target= when driving AArch64 asm; Clang needs it when cross-compiling.
++    if(CMAKE_CXX_COMPILER_TARGET AND (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
 +        list(PREPEND ARM_ARGS "--target=${CMAKE_CXX_COMPILER_TARGET}")
 +    endif()
++
      if(ARM OR CROSS_COMPILE_ARM)
      # compile ARM arch asm files here
          enable_language(ASM)
