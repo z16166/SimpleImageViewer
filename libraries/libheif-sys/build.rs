@@ -41,11 +41,27 @@ fn main() {
                 println!("cargo:rustc-link-search=native={}", debug_lib_dir.display());
             }
             println!("cargo:include={}", include_dir.display());
-            println!("cargo:rustc-link-lib=static=heif");
-            println!("cargo:rustc-link-lib=static=libde265");
-            println!("cargo:rustc-link-lib=static=x265-static");
+            println_libheif_core_static_libs();
             println_libheif_optional_codec_libs_static(&installed_dir, &vcpkg_triplet);
         }
+    }
+}
+
+/// Core codec libraries for static libheif. **MSVC** vcpkg uses `libde265.lib` / `x265-static.lib`
+/// naming in this tree; **Unix** linkers expect `-lde265` / `-lx265` (i.e. `libde265.a`, never
+/// `llibde265` — do not pass the `lib` prefix to `rustc-link-lib`).
+fn println_libheif_core_static_libs() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let is_msvc = target_os == "windows" && target_env == "msvc";
+
+    println!("cargo:rustc-link-lib=static=heif");
+    if is_msvc {
+        println!("cargo:rustc-link-lib=static=libde265");
+        println!("cargo:rustc-link-lib=static=x265-static");
+    } else {
+        println!("cargo:rustc-link-lib=static=de265");
+        println!("cargo:rustc-link-lib=static=x265");
     }
 }
 
