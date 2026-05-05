@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.6.0] - 2026-05-04
+
+### Added
+- **HDR viewing & tone mapping**: Scene-linear HDR pipeline with adjustable exposure (EV), PQ/HLG and scRGB-style paths where supported, tiled HDR for large images, and on-screen HDR status where applicable.
+- **GPU backends**: HDR and modern formats use **WGPU** with **DirectX 12** on Windows and **Metal** on macOS for composition and presentation.
+- **Format support** (native decode paths where noted):
+    - **OpenEXR** (.exr) via OpenEXRCore, including large/tiled EXR workflows.
+    - **AVIF / AVIFS** and **HEIF / HEIC** via libavif / libheif (HDR-capable where the bitstream allows).
+    - **JPEG gain-map HDR** (Ultra HDR / `JPEG_R`): decode and display with capacity-aware handling.
+    - **JPEG XL** (.jxl) as an optional native path when enabled in the build.
+    - **TIFF**: extended coverage for float / LogLuv / high bit-depth and HDR-oriented TIFFs via libtiff integration (not every TIFF variant).
+
+### Changed
+- **TurboJPEG**: Treat non-fatal **`tjGetErrorCode` warning** as success after `tjDecompressHeader3` / `tjDecompress2` so JPEGs with reserved/unknown markers (e.g. `0x9d`) still decode instead of aborting.
+- **MINISWHITE float grayscale TIFF**: File-level white reference using `SMaxSampleValue` or image-wide maximum (not per-scanline pivot); corrected **`TIFFGetField`** scalar read for `SMinSampleValue` / `SMaxSampleValue`.
+
+### Notes
+- Requires up-to-date **libjpeg-turbo** (TurboJPEG **`tjGetErrorCode`**, ≥ 1.6) when using the bundled static link.
+
+
 ## [1.5.8] - 2026-04-29
 
 ### Changed
