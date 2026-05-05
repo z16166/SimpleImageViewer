@@ -127,6 +127,17 @@ impl ImageViewerApp {
         None
     }
 
+    fn adjust_hdr_exposure_by_ev(&mut self, delta_ev: f32, ctx: &Context) {
+        self.settings.hdr_exposure_ev =
+            (self.settings.hdr_exposure_ev + delta_ev).clamp(-8.0, 8.0);
+        let tone = self.settings.hdr_tone_map_settings();
+        self.hdr_renderer.tone_map = tone;
+        self.loader.set_hdr_tone_map_settings(tone);
+        self.refresh_ultra_hdr_decode_capacity(ctx);
+        self.queue_save();
+        ctx.request_repaint();
+    }
+
     fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         match action {
             AppAction::Next => {
@@ -184,6 +195,14 @@ impl ImageViewerApp {
             }
             AppAction::RotateCCW => self.apply_rotation_with_tracking(false, ctx),
             AppAction::RotateCW => self.apply_rotation_with_tracking(true, ctx),
+            AppAction::HdrExposureUp => {
+                const STEP_EV: f32 = 0.5;
+                self.adjust_hdr_exposure_by_ev(STEP_EV, ctx);
+            }
+            AppAction::HdrExposureDown => {
+                const STEP_EV: f32 = 0.5;
+                self.adjust_hdr_exposure_by_ev(-STEP_EV, ctx);
+            }
             AppAction::Delete => self.delete_current_image(false),
             AppAction::PermanentDelete => self.delete_current_image(true),
             AppAction::Print => self.print_image(ctx, crate::print::PrintMode::FullImage),
@@ -538,6 +557,8 @@ pub(crate) enum AppAction {
     ToggleOSD,
     RotateCW,
     RotateCCW,
+    HdrExposureUp,
+    HdrExposureDown,
     Delete,
     PermanentDelete,
     Print,
@@ -592,6 +613,16 @@ const HOTKEY_MAP: &[HotkeyBinding] = &[
         modifiers: M_CTRL,
         key: egui::Key::ArrowRight,
         action: AppAction::RotateCW,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowUp,
+        action: AppAction::HdrExposureUp,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowDown,
+        action: AppAction::HdrExposureDown,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
