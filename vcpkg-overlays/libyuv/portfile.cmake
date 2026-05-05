@@ -7,20 +7,13 @@ vcpkg_from_git(
         cmake.diff
 )
 
-# ubuntu:20.04 gcc-aarch64-linux-gnu and older binutils: libyuv uses -march=...+dotprod+i8mm which compiles `udot`
-# that `as` then rejects (`selected processor does not support`). Baseline AArch64 avoids that (vcpkg #44260).
+set(libyuv_extra_cmake_opts "")
+# Cross-build to arm64 on Ubuntu focal: GCC emits dot-product Neon ops but GNU as used a
+# default -march that rejects udot/usdot/sudot. Teach the assembler the same ISA
+# (CMAKE_PROJECT_<NAME>_INCLUDE runs with project(YUV)).
 if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
-    file(READ "${SOURCE_PATH}/CMakeLists.txt" _ly_cml)
-    # Match upstream variants (dotprod / sve / sme) for gcc-9 cross + binutils (vcpkg #44260).
-    string(REPLACE "-march=armv8.2-a+dotprod+i8mm" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv8-a+dotprod+i8mm" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv8.2-a+dotprod" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv8-a+dotprod" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv8.5-a+i8mm+sve2" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REPLACE "-march=armv9-a+i8mm+sme" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REGEX REPLACE "-march=armv8\\.2-a\\+dotprod[^ )]+" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    string(REGEX REPLACE "-march=armv8-a\\+dotprod[^ )]+" "-march=armv8-a" _ly_cml "${_ly_cml}")
-    file(WRITE "${SOURCE_PATH}/CMakeLists.txt" "${_ly_cml}")
+    list(APPEND libyuv_extra_cmake_opts
+        "-DCMAKE_PROJECT_YUV_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/linux-arm64-libyuv-as.cmake")
 endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
@@ -32,6 +25,7 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
+        ${libyuv_extra_cmake_opts}
     OPTIONS_DEBUG
         -DBUILD_TOOLS=OFF
 )
