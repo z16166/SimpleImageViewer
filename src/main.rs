@@ -364,6 +364,7 @@ fn setup_panic_hook() {
             );
         }
 
+        // No `set_parent`: the crash hook can run when no egui window exists.
         // Use rfd for a system native dialog
         rfd::MessageDialog::new()
             .set_title(&title)
@@ -661,8 +662,8 @@ fn main() -> eframe::Result {
             )
         };
 
+        // No `set_parent`: `run_native` failed before a main window was created.
         rfd::MessageDialog::new()
-            .set_title(rust_i18n::t!("dialog.startup_error_title").to_string())
             .set_description(&dialog_msg)
             .set_level(rfd::MessageLevel::Error)
             .show();

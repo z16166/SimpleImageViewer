@@ -20,6 +20,7 @@ pub(crate) mod image_management;
 pub(crate) mod input;
 pub(crate) mod lifecycle;
 pub(crate) mod media;
+pub(crate) mod rfd_parent;
 pub(crate) mod rendering;
 
 use std::collections::{HashMap, HashSet};
@@ -913,7 +914,7 @@ impl eframe::App for ImageViewerApp {
 
     /// Draw the UI. In eframe 0.34 this is the required method; `ui` is called
     /// with the root `Ui` for the window's central area.
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         // Draw image canvas (fills the central area)
@@ -957,7 +958,7 @@ impl eframe::App for ImageViewerApp {
         // receiving input) while a dialog is on screen.
         let modal_open = self.active_modal.is_some();
         if self.show_settings && !modal_open {
-            self.draw_settings_panel(&ctx);
+            self.draw_settings_panel(&ctx, frame);
         } else if !self.show_settings {
             self.last_show_settings = false;
         }

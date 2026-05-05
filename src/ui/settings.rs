@@ -20,10 +20,11 @@ use crate::ui::utils::{
     styled_button_widget,
 };
 use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
+use eframe::Frame;
 use rust_i18n::t;
 use std::time::Instant;
 
-pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
+pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
     // The settings layout uses nested UI elements to achieve responsive alignment.
     // Specifically, path_display_box and certain groupings require fixed widths or
@@ -91,13 +92,13 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         });
 
     if open_dir {
-        app.open_directory_dialog();
+        app.open_directory_dialog(frame);
     }
     if open_music_file {
-        app.open_music_file_dialog();
+        app.open_music_file_dialog(frame);
     }
     if open_music_dir {
-        app.open_music_dir_dialog();
+        app.open_music_dir_dialog(frame);
     }
     if fullscreen_changed {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(app.settings.fullscreen));

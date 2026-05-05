@@ -304,8 +304,8 @@ impl ImageViewerApp {
     // UI: Settings panel
     // ------------------------------------------------------------------
 
-    pub(crate) fn draw_settings_panel(&mut self, ctx: &egui::Context) {
-        ui_settings::draw(self, ctx);
+    pub(crate) fn draw_settings_panel(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        ui_settings::draw(self, ctx, frame);
     }
 
     /// Dispatch rendering for the currently active modal dialog, and process

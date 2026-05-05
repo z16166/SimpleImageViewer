@@ -383,8 +383,8 @@ impl ImageViewerApp {
     // Directory loading
     // ------------------------------------------------------------------
 
-    pub(crate) fn open_directory_dialog(&mut self) {
-        let mut dialog = rfd::FileDialog::new();
+    pub(crate) fn open_directory_dialog(&mut self, frame: &eframe::Frame) {
+        let mut dialog = super::rfd_parent::file_dialog_for_main_window(frame);
         if let Some(ref dir) = self.settings.last_image_dir.clone() {
             dialog = dialog.set_directory(dir);
         }
