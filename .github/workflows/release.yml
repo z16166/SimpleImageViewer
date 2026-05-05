@@ -42,51 +42,99 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
+  # GitHub does not allow `matrix.*` in job-level `if`; filter the matrix here instead.
+  matrix-prep:
+    runs-on: ubuntu-latest
+    outputs:
+      include_json: ${{ steps.set.outputs.include_json }}
+      targets_count: ${{ steps.set.outputs.targets_count }}
+    steps:
+      - id: set
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BUILD_TARGET: ${{ github.event.inputs.build_target || 'all' }}
+        run: |
+          python3 <<'PY'
+          import json, os
+
+          rows = [
+              {
+                  "os": "ubuntu-latest",
+                  "target": "x86_64-unknown-linux-gnu",
+                  "vcpkg_cache_suffix": "focal-glibc231",
+                  "binary_name": "SimpleImageViewer",
+                  "archive_ext": ".tar.gz",
+                  "use_cross": True,
+              },
+              {
+                  "os": "ubuntu-latest",
+                  "target": "aarch64-unknown-linux-gnu",
+                  "vcpkg_cache_suffix": "jammy-glibc235",
+                  "binary_name": "SimpleImageViewer",
+                  "archive_ext": ".tar.gz",
+                  "use_cross": True,
+              },
+              {
+                  "os": "windows-latest",
+                  "target": "x86_64-pc-windows-msvc",
+                  "vcpkg_cache_suffix": "na",
+                  "binary_name": "SimpleImageViewer.exe",
+                  "archive_ext": ".zip",
+                  "use_cross": False,
+              },
+              {
+                  "os": "windows-latest",
+                  "target": "aarch64-pc-windows-msvc",
+                  "vcpkg_cache_suffix": "na",
+                  "binary_name": "SimpleImageViewer.exe",
+                  "archive_ext": ".zip",
+                  "use_cross": False,
+              },
+              {
+                  "os": "macos-latest",
+                  "target": "aarch64-apple-darwin",
+                  "vcpkg_cache_suffix": "na",
+                  "binary_name": "SimpleImageViewer",
+                  "archive_ext": ".zip",
+                  "use_cross": False,
+              },
+              {
+                  "os": "macos-latest",
+                  "target": "x86_64-apple-darwin",
+                  "vcpkg_cache_suffix": "na",
+                  "binary_name": "SimpleImageViewer",
+                  "archive_ext": ".zip",
+                  "use_cross": False,
+              },
+          ]
+
+          ev = os.environ["EVENT_NAME"]
+          bt = (os.environ.get("BUILD_TARGET") or "all").strip() or "all"
+
+          if ev != "workflow_dispatch" or bt == "all":
+              chosen = rows
+          else:
+              chosen = [r for r in rows if r["target"] == bt]
+
+          compact = json.dumps(chosen, separators=(",", ":"))
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a", encoding="utf-8") as f:
+              f.write(f"targets_count={len(chosen)}\n")
+              f.write("include_json<<JSON_DELIM\n")
+              f.write(compact + "\n")
+              f.write("JSON_DELIM\n")
+          PY
+
   build:
     name: Build (${{ matrix.target }})
-    if: |-
-      ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == matrix.target }}
+    needs: matrix-prep
+    if: needs.matrix-prep.outputs.targets_count != '0'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            vcpkg_cache_suffix: focal-glibc231
-            binary_name: SimpleImageViewer
-            archive_ext: .tar.gz
-            use_cross: true
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            vcpkg_cache_suffix: jammy-glibc235
-            binary_name: SimpleImageViewer
-            archive_ext: .tar.gz
-            use_cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            vcpkg_cache_suffix: na
-            binary_name: SimpleImageViewer.exe
-            archive_ext: .zip
-            use_cross: false
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            vcpkg_cache_suffix: na
-            binary_name: SimpleImageViewer.exe
-            archive_ext: .zip
-            use_cross: false
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            vcpkg_cache_suffix: na
-            binary_name: SimpleImageViewer
-            archive_ext: .zip
-            use_cross: false
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            vcpkg_cache_suffix: na
-            binary_name: SimpleImageViewer
-            archive_ext: .zip
-            use_cross: false
+        include: ${{ fromJSON(needs.matrix-prep.outputs.include_json) }}
 
     steps:
       - name: Checkout repository
