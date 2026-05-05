@@ -7,12 +7,11 @@ export DEBIAN_FRONTEND=noninteractive
 export TZ=Etc/UTC
 export VCPKG_ROOT=/vcpkg
 
-# x64-linux: host clang for vcpkg. arm64-linux: pin GCC 10 for most ports; libyuv alone uses Clang 15 (apt.llvm.org, see below).
-if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
-  # Unversioned aarch64-linux-gnu-g++ is typically GCC 9 on focal; vcpkg must not resolve to that.
-  export CC=/usr/bin/aarch64-linux-gnu-gcc-10
-  export CXX=/usr/bin/aarch64-linux-gnu-g++-10
-else
+# x64-linux: default to host clang so vcpkg / CMake find a sane native compiler for host tooling.
+# arm64-linux: do NOT set CC/CXX to the cross compiler — vcpkg probes x64-linux (host triplet)
+# before arm64-linux, and aarch64-* in CXX breaks that. Cross compilers come from GHA's
+# VCPKG_CHAINLOAD_TOOLCHAIN_FILE (/work/arm64-toolchain.cmake) instead.
+if [[ "${VCPKG_DEFAULT_TRIPLET:-}" != "arm64-linux" ]]; then
   export CC=clang
   export CXX=clang++
 fi
@@ -106,6 +105,11 @@ dump_vcpkg_build_logs() {
   fi
   echo "::endgroup::"
 }
+
+if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
+  # Any inherited aarch64 CC/CXX would break vcpkg's x64-linux probe; host uses default GNU or chainload.
+  unset CC CXX CPP CFLAGS CXXFLAGS LDFLAGS 2>/dev/null || true
+fi
 
 set +e
 /vcpkg/vcpkg install \
