@@ -34,7 +34,7 @@ PKG=(
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu tzdata git python3 python3-venv
 )
 
-# arm64-linux vcpkg: libyuv needs gcc>=10 for +i8mm / SVE march tokens; focal's default cross is gcc 9.
+# arm64-linux vcpkg: cross GCC 10 (focal); libyuv overlay strips cc1 i8mm/SVE2 marches — see vcpkg-overlays/libyuv.
 if [[ "${VCPKG_DEFAULT_TRIPLET:-}" == "arm64-linux" ]]; then
   PKG+=( gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu )
 fi
