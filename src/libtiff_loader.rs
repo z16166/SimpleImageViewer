@@ -787,18 +787,14 @@ unsafe fn manual_decode_scanline(
     let mut smax_provided = false;
     let mut smin_provided = false;
     unsafe {
-        let mut smin_ptr: *mut f64 = std::ptr::null_mut();
-        let mut smax_ptr: *mut f64 = std::ptr::null_mut();
-        if lib::TIFFGetField(tif, lib::TIFFTAG_SMINSAMPLEVALUE, &mut smin_ptr) != 0
-            && !smin_ptr.is_null()
-        {
-            smin = *smin_ptr;
+        let mut smin_v: f64 = 0.0;
+        let mut smax_v: f64 = 0.0;
+        if lib::TIFFGetField(tif, lib::TIFFTAG_SMINSAMPLEVALUE, &mut smin_v) != 0 {
+            smin = smin_v;
             smin_provided = true;
         }
-        if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut smax_ptr) != 0
-            && !smax_ptr.is_null()
-        {
-            smax = *smax_ptr;
+        if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut smax_v) != 0 {
+            smax = smax_v;
             smax_provided = true;
         }
     }
@@ -1263,15 +1259,12 @@ fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
     if v.is_finite() { v } else { 0.0 }
 }
 
-/// `TIFFTAG_SMAXSAMPLEVALUE` when stored as `double` (typical for float/extended-range TIFF).
+/// `TIFFTAG_SMAXSAMPLEVALUE` — libtiff passes this tag as a `double` out-parameter, not `double**`.
 unsafe fn tiff_tag_smax_sample_value_f64(tif: *mut lib::TIFF) -> Option<f64> {
-    let mut p: *mut f64 = std::ptr::null_mut();
+    let mut v: f64 = 0.0;
     unsafe {
-        if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut p) != 0 && !p.is_null() {
-            let v = *p;
-            if v.is_finite() {
-                return Some(v);
-            }
+        if lib::TIFFGetField(tif, lib::TIFFTAG_SMAXSAMPLEVALUE, &mut v) != 0 && v.is_finite() {
+            return Some(v);
         }
     }
     None
