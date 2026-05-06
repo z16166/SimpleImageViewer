@@ -979,114 +979,134 @@ impl OpenExrCoreReadContext {
             && g_idx.is_none()
             && b_idx.is_none();
 
-        for sample_index in 0..sample_count {
-            let dest = sample_index * 4;
-            let row_u = (sample_index / chunk_width) as u32;
-            let col_u = (sample_index % chunk_width) as u32;
+        let chunk_width_u32 = u32::try_from(chunk_width).unwrap();
+        let chunk_height_u32 = u32::try_from(chunk_height).unwrap();
 
-            rgba[dest + 3] = a_idx
-                .map(|i| {
-                    channel_sample_f32(
-                        &buffers,
-                        &channel_layouts,
-                        i,
-                        chunk_origin,
-                        col_u,
-                        row_u,
-                    )
-                })
-                .unwrap_or(1.0);
+        // FAST PATH: All involved channels are 1:1 resolution (no subsampling)
+        let mut can_use_fast_path = !is_yryby;
+        if can_use_fast_path {
+            for idx_opt in [r_idx, g_idx, b_idx, a_idx] {
+                if let Some(i) = idx_opt {
+                    if let Some(layout) = channel_layouts[i] {
+                        if layout.x_samples != 1 || layout.y_samples != 1 {
+                            can_use_fast_path = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
-            if is_yryby {
-                let y = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    y_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                // OpenEXR luminance/chroma stores RY=(R−Y)/Y and BY=(B−Y)/Y, not plain R−Y / B−Y
-                // (Technical Introduction → Luminance/Chroma Images). Inverting with Y=wR·R+wG·G+wB·B
-                // and default Rec.709 weights when `chromaticities` is omitted yields:
-                let ry_ratio = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    ry_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                let by_ratio = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    by_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                let [wr, wg, wb] = self.exr_luma_weights;
-                let r = y * (1.0 + ry_ratio);
-                let b = y * (1.0 + by_ratio);
-                // Same as OpenEXR `RgbaYca::YCAtoRGBA`: g = (Y - r*yw.x - b*yw.z) / yw.y
-                let g = (y - wr * r - wb * b) / wg;
+        if can_use_fast_path {
+            let r_buf = r_idx.map(|i| &buffers[i]);
+            let g_buf = g_idx.map(|i| &buffers[i]);
+            let b_buf = b_idx.map(|i| &buffers[i]);
+            let a_buf = a_idx.map(|i| &buffers[i]);
 
-                rgba[dest] = r;
-                rgba[dest + 1] = g;
-                rgba[dest + 2] = b;
-            } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
-                rgba[dest] = r_idx
-                    .map(|i| {
-                        channel_sample_f32(
+            for row in 0..chunk_height_u32 {
+                let row_offset = row as usize * chunk_width;
+                let dest_row_offset = row_offset * 4;
+                for col in 0..chunk_width_u32 {
+                    let i = row_offset + col as usize;
+                    let dest = dest_row_offset + col as usize * 4;
+
+                    rgba[dest] = r_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 1] = g_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 2] = b_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 3] = a_buf.map(|b| b[i]).unwrap_or(1.0);
+                }
+            }
+        } else {
+            // SLOW PATH: Handles subsampling (YCbCr etc)
+            for row_u in 0..chunk_height_u32 {
+                for col_u in 0..chunk_width_u32 {
+                    let dest = (row_u as usize * chunk_width + col_u as usize) * 4;
+
+                    rgba[dest + 3] = a_idx
+                        .map(|i| {
+                            channel_sample_f32(
+                                &buffers,
+                                &channel_layouts,
+                                i,
+                                chunk_origin,
+                                col_u,
+                                row_u,
+                            )
+                        })
+                        .unwrap_or(1.0);
+
+                    if is_yryby {
+                        let y = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
-                            i,
+                            y_idx.unwrap(),
                             chunk_origin,
                             col_u,
                             row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-                rgba[dest + 1] = g_idx
-                    .map(|i| {
-                        channel_sample_f32(
+                        );
+                        let ry_ratio = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
-                            i,
+                            ry_idx.unwrap(),
                             chunk_origin,
                             col_u,
                             row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-                rgba[dest + 2] = b_idx
-                    .map(|i| {
-                        channel_sample_f32(
+                        );
+                        let by_ratio = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
-                            i,
+                            by_idx.unwrap(),
                             chunk_origin,
                             col_u,
                             row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-            } else if y_idx.is_some() {
-                let y = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    y_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                rgba[dest] = y;
-                rgba[dest + 1] = y;
-                rgba[dest + 2] = y;
-            } else {
-                rgba[dest] = 0.0;
-                rgba[dest + 1] = 0.0;
-                rgba[dest + 2] = 0.0;
+                        );
+                        let [wr, wg, wb] = self.exr_luma_weights;
+                        let r = y * (1.0 + ry_ratio);
+                        let b = y * (1.0 + by_ratio);
+                        let g = (y - wr * r - wb * b) / wg;
+
+                        rgba[dest] = r;
+                        rgba[dest + 1] = g;
+                        rgba[dest + 2] = b;
+                    } else {
+                        rgba[dest] = r_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        rgba[dest + 1] = g_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        rgba[dest + 2] = b_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                    }
+                }
             }
         }
         let rgba = Arc::new(rgba);
