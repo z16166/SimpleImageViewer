@@ -522,7 +522,7 @@ jobs:
           YY_THUNKS: ${{ env.YY_THUNKS }}
         run: |
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          thunk --os win7 --arch x64 --subsystem windows -- --release --features legacy_win7
+          thunk --os win7 --arch x64 -- --release --features legacy_win7
 
 
 
