@@ -44,7 +44,8 @@ vcpkg-manifest-install.log
 *.7z
 *.msi
 *.exe
-docs/
+docs/**
+!docs/loader-split-plan.md
 AGENTS.md
 !src/
 !libraries/
