@@ -1508,11 +1508,25 @@ impl ImageLoader {
 
     /// Drop queued decode results from a previous `generation` so rapid navigation
     /// cannot retain hundreds of megabytes in the unbounded channel / defer queue.
-    pub fn discard_pending_stale_outputs(&mut self, keep_generation: u64) {
+    ///
+    /// `also_keep_preview` — when `Some((index, gen))`, Preview results for that
+    /// specific (index, generation) are also preserved even though they don't match
+    /// `keep_generation`. Used when a prefetched TileManager is promoted to current:
+    /// the prefetch-phase HQ preview task carries the old generation and must not be
+    /// discarded merely because the generation counter was bumped on promotion.
+    pub fn discard_pending_stale_outputs(
+        &mut self,
+        keep_generation: u64,
+        also_keep_preview: Option<(usize, u64)>,
+    ) {
         let keep = |output: &LoaderOutput| -> bool {
             match output {
                 LoaderOutput::Image(r) => r.generation == keep_generation,
-                LoaderOutput::Preview(p) => p.generation == keep_generation,
+                LoaderOutput::Preview(p) => {
+                    p.generation == keep_generation
+                        || also_keep_preview
+                            .is_some_and(|(idx, old_gen)| p.index == idx && p.generation == old_gen)
+                }
                 LoaderOutput::HdrSdrFallback(h) => h.generation == keep_generation,
                 LoaderOutput::Refined(_, g) => *g == keep_generation,
                 LoaderOutput::Tile(t) => t.generation == keep_generation,

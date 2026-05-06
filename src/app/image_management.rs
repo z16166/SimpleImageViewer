@@ -641,7 +641,14 @@ impl ImageViewerApp {
         });
 
         self.schedule_preloads(true);
-        self.loader.discard_pending_stale_outputs(self.generation);
+        // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
+        // current index that still carries the old prefetch generation — it may have arrived in
+        // the channel between the generation bump and now and must not be thrown away.
+        let also_keep = self
+            .prefetch_prev_generation
+            .map(|old_gen| (self.current_index, old_gen));
+        self.loader
+            .discard_pending_stale_outputs(self.generation, also_keep);
     }
 
     pub(crate) fn navigate_next(&mut self) {
