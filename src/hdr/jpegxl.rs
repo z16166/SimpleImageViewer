@@ -1758,6 +1758,7 @@ fn read_jxl_metadata(
         metadata.transfer_function = trc;
         metadata.reference = HdrReference::Unknown;
         metadata.luminance = saved_luminance;
+        crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
         return metadata;
     }
 

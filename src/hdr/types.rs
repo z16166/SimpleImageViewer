@@ -14,6 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::sync::{LazyLock, Mutex};
+
 pub const DEFAULT_SDR_WHITE_NITS: f32 = 203.0;
 pub const DEFAULT_MAX_DISPLAY_NITS: f32 = 1000.0;
 
@@ -126,11 +131,11 @@ impl HdrImageMetadata {
         match self.color_profile {
             HdrColorProfile::LinearSrgb => HdrColorSpace::LinearSrgb,
             HdrColorProfile::ColorSpace(color_space) => color_space,
-            // **Matrix coefficients** 9/10 are BT.2020 NCL/CL: libavif YUV→RGB produces **Rec.2020**
-            // display-referred RGB. Some AVIF (incl. bad conformance tags) declare **colour_primaries 1**
+            // **Matrix coefficients** 9/10/12 are BT.2020 NCL/CL variants: libavif/YUV→RGB produces
+            // **Rec.2020** display-referred RGB. Some AVIF (incl. bad conformance tags) declare **colour_primaries 1**
             // with matrix 10; matching `primaries 1` first would skip WGSL Rec.2020→linear-sRGB → blue.
             HdrColorProfile::Cicp {
-                matrix_coefficients: 9 | 10,
+                matrix_coefficients: 9 | 10 | 12,
                 ..
             } => HdrColorSpace::Rec2020Linear,
             HdrColorProfile::Cicp {
@@ -142,6 +147,7 @@ impl HdrImageMetadata {
             HdrColorProfile::Cicp {
                 color_primaries: 1, ..
             } => HdrColorSpace::LinearSrgb,
+            HdrColorProfile::Icc(ref data) => embedded_icc_profile_color_space_hint(data.as_slice()),
             _ => HdrColorSpace::Unknown,
         }
     }
@@ -159,6 +165,19 @@ impl HdrImageMetadata {
     }
 }
 
+/// Emit **decode-time** diagnostics for embedded ICC that `embedded_icc_profile_color_space_hint`
+/// could not classify. Call from loader / decode paths only (e.g. background decode thread), not from
+/// `color_space_hint()` which also runs on UI/HDR draw hot paths.
+pub(crate) fn log_unrecognized_embedded_icc_after_decode(metadata: &HdrImageMetadata) {
+    let HdrColorProfile::Icc(ref data) = metadata.color_profile else {
+        return;
+    };
+    let icc = data.as_slice();
+    if embedded_icc_profile_color_space_hint(icc) == HdrColorSpace::Unknown {
+        log_unrecognized_embedded_icc_profile_once(icc);
+    }
+}
+
 impl Default for HdrImageMetadata {
     fn default() -> Self {
         Self {
@@ -169,6 +188,79 @@ impl Default for HdrImageMetadata {
             gain_map: None,
         }
     }
+}
+
+/// Embedded ICC: **only** ISO 15076–based classification via **Little CMS 2** (read ICC `rXYZ` /
+/// `gXYZ` / `bXYZ` and compare chromaticities to **ITU/SMPTE** tabulated primaries). **CICP** is
+/// handled in [`Self::color_space_hint`] for [`HdrColorProfile::Cicp`] (ITU-T H.273). There is **no**
+/// substring / `mluc` text matching. Builds **without** `jpegxl` cannot link `lcms2` here —
+/// [`HdrColorProfile::Icc`] yields [`HdrColorSpace::Unknown`] (honest, not guessed).
+fn embedded_icc_profile_color_space_hint(icc: &[u8]) -> HdrColorSpace {
+    #[cfg(feature = "jpegxl")]
+    {
+        use crate::hdr::icc_primaries_lcms::{classify_embedded_icc_primaries, EmbeddedIccHint};
+        match classify_embedded_icc_primaries(icc) {
+            EmbeddedIccHint::Classified(cs) => cs,
+            EmbeddedIccHint::RgbPrimariesUnmatched | EmbeddedIccHint::IccPrimariesNotReadable => {
+                HdrColorSpace::Unknown
+            }
+        }
+    }
+    #[cfg(not(feature = "jpegxl"))]
+    {
+        let _ = icc;
+        HdrColorSpace::Unknown
+    }
+}
+
+/// Deduplicate ICC blobs so opening the same file twice does not repeat huge hex lines; not for UI throttling.
+const ICC_UNRECOGNIZED_LOG_HEX_BYTES: usize = 256;
+
+static ICC_UNRECOGNIZED_LOG_DEDUPE: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn icc_profile_fingerprint_for_dedup(icc: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    icc.len().hash(&mut h);
+    for b in icc.iter().take(512) {
+        b.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn icc_bytes_to_lower_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
+}
+
+/// Raw hex only — embedded text may be UTF-16 `mluc` / vendor-specific; encoding is not assumed.
+fn log_unrecognized_embedded_icc_profile_once(icc: &[u8]) {
+    let fp = icc_profile_fingerprint_for_dedup(icc);
+    let mut seen = ICC_UNRECOGNIZED_LOG_DEDUPE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !seen.insert(fp) {
+        return;
+    }
+
+    let len = icc.len();
+    let preview_n = len.min(ICC_UNRECOGNIZED_LOG_HEX_BYTES);
+    let head_hex = icc_bytes_to_lower_hex(&icc[..preview_n]);
+    let tail_note = if len > ICC_UNRECOGNIZED_LOG_HEX_BYTES {
+        format!(" [log truncated: first {} of {} bytes as hex]", preview_n, len)
+    } else {
+        String::new()
+    };
+    log::debug!(
+        "[HDR] embedded ICC: primaries not classified (ICC.1 + lcms: invalid/non-RGB/missing XYZ tags or xy outside BT.709 | P3 | BT.2020); len={} hex_preview={}{}",
+        len,
+        head_hex,
+        tail_note
+    );
 }
 
 #[allow(dead_code)]
@@ -323,6 +415,16 @@ mod tests {
         };
 
         assert_eq!(metadata.transfer_short_label(), "PQ");
+    }
+
+    #[test]
+    fn embedded_icc_invalid_or_opaque_blob_yields_unknown() {
+        let icc = vec![0xFF_u8; 512];
+        let metadata = HdrImageMetadata {
+            color_profile: HdrColorProfile::Icc(Arc::new(icc)),
+            ..HdrImageMetadata::default()
+        };
+        assert_eq!(metadata.color_space_hint(), HdrColorSpace::Unknown);
     }
 
     #[test]

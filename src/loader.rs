@@ -2143,6 +2143,8 @@ fn load_jpeg_with_target_capacity(
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
+    // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
     let orientation = crate::metadata_utils::get_exif_orientation(path);
     // Apply EXIF Orientation per TIFF/EXIF rules (same transform family as Pillow `exif_transpose`).
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
@@ -2274,6 +2276,65 @@ fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_map: &HdrTone
     hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
 }
 
+/// Apply EXIF **Orientation** (values 1–8) via [`metadata_utils::get_exif_orientation`] for formats whose
+/// loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer, …).
+///
+/// **Never chain on JPEG or TIFF extension loads** — that would double-rotate:
+/// - **`.jpg`/`.jpeg`** (incl. **JPEG_R / Ultra HDR**): only [`load_jpeg_with_target_capacity`] may apply
+///   `get_exif_orientation` + [`hdr::ultra_hdr::apply_orientation_to_hdr_buffer`] / [`apply_orientation_buffer`].
+/// - **`.tif`/`.tiff`** (incl. **f16/f32 / scene-linear**): only [`crate::libtiff_loader`] applies the TIFF
+///   **`Orientation`** tag (`TIFFTAG_ORIENTATION`), not this function.
+///
+/// **HdrTiled** (large disk-backed EXR/Radiance) is unchanged: no practical container orientation path here.
+fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData) -> ImageData {
+    match data {
+        ImageData::Hdr { hdr, fallback } => {
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+            ImageData::Hdr { hdr, fallback }
+        }
+        ImageData::Animated(frames) => {
+            let o = crate::metadata_utils::get_exif_orientation(path);
+            if o <= 1 || frames.is_empty() {
+                return ImageData::Animated(frames);
+            }
+            let out = frames
+                .into_iter()
+                .map(|f| {
+                    let px = f.rgba().to_vec();
+                    let (ow, oh, opx) =
+                        crate::libtiff_loader::apply_orientation_buffer(px, f.width, f.height, o);
+                    AnimationFrame::new(ow, oh, opx, f.delay)
+                })
+                .collect();
+            ImageData::Animated(out)
+        }
+        other => other,
+    }
+}
+
+fn apply_exif_orientation_to_hdr_pair(
+    path: &Path,
+    hdr: crate::hdr::types::HdrImageBuffer,
+    fallback: DecodedImage,
+) -> (crate::hdr::types::HdrImageBuffer, DecodedImage) {
+    let mut o = crate::metadata_utils::get_exif_orientation(path);
+    #[cfg(feature = "heif-native")]
+    if crate::hdr::heif::decoded_pixels_match_swapped_ispe(path, hdr.width, hdr.height) {
+        o = 1;
+    }
+    if o <= 1 {
+        return (hdr, fallback);
+    }
+    let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, o);
+    let w = fallback.width;
+    let h = fallback.height;
+    let mut fallback = fallback;
+    let px = fallback.take_rgba_owned();
+    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
+    fallback.set_rgba_buffer(ow, oh, opx);
+    (hdr, fallback)
+}
+
 fn load_avif_with_target_capacity(
     path: &PathBuf,
     hdr_target_capacity: f32,
@@ -2295,7 +2356,10 @@ fn load_avif_with_target_capacity(
                     frames.len(),
                     path.display()
                 );
-                return Ok(ImageData::Animated(frames));
+                return Ok(apply_exif_orientation_to_image_data(
+                    path.as_path(),
+                    ImageData::Animated(frames),
+                ));
             }
             Ok(_) => {}
             Err(e) => {
@@ -2315,6 +2379,8 @@ fn load_avif_with_target_capacity(
                     &hdr_tone_map,
                 )?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                let (hdr, fallback) =
+                    apply_exif_orientation_to_hdr_pair(path.as_path(), hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))
             }
             Err(err) => {
@@ -2364,12 +2430,13 @@ fn load_jxl_with_target_capacity(
     #[cfg(feature = "jpegxl")]
     {
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
+        let data = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
             decode_capacity,
             hdr_target_capacity,
             hdr_tone_map,
-        )
+        )?;
+        Ok(apply_exif_orientation_to_image_data(path.as_path(), data))
     }
 
     #[cfg(not(feature = "jpegxl"))]
@@ -2387,7 +2454,7 @@ fn load_heif_hdr_aware(
     #[cfg(feature = "heif-native")]
     {
         match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map) {
-            Ok(image) => Ok(image),
+            Ok(image) => Ok(apply_exif_orientation_to_image_data(path.as_path(), image)),
             Err(err) => {
                 log::warn!(
                     "[Loader] libheif decode failed for {}: {err}",
@@ -2436,7 +2503,7 @@ fn load_hdr(
         &hdr_tone_map,
     )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
-
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -2521,6 +2588,7 @@ fn exr_tiled_source_to_static_hdr(
         hdr.height,
         path.display()
     );
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -2567,6 +2635,7 @@ fn load_deep_exr(
                 &hdr_tone_map,
             )?;
             let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             Ok(make_hdr_image_data(hdr, fallback))
         }
         Err(err) => {
@@ -2645,7 +2714,10 @@ fn process_animation_frames(
         })
         .collect();
 
-    Ok(ImageData::Animated(frames))
+    Ok(apply_exif_orientation_to_image_data(
+        path.as_path(),
+        ImageData::Animated(frames),
+    ))
 }
 
 fn load_gif(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
@@ -4084,6 +4156,7 @@ fn load_detected_exr(
         &hdr_tone_map,
     )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
