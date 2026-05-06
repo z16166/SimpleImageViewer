@@ -600,6 +600,19 @@ impl ImageViewerApp {
             tm.get_source()
                 .request_refinement(self.current_index, self.generation);
 
+            // HDR tiled sources (EXR, JXL, etc.) use a separate HQ preview pipeline that is
+            // NOT covered by the TiledImageSource::request_refinement no-op above.
+            // When a prefetched TileManager is promoted to current, the generation counter has
+            // just been incremented, so any in-flight refinement task from the prefetch phase
+            // will be discarded as stale. Spawn a fresh task under the new generation here.
+            if let Some(hdr_source) = self.hdr_tiled_source_cache.get(&self.current_index).cloned() {
+                self.loader.request_hdr_tiled_refinement(
+                    self.current_index,
+                    self.generation,
+                    hdr_source,
+                );
+            }
+
             self.tile_manager = Some(tm);
 
             log::info!(
