@@ -174,6 +174,10 @@ impl TiledImageSource for MemoryImageSource {
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
         Some(Arc::clone(&self.pixels))
     }
+
+    fn exif_orientation_rotate_in_memory_rgba(&self) -> bool {
+        !self.hdr_sdr_fallback
+    }
 }
 
 // ---------------------------------------------------------------------------

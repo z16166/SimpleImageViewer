@@ -106,6 +106,15 @@ pub trait TiledImageSource: Send + Sync {
     fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>);
     /// Optionally provide the full pixel buffer if already in memory.
     fn full_pixels(&self) -> Option<Arc<Vec<u8>>>;
+
+    /// When true, [`crate::loader::orientation::apply_exif_orientation_to_image_data`] may rotate pixels
+    /// from [`Self::full_pixels`] using [`crate::metadata_utils::get_exif_orientation`].
+    ///
+    /// Only non-HDR-fallback [`crate::loader::tiled_sources::MemoryImageSource`] enables this — JPEG /
+    /// TIFF paths and HDR/SDR pairs apply orientation elsewhere; LibRAW tiled sources use flip metadata.
+    fn exif_orientation_rotate_in_memory_rgba(&self) -> bool {
+        false
+    }
     /// Trigger background refinement to replace preview data with full-quality pixels.
     /// Default no-op; only RAW sources need background demosaicing.
     fn request_refinement(&self, _index: usize, _generation: u64) {}

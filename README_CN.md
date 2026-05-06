@@ -15,11 +15,20 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 ## 特性列表
 
 - **快速图片加载** — 后台线程预加载前后图片，翻页无延迟。包含针对 Windows 平台大尺寸竖拍（旋转）JPEG 图片的 WIC 管道性能深度优化
-- **广泛格式支持** — JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、HDR、AVIF、HEIF/HEIC、QOI、EXR、PSD、PSB **以及超过 60 种相机 RAW 格式**
-- **专业相机 RAW 支持** — 原生支持超过 60 种相机 RAW 格式的查看（暂不支持编辑），涵盖佳能 (`.cr2`, `.cr3`)、尼康 (`.nef`, `.nrw`)、索尼 (`.arw`)、富士 (`.raf`)、松下 (`.rw2`)、奥林巴斯 (`.orf`)、宾得 (`.pef`)、哈苏 (`.3fr`)、飞思 (`.iiq`) 等主流及专业机型
+- **图像格式支持** — 覆盖常见与现代静态图、Photoshop 文档及多种相机 RAW（RAW 为仅浏览）。
+  - **常见静态**：JPEG、PNG、GIF、BMP、TIFF、TGA、WebP、ICO、PNM、QOI
+  - **现代与高动态**：JPEG XL（`.jxl`）、AVIF / AVIFS 序列（`.avif`、`.avifs`）、OpenEXR（`.exr`）、Radiance HDR（`.hdr`）、HEIF / HEIC / HIF（含典型 iPhone HEIC）
+  - **Photoshop**：PSD / PSB；PSB 大文档加载前有内存安全检查
+  - **相机 RAW**（60 余种）：佳能（`.cr2`、`.cr3`）、尼康（`.nef`、`.nrw`）、索尼（`.arw`）、富士（`.raf`）、松下（`.rw2`）、奥林巴斯（`.orf`）、宾得（`.pef`）、哈苏（`.3fr`）、飞思（`.iiq`）等
+- **HDR 与高动态渲染** — 对自带 HDR 或更广亮度动态的文件提供 HDR 观感呈现；最终观感取决于 HDR 显示器与系统的 HDR 是否开启。
+  - Ultra HDR JPEG、自带 HDR 信息的 JPEG
+  - Radiance HDR（`.hdr`）
+  - OpenEXR（`.exr`）
+  - 保留更高亮度层次的 TIFF
+  - JPEG XL
+  - AVIF / AVIFS
+  - HEIF / HEIC / HIF
 - **超大图分片渲染** — 内置分片渲染引擎，支持超高分辨率图片（1亿像素以上）；仅将视口内的切片上传至 GPU，通过高效缓存管理保持显存占用恒定
-- **PSD / PSB 支持** — 原生 Photoshop 文件读取器；PSB 大文件格式（4 GB+）支持自动检测系统可用内存并安全加载
-- **HEIF / HEIC 支持** — 原生支持 iPhone 高效率图片格式；高性能原生解码，跨平台兼容性好
 - **图片打印** — 直接从应用内打印图片。
   - **Windows**: 调用系统原生打印向导。支持高保真 JPEG (95% 质量) 和自动 Alpha 透明度扁平化处理。
   - **macOS / Linux**: 自动将图像导出为完美尺寸、无边距的 PDF，并调用系统默认查看器打开以供打印。

@@ -49,7 +49,10 @@ pub(crate) fn load_static(
     let (width, height) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
-    Ok(make_image_data(DecodedImage::new(width, height, pixels)))
+    Ok(apply_exif_orientation_to_image_data(
+        path.as_path(),
+        make_image_data(DecodedImage::new(width, height, pixels)),
+    ))
 }
 pub(crate) fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
@@ -224,7 +227,10 @@ pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         match handle.join() {
             Ok(Ok((w, h, pixels))) => {
                 let img = DecodedImage::new(w, h, pixels);
-                Ok(make_image_data(img))
+                Ok(apply_exif_orientation_to_image_data(
+                    path.as_path(),
+                    make_image_data(img),
+                ))
             }
             Ok(Err(e)) => {
                 const PSD_DECODE_PANIC_PREFIX: &str = "PSD v1 decode: decoder panic: ";

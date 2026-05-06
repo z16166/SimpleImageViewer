@@ -149,7 +149,6 @@ pub(crate) fn load_image_file(
             "gif" => load_gif(path, hdr_target_capacity, hdr_tone_map),
             "png" | "apng" => load_png(path, hdr_target_capacity, hdr_tone_map),
             "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
-            "jpg" | "jpeg" => load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
             _ => load_static(path, hdr_target_capacity, hdr_tone_map),
         };
         if result.is_err() {

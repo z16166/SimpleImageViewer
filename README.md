@@ -9,11 +9,20 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 ## Features
 
 - **Fast image loading** — background thread pre-loads adjacent images so navigation is instant. Includes high-performance WIC pipeline optimization for large portrait (rotated) JPEG images on Windows.
-- **Wide format support** — JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, HDR, AVIF, HEIF/HEIC, QOI, EXR, PSD, PSB and **60+ Camera RAW formats**
-- **Professional RAW Support** — viewing-only support for 60+ RAW formats, including Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and many more.
+- **Image formats** — Common and modern stills, Photoshop documents, and 60+ camera RAW formats (RAW is viewing-only).
+  - **Common stills**: JPEG, PNG, GIF, BMP, TIFF, TGA, WebP, ICO, PNM, QOI
+  - **Modern & high-dynamic**: JPEG XL (`.jxl`), AVIF / AVIFS sequences (`.avif`, `.avifs`), OpenEXR (`.exr`), Radiance HDR (`.hdr`), HEIF / HEIC / HIF (including typical iPhone HEIC)
+  - **Photoshop**: PSD & PSB, with a RAM safety check before loading large PSB documents
+  - **Camera RAW** (60+): Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Sony (`.arw`), Fujifilm (`.raf`), Panasonic (`.rw2`), Olympus (`.orf`), Pentax (`.pef`), Hasselblad (`.3fr`), Phase One (`.iiq`), and more
+- **HDR-capable rendering** — HDR-oriented presentation when the file carries HDR or extended brightness range; how strong it looks depends on an HDR-capable display and whether system HDR is enabled.
+  - Ultra HDR JPEG and JPEGs with HDR metadata
+  - Radiance HDR (`.hdr`)
+  - OpenEXR (`.exr`)
+  - TIFF encodes that retain extended range / higher bit depth
+  - JPEG XL
+  - AVIF / AVIFS
+  - HEIF / HEIC / HIF
 - **Gigapixel image support** — tiled rendering engine for ultra-high-resolution images (100MP+); only visible tiles are uploaded to GPU, with efficient memory management to keep VRAM usage constant
-- **PSD / PSB support** — native Photoshop Document reader; PSB (Large Document, 4 GB+) supported with automatic RAM safety check before loading
-- **HEIF / HEIC Support** — native decoding of Apple iPhone high-efficiency photos with high performance and cross-platform compatibility
 - **Image Printing** — print images directly from the app.
   - **Windows**: Uses the system native print wizard. Supports high-quality JPEG (95% quality) and automatic alpha flattening.
   - **macOS / Linux**: Automatically exports the image to a perfectly sized, margin-less PDF and opens it with the system default viewer for printing.

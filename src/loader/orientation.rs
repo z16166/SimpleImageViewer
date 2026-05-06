@@ -16,8 +16,9 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use std::path::Path;
+use std::sync::Arc;
 
-use super::types::{AnimationFrame, DecodedImage, ImageData};
+use super::types::{AnimationFrame, DecodedImage, ImageData, TiledImageSource};
 
 /// Linear luminance ratio (peak / SDR white) used when **decoding** ISO gain maps (JPEG_R,
 /// AVIF, JXL). Probed monitor headroom can exceed [`HdrToneMapSettings::max_display_nits`];
@@ -28,7 +29,8 @@ pub(crate) fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_ma
 }
 
 /// Apply EXIF **Orientation** (values 1–8) via [`metadata_utils::get_exif_orientation`] for formats whose
-/// loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer, …).
+/// loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer,
+/// `image-rs` static decode / memory-backed tiling, …).
 ///
 /// **Never chain on JPEG or TIFF extension loads** — that would double-rotate:
 /// - **`.jpg`/`.jpeg`** (incl. **JPEG_R / Ultra HDR**): only the JPEG loader may apply
@@ -37,11 +39,45 @@ pub(crate) fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_ma
 ///   **`Orientation`** tag (`TIFFTAG_ORIENTATION`), not this function.
 ///
 /// **HdrTiled** (large disk-backed EXR/Radiance) is unchanged: no practical container orientation path here.
+///
+/// **`static` tiling** via [`crate::loader::tiled_sources::MemoryImageSource`]: rotates when
+/// [`TiledImageSource::exif_orientation_rotate_in_memory_rgba`] is true (non-HDR-fallback memory buffers only).
+/// Disk-backed TIFF/EXR tile sources omit EXIF rotation here by design ([`crate::libtiff_loader::LibTiffTiledSource`]).
 pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData) -> ImageData {
     match data {
         ImageData::Hdr { hdr, fallback } => {
             let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             ImageData::Hdr { hdr, fallback }
+        }
+        ImageData::Static(mut img) => {
+            let o = crate::metadata_utils::get_exif_orientation(path);
+            if o <= 1 {
+                return ImageData::Static(img);
+            }
+            let w = img.width;
+            let h = img.height;
+            let px = img.take_rgba_owned();
+            let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
+            img.set_rgba_buffer(ow, oh, opx);
+            ImageData::Static(img)
+        }
+        ImageData::Tiled(source) => {
+            if !TiledImageSource::exif_orientation_rotate_in_memory_rgba(source.as_ref()) {
+                return ImageData::Tiled(source);
+            }
+            let o = crate::metadata_utils::get_exif_orientation(path);
+            if o <= 1 {
+                return ImageData::Tiled(source);
+            }
+            let Some(full_px) = source.full_pixels() else {
+                return ImageData::Tiled(source);
+            };
+            let w = source.width();
+            let h = source.height();
+            let vec = (*full_px).clone();
+            let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(vec, w, h, o);
+            let rebuilt = crate::loader::tiled_sources::MemoryImageSource::new(ow, oh, Arc::new(opx));
+            ImageData::Tiled(Arc::new(rebuilt))
         }
         ImageData::Animated(frames) => {
             let o = crate::metadata_utils::get_exif_orientation(path);
