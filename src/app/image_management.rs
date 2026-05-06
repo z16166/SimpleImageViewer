@@ -70,6 +70,7 @@ fn cache_hdr_tiled_preview_state(
     cache: &mut HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     current: &mut Option<crate::app::CurrentHdrImage>,
     preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    file_name: &str,
 ) {
     let Some(preview) = preview else {
         return;
@@ -80,7 +81,8 @@ fn cache_hdr_tiled_preview_state(
         .map(|cached| cached.width.max(cached.height));
     if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
         log::debug!(
-            "[App] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
+            "[App] [{}] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
+            file_name,
             idx,
             preview.width,
             preview.height,
@@ -90,7 +92,8 @@ fn cache_hdr_tiled_preview_state(
     }
 
     log::info!(
-        "[App] Cached HDR tiled preview for index {} ({}x{}, cached max side {:?})",
+        "[App] [{}] Cached HDR tiled preview for index {} ({}x{}, cached max side {:?})",
+        file_name,
         idx,
         preview.width,
         preview.height,
@@ -582,28 +585,34 @@ impl ImageViewerApp {
         // Check if we have a prefetched TileManager ready to use!
         if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
             // We successfully hit the cache!
-            // The prefetch completed previously (or is still decoding in background).
-            // We MUST update its generation to match the current navigation sequence,
-            // otherwise its internal tile queue matching will fail.
+            // Save the prefetch-phase generation before incrementing. Any in-flight HQ preview
+            // tasks (HDR or SDR) were spawned with this old generation. We record it so that
+            // handle_preview_update() can accept their results instead of discarding them as
+            // stale — avoiding a from-scratch re-render of huge EXR/JXL files.
+            let prefetch_gen = self.generation;
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
+            self.prefetch_prev_generation = Some(prefetch_gen);
 
             tm.generation = self.generation;
             self.current_image_res = Some((tm.full_width, tm.full_height));
 
-            // Trigger deferred refinement now that this image is actively viewed.
-            // Prefetched RAW images defer refinement to avoid ~400MB develop allocations
-            // for images the user might never actually look at.
+            // Trigger deferred refinement for RAW sources (LibRaw demosaic).
+            // HDR tiled sources: in-flight prefetch tasks carry `prefetch_gen` and will be
+            // accepted by handle_preview_update via prefetch_prev_generation — no re-spawn needed.
             tm.get_source()
                 .request_refinement(self.current_index, self.generation);
 
             self.tile_manager = Some(tm);
 
-            log::info!(
-                "[App] Cache Hit: Restored prefetched TileManager for index {}",
-                self.current_index
+            log::debug!(
+                "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
+                self.current_index, prefetch_gen, self.generation
             );
         } else {
+            // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
+            // so handle_preview_update doesn't erroneously accept stale old-gen results.
+            self.prefetch_prev_generation = None;
             // ALWAYS increment generation on every navigation and request a fresh load.
             // This ensures TileManager is re-initialized for large images and
             // low-res thumbnails are upgraded to full resolution.
@@ -632,7 +641,14 @@ impl ImageViewerApp {
         });
 
         self.schedule_preloads(true);
-        self.loader.discard_pending_stale_outputs(self.generation);
+        // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
+        // current index that still carries the old prefetch generation — it may have arrived in
+        // the channel between the generation bump and now and must not be thrown away.
+        let also_keep = self
+            .prefetch_prev_generation
+            .map(|old_gen| (self.current_index, old_gen));
+        self.loader
+            .discard_pending_stale_outputs(self.generation, also_keep);
     }
 
     pub(crate) fn navigate_next(&mut self) {
@@ -1514,8 +1530,42 @@ impl ImageViewerApp {
         // CRITICAL: Drop any stale preview results.
         // This prevents out-of-date HQ previews from repopulating the cache after
         // a directory rescan (which shifts indices) or file deletion.
-        if update.generation != self.generation {
+        //
+        // Exception: when a prefetched TileManager is promoted to current, we save the
+        // old generation in `prefetch_prev_generation`. In-flight tasks from the prefetch
+        // phase carry that old generation — we accept their results rather than discarding
+        // them and re-doing the (potentially expensive) render from scratch.
+        let is_prefetch_survivor = update.index == self.current_index
+            && self.prefetch_prev_generation == Some(update.generation);
+
+        if update.generation != self.generation && !is_prefetch_survivor {
+            let file_name = self.image_files[update.index]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            log::warn!(
+                "[App] [{}] Preview update discarded (stale generation): {} vs current {}",
+                file_name,
+                update.generation,
+                self.generation
+            );
             return;
+        }
+
+        // Once we have accepted the prefetch-survivor result, clear the slot so future
+        // results with the old generation are correctly rejected.
+        if is_prefetch_survivor {
+            let file_name = self.image_files[update.index]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            log::debug!(
+                "[App] [{}] Accepted in-flight prefetch preview (gen={} → promoted gen={})",
+                file_name,
+                update.generation,
+                self.generation
+            );
+            self.prefetch_prev_generation = None;
         }
 
         if update.preview_bundle.hdr().is_some() {
@@ -1536,8 +1586,12 @@ impl ImageViewerApp {
             (Some(preview), _) => {
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
-                    if tm.image_index == update.index && update.generation == tm.generation {
-                        log::info!(
+                    // Accept if generation matches, OR if this is a prefetch-survivor result
+                    // (update.generation == old prefetch gen, tm.generation == new promoted gen).
+                    if tm.image_index == update.index
+                        && (update.generation == tm.generation || is_prefetch_survivor)
+                    {
+                        log::debug!(
                             "[App] HQ preview applied for current index {} ({}x{})",
                             update.index,
                             preview.width,
@@ -1554,10 +1608,12 @@ impl ImageViewerApp {
                     }
                 }
 
-                // 2. Update prefetched TileManagers
+                // 2. Update prefetched TileManagers (survivor results won't match here since
+                // the TileManager was already promoted out of prefetched_tiles, skip for them).
+                if !is_prefetch_survivor {
                 if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
                     if update.generation == tm.generation {
-                        log::info!(
+                        log::debug!(
                             "[App] HQ preview applied for prefetched index {} ({}x{})",
                             update.index,
                             preview.width,
@@ -1566,6 +1622,7 @@ impl ImageViewerApp {
                         tm.set_preview(preview.clone(), ctx);
                     }
                 }
+                } // end !is_prefetch_survivor
 
                 // 3. Update global texture cache (so instant-flips also get HQ texture).
                 // Only update if it's empty or currently holds a preview (don't downgrade full static images).
@@ -1696,12 +1753,18 @@ impl ImageViewerApp {
         idx: usize,
         preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     ) {
+        let file_name = self.image_files[idx]
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         cache_hdr_tiled_preview_state(
             idx,
             self.current_index,
             &mut self.hdr_tiled_preview_cache,
             &mut self.current_hdr_tiled_preview,
             preview,
+            &file_name,
         );
     }
 
@@ -1846,9 +1909,9 @@ mod tests {
         let mut cache = HashMap::new();
         let mut current = None;
 
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)));
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)));
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller));
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)), "test.exr");
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)), "test.exr");
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller), "test.exr");
 
         let cached = cache.get(&7).expect("preview should be cached");
         assert_eq!(cached.width, 4096);
