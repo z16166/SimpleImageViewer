@@ -1331,6 +1331,11 @@ impl ImageLoader {
             let gen_ref = Arc::clone(&current_gen);
             match (hdr_source, sdr_source) {
                 (Some(source), _) => {
+                    let file_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
                     REFINEMENT_POOL.spawn(move || {
                         if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
                             return;
@@ -1342,23 +1347,33 @@ impl ImageLoader {
                         let limit = hq_preview_max_side();
                         let started_at = std::time::Instant::now();
                         log::info!(
-                            "[Loader] HQ HDR preview start: index={} generation={} limit={} source={}x{}",
+                            "[Loader] [{}] HQ preview start: index={} generation={} limit={} source={}x{} (hdr_mode={})",
+                            file_name,
                             index,
                             generation,
                             limit,
                             source.width(),
-                            source.height()
+                            source.height(),
+                            hdr_target_capacity > 1.0
                         );
+                        let is_hdr_mode = hdr_target_capacity > 1.0;
                         let r_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                source.generate_hdr_preview(limit, limit)
+                                let hdr = source.generate_hdr_preview(limit, limit)?;
+                                let sdr = if !is_hdr_mode {
+                                    Some(crate::hdr::tiled::sdr_preview_from_hdr_preview(&hdr)?)
+                                } else {
+                                    None
+                                };
+                                Ok((hdr, sdr))
                             }));
 
                         match r_result {
-                            Ok(Ok(preview)) if preview.width > 0 && preview.height > 0 => {
+                            Ok(Ok((hdr, sdr))) => {
                                 if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
                                     log::info!(
-                                        "[Loader] HQ HDR preview discarded as stale: index={} generation={} elapsed={:?}",
+                                        "[Loader] [{}] HQ preview discarded as stale: index={} generation={} elapsed={:?}",
+                                        file_name,
                                         index,
                                         generation,
                                         started_at.elapsed()
@@ -1366,25 +1381,35 @@ impl ImageLoader {
                                     return;
                                 }
                                 log::info!(
-                                    "[Loader] HQ HDR preview generated: {}x{} (source {}x{}, limit={}, elapsed={:?})",
-                                    preview.width,
-                                    preview.height,
+                                    "[Loader] [{}] HQ previews generated: {}x{} (source {}x{}, limit={}, elapsed={:?}, hdr_mode={})",
+                                    file_name,
+                                    hdr.width,
+                                    hdr.height,
                                     source.width(),
                                     source.height(),
                                     limit,
-                                    started_at.elapsed()
+                                    started_at.elapsed(),
+                                    is_hdr_mode
                                 );
-                                let _ = tx_cloned.send(LoaderOutput::Preview(
-                                    PreviewResult::from_hdr_preview(
-                                        index,
-                                        generation,
-                                        Ok(Arc::new(preview)),
-                                    ),
-                                ));
+                                let mut bundle = PreviewBundle::refined();
+                                if is_hdr_mode {
+                                    bundle = bundle.with_hdr(Arc::new(hdr));
+                                }
+                                if let Some(s) = sdr {
+                                    bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
+                                }
+
+                                let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
+                                    index,
+                                    generation,
+                                    preview_bundle: bundle,
+                                    error: None,
+                                }));
                             }
                             Ok(Err(e)) => {
                                 log::error!(
-                                    "[Loader] High-quality HDR preview failed: index={} generation={} limit={} elapsed={:?}: {e}",
+                                    "[Loader] [{}] High-quality HDR preview failed: index={} generation={} limit={} elapsed={:?}: {e}",
+                                    file_name,
                                     index,
                                     generation,
                                     limit,
@@ -1393,7 +1418,8 @@ impl ImageLoader {
                             }
                             Err(e) => {
                                 log::error!(
-                                    "[Loader] High-quality HDR preview PANICKED: index={} generation={} limit={} elapsed={:?}: {:?}",
+                                    "[Loader] [{}] High-quality HDR preview PANICKED: index={} generation={} limit={} elapsed={:?}: {:?}",
+                                    file_name,
                                     index,
                                     generation,
                                     limit,

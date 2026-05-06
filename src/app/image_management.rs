@@ -70,6 +70,7 @@ fn cache_hdr_tiled_preview_state(
     cache: &mut HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     current: &mut Option<crate::app::CurrentHdrImage>,
     preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    file_name: &str,
 ) {
     let Some(preview) = preview else {
         return;
@@ -80,7 +81,8 @@ fn cache_hdr_tiled_preview_state(
         .map(|cached| cached.width.max(cached.height));
     if !should_cache_tiled_hdr_preview(cached_preview_max_side, preview_max_side) {
         log::debug!(
-            "[App] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
+            "[App] [{}] Ignored HDR tiled preview for index {} ({}x{}), cached max side {:?}",
+            file_name,
             idx,
             preview.width,
             preview.height,
@@ -90,7 +92,8 @@ fn cache_hdr_tiled_preview_state(
     }
 
     log::info!(
-        "[App] Cached HDR tiled preview for index {} ({}x{}, cached max side {:?})",
+        "[App] [{}] Cached HDR tiled preview for index {} ({}x{}, cached max side {:?})",
+        file_name,
         idx,
         preview.width,
         preview.height,
@@ -1515,6 +1518,16 @@ impl ImageViewerApp {
         // This prevents out-of-date HQ previews from repopulating the cache after
         // a directory rescan (which shifts indices) or file deletion.
         if update.generation != self.generation {
+            let file_name = self.image_files[update.index]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            log::warn!(
+                "[App] [{}] Preview update discarded (stale generation): {} vs current {}",
+                file_name,
+                update.generation,
+                self.generation
+            );
             return;
         }
 
@@ -1696,12 +1709,18 @@ impl ImageViewerApp {
         idx: usize,
         preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     ) {
+        let file_name = self.image_files[idx]
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         cache_hdr_tiled_preview_state(
             idx,
             self.current_index,
             &mut self.hdr_tiled_preview_cache,
             &mut self.current_hdr_tiled_preview,
             preview,
+            &file_name,
         );
     }
 
@@ -1846,9 +1865,9 @@ mod tests {
         let mut cache = HashMap::new();
         let mut current = None;
 
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)));
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)));
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller));
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)), "test.exr");
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)), "test.exr");
+        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller), "test.exr");
 
         let cached = cache.get(&7).expect("preview should be cached");
         assert_eq!(cached.width, 4096);
