@@ -1548,14 +1548,6 @@ impl ImageLoader {
 
         while let Ok(output) = self.rx.try_recv() {
             if keep(&output) {
-                if let LoaderOutput::Image(ref r) = output {
-                    let mut loading = self.loading.lock().unwrap();
-                    if let Some(&g) = loading.get(&r.index) {
-                        if g <= r.generation {
-                            loading.remove(&r.index);
-                        }
-                    }
-                }
                 self.local_queue.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock().unwrap();
@@ -1573,18 +1565,17 @@ impl ImageLoader {
         }
 
         match self.rx.try_recv() {
-            Ok(output) => {
-                if let LoaderOutput::Image(ref result) = output {
-                    let mut loading = self.loading.lock().unwrap();
-                    if let Some(&g) = loading.get(&result.index) {
-                        if g <= result.generation {
-                            loading.remove(&result.index);
-                        }
-                    }
-                }
-                Some(output)
-            }
+            Ok(output) => Some(output),
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
+        }
+    }
+
+    pub fn finish_image_request(&self, index: usize, generation: u64) {
+        let mut loading = self.loading.lock().unwrap();
+        if let Some(&g) = loading.get(&index) {
+            if g <= generation {
+                loading.remove(&index);
+            }
         }
     }
 
@@ -3139,7 +3130,12 @@ mod tests {
             metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
         });
-        let update = PreviewResult::from_hdr_preview(3, 5, Ok(Arc::clone(&hdr_preview)));
+        let update = PreviewResult {
+            index: 3,
+            generation: 5,
+            preview_bundle: PreviewBundle::refined().with_hdr(Arc::clone(&hdr_preview)),
+            error: None,
+        };
 
         assert!(update.error.is_none());
         assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
@@ -3157,6 +3153,38 @@ mod tests {
         // HDR-only avoids tone-mapping a 4K HQ preview on systems that will only present
         // it through the native scRGB pipeline.
         assert!(update.preview_bundle.sdr().is_none());
+    }
+
+    #[test]
+    fn image_request_stays_inflight_until_ui_finishes_installing_result() {
+        let mut loader = ImageLoader::new();
+        let index = 7;
+        let generation = 11;
+        loader
+            .loading
+            .lock()
+            .unwrap()
+            .insert(index, generation);
+
+        let load_result = LoadResult {
+            index,
+            generation,
+            result: Err("synthetic".to_string()),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+        };
+        loader
+            .tx
+            .send(LoaderOutput::Image(load_result))
+            .expect("queue image result");
+
+        let output = loader.poll().expect("polled image result");
+        assert!(matches!(output, LoaderOutput::Image(_)));
+        assert!(loader.is_loading(index, generation));
+
+        loader.finish_image_request(index, generation);
+        assert!(!loader.is_loading(index, generation));
     }
 
     #[test]
