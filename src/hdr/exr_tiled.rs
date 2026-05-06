@@ -130,6 +130,7 @@ impl ExrTiledImageSource {
     }
 
     fn prefill_scanline_band_tiles(&self, y: u32, height: u32) -> Result<(), String> {
+        #[cfg(feature = "tile-debug")]
         let started_at = std::time::Instant::now();
         let tile_size = crate::tile_cache::get_tile_size();
         let band_height = tile_size.min(self.height.saturating_sub(y));
@@ -141,10 +142,12 @@ impl ExrTiledImageSource {
         if keys.len() <= 1 {
             return Ok(());
         }
+        #[cfg(feature = "tile-debug")]
         let tile_count = keys.len();
         let band_key = (y, band_height);
         if let Ok(mut cache) = self.tile_cache.lock() {
             if keys.iter().all(|key| cache.get(*key).is_some()) {
+                #[cfg(feature = "tile-debug")]
                 log::debug!(
                     "[HDR][band][exr] file=\"{}\" y={} height={} tiles={} cache=hit elapsed_ms={:.2}",
                     self.path
@@ -174,6 +177,7 @@ impl ExrTiledImageSource {
 
             if let Ok(mut cache) = self.tile_cache.lock() {
                 if keys.iter().all(|key| cache.get(*key).is_some()) {
+                    #[cfg(feature = "tile-debug")]
                     log::debug!(
                         "[HDR][band][exr] file=\"{}\" y={} height={} tiles={} cache=coalesced elapsed_ms={:.2}",
                         self.path
@@ -235,6 +239,7 @@ impl ExrTiledImageSource {
                     cache.insert(key, tile);
                 }
             }
+            #[cfg(feature = "tile-debug")]
             log::debug!(
                 "[HDR][band][exr] file=\"{}\" y={} height={} width={} tiles={} cache=miss elapsed_ms={:.2}",
                 self.path

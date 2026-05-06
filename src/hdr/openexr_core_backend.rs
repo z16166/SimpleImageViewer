@@ -592,6 +592,7 @@ impl OpenExrCoreReadContext {
         max_w: u32,
         max_h: u32,
     ) -> Result<OpenExrCoreRgbaTile, String> {
+        #[cfg(feature = "tile-debug")]
         let started_at = Instant::now();
         let part = self.part(part_index)?;
         if part.storage != sys::EXR_STORAGE_SCANLINE {
@@ -664,7 +665,9 @@ impl OpenExrCoreReadContext {
         let unique_chunks = rows_by_chunk.len();
         let mut cache_hits = 0usize;
         let mut cache_misses = 0usize;
+        #[cfg(feature = "tile-debug")]
         let mut decode_ms = 0.0_f64;
+        #[cfg(feature = "tile-debug")]
         let mut copy_ms = 0.0_f64;
         let chunk_jobs = rows_by_chunk.into_values().collect::<Vec<_>>();
         let parallel_chunks = scanline_preview_decode_parallelism(unique_chunks);
@@ -684,8 +687,21 @@ impl OpenExrCoreReadContext {
                 } else {
                     cache_misses += 1;
                 }
-                decode_ms += fetched.decode_ms;
-                let copy_started = Instant::now();
+                #[cfg(feature = "tile-debug")]
+                {
+                    decode_ms += fetched.decode_ms;
+                    let copy_started = Instant::now();
+                    sample_decoded_scanline_chunk_into_preview(
+                        &fetched.decoded,
+                        part.width,
+                        width,
+                        height,
+                        rows,
+                        &mut rgba,
+                    )?;
+                    copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
+                }
+                #[cfg(not(feature = "tile-debug"))]
                 sample_decoded_scanline_chunk_into_preview(
                     &fetched.decoded,
                     part.width,
@@ -694,9 +710,13 @@ impl OpenExrCoreReadContext {
                     rows,
                     &mut rgba,
                 )?;
-                copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
             }
         }
+
+        #[cfg(not(feature = "tile-debug"))]
+        let _ = (cache_hits, cache_misses);
+
+        #[cfg(feature = "tile-debug")]
         log::info!(
             "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
             self.path
