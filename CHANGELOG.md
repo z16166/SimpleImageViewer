@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.1] - 2026-05-06
+
+### Fixed
+- **HEIF / HEIC (HDR)**: Phone and camera shots that looked sideways or upside down now open in the correct orientation, including many **HDR / wide-color** `.heic` files where the viewer previously ignored rotation metadata.
+
+### Improved
+- **OpenEXR (.exr)**: Noticeably **faster** to open and preview very large files—scrolling and zooming huge EXRs should feel **snappier**, with work spread across your CPU instead of stalling one core.
+- **HDR color labels**: Images that carry an **embedded ICC profile** are more reliably described in HDR status (for example **Display P3** vs **Rec.709**), instead of falling back to a vague “unknown” gamut when the file really did include profile data.
+- **HDR preview noise**: Fewer **duplicate preview jobs** when you flip through folders quickly, and **less log spam** from harmless HDR preview updates so troubleshooting stays readable (`tile-debug` still exposes extra detail when you need it).
+
+### Changed
+- **Heavy HDR / tiled previews**: Background preview work is **capped more safely** so the app stays responsive when you stress it with huge images or rapid navigation.
+
+
 ## [2.0.0] - 2026-05-05
 
 ### Added
