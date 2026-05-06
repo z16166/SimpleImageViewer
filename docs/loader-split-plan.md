@@ -92,6 +92,8 @@ Replace monolithic `loader.rs` with **`loader/mod.rs`** and submodules. `main.rs
 |-------|--------|
 | A.1 Plan doc (`docs/loader-split-plan.md`) | Done |
 | A.2 `preview_caps.rs` + `loader/mod.rs` (monolith moved under `loader/`) | Done |
-| B–D | Pending |
+| B.1 `types.rs` + `orientation.rs` + `metadata.rs` + `hdr_fallback.rs` | Done |
+| C.1 `ImageLoader` + tile queue (`orchestrator.rs`); decode path in `decode/mod.rs` (single file for now; future: `jpeg` / `modern` / …) | Done |
+| D | Pending |
 
 _Update this table as work lands._
