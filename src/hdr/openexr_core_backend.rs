@@ -606,43 +606,51 @@ impl OpenExrCoreReadContext {
 
         let part_index =
             i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
+        let source_row_budget = scanline_preview_source_row_budget(max_w);
+        use rayon::prelude::*;
+        let chunk_jobs = (0..height)
+            .into_par_iter()
+            .map(|preview_y| {
+                let source_y = budgeted_scanline_preview_source_y(
+                    preview_y,
+                    height,
+                    part.height,
+                    source_row_budget,
+                );
+                let mut chunk = sys::ExrChunkInfo::default();
+                let res = unsafe {
+                    sys::exr_read_scanline_chunk_info(
+                        self.raw.cast_const(),
+                        part_index,
+                        i32::try_from(source_y)
+                            .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                            + part.data_window_min.1,
+                        &mut chunk,
+                    )
+                };
+                if res != 0 {
+                    return Err(format!("OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"));
+                }
+                
+                let chunk_origin = (
+                    u32::try_from(chunk.start_x - part.data_window_min.0)
+                        .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
+                    u32::try_from(chunk.start_y - part.data_window_min.1)
+                        .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
+                );
+                Ok((chunk.start_y, chunk, chunk_origin, (preview_y, source_y)))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
         let mut rows_by_chunk = std::collections::BTreeMap::<
             i32,
             (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
         >::new();
-        let source_row_budget = scanline_preview_source_row_budget(max_w);
-        for preview_y in 0..height {
-            let source_y = budgeted_scanline_preview_source_y(
-                preview_y,
-                height,
-                part.height,
-                source_row_budget,
-            );
-            let mut chunk = sys::ExrChunkInfo::default();
-            exr_result(unsafe {
-                sys::exr_read_scanline_chunk_info(
-                    self.raw.cast_const(),
-                    part_index,
-                    i32::try_from(source_y)
-                        .map_err(|_| "EXR scanline y exceeds i32".to_string())?
-                        + part.data_window_min.1,
-                    &mut chunk,
-                )
-            })?;
-            if chunk.height <= 0 || chunk.width <= 0 {
-                continue;
-            }
-            let chunk_origin = (
-                u32::try_from(chunk.start_x - part.data_window_min.0)
-                    .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
-                u32::try_from(chunk.start_y - part.data_window_min.1)
-                    .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
-            );
-            rows_by_chunk
-                .entry(chunk.start_y)
-                .or_insert_with(|| (chunk, chunk_origin, Vec::new()))
-                .2
-                .push((preview_y, source_y));
+        for (start_y, chunk, chunk_origin, row) in chunk_jobs {
+            let entry = rows_by_chunk
+                .entry(start_y)
+                .or_insert_with(|| (chunk, chunk_origin, Vec::new()));
+            entry.2.push(row);
         }
 
         let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
@@ -1297,7 +1305,7 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
 
 fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
     let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    (cpuses / 2).clamp(8, 32).min(unique_chunks)
+    (cpuses * 3 / 4).clamp(16, 32).min(unique_chunks)
 }
 
 fn budgeted_scanline_preview_source_y(
