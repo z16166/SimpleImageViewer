@@ -448,6 +448,24 @@ pub type cmsHPROFILE = *mut libc::c_void;
 pub type cmsHTRANSFORM = *mut libc::c_void;
 pub type cmsContext = *mut libc::c_void;
 pub type cmsUInt32Number = u32;
+pub type cmsColorSpaceSignature = cmsUInt32Number;
+pub type cmsTagSignature = cmsUInt32Number;
+
+/// `cmsSigRgbData` — input/output space is RGB (`lcms2.h`).
+pub const CMS_SIG_RGB_DATA: cmsColorSpaceSignature = u32::from_be_bytes(*b"RGB ");
+/// ICC `rXYZ` / `gXYZ` / `bXYZ` device primary tags (`lcms2.h` `cmsSigRedColorantTag`, …).
+pub const CMS_SIG_RED_COLORANT: cmsTagSignature = u32::from_be_bytes(*b"rXYZ");
+pub const CMS_SIG_GREEN_COLORANT: cmsTagSignature = u32::from_be_bytes(*b"gXYZ");
+pub const CMS_SIG_BLUE_COLORANT: cmsTagSignature = u32::from_be_bytes(*b"bXYZ");
+
+/// `cmsCIEXYZ` from `lcms2.h` (`cmsFloat64Number` ≡ `double`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CmsCiexyz {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
 
 /// `INTENT_PERCEPTUAL` from `lcms2.h`. Other intents (relative, saturation,
 /// absolute) follow standard ICC numbering 1, 2, 3.
@@ -472,6 +490,12 @@ unsafe extern "C" {
         mem_ptr: *const libc::c_void,
         mem_size: cmsUInt32Number,
     ) -> cmsHPROFILE;
+
+    pub fn cmsGetColorSpace(hProfile: cmsHPROFILE) -> cmsColorSpaceSignature;
+
+    /// Returns a pointer to **read-only** tag data owned by the profile; `NULL` if missing.
+    /// Caller must not free; copy out `CmsCiexyz` immediately if needed.
+    pub fn cmsReadTag(hProfile: cmsHPROFILE, sig: cmsTagSignature) -> *mut libc::c_void;
 
     /// Returns a freshly-allocated profile representing standard sRGB
     /// (D65 white point, sRGB primaries, sRGB transfer). Caller must
@@ -530,6 +554,20 @@ impl CmsProfile {
 
     pub fn as_ptr(&self) -> cmsHPROFILE {
         self.0
+    }
+
+    /// Data (device) color space, e.g. [`CMS_SIG_RGB_DATA`].
+    pub fn data_color_space(&self) -> cmsColorSpaceSignature {
+        unsafe { cmsGetColorSpace(self.0) }
+    }
+
+    /// Reads an ICC **`XYZType`** tag (e.g. `rXYZ`) as CIEXYZ tristimulus values.
+    pub fn read_tag_ciexyz(&self, tag: cmsTagSignature) -> Option<CmsCiexyz> {
+        let p = unsafe { cmsReadTag(self.0, tag) };
+        if p.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ptr::read(p.cast::<CmsCiexyz>()) })
     }
 }
 

@@ -16,7 +16,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use openexr_core_sys as sys;
-use rayon::prelude::*;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
@@ -32,7 +31,6 @@ const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
 // Refined preview is generated off the UI-critical path, so keep full row sampling for quality.
 // A zero budget means "do not collapse preview rows into representative buckets".
 const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
-const SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -436,7 +434,10 @@ impl OpenExrCoreReadContext {
 
         match part.storage {
             sys::EXR_STORAGE_SCANLINE => {
+                use rayon::prelude::*;
+
                 let mut decoded_starts = std::collections::BTreeSet::new();
+                let mut chunk_work = Vec::<(sys::ExrChunkInfo, u32, u32)>::new();
                 for source_y in y..y + height {
                     let mut chunk = sys::ExrChunkInfo::default();
                     exr_result(unsafe {
@@ -464,27 +465,43 @@ impl OpenExrCoreReadContext {
                         .map_err(|_| {
                             "OpenEXRCore chunk start_y is outside data window".to_string()
                         })?;
-                    let timing = self.decode_chunk_to_tile(
-                        part_index,
-                        &chunk,
-                        (chunk_origin_x, chunk_origin_y),
-                        (x, y, width, height),
+                    chunk_work.push((chunk, chunk_origin_x, chunk_origin_y));
+                }
+
+                let fetched = chunk_work
+                    .par_iter()
+                    .map(|(chunk, ox, oy)| {
+                        self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                let tile_rect = (x, y, width, height);
+                for i in 0..fetched.len() {
+                    let fetch = &fetched[i];
+                    let copy_ms = copy_decoded_chunk_to_tile(
+                        &fetch.decoded,
+                        tile_rect,
                         &mut rgba,
                     )?;
-                    #[cfg(not(feature = "tile-debug"))]
-                    let _ = timing;
                     #[cfg(feature = "tile-debug")]
                     {
+                        let (chunk, chunk_origin_x, chunk_origin_y) = &chunk_work[i];
                         decoded_chunk_count += 1;
                         self.log_tile_chunk_decode(
                             part_index,
                             &part,
-                            &chunk,
-                            (chunk_origin_x, chunk_origin_y),
-                            (x, y, width, height),
-                            timing,
+                            chunk,
+                            (*chunk_origin_x, *chunk_origin_y),
+                            tile_rect,
+                            OpenExrCoreChunkDecodeTiming {
+                                decode_ms: fetch.decode_ms,
+                                copy_ms,
+                                cache_hit: fetch.cache_hit,
+                            },
                         );
                     }
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = copy_ms;
                 }
             }
             sys::EXR_STORAGE_TILED => {
@@ -594,6 +611,7 @@ impl OpenExrCoreReadContext {
         max_w: u32,
         max_h: u32,
     ) -> Result<OpenExrCoreRgbaTile, String> {
+        #[cfg(feature = "tile-debug")]
         let started_at = Instant::now();
         let part = self.part(part_index)?;
         if part.storage != sys::EXR_STORAGE_SCANLINE {
@@ -606,43 +624,57 @@ impl OpenExrCoreReadContext {
 
         let part_index =
             i32::try_from(part_index).map_err(|_| "EXR part index exceeds i32".to_string())?;
+        let source_row_budget = scanline_preview_source_row_budget(max_w);
+        use rayon::prelude::*;
+        let chunk_jobs = (0..height)
+            .into_par_iter()
+            .map(|preview_y| -> Result<Option<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))>, String> {
+                let source_y = budgeted_scanline_preview_source_y(
+                    preview_y,
+                    height,
+                    part.height,
+                    source_row_budget,
+                );
+                let mut chunk = sys::ExrChunkInfo::default();
+                let res = unsafe {
+                    sys::exr_read_scanline_chunk_info(
+                        self.raw.cast_const(),
+                        part_index,
+                        i32::try_from(source_y)
+                            .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                            + part.data_window_min.1,
+                        &mut chunk,
+                    )
+                };
+                if res != 0 {
+                    return Err(format!("OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"));
+                }
+                if chunk.height <= 0 || chunk.width <= 0 {
+                    return Ok(None);
+                }
+
+                let chunk_origin = (
+                    u32::try_from(chunk.start_x - part.data_window_min.0)
+                        .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
+                    u32::try_from(chunk.start_y - part.data_window_min.1)
+                        .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
+                );
+                Ok(Some((chunk.start_y, chunk, chunk_origin, (preview_y, source_y))))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        let chunk_jobs: Vec<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))> =
+            chunk_jobs.into_iter().flatten().collect();
+
         let mut rows_by_chunk = std::collections::BTreeMap::<
             i32,
             (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
         >::new();
-        let source_row_budget = scanline_preview_source_row_budget(max_w);
-        for preview_y in 0..height {
-            let source_y = budgeted_scanline_preview_source_y(
-                preview_y,
-                height,
-                part.height,
-                source_row_budget,
-            );
-            let mut chunk = sys::ExrChunkInfo::default();
-            exr_result(unsafe {
-                sys::exr_read_scanline_chunk_info(
-                    self.raw.cast_const(),
-                    part_index,
-                    i32::try_from(source_y)
-                        .map_err(|_| "EXR scanline y exceeds i32".to_string())?
-                        + part.data_window_min.1,
-                    &mut chunk,
-                )
-            })?;
-            if chunk.height <= 0 || chunk.width <= 0 {
-                continue;
-            }
-            let chunk_origin = (
-                u32::try_from(chunk.start_x - part.data_window_min.0)
-                    .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
-                u32::try_from(chunk.start_y - part.data_window_min.1)
-                    .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
-            );
-            rows_by_chunk
-                .entry(chunk.start_y)
-                .or_insert_with(|| (chunk, chunk_origin, Vec::new()))
-                .2
-                .push((preview_y, source_y));
+        for (start_y, chunk, chunk_origin, row) in chunk_jobs {
+            let entry = rows_by_chunk
+                .entry(start_y)
+                .or_insert_with(|| (chunk, chunk_origin, Vec::new()));
+            entry.2.push(row);
         }
 
         let mut rgba = vec![0.0_f32; width as usize * height as usize * 4];
@@ -652,7 +684,9 @@ impl OpenExrCoreReadContext {
         let unique_chunks = rows_by_chunk.len();
         let mut cache_hits = 0usize;
         let mut cache_misses = 0usize;
+        #[cfg(feature = "tile-debug")]
         let mut decode_ms = 0.0_f64;
+        #[cfg(feature = "tile-debug")]
         let mut copy_ms = 0.0_f64;
         let chunk_jobs = rows_by_chunk.into_values().collect::<Vec<_>>();
         let parallel_chunks = scanline_preview_decode_parallelism(unique_chunks);
@@ -672,8 +706,21 @@ impl OpenExrCoreReadContext {
                 } else {
                     cache_misses += 1;
                 }
-                decode_ms += fetched.decode_ms;
-                let copy_started = Instant::now();
+                #[cfg(feature = "tile-debug")]
+                {
+                    decode_ms += fetched.decode_ms;
+                    let copy_started = Instant::now();
+                    sample_decoded_scanline_chunk_into_preview(
+                        &fetched.decoded,
+                        part.width,
+                        width,
+                        height,
+                        rows,
+                        &mut rgba,
+                    )?;
+                    copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
+                }
+                #[cfg(not(feature = "tile-debug"))]
                 sample_decoded_scanline_chunk_into_preview(
                     &fetched.decoded,
                     part.width,
@@ -682,9 +729,13 @@ impl OpenExrCoreReadContext {
                     rows,
                     &mut rgba,
                 )?;
-                copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
             }
         }
+
+        #[cfg(not(feature = "tile-debug"))]
+        let _ = (cache_hits, cache_misses);
+
+        #[cfg(feature = "tile-debug")]
         log::info!(
             "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
             self.path
@@ -971,114 +1022,159 @@ impl OpenExrCoreReadContext {
             && g_idx.is_none()
             && b_idx.is_none();
 
-        for sample_index in 0..sample_count {
-            let dest = sample_index * 4;
-            let row_u = (sample_index / chunk_width) as u32;
-            let col_u = (sample_index % chunk_width) as u32;
+        let chunk_width_u32 = u32::try_from(chunk_width).unwrap();
+        let chunk_height_u32 = u32::try_from(chunk_height).unwrap();
 
-            rgba[dest + 3] = a_idx
-                .map(|i| {
-                    channel_sample_f32(
-                        &buffers,
-                        &channel_layouts,
-                        i,
-                        chunk_origin,
-                        col_u,
-                        row_u,
-                    )
-                })
-                .unwrap_or(1.0);
+        // FAST PATH: All involved channels are 1:1 resolution (no subsampling)
+        let mut can_use_fast_path = !is_yryby;
+        if can_use_fast_path {
+            for idx_opt in [r_idx, g_idx, b_idx, a_idx] {
+                if let Some(i) = idx_opt {
+                    if let Some(layout) = channel_layouts[i] {
+                        if layout.x_samples != 1 || layout.y_samples != 1 {
+                            can_use_fast_path = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if can_use_fast_path
+            && y_idx.is_some()
+            && r_idx.is_none()
+            && g_idx.is_none()
+            && b_idx.is_none()
+        {
+            // Luminance-only (non-YC) must use per-sample resampling, not the RGB fast path.
+            can_use_fast_path = false;
+        }
 
-            if is_yryby {
-                let y = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    y_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                // OpenEXR luminance/chroma stores RY=(R−Y)/Y and BY=(B−Y)/Y, not plain R−Y / B−Y
-                // (Technical Introduction → Luminance/Chroma Images). Inverting with Y=wR·R+wG·G+wB·B
-                // and default Rec.709 weights when `chromaticities` is omitted yields:
-                let ry_ratio = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    ry_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                let by_ratio = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    by_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                let [wr, wg, wb] = self.exr_luma_weights;
-                let r = y * (1.0 + ry_ratio);
-                let b = y * (1.0 + by_ratio);
-                // Same as OpenEXR `RgbaYca::YCAtoRGBA`: g = (Y - r*yw.x - b*yw.z) / yw.y
-                let g = (y - wr * r - wb * b) / wg;
+        if can_use_fast_path {
+            let r_buf = r_idx.map(|i| &buffers[i]);
+            let g_buf = g_idx.map(|i| &buffers[i]);
+            let b_buf = b_idx.map(|i| &buffers[i]);
+            let a_buf = a_idx.map(|i| &buffers[i]);
 
-                rgba[dest] = r;
-                rgba[dest + 1] = g;
-                rgba[dest + 2] = b;
-            } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
-                rgba[dest] = r_idx
-                    .map(|i| {
-                        channel_sample_f32(
+            for row in 0..chunk_height_u32 {
+                let row_offset = row as usize * chunk_width;
+                let dest_row_offset = row_offset * 4;
+                for col in 0..chunk_width_u32 {
+                    let i = row_offset + col as usize;
+                    let dest = dest_row_offset + col as usize * 4;
+
+                    rgba[dest] = r_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 1] = g_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 2] = b_buf.map(|b| b[i]).unwrap_or(0.0);
+                    rgba[dest + 3] = a_buf.map(|b| b[i]).unwrap_or(1.0);
+                }
+            }
+        } else {
+            // SLOW PATH: Handles subsampling (YCbCr etc)
+            for row_u in 0..chunk_height_u32 {
+                for col_u in 0..chunk_width_u32 {
+                    let dest = (row_u as usize * chunk_width + col_u as usize) * 4;
+
+                    rgba[dest + 3] = a_idx
+                        .map(|i| {
+                            channel_sample_f32(
+                                &buffers,
+                                &channel_layouts,
+                                i,
+                                chunk_origin,
+                                col_u,
+                                row_u,
+                            )
+                        })
+                        .unwrap_or(1.0);
+
+                    if is_yryby {
+                        let y = channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            y_idx.unwrap(),
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        );
+                        let ry_ratio = channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            ry_idx.unwrap(),
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        );
+                        let by_ratio = channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            by_idx.unwrap(),
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        );
+                        let [wr, wg, wb] = self.exr_luma_weights;
+                        let r = y * (1.0 + ry_ratio);
+                        let b = y * (1.0 + by_ratio);
+                        let g = (y - wr * r - wb * b) / wg;
+
+                        rgba[dest] = r;
+                        rgba[dest + 1] = g;
+                        rgba[dest + 2] = b;
+                    } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
+                        rgba[dest] = r_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        rgba[dest + 1] = g_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                        rgba[dest + 2] = b_idx
+                            .map(|i| {
+                                channel_sample_f32(
+                                    &buffers,
+                                    &channel_layouts,
+                                    i,
+                                    chunk_origin,
+                                    col_u,
+                                    row_u,
+                                )
+                            })
+                            .unwrap_or(0.0);
+                    } else if let Some(i) = y_idx {
+                        let y = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
                             i,
                             chunk_origin,
                             col_u,
                             row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-                rgba[dest + 1] = g_idx
-                    .map(|i| {
-                        channel_sample_f32(
-                            &buffers,
-                            &channel_layouts,
-                            i,
-                            chunk_origin,
-                            col_u,
-                            row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-                rgba[dest + 2] = b_idx
-                    .map(|i| {
-                        channel_sample_f32(
-                            &buffers,
-                            &channel_layouts,
-                            i,
-                            chunk_origin,
-                            col_u,
-                            row_u,
-                        )
-                    })
-                    .unwrap_or(0.0);
-            } else if y_idx.is_some() {
-                let y = channel_sample_f32(
-                    &buffers,
-                    &channel_layouts,
-                    y_idx.unwrap(),
-                    chunk_origin,
-                    col_u,
-                    row_u,
-                );
-                rgba[dest] = y;
-                rgba[dest + 1] = y;
-                rgba[dest + 2] = y;
-            } else {
-                rgba[dest] = 0.0;
-                rgba[dest + 1] = 0.0;
-                rgba[dest + 2] = 0.0;
+                        );
+                        rgba[dest] = y;
+                        rgba[dest + 1] = y;
+                        rgba[dest + 2] = y;
+                    } else {
+                        rgba[dest] = 0.0;
+                        rgba[dest + 1] = 0.0;
+                        rgba[dest + 2] = 0.0;
+                    }
+                }
             }
         }
         let rgba = Arc::new(rgba);
@@ -1296,7 +1392,9 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
 }
 
 fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
-    unique_chunks.clamp(1, SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS)
+    let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let cap = (cpuses * 3 / 4).clamp(16, 32);
+    cap.min(unique_chunks.max(1))
 }
 
 fn budgeted_scanline_preview_source_y(
@@ -1432,68 +1530,42 @@ fn assign_channel_roles(channels: &[sys::ExrCodingChannelInfo]) -> Vec<Option<Ch
     let mut has_by = false;
     let mut has_a = false;
 
-    // First pass: exact matches
     for (i, ch) in channels.iter().enumerate() {
         if ch.channel_name.is_null() {
             continue;
         }
-        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
-        if name.eq_ignore_ascii_case("R") && !has_r {
+        let name_bytes = unsafe { CStr::from_ptr(ch.channel_name) }.to_bytes();
+
+        let is_suffix = |suffix: &[u8]| {
+            name_bytes.len() >= suffix.len()
+                && name_bytes[name_bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+                && (name_bytes.len() == suffix.len()
+                    || name_bytes[name_bytes.len() - suffix.len() - 1] == b'.')
+        };
+
+        if !has_r && (is_suffix(b"R") || is_suffix(b"red")) {
             roles[i] = Some(ChannelRole::Red);
             has_r = true;
-        } else if name.eq_ignore_ascii_case("G") && !has_g {
+        } else if !has_g && (is_suffix(b"G") || is_suffix(b"green")) {
             roles[i] = Some(ChannelRole::Green);
             has_g = true;
-        } else if name.eq_ignore_ascii_case("B") && !has_b {
+        } else if !has_b && (is_suffix(b"B") || is_suffix(b"blue")) {
             roles[i] = Some(ChannelRole::Blue);
             has_b = true;
-        } else if name.eq_ignore_ascii_case("Y") && !has_y {
+        } else if !has_y && is_suffix(b"Y") {
             roles[i] = Some(ChannelRole::Luma);
             has_y = true;
-        } else if name.eq_ignore_ascii_case("RY") && !has_ry {
+        } else if !has_ry && is_suffix(b"RY") {
             roles[i] = Some(ChannelRole::Ry);
             has_ry = true;
-        } else if name.eq_ignore_ascii_case("BY") && !has_by {
+        } else if !has_by && is_suffix(b"BY") {
             roles[i] = Some(ChannelRole::By);
             has_by = true;
-        } else if name.eq_ignore_ascii_case("A") && !has_a {
+        } else if !has_a && (is_suffix(b"A") || is_suffix(b"alpha")) {
             roles[i] = Some(ChannelRole::Alpha);
             has_a = true;
         }
     }
-
-    // Second pass: suffix matches if exact not found
-    for (i, ch) in channels.iter().enumerate() {
-        if roles[i].is_some() || ch.channel_name.is_null() {
-            continue;
-        }
-        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
-        let base = name.rsplit('.').next().unwrap_or(&name);
-
-        if base.eq_ignore_ascii_case("R") && !has_r {
-            roles[i] = Some(ChannelRole::Red);
-            has_r = true;
-        } else if base.eq_ignore_ascii_case("G") && !has_g {
-            roles[i] = Some(ChannelRole::Green);
-            has_g = true;
-        } else if base.eq_ignore_ascii_case("B") && !has_b {
-            roles[i] = Some(ChannelRole::Blue);
-            has_b = true;
-        } else if base.eq_ignore_ascii_case("Y") && !has_y {
-            roles[i] = Some(ChannelRole::Luma);
-            has_y = true;
-        } else if base.eq_ignore_ascii_case("RY") && !has_ry {
-            roles[i] = Some(ChannelRole::Ry);
-            has_ry = true;
-        } else if base.eq_ignore_ascii_case("BY") && !has_by {
-            roles[i] = Some(ChannelRole::By);
-            has_by = true;
-        } else if base.eq_ignore_ascii_case("A") && !has_a {
-            roles[i] = Some(ChannelRole::Alpha);
-            has_a = true;
-        }
-    }
-
     roles
 }
 
@@ -1837,12 +1909,15 @@ mod tests {
 
     #[test]
     fn scanline_preview_decode_parallelism_is_bounded() {
+        let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let cap = (cpuses * 3 / 4).clamp(16, 32);
         assert_eq!(super::scanline_preview_decode_parallelism(0), 1);
         assert_eq!(super::scanline_preview_decode_parallelism(1), 1);
         assert_eq!(super::scanline_preview_decode_parallelism(2), 2);
-        assert_eq!(
-            super::scanline_preview_decode_parallelism(384),
-            super::SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS
+        assert_eq!(super::scanline_preview_decode_parallelism(384), cap);
+        assert!(
+            super::scanline_preview_decode_parallelism(usize::MAX / 4) <= 32,
+            "scanline decode parallelism must not exceed 32 chunks per batch"
         );
     }
 }

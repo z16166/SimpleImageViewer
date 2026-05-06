@@ -156,4 +156,37 @@ unsafe extern "C" {
         channel: heif_channel,
         out_stride: *mut libc::size_t,
     ) -> *const u8;
+
+    pub fn heif_image_handle_get_width(handle: *const heif_image_handle) -> libc::c_int;
+    pub fn heif_image_handle_get_height(handle: *const heif_image_handle) -> libc::c_int;
+    pub fn heif_image_handle_get_ispe_width(handle: *const heif_image_handle) -> libc::c_int;
+    pub fn heif_image_handle_get_ispe_height(handle: *const heif_image_handle) -> libc::c_int;
+
+    pub fn heif_image_handle_get_number_of_metadata_blocks(
+        handle: *const heif_image_handle,
+        type_filter: *const libc::c_char,
+    ) -> libc::c_int;
+
+    pub fn heif_image_handle_get_list_of_metadata_block_IDs(
+        handle: *const heif_image_handle,
+        type_filter: *const libc::c_char,
+        ids: *mut heif_item_id,
+        count: libc::c_int,
+    ) -> libc::c_int;
+
+    pub fn heif_image_handle_get_metadata_type(
+        handle: *const heif_image_handle,
+        metadata_id: heif_item_id,
+    ) -> *const libc::c_char;
+
+    pub fn heif_image_handle_get_metadata_size(
+        handle: *const heif_image_handle,
+        metadata_id: heif_item_id,
+    ) -> libc::size_t;
+
+    pub fn heif_image_handle_get_metadata(
+        handle: *const heif_image_handle,
+        metadata_id: heif_item_id,
+        out_data: *mut libc::c_void,
+    ) -> heif_error;
 }

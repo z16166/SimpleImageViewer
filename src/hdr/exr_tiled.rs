@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use crate::hdr::tiled::{
@@ -45,6 +46,22 @@ pub struct ExrTiledImageSource {
     color_space: HdrColorSpace,
     has_subsampled_channels: bool,
     tile_cache: Mutex<HdrTileCache>,
+    scanline_band_prefills: Mutex<HashSet<(u32, u32)>>,
+    scanline_band_prefills_ready: Condvar,
+}
+
+struct ScanlineBandPrefillLeader<'a> {
+    source: &'a ExrTiledImageSource,
+    band_key: (u32, u32),
+}
+
+impl Drop for ScanlineBandPrefillLeader<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut in_flight) = self.source.scanline_band_prefills.lock() {
+            in_flight.remove(&self.band_key);
+        }
+        self.source.scanline_band_prefills_ready.notify_all();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +104,8 @@ impl ExrTiledImageSource {
             color_space,
             has_subsampled_channels,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
+            scanline_band_prefills: Mutex::new(HashSet::new()),
+            scanline_band_prefills_ready: Condvar::new(),
         })
     }
 
@@ -111,6 +130,8 @@ impl ExrTiledImageSource {
     }
 
     fn prefill_scanline_band_tiles(&self, y: u32, height: u32) -> Result<(), String> {
+        #[cfg(feature = "tile-debug")]
+        let started_at = std::time::Instant::now();
         let tile_size = crate::tile_cache::get_tile_size();
         let band_height = tile_size.min(self.height.saturating_sub(y));
         if band_height != height {
@@ -121,52 +142,120 @@ impl ExrTiledImageSource {
         if keys.len() <= 1 {
             return Ok(());
         }
+        #[cfg(feature = "tile-debug")]
+        let tile_count = keys.len();
+        let band_key = (y, band_height);
         if let Ok(mut cache) = self.tile_cache.lock() {
             if keys.iter().all(|key| cache.get(*key).is_some()) {
+                #[cfg(feature = "tile-debug")]
+                log::debug!(
+                    "[HDR][band][exr] file=\"{}\" y={} height={} tiles={} cache=hit elapsed_ms={:.2}",
+                    self.path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("<unknown>"),
+                    y,
+                    band_height,
+                    tile_count,
+                    started_at.elapsed().as_secs_f64() * 1000.0
+                );
                 return Ok(());
             }
         }
 
-        let context = exr_file_context("extract EXR scanline tile band", &self.path);
-        let band = catch_exr_panic(&context, || {
-            self.context.extract_scanline_rgba32f_tile(
-                self.part_index,
-                0,
+        loop {
+            let mut in_flight = self.scanline_band_prefills.lock().unwrap();
+            if in_flight.insert(band_key) {
+                break;
+            }
+
+            in_flight = self
+                .scanline_band_prefills_ready
+                .wait_while(in_flight, |in_flight| in_flight.contains(&band_key))
+                .unwrap();
+            drop(in_flight);
+
+            if let Ok(mut cache) = self.tile_cache.lock() {
+                if keys.iter().all(|key| cache.get(*key).is_some()) {
+                    #[cfg(feature = "tile-debug")]
+                    log::debug!(
+                        "[HDR][band][exr] file=\"{}\" y={} height={} tiles={} cache=coalesced elapsed_ms={:.2}",
+                        self.path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("<unknown>"),
+                        y,
+                        band_height,
+                        tile_count,
+                        started_at.elapsed().as_secs_f64() * 1000.0
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        let _band_leader = ScanlineBandPrefillLeader {
+            source: self,
+            band_key,
+        };
+
+        let result = (|| -> Result<(), String> {
+            let context = exr_file_context("extract EXR scanline tile band", &self.path);
+            let band = catch_exr_panic(&context, || {
+                self.context.extract_scanline_rgba32f_tile(
+                    self.part_index,
+                    0,
+                    y,
+                    self.width,
+                    band_height,
+                )
+            })?;
+
+            let mut tiles = Vec::with_capacity(keys.len());
+            for (tile_x, tile_y, tile_width, tile_height) in keys {
+                let mut rgba = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
+                let start_x = tile_x as usize * 4;
+                let row_len = tile_width as usize * 4;
+                let source_stride = band.width as usize * 4;
+                for row in 0..tile_height as usize {
+                    let start = row * source_stride + start_x;
+                    let end = start + row_len;
+                    rgba.extend_from_slice(&band.rgba[start..end]);
+                }
+                tiles.push((
+                    (tile_x, tile_y, tile_width, tile_height),
+                    Arc::new(HdrTileBuffer::new_with_metadata(
+                        tile_width,
+                        tile_height,
+                        self.color_space,
+                        HdrImageMetadata::from_color_space(self.color_space),
+                        Arc::new(rgba),
+                    )),
+                ));
+            }
+
+            if let Ok(mut cache) = self.tile_cache.lock() {
+                for (key, tile) in tiles {
+                    cache.insert(key, tile);
+                }
+            }
+            #[cfg(feature = "tile-debug")]
+            log::debug!(
+                "[HDR][band][exr] file=\"{}\" y={} height={} width={} tiles={} cache=miss elapsed_ms={:.2}",
+                self.path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<unknown>"),
                 y,
-                self.width,
                 band_height,
-            )
-        })?;
+                self.width,
+                tile_count,
+                started_at.elapsed().as_secs_f64() * 1000.0
+            );
+            Ok(())
+        })();
 
-        let mut tiles = Vec::with_capacity(keys.len());
-        for (tile_x, tile_y, tile_width, tile_height) in keys {
-            let mut rgba = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
-            let start_x = tile_x as usize * 4;
-            let row_len = tile_width as usize * 4;
-            let source_stride = band.width as usize * 4;
-            for row in 0..tile_height as usize {
-                let start = row * source_stride + start_x;
-                let end = start + row_len;
-                rgba.extend_from_slice(&band.rgba[start..end]);
-            }
-            tiles.push((
-                (tile_x, tile_y, tile_width, tile_height),
-                Arc::new(HdrTileBuffer::new_with_metadata(
-                    tile_width,
-                    tile_height,
-                    self.color_space,
-                    HdrImageMetadata::from_color_space(self.color_space),
-                    Arc::new(rgba),
-                )),
-            ));
-        }
-
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            for (key, tile) in tiles {
-                cache.insert(key, tile);
-            }
-        }
-        Ok(())
+        result
     }
 }
 
@@ -221,6 +310,25 @@ impl HdrTiledSource for ExrTiledImageSource {
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let context = exr_file_context("generate EXR SDR preview", &self.path);
         catch_exr_panic(&context, || {
+            if self.storage == openexr_core_sys::EXR_STORAGE_SCANLINE
+                && !self.has_subsampled_channels
+            {
+                let preview = self.context.extract_scanline_rgba32f_preview_nearest(
+                    self.part_index,
+                    max_w,
+                    max_h,
+                )?;
+                let hdr = HdrImageBuffer {
+                    width: preview.width,
+                    height: preview.height,
+                    format: HdrPixelFormat::Rgba32Float,
+                    color_space: self.color_space,
+                    metadata: HdrImageMetadata::from_color_space(self.color_space),
+                    rgba_f32: Arc::new(preview.rgba),
+                };
+                return sdr_preview_from_hdr_preview(&hdr);
+            }
+
             let preview = hdr_preview_from_tiled_source_nearest(self, max_w, max_h)?;
             sdr_preview_from_hdr_preview(&preview)
         })

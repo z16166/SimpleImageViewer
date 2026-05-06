@@ -17,6 +17,8 @@
 pub mod avif;
 pub mod capabilities;
 pub mod decode;
+#[cfg(feature = "jpegxl")]
+pub(crate) mod icc_primaries_lcms;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
 pub mod heif;

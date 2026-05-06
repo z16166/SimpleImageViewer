@@ -32,7 +32,7 @@ use std::time::Duration;
 /// Hardware-tier cap for HQ preview / refine (written at startup from
 /// [`crate::app::HardwareTier::max_preview_size`]).
 ///
-/// **Display cap:** do not use the window’s **client size**; the user may fullscreen at any time.
+/// **Display cap:** do not use the window's **client size**; the user may fullscreen at any time.
 /// **Multi-monitor (policy):** use the monitor for the **current** root viewport (eframe/winit:
 /// the monitor that contains the window, aligned with centering/fullscreen on that display).
 ///
@@ -40,7 +40,7 @@ use std::time::Duration;
 pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
 
-/// Max preview side derived from the current monitor’s **physical** long edge × headroom
+/// Max preview side derived from the current monitor's **physical** long edge × headroom
 /// (see [`refresh_hq_preview_monitor_cap`]). Capped at [`MAX_QUALITY_PREVIEW_SIZE`]; combined with
 /// [`PREVIEW_LIMIT`] in [`hq_preview_max_side`].
 pub static MONITOR_PREVIEW_CAP: std::sync::atomic::AtomicU32 =
@@ -89,11 +89,27 @@ pub fn hq_preview_max_side() -> u32 {
     tier_v.min(mon_v)
 }
 
+/// Upper bound for [`REFINEMENT_POOL`] workers. Each task can hold large HDR/SDR preview buffers;
+/// too many concurrent refinements spikes RSS and contends with the main loader / tile workers.
+const REFINEMENT_POOL_MAX_THREADS: usize = 4;
+/// Minimum workers: keep some overlap for I/O vs CPU without spawning a thread per logical core.
+const REFINEMENT_POOL_MIN_THREADS: usize = 2;
+
 /// Dedicated pool for heavy high-quality preview generation (refinement).
-/// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
+/// Thread count stays between [`REFINEMENT_POOL_MIN_THREADS`] and [`REFINEMENT_POOL_MAX_THREADS`]
+/// (derived from [`std::thread::available_parallelism`]) to limit peak memory when giant images are
+/// switched rapidly and to avoid oversubscription vs tile decode threads.
 static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     match rayon::ThreadPoolBuilder::new()
-        .num_threads(2)
+        .num_threads(
+            std::thread::available_parallelism()
+                .map(|n| {
+                    n.get()
+                        .div_ceil(4)
+                        .clamp(REFINEMENT_POOL_MIN_THREADS, REFINEMENT_POOL_MAX_THREADS)
+                })
+                .unwrap_or(REFINEMENT_POOL_MIN_THREADS),
+        )
         .thread_name(|i| format!("refinement-worker-{}", i))
         .build()
     {
@@ -1158,7 +1174,10 @@ impl ImageLoader {
     ) {
         {
             let mut loading = self.loading.lock().unwrap();
-            if loading.get(&index) == Some(&generation) {
+            if let Some(&existing) = loading.get(&index) {
+                if generation > existing {
+                    loading.insert(index, generation);
+                }
                 return;
             }
             loading.insert(index, generation);
@@ -1239,6 +1258,27 @@ impl ImageLoader {
         }
     }
 
+    /// True when [`ImageLoader::loading`] shows a **strictly newer** registered load generation for
+    /// `index` than the adoption generation from the decode worker (`adoptee_generation`).
+    ///
+    /// HQ refinement must **not** use `loader.current_gen` alone for staleness: prefetch promotion to
+    /// the current TileManager bumps [`ImageLoader::set_generation`] without re-queuing a load while
+    /// the UI deliberately accepts prefetch-era previews (`prefetch_prev_generation` in image
+    /// management). Likewise, `finish_image_request` clears the map without implying supersession for
+    /// in-flight refinement.
+    #[inline]
+    fn hq_refinement_superseded(
+        loading: &Arc<Mutex<HashMap<usize, u64>>>,
+        index: usize,
+        adoptee_generation: u64,
+    ) -> bool {
+        loading
+            .lock()
+            .unwrap()
+            .get(&index)
+            .is_some_and(|&registered| registered > adoptee_generation)
+    }
+
     fn do_load(
         index: usize,
         generation: u64,
@@ -1246,21 +1286,21 @@ impl ImageLoader {
         tx: Sender<LoaderOutput>,
         refine_tx: Sender<RefinementRequest>,
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
-        current_gen: Arc<std::sync::atomic::AtomicU64>,
+        _current_gen: Arc<std::sync::atomic::AtomicU64>,
         high_quality: bool,
         hdr_target_capacity: f32,
         hdr_tone_map: HdrToneMapSettings,
     ) {
-        let global_gen = current_gen.load(std::sync::atomic::Ordering::Relaxed);
-        if generation != global_gen {
-            let mut loading = loading_ref.lock().unwrap();
-            if loading.get(&index) == Some(&generation) {
-                loading.remove(&index);
+        // Adoption logic: We no longer abort if global_gen has changed.
+        // As long as our index is still in the loading map, we continue.
+        {
+            let loading = loading_ref.lock().unwrap();
+            if !loading.contains_key(&index) {
+                return;
             }
-            return;
         }
 
-        let load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut load_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             load_image_file(
                 generation,
                 index,
@@ -1299,13 +1339,20 @@ impl ImageLoader {
             log::error!("[Loader] Load FAILED for index={}: {}", index, e);
         }
 
-        // Drop stale results before sending into the channel (rapid navigation).
-        {
+        // Finalize result generation: read the LATEST generation ID from the map.
+        // This allows the worker to "adopt" newer generations that were requested
+        // while the decode was in progress.
+        let final_gen = {
             let map = loading_ref.lock().unwrap();
-            if map.get(&index) != Some(&generation) {
+            if let Some(&latest) = map.get(&index) {
+                latest
+            } else {
+                // Index was removed from loading map (cancelled)
                 return;
             }
-        }
+        };
+
+        load_result.generation = final_gen;
 
         // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
         // (avoids cloning full Static/Animated pixel buffers).
@@ -1313,7 +1360,7 @@ impl ImageLoader {
             let sdr_source = image_data.tiled_sdr_source().cloned();
             let hdr_source = image_data.tiled_hdr_source().cloned();
             let tx_cloned = tx.clone();
-            let gen_ref = Arc::clone(&current_gen);
+            let loading_for_hq = Arc::clone(&loading_ref);
             match (hdr_source, sdr_source) {
                 (Some(source), _) => {
                     let file_name = path
@@ -1322,7 +1369,7 @@ impl ImageLoader {
                         .unwrap_or("unknown")
                         .to_string();
                     REFINEMENT_POOL.spawn(move || {
-                        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                        if Self::hq_refinement_superseded(&loading_for_hq, index, final_gen) {
                             return;
                         }
 
@@ -1335,7 +1382,7 @@ impl ImageLoader {
                             "[Loader] [{}] HQ preview start: index={} generation={} limit={} source={}x{} (hdr_mode={})",
                             file_name,
                             index,
-                            generation,
+                            final_gen,
                             limit,
                             source.width(),
                             source.height(),
@@ -1355,12 +1402,12 @@ impl ImageLoader {
 
                         match r_result {
                             Ok(Ok((hdr, sdr))) => {
-                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                                if Self::hq_refinement_superseded(&loading_for_hq, index, final_gen) {
                                     log::debug!(
                                         "[Loader] [{}] HQ preview discarded as stale: index={} generation={} elapsed={:?}",
                                         file_name,
                                         index,
-                                        generation,
+                                        final_gen,
                                         started_at.elapsed()
                                     );
                                     return;
@@ -1376,17 +1423,19 @@ impl ImageLoader {
                                     started_at.elapsed(),
                                     is_hdr_mode
                                 );
-                                let mut bundle = PreviewBundle::refined();
-                                if is_hdr_mode {
-                                    bundle = bundle.with_hdr(Arc::new(hdr));
-                                }
+                                // Always publish the HDR float preview when we decoded it. `hdr_mode`
+                                // only controls whether we also build an SDR tone-map helper plane;
+                                // native HDR display samples the HDR preview cache/TM path and would
+                                // otherwise stay on the coarse bootstrap HDR if we attached SDR only.
+                                let mut bundle =
+                                    PreviewBundle::refined().with_hdr(Arc::new(hdr));
                                 if let Some(s) = sdr {
                                     bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
                                 }
 
                                 let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                                     index,
-                                    generation,
+                                    generation: final_gen,
                                     preview_bundle: bundle,
                                     error: None,
                                 }));
@@ -1396,7 +1445,7 @@ impl ImageLoader {
                                     "[Loader] [{}] High-quality HDR preview failed: index={} generation={} limit={} elapsed={:?}: {e}",
                                     file_name,
                                     index,
-                                    generation,
+                                    final_gen,
                                     limit,
                                     started_at.elapsed()
                                 );
@@ -1406,19 +1455,19 @@ impl ImageLoader {
                                     "[Loader] [{}] High-quality HDR preview PANICKED: index={} generation={} limit={} elapsed={:?}: {:?}",
                                     file_name,
                                     index,
-                                    generation,
+                                    final_gen,
                                     limit,
                                     started_at.elapsed(),
                                     e
                                 );
                             }
-                    }
+                        }
                     });
                 }
                 (None, Some(source)) => {
+                    let loading_sdr_hq = Arc::clone(&loading_ref);
                     REFINEMENT_POOL.spawn(move || {
-                        // Staleness check: Abort if the user has navigated to a new image
-                        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                        if Self::hq_refinement_superseded(&loading_sdr_hq, index, final_gen) {
                             return;
                         }
 
@@ -1433,8 +1482,7 @@ impl ImageLoader {
 
                         match r_result {
                             Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                                // Double check staleness after the expensive thumbnailing
-                                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
+                                if Self::hq_refinement_superseded(&loading_sdr_hq, index, final_gen) {
                                     return;
                                 }
 
@@ -1448,7 +1496,7 @@ impl ImageLoader {
                                 let _ = tx_cloned.send(LoaderOutput::Preview(
                                     PreviewResult::from_sdr_preview(
                                         index,
-                                        generation,
+                                        final_gen,
                                         Ok(DecodedImage::new(pw, ph, p_pixels)),
                                     ),
                                 ));
@@ -1463,9 +1511,9 @@ impl ImageLoader {
                 (None, None) => {
                     spawn_hdr_sdr_fallback_if_placeholder(
                         &load_result,
-                        generation,
+                        final_gen,
                         &tx,
-                        &current_gen,
+                        &loading_ref,
                         hdr_tone_map,
                     );
                     let _ = tx.send(LoaderOutput::Image(load_result));
@@ -1476,9 +1524,9 @@ impl ImageLoader {
 
         spawn_hdr_sdr_fallback_if_placeholder(
             &load_result,
-            generation,
+            final_gen,
             &tx,
-            &current_gen,
+            &loading_ref,
             hdr_tone_map,
         );
         let _ = tx.send(LoaderOutput::Image(load_result));
@@ -1548,14 +1596,6 @@ impl ImageLoader {
 
         while let Ok(output) = self.rx.try_recv() {
             if keep(&output) {
-                if let LoaderOutput::Image(ref r) = output {
-                    let mut loading = self.loading.lock().unwrap();
-                    if let Some(&g) = loading.get(&r.index) {
-                        if g <= r.generation {
-                            loading.remove(&r.index);
-                        }
-                    }
-                }
                 self.local_queue.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
                 let mut loading = self.loading.lock().unwrap();
@@ -1573,18 +1613,17 @@ impl ImageLoader {
         }
 
         match self.rx.try_recv() {
-            Ok(output) => {
-                if let LoaderOutput::Image(ref result) = output {
-                    let mut loading = self.loading.lock().unwrap();
-                    if let Some(&g) = loading.get(&result.index) {
-                        if g <= result.generation {
-                            loading.remove(&result.index);
-                        }
-                    }
-                }
-                Some(output)
-            }
+            Ok(output) => Some(output),
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
+        }
+    }
+
+    pub fn finish_image_request(&self, index: usize, generation: u64) {
+        let mut loading = self.loading.lock().unwrap();
+        if let Some(&g) = loading.get(&index) {
+            if g <= generation {
+                loading.remove(&index);
+            }
         }
     }
 
@@ -1665,9 +1704,9 @@ fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
 
 fn spawn_hdr_sdr_fallback_if_placeholder(
     load_result: &LoadResult,
-    generation: u64,
+    final_gen: u64,
     tx: &Sender<LoaderOutput>,
-    current_gen: &Arc<std::sync::atomic::AtomicU64>,
+    loading: &Arc<Mutex<HashMap<usize, u64>>>,
     tone: HdrToneMapSettings,
 ) {
     if !load_result.sdr_fallback_is_placeholder {
@@ -1679,9 +1718,9 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
     let index = load_result.index;
     let hdr = hdr.clone();
     let tx = tx.clone();
-    let gen_ref = Arc::clone(current_gen);
+    let loading = Arc::clone(loading);
     REFINEMENT_POOL.spawn(move || {
-        if gen_ref.load(std::sync::atomic::Ordering::Relaxed) != generation {
+        if ImageLoader::hq_refinement_superseded(&loading, index, final_gen) {
             return;
         }
         #[cfg(target_os = "windows")]
@@ -1693,31 +1732,31 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
         }));
         match r {
             Ok(Ok(pixels)) => {
-                if gen_ref.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                if ImageLoader::hq_refinement_superseded(&loading, index, final_gen) {
                     log::info!(
-                        "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={generation}"
+                        "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={final_gen}"
                     );
                     return;
                 }
                 log::debug!(
-                    "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={generation} elapsed={:?}",
+                    "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={final_gen} elapsed={:?}",
                     started_at.elapsed()
                 );
                 let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
                 let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
                     index,
-                    generation,
+                    generation: final_gen,
                     fallback,
                 }));
             }
             Ok(Err(e)) => {
                 log::warn!(
-                    "[Loader] HDR SDR fallback refinement failed: index={index} generation={generation}: {e}"
+                    "[Loader] HDR SDR fallback refinement failed: index={index} generation={final_gen}: {e}"
                 );
             }
             Err(payload) => {
                 log::error!(
-                    "[Loader] HDR SDR fallback refinement panicked: index={index} generation={generation}: {:?}",
+                    "[Loader] HDR SDR fallback refinement panicked: index={index} generation={final_gen}: {:?}",
                     payload
                 );
             }
@@ -2104,6 +2143,8 @@ fn load_jpeg_with_target_capacity(
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
+    // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
     let orientation = crate::metadata_utils::get_exif_orientation(path);
     // Apply EXIF Orientation per TIFF/EXIF rules (same transform family as Pillow `exif_transpose`).
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
@@ -2235,6 +2276,65 @@ fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_map: &HdrTone
     hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
 }
 
+/// Apply EXIF **Orientation** (values 1–8) via [`metadata_utils::get_exif_orientation`] for formats whose
+/// loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer, …).
+///
+/// **Never chain on JPEG or TIFF extension loads** — that would double-rotate:
+/// - **`.jpg`/`.jpeg`** (incl. **JPEG_R / Ultra HDR**): only [`load_jpeg_with_target_capacity`] may apply
+///   `get_exif_orientation` + [`hdr::ultra_hdr::apply_orientation_to_hdr_buffer`] / [`apply_orientation_buffer`].
+/// - **`.tif`/`.tiff`** (incl. **f16/f32 / scene-linear**): only [`crate::libtiff_loader`] applies the TIFF
+///   **`Orientation`** tag (`TIFFTAG_ORIENTATION`), not this function.
+///
+/// **HdrTiled** (large disk-backed EXR/Radiance) is unchanged: no practical container orientation path here.
+fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData) -> ImageData {
+    match data {
+        ImageData::Hdr { hdr, fallback } => {
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
+            ImageData::Hdr { hdr, fallback }
+        }
+        ImageData::Animated(frames) => {
+            let o = crate::metadata_utils::get_exif_orientation(path);
+            if o <= 1 || frames.is_empty() {
+                return ImageData::Animated(frames);
+            }
+            let out = frames
+                .into_iter()
+                .map(|f| {
+                    let px = f.rgba().to_vec();
+                    let (ow, oh, opx) =
+                        crate::libtiff_loader::apply_orientation_buffer(px, f.width, f.height, o);
+                    AnimationFrame::new(ow, oh, opx, f.delay)
+                })
+                .collect();
+            ImageData::Animated(out)
+        }
+        other => other,
+    }
+}
+
+fn apply_exif_orientation_to_hdr_pair(
+    path: &Path,
+    hdr: crate::hdr::types::HdrImageBuffer,
+    fallback: DecodedImage,
+) -> (crate::hdr::types::HdrImageBuffer, DecodedImage) {
+    let mut o = crate::metadata_utils::get_exif_orientation(path);
+    #[cfg(feature = "heif-native")]
+    if crate::hdr::heif::decoded_pixels_match_swapped_ispe(path, hdr.width, hdr.height) {
+        o = 1;
+    }
+    if o <= 1 {
+        return (hdr, fallback);
+    }
+    let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, o);
+    let w = fallback.width;
+    let h = fallback.height;
+    let mut fallback = fallback;
+    let px = fallback.take_rgba_owned();
+    let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(px, w, h, o);
+    fallback.set_rgba_buffer(ow, oh, opx);
+    (hdr, fallback)
+}
+
 fn load_avif_with_target_capacity(
     path: &PathBuf,
     hdr_target_capacity: f32,
@@ -2256,7 +2356,10 @@ fn load_avif_with_target_capacity(
                     frames.len(),
                     path.display()
                 );
-                return Ok(ImageData::Animated(frames));
+                return Ok(apply_exif_orientation_to_image_data(
+                    path.as_path(),
+                    ImageData::Animated(frames),
+                ));
             }
             Ok(_) => {}
             Err(e) => {
@@ -2276,6 +2379,8 @@ fn load_avif_with_target_capacity(
                     &hdr_tone_map,
                 )?;
                 let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                let (hdr, fallback) =
+                    apply_exif_orientation_to_hdr_pair(path.as_path(), hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))
             }
             Err(err) => {
@@ -2325,12 +2430,13 @@ fn load_jxl_with_target_capacity(
     #[cfg(feature = "jpegxl")]
     {
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
+        let data = crate::hdr::jpegxl::load_jxl_hdr_with_target_capacity(
             path,
             decode_capacity,
             hdr_target_capacity,
             hdr_tone_map,
-        )
+        )?;
+        Ok(apply_exif_orientation_to_image_data(path.as_path(), data))
     }
 
     #[cfg(not(feature = "jpegxl"))]
@@ -2348,7 +2454,7 @@ fn load_heif_hdr_aware(
     #[cfg(feature = "heif-native")]
     {
         match crate::hdr::heif::load_heif_hdr(path, hdr_target_capacity, hdr_tone_map) {
-            Ok(image) => Ok(image),
+            Ok(image) => Ok(apply_exif_orientation_to_image_data(path.as_path(), image)),
             Err(err) => {
                 log::warn!(
                     "[Loader] libheif decode failed for {}: {err}",
@@ -2397,7 +2503,7 @@ fn load_hdr(
         &hdr_tone_map,
     )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
-
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -2482,6 +2588,7 @@ fn exr_tiled_source_to_static_hdr(
         hdr.height,
         path.display()
     );
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
@@ -2528,6 +2635,7 @@ fn load_deep_exr(
                 &hdr_tone_map,
             )?;
             let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+            let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
             Ok(make_hdr_image_data(hdr, fallback))
         }
         Err(err) => {
@@ -2606,7 +2714,10 @@ fn process_animation_frames(
         })
         .collect();
 
-    Ok(ImageData::Animated(frames))
+    Ok(apply_exif_orientation_to_image_data(
+        path.as_path(),
+        ImageData::Animated(frames),
+    ))
 }
 
 fn load_gif(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
@@ -3139,7 +3250,12 @@ mod tests {
             metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
         });
-        let update = PreviewResult::from_hdr_preview(3, 5, Ok(Arc::clone(&hdr_preview)));
+        let update = PreviewResult {
+            index: 3,
+            generation: 5,
+            preview_bundle: PreviewBundle::refined().with_hdr(Arc::clone(&hdr_preview)),
+            error: None,
+        };
 
         assert!(update.error.is_none());
         assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
@@ -3157,6 +3273,38 @@ mod tests {
         // HDR-only avoids tone-mapping a 4K HQ preview on systems that will only present
         // it through the native scRGB pipeline.
         assert!(update.preview_bundle.sdr().is_none());
+    }
+
+    #[test]
+    fn image_request_stays_inflight_until_ui_finishes_installing_result() {
+        let mut loader = ImageLoader::new();
+        let index = 7;
+        let generation = 11;
+        loader
+            .loading
+            .lock()
+            .unwrap()
+            .insert(index, generation);
+
+        let load_result = LoadResult {
+            index,
+            generation,
+            result: Err("synthetic".to_string()),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+        };
+        loader
+            .tx
+            .send(LoaderOutput::Image(load_result))
+            .expect("queue image result");
+
+        let output = loader.poll().expect("polled image result");
+        assert!(matches!(output, LoaderOutput::Image(_)));
+        assert!(loader.is_loading(index, generation));
+
+        loader.finish_image_request(index, generation);
+        assert!(!loader.is_loading(index, generation));
     }
 
     #[test]
@@ -3898,7 +4046,7 @@ mod tests {
     }
 
     /// Set `SIV_PSD_SAMPLES_DIR` to a folder that contains `colors.psd` and `seine.psd`
-    /// (for example `…/libavif/tests/data/sources`) to regression-test the `psd` crate composite
+    /// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test the `psd` crate composite
     /// path: it must not unwind (historical `psd_channel` index OOB panics).
     ///
     /// When the variable is unset or files are missing, this test is a no-op so CI stays green.
@@ -4008,6 +4156,7 @@ fn load_detected_exr(
         &hdr_tone_map,
     )?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+    let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
 }
 

@@ -293,10 +293,15 @@ pub fn effective_capability_output_mode(
 }
 
 /// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for
-/// probe scheduling / signature only). On Windows the DXGI monitor is resolved from the
-/// process **largest** visible top-level `HWND` via `GetWindowRect` center +
-/// `MonitorFromPoint`, with periodic reprobes when the signature is unchanged so
-/// cross-monitor drags still update after `outer_rect` lag.
+/// scheduling *and* as a signal for which monitor the user perceives the window on).
+/// On Windows we normally resolve DXGI from the process **largest** visible top-level
+/// `HWND` via `GetWindowRect` center + `MonitorFromPoint` (not `MonitorFromWindow`), so
+/// wide cross-monitor drags track the center monitor. During the first frames after
+/// launch, however, the OS / winit frame can still report a **tiny** `GetWindowRect`
+/// (e.g. near `(0,0)`) before the saved YAML placement is applied — the center then
+/// lands on the wrong display even though `ViewportInfo::outer_rect` already matches the
+/// restored position. When the viewport outer rect is **plausible** and strictly larger
+/// than the HWND rect area, we prefer the viewport center for this probe.
 #[cfg(target_os = "windows")]
 pub fn active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
@@ -503,7 +508,8 @@ fn windows_active_monitor_hdr_status(
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow};
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
-    let _ = viewport_outer_rect_screen_px;
+    /// Ignore degenerate rects from Win32 before the real client size is committed.
+    const MIN_PLAUSIBLE_OUTER_AREA: i64 = 64 * 64;
 
     let candidates = windows_collect_process_tl_hwnds();
     if candidates.is_empty() {
@@ -523,7 +529,39 @@ fn windows_active_monitor_hdr_status(
     // window on?" behaviour and updates as soon as the center crosses the boundary.
     let hwnd = windows_pick_tl_hwnd_largest_screen_area(&candidates).unwrap_or(candidates[0]);
     let mut rect = RECT::default();
-    let monitor = if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+    let hwnd_rect_ok = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok();
+    let hwnd_area = if hwnd_rect_ok {
+        windows_screen_rect_area(&rect)
+    } else {
+        0
+    };
+
+    let viewport_choice = viewport_outer_rect_screen_px.and_then(|[vl, vt, vr, vb]| {
+        let vp_area = i64::from(vr.saturating_sub(vl)).max(0) * i64::from(vb.saturating_sub(vt)).max(0);
+        if vp_area < MIN_PLAUSIBLE_OUTER_AREA {
+            return None;
+        }
+        if hwnd_area > 0 && vp_area <= hwnd_area {
+            // Normal steady state (and cross-monitor drags where `outer_rect` lags): keep the
+            // HWND center path so we still track the native frame while egui catches up.
+            return None;
+        }
+        Some([vl, vt, vr, vb])
+    });
+
+    let monitor = if let Some([vl, vt, vr, vb]) = viewport_choice {
+        let cx = (vl + vr) / 2;
+        let cy = (vt + vb) / 2;
+        let m = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };
+        log::debug!(
+            "[HDR] active-monitor probe: origin=viewport_outer_rect center_screen=({cx},{cy}) \
+             vp_area={} hwnd_area={} monitor_handle={:?}",
+            i64::from(vr.saturating_sub(vl)).max(0) * i64::from(vb.saturating_sub(vt)).max(0),
+            hwnd_area,
+            m,
+        );
+        m
+    } else if hwnd_rect_ok {
         let cx = (rect.left + rect.right) / 2;
         let cy = (rect.top + rect.bottom) / 2;
         let m = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };

@@ -1084,14 +1084,16 @@ impl ImageViewerApp {
             match output {
                 LoaderOutput::Image(load_result) => {
                     let idx = load_result.index;
+                    let generation = load_result.generation;
                     let is_current = idx == self.current_index;
-                    let gen_match = load_result.generation == self.generation;
+                    let gen_match = generation == self.generation;
 
                     // CRITICAL: Drop any stale results, even for the current index.
                     // This prevents a race where deleting an image reuses the index
                     // but a late decode from the deleted file arrives and overwrites
                     // the new current image state.
                     if !gen_match {
+                        self.loader.finish_image_request(idx, generation);
                         continue;
                     }
 
@@ -1115,6 +1117,7 @@ impl ImageViewerApp {
                     }
 
                     self.handle_image_load_result(load_result, ctx);
+                    self.loader.finish_image_request(idx, generation);
                     uploads_this_frame += 1;
 
                     if should_request_repaint_for_asset_update(
@@ -1667,10 +1670,19 @@ impl ImageViewerApp {
                 );
             }
             (None, None) => {
-                log::warn!(
-                    "Preview update for index {} carried no SDR preview plane",
-                    update.index
-                );
+                if update.preview_bundle.hdr().is_some() {
+                    // Refined HQ for native-HDR / high headroom: loader omits the SDR preview plane
+                    // (checklist: avoid generating SDR refinement when not needed). HDR was applied above.
+                    log::debug!(
+                        "Preview update for index {} is HDR-only (no SDR plane)",
+                        update.index
+                    );
+                } else {
+                    log::warn!(
+                        "Preview update for index {} carried no SDR preview plane",
+                        update.index
+                    );
+                }
             }
         }
     }

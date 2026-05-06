@@ -22,6 +22,8 @@ use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrT
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
+use std::path::Path;
+#[cfg(feature = "heif-native")]
 use std::sync::Arc;
 
 pub(crate) fn is_heif_brand(brand: &[u8]) -> bool {
@@ -112,6 +114,217 @@ fn append_mini_format_read_hint(action: &str, msg: String) -> String {
     msg
 }
 
+// --- libheif session (context + primary handle) ---------------------------------------------
+
+#[cfg(feature = "heif-native")]
+struct HeifCtxGuard(pub *mut libheif_sys::heif_context);
+
+#[cfg(feature = "heif-native")]
+impl Drop for HeifCtxGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libheif_sys::heif_context_free(self.0);
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+struct HeifPrimaryGuard(pub *mut libheif_sys::heif_image_handle);
+
+#[cfg(feature = "heif-native")]
+impl Drop for HeifPrimaryGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libheif_sys::heif_image_handle_release(self.0);
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_error_to_string_lib(err: libheif_sys::heif_error) -> String {
+    if err.message.is_null() {
+        return format!("libheif error code {} subcode {}", err.code, err.subcode);
+    }
+    unsafe { CStr::from_ptr(err.message) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(feature = "heif-native")]
+fn ensure_heif_ok_lib(err: libheif_sys::heif_error, action: &str) -> Result<(), String> {
+    if err.code == libheif_sys::heif_error_Ok {
+        Ok(())
+    } else {
+        let raw = format!("Failed to {action}: {}", heif_error_to_string_lib(err));
+        let expanded = append_heif_unci_build_hint(raw);
+        let expanded = append_mini_format_read_hint(action, expanded);
+        Err(expanded)
+    }
+}
+
+/// Allocate libheif context, read the blob, and resolve the primary image handle.
+#[cfg(feature = "heif-native")]
+fn open_heif_primary_from_bytes(bytes: &[u8]) -> Result<(HeifCtxGuard, HeifPrimaryGuard), String> {
+    {
+        use std::sync::Once;
+        static LOG_VERSION: Once = Once::new();
+        LOG_VERSION.call_once(|| unsafe {
+            let p = libheif_sys::heif_get_version();
+            if !p.is_null() {
+                log::debug!(
+                    "[HEIF] linked libheif version: {}",
+                    CStr::from_ptr(p).to_string_lossy()
+                );
+            }
+        });
+    }
+
+    let context = HeifCtxGuard(unsafe { libheif_sys::heif_context_alloc() });
+    if context.0.is_null() {
+        return Err("Failed to allocate libheif context".to_string());
+    }
+
+    ensure_heif_ok_lib(
+        unsafe {
+            libheif_sys::heif_context_read_from_memory_without_copy(
+                context.0,
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                std::ptr::null(),
+            )
+        },
+        "read HEIF from memory",
+    )?;
+
+    let mut handle_ptr = std::ptr::null_mut();
+    ensure_heif_ok_lib(
+        unsafe { libheif_sys::heif_context_get_primary_image_handle(context.0, &mut handle_ptr) },
+        "get HEIF primary image",
+    )?;
+    if handle_ptr.is_null() {
+        return Err("libheif returned a null primary image handle".to_string());
+    }
+
+    Ok((context, HeifPrimaryGuard(handle_ptr)))
+}
+
+/// Parse embedded Exif item payload (`Exif` metadata). Mirrors [`kamadak_exif::isobmff::get_exif_attr`]
+/// stripping of the TIFF offset; falls back to treating the whole blob as TIFF if needed.
+#[cfg(feature = "heif-native")]
+fn orientation_from_heif_exif_item_blob(buf: &[u8]) -> Option<u16> {
+    fn from_exif(exif: &exif::Exif) -> Option<u16> {
+        let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+        let o = field.value.get_uint(0)? as u16;
+        ((1..=8).contains(&o)).then_some(o)
+    }
+
+    if buf.len() >= 6 {
+        let offset = u32::from_be_bytes(buf.get(0..4)?.try_into().ok()?) as usize;
+        if buf.len() >= 4 + offset {
+            let tiff_tail = buf.get(4 + offset..)?.to_vec();
+            if let Ok(exif) = exif::Reader::new().read_raw(tiff_tail) {
+                if let Some(o) = from_exif(&exif) {
+                    return Some(o);
+                }
+            }
+        }
+    }
+    if let Ok(exif) = exif::Reader::new().read_raw(buf.to_vec()) {
+        return from_exif(&exif);
+    }
+    None
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> Option<u16> {
+    let handle = primary.0;
+    unsafe {
+        let total =
+            libheif_sys::heif_image_handle_get_number_of_metadata_blocks(handle, std::ptr::null());
+        if total <= 0 {
+            return None;
+        }
+        let total = total as usize;
+        let mut ids = vec![0u32; total];
+        let n = libheif_sys::heif_image_handle_get_list_of_metadata_block_IDs(
+            handle,
+            std::ptr::null(),
+            ids.as_mut_ptr(),
+            total as i32,
+        );
+        let n = n.max(0) as usize;
+        for &id in ids.iter().take(n) {
+            let typ = libheif_sys::heif_image_handle_get_metadata_type(handle, id);
+            if typ.is_null() {
+                continue;
+            }
+            let typ_bytes = CStr::from_ptr(typ).to_bytes();
+            if typ_bytes != b"Exif" {
+                continue;
+            }
+            let sz = libheif_sys::heif_image_handle_get_metadata_size(handle, id);
+            if sz == 0 {
+                continue;
+            }
+            let mut buf = vec![0u8; sz];
+            let err =
+                libheif_sys::heif_image_handle_get_metadata(handle, id, buf.as_mut_ptr().cast());
+            if err.code != libheif_sys::heif_error_Ok {
+                continue;
+            }
+            if let Some(o) = orientation_from_heif_exif_item_blob(&buf) {
+                return Some(o);
+            }
+        }
+        None
+    }
+}
+
+/// Read [`exif::Tag::Orientation`] from libheif-attached `Exif` metadata items (works when pure ISOBMFF
+/// scanning in [`crate::metadata_utils::get_exif_orientation`] misses the `Exif` item).
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_exif_orientation_tag(path: &Path) -> Option<u16> {
+    let mmap = crate::mmap_util::map_file(path).ok()?;
+    let (_ctx, primary) = open_heif_primary_from_bytes(&mmap[..]).ok()?;
+    heif_exif_orientation_from_handle(&primary)
+}
+
+/// When the decoded raster's width/height are the **swap** of libheif’s `ispe` width/height (non-square),
+/// decoder has already applied a 90°/270° HEIF transform on the pixel grid — suppress applying EXIF
+/// Orientation again to avoid double rotation.
+#[cfg(feature = "heif-native")]
+pub(crate) fn decoded_pixels_match_swapped_ispe(path: &Path, decoded_w: u32, decoded_h: u32) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "heic" && ext != "heif" && ext != "hif" {
+        return false;
+    }
+    let mmap = match crate::mmap_util::map_file(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let (_ctx, primary) = match open_heif_primary_from_bytes(&mmap[..]) {
+        Ok(x) => x,
+        Err(_) => return false,
+    };
+    unsafe {
+        let iw = libheif_sys::heif_image_handle_get_ispe_width(primary.0);
+        let ih = libheif_sys::heif_image_handle_get_ispe_height(primary.0);
+        if iw <= 0 || ih <= 0 {
+            return false;
+        }
+        let iw = iw as u32;
+        let ih = ih as u32;
+        if iw == ih {
+            return false;
+        }
+        decoded_w == ih && decoded_h == iw
+    }
+}
+
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(
     path: &std::path::Path,
@@ -143,88 +356,14 @@ pub(crate) fn decode_heif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, 
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
-    use std::ffi::CStr;
-
-    struct HeifContext(*mut libheif_sys::heif_context);
-    impl Drop for HeifContext {
-        fn drop(&mut self) {
-            unsafe { libheif_sys::heif_context_free(self.0) };
-        }
-    }
-
-    struct HeifImageHandle(*mut libheif_sys::heif_image_handle);
-    impl Drop for HeifImageHandle {
-        fn drop(&mut self) {
-            unsafe { libheif_sys::heif_image_handle_release(self.0) };
-        }
-    }
-
-    fn heif_error_to_string(err: libheif_sys::heif_error) -> String {
-        if err.message.is_null() {
-            return format!("libheif error code {} subcode {}", err.code, err.subcode);
-        }
-        unsafe { CStr::from_ptr(err.message) }
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    fn ensure_heif_ok(err: libheif_sys::heif_error, action: &str) -> Result<(), String> {
-        if err.code == libheif_sys::heif_error_Ok {
-            Ok(())
-        } else {
-            let raw = format!("Failed to {action}: {}", heif_error_to_string(err));
-            let expanded = append_heif_unci_build_hint(raw);
-            let expanded = append_mini_format_read_hint(action, expanded);
-            Err(expanded)
-        }
-    }
-
-    // Confirms which libheif binary is actually linked (helps debug stale vcpkg / wrong triplet).
-    {
-        use std::sync::Once;
-        static LOG_VERSION: Once = Once::new();
-        LOG_VERSION.call_once(|| unsafe {
-            let p = libheif_sys::heif_get_version();
-            if !p.is_null() {
-                log::debug!(
-                    "[HEIF] linked libheif version: {}",
-                    CStr::from_ptr(p).to_string_lossy()
-                );
-            }
-        });
-    }
-
-    let context = HeifContext(unsafe { libheif_sys::heif_context_alloc() });
-    if context.0.is_null() {
-        return Err("Failed to allocate libheif context".to_string());
-    }
-
-    ensure_heif_ok(
-        unsafe {
-            libheif_sys::heif_context_read_from_memory_without_copy(
-                context.0,
-                bytes.as_ptr().cast(),
-                bytes.len(),
-                std::ptr::null(),
-            )
-        },
-        "read HEIF from memory",
-    )?;
-
-    let mut handle_ptr = std::ptr::null_mut();
-    ensure_heif_ok(
-        unsafe { libheif_sys::heif_context_get_primary_image_handle(context.0, &mut handle_ptr) },
-        "get HEIF primary image",
-    )?;
-    if handle_ptr.is_null() {
-        return Err("libheif returned a null primary image handle".to_string());
-    }
-    let handle = HeifImageHandle(handle_ptr);
+    let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
     let mut metadata = read_heif_metadata(handle.0);
     if let Some(diagnostic) = inspect_heif_gain_map_auxiliaries(handle.0) {
         metadata.gain_map = Some(diagnostic);
     }
+    refine_heif_transfer_for_primary_bit_depth(handle.0, &mut metadata);
+    crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
 
     decode_primary_heif_to_hdr(handle.0, metadata)
 }
@@ -804,19 +943,36 @@ enum HeifYcbcrMatrix {
     /// constant-luminance coding for MC=9 only is not split out; stills usually match the NCL matrix.
     Bt2020Ncl,
     /// CICP matrix_coefficients 0 — no colour difference; replicate luma.
+    /// True Y′-only path (R=G=B=Y′) when chroma is absent — not selected from NCLX `matrix_coefficients`
+    /// alone (code 0 in HEIF often means “unspecified YUV”, not monochrome video).
+    #[allow(dead_code)]
     Monochrome,
 }
 
 #[cfg(feature = "heif-native")]
-fn heif_ycbcr_matrix_from_nclx(metadata: &HdrImageMetadata) -> HeifYcbcrMatrix {
+fn heif_ycbcr_matrix_from_nclx(
+    metadata: &HdrImageMetadata,
+    y_width: usize,
+    y_height: usize,
+) -> HeifYcbcrMatrix {
     match &metadata.color_profile {
         HdrColorProfile::Cicp {
             matrix_coefficients: mc,
             ..
         } => match *mc {
-            0 => HeifYcbcrMatrix::Monochrome,
+            // H.273 matrix 0 = RGB identity (non‑YCbCr); **HEIF stills** sometimes tag 0 / 2 when the
+            // encoder meant “unspecified”. Interpreting that as monochrome destroys colour — use a
+            // simple SD vs HD **luma resolution** split (common broadcast rule of thumb).
+            0 | 2 => {
+                let hdish = y_width >= 1280 || y_height >= 720;
+                if hdish {
+                    HeifYcbcrMatrix::Bt709
+                } else {
+                    HeifYcbcrMatrix::Bt601
+                }
+            }
             5 | 6 => HeifYcbcrMatrix::Bt601,
-            9 | 10 => HeifYcbcrMatrix::Bt2020Ncl,
+            9 | 10 | 12 => HeifYcbcrMatrix::Bt2020Ncl,
             _ => HeifYcbcrMatrix::Bt709,
         },
         _ => HeifYcbcrMatrix::Bt709,
@@ -1010,7 +1166,7 @@ fn hdr_buffer_from_ycbcr(
         1.0
     };
 
-    let yuv_matrix = heif_ycbcr_matrix_from_nclx(metadata);
+    let yuv_matrix = heif_ycbcr_matrix_from_nclx(metadata, y_w, y_h);
 
     let min_y_need = span_y * y_w.max(1);
     if stride_y < min_y_need {
@@ -1111,9 +1267,15 @@ fn read_heif_metadata(handle: *const libheif_sys::heif_image_handle) -> HdrImage
             libheif_sys::heif_image_handle_get_raw_color_profile(handle, icc.as_mut_ptr().cast())
         };
         if icc_status.code == libheif_sys::heif_error_Ok {
+            log::debug!(
+                "[HEIF] using embedded ICC profile ({} bytes); no NCLX colour_property box",
+                icc_size
+            );
             return HdrImageMetadata {
                 color_profile: HdrColorProfile::Icc(Arc::new(icc)),
-                transfer_function: HdrTransferFunction::Unknown,
+                // Embedded ICC camera stills are almost always display-referred gamma; `Unknown` skips
+                // WGSL sRGB decode and looks too bright on SDR / inconsistent on HDR when tagged PQ+8-bit.
+                transfer_function: HdrTransferFunction::Srgb,
                 reference: HdrReference::Unknown,
                 luminance: HdrLuminanceMetadata::default(),
                 gain_map: None,
@@ -1122,6 +1284,44 @@ fn read_heif_metadata(handle: *const libheif_sys::heif_image_handle) -> HdrImage
     }
 
     HdrImageMetadata::default()
+}
+
+/// Apple-style **composite HDR HEIC**: NCLX may mark **PQ** while the **primary** decoded surface is
+/// an **8-bit SDR** compatible base; decoding that through PQ in WGSL crushes luminance (HDR too dark).
+/// **Unknown** skips `srgb_to_linear` and often reads as linear (SDR too bright). Heuristic: ≤8-bit
+/// luma on the **handle** ⇒ treat transfer as sRGB-like for the GPU decode path.
+#[cfg(feature = "heif-native")]
+fn refine_heif_transfer_for_primary_bit_depth(
+    handle: *const libheif_sys::heif_image_handle,
+    metadata: &mut HdrImageMetadata,
+) {
+    let luma =
+        unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) }.max(0);
+    apply_heif_transfer_depth_heuristics(luma, metadata);
+}
+
+#[cfg(feature = "heif-native")]
+fn apply_heif_transfer_depth_heuristics(luma_bits: i32, metadata: &mut HdrImageMetadata) {
+    let luma = luma_bits.max(0) as u32;
+    if luma == 0 || luma > 8 {
+        return;
+    }
+
+    if metadata.transfer_function == HdrTransferFunction::Pq {
+        log::debug!(
+            "[HEIF] PQ transfer with {luma}-bit primary handle — using sRGB-like decode (likely SDR base / tagging mismatch)"
+        );
+        metadata.transfer_function = HdrTransferFunction::Srgb;
+        metadata.reference = HdrReference::Unknown;
+        return;
+    }
+
+    if metadata.transfer_function == HdrTransferFunction::Unknown {
+        log::debug!(
+            "[HEIF] unknown transfer with {luma}-bit luma — assuming sRGB-like display gamma for decode"
+        );
+        metadata.transfer_function = HdrTransferFunction::Srgb;
+    }
 }
 
 #[cfg(feature = "heif-native")]
@@ -1283,6 +1483,38 @@ mod tests {
 
     #[cfg(feature = "heif-native")]
     #[test]
+    fn heif_transfer_depth_heuristic_pq_8bit_primary_to_srgb() {
+        use super::apply_heif_transfer_depth_heuristics;
+
+        let mut m = heif_nclx_to_metadata(9, 16, 9, false);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Pq);
+        apply_heif_transfer_depth_heuristics(8, &mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_transfer_depth_heuristic_pq_10bit_primary_unchanged() {
+        use super::apply_heif_transfer_depth_heuristics;
+
+        let mut m = heif_nclx_to_metadata(9, 16, 9, false);
+        apply_heif_transfer_depth_heuristics(10, &mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Pq);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_transfer_depth_heuristic_unknown_8bit_to_srgb() {
+        use super::apply_heif_transfer_depth_heuristics;
+
+        let mut m = heif_nclx_to_metadata(9, 99, 9, false);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Unknown);
+        apply_heif_transfer_depth_heuristics(8, &mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
     fn heif_auxiliary_type_classifies_gain_map_and_tmap_evidence() {
         assert_eq!(
             classify_heif_auxiliary_type("urn:com:apple:photo:2020:aux:hdrgainmap"),
@@ -1360,26 +1592,43 @@ mod tests {
         }
 
         assert_eq!(
-            heif_ycbcr_matrix_from_nclx(&meta(0)),
-            HeifYcbcrMatrix::Monochrome
-        );
-        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(5)), HeifYcbcrMatrix::Bt601);
-        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(6)), HeifYcbcrMatrix::Bt601);
-        assert_eq!(
-            heif_ycbcr_matrix_from_nclx(&meta(9)),
-            HeifYcbcrMatrix::Bt2020Ncl
+            heif_ycbcr_matrix_from_nclx(&meta(0), 640, 480),
+            HeifYcbcrMatrix::Bt601
         );
         assert_eq!(
-            heif_ycbcr_matrix_from_nclx(&meta(10)),
-            HeifYcbcrMatrix::Bt2020Ncl
-        );
-        assert_eq!(heif_ycbcr_matrix_from_nclx(&meta(1)), HeifYcbcrMatrix::Bt709);
-        assert_eq!(
-            heif_ycbcr_matrix_from_nclx(&meta(255)),
+            heif_ycbcr_matrix_from_nclx(&meta(0), 1920, 1080),
             HeifYcbcrMatrix::Bt709
         );
         assert_eq!(
-            heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default()),
+            heif_ycbcr_matrix_from_nclx(&meta(5), 100, 100),
+            HeifYcbcrMatrix::Bt601
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(6), 100, 100),
+            HeifYcbcrMatrix::Bt601
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(9), 100, 100),
+            HeifYcbcrMatrix::Bt2020Ncl
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(10), 100, 100),
+            HeifYcbcrMatrix::Bt2020Ncl
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(12), 100, 100),
+            HeifYcbcrMatrix::Bt2020Ncl
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(1), 100, 100),
+            HeifYcbcrMatrix::Bt709
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&meta(255), 100, 100),
+            HeifYcbcrMatrix::Bt709
+        );
+        assert_eq!(
+            heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default(), 1, 1),
             HeifYcbcrMatrix::Bt709
         );
     }
