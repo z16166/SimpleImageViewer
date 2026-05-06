@@ -1670,10 +1670,19 @@ impl ImageViewerApp {
                 );
             }
             (None, None) => {
-                log::warn!(
-                    "Preview update for index {} carried no SDR preview plane",
-                    update.index
-                );
+                if update.preview_bundle.hdr().is_some() {
+                    // Refined HQ for native-HDR / high headroom: loader omits the SDR preview plane
+                    // (checklist: avoid generating SDR refinement when not needed). HDR was applied above.
+                    log::debug!(
+                        "Preview update for index {} is HDR-only (no SDR plane)",
+                        update.index
+                    );
+                } else {
+                    log::warn!(
+                        "Preview update for index {} carried no SDR preview plane",
+                        update.index
+                    );
+                }
             }
         }
     }
