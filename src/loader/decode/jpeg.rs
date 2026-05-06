@@ -22,7 +22,8 @@ use crate::loader::{DecodedImage, ImageData};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::assemble::{make_hdr_image_data, make_image_data, MemoryImageSource};
+use super::assemble::{make_hdr_image_data, make_image_data};
+use crate::loader::tiled_sources::MemoryImageSource;
 
 #[cfg(test)]
 pub(crate) fn load_jpeg(path: &PathBuf) -> Result<ImageData, String> {

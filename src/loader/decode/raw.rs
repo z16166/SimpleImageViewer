@@ -16,171 +16,16 @@
 
 //! LibRAW and raw tiled refinement.
 
-use crate::constants::RGBA_CHANNELS;
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{hq_preview_max_side, hdr_sdr_fallback_rgba8_eager_or_placeholder};
-use crate::loader::{DecodedImage, ImageData, RefinementRequest, TiledImageSource};
+use crate::loader::{DecodedImage, ImageData, RefinementRequest};
+use crate::loader::tiled_sources::RawImageSource;
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
-use image::{DynamicImage, GenericImageView};
-use parking_lot::RwLock as PLRwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::assemble::{make_hdr_image_data, make_image_data};
-
-// ---------------------------------------------------------------------------
-// RAW Image Support (LibRaw)
-// ---------------------------------------------------------------------------
-
-pub(crate) struct RawImageSource {
-    path: PathBuf,
-    /// True RAW sensor dimensions (not thumbnail dimensions).
-    width: u32,
-    height: u32,
-    /// Initially holds the system preview at its ORIGINAL resolution (NOT upscaled).
-    /// The refinement worker replaces this with the full-res LibRaw demosaiced image.
-    /// extract_tile() dynamically maps coordinates between RAW space and preview space.
-    developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
-    /// Channel to send refinement requests. Kept here so `request_refinement()` can
-    /// be called later (only when the image becomes active) instead of eagerly in the
-    /// constructor, preventing prefetched images from spawning ~400MB develop tasks.
-    refine_tx: Sender<RefinementRequest>,
-    orientation_override: i32,
-}
-
-impl RawImageSource {
-    pub(crate) fn new(
-        path: PathBuf,
-        preview: DecodedImage,
-        raw_width: u32,
-        raw_height: u32,
-        refine_tx: Sender<RefinementRequest>,
-        orientation_override: i32,
-    ) -> Self {
-        // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
-        // Previously this called resize_exact(raw_width, raw_height) which allocated
-        // ~400MB per image (e.g. 11648×8736×4). With rapid switching and prefetching,
-        // multiple concurrent allocations of this size caused OOM crashes.
-        // Instead, extract_tile() maps coordinates from RAW space to preview space on demand.
-        //
-        // ALSO: We do NOT send a refinement request here. Refinement is deferred until
-        // the image becomes the actively-viewed one (via request_refinement()). This
-        // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
-
-        let rgba = preview.into_rgba8_image();
-        let developed_image = Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
-
-        let refine_tx = refine_tx.clone();
-
-        Self {
-            path,
-            width: raw_width,
-            height: raw_height,
-            developed_image,
-            refine_tx,
-            orientation_override,
-        }
-    }
-}
-
-impl TiledImageSource for RawImageSource {
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let img_lock = self.developed_image.read();
-        if let Some(ref img) = *img_lock {
-            let (iw, ih) = img.dimensions();
-            if iw == self.width && ih == self.height {
-                // Full-res developed image available — direct crop, no scaling needed.
-                if let Some(rgba) = img.as_rgba8() {
-                    let mut result = vec![0u8; (w * h * 4) as usize];
-                    for row in 0..h {
-                        let src_y = y + row;
-                        let src_offset = (src_y * iw + x) as usize * 4;
-                        let dst_offset = (row * w) as usize * 4;
-                        let len =
-                            (w as usize * 4).min(rgba.as_raw().len().saturating_sub(src_offset));
-                        if len > 0 {
-                            result[dst_offset..dst_offset + len]
-                                .copy_from_slice(&rgba.as_raw()[src_offset..src_offset + len]);
-                        }
-                    }
-                    Arc::new(result)
-                } else {
-                    let crop = img.crop_imm(x, y, w, h);
-                    Arc::new(crop.into_rgba8().into_raw())
-                }
-            } else {
-                // Preview image (smaller than RAW dimensions).
-                let scale_x = iw as f64 / self.width as f64;
-                let scale_y = ih as f64 / self.height as f64;
-                let px = (x as f64 * scale_x) as u32;
-                let py = (y as f64 * scale_y) as u32;
-                let pw = ((w as f64 * scale_x).ceil() as u32)
-                    .min(iw.saturating_sub(px))
-                    .max(1);
-                let ph = ((h as f64 * scale_y).ceil() as u32)
-                    .min(ih.saturating_sub(py))
-                    .max(1);
-                let crop = img.crop_imm(px, py, pw, ph);
-                let resized = crop.resize_exact(w, h, image::imageops::FilterType::Triangle);
-                Arc::new(resized.into_rgba8().into_raw())
-            }
-        } else {
-            Arc::new(vec![0; (w * h * RGBA_CHANNELS as u32) as usize])
-        }
-    }
-
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        let img_lock = self.developed_image.read();
-        if let Some(ref img) = *img_lock {
-            let scaled = img.thumbnail(max_w, max_h);
-            let rgba = scaled.to_rgba8();
-            (rgba.width(), rgba.height(), rgba.into_raw())
-        } else {
-            (0, 0, Vec::new())
-        }
-    }
-
-    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        let img_lock = self.developed_image.read();
-        if let Some(ref img) = *img_lock {
-            let (iw, ih) = img.dimensions();
-            // Only return pixels when we have the full-res developed image.
-            // If it's still the small preview, the stride would mismatch
-            // self.width/self.height and corrupt downstream consumers (e.g. printing).
-            if iw == self.width && ih == self.height {
-                Some(Arc::new(img.to_rgba8().into_raw()))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    fn request_refinement(&self, index: usize, generation: u64) {
-        log::info!(
-            "[RawImageSource] Triggering refinement for index={}, gen={}",
-            index,
-            generation
-        );
-        let _ = self.refine_tx.send(RefinementRequest {
-            path: self.path.clone(),
-            index,
-            generation,
-            orientation_override: Some(self.orientation_override),
-            developed_image: self.developed_image.clone(),
-        });
-    }
-}
 
 pub(crate) fn load_raw(
     _index: usize,
@@ -201,6 +46,7 @@ pub(crate) fn load_raw(
             e
         );
         #[cfg(target_os = "windows")]
+        // WIC requires COM on this thread (`ComGuard` — see `decode` module docs).
         return crate::wic::load_via_wic(path, high_quality, None);
         #[cfg(target_os = "macos")]
         return crate::macos_image_io::load_via_image_io(path, high_quality, None);
@@ -250,7 +96,10 @@ pub(crate) fn load_raw(
         // Step 1: Try platform-native loaders (WIC/ImageIO).
         // We pass Some(final_orientation) to force the system loader to respect our authoritative choice.
         #[cfg(target_os = "windows")]
-        let res = crate::wic::load_via_wic(path, high_quality, Some(final_orientation));
+        let res = {
+            // WIC requires COM on this thread (`ComGuard` — see `decode` module docs).
+            crate::wic::load_via_wic(path, high_quality, Some(final_orientation))
+        };
         #[cfg(target_os = "macos")]
         let res =
             crate::macos_image_io::load_via_image_io(path, high_quality, Some(final_orientation));

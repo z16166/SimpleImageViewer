@@ -25,7 +25,8 @@ use crate::loader::{
 use std::path::Path;
 use std::sync::Arc;
 
-use super::assemble::{make_hdr_image_data, HdrSdrTiledFallbackSource};
+use super::assemble::make_hdr_image_data;
+use crate::loader::tiled_sources::HdrSdrTiledFallbackSource;
 
 pub(crate) fn load_hdr(
     path: &Path,

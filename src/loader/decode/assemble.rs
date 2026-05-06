@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! HDR/SDR assembly and in-memory tiled sources.
+//! HDR/SDR [`ImageData`] assembly (static vs tiled) using [`crate::loader::tiled_sources::MemoryImageSource`].
 
-use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{hdr_to_sdr_with_user_tone, DecodedImage, ImageData, TiledImageSource};
+use crate::loader::{DecodedImage, ImageData, TiledImageSource};
+use crate::loader::tiled_sources::MemoryImageSource;
 use std::sync::Arc;
 
 pub(crate) fn make_image_data(img: DecodedImage) -> ImageData {
@@ -103,154 +103,5 @@ pub(crate) fn make_hdr_image_data_for_limit(
         }
     } else {
         ImageData::Hdr { hdr, fallback }
-    }
-}
-/// A TiledImageSource that serves tiles from an in-memory byte buffer.
-/// Primarily used for common formats (PNG, JPEG, etc.) that exceed the GPU's single texture limit.
-pub(crate) struct MemoryImageSource {
-    width: u32,
-    height: u32,
-    pixels: Arc<Vec<u8>>,
-    hdr_sdr_fallback: bool,
-}
-
-impl MemoryImageSource {
-    pub fn new(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Self {
-        Self::new_with_hdr_sdr_fallback(width, height, pixels, false)
-    }
-
-    pub fn new_with_hdr_sdr_fallback(
-        width: u32,
-        height: u32,
-        pixels: Arc<Vec<u8>>,
-        hdr_sdr_fallback: bool,
-    ) -> Self {
-        Self {
-            width,
-            height,
-            pixels,
-            hdr_sdr_fallback,
-        }
-    }
-}
-
-pub(crate) struct HdrSdrTiledFallbackSource {
-    source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-    tone_map: HdrToneMapSettings,
-}
-
-impl HdrSdrTiledFallbackSource {
-    pub(crate) fn new(
-        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-        tone_map: HdrToneMapSettings,
-    ) -> Self {
-        Self { source, tone_map }
-    }
-}
-
-impl TiledImageSource for HdrSdrTiledFallbackSource {
-    fn width(&self) -> u32 {
-        self.source.width()
-    }
-
-    fn height(&self) -> u32 {
-        self.source.height()
-    }
-
-    fn is_hdr_sdr_fallback(&self) -> bool {
-        true
-    }
-
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let pixels = self
-            .source
-            .extract_tile_rgba32f_arc(x, y, w, h)
-            .and_then(|tile| {
-                hdr_to_sdr_with_user_tone(
-                    &crate::hdr::types::HdrImageBuffer {
-                        width: tile.width,
-                        height: tile.height,
-                        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
-                        color_space: tile.color_space,
-                        metadata: tile.metadata.clone(),
-                        rgba_f32: Arc::clone(&tile.rgba_f32),
-                    },
-                    &self.tone_map,
-                )
-            })
-            .unwrap_or_else(|err| {
-                log::warn!("[Loader] HDR SDR tile fallback failed: {err}");
-                vec![0; w as usize * h as usize * 4]
-            });
-        Arc::new(pixels)
-    }
-
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        self.source
-            .generate_sdr_preview(max_w, max_h)
-            .unwrap_or_else(|err| {
-                log::warn!("[Loader] HDR SDR preview fallback failed: {err}");
-                let scale = (max_w as f32 / self.width() as f32)
-                    .min(max_h as f32 / self.height() as f32)
-                    .min(1.0);
-                let width = ((self.width() as f32 * scale).round() as u32).max(1);
-                let height = ((self.height() as f32 * scale).round() as u32).max(1);
-                (width, height, vec![0; width as usize * height as usize * 4])
-            })
-    }
-
-    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        None
-    }
-}
-
-impl TiledImageSource for MemoryImageSource {
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    fn height(&self) -> u32 {
-        self.height
-    }
-
-    fn is_hdr_sdr_fallback(&self) -> bool {
-        self.hdr_sdr_fallback
-    }
-
-    fn extract_tile(&self, x: u32, y: u32, w: u32, h: u32) -> Arc<Vec<u8>> {
-        let mut tile_pixels = Vec::with_capacity((w * h * 4) as usize);
-        let stride = self.width as usize * 4;
-
-        for row in y..(y + h) {
-            let start = (row as usize * stride) + (x as usize * 4);
-            let end = start + (w as usize * 4);
-            if end <= self.pixels.len() {
-                tile_pixels.extend_from_slice(&self.pixels[start..end]);
-            } else {
-                // Safety fallback for out-of-bounds
-                tile_pixels.resize(tile_pixels.len() + (w * 4) as usize, 0);
-            }
-        }
-        Arc::new(tile_pixels)
-    }
-
-    fn generate_preview(&self, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
-        // Since we already have the full image in memory, we can use the image crate
-        // to generate a high-quality downscaled preview.
-        // OPTIMIZATION: Use ImageBuffer with reference (slice) to avoid cloning giant pixel buffer.
-        if let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
-            self.width,
-            self.height,
-            &self.pixels,
-        ) {
-            let img = image::imageops::thumbnail(&buf, max_w, max_h);
-            (img.width(), img.height(), img.into_raw())
-        } else {
-            (0, 0, Vec::new())
-        }
-    }
-
-    fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
-        Some(Arc::clone(&self.pixels))
     }
 }

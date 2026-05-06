@@ -39,7 +39,7 @@ Replace monolithic `loader.rs` with **`loader/mod.rs`** and submodules. `main.rs
 | `loader/orientation.rs` | `apply_exif_orientation_*`, gain-map decode capacity helpers |
 | `loader/metadata.rs` | `extract_exif_thumbnail` |
 | `loader/texture_cache.rs` | `TextureCache` |
-| `loader/tiled_sources.rs` | `RawImageSource`, `MemoryImageSource`, `HdrSdrTiledFallbackSource` + `TiledImageSource` impls (split further if needed) |
+| `loader/tiled_sources.rs` | `MemoryImageSource`, `HdrSdrTiledFallbackSource`, `RawImageSource` + `TiledImageSource` impls |
 | `loader/decode/mod.rs` | `load_image_file`, format dispatch, `load_by_image_format`, content detection |
 | `loader/decode/jpeg.rs` | JPEG + Ultra HDR / capacity path |
 | `loader/decode/modern.rs` | AVIF, JXL, HEIF entry points |
@@ -93,7 +93,12 @@ Replace monolithic `loader.rs` with **`loader/mod.rs`** and submodules. `main.rs
 | A.1 Plan doc (`docs/loader-split-plan.md`) | Done |
 | A.2 `preview_caps.rs` + `loader/mod.rs` (monolith moved under `loader/`) | Done |
 | B.1 `types.rs` + `orientation.rs` + `metadata.rs` + `hdr_fallback.rs` | Done |
-| C.1 `ImageLoader` + tile queue (`orchestrator.rs`); decode path in `decode/mod.rs` (single file for now; future: `jpeg` / `modern` / …) | Done |
-| D | Pending |
+| C.1 `ImageLoader` + tile queue (`orchestrator.rs`); decode pipeline in `decode/` (`mod.rs` + `jpeg` / `modern` / `hdr_formats` / …) | Done |
+| D | Done — decode tests split under `decode/tests/`; WIC/COM contract documented on `decode` |
 
 _Update this table as work lands._
+
+### Phase D notes
+
+- **`decode/tests/`**: topic modules (`types_and_planes`, `tiles_loader`, `hdr_routing`, `exr`, `jpeg_ultra`, `formats_misc`) plus `support` for `TILED_THRESHOLD` overrides.
+- **Windows WIC**: `load_via_wic` is only used from decode paths invoked on loader threads that install `ComGuard` (`orchestrator`).
