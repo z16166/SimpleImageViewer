@@ -29,12 +29,10 @@ const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 // it is less blocky than 512px, while the row budget keeps initial load bounded.
 const SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE: u32 = 1024;
 const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
-// Refined preview still needs to stay bounded for giant scanline EXR files. Sampling a
-// budgeted set of representative rows is dramatically faster than visiting the full image
-// height, while remaining much sharper than the bootstrap preview.
-const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 768;
-const SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS: usize = 8;
-const SCANLINE_TILE_MAX_PARALLEL_CHUNKS: usize = 4;
+// Refined preview is generated off the UI-critical path, so keep full row sampling for quality.
+// A zero budget means "do not collapse preview rows into representative buckets".
+const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
+const SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -55,8 +53,9 @@ unsafe impl Sync for OpenExrCoreReadContext {}
 fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> {
     let filename = CString::new(path.to_string_lossy().as_bytes()).ok()?;
     let mut out = [0.0_f32; 8];
-    let code =
-        unsafe { sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr()) };
+    let code = unsafe {
+        sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr())
+    };
     (code == 0).then_some(out)
 }
 
@@ -86,11 +85,14 @@ fn openexr_luminance_weights_from_chromaticities_xy(ch: &[f32; 8]) -> Option<[f3
 
     let d = rx * (by - gy) + bx * (gy - ry) + gx * (ry - by);
 
-    let sr_n = x * (by - gy) - gx * (y_white * (by - 1.0) + by * (x + z))
+    let sr_n = x * (by - gy)
+        - gx * (y_white * (by - 1.0) + by * (x + z))
         + bx * (y_white * (gy - 1.0) + gy * (x + z));
-    let sg_n = x * (ry - by) + rx * (y_white * (by - 1.0) + by * (x + z))
+    let sg_n = x * (ry - by)
+        + rx * (y_white * (by - 1.0) + by * (x + z))
         - bx * (y_white * (ry - 1.0) + ry * (x + z));
-    let sb_n = x * (gy - ry) - rx * (y_white * (gy - 1.0) + gy * (x + z))
+    let sb_n = x * (gy - ry)
+        - rx * (y_white * (gy - 1.0) + gy * (x + z))
         + gx * (y_white * (ry - 1.0) + ry * (x + z));
 
     if d.abs() < 1.0
@@ -345,9 +347,7 @@ impl OpenExrCoreReadContext {
         })
     }
 
-    pub(crate) fn infer_exr_display_color_space_for_path(
-        path: &Path,
-    ) -> crate::hdr::types::HdrColorSpace {
+    pub(crate) fn infer_exr_display_color_space_for_path(path: &Path) -> crate::hdr::types::HdrColorSpace {
         match imf_exr_chromaticities_from_path(path) {
             Some(ch) => hdr_color_space_from_chromaticities_xy(&ch),
             None => crate::hdr::types::HdrColorSpace::LinearSrgb,
@@ -420,9 +420,10 @@ impl OpenExrCoreReadContext {
         width: u32,
         height: u32,
     ) -> Result<OpenExrCoreRgbaTile, String> {
-        let started_at = Instant::now();
         let part = self.part(part_index)?;
         validate_tile_bounds(part.width, part.height, x, y, width, height)?;
+        #[cfg(feature = "tile-debug")]
+        let tile_start = Instant::now();
         #[cfg(feature = "tile-debug")]
         let mut decoded_chunk_count = 0_u32;
 
@@ -435,76 +436,56 @@ impl OpenExrCoreReadContext {
 
         match part.storage {
             sys::EXR_STORAGE_SCANLINE => {
-                let chunk_jobs = collect_scanline_chunk_jobs_for_tile(
-                    self.raw.cast_const(),
-                    part_index,
-                    &part,
-                    y,
-                    height,
-                )?;
-                let parallel_chunks = scanline_tile_decode_parallelism(chunk_jobs.len());
-                let mut cache_hits = 0usize;
-                let mut cache_misses = 0usize;
-                let mut decode_ms = 0.0_f64;
-                let mut copy_ms = 0.0_f64;
-                for chunk_batch in chunk_jobs.chunks(parallel_chunks) {
-                    let fetched_batch = chunk_batch
-                        .par_iter()
-                        .map(|job| {
-                            self.fetch_decoded_chunk(part_index, &job.chunk, job.chunk_origin)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
+                let mut decoded_starts = std::collections::BTreeSet::new();
+                for source_y in y..y + height {
+                    let mut chunk = sys::ExrChunkInfo::default();
+                    exr_result(unsafe {
+                        sys::exr_read_scanline_chunk_info(
+                            self.raw.cast_const(),
+                            part_index,
+                            i32::try_from(source_y)
+                                .map_err(|_| "EXR scanline y exceeds i32".to_string())?
+                                + part.data_window_min.1,
+                            &mut chunk,
+                        )
+                    })?;
+                    if !decoded_starts.insert(chunk.start_y) {
+                        continue;
+                    }
+                    if chunk.height <= 0 || chunk.width <= 0 {
+                        continue;
+                    }
 
-                    for (fetched, job) in fetched_batch.into_iter().zip(chunk_batch.iter()) {
-                        if fetched.cache_hit {
-                            cache_hits += 1;
-                        } else {
-                            cache_misses += 1;
-                        }
-                        decode_ms += fetched.decode_ms;
-                        let chunk_copy_ms = copy_decoded_chunk_to_tile(
-                            &fetched.decoded,
+                    let chunk_origin_x = u32::try_from(chunk.start_x - part.data_window_min.0)
+                        .map_err(|_| {
+                            "OpenEXRCore chunk start_x is outside data window".to_string()
+                        })?;
+                    let chunk_origin_y = u32::try_from(chunk.start_y - part.data_window_min.1)
+                        .map_err(|_| {
+                            "OpenEXRCore chunk start_y is outside data window".to_string()
+                        })?;
+                    let timing = self.decode_chunk_to_tile(
+                        part_index,
+                        &chunk,
+                        (chunk_origin_x, chunk_origin_y),
+                        (x, y, width, height),
+                        &mut rgba,
+                    )?;
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = timing;
+                    #[cfg(feature = "tile-debug")]
+                    {
+                        decoded_chunk_count += 1;
+                        self.log_tile_chunk_decode(
+                            part_index,
+                            &part,
+                            &chunk,
+                            (chunk_origin_x, chunk_origin_y),
                             (x, y, width, height),
-                            &mut rgba,
-                        )?;
-                        copy_ms += chunk_copy_ms;
-                        let timing = OpenExrCoreChunkDecodeTiming {
-                            decode_ms: fetched.decode_ms,
-                            copy_ms: chunk_copy_ms,
-                            cache_hit: fetched.cache_hit,
-                        };
-                        #[cfg(not(feature = "tile-debug"))]
-                        let _ = (&timing, job);
-                        #[cfg(feature = "tile-debug")]
-                        {
-                            decoded_chunk_count += 1;
-                            self.log_tile_chunk_decode(
-                                part_index,
-                                &part,
-                                &job.chunk,
-                                job.chunk_origin,
-                                (x, y, width, height),
-                                timing,
-                            );
-                        }
+                            timing,
+                        );
                     }
                 }
-                log::debug!(
-                    "[HDR][tile][openexr-core] file=\"{}\" part={} request=({}, {}) size={}x{} storage=scanline unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
-                    self.source_name(),
-                    part_index,
-                    x,
-                    y,
-                    width,
-                    height,
-                    chunk_jobs.len(),
-                    parallel_chunks,
-                    cache_hits,
-                    cache_misses,
-                    decode_ms,
-                    copy_ms,
-                    started_at.elapsed().as_secs_f64() * 1000.0
-                );
             }
             sys::EXR_STORAGE_TILED => {
                 let tile_grid = self.tile_grid(part_index)?;
@@ -597,7 +578,7 @@ impl OpenExrCoreReadContext {
             height,
             storage_name(part.storage),
             decoded_chunk_count,
-            started_at.elapsed().as_secs_f64() * 1000.0
+            tile_start.elapsed().as_secs_f64() * 1000.0
         );
 
         Ok(OpenExrCoreRgbaTile {
@@ -630,13 +611,6 @@ impl OpenExrCoreReadContext {
             (sys::ExrChunkInfo, (u32, u32), Vec<(u32, u32)>),
         >::new();
         let source_row_budget = scanline_preview_source_row_budget(max_w);
-        let preview_stage = if max_w <= crate::constants::DEFAULT_PREVIEW_SIZE
-            && max_h <= crate::constants::DEFAULT_PREVIEW_SIZE
-        {
-            "bootstrap"
-        } else {
-            "refined"
-        };
         for preview_y in 0..height {
             let source_y = budgeted_scanline_preview_source_y(
                 preview_y,
@@ -711,14 +685,13 @@ impl OpenExrCoreReadContext {
                 copy_ms += copy_started.elapsed().as_secs_f64() * 1000.0;
             }
         }
-        log::debug!(
-            "[HDR][preview][openexr-core] file=\"{}\" part={} stage={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
+        log::info!(
+            "[HDR][preview][openexr-core] file=\"{}\" part={} requested={}x{} effective={}x{} source={}x{} storage=scanline row_budget={} unique_chunks={} parallel_chunks={} cache_hit={} cache_miss={} decode_ms={:.2} copy_ms={:.2} elapsed_ms={:.2}",
             self.path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("<unknown>"),
             part_index,
-            preview_stage,
             max_w,
             max_h,
             width,
@@ -1005,7 +978,14 @@ impl OpenExrCoreReadContext {
 
             rgba[dest + 3] = a_idx
                 .map(|i| {
-                    channel_sample_f32(&buffers, &channel_layouts, i, chunk_origin, col_u, row_u)
+                    channel_sample_f32(
+                        &buffers,
+                        &channel_layouts,
+                        i,
+                        chunk_origin,
+                        col_u,
+                        row_u,
+                    )
                 })
                 .unwrap_or(1.0);
 
@@ -1131,12 +1111,6 @@ struct OpenExrCoreDecodedChunkFetch {
     decoded: Arc<OpenExrCoreDecodedChunk>,
     decode_ms: f64,
     cache_hit: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct OpenExrCoreScanlineChunkJob {
-    chunk: sys::ExrChunkInfo,
-    chunk_origin: (u32, u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1294,65 +1268,6 @@ fn sample_decoded_scanline_chunk_into_preview(
     Ok(())
 }
 
-fn collect_scanline_chunk_jobs_for_tile(
-    context: sys::ExrConstContext,
-    part_index: i32,
-    part: &OpenExrCorePartInfo,
-    y: u32,
-    height: u32,
-) -> Result<Vec<OpenExrCoreScanlineChunkJob>, String> {
-    let mut jobs = Vec::new();
-    let mut source_y = y;
-    let source_end = y.saturating_add(height);
-    while source_y < source_end {
-        let mut chunk = sys::ExrChunkInfo::default();
-        exr_result(unsafe {
-            sys::exr_read_scanline_chunk_info(
-                context,
-                part_index,
-                i32::try_from(source_y).map_err(|_| "EXR scanline y exceeds i32".to_string())?
-                    + part.data_window_min.1,
-                &mut chunk,
-            )
-        })?;
-        if chunk.height <= 0 || chunk.width <= 0 {
-            source_y = source_y.saturating_add(1);
-            continue;
-        }
-        jobs.push(OpenExrCoreScanlineChunkJob {
-            chunk,
-            chunk_origin: scanline_chunk_origin(part, &chunk)?,
-        });
-        source_y = next_scanline_source_y(source_y, part, &chunk);
-    }
-    Ok(jobs)
-}
-
-fn scanline_chunk_origin(
-    part: &OpenExrCorePartInfo,
-    chunk: &sys::ExrChunkInfo,
-) -> Result<(u32, u32), String> {
-    Ok((
-        u32::try_from(chunk.start_x - part.data_window_min.0)
-            .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
-        u32::try_from(chunk.start_y - part.data_window_min.1)
-            .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
-    ))
-}
-
-fn next_scanline_source_y(
-    current_source_y: u32,
-    part: &OpenExrCorePartInfo,
-    chunk: &sys::ExrChunkInfo,
-) -> u32 {
-    let chunk_start =
-        u32::try_from(chunk.start_y - part.data_window_min.1).unwrap_or(current_source_y);
-    let chunk_height = u32::try_from(chunk.height).unwrap_or(1).max(1);
-    chunk_start
-        .saturating_add(chunk_height)
-        .max(current_source_y.saturating_add(1))
-}
-
 fn scanline_preview_dimensions(
     source_width: u32,
     source_height: u32,
@@ -1381,11 +1296,8 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
 }
 
 fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
-    unique_chunks.clamp(1, SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS)
-}
-
-fn scanline_tile_decode_parallelism(unique_chunks: usize) -> usize {
-    unique_chunks.clamp(1, SCANLINE_TILE_MAX_PARALLEL_CHUNKS)
+    let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    (cpuses / 2).clamp(8, 32).min(unique_chunks)
 }
 
 fn budgeted_scanline_preview_source_y(
@@ -1521,68 +1433,42 @@ fn assign_channel_roles(channels: &[sys::ExrCodingChannelInfo]) -> Vec<Option<Ch
     let mut has_by = false;
     let mut has_a = false;
 
-    // First pass: exact matches
     for (i, ch) in channels.iter().enumerate() {
         if ch.channel_name.is_null() {
             continue;
         }
-        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
-        if name.eq_ignore_ascii_case("R") && !has_r {
+        let name_bytes = unsafe { CStr::from_ptr(ch.channel_name) }.to_bytes();
+
+        let is_suffix = |suffix: &[u8]| {
+            name_bytes.len() >= suffix.len()
+                && name_bytes[name_bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+                && (name_bytes.len() == suffix.len()
+                    || name_bytes[name_bytes.len() - suffix.len() - 1] == b'.')
+        };
+
+        if !has_r && (is_suffix(b"R") || is_suffix(b"red")) {
             roles[i] = Some(ChannelRole::Red);
             has_r = true;
-        } else if name.eq_ignore_ascii_case("G") && !has_g {
+        } else if !has_g && (is_suffix(b"G") || is_suffix(b"green")) {
             roles[i] = Some(ChannelRole::Green);
             has_g = true;
-        } else if name.eq_ignore_ascii_case("B") && !has_b {
+        } else if !has_b && (is_suffix(b"B") || is_suffix(b"blue")) {
             roles[i] = Some(ChannelRole::Blue);
             has_b = true;
-        } else if name.eq_ignore_ascii_case("Y") && !has_y {
+        } else if !has_y && is_suffix(b"Y") {
             roles[i] = Some(ChannelRole::Luma);
             has_y = true;
-        } else if name.eq_ignore_ascii_case("RY") && !has_ry {
+        } else if !has_ry && is_suffix(b"RY") {
             roles[i] = Some(ChannelRole::Ry);
             has_ry = true;
-        } else if name.eq_ignore_ascii_case("BY") && !has_by {
+        } else if !has_by && is_suffix(b"BY") {
             roles[i] = Some(ChannelRole::By);
             has_by = true;
-        } else if name.eq_ignore_ascii_case("A") && !has_a {
+        } else if !has_a && (is_suffix(b"A") || is_suffix(b"alpha")) {
             roles[i] = Some(ChannelRole::Alpha);
             has_a = true;
         }
     }
-
-    // Second pass: suffix matches if exact not found
-    for (i, ch) in channels.iter().enumerate() {
-        if roles[i].is_some() || ch.channel_name.is_null() {
-            continue;
-        }
-        let name = unsafe { CStr::from_ptr(ch.channel_name) }.to_string_lossy();
-        let base = name.rsplit('.').next().unwrap_or(&name);
-
-        if base.eq_ignore_ascii_case("R") && !has_r {
-            roles[i] = Some(ChannelRole::Red);
-            has_r = true;
-        } else if base.eq_ignore_ascii_case("G") && !has_g {
-            roles[i] = Some(ChannelRole::Green);
-            has_g = true;
-        } else if base.eq_ignore_ascii_case("B") && !has_b {
-            roles[i] = Some(ChannelRole::Blue);
-            has_b = true;
-        } else if base.eq_ignore_ascii_case("Y") && !has_y {
-            roles[i] = Some(ChannelRole::Luma);
-            has_y = true;
-        } else if base.eq_ignore_ascii_case("RY") && !has_ry {
-            roles[i] = Some(ChannelRole::Ry);
-            has_ry = true;
-        } else if base.eq_ignore_ascii_case("BY") && !has_by {
-            roles[i] = Some(ChannelRole::By);
-            has_by = true;
-        } else if base.eq_ignore_ascii_case("A") && !has_a {
-            roles[i] = Some(ChannelRole::Alpha);
-            has_a = true;
-        }
-    }
-
     roles
 }
 
@@ -1657,7 +1543,6 @@ fn exr_result(result: sys::ExrResult) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use crate::hdr::types::HdrColorSpace;
-    use openexr_core_sys as sys;
 
     #[test]
     fn carrots_exr_chromaticities_and_preview_stats_when_corpus_present() {
@@ -1690,17 +1575,12 @@ mod tests {
             "Imf should read chromaticities from Carrots.exr header"
         );
         assert_eq!(cs, HdrColorSpace::Aces2065_1);
-        assert!(
-            max_rgb[0] > 0.01 || max_rgb[1] > 0.01 || max_rgb[2] > 0.01,
-            "rgb should not be flat black"
-        );
+        assert!(max_rgb[0] > 0.01 || max_rgb[1] > 0.01 || max_rgb[2] > 0.01, "rgb should not be flat black");
     }
 
     #[test]
     fn aces_ap0_chromaticities_heuristic_triggers() {
-        let ap0 = [
-            0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767,
-        ];
+        let ap0 = [0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767];
         assert!(super::chromaticities_looks_like_aces_ap0(&ap0));
         assert_eq!(
             super::hdr_color_space_from_chromaticities_xy(&ap0),
@@ -1912,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn scanline_refined_preview_samples_budgeted_rows() {
+    fn scanline_refined_preview_samples_all_preview_rows() {
         let preview_height = 1024;
         let source_height = 12_288;
         let sampled = (0..preview_height)
@@ -1926,11 +1806,8 @@ mod tests {
             })
             .collect::<std::collections::BTreeSet<_>>();
 
-        assert_eq!(super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET, 768);
-        assert_eq!(
-            sampled.len(),
-            super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET as usize
-        );
+        assert_eq!(super::SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET, 0);
+        assert_eq!(sampled.len(), preview_height as usize);
     }
 
     #[test]
@@ -1942,35 +1819,5 @@ mod tests {
             super::scanline_preview_decode_parallelism(384),
             super::SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS
         );
-    }
-
-    #[test]
-    fn scanline_tile_decode_parallelism_is_bounded() {
-        assert_eq!(super::scanline_tile_decode_parallelism(0), 1);
-        assert_eq!(super::scanline_tile_decode_parallelism(1), 1);
-        assert_eq!(super::scanline_tile_decode_parallelism(3), 3);
-        assert_eq!(
-            super::scanline_tile_decode_parallelism(384),
-            super::SCANLINE_TILE_MAX_PARALLEL_CHUNKS
-        );
-    }
-
-    #[test]
-    fn next_scanline_source_y_skips_to_next_native_chunk_start() {
-        let part = super::OpenExrCorePartInfo {
-            storage: sys::EXR_STORAGE_SCANLINE,
-            width: 24576,
-            height: 12288,
-            data_window_min: (0, 0),
-            data_window_max: (24575, 12287),
-            chunk_count: 0,
-            channels: Vec::new(),
-        };
-        let chunk = sys::ExrChunkInfo {
-            start_y: 2048,
-            height: 32,
-            ..Default::default()
-        };
-        assert_eq!(super::next_scanline_source_y(2053, &part, &chunk), 2080);
     }
 }
