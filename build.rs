@@ -57,6 +57,15 @@ fn main() {
         println!("cargo:rustc-link-lib=ole32");
         println!("cargo:rustc-link-lib=uuid");
         println!("cargo:rustc-link-lib=dbghelp");
+
+        // When building for legacy Windows 7 (using YY-Thunks and VC-LTL5),
+        // we must ensure the correct subsystem and entry point are set.
+        // We do this here rather than via global RUSTFLAGS to avoid affecting
+        // intermediate DLLs or proc-macros.
+        if std::env::var("CARGO_FEATURE_LEGACY_WIN7").is_ok() {
+            println!("cargo:rustc-link-arg=/SUBSYSTEM:WINDOWS,6.01");
+            println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
+        }
     }
 }
 
