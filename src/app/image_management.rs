@@ -605,7 +605,7 @@ impl ImageViewerApp {
 
             self.tile_manager = Some(tm);
 
-            log::info!(
+            log::debug!(
                 "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
                 self.current_index, prefetch_gen, self.generation
             );
@@ -1559,7 +1559,7 @@ impl ImageViewerApp {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
-            log::info!(
+            log::debug!(
                 "[App] [{}] Accepted in-flight prefetch preview (gen={} → promoted gen={})",
                 file_name,
                 update.generation,
@@ -1591,7 +1591,7 @@ impl ImageViewerApp {
                     if tm.image_index == update.index
                         && (update.generation == tm.generation || is_prefetch_survivor)
                     {
-                        log::info!(
+                        log::debug!(
                             "[App] HQ preview applied for current index {} ({}x{})",
                             update.index,
                             preview.width,
@@ -1613,7 +1613,7 @@ impl ImageViewerApp {
                 if !is_prefetch_survivor {
                 if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
                     if update.generation == tm.generation {
-                        log::info!(
+                        log::debug!(
                             "[App] HQ preview applied for prefetched index {} ({}x{})",
                             update.index,
                             preview.width,

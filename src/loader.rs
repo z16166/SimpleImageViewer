@@ -982,7 +982,7 @@ impl ImageLoader {
                     }
 
                     // 2. Perform heavy development
-                    log::info!("[Refinement] Starting full demosaic for {:?} (gen={})", req.path.file_name().unwrap_or_default(), req.generation);
+                    log::debug!("[Refinement] Starting full demosaic for {:?} (gen={})", req.path.file_name().unwrap_or_default(), req.generation);
                     let t0 = std::time::Instant::now();
 
                     let mut processor = match RawProcessor::new() {
@@ -1356,7 +1356,7 @@ impl ImageLoader {
                         match r_result {
                             Ok(Ok((hdr, sdr))) => {
                                 if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
-                                    log::info!(
+                                    log::debug!(
                                         "[Loader] [{}] HQ preview discarded as stale: index={} generation={} elapsed={:?}",
                                         file_name,
                                         index,
@@ -1365,7 +1365,7 @@ impl ImageLoader {
                                     );
                                     return;
                                 }
-                                log::info!(
+                                log::debug!(
                                     "[Loader] [{}] HQ previews generated: {}x{} (source {}x{}, limit={}, elapsed={:?}, hdr_mode={})",
                                     file_name,
                                     hdr.width,
@@ -1438,7 +1438,7 @@ impl ImageLoader {
                                     return;
                                 }
 
-                                log::info!(
+                                log::debug!(
                                     "[Loader] HQ preview generated: {}x{} (source {}x{})",
                                     pw,
                                     ph,
