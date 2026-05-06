@@ -50,6 +50,20 @@ pub struct ExrTiledImageSource {
     scanline_band_prefills_ready: Condvar,
 }
 
+struct ScanlineBandPrefillLeader<'a> {
+    source: &'a ExrTiledImageSource,
+    band_key: (u32, u32),
+}
+
+impl Drop for ScanlineBandPrefillLeader<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut in_flight) = self.source.scanline_band_prefills.lock() {
+            in_flight.remove(&self.band_key);
+        }
+        self.source.scanline_band_prefills_ready.notify_all();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExrPartInfo {
     pub(crate) index: usize,
@@ -176,6 +190,11 @@ impl ExrTiledImageSource {
             }
         }
 
+        let _band_leader = ScanlineBandPrefillLeader {
+            source: self,
+            band_key,
+        };
+
         let result = (|| -> Result<(), String> {
             let context = exr_file_context("extract EXR scanline tile band", &self.path);
             let band = catch_exr_panic(&context, || {
@@ -230,11 +249,6 @@ impl ExrTiledImageSource {
             );
             Ok(())
         })();
-
-        let mut in_flight = self.scanline_band_prefills.lock().unwrap();
-        in_flight.remove(&band_key);
-        self.scanline_band_prefills_ready.notify_all();
-        drop(in_flight);
 
         result
     }

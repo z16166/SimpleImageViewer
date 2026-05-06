@@ -16,7 +16,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use openexr_core_sys as sys;
-use rayon::prelude::*;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_DECODED_CHUNK_CACHE_BYTES: usize = 4 * 1024 * 1024 * 1024;
@@ -32,7 +31,6 @@ const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
 // Refined preview is generated off the UI-critical path, so keep full row sampling for quality.
 // A zero budget means "do not collapse preview rows into representative buckets".
 const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
-const SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {
@@ -610,7 +608,7 @@ impl OpenExrCoreReadContext {
         use rayon::prelude::*;
         let chunk_jobs = (0..height)
             .into_par_iter()
-            .map(|preview_y| {
+            .map(|preview_y| -> Result<Option<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))>, String> {
                 let source_y = budgeted_scanline_preview_source_y(
                     preview_y,
                     height,
@@ -631,16 +629,22 @@ impl OpenExrCoreReadContext {
                 if res != 0 {
                     return Err(format!("OpenEXRCore failed to read scanline chunk info at y={source_y}: {res}"));
                 }
-                
+                if chunk.height <= 0 || chunk.width <= 0 {
+                    return Ok(None);
+                }
+
                 let chunk_origin = (
                     u32::try_from(chunk.start_x - part.data_window_min.0)
                         .map_err(|_| "OpenEXRCore chunk start_x is outside data window".to_string())?,
                     u32::try_from(chunk.start_y - part.data_window_min.1)
                         .map_err(|_| "OpenEXRCore chunk start_y is outside data window".to_string())?,
                 );
-                Ok((chunk.start_y, chunk, chunk_origin, (preview_y, source_y)))
+                Ok(Some((chunk.start_y, chunk, chunk_origin, (preview_y, source_y))))
             })
             .collect::<Result<Vec<_>, String>>()?;
+
+        let chunk_jobs: Vec<(i32, sys::ExrChunkInfo, (u32, u32), (u32, u32))> =
+            chunk_jobs.into_iter().flatten().collect();
 
         let mut rows_by_chunk = std::collections::BTreeMap::<
             i32,
@@ -996,6 +1000,15 @@ impl OpenExrCoreReadContext {
                 }
             }
         }
+        if can_use_fast_path
+            && y_idx.is_some()
+            && r_idx.is_none()
+            && g_idx.is_none()
+            && b_idx.is_none()
+        {
+            // Luminance-only (non-YC) must use per-sample resampling, not the RGB fast path.
+            can_use_fast_path = false;
+        }
 
         if can_use_fast_path {
             let r_buf = r_idx.map(|i| &buffers[i]);
@@ -1068,7 +1081,7 @@ impl OpenExrCoreReadContext {
                         rgba[dest] = r;
                         rgba[dest + 1] = g;
                         rgba[dest + 2] = b;
-                    } else {
+                    } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
                         rgba[dest] = r_idx
                             .map(|i| {
                                 channel_sample_f32(
@@ -1105,6 +1118,22 @@ impl OpenExrCoreReadContext {
                                 )
                             })
                             .unwrap_or(0.0);
+                    } else if let Some(i) = y_idx {
+                        let y = channel_sample_f32(
+                            &buffers,
+                            &channel_layouts,
+                            i,
+                            chunk_origin,
+                            col_u,
+                            row_u,
+                        );
+                        rgba[dest] = y;
+                        rgba[dest + 1] = y;
+                        rgba[dest + 2] = y;
+                    } else {
+                        rgba[dest] = 0.0;
+                        rgba[dest + 1] = 0.0;
+                        rgba[dest + 2] = 0.0;
                     }
                 }
             }
@@ -1325,7 +1354,8 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
 
 fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
     let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    (cpuses * 3 / 4).clamp(16, 32).min(unique_chunks)
+    let cap = (cpuses * 3 / 4).clamp(16, 32);
+    cap.min(unique_chunks.max(1))
 }
 
 fn budgeted_scanline_preview_source_y(
@@ -1840,12 +1870,15 @@ mod tests {
 
     #[test]
     fn scanline_preview_decode_parallelism_is_bounded() {
+        let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let cap = (cpuses * 3 / 4).clamp(16, 32);
         assert_eq!(super::scanline_preview_decode_parallelism(0), 1);
         assert_eq!(super::scanline_preview_decode_parallelism(1), 1);
         assert_eq!(super::scanline_preview_decode_parallelism(2), 2);
-        assert_eq!(
-            super::scanline_preview_decode_parallelism(384),
-            super::SCANLINE_PREVIEW_MAX_PARALLEL_CHUNKS
+        assert_eq!(super::scanline_preview_decode_parallelism(384), cap);
+        assert!(
+            super::scanline_preview_decode_parallelism(usize::MAX / 4) <= 32,
+            "scanline decode parallelism must not exceed 32 chunks per batch"
         );
     }
 }

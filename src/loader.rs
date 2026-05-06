@@ -32,7 +32,7 @@ use std::time::Duration;
 /// Hardware-tier cap for HQ preview / refine (written at startup from
 /// [`crate::app::HardwareTier::max_preview_size`]).
 ///
-/// **Display cap:** do not use the window鈥檚 **client size**; the user may fullscreen at any time.
+/// **Display cap:** do not use the window's **client size**; the user may fullscreen at any time.
 /// **Multi-monitor (policy):** use the monitor for the **current** root viewport (eframe/winit:
 /// the monitor that contains the window, aligned with centering/fullscreen on that display).
 ///
@@ -40,7 +40,7 @@ use std::time::Duration;
 pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
 
-/// Max preview side derived from the current monitor鈥檚 **physical** long edge 脳 headroom
+/// Max preview side derived from the current monitor's **physical** long edge × headroom
 /// (see [`refresh_hq_preview_monitor_cap`]). Capped at [`MAX_QUALITY_PREVIEW_SIZE`]; combined with
 /// [`PREVIEW_LIMIT`] in [`hq_preview_max_side`].
 pub static MONITOR_PREVIEW_CAP: std::sync::atomic::AtomicU32 =
@@ -57,7 +57,7 @@ pub fn refresh_hq_preview_monitor_cap(ctx: &egui::Context) {
         if ms.x < 1.0 || ms.y < 1.0 || !npp.is_finite() || npp <= 0.0 {
             return None;
         }
-        // `monitor_size` is in UI points; scale by OS native pixels-per-point 鈫?physical pixels.
+        // `monitor_size` is in UI points; scale by OS native pixels-per-point → physical pixels.
         let phys_w = (ms.x * npp).round().clamp(1.0, u32::MAX as f32) as u32;
         let phys_h = (ms.y * npp).round().clamp(1.0, u32::MAX as f32) as u32;
         let long = phys_w.max(phys_h);
@@ -89,15 +89,26 @@ pub fn hq_preview_max_side() -> u32 {
     tier_v.min(mon_v)
 }
 
+/// Upper bound for [`REFINEMENT_POOL`] workers. Each task can hold large HDR/SDR preview buffers;
+/// too many concurrent refinements spikes RSS and contends with the main loader / tile workers.
+const REFINEMENT_POOL_MAX_THREADS: usize = 4;
+/// Minimum workers: keep some overlap for I/O vs CPU without spawning a thread per logical core.
+const REFINEMENT_POOL_MIN_THREADS: usize = 2;
+
 /// Dedicated pool for heavy high-quality preview generation (refinement).
-/// Limited to 2 threads to prevent OOM when multiple giant images are switched rapidly.
+/// Thread count stays between [`REFINEMENT_POOL_MIN_THREADS`] and [`REFINEMENT_POOL_MAX_THREADS`]
+/// (derived from [`std::thread::available_parallelism`]) to limit peak memory when giant images are
+/// switched rapidly and to avoid oversubscription vs tile decode threads.
 static REFINEMENT_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     match rayon::ThreadPoolBuilder::new()
         .num_threads(
             std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(8)
-                .clamp(4, 16),
+                .map(|n| {
+                    n.get()
+                        .div_ceil(4)
+                        .clamp(REFINEMENT_POOL_MIN_THREADS, REFINEMENT_POOL_MAX_THREADS)
+                })
+                .unwrap_or(REFINEMENT_POOL_MIN_THREADS),
         )
         .thread_name(|i| format!("refinement-worker-{}", i))
         .build()
@@ -121,8 +132,8 @@ use crate::raw_processor::RawProcessor;
 use image::{DynamicImage, GenericImageView, RgbaImage};
 use parking_lot::RwLock as PLRwLock;
 
-/// RGBA8 in a shared [`Arc`] so decode 鈫?channel 鈫?UI can reuse one allocation (cheap `Clone`).
-/// `egui::ColorImage::from_rgba_unmultiplied` still converts RGBA8 鈫?`Color32` once at upload time.
+/// RGBA8 in a shared [`Arc`] so decode → channel → UI can reuse one allocation (cheap `Clone`).
+/// `egui::ColorImage::from_rgba_unmultiplied` still converts RGBA8 → `Color32` once at upload time.
 #[derive(Clone)]
 pub struct DecodedImage {
     pub width: u32,
@@ -256,7 +267,7 @@ impl AnimationFrame {
     }
 }
 
-/// Decoded image data 鈥?either a static image, a large image (for tiled rendering), or an animated sequence.
+/// Decoded image data — either a static image, a large image (for tiled rendering), or an animated sequence.
 #[derive(Clone)]
 pub enum ImageData {
     Static(DecodedImage),
@@ -271,7 +282,7 @@ pub enum ImageData {
         hdr: std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource>,
         fallback: std::sync::Arc<dyn TiledImageSource>,
     },
-    /// Virtualized image source 鈥?tiles are decoded on-demand from disk or other sources.
+    /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
     Tiled(std::sync::Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
 }
@@ -612,7 +623,7 @@ pub struct ImageLoader {
     pub rx: Receiver<LoaderOutput>,
     /// Maps image index -> latest requested generation ID.
     loading: Arc<Mutex<HashMap<usize, u64>>>,
-    /// Global generation counter 鈥?updated on every navigation.
+    /// Global generation counter — updated on every navigation.
     /// Spawned tasks check this to detect staleness and abort early.
     current_gen: Arc<std::sync::atomic::AtomicU64>,
     pool: Arc<rayon::ThreadPool>,
@@ -763,7 +774,7 @@ impl ImageLoader {
 
         let tile_queue: Arc<(Mutex<BinaryHeap<TileRequest>>, Condvar)> =
             Arc::new((Mutex::new(BinaryHeap::new()), Condvar::new()));
-        // Shared set of tiles currently being decoded 鈥?prevents duplicate work across workers
+        // Shared set of tiles currently being decoded — prevents duplicate work across workers
         let in_flight: Arc<Mutex<std::collections::HashSet<TileInFlightKey>>> =
             Arc::new(Mutex::new(std::collections::HashSet::new()));
 
@@ -856,7 +867,7 @@ impl ImageLoader {
                             continue;
                         }
 
-                        // Claim this tile 鈥?skip if another worker is already decoding it
+                        // Claim this tile — skip if another worker is already decoding it
                         {
                             let mut set = flight.lock().unwrap();
                             if !set.insert(tile_key) {
@@ -1014,12 +1025,12 @@ impl ImageLoader {
                         Ok(full_img) => {
                             let elapsed = t0.elapsed();
 
-                            // 3. Post-develop staleness check 鈥?develop() takes seconds.
+                            // 3. Post-develop staleness check — develop() takes seconds.
                             // If the user navigated away during that time, discard the
                             // ~400MB result immediately instead of storing it.
                             let global_gen = worker_gen.load(std::sync::atomic::Ordering::Relaxed);
                             if req.generation < global_gen {
-                                log::info!("[Refinement] Discarding stale develop result for {:?} (gen {} < {}) 鈥?saving ~400MB",
+                                log::info!("[Refinement] Discarding stale develop result for {:?} (gen {} < {}) — saving ~400MB",
                                     req.path.file_name().unwrap_or_default(), req.generation, global_gen);
                                 continue;
                             }
@@ -1524,7 +1535,7 @@ impl ImageLoader {
     /// Drop queued decode results from a previous `generation` so rapid navigation
     /// cannot retain hundreds of megabytes in the unbounded channel / defer queue.
     ///
-    /// `also_keep_preview` 鈥?when `Some((index, gen))`, Preview results for that
+    /// `also_keep_preview` — when `Some((index, gen))`, Preview results for that
     /// specific (index, generation) are also preserved even though they don't match
     /// `keep_generation`. Used when a prefetched TileManager is promoted to current:
     /// the prefetch-phase HQ preview task carries the old generation and must not be
@@ -1775,7 +1786,7 @@ fn load_image_file(
             }
         }
 
-        // PSD/PSB: only `load_psd` (do not fall through 鈥?image-rs would invoke `psd` again without catch_unwind).
+        // PSD/PSB: only `load_psd` (do not fall through — image-rs would invoke `psd` again without catch_unwind).
         if ext == "psd" || ext == "psb" {
             return load_psd(path);
         }
@@ -2258,7 +2269,7 @@ fn load_avif_with_target_capacity(
                     .map(|(delay, w, h, px)| AnimationFrame::new(w, h, px, delay))
                     .collect();
                 log::info!(
-                    "[Loader] AVIF image sequence: {} frames (SDR RGBA8) 鈥?{}",
+                    "[Loader] AVIF image sequence: {} frames (SDR RGBA8) — {}",
                     frames.len(),
                     path.display()
                 );
@@ -2297,7 +2308,7 @@ fn load_avif_with_target_capacity(
                         || lower.contains("file type box")
                     {
                         log::info!(
-                            "[Loader] libavif rejected container/brands 鈥?trying libheif for {}",
+                            "[Loader] libavif rejected container/brands — trying libheif for {}",
                             path.display()
                         );
                         return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map)
@@ -2699,7 +2710,7 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
     }
 
     log::info!(
-        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB 鈥?proceeding",
+        "PSD/PSB {}x{}: estimated {estimated_mb} MB, available {available_mb} MB — proceeding",
         width,
         height
     );
@@ -2757,7 +2768,7 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
                         msg
                     );
                     Err(format!(
-                        "PSD decode failed (psd crate internal error 鈥?corrupt or unsupported layer data): {msg}"
+                        "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
                     ))
                 } else {
                     Err(e)
@@ -2777,7 +2788,7 @@ fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
                     msg
                 );
                 Err(format!(
-                    "PSD decode failed (psd crate internal error 鈥?corrupt or unsupported layer data): {msg}"
+                    "PSD decode failed (psd crate internal error — corrupt or unsupported layer data): {msg}"
                 ))
             }
         }
@@ -2916,8 +2927,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// `tests/data/paris_exif_orientation_5.jpg` from libavif: stored SOF 403脳302, EXIF Orientation 5.
-    /// Correct viewing swaps to 302脳403 (same as Pillow `ImageOps.exif_transpose`).
+    /// `tests/data/paris_exif_orientation_5.jpg` from libavif: stored SOF 403×302, EXIF Orientation 5.
+    /// Correct viewing swaps to 302×403 (same as Pillow `ImageOps.exif_transpose`).
     #[test]
     fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2939,7 +2950,7 @@ mod tests {
         assert_eq!(
             (decoded.width, decoded.height),
             (302, 403),
-            "EXIF 5 should transpose 403脳302 stored raster to 302脳403 display"
+            "EXIF 5 should transpose 403×302 stored raster to 302×403 display"
         );
     }
 
@@ -3162,7 +3173,7 @@ mod tests {
                 .dimensions(),
             (2, 1)
         );
-        // HDR refinement results carry HDR pixels only 鈥?the SDR fallback plane is derived
+        // HDR refinement results carry HDR pixels only — the SDR fallback plane is derived
         // lazily at render time by `select_render_backend`'s HDR-plane fallback (and the
         // HDR image plane shader's `SdrToneMapped` output mode). Keeping the loader side
         // HDR-only avoids tone-mapping a 4K HQ preview on systems that will only present
@@ -3757,7 +3768,7 @@ mod tests {
         let low = load_jpeg_with_target_capacity(&path, 1.0, HdrToneMapSettings::default())
             .expect("load low-capacity Ultra HDR JPEG_R sample");
         // `hdr_gain_map_decode_capacity` clamps to `HdrToneMapSettings::target_hdr_capacity()`;
-        // raise the configured peak so an 8脳 probe survives the min() and exercises strong gain.
+        // raise the configured peak so an 8× probe survives the min() and exercises strong gain.
         let high_tone = HdrToneMapSettings {
             max_display_nits: HdrToneMapSettings::default().sdr_white_nits * 8.0,
             ..HdrToneMapSettings::default()
@@ -3941,7 +3952,7 @@ mod tests {
     }
 
     /// Set `SIV_PSD_SAMPLES_DIR` to a folder that contains `colors.psd` and `seine.psd`
-    /// (for example `鈥?libavif/tests/data/sources`) to regression-test the `psd` crate composite
+    /// (for example `libavif/tests/data/sources` inside a libavif source checkout) to regression-test the `psd` crate composite
     /// path: it must not unwind (historical `psd_channel` index OOB panics).
     ///
     /// When the variable is unset or files are missing, this test is a no-op so CI stays green.
@@ -3976,7 +3987,7 @@ mod tests {
                     _ => panic!("{name}: unexpected PSD ImageData shape"),
                 },
                 Err(_msg) => {
-                    // OOM guard, `psd` parse error, or composite `Err` after catch_unwind 鈥?all OK.
+                    // OOM guard, `psd` parse error, or composite `Err` after catch_unwind — all OK.
                 }
             }
         }
@@ -4272,9 +4283,9 @@ impl RawImageSource {
         refine_tx: Sender<RefinementRequest>,
         orientation_override: i32,
     ) -> Self {
-        // IMPORTANT: Store preview at its ORIGINAL resolution 鈥?NO upscaling!
+        // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
         // Previously this called resize_exact(raw_width, raw_height) which allocated
-        // ~400MB per image (e.g. 11648脳8736脳4). With rapid switching and prefetching,
+        // ~400MB per image (e.g. 11648×8736×4). With rapid switching and prefetching,
         // multiple concurrent allocations of this size caused OOM crashes.
         // Instead, extract_tile() maps coordinates from RAW space to preview space on demand.
         //
@@ -4312,7 +4323,7 @@ impl TiledImageSource for RawImageSource {
         if let Some(ref img) = *img_lock {
             let (iw, ih) = img.dimensions();
             if iw == self.width && ih == self.height {
-                // Full-res developed image available 鈥?direct crop, no scaling needed.
+                // Full-res developed image available — direct crop, no scaling needed.
                 if let Some(rgba) = img.as_rgba8() {
                     let mut result = vec![0u8; (w * h * 4) as usize];
                     for row in 0..h {
