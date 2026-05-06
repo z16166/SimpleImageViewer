@@ -535,23 +535,8 @@ impl PreviewResult {
         }
     }
 
-    pub fn from_hdr_preview(
-        index: usize,
-        generation: u64,
-        result: Result<std::sync::Arc<crate::hdr::types::HdrImageBuffer>, String>,
-    ) -> Self {
-        let (preview_bundle, error) = match result {
-            Ok(preview) => (PreviewBundle::refined().with_hdr(preview), None),
-            Err(error) => (PreviewBundle::refined(), Some(error)),
-        };
-        Self {
-            index,
-            generation,
-            preview_bundle,
-            error,
-        }
-    }
 }
+
 
 pub enum LoaderOutput {
     Image(LoadResult),
@@ -1427,8 +1412,7 @@ impl ImageLoader {
                                     e
                                 );
                             }
-                            _ => {}
-                        }
+                    }
                     });
                 }
                 (None, Some(source)) => {
@@ -1566,109 +1550,6 @@ impl ImageLoader {
                 }
             }
         }
-    }
-
-    /// Spawn an HDR tiled HQ-preview refinement task for a source that is now the active image.
-    ///
-    /// Call this after a prefetched `TileManager` is promoted to current and its `generation` has
-    /// been updated. The old refinement task (launched during prefetch with the old generation)
-    /// will be discarded by `discard_pending_stale_outputs`; this method issues a fresh one under
-    /// the new generation so the UI eventually receives a refined HDR preview.
-    pub fn request_hdr_tiled_refinement(
-        &self,
-        index: usize,
-        generation: u64,
-        source: Arc<dyn crate::hdr::tiled::HdrTiledSource>,
-    ) {
-        let tx = self.tx.clone();
-        let gen_ref = Arc::clone(&self.current_gen);
-        let hdr_target_capacity = f32::from_bits(
-            self.hdr_target_capacity_bits
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
-        let file_name = source.source_name();
-
-        log::info!(
-            "[Loader] [{}] Spawning HDR tiled refinement: index={} gen={} hdr_mode={}",
-            file_name,
-            index,
-            generation,
-            hdr_target_capacity > 1.0
-        );
-
-        REFINEMENT_POOL.spawn(move || {
-            if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
-                log::info!(
-                    "[Loader] [{}] HDR tiled refinement aborted (stale before start): index={} gen={}",
-                    file_name, index, generation
-                );
-                return;
-            }
-
-            #[cfg(target_os = "windows")]
-            let _com = crate::wic::ComGuard::new();
-
-            let limit = hq_preview_max_side();
-            let is_hdr_mode = hdr_target_capacity > 1.0;
-            let started_at = std::time::Instant::now();
-
-            log::info!(
-                "[Loader] [{}] HDR tiled HQ preview start: index={} gen={} limit={} {}x{} hdr_mode={}",
-                file_name, index, generation, limit,
-                source.width(), source.height(), is_hdr_mode
-            );
-
-            let r_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
-                let hdr = source.generate_hdr_preview(limit, limit)?;
-                let sdr = if !is_hdr_mode {
-                    Some(crate::hdr::tiled::sdr_preview_from_hdr_preview(&hdr)?)
-                } else {
-                    None
-                };
-                Ok((hdr, sdr))
-            }));
-
-            match r_result {
-                Ok(Ok((hdr, sdr))) => {
-                    if gen_ref.load(std::sync::atomic::Ordering::Relaxed) > generation {
-                        log::info!(
-                            "[Loader] [{}] HDR tiled HQ preview discarded (stale): index={} gen={} elapsed={:?}",
-                            file_name, index, generation, started_at.elapsed()
-                        );
-                        return;
-                    }
-                    log::info!(
-                        "[Loader] [{}] HDR tiled HQ preview done: {}x{} elapsed={:?} hdr_mode={}",
-                        file_name, hdr.width, hdr.height, started_at.elapsed(), is_hdr_mode
-                    );
-                    let mut bundle = PreviewBundle::refined();
-                    if is_hdr_mode {
-                        bundle = bundle.with_hdr(Arc::new(hdr));
-                    }
-                    if let Some(s) = sdr {
-                        bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
-                    }
-                    let _ = tx.send(LoaderOutput::Preview(PreviewResult {
-                        index,
-                        generation,
-                        preview_bundle: bundle,
-                        error: None,
-                    }));
-                }
-                Ok(Err(e)) => {
-                    log::error!(
-                        "[Loader] [{}] HDR tiled HQ preview failed: index={} gen={} err={}",
-                        file_name, index, generation, e
-                    );
-                }
-                Err(_) => {
-                    log::error!(
-                        "[Loader] [{}] HDR tiled HQ preview PANICKED: index={} gen={}",
-                        file_name, index, generation
-                    );
-                }
-            }
-        });
     }
 
     pub fn poll(&mut self) -> Option<LoaderOutput> {

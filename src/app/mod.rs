@@ -395,6 +395,11 @@ pub struct ImageViewerApp {
 
     // Cached state
     pub(crate) generation: u64,
+    /// When a prefetched TileManager is promoted to current, `generation` is incremented
+    /// so tile workers use the new value. But any in-flight HDR HQ preview task launched
+    /// during prefetch still carries the old generation. We store that old value here so
+    /// `handle_preview_update` can accept the result instead of discarding it as stale.
+    pub(crate) prefetch_prev_generation: Option<u64>,
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,
 
