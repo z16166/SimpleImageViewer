@@ -434,7 +434,10 @@ impl OpenExrCoreReadContext {
 
         match part.storage {
             sys::EXR_STORAGE_SCANLINE => {
+                use rayon::prelude::*;
+
                 let mut decoded_starts = std::collections::BTreeSet::new();
+                let mut chunk_work = Vec::<(sys::ExrChunkInfo, u32, u32)>::new();
                 for source_y in y..y + height {
                     let mut chunk = sys::ExrChunkInfo::default();
                     exr_result(unsafe {
@@ -462,27 +465,43 @@ impl OpenExrCoreReadContext {
                         .map_err(|_| {
                             "OpenEXRCore chunk start_y is outside data window".to_string()
                         })?;
-                    let timing = self.decode_chunk_to_tile(
-                        part_index,
-                        &chunk,
-                        (chunk_origin_x, chunk_origin_y),
-                        (x, y, width, height),
+                    chunk_work.push((chunk, chunk_origin_x, chunk_origin_y));
+                }
+
+                let fetched = chunk_work
+                    .par_iter()
+                    .map(|(chunk, ox, oy)| {
+                        self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                let tile_rect = (x, y, width, height);
+                for i in 0..fetched.len() {
+                    let fetch = &fetched[i];
+                    let copy_ms = copy_decoded_chunk_to_tile(
+                        &fetch.decoded,
+                        tile_rect,
                         &mut rgba,
                     )?;
-                    #[cfg(not(feature = "tile-debug"))]
-                    let _ = timing;
                     #[cfg(feature = "tile-debug")]
                     {
+                        let (chunk, chunk_origin_x, chunk_origin_y) = &chunk_work[i];
                         decoded_chunk_count += 1;
                         self.log_tile_chunk_decode(
                             part_index,
                             &part,
-                            &chunk,
-                            (chunk_origin_x, chunk_origin_y),
-                            (x, y, width, height),
-                            timing,
+                            chunk,
+                            (*chunk_origin_x, *chunk_origin_y),
+                            tile_rect,
+                            OpenExrCoreChunkDecodeTiming {
+                                decode_ms: fetch.decode_ms,
+                                copy_ms,
+                                cache_hit: fetch.cache_hit,
+                            },
                         );
                     }
+                    #[cfg(not(feature = "tile-debug"))]
+                    let _ = copy_ms;
                 }
             }
             sys::EXR_STORAGE_TILED => {
