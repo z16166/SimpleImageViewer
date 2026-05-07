@@ -47,9 +47,10 @@ fn is_jxl_extension(path: &Path) -> bool {
 /// on the primary item when the geometric list is rotation/mirror-only (no **`clap`**) — decoding uses matching
 /// `ignore_transformations` so pixels are not rotated twice. **`.jxl`**: after container EXIF,
 /// **`JxlDecoderSetKeepOrientation`** probe (values 1–8 match EXIF; the main decode path keeps coded
-/// orientation too). Radiance **`.hdr`** and JPEG XR **`.jxr`/`.wdp`** do not
-/// carry HEIF **`irot`**; orientation for those relies on existing EXIF / codec metadata paths (`kamadak-exif`,
-/// WIC, etc.).
+/// orientation too). **Radiance `.hdr`/`.pic`**: scan order is encoded in the **resolution line**
+/// (`±X`/`±Y`); the Radiance decoder unfolds that to normal top-left row-major RGBA (not EXIF).
+/// **JPEG XR `.jxr`/`.wdp`** do not carry HEIF **`irot`**; orientation for those relies on EXIF /
+/// WIC / ImageIO where applicable (`kamadak-exif`, …).
 pub fn get_exif_orientation(path: &Path) -> u16 {
     if let Ok(file) = File::open(path) {
         let mut reader = BufReader::new(file);

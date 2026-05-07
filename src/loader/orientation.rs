@@ -37,6 +37,8 @@ pub(crate) fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_ma
 /// (**libheif** decodes those with **`ignore_transformations`** so manual orientation matches libavif semantics).
 /// **`.jxl`** uses **`JxlDecoderSetKeepOrientation`** probing of codestream basic info when container EXIF is absent
 /// (**libjxl**’s JPEG XL decoder is configured with the same flag so viewers do not rotate twice).
+/// **Radiance `.hdr`/`.pic`** orientation comes from the resolution line and is applied during decode
+/// (not via this EXIF hook).
 ///
 /// **Never chain on JPEG or TIFF extension loads** — that would double-rotate:
 /// - **`.jpg`/`.jpeg`** (incl. **JPEG_R / Ultra HDR**): only the JPEG loader may apply
