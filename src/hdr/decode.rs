@@ -15,11 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::{BufRead, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 
-use image::ImageDecoder;
+#[cfg(test)]
+use std::io::{BufRead, Cursor};
+
 use image::{ImageReader, Limits};
 
 use crate::hdr::tiled::HdrTiledSource;
@@ -41,7 +42,9 @@ const MAX_HDR_TONE_MAP_INPUT: f32 = f32::MAX;
 const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 
 pub fn is_hdr_candidate_ext(ext: &str) -> bool {
-    ext.eq_ignore_ascii_case("exr") || ext.eq_ignore_ascii_case("hdr")
+    ext.eq_ignore_ascii_case("exr")
+        || ext.eq_ignore_ascii_case("hdr")
+        || ext.eq_ignore_ascii_case("pic")
 }
 
 pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
@@ -82,37 +85,14 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let file = File::open(path).map_err(|err| err.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-    let radiance_params = RadianceHeaderParams::read_from_bytes(&mmap)?;
+    let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(&mmap, None)?;
     log::debug!(
-        "[HDR] {}: {}",
+        "[HDR] {}: Radiance decode {}x{} (resolution-line orientation unfolded)",
         path.display(),
-        radiance_params.diagnostic_label()
+        img.width,
+        img.height
     );
-    let decoder = image::codecs::hdr::HdrDecoder::new(Cursor::new(&mmap[..]))
-        .map_err(|err| err.to_string())?;
-    let (width, height) = decoder.dimensions();
-    validate_hdr_fallback_budget(width, height)?;
-
-    let mut rgb_bytes = vec![0_u8; decoder.total_bytes() as usize];
-    decoder
-        .read_image(&mut rgb_bytes)
-        .map_err(|err| err.to_string())?;
-
-    let rgb_f32: &[f32] = bytemuck::cast_slice(&rgb_bytes);
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-    for rgb in rgb_f32.chunks_exact(3) {
-        rgba_f32.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
-    }
-    radiance_params.apply_to_pixels(&mut rgba_f32);
-
-    Ok(HdrImageBuffer {
-        width,
-        height,
-        format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::LinearSrgb,
-        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
-        rgba_f32: Arc::new(rgba_f32),
-    })
+    Ok(img)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +102,7 @@ pub(crate) struct RadianceHeaderParams {
 }
 
 impl RadianceHeaderParams {
+    #[cfg(test)]
     pub(crate) fn read_from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let mut reader = Cursor::new(bytes);
         let mut params = Self::default();
@@ -229,9 +210,9 @@ fn is_exr_path(path: &Path) -> bool {
 }
 
 fn is_radiance_hdr_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("hdr"))
+    path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+        matches!(ext.to_ascii_lowercase().as_str(), "hdr" | "pic")
+    })
 }
 
 /// Tone-map HDR float RGBA to 8-bit sRGB for SDR displays. Uses [`HdrImageMetadata`]

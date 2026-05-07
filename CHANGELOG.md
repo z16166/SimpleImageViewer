@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.2] - 2026-05-07
+
+### Added / improved
+- **Radiance HDR (`.hdr` / `.pic`)**: Faster, native-style decode with correct **upright display** driven by the file’s resolution line (Greg Ward HDR layout), instead of guessing from EXIF. Large RGBE scans should decode more smoothly thanks to tighter inner-loop pixel placement.
+- **JPEG XL**: **Orientation metadata** parsed from the **codestream** so rotated `.jxl` frames line up consistently with modern layout rules.
+- **HEIF / AVIF HDR-style paths**: **Orientation handling** tightened on these GPU-oriented decode routes so thumbnails and previews match how the image should be viewed.
+
+### Fixed
+- **EXIF rotation**: Miscellaneous **loader orientation** fixes so common camera/Mirrorless tags are applied more reliably when opening stills (including paths that share the same metadata utilities across decoders).
+
+### Notes
+- **Under the hood**: The image decode pipeline was **split into smaller modules** (same behavior, easier maintenance and testing). This should not change day-to-day use, but it helps keep fixes and new formats consistent across platforms.
+
+
 ## [2.0.1] - 2026-05-06
 
 ### Fixed

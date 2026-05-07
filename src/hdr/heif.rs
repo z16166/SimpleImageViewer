@@ -25,6 +25,8 @@ use std::ffi::CStr;
 use std::path::Path;
 #[cfg(feature = "heif-native")]
 use std::sync::Arc;
+#[cfg(feature = "heif-native")]
+use std::sync::OnceLock;
 
 pub(crate) fn is_heif_brand(brand: &[u8]) -> bool {
     matches!(
@@ -289,6 +291,230 @@ pub(crate) fn libheif_exif_orientation_tag(path: &Path) -> Option<u16> {
     heif_exif_orientation_from_handle(&primary)
 }
 
+/// JEITA Orientation chain helper: **`T(out) ≅ T(acc) ◦ T(next)`** (apply [`next`] to pixels after [`acc`]).
+#[cfg(feature = "heif-native")]
+static COMPOSE_ORIENTATION_CHAIN: OnceLock<[[u8; 9]; 9]> = OnceLock::new();
+
+#[cfg(feature = "heif-native")]
+fn compose_orientation_chain(acc: u16, primitive_next: u16) -> u16 {
+    let table = COMPOSE_ORIENTATION_CHAIN.get_or_init(build_compose_orientation_chain_table);
+    table[acc as usize][primitive_next as usize] as u16
+}
+
+#[cfg(feature = "heif-native")]
+fn build_compose_orientation_chain_table() -> [[u8; 9]; 9] {
+    let mut out = [[0u8; 9]; 9];
+    for a in 1..=8u16 {
+        for n in 1..=8u16 {
+            out[a as usize][n as usize] = brute_compose_orientation_row_col(a, n) as u8;
+        }
+    }
+    out
+}
+
+#[cfg(feature = "heif-native")]
+fn brute_compose_orientation_row_col(acc: u16, primitive_next: u16) -> u16 {
+    const W: u32 = 5;
+    const H: u32 = 4;
+    let base = synth_gradient_rgba8(W, H);
+    let (w1, h1, mid) =
+        crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, acc);
+    let (wf, hf, composed) =
+        crate::libtiff_loader::apply_orientation_buffer(mid, w1, h1, primitive_next);
+    for cand in 1..=8u16 {
+        let (wc, hc, pc) = crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, cand);
+        if wc == wf && hc == hf && pc == composed {
+            return cand;
+        }
+    }
+    1
+}
+
+#[cfg(feature = "heif-native")]
+fn synth_gradient_rgba8(w: u32, h: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let p = (((y * w + x) * 17 + ((x ^ y) * 3)) & 255) as u8;
+            v.extend_from_slice(&[p, p ^ 0xAA, p.rotate_left(5), 0xFF]);
+        }
+    }
+    v
+}
+
+/// Primary item exposes only **`irot` / `imir`** transformation properties (or none). **`clap`** and other
+/// geometry stay on the decoder path with default options.
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_primary_geometric_mirror_rotation_only(
+    context: *const libheif_sys::heif_context,
+    handle: *const libheif_sys::heif_image_handle,
+) -> bool {
+    unsafe {
+        let item_id = libheif_sys::heif_image_handle_get_item_id(handle);
+        let n = libheif_sys::heif_item_get_transformation_properties(
+            context,
+            item_id,
+            std::ptr::null_mut(),
+            0,
+        );
+        if n <= 0 {
+            return true;
+        }
+        let mut props = vec![0u32; n as usize];
+        let wrote = libheif_sys::heif_item_get_transformation_properties(
+            context,
+            item_id,
+            props.as_mut_ptr(),
+            n,
+        );
+        if wrote < 0 {
+            return false;
+        }
+        for &pid in props.iter().take(wrote as usize) {
+            let ty = libheif_sys::heif_item_get_property_type(context, item_id, pid);
+            let ok = ty == libheif_sys::heif_item_property_type_transform_rotation
+                || ty == libheif_sys::heif_item_property_type_transform_mirror;
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_primary_decode_should_ignore_embedded_geometry(bytes: &[u8]) -> bool {
+    let Ok((ctx, primary)) = open_heif_primary_from_bytes(bytes) else {
+        return false;
+    };
+    libheif_primary_geometric_mirror_rotation_only(ctx.0.cast_const(), primary.0)
+}
+
+#[cfg(feature = "heif-native")]
+fn libheif_transformation_props_to_manual_exif(
+    context: *const libheif_sys::heif_context,
+    handle: *const libheif_sys::heif_image_handle,
+) -> Option<u16> {
+    unsafe {
+    let item_id = libheif_sys::heif_image_handle_get_item_id(handle);
+    let n = libheif_sys::heif_item_get_transformation_properties(
+        context,
+        item_id,
+        std::ptr::null_mut(),
+        0,
+    );
+    if n <= 0 {
+        return Some(1);
+    }
+    let mut props = vec![0u32; n as usize];
+    let wrote = libheif_sys::heif_item_get_transformation_properties(
+        context,
+        item_id,
+        props.as_mut_ptr(),
+        n,
+    );
+    if wrote < 0 {
+        return None;
+    }
+    let mut acc = 1u16;
+    for &pid in props.iter().take(wrote as usize) {
+        let ty = libheif_sys::heif_item_get_property_type(context, item_id, pid);
+        match ty {
+            t if t == libheif_sys::heif_item_property_type_transform_rotation => {
+                let ccw =
+                    libheif_sys::heif_item_get_property_transform_rotation_ccw(context, item_id, pid);
+                let primitive = match ccw {
+                    0 => 1u16,
+                    90 => 8,
+                    180 => 3,
+                    270 => 6,
+                    _ => return None,
+                };
+                acc = compose_orientation_chain(acc, primitive);
+            }
+            t if t == libheif_sys::heif_item_property_type_transform_mirror => {
+                let mdir = libheif_sys::heif_item_get_property_transform_mirror(context, item_id, pid);
+                let primitive = if mdir == libheif_sys::heif_transform_mirror_direction_vertical {
+                    4u16
+                } else if mdir == libheif_sys::heif_transform_mirror_direction_horizontal {
+                    2
+                } else {
+                    return None;
+                };
+                acc = compose_orientation_chain(acc, primitive);
+            }
+            _ => return None,
+        }
+    }
+        ((1..=8).contains(&acc)).then_some(acc)
+    }
+}
+
+/// EXIF Orientation (1–8) reconstructed from **`irot`/`imir`** when the decoder is instructed to skip
+/// embedded geometry (**[`HeifDecodeOptionsIgnoredGeometryOwned`]**) so pixels match AVIF-style manual rotation.
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_manual_geometry_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let (ctx, primary) = open_heif_primary_from_bytes(bytes).ok()?;
+    if !libheif_primary_geometric_mirror_rotation_only(ctx.0.cast_const(), primary.0) {
+        return None;
+    }
+    libheif_transformation_props_to_manual_exif(ctx.0.cast_const(), primary.0)
+}
+
+#[cfg(feature = "heif-native")]
+pub(crate) fn libheif_manual_geometry_exif_orientation_from_path(path: &Path) -> Option<u16> {
+    let mmap = crate::mmap_util::map_file(path).ok()?;
+    libheif_manual_geometry_exif_orientation_from_bytes(&mmap[..])
+}
+
+/// Decoding options: **`ignore_transformations = true`**. Matches `struct heif_decoding_options`: `ignore_transformations`
+/// is immediately after **`version`** (confirmed for libheif ≥ 1.x).
+#[cfg(feature = "heif-native")]
+pub(crate) struct HeifDecodeOptionsIgnoredGeometryOwned {
+    ptr: *mut libheif_sys::heif_decoding_options,
+}
+
+#[cfg(feature = "heif-native")]
+impl HeifDecodeOptionsIgnoredGeometryOwned {
+    pub(crate) fn new_ignore_transformations() -> Option<Self> {
+        unsafe {
+            let ptr = libheif_sys::heif_decoding_options_alloc();
+            if ptr.is_null() {
+                return None;
+            }
+            *ptr.cast::<u8>().add(1) = 1;
+            Some(Self { ptr })
+        }
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const libheif_sys::heif_decoding_options {
+        self.ptr.cast_const()
+    }
+}
+
+#[cfg(feature = "heif-native")]
+impl Drop for HeifDecodeOptionsIgnoredGeometryOwned {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                libheif_sys::heif_decoding_options_free(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn allocate_decode_options_for_heif_manual_geometry_fixup(
+    bytes: &[u8],
+) -> Option<HeifDecodeOptionsIgnoredGeometryOwned> {
+    if libheif_primary_decode_should_ignore_embedded_geometry(bytes) {
+        HeifDecodeOptionsIgnoredGeometryOwned::new_ignore_transformations()
+    } else {
+        None
+    }
+}
+
 /// When the decoded raster's width/height are the **swap** of libheif’s `ispe` width/height (non-square),
 /// decoder has already applied a 90°/270° HEIF transform on the pixel grid — suppress applying EXIF
 /// Orientation again to avoid double rotation.
@@ -365,7 +591,12 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
     refine_heif_transfer_for_primary_bit_depth(handle.0, &mut metadata);
     crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
 
-    decode_primary_heif_to_hdr(handle.0, metadata)
+    let decode_geo_holder = allocate_decode_options_for_heif_manual_geometry_fixup(bytes);
+    let decode_opts_ptr = decode_geo_holder
+        .as_ref()
+        .map(|g| g.as_ptr())
+        .unwrap_or(std::ptr::null());
+    decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)
 }
 
 /// Decode the primary HEIF tile to HDR float RGBA. Tries interleaved 16-bit RGBA first, then other
@@ -374,43 +605,44 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
 fn decode_primary_heif_to_hdr(
     handle: *const libheif_sys::heif_image_handle,
     metadata: HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
-    let interleaved_aa = match decode_primary_interleaved_rrggbbaa_le(handle, &metadata) {
+    let interleaved_aa = match decode_primary_interleaved_rrggbbaa_le(handle, &metadata, decode_options) {
         Ok(img) => return Ok(img),
         Err(e) => e,
     };
 
-    let interleaved_rgb16 = match decode_primary_interleaved_rrggbbe_le(handle, &metadata) {
+    let interleaved_rgb16 = match decode_primary_interleaved_rrggbbe_le(handle, &metadata, decode_options) {
         Ok(img) => return Ok(img),
         Err(e) => e,
     };
 
-    let y422 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_422) {
+    let y422 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_422, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let y444 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_444) {
+    let y444 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_444, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let y420 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_420) {
+    let y420 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_420, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let planar = match decode_primary_planar_rgb444(handle, &metadata) {
+    let planar = match decode_primary_planar_rgb444(handle, &metadata, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let rgba8 = match decode_primary_interleaved_rgba8(handle, &metadata) {
+    let rgba8 = match decode_primary_interleaved_rgba8(handle, &metadata, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let rgb8 = match decode_primary_interleaved_rgb8(handle, &metadata) {
+    let rgb8 = match decode_primary_interleaved_rgb8(handle, &metadata, decode_options) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
@@ -435,6 +667,7 @@ fn heif_try_decode_into(
     handle: *const libheif_sys::heif_image_handle,
     cs: libheif_sys::heif_colorspace,
     chroma: libheif_sys::heif_chroma,
+    decode_options: *const libheif_sys::heif_decoding_options,
     _detail: &'static str,
 ) -> Result<RawHeifImage, libheif_sys::heif_error> {
     let mut image_ptr = std::ptr::null_mut();
@@ -444,7 +677,7 @@ fn heif_try_decode_into(
             &mut image_ptr,
             cs,
             chroma,
-            std::ptr::null(),
+            decode_options,
         )
     };
     if err.code != libheif_sys::heif_error_Ok {
@@ -475,11 +708,13 @@ fn heif_err_to_plain(err: libheif_sys::heif_error) -> String {
 fn decode_primary_interleaved_rrggbbaa_le(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_RGB,
         libheif_sys::heif_chroma_interleaved_RRGGBBAA_LE,
+        decode_options,
         "RGBA16",
     ) {
         Ok(i) => i,
@@ -498,11 +733,13 @@ fn decode_primary_interleaved_rrggbbaa_le(
 fn decode_primary_interleaved_rrggbbe_le(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_RGB,
         libheif_sys::heif_chroma_interleaved_RRGGBB_LE,
+        decode_options,
         "RGB16 triple",
     ) {
         Ok(i) => i,
@@ -521,11 +758,13 @@ fn decode_primary_interleaved_rrggbbe_le(
 fn decode_primary_interleaved_rgba8(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_RGB,
         libheif_sys::heif_chroma_interleaved_RGBA,
+        decode_options,
         "RGBA8",
     ) {
         Ok(i) => i,
@@ -544,11 +783,13 @@ fn decode_primary_interleaved_rgba8(
 fn decode_primary_interleaved_rgb8(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_RGB,
         libheif_sys::heif_chroma_interleaved_RGB,
+        decode_options,
         "RGB8",
     ) {
         Ok(i) => i,
@@ -567,11 +808,13 @@ fn decode_primary_interleaved_rgb8(
 fn decode_primary_planar_rgb444(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_RGB,
         libheif_sys::heif_chroma_444,
+        decode_options,
         "RGB444 planar",
     ) {
         Ok(i) => i,
@@ -591,12 +834,14 @@ fn decode_primary_ycbcr(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &HdrImageMetadata,
     chroma: libheif_sys::heif_chroma,
+    decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
     let chroma_detail = chroma_plane_label(chroma);
     let img = match heif_try_decode_into(
         handle,
         libheif_sys::heif_colorspace_YCbCr,
         chroma,
+        decode_options,
         chroma_detail,
     ) {
         Ok(i) => i,
