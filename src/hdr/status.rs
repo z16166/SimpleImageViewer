@@ -32,7 +32,6 @@ pub fn hdr_osd_tag(
     capabilities: &HdrCapabilities,
     ultra_hdr_decode_capacity: Option<f32>,
     monitor_label: Option<&str>,
-    metadata_diagnostic_label: Option<&str>,
 ) -> Option<String> {
     if !is_hdr_source {
         return None;
@@ -62,10 +61,6 @@ pub fn hdr_osd_tag(
         parts.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = capacity));
     }
     if let Some(label) = monitor_label.filter(|label| !label.is_empty()) {
-        parts.push_str(" | ");
-        parts.push_str(label);
-    }
-    if let Some(label) = metadata_diagnostic_label.filter(|label| !label.is_empty()) {
         parts.push_str(" | ");
         parts.push_str(label);
     }
@@ -129,7 +124,6 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
-            None,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -151,7 +145,6 @@ mod tests {
             HdrRenderPath::FloatTilePlane,
             None,
             &HdrCapabilities::sdr("native HDR output not enabled"),
-            None,
             None,
             None,
         );
@@ -177,7 +170,6 @@ mod tests {
             HdrRenderPath::FloatTilePlane,
             Some(HdrColorSpace::Rec2020Linear),
             &HdrCapabilities::sdr("native HDR output not enabled"),
-            None,
             None,
             None,
         );
@@ -207,34 +199,6 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             Some(5.5),
             Some("DISPLAY1"),
-            None,
-        );
-
-        assert_eq!(tag.as_deref(), Some(expected.as_str()));
-    }
-
-    #[test]
-    fn hdr_osd_tag_includes_metadata_diagnostic_label() {
-        rust_i18n::set_locale("en");
-        let color = t!("hdr.color_space.linear_srgb").to_string();
-        let render = t!("hdr.render_path.float_plane").to_string();
-        let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let mut expected = t!(
-            "hdr.osd.tag_with_color",
-            color = color,
-            render = render,
-            output = output
-        )
-        .to_string();
-        expected.push_str(" | metadata: EXR chromaticities");
-        let tag = hdr_osd_tag(
-            true,
-            HdrRenderPath::FloatImagePlane,
-            Some(HdrColorSpace::LinearSrgb),
-            &HdrCapabilities::sdr("native HDR output not enabled"),
-            None,
-            None,
-            Some("metadata: EXR chromaticities"),
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -260,7 +224,6 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
-            None,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -274,7 +237,6 @@ mod tests {
             HdrRenderPath::SdrFallback,
             Some(HdrColorSpace::LinearSrgb),
             &HdrCapabilities::sdr("not an HDR image"),
-            None,
             None,
             None,
         );
