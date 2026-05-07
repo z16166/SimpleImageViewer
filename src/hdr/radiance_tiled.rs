@@ -1081,6 +1081,9 @@ fn read_byte<R: Read>(reader: &mut R) -> Result<u8, String> {
 }
 
 impl Rgbe8Pixel {
+    /// Runs once per decoded Radiance RGBE pixel. `powi` applies the Ward-style scale (`2^(e-128-8)`
+    /// on the mantissa, same role as `ldexp`). SIMD on contiguous unpacked pixels or an `exponent`→scale
+    /// LUT are optional optimizations; scanline RLE/component decode tends to dominate end-to-end cost.
     fn to_rgb_f32(self) -> [f32; 3] {
         if self.exponent == 0 {
             return [0.0; 3];
