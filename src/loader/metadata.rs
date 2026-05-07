@@ -20,6 +20,8 @@ use super::types::DecodedImage;
 
 pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
     use exif::Reader;
+    use std::io::{Read, Seek, SeekFrom};
+
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
     let exifreader = Reader::new();
@@ -34,11 +36,9 @@ pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
             .and_then(|f| f.value.get_uint(0));
 
         if let (Some(off), Some(len)) = (offset, length) {
-            use std::io::{Read, Seek, SeekFrom};
-            let mut f = std::fs::File::open(path).ok()?;
-            f.seek(SeekFrom::Start(off as u64)).ok()?;
+            reader.seek(SeekFrom::Start(off as u64)).ok()?;
             let mut blob = vec![0u8; len as usize];
-            if f.read_exact(&mut blob).is_ok() {
+            if reader.read_exact(&mut blob).is_ok() {
                 if let Ok(img) = image::load_from_memory(&blob) {
                     let rgba = img.into_rgba8();
                     log::info!(
