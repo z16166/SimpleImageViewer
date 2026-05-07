@@ -16,6 +16,16 @@ pub type JxlTransferFunction = libc::c_int;
 pub type JxlRenderingIntent = libc::c_int;
 pub type JxlOrientation = libc::c_int;
 
+/// `jxl/codestream_header.h` — `JxlOrientation` values 1..8 match EXIF Orientation.
+pub const JXL_ORIENT_IDENTITY: JxlOrientation = 1;
+pub const JXL_ORIENT_FLIP_HORIZONTAL: JxlOrientation = 2;
+pub const JXL_ORIENT_ROTATE_180: JxlOrientation = 3;
+pub const JXL_ORIENT_FLIP_VERTICAL: JxlOrientation = 4;
+pub const JXL_ORIENT_TRANSPOSE: JxlOrientation = 5;
+pub const JXL_ORIENT_ROTATE_90_CW: JxlOrientation = 6;
+pub const JXL_ORIENT_ANTI_TRANSPOSE: JxlOrientation = 7;
+pub const JXL_ORIENT_ROTATE_90_CCW: JxlOrientation = 8;
+
 /// `jxl/color_encoding.h` — CIE D65 (matches H.273 default illuminant).
 pub const JXL_WHITE_POINT_D65: JxlWhitePoint = 1;
 /// `jxl/color_encoding.h` — media-relative colorimetric.
@@ -245,6 +255,12 @@ unsafe extern "C" {
     pub fn JxlDecoderSetDesiredIntensityTarget(
         decoder: *mut JxlDecoder,
         desired_intensity_target: f32,
+    ) -> JxlDecoderStatus;
+    /// `skip_reorientation = JXL_TRUE` keeps coded pixel order and preserves `JxlBasicInfo.orientation`
+    /// (`jxl/decode.h` — must be called before decode starts).
+    pub fn JxlDecoderSetKeepOrientation(
+        decoder: *mut JxlDecoder,
+        skip_reorientation: JXL_BOOL,
     ) -> JxlDecoderStatus;
     pub fn JxlDecoderSetParallelRunner(
         decoder: *mut JxlDecoder,

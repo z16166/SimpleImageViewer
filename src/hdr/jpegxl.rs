@@ -70,12 +70,92 @@ pub(crate) fn is_jxl_header(header: &[u8]) -> bool {
         || header.starts_with(&[0x00, 0x00, 0x00, 0x0c, b'J', b'X', b'L', b' '])
 }
 
+/// Peek [`JxlBasicInfo.orientation`] with [`libjxl_sys::JxlDecoderSetKeepOrientation`] enabled so
+/// libjxl reports the codestream value (defaults would fold it to [`libjxl_sys::JXL_ORIENT_IDENTITY`]
+/// once re-orientation is applied). Values match EXIF Orientation 1–8 (`jxl/codestream_header.h`).
+#[cfg(feature = "jpegxl")]
+pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let probe_len = bytes.len().min(16).max(2);
+    if bytes.len() < 2 || !is_jxl_header(&bytes[..probe_len]) {
+        return None;
+    }
+    struct DecoderPtr(*mut libjxl_sys::JxlDecoder);
+    impl Drop for DecoderPtr {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { libjxl_sys::JxlDecoderDestroy(self.0) };
+                self.0 = std::ptr::null_mut();
+            }
+        }
+    }
+    unsafe {
+        let raw = libjxl_sys::JxlDecoderCreate(std::ptr::null());
+        if raw.is_null() {
+            return None;
+        }
+        let decoder = DecoderPtr(raw);
+        if libjxl_sys::JxlDecoderSetKeepOrientation(decoder.0, libjxl_sys::JXL_TRUE)
+            != libjxl_sys::JXL_DEC_SUCCESS
+        {
+            return None;
+        }
+        if libjxl_sys::JxlDecoderSubscribeEvents(
+            decoder.0,
+            libjxl_sys::JXL_DEC_BASIC_INFO as std::os::raw::c_int,
+        ) != libjxl_sys::JXL_DEC_SUCCESS
+        {
+            return None;
+        }
+        if libjxl_sys::JxlDecoderSetInput(decoder.0, bytes.as_ptr(), bytes.len())
+            != libjxl_sys::JXL_DEC_SUCCESS
+        {
+            return None;
+        }
+        libjxl_sys::JxlDecoderCloseInput(decoder.0);
+
+        // Subscribed-only basic-info probes should terminate quickly; cap iterations on bad input.
+        for _ in 0..4096_usize {
+            match libjxl_sys::JxlDecoderProcessInput(decoder.0) {
+                libjxl_sys::JXL_DEC_BASIC_INFO => {
+                    let mut info = std::mem::MaybeUninit::<libjxl_sys::JxlBasicInfo>::uninit();
+                    if libjxl_sys::JxlDecoderGetBasicInfo(
+                        decoder.0.cast_const(),
+                        info.as_mut_ptr(),
+                    ) != libjxl_sys::JXL_DEC_SUCCESS
+                    {
+                        return None;
+                    }
+                    let info = info.assume_init();
+                    let o_ok = info.orientation as i32;
+                    return ((1..=8).contains(&o_ok)).then_some(o_ok as u16);
+                }
+                libjxl_sys::JXL_DEC_SUCCESS | libjxl_sys::JXL_DEC_ERROR | libjxl_sys::JXL_DEC_NEED_MORE_INPUT => {
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+#[cfg(feature = "jpegxl")]
+pub(crate) fn libjxl_probe_orientation_from_path(path: &std::path::Path) -> Option<u16> {
+    let mmap = crate::mmap_util::map_file(path).ok()?;
+    libjxl_probe_orientation_from_bytes(&mmap[..])
+}
+
 // JPEG XL colour / container behaviour (normative references for this module):
 //
 // - **ISO/IEC 18181-1** — JPEG XL codestream (image data, colour description in bitstream).
 // - **ISO/IEC 18181-2** — JPEG XL file format (BMFF boxes, optional ICC, orientation, etc.).
 // - **ISO/IEC 18181-4** — Reference software; **libjxl** is the de-facto normative decoder API
 //   used here (`jxl/decode.h`). Decoder colour queries are defined in that API, not guessed.
+// - **JPEG XL orientation** (`JxlDecoderSetKeepOrientation`, `JxlBasicInfo`): default libjxl applies
+//   codestream orientation during decode **and folds** [`JxlBasicInfo.orientation`] back to identity
+//   (`jxl/decode.h`). We enable **keep coded orientation** on the main decoder so pixels stay in codestream
+//   layout while [`crate::metadata_utils::get_exif_orientation`] reads container EXIF when present or
+//   else [`libjxl_probe_orientation_from_bytes`]/`path` parity for [`crate::loader::orientation`].
 // - **`JxlColorProfileTarget`** (libjxl): `JXL_COLOR_PROFILE_TARGET_DATA` is the profile of the
 //   **decoded pixels** written to the image out buffer; `JXL_COLOR_PROFILE_TARGET_ORIGINAL` is
 //   the profile carried in metadata / codestream before decode. For `JXL_TYPE_FLOAT` output,
@@ -562,6 +642,14 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
         log::warn!(
             "JxlDecoderSetUnpremultiplyAlpha failed (libjxl status {unpremul_st}); colors may be wrong for premultiplied alpha"
         );
+    }
+
+    let keep_ori_st =
+        unsafe { libjxl_sys::JxlDecoderSetKeepOrientation(decoder.0, libjxl_sys::JXL_TRUE) };
+    if keep_ori_st != libjxl_sys::JXL_DEC_SUCCESS {
+        return Err(format!(
+            "JxlDecoderSetKeepOrientation failed (libjxl status {keep_ori_st})"
+        ));
     }
 
     if let Some(runner) = parallel_runner.as_ref() {
@@ -1942,18 +2030,17 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read conformance jxl");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let got = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            tone.target_hdr_capacity(),
-            tone.target_hdr_capacity(),
-            tone,
+        let got = crate::loader::apply_exif_orientation_to_image_data(
+            path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                tone.target_hdr_capacity(),
+                tone.target_hdr_capacity(),
+                tone,
+            )
+            .expect("decoded animation_icos4d"),
         );
-        assert!(
-            got.is_ok(),
-            "decode animation_icos4d: {:?}",
-            got.as_ref().err()
-        );
-        match got.expect("decoded") {
+        match got {
             crate::loader::ImageData::Animated(frames) => {
                 assert!(frames.len() > 1, "expected animation, got {} frames", frames.len());
             }
@@ -2035,13 +2122,16 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read conformance jxl");
         let tone = HdrToneMapSettings::default();
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            tone.target_hdr_capacity(),
-            tone.target_hdr_capacity(),
-            tone,
-        )
-        .expect("decode");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                tone.target_hdr_capacity(),
+                tone.target_hdr_capacity(),
+                tone,
+            )
+            .expect("decode"),
+        );
         let crate::loader::ImageData::Hdr { fallback, .. } = img else {
             panic!("expected ImageData::Hdr");
         };
@@ -2087,13 +2177,16 @@ mod tests {
         }
         let bytes = std::fs::read(jxl_path).expect("read conformance jxl");
         let tone = HdrToneMapSettings::default();
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            tone.target_hdr_capacity(),
-            tone.target_hdr_capacity(),
-            tone,
-        )
-        .expect("decode jxl");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                tone.target_hdr_capacity(),
+                tone.target_hdr_capacity(),
+                tone,
+            )
+            .expect("decode jxl"),
+        );
         let crate::loader::ImageData::Hdr {
             fallback,
             hdr,
@@ -2767,14 +2860,16 @@ mod tests {
         }
         let bytes = std::fs::read(jxl_path).expect("read cmyk_layers/input.jxl");
         let tone = HdrToneMapSettings::default();
-        let img =
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
             super::decode_jxl_bytes_to_image_data(
                 &bytes,
                 tone.target_hdr_capacity(),
                 tone.target_hdr_capacity(),
                 tone,
             )
-                .expect("decode cmyk_layers");
+            .expect("decode cmyk_layers"),
+        );
         let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
             panic!("expected ImageData::Hdr");
         };
@@ -2859,13 +2954,16 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(jxl_path).expect("read jxl");
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default(),
-        )
-        .expect("decode jxl");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default(),
+            )
+            .expect("decode jxl"),
+        );
         let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
             panic!("unexpected ImageData variant");
         };
@@ -2934,13 +3032,16 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(jxl_path).expect("read jxl");
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default(),
-        )
-        .expect("decode jxl");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default(),
+            )
+            .expect("decode jxl"),
+        );
         let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
             panic!("unexpected ImageData variant");
         };
@@ -3056,13 +3157,16 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(jxl_path).expect("read jxl");
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default(),
-        )
-        .expect("decode jxl");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default(),
+            )
+            .expect("decode jxl"),
+        );
         let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
             panic!("unexpected ImageData variant");
         };
@@ -3191,7 +3295,7 @@ mod tests {
             tone.target_hdr_capacity(),
             tone,
         ) {
-            Ok(img) => img,
+            Ok(img) => crate::loader::apply_exif_orientation_to_image_data(jxl_path, img),
             Err(e) => { eprintln!("[{name}] decode failed: {e}"); return; }
         };
         let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
@@ -3320,12 +3424,15 @@ mod tests {
         let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases\blendmodes\ref.png");
         if !jxl_path.is_file() || !ref_path.is_file() { return; }
         let bytes = std::fs::read(jxl_path).expect("read jxl");
-        let img = super::decode_jxl_bytes_to_image_data(
-            &bytes,
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default().target_hdr_capacity(),
-            HdrToneMapSettings::default(),
-        ).expect("decode");
+        let img = crate::loader::apply_exif_orientation_to_image_data(
+            jxl_path,
+            super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default().target_hdr_capacity(),
+                HdrToneMapSettings::default(),
+            ).expect("decode"),
+        );
         let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else { return };
         let our = fallback.rgba().to_vec();
         let r = image::open(ref_path).expect("ref").to_rgba8().into_raw();

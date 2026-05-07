@@ -166,6 +166,105 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
     Ok(Some(frames))
 }
 
+#[cfg(feature = "avif-native")]
+const AVIF_TRANSFORM_IROT_FLAG: libavif_sys::avifTransformFlags = 1 << 2;
+#[cfg(feature = "avif-native")]
+const AVIF_TRANSFORM_IMIR_FLAG: libavif_sys::avifTransformFlags = 1 << 3;
+
+/// Map HEIF **`irot` / `imir`** on an [`libavif_sys::avifImage`] (counter‑clockwise quarter turns +
+/// mirror axes per ISO/IEC 23008-12 / libavif) to **JEITA/TIFF EXIF Orientation (1–8)** so
+/// [`crate::libtiff_loader::apply_orientation_buffer`] rotates pixels the same way viewers expect.
+///
+/// Derived from libavif `avifImageIrotImirToExifOrientation`; must stay aligned when updating libavif.
+#[cfg(feature = "avif-native")]
+pub(crate) fn avif_irot_imir_to_exif_orientation(
+    transform_flags: libavif_sys::avifTransformFlags,
+    irot_angle: u8,
+    imir_axis: u8,
+) -> u16 {
+    let flags = transform_flags;
+    let angle = irot_angle & 3;
+    let axis = imir_axis & 1;
+
+    if flags & AVIF_TRANSFORM_IROT_FLAG == 0 || angle == 0 {
+        if flags & AVIF_TRANSFORM_IMIR_FLAG == 0 {
+            return 1;
+        }
+        return if axis == 0 { 4 } else { 2 };
+    }
+
+    if angle == 1 {
+        if flags & AVIF_TRANSFORM_IMIR_FLAG == 0 {
+            return 8;
+        }
+        return if axis == 0 { 5 } else { 7 };
+    }
+
+    if angle == 2 {
+        if flags & AVIF_TRANSFORM_IMIR_FLAG == 0 {
+            return 3;
+        }
+        return if axis == 0 { 2 } else { 4 };
+    }
+
+    if flags & AVIF_TRANSFORM_IMIR_FLAG == 0 {
+        return 6;
+    }
+    if axis == 0 {
+        return 7;
+    }
+    5
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn avif_transforms_to_exif_orientation(image: &libavif_sys::avifImage) -> u16 {
+    avif_irot_imir_to_exif_orientation(
+        image.transformFlags,
+        image.irot.angle,
+        image.imir.axis,
+    )
+}
+
+/// After [`libavif_sys::avifDecoderParse`], `decoder->image` is filled from the container (incl. `irot` /
+/// `imir`) before bitstream decode — no need for full read.
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_exif_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
+    let decoder = libavif_sys::AvifDecoderOwned::new()?;
+    unsafe {
+        libavif_sys::siv_avif_decoder_set_strict_flags(
+            decoder.as_ptr(),
+            libavif_sys::AVIF_STRICT_DISABLED,
+        );
+        libavif_sys::siv_avif_decoder_set_image_content_flags(
+            decoder.as_ptr(),
+            libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
+        );
+    }
+    let r = unsafe {
+        libavif_sys::avifDecoderSetIOMemory(decoder.as_ptr(), bytes.as_ptr(), bytes.len())
+    };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return None;
+    }
+    let r = unsafe { libavif_sys::avifDecoderParse(decoder.as_ptr()) };
+    if r != libavif_sys::AVIF_RESULT_OK {
+        return None;
+    }
+    let img = unsafe { libavif_sys::siv_avif_decoder_get_image(decoder.as_ptr()) };
+    if img.is_null() {
+        return None;
+    }
+    let image = unsafe { &*img };
+    let o = avif_transforms_to_exif_orientation(image);
+    ((1..=8).contains(&o)).then_some(o)
+}
+
+#[cfg(feature = "avif-native")]
+pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -> Option<u16> {
+    let mmap = crate::mmap_util::map_file(path).ok()?;
+    libavif_probe_exif_orientation_from_bytes(&mmap[..])
+}
+
 #[allow(dead_code)]
 pub(crate) fn avif_cicp_to_metadata(
     color_primaries: u16,
@@ -1242,5 +1341,37 @@ mod tests {
     #[cfg(feature = "avif-native")]
     fn unsigned(n: u32, d: u32) -> libavif_sys::avifUnsignedFraction {
         libavif_sys::avifUnsignedFraction { n, d }
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn avif_irot_ccw_quarter_turns_map_to_exif_like_libavif_table() {
+        use super::{AVIF_TRANSFORM_IMIR_FLAG as IMIR, AVIF_TRANSFORM_IROT_FLAG as IROT};
+
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(0, 0, 0), 1);
+
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(IROT, 1, 0), 8);
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(IROT, 2, 0), 3);
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(IROT, 3, 0), 6);
+
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(IMIR, 0, 0), 4);
+        assert_eq!(super::avif_irot_imir_to_exif_orientation(IMIR, 0, 1), 2);
+
+        assert_eq!(
+            super::avif_irot_imir_to_exif_orientation(IROT | IMIR, 1, 0),
+            5
+        );
+        assert_eq!(
+            super::avif_irot_imir_to_exif_orientation(IROT | IMIR, 1, 1),
+            7
+        );
+        assert_eq!(
+            super::avif_irot_imir_to_exif_orientation(IROT | IMIR, 2, 1),
+            4
+        );
+        assert_eq!(
+            super::avif_irot_imir_to_exif_orientation(IROT | IMIR, 3, 1),
+            5
+        );
     }
 }

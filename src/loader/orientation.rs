@@ -28,9 +28,15 @@ pub(crate) fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_ma
     hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
 }
 
-/// Apply EXIF **Orientation** (values 1–8) via [`metadata_utils::get_exif_orientation`] for formats whose
-/// loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer,
+/// Apply display **Orientation** (JEITA/TIFF values 1–8) via [`metadata_utils::get_exif_orientation`] for
+/// formats whose loader **does not** already rotate (AVIF, HEIF, JXL, EXR full decode, radiance small buffer,
 /// `image-rs` static decode / memory-backed tiling, …).
+///
+/// **`get_exif_orientation`** reads embedded EXIF when present; for **`.avif`/`.avifs`** it reads container **`irot`/`imir`**.
+/// HEIF (**`.heic`/`.heif`/`.hif`**) uses **`Exif` items**, then **`irot`/`imir`** when geometric properties are rotation/mirror-only
+/// (**libheif** decodes those with **`ignore_transformations`** so manual orientation matches libavif semantics).
+/// **`.jxl`** uses **`JxlDecoderSetKeepOrientation`** probing of codestream basic info when container EXIF is absent
+/// (**libjxl**’s JPEG XL decoder is configured with the same flag so viewers do not rotate twice).
 ///
 /// **Never chain on JPEG or TIFF extension loads** — that would double-rotate:
 /// - **`.jpg`/`.jpeg`** (incl. **JPEG_R / Ultra HDR**): only the JPEG loader may apply
@@ -104,7 +110,10 @@ pub(crate) fn apply_exif_orientation_to_hdr_pair(
     hdr: crate::hdr::types::HdrImageBuffer,
     fallback: DecodedImage,
 ) -> (crate::hdr::types::HdrImageBuffer, DecodedImage) {
+    #[cfg(feature = "heif-native")]
     let mut o = crate::metadata_utils::get_exif_orientation(path);
+    #[cfg(not(feature = "heif-native"))]
+    let o = crate::metadata_utils::get_exif_orientation(path);
     #[cfg(feature = "heif-native")]
     if crate::hdr::heif::decoded_pixels_match_swapped_ispe(path, hdr.width, hdr.height) {
         o = 1;

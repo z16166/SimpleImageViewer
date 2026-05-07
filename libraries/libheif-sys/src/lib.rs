@@ -11,8 +11,23 @@ pub type heif_color_primaries = libc::c_int;
 pub type heif_transfer_characteristics = libc::c_int;
 pub type heif_matrix_coefficients = libc::c_int;
 pub type heif_item_id = u32;
+pub type heif_property_id = u32;
+pub type heif_item_property_type = libc::c_int;
 
 pub const heif_error_Ok: heif_error_code = 0;
+
+/// `heif_item_property_type` values use big-endian FourCC (ISO BMFF short box types).
+pub const heif_item_property_type_invalid: heif_item_property_type = 0;
+pub const heif_item_property_type_transform_mirror: heif_item_property_type =
+    i32::from_be_bytes(*b"imir");
+pub const heif_item_property_type_transform_rotation: heif_item_property_type =
+    i32::from_be_bytes(*b"irot");
+pub const heif_item_property_type_transform_crop: heif_item_property_type =
+    i32::from_be_bytes(*b"clap");
+
+pub const heif_transform_mirror_direction_invalid: libc::c_int = -1;
+pub const heif_transform_mirror_direction_vertical: libc::c_int = 0;
+pub const heif_transform_mirror_direction_horizontal: libc::c_int = 1;
 /// Matches `enum heif_colorspace` / `enum heif_chroma` / `enum heif_channel` in upstream `heif_image.h`.
 pub const heif_colorspace_YCbCr: heif_colorspace = 0;
 pub const heif_colorspace_RGB: heif_colorspace = 1;
@@ -46,6 +61,12 @@ pub struct heif_image_handle {
 
 #[repr(C)]
 pub struct heif_image {
+    _private: [u8; 0],
+}
+
+/// Opaque; always allocate with [`heif_decoding_options_alloc`].
+#[repr(C)]
+pub struct heif_decoding_options {
     _private: [u8; 0],
 }
 
@@ -130,12 +151,15 @@ unsafe extern "C" {
         auxiliary_id: heif_item_id,
         out_auxiliary_handle: *mut *mut heif_image_handle,
     ) -> heif_error;
+    pub fn heif_decoding_options_alloc() -> *mut heif_decoding_options;
+    pub fn heif_decoding_options_free(options: *mut heif_decoding_options);
+
     pub fn heif_decode_image(
         handle: *const heif_image_handle,
         out_img: *mut *mut heif_image,
         colorspace: heif_colorspace,
         chroma: heif_chroma,
-        options: *const libc::c_void,
+        options: *const heif_decoding_options,
     ) -> heif_error;
     pub fn heif_image_release(image: *const heif_image);
     pub fn heif_image_get_primary_width(image: *const heif_image) -> libc::c_int;
@@ -161,6 +185,33 @@ unsafe extern "C" {
     pub fn heif_image_handle_get_height(handle: *const heif_image_handle) -> libc::c_int;
     pub fn heif_image_handle_get_ispe_width(handle: *const heif_image_handle) -> libc::c_int;
     pub fn heif_image_handle_get_ispe_height(handle: *const heif_image_handle) -> libc::c_int;
+
+    pub fn heif_image_handle_get_item_id(handle: *const heif_image_handle) -> heif_item_id;
+
+    pub fn heif_item_get_transformation_properties(
+        context: *const heif_context,
+        item_id: heif_item_id,
+        out_list: *mut heif_property_id,
+        count: libc::c_int,
+    ) -> libc::c_int;
+
+    pub fn heif_item_get_property_type(
+        context: *const heif_context,
+        item_id: heif_item_id,
+        property_id: heif_property_id,
+    ) -> heif_item_property_type;
+
+    pub fn heif_item_get_property_transform_mirror(
+        context: *const heif_context,
+        item_id: heif_item_id,
+        property_id: heif_property_id,
+    ) -> libc::c_int;
+
+    pub fn heif_item_get_property_transform_rotation_ccw(
+        context: *const heif_context,
+        item_id: heif_item_id,
+        property_id: heif_property_id,
+    ) -> libc::c_int;
 
     pub fn heif_image_handle_get_number_of_metadata_blocks(
         handle: *const heif_image_handle,
