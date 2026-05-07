@@ -18,12 +18,12 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
-use crate::loader::{
-    hdr_to_sdr_with_user_tone, hq_preview_max_side, DecodedImage, HdrSdrFallbackResult, ImageData,
-    LoaderOutput, LoadResult, PreviewBundle, PreviewResult, RefinementRequest, TileDecodeSource,
-    TilePixelKind, TileResult,
-};
 use crate::loader::preview_caps::REFINEMENT_POOL;
+use crate::loader::{
+    DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
+    PreviewResult, RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
+    hdr_to_sdr_with_user_tone, hq_preview_max_side,
+};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use image::DynamicImage;
@@ -44,7 +44,13 @@ pub(crate) struct TileInFlightKey {
 }
 
 impl TileInFlightKey {
-    pub(crate) fn new(index: usize, generation: u64, col: u32, row: u32, pixel_kind: TilePixelKind) -> Self {
+    pub(crate) fn new(
+        index: usize,
+        generation: u64,
+        col: u32,
+        row: u32,
+        pixel_kind: TilePixelKind,
+    ) -> Self {
         Self {
             index,
             generation,
@@ -178,7 +184,8 @@ impl ImageLoader {
         ));
 
         let default_tone = HdrToneMapSettings::default();
-        let hdr_tone_exposure_ev_bits = Arc::new(AtomicU32::new(default_tone.exposure_ev.to_bits()));
+        let hdr_tone_exposure_ev_bits =
+            Arc::new(AtomicU32::new(default_tone.exposure_ev.to_bits()));
         let hdr_tone_sdr_white_nits_bits =
             Arc::new(AtomicU32::new(default_tone.sdr_white_nits.to_bits()));
         let hdr_tone_max_display_nits_bits =
@@ -965,7 +972,8 @@ impl ImageLoader {
 
                         match r_result {
                             Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
-                                if Self::hq_refinement_superseded(&loading_sdr_hq, index, final_gen) {
+                                if Self::hq_refinement_superseded(&loading_sdr_hq, index, final_gen)
+                                {
                                     return;
                                 }
 
@@ -1211,4 +1219,3 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
         }
     });
 }
-

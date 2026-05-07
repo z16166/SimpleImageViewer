@@ -16,9 +16,13 @@
 
 //! GIF / PNG / WebP / PSD and static raster via `image`.
 
-use crate::constants::{BYTES_PER_GB, BYTES_PER_MB, DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
+use crate::constants::{
+    BYTES_PER_GB, BYTES_PER_MB, DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS,
+};
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{apply_exif_orientation_to_image_data, AnimationFrame, DecodedImage, ImageData};
+use crate::loader::{
+    AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_image_data,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -96,7 +100,11 @@ pub(crate) fn process_animation_frames(
     ))
 }
 
-pub(crate) fn load_gif(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+pub(crate) fn load_gif(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
     use std::io::BufReader;
@@ -112,7 +120,11 @@ pub(crate) fn load_gif(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: H
     process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
 }
 
-pub(crate) fn load_png(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+pub(crate) fn load_png(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::png::PngDecoder;
     use std::io::BufReader;
@@ -139,7 +151,11 @@ pub(crate) fn load_png(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: H
 // Animated WebP
 // ---------------------------------------------------------------------------
 
-pub(crate) fn load_webp(path: &PathBuf, hdr_target_capacity: f32, hdr_tone_map: HdrToneMapSettings) -> Result<ImageData, String> {
+pub(crate) fn load_webp(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::webp::WebPDecoder;
     use std::io::BufReader;
@@ -204,8 +220,8 @@ pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
         // Decode on a dedicated thread: `join()` turns any unwinding panic into `Err`, which is
         // more reliable than `catch_unwind` alone when the loader runs on worker pools / mixed stacks.
-        let mmap = crate::mmap_util::map_file(path)
-            .map_err(|e| format!("Failed to read PSD: {e}"))?;
+        let mmap =
+            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
 
         let handle = std::thread::Builder::new()
             .name("siv-psd-v1".to_string())

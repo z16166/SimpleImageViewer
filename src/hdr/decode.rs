@@ -26,8 +26,8 @@ use image::{ImageReader, Limits};
 use crate::hdr::tiled::HdrTiledSource;
 
 use super::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrToneMapSettings,
-    HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 
 const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
@@ -210,9 +210,9 @@ fn is_exr_path(path: &Path) -> bool {
 }
 
 fn is_radiance_hdr_path(path: &Path) -> bool {
-    path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
-        matches!(ext.to_ascii_lowercase().as_str(), "hdr" | "pic")
-    })
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "hdr" | "pic"))
 }
 
 /// Tone-map HDR float RGBA to 8-bit sRGB for SDR displays. Uses [`HdrImageMetadata`]
@@ -271,10 +271,7 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     }
 
     let tf = buffer.metadata.transfer_function;
-    let apply_peak_scaler = matches!(
-        tf,
-        HdrTransferFunction::Pq | HdrTransferFunction::Hlg
-    );
+    let apply_peak_scaler = matches!(tf, HdrTransferFunction::Pq | HdrTransferFunction::Hlg);
     let exposure_scale = 2.0_f32.powf(exposure_ev);
     let peak_scale = if apply_peak_scaler {
         tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits)
@@ -286,9 +283,15 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
     for pixel in buffer.rgba_f32.chunks_exact(4) {
         let rgb_in = [pixel[0], pixel[1], pixel[2]];
         let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
-        let linear_srgb = linear_primary_to_linear_srgb(decoded, buffer.color_space, &buffer.metadata);
+        let linear_srgb =
+            linear_primary_to_linear_srgb(decoded, buffer.color_space, &buffer.metadata);
         let encoded = encode_sdr_rgb8(linear_srgb, exposure_scale, peak_scale);
-        pixels.extend_from_slice(&[encoded[0], encoded[1], encoded[2], float_to_u8(pixel[3].clamp(0.0, 1.0))]);
+        pixels.extend_from_slice(&[
+            encoded[0],
+            encoded[1],
+            encoded[2],
+            float_to_u8(pixel[3].clamp(0.0, 1.0)),
+        ]);
     }
     Ok(pixels)
 }
@@ -371,7 +374,11 @@ fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
     }
 }
 
-pub(crate) fn linear_primary_to_linear_srgb(rgb: [f32; 3], color_space: HdrColorSpace, meta: &HdrImageMetadata) -> [f32; 3] {
+pub(crate) fn linear_primary_to_linear_srgb(
+    rgb: [f32; 3],
+    color_space: HdrColorSpace,
+    meta: &HdrImageMetadata,
+) -> [f32; 3] {
     match color_space {
         HdrColorSpace::LinearSrgb | HdrColorSpace::LinearScRgb => rgb,
         HdrColorSpace::Rec2020Linear => rec2020_linear_to_linear_srgb(rgb),
@@ -438,7 +445,9 @@ fn xyz_to_linear_srgb(xyz: [f32; 3]) -> [f32; 3] {
 fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
     let mut out = [0_u8; 3];
     for i in 0..3 {
-        let exposed = clamp_hdr_tone_map_input(sanitize_hdr_rgb(linear_srgb[i]) * exposure_scale * peak_scale);
+        let exposed = clamp_hdr_tone_map_input(
+            sanitize_hdr_rgb(linear_srgb[i]) * exposure_scale * peak_scale,
+        );
         let mapped = exposed / (1.0 + exposed);
         let encoded = mapped.powf(INVERSE_DISPLAY_GAMMA).clamp(0.0, 1.0);
         out[i] = float_to_u8(encoded);
@@ -493,8 +502,8 @@ fn float_to_u8(value: f32) -> u8 {
 mod tests {
     use super::*;
     use crate::hdr::types::{
-        HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrToneMapSettings,
-        HdrTransferFunction,
+        HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+        HdrToneMapSettings, HdrTransferFunction,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -644,8 +653,10 @@ mod tests {
             max_display_nits: 4000.0,
             ..HdrToneMapSettings::default()
         };
-        let brighter = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &narrow_peak).expect("tone map");
-        let darker = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &wide_peak).expect("tone map");
+        let brighter =
+            hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &narrow_peak).expect("tone map");
+        let darker =
+            hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &wide_peak).expect("tone map");
         let sum_brighter: u32 = brighter[..3].iter().map(|&b| b as u32).sum();
         let sum_darker: u32 = darker[..3].iter().map(|&b| b as u32).sum();
         assert!(

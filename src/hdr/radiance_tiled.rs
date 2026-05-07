@@ -324,8 +324,7 @@ impl RadianceHdrTiledImageSource {
         let raster = read_radiance_header(&mut reader, &mut params)?;
         let (width, height) = (raster.width, raster.height);
         let data_offset = reader.position() as usize;
-        let scanline_offsets =
-            build_radiance_scanline_offsets(&mmap, data_offset, &raster)?;
+        let scanline_offsets = build_radiance_scanline_offsets(&mmap, data_offset, &raster)?;
         log::debug!("[HDR] {}: {}", path.display(), params.diagnostic_label());
 
         Ok(Self {
@@ -467,8 +466,7 @@ fn decode_radiance_tile_window(
     let mut reader = Cursor::new(mmap);
 
     let mut scanline = vec![Rgbe8Pixel::default(); raster.inner_len as usize];
-    let mut rgba =
-        vec![0.0f32; tile_w as usize * tile_h as usize * 4];
+    let mut rgba = vec![0.0f32; tile_w as usize * tile_h as usize * 4];
 
     if raster.is_row_major_top_left() {
         let first_row = tile_y;
@@ -496,13 +494,9 @@ fn decode_radiance_tile_window(
 
         if plan.outer_major_is_y {
             let y0 = plan.y_start;
-            if let Some((oa_lo, oa_hi)) = outer_range_covering_coord_inclusive(
-                y0,
-                plan.y_step,
-                raster.outer_len,
-                ty0,
-                ty1,
-            ) {
+            if let Some((oa_lo, oa_hi)) =
+                outer_range_covering_coord_inclusive(y0, plan.y_step, raster.outer_len, ty0, ty1)
+            {
                 for outer_a in oa_lo..=oa_hi {
                     reader.set_position(scanline_offsets[outer_a as usize] as u64);
                     read_scanline(&mut reader, &mut scanline)?;
@@ -520,21 +514,16 @@ fn decode_radiance_tile_window(
                             let x = plan.x_start + (inner_b as i32) * plan.x_step;
                             let dx = (x - tx0) as usize;
                             let base = (dy * tw + dx) * 4;
-                            rgba[base..base + 4]
-                                .copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+                            rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                         }
                     }
                 }
             }
         } else {
             let x0 = plan.x_start;
-            if let Some((oa_lo, oa_hi)) = outer_range_covering_coord_inclusive(
-                x0,
-                plan.x_step,
-                raster.outer_len,
-                tx0,
-                tx1,
-            ) {
+            if let Some((oa_lo, oa_hi)) =
+                outer_range_covering_coord_inclusive(x0, plan.x_step, raster.outer_len, tx0, tx1)
+            {
                 for outer_a in oa_lo..=oa_hi {
                     reader.set_position(scanline_offsets[outer_a as usize] as u64);
                     read_scanline(&mut reader, &mut scanline)?;
@@ -552,8 +541,7 @@ fn decode_radiance_tile_window(
                             let y = plan.y_start + (inner_b as i32) * plan.y_step;
                             let dy = (y - ty0) as usize;
                             let base = (dy * tw + dx) * 4;
-                            rgba[base..base + 4]
-                                .copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+                            rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
                         }
                     }
                 }
@@ -621,8 +609,7 @@ fn decode_radiance_hdr_preview(
                 let source_x =
                     preview_sample_coord(preview_x, preview_width, logical_width) as usize;
                 let rgb = scanline[source_x].to_rgb_f32();
-                let base =
-                    (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
+                let base = (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
                 rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
             }
         }
@@ -641,8 +628,7 @@ fn decode_radiance_hdr_preview(
                 }
 
                 let rgb = scanline[inner_b as usize].to_rgb_f32();
-                let base =
-                    (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
+                let base = (preview_y as usize * preview_width as usize + preview_x as usize) * 4;
                 rgba[base..base + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
             }
         }
@@ -737,7 +723,10 @@ fn read_radiance_header<R: BufRead>(
     parse_radiance_dimensions_line(line.trim())
 }
 
-fn parse_axis_size_token(tag: &str, size_str: &str) -> Result<(RadianceScanAxis, RadianceScanSign, u32), String> {
+fn parse_axis_size_token(
+    tag: &str,
+    size_str: &str,
+) -> Result<(RadianceScanAxis, RadianceScanSign, u32), String> {
     let b = tag.as_bytes();
     if b.len() < 2 {
         return Err(format!(
@@ -748,18 +737,14 @@ fn parse_axis_size_token(tag: &str, size_str: &str) -> Result<(RadianceScanAxis,
         b'+' => RadianceScanSign::Positive,
         b'-' => RadianceScanSign::Negative,
         _ => {
-            return Err(format!(
-                "Invalid Radiance HDR axis sign in token: {tag}"
-            ));
+            return Err(format!("Invalid Radiance HDR axis sign in token: {tag}"));
         }
     };
     let axis = match b[1] {
         b'x' | b'X' => RadianceScanAxis::X,
         b'y' | b'Y' => RadianceScanAxis::Y,
         _ => {
-            return Err(format!(
-                "Invalid Radiance HDR axis letter in token: {tag}"
-            ));
+            return Err(format!("Invalid Radiance HDR axis letter in token: {tag}"));
         }
     };
     let size = size_str

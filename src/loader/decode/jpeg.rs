@@ -17,8 +17,8 @@
 //! Baseline JPEG and Ultra HDR (JPEG_R).
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder};
 use crate::loader::{DecodedImage, ImageData};
+use crate::loader::{hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -87,11 +87,8 @@ pub(crate) fn load_jpeg_with_target_capacity(
         }
 
         let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
-        let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            &hdr,
-            hdr_target_capacity,
-            &hdr_tone_map,
-        )?;
+        let fallback_pixels =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
         let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
         return Ok(make_hdr_image_data(hdr, fallback));
     }

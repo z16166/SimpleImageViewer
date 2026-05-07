@@ -8,7 +8,7 @@ use crate::loader::decode::detect::load_via_content_detection;
 use crate::loader::decode::hdr_formats::{load_hdr, try_load_disk_backed_exr_hdr};
 use crate::loader::decode::load_image_file;
 
-use super::support::{lock_tiled_threshold_for_test, TiledThresholdOverride};
+use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 
 fn openexr_images_root() -> Option<PathBuf> {
     std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
@@ -66,9 +66,8 @@ fn max_rgba8_rgb(pixels: &[u8]) -> u8 {
 }
 
 fn collect_exr_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let entries = std::fs::read_dir(root).unwrap_or_else(|err| {
-        panic!("read OpenEXR corpus directory {}: {err}", root.display())
-    });
+    let entries = std::fs::read_dir(root)
+        .unwrap_or_else(|err| panic!("read OpenEXR corpus directory {}: {err}", root.display()));
     for entry in entries {
         let path = entry.expect("read OpenEXR corpus entry").path();
         if path.is_dir() {

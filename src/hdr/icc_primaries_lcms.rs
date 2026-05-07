@@ -32,25 +32,13 @@ pub(crate) enum EmbeddedIccHint {
 }
 
 /// BT.709 / sRGB display primaries (xy), ITU-R BT.709-6 / IEC 61966-2.1.
-const REF_BT709_SRGB: [(f64, f64); 3] = [
-    (0.64, 0.33),
-    (0.30, 0.60),
-    (0.15, 0.06),
-];
+const REF_BT709_SRGB: [(f64, f64); 3] = [(0.64, 0.33), (0.30, 0.60), (0.15, 0.06)];
 
 /// Display P3 (SMPTE EG 432-1 / common Apple / wide-gamut UI).
-const REF_DISPLAY_P3: [(f64, f64); 3] = [
-    (0.680, 0.320),
-    (0.265, 0.690),
-    (0.150, 0.060),
-];
+const REF_DISPLAY_P3: [(f64, f64); 3] = [(0.680, 0.320), (0.265, 0.690), (0.150, 0.060)];
 
 /// Rec. ITU-R BT.2020 / BT.2100 primaries (xy).
-const REF_BT2020: [(f64, f64); 3] = [
-    (0.708, 0.292),
-    (0.170, 0.797),
-    (0.131, 0.046),
-];
+const REF_BT2020: [(f64, f64); 3] = [(0.708, 0.292), (0.170, 0.797), (0.131, 0.046)];
 
 /// Application tolerance on **CIE xy** (not an ITU constant; chosen so slight ICC quantization still maps).
 const XY_MATCH_MAX: f64 = 0.058;
@@ -58,8 +46,8 @@ const XY_MATCH_MAX: f64 = 0.058;
 /// Classify embedded ICC using **lcms2** + ICC **`XYZType`** colorant tags.
 pub(crate) fn classify_embedded_icc_primaries(icc: &[u8]) -> EmbeddedIccHint {
     use libjxl_sys::{
-        CmsProfile, CMS_SIG_BLUE_COLORANT, CMS_SIG_GREEN_COLORANT, CMS_SIG_RED_COLORANT,
-        CMS_SIG_RGB_DATA,
+        CMS_SIG_BLUE_COLORANT, CMS_SIG_GREEN_COLORANT, CMS_SIG_RED_COLORANT, CMS_SIG_RGB_DATA,
+        CmsProfile,
     };
 
     let Some(profile) = CmsProfile::open_from_mem(icc) else {
@@ -122,10 +110,7 @@ fn best_reference_gamut(measured: [(f64, f64); 3]) -> Option<HdrColorSpace> {
     let (space, dist) = candidates
         .into_iter()
         .map(|(sp, reference)| (sp, max_euclidean_xy_distance(measured, reference)))
-        .min_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })?;
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
     if dist <= XY_MATCH_MAX {
         Some(space)
     } else {

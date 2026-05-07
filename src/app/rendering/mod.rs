@@ -210,7 +210,10 @@ impl ImageViewerApp {
                     if !self.show_settings {
                         ui.painter().text(
                             screen_rect.right_bottom()
-                                + Vec2::new(-crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN),
+                                + Vec2::new(
+                                    -crate::constants::OSD_MARGIN,
+                                    -crate::constants::OSD_MARGIN,
+                                ),
                             Align2::RIGHT_BOTTOM,
                             t!("hint.keyboard").to_string(),
                             FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE),

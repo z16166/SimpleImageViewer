@@ -48,8 +48,7 @@ pub(crate) fn should_route_through_hdr_plane(
     transition: TransitionStyle,
     is_animating: bool,
 ) -> bool {
-    plan.backend == PlaneBackendKind::Hdr
-        && should_use_hdr_callback(transition, is_animating)
+    plan.backend == PlaneBackendKind::Hdr && should_use_hdr_callback(transition, is_animating)
 }
 
 pub(crate) fn should_draw_static_hdr_immediately(
@@ -121,8 +120,11 @@ impl ImageViewerApp {
         // `draw_standard_image` is only reached when `texture_cache.get(current_index)` returned
         // `Some` (see `app::rendering::mod`), so the cached SDR fallback texture always exists
         // here and `has_sdr_fallback = true`.
-        let render_plan =
-            self.build_render_plan(RenderShape::Static, hdr_image.is_some(), /* has_sdr_fallback */ true);
+        let render_plan = self.build_render_plan(
+            RenderShape::Static,
+            hdr_image.is_some(),
+            /* has_sdr_fallback */ true,
+        );
         if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating)
         {
             self.transition_start = None;

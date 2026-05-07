@@ -50,7 +50,12 @@ pub fn hdr_osd_tag(
             output = output
         )
         .to_string(),
-        None => t!("hdr.osd.tag_without_color", render = render, output = output).to_string(),
+        None => t!(
+            "hdr.osd.tag_without_color",
+            render = render,
+            output = output
+        )
+        .to_string(),
     };
     if let Some(capacity) = ultra_hdr_decode_capacity {
         let capacity = format!("{capacity:.2}");
@@ -111,7 +116,12 @@ mod tests {
         rust_i18n::set_locale("en");
         let render = t!("hdr.render_path.float_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!("hdr.osd.tag_without_color", render = render, output = output).to_string();
+        let expected = t!(
+            "hdr.osd.tag_without_color",
+            render = render,
+            output = output
+        )
+        .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -130,7 +140,12 @@ mod tests {
         rust_i18n::set_locale("en");
         let render = t!("hdr.render_path.float_tile_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!("hdr.osd.tag_without_color", render = render, output = output).to_string();
+        let expected = t!(
+            "hdr.osd.tag_without_color",
+            render = render,
+            output = output
+        )
+        .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -150,14 +165,13 @@ mod tests {
         let color = t!("hdr.color_space.rec2020_linear").to_string();
         let render = t!("hdr.render_path.float_tile_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected =
-            t!(
-                "hdr.osd.tag_with_color",
-                color = color,
-                render = render,
-                output = output
-            )
-            .to_string();
+        let expected = t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -232,14 +246,13 @@ mod tests {
         let color = t!("hdr.color_space.unknown").to_string();
         let render = t!("hdr.render_path.float_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected =
-            t!(
-                "hdr.osd.tag_with_color",
-                color = color,
-                render = render,
-                output = output
-            )
-            .to_string();
+        let expected = t!(
+            "hdr.osd.tag_with_color",
+            color = color,
+            render = render,
+            output = output
+        )
+        .to_string();
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,

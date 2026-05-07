@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::loader::ImageData;
 use crate::loader::decode::modern::{
-    is_avif_path, is_heif_path, is_hdr_capable_modern_format_path, is_jxl_path,
+    is_avif_path, is_hdr_capable_modern_format_path, is_heif_path, is_jxl_path,
 };
 use crate::loader::decode::raster::load_psd;
 

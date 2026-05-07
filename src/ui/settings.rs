@@ -19,8 +19,8 @@ use crate::ui::utils::{
     middle_truncate, path_display_box, setup_fonts, setup_visuals, styled_button,
     styled_button_widget,
 };
-use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
 use eframe::Frame;
+use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
 use rust_i18n::t;
 use std::time::Instant;
 

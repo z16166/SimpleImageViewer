@@ -17,12 +17,13 @@
 pub mod avif;
 pub mod capabilities;
 pub mod decode;
-#[cfg(feature = "jpegxl")]
-pub(crate) mod icc_primaries_lcms;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
 pub mod heif;
+#[cfg(feature = "jpegxl")]
+pub(crate) mod icc_primaries_lcms;
 pub mod jpegxl;
+pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod openexr_core_backend;
 pub mod radiance_tiled;
@@ -32,4 +33,3 @@ pub mod surface;
 pub mod tiled;
 pub mod types;
 pub mod ultra_hdr;
-pub(crate) mod logluv_decode;

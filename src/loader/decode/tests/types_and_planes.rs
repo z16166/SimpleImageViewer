@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
-use crate::loader::{
-    DecodedImage, ImageData, LoadResult, PixelPlaneKind, PreviewBundle, PreviewResult, PreviewStage,
-    RenderShape, TileDecodeSource, TilePixelKind, TileResult, TiledImageSource,
-};
-use crate::loader::tiled_sources::MemoryImageSource;
 use crate::loader::orchestrator::TileInFlightKey;
+use crate::loader::tiled_sources::MemoryImageSource;
+use crate::loader::{
+    DecodedImage, ImageData, LoadResult, PixelPlaneKind, PreviewBundle, PreviewResult,
+    PreviewStage, RenderShape, TileDecodeSource, TilePixelKind, TileResult, TiledImageSource,
+};
 
 #[test]
 fn tile_inflight_keys_distinguish_sdr_and_hdr_outputs() {
@@ -28,9 +28,8 @@ fn tile_inflight_keys_distinguish_generations() {
 
 #[test]
 fn tile_decode_source_reports_output_kind() {
-    let sdr_source: Arc<dyn TiledImageSource> = Arc::new(
-        MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])),
-    );
+    let sdr_source: Arc<dyn TiledImageSource> =
+        Arc::new(MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])));
     let hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
         crate::hdr::tiled::HdrTiledImageSource::new(HdrImageBuffer {
             width: 1,
@@ -111,12 +110,10 @@ fn image_data_exposes_render_shape_and_available_planes() {
         hdr: hdr.clone(),
         fallback: sdr.clone(),
     };
-    let tiled_sdr_source: Arc<dyn TiledImageSource> = Arc::new(
-        MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])),
-    );
-    let tiled_hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
-        crate::hdr::tiled::HdrTiledImageSource::new(hdr).expect("build HDR tiled source"),
-    );
+    let tiled_sdr_source: Arc<dyn TiledImageSource> =
+        Arc::new(MemoryImageSource::new(1, 1, Arc::new(vec![0, 0, 0, 255])));
+    let tiled_hdr_source: Arc<dyn crate::hdr::tiled::HdrTiledSource> =
+        Arc::new(crate::hdr::tiled::HdrTiledImageSource::new(hdr).expect("build HDR tiled source"));
     let tiled_hdr = ImageData::HdrTiled {
         hdr: Arc::clone(&tiled_hdr_source),
         fallback: Arc::clone(&tiled_sdr_source),

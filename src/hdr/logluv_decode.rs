@@ -26,7 +26,10 @@ mod tables {
         pub(super) ncum: i16,
     }
 
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/hdr/logluv_uv_row.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/hdr/logluv_uv_row.rs"
+    ));
 }
 
 use tables::UV_ROW;
@@ -84,13 +87,10 @@ pub(crate) fn log_l16_to_y(p16: i32) -> f64 {
     if le == 0 {
         return 0.0;
     }
-    let y =
-        ((std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5) - std::f64::consts::LN_2 * 64.0).exp();
-    if (p16 & 0x8000) == 0 {
-        y
-    } else {
-        -y
-    }
+    let y = ((std::f64::consts::LN_2 / 256.0) * ((le as f64) + 0.5)
+        - std::f64::consts::LN_2 * 64.0)
+        .exp();
+    if (p16 & 0x8000) == 0 { y } else { -y }
 }
 
 /// `LogLuv24toXYZ` from `tif_luv.c`.

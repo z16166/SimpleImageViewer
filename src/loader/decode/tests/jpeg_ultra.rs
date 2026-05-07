@@ -7,7 +7,7 @@ use crate::loader::ImageData;
 use crate::loader::decode::jpeg::{load_jpeg, load_jpeg_with_target_capacity};
 use crate::loader::decode::load_image_file;
 
-use super::support::{lock_tiled_threshold_for_test, TiledThresholdOverride};
+use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 
 #[test]
 fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {

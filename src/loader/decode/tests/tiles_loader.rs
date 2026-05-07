@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
-use crate::loader::{ImageLoader, LoadResult, LoaderOutput, PreviewBundle, TileDecodeSource, TilePixelKind};
+use crate::loader::{
+    ImageLoader, LoadResult, LoaderOutput, PreviewBundle, TileDecodeSource, TilePixelKind,
+};
 
 #[test]
 fn image_request_stays_inflight_until_ui_finishes_installing_result() {

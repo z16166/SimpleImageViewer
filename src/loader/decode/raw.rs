@@ -17,9 +17,9 @@
 //! LibRAW and raw tiled refinement.
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{hq_preview_max_side, hdr_sdr_fallback_rgba8_eager_or_placeholder};
-use crate::loader::{DecodedImage, ImageData, RefinementRequest};
 use crate::loader::tiled_sources::RawImageSource;
+use crate::loader::{DecodedImage, ImageData, RefinementRequest};
+use crate::loader::{hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use std::path::PathBuf;

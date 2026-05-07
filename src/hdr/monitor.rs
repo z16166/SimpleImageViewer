@@ -456,7 +456,10 @@ fn windows_collect_process_tl_hwnds() -> Vec<windows::Win32::Foundation::HWND> {
         if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
             return true.into();
         }
-        if !unsafe { GetWindow(hwnd, GW_OWNER) }.unwrap_or_default().is_invalid() {
+        if !unsafe { GetWindow(hwnd, GW_OWNER) }
+            .unwrap_or_default()
+            .is_invalid()
+        {
             return true.into();
         }
         state.hwnds.push(hwnd);
@@ -505,7 +508,9 @@ fn windows_active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,
 ) -> Result<HdrMonitorSelection, String> {
     use windows::Win32::Foundation::{POINT, RECT};
-    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow};
+    use windows::Win32::Graphics::Gdi::{
+        MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow,
+    };
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     /// Ignore degenerate rects from Win32 before the real client size is committed.
@@ -537,7 +542,8 @@ fn windows_active_monitor_hdr_status(
     };
 
     let viewport_choice = viewport_outer_rect_screen_px.and_then(|[vl, vt, vr, vb]| {
-        let vp_area = i64::from(vr.saturating_sub(vl)).max(0) * i64::from(vb.saturating_sub(vt)).max(0);
+        let vp_area =
+            i64::from(vr.saturating_sub(vl)).max(0) * i64::from(vb.saturating_sub(vt)).max(0);
         if vp_area < MIN_PLAUSIBLE_OUTER_AREA {
             return None;
         }
@@ -702,7 +708,15 @@ pub fn spawn_monitor_hdr_status(
         // accidentally land on the *neighbouring* monitor when the window's
         // exact top-left pixel sits on a monitor boundary.
         (
-            unsafe { MonitorFromPoint(POINT { x: x + 20, y: y + 20 }, MONITOR_DEFAULTTOPRIMARY) },
+            unsafe {
+                MonitorFromPoint(
+                    POINT {
+                        x: x + 20,
+                        y: y + 20,
+                    },
+                    MONITOR_DEFAULTTOPRIMARY,
+                )
+            },
             "saved_window_position",
         )
     } else {

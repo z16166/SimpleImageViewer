@@ -32,20 +32,18 @@ use crate::hdr::types::HdrToneMapSettings;
 use crossbeam_channel::Sender;
 use std::path::{Path, PathBuf};
 
-use super::{extract_exif_thumbnail, hdr_display_requests_sdr_preview};
 use super::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewBundle, PreviewStage,
     RefinementRequest,
 };
+use super::{extract_exif_thumbnail, hdr_display_requests_sdr_preview};
 
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::load_via_content_detection;
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_with_target_capacity;
 use modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity};
-use raster::{
-    load_gif, load_png, load_psd, load_static, load_webp, is_maybe_animated,
-};
+use raster::{is_maybe_animated, load_gif, load_png, load_psd, load_static, load_webp};
 use raw::load_raw;
 
 pub(crate) fn load_image_file(
@@ -408,7 +406,5 @@ fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String
         )
 }
 
-
 #[cfg(test)]
 mod tests;
-

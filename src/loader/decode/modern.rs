@@ -18,9 +18,9 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    apply_exif_orientation_to_hdr_pair, apply_exif_orientation_to_image_data,
-    hdr_gain_map_decode_capacity, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    AnimationFrame, DecodedImage, ImageData,
+    AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair,
+    apply_exif_orientation_to_image_data, hdr_gain_map_decode_capacity,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
 use std::path::{Path, PathBuf};
 
@@ -62,8 +62,8 @@ pub(crate) fn load_avif_with_target_capacity(
 ) -> Result<ImageData, String> {
     #[cfg(feature = "avif-native")]
     {
-        let mmap = crate::mmap_util::map_file(path)
-            .map_err(|e| format!("Failed to read AVIF: {e}"))?;
+        let mmap =
+            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
 
         match crate::hdr::avif::try_decode_avif_image_sequence_sdr(&mmap[..]) {
             Ok(Some(raw)) if raw.len() > 1 => {
@@ -91,7 +91,10 @@ pub(crate) fn load_avif_with_target_capacity(
         }
 
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(&mmap[..], decode_capacity) {
+        match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(
+            &mmap[..],
+            decode_capacity,
+        ) {
             Ok(hdr) => {
                 let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
                     &hdr,
@@ -135,10 +138,7 @@ pub(crate) fn load_avif_with_target_capacity(
     #[cfg(not(feature = "avif-native"))]
     {
         let _ = (path, hdr_target_capacity, hdr_tone_map);
-        Err(
-            "AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats)."
-                .to_string(),
-        )
+        Err("AVIF decoding requires the avif-native feature (e.g. hdr-modern-formats).".to_string())
     }
 }
 

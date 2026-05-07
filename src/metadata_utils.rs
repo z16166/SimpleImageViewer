@@ -21,18 +21,15 @@ use std::path::Path;
 /// Extension-only hint for HEIF container orientation sidecars (`Exif` may not be reachable via
 /// [`exif::Reader::read_from_container`] on every writer layout).
 fn is_heif_extension(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-        matches!(
-            e.to_ascii_lowercase().as_str(),
-            "heic" | "heif" | "hif"
-        )
-    })
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "heic" | "heif" | "hif"))
 }
 
 fn is_avif_extension(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-        matches!(e.to_ascii_lowercase().as_str(), "avif" | "avifs")
-    })
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "avif" | "avifs"))
 }
 
 fn is_jxl_extension(path: &Path) -> bool {
@@ -85,7 +82,9 @@ pub fn get_exif_orientation(path: &Path) -> u16 {
                     return o;
                 }
             }
-            if let Some(o) = crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path) {
+            if let Some(o) =
+                crate::hdr::heif::libheif_manual_geometry_exif_orientation_from_path(path)
+            {
                 if (1..=8).contains(&o) {
                     return o;
                 }

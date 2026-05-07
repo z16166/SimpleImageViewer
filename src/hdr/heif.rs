@@ -76,7 +76,8 @@ fn append_heif_unci_build_hint(msg: String) -> String {
     let unci_related = lower.contains("unci")
         || lower.contains("23001-17")
         || lower.contains("uncompressed image type");
-    let brotli_unc = lower.contains("brotli") && (unci_related || lower.contains("generic compression"));
+    let brotli_unc =
+        lower.contains("brotli") && (unci_related || lower.contains("generic compression"));
 
     if brotli_unc {
         return format!(
@@ -317,12 +318,12 @@ fn brute_compose_orientation_row_col(acc: u16, primitive_next: u16) -> u16 {
     const W: u32 = 5;
     const H: u32 = 4;
     let base = synth_gradient_rgba8(W, H);
-    let (w1, h1, mid) =
-        crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, acc);
+    let (w1, h1, mid) = crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, acc);
     let (wf, hf, composed) =
         crate::libtiff_loader::apply_orientation_buffer(mid, w1, h1, primitive_next);
     for cand in 1..=8u16 {
-        let (wc, hc, pc) = crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, cand);
+        let (wc, hc, pc) =
+            crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, cand);
         if wc == wf && hc == hf && pc == composed {
             return cand;
         }
@@ -396,56 +397,59 @@ fn libheif_transformation_props_to_manual_exif(
     handle: *const libheif_sys::heif_image_handle,
 ) -> Option<u16> {
     unsafe {
-    let item_id = libheif_sys::heif_image_handle_get_item_id(handle);
-    let n = libheif_sys::heif_item_get_transformation_properties(
-        context,
-        item_id,
-        std::ptr::null_mut(),
-        0,
-    );
-    if n <= 0 {
-        return Some(1);
-    }
-    let mut props = vec![0u32; n as usize];
-    let wrote = libheif_sys::heif_item_get_transformation_properties(
-        context,
-        item_id,
-        props.as_mut_ptr(),
-        n,
-    );
-    if wrote < 0 {
-        return None;
-    }
-    let mut acc = 1u16;
-    for &pid in props.iter().take(wrote as usize) {
-        let ty = libheif_sys::heif_item_get_property_type(context, item_id, pid);
-        match ty {
-            t if t == libheif_sys::heif_item_property_type_transform_rotation => {
-                let ccw =
-                    libheif_sys::heif_item_get_property_transform_rotation_ccw(context, item_id, pid);
-                let primitive = match ccw {
-                    0 => 1u16,
-                    90 => 8,
-                    180 => 3,
-                    270 => 6,
-                    _ => return None,
-                };
-                acc = compose_orientation_chain(acc, primitive);
-            }
-            t if t == libheif_sys::heif_item_property_type_transform_mirror => {
-                let mdir = libheif_sys::heif_item_get_property_transform_mirror(context, item_id, pid);
-                let primitive = if mdir == libheif_sys::heif_transform_mirror_direction_vertical {
-                    4u16
-                } else if mdir == libheif_sys::heif_transform_mirror_direction_horizontal {
-                    2
-                } else {
-                    return None;
-                };
-                acc = compose_orientation_chain(acc, primitive);
-            }
-            _ => return None,
+        let item_id = libheif_sys::heif_image_handle_get_item_id(handle);
+        let n = libheif_sys::heif_item_get_transformation_properties(
+            context,
+            item_id,
+            std::ptr::null_mut(),
+            0,
+        );
+        if n <= 0 {
+            return Some(1);
         }
-    }
+        let mut props = vec![0u32; n as usize];
+        let wrote = libheif_sys::heif_item_get_transformation_properties(
+            context,
+            item_id,
+            props.as_mut_ptr(),
+            n,
+        );
+        if wrote < 0 {
+            return None;
+        }
+        let mut acc = 1u16;
+        for &pid in props.iter().take(wrote as usize) {
+            let ty = libheif_sys::heif_item_get_property_type(context, item_id, pid);
+            match ty {
+                t if t == libheif_sys::heif_item_property_type_transform_rotation => {
+                    let ccw = libheif_sys::heif_item_get_property_transform_rotation_ccw(
+                        context, item_id, pid,
+                    );
+                    let primitive = match ccw {
+                        0 => 1u16,
+                        90 => 8,
+                        180 => 3,
+                        270 => 6,
+                        _ => return None,
+                    };
+                    acc = compose_orientation_chain(acc, primitive);
+                }
+                t if t == libheif_sys::heif_item_property_type_transform_mirror => {
+                    let mdir =
+                        libheif_sys::heif_item_get_property_transform_mirror(context, item_id, pid);
+                    let primitive = if mdir == libheif_sys::heif_transform_mirror_direction_vertical
+                    {
+                        4u16
+                    } else if mdir == libheif_sys::heif_transform_mirror_direction_horizontal {
+                        2
+                    } else {
+                        return None;
+                    };
+                    acc = compose_orientation_chain(acc, primitive);
+                }
+                _ => return None,
+            }
+        }
         ((1..=8).contains(&acc)).then_some(acc)
     }
 }
@@ -519,7 +523,11 @@ fn allocate_decode_options_for_heif_manual_geometry_fixup(
 /// decoder has already applied a 90°/270° HEIF transform on the pixel grid — suppress applying EXIF
 /// Orientation again to avoid double rotation.
 #[cfg(feature = "heif-native")]
-pub(crate) fn decoded_pixels_match_swapped_ispe(path: &Path, decoded_w: u32, decoded_h: u32) -> bool {
+pub(crate) fn decoded_pixels_match_swapped_ispe(
+    path: &Path,
+    decoded_w: u32,
+    decoded_h: u32,
+) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -558,8 +566,7 @@ pub(crate) fn load_heif_hdr(
     tone_map: HdrToneMapSettings,
 ) -> Result<crate::loader::ImageData, String> {
     let hdr = decode_heif_hdr(path)?;
-    let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity)
-    {
+    let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
         crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
             &hdr,
             tone_map.exposure_ev,
@@ -575,8 +582,8 @@ pub(crate) fn load_heif_hdr(
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_heif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let mmap = crate::mmap_util::map_file(path)
-        .map_err(|err| format!("Failed to read HEIF: {err}"))?;
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
     decode_heif_hdr_bytes(&mmap[..])
 }
 
@@ -607,27 +614,44 @@ fn decode_primary_heif_to_hdr(
     metadata: HdrImageMetadata,
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Result<HdrImageBuffer, String> {
-    let interleaved_aa = match decode_primary_interleaved_rrggbbaa_le(handle, &metadata, decode_options) {
-        Ok(img) => return Ok(img),
-        Err(e) => e,
-    };
+    let interleaved_aa =
+        match decode_primary_interleaved_rrggbbaa_le(handle, &metadata, decode_options) {
+            Ok(img) => return Ok(img),
+            Err(e) => e,
+        };
 
-    let interleaved_rgb16 = match decode_primary_interleaved_rrggbbe_le(handle, &metadata, decode_options) {
-        Ok(img) => return Ok(img),
-        Err(e) => e,
-    };
+    let interleaved_rgb16 =
+        match decode_primary_interleaved_rrggbbe_le(handle, &metadata, decode_options) {
+            Ok(img) => return Ok(img),
+            Err(e) => e,
+        };
 
-    let y422 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_422, decode_options) {
+    let y422 = match decode_primary_ycbcr(
+        handle,
+        &metadata,
+        libheif_sys::heif_chroma_422,
+        decode_options,
+    ) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let y444 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_444, decode_options) {
+    let y444 = match decode_primary_ycbcr(
+        handle,
+        &metadata,
+        libheif_sys::heif_chroma_444,
+        decode_options,
+    ) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
 
-    let y420 = match decode_primary_ycbcr(handle, &metadata, libheif_sys::heif_chroma_420, decode_options) {
+    let y420 = match decode_primary_ycbcr(
+        handle,
+        &metadata,
+        libheif_sys::heif_chroma_420,
+        decode_options,
+    ) {
         Ok(b) => return Ok(b),
         Err(e) => e,
     };
@@ -672,13 +696,7 @@ fn heif_try_decode_into(
 ) -> Result<RawHeifImage, libheif_sys::heif_error> {
     let mut image_ptr = std::ptr::null_mut();
     let err = unsafe {
-        libheif_sys::heif_decode_image(
-            handle,
-            &mut image_ptr,
-            cs,
-            chroma,
-            decode_options,
-        )
+        libheif_sys::heif_decode_image(handle, &mut image_ptr, cs, chroma, decode_options)
     };
     if err.code != libheif_sys::heif_error_Ok {
         return Err(err);
@@ -866,8 +884,6 @@ fn chroma_plane_label(chroma: libheif_sys::heif_chroma) -> &'static str {
     }
 }
 
-
-
 #[cfg(feature = "heif-native")]
 fn hdr_buffer_from_interleaved_rgb16_le(
     handle: *const libheif_sys::heif_image_handle,
@@ -1019,11 +1035,9 @@ fn planar_semantic_depth_bits(
     handle: *const libheif_sys::heif_image_handle,
     channel: libheif_sys::heif_channel,
 ) -> Result<i32, String> {
-    let decoded_range =
-        unsafe { libheif_sys::heif_image_get_bits_per_pixel_range(image, channel) };
+    let decoded_range = unsafe { libheif_sys::heif_image_get_bits_per_pixel_range(image, channel) };
     let luma = unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) };
-    let chroma =
-        unsafe { libheif_sys::heif_image_handle_get_chroma_bits_per_pixel(handle) };
+    let chroma = unsafe { libheif_sys::heif_image_handle_get_chroma_bits_per_pixel(handle) };
     let per_ch = decoded_range.max(luma).max(chroma).max(8);
     Ok(per_ch.min(32))
 }
@@ -1104,13 +1118,18 @@ fn hdr_buffer_from_planar_rgb444(
     };
     let alpha_pack = if has_alpha {
         let mut stride_a = 0usize;
-        let ptr_a =
-            unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Alpha, &mut stride_a) };
+        let ptr_a = unsafe {
+            libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Alpha, &mut stride_a)
+        };
         if ptr_a.is_null() || stride_a == 0 {
             None
         } else {
             let span_a_val = planar_storage_span_bytes(image, heif_channel_Alpha);
-            let scale_a_val = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Alpha)?);
+            let scale_a_val = planar_scale_from_depth(planar_semantic_depth_bits(
+                image,
+                handle,
+                heif_channel_Alpha,
+            )?);
             Some((ptr_a, stride_a, span_a_val, scale_a_val))
         }
     } else {
@@ -1125,9 +1144,12 @@ fn hdr_buffer_from_planar_rgb444(
     let span_g = planar_storage_span_bytes(image, heif_channel_G);
     let span_b = planar_storage_span_bytes(image, heif_channel_B);
 
-    let scale_r = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_R)?);
-    let scale_g = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_G)?);
-    let scale_b = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_B)?);
+    let scale_r =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_R)?);
+    let scale_g =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_G)?);
+    let scale_b =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_B)?);
 
     let mut rgba_f32 = Vec::with_capacity(w * h * 4);
 
@@ -1139,7 +1161,10 @@ fn hdr_buffer_from_planar_rgb444(
         let min_stride_need_r = span_r * w.max(1);
         let min_stride_need_g = span_g * w.max(1);
         let min_stride_need_b = span_b * w.max(1);
-        if stride_r < min_stride_need_r || stride_g < min_stride_need_g || stride_b < min_stride_need_b {
+        if stride_r < min_stride_need_r
+            || stride_g < min_stride_need_g
+            || stride_b < min_stride_need_b
+        {
             return Err("planar RGB: stride inconsistent with dimensions".to_string());
         }
 
@@ -1312,22 +1337,14 @@ fn studio_digital_sample_to_normalized(
 #[cfg(feature = "heif-native")]
 fn chroma_column_index(x: usize, chroma: libheif_sys::heif_chroma, chroma_plane_w: usize) -> usize {
     let subsamp_h = chroma != libheif_sys::heif_chroma_444;
-    let ix = if subsamp_h {
-        x / 2
-    } else {
-        x
-    };
+    let ix = if subsamp_h { x / 2 } else { x };
     ix.min(chroma_plane_w.saturating_sub(1))
 }
 
 #[cfg(feature = "heif-native")]
 fn chroma_row_index(y_px: usize, chroma: libheif_sys::heif_chroma, chroma_plane_h: usize) -> usize {
     let subsamp_v = chroma == libheif_sys::heif_chroma_420;
-    let iy = if subsamp_v {
-        y_px / 2
-    } else {
-        y_px
-    };
+    let iy = if subsamp_v { y_px / 2 } else { y_px };
     iy.min(chroma_plane_h.saturating_sub(1))
 }
 
@@ -1362,20 +1379,29 @@ fn hdr_buffer_from_ycbcr(
     let cb_h = unsafe { libheif_sys::heif_image_get_height(image, heif_channel_Cb) } as usize;
 
     let mut stride_y = 0usize;
-    let ptr_y =
-        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Y, &mut stride_y) };
+    let ptr_y = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Y, &mut stride_y)
+    };
     let mut stride_cb = 0usize;
-    let ptr_cb =
-        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cb, &mut stride_cb) };
+    let ptr_cb = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cb, &mut stride_cb)
+    };
     let mut stride_cr = 0usize;
-    let ptr_cr =
-        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cr, &mut stride_cr) };
+    let ptr_cr = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Cr, &mut stride_cr)
+    };
 
     let has_alpha_channel =
         unsafe { libheif_sys::heif_image_has_channel(image, heif_channel_Alpha) != 0 };
     let mut alpha_stride = 0usize;
     let alpha_ptr = if has_alpha_channel {
-        unsafe { libheif_sys::heif_image_get_plane_readonly2(image, heif_channel_Alpha, &mut alpha_stride) }
+        unsafe {
+            libheif_sys::heif_image_get_plane_readonly2(
+                image,
+                heif_channel_Alpha,
+                &mut alpha_stride,
+            )
+        }
     } else {
         std::ptr::null()
     };
@@ -1389,7 +1415,8 @@ fn hdr_buffer_from_ycbcr(
     let span_cb = planar_storage_span_bytes(image, heif_channel_Cb);
     let span_cr = planar_storage_span_bytes(image, heif_channel_Cr);
 
-    let scale_y = planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
+    let scale_y =
+        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Y)?);
     let scale_cb =
         planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Cb)?);
     let scale_cr =
@@ -1406,7 +1433,11 @@ fn hdr_buffer_from_ycbcr(
         0
     };
     let scale_alpha = if alpha_valid {
-        planar_scale_from_depth(planar_semantic_depth_bits(image, handle, heif_channel_Alpha)?)
+        planar_scale_from_depth(planar_semantic_depth_bits(
+            image,
+            handle,
+            heif_channel_Alpha,
+        )?)
     } else {
         1.0
     };
@@ -1459,8 +1490,8 @@ fn hdr_buffer_from_ycbcr(
             rgba_f32.push(b_.clamp(0.0, 1.0));
 
             if let Some(ar) = row_alpha {
-                let av =
-                    planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32 / scale_alpha.max(1.0);
+                let av = planar_read_sample(ar, x_px, alpha_stride, span_alpha)? as f32
+                    / scale_alpha.max(1.0);
                 rgba_f32.push(av.clamp(0.0, 1.0));
             } else {
                 rgba_f32.push(1.0);
@@ -1540,8 +1571,7 @@ fn refine_heif_transfer_for_primary_bit_depth(
     handle: *const libheif_sys::heif_image_handle,
     metadata: &mut HdrImageMetadata,
 ) {
-    let luma =
-        unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) }.max(0);
+    let luma = unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) }.max(0);
     apply_heif_transfer_depth_heuristics(luma, metadata);
 }
 
@@ -1782,7 +1812,7 @@ mod tests {
     #[cfg(feature = "heif-native")]
     #[test]
     fn heif_studio_swing_8bit_neutral_gray_bt709() {
-        use super::{studio_digital_sample_to_normalized, HeifYcbcrMatrix, ycbcr_linear_to_rgb};
+        use super::{HeifYcbcrMatrix, studio_digital_sample_to_normalized, ycbcr_linear_to_rgb};
 
         let ey = studio_digital_sample_to_normalized(110, 8, true).unwrap();
         assert!((ey - 94.0 / 219.0).abs() < 1e-5);
@@ -1813,15 +1843,14 @@ mod tests {
     #[test]
     fn heif_ycbcr_monochrome_replicates_y() {
         use super::{HeifYcbcrMatrix, ycbcr_linear_to_rgb};
-        let [r, g, b] =
-            ycbcr_linear_to_rgb(0.42, 0.9, -0.3, HeifYcbcrMatrix::Monochrome);
+        let [r, g, b] = ycbcr_linear_to_rgb(0.42, 0.9, -0.3, HeifYcbcrMatrix::Monochrome);
         assert!((r - 0.42).abs() < 1e-6 && r == g && g == b);
     }
 
     #[cfg(feature = "heif-native")]
     #[test]
     fn heif_nclx_maps_matrix_coefficients_to_ycbcr_matrix() {
-        use super::{heif_ycbcr_matrix_from_nclx, HeifYcbcrMatrix};
+        use super::{HeifYcbcrMatrix, heif_ycbcr_matrix_from_nclx};
         use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
 
         fn meta(mc: u16) -> HdrImageMetadata {
