@@ -16,8 +16,8 @@
 
 //! HDR/SDR [`ImageData`] assembly (static vs tiled) using [`crate::loader::tiled_sources::MemoryImageSource`].
 
-use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use crate::loader::tiled_sources::MemoryImageSource;
+use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use std::sync::Arc;
 
 pub(crate) fn make_image_data(img: DecodedImage) -> ImageData {

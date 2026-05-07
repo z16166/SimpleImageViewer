@@ -43,11 +43,7 @@ struct JxlResizableRunnerPtr(*mut std::ffi::c_void);
 impl JxlResizableRunnerPtr {
     fn try_new() -> Option<Self> {
         let ptr = unsafe { libjxl_sys::JxlResizableParallelRunnerCreate(std::ptr::null()) };
-        if ptr.is_null() {
-            None
-        } else {
-            Some(Self(ptr))
-        }
+        if ptr.is_null() { None } else { Some(Self(ptr)) }
     }
 
     fn as_ptr(&self) -> *mut std::ffi::c_void {
@@ -118,10 +114,8 @@ pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
             match libjxl_sys::JxlDecoderProcessInput(decoder.0) {
                 libjxl_sys::JXL_DEC_BASIC_INFO => {
                     let mut info = std::mem::MaybeUninit::<libjxl_sys::JxlBasicInfo>::uninit();
-                    if libjxl_sys::JxlDecoderGetBasicInfo(
-                        decoder.0.cast_const(),
-                        info.as_mut_ptr(),
-                    ) != libjxl_sys::JXL_DEC_SUCCESS
+                    if libjxl_sys::JxlDecoderGetBasicInfo(decoder.0.cast_const(), info.as_mut_ptr())
+                        != libjxl_sys::JXL_DEC_SUCCESS
                     {
                         return None;
                     }
@@ -129,7 +123,9 @@ pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
                     let o_ok = info.orientation as i32;
                     return ((1..=8).contains(&o_ok)).then_some(o_ok as u16);
                 }
-                libjxl_sys::JXL_DEC_SUCCESS | libjxl_sys::JXL_DEC_ERROR | libjxl_sys::JXL_DEC_NEED_MORE_INPUT => {
+                libjxl_sys::JXL_DEC_SUCCESS
+                | libjxl_sys::JXL_DEC_ERROR
+                | libjxl_sys::JXL_DEC_NEED_MORE_INPUT => {
                     return None;
                 }
                 _ => {}
@@ -333,9 +329,9 @@ fn jxl_sdr_grade_fallback_rgba8(
     // PQ / HLG → fall through to the HDR pipeline.
     let needs_srgb_oetf = match metadata.transfer_function {
         HdrTransferFunction::Linear => true,
-        HdrTransferFunction::Srgb
-        | HdrTransferFunction::Gamma
-        | HdrTransferFunction::Unknown => false,
+        HdrTransferFunction::Srgb | HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => {
+            false
+        }
         HdrTransferFunction::Pq | HdrTransferFunction::Hlg => return None,
     };
     let mut out = Vec::with_capacity(rgba_f32.len());
@@ -423,11 +419,7 @@ fn jxl_find_black_extra_channel_index(
 /// or lcms internal error) leaves `rgba` untouched and logs a warning so the
 /// caller can fall back to the existing native-HDR / SDR-grading path.
 #[cfg(feature = "jpegxl")]
-fn apply_cmyk_to_srgb_via_lcms(
-    rgba: &mut [f32],
-    k: &[f32],
-    source_icc: &[u8],
-) -> bool {
+fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -> bool {
     let pixel_count = rgba.len() / 4;
     if pixel_count != k.len() {
         log::warn!(
@@ -509,13 +501,7 @@ fn apply_jxl_jhgm_gain_map_if_present(
         return;
     };
     let expected_len = width as usize * height as usize * 4;
-    match decode_jxl_gain_map(
-        jhgm_box,
-        target_hdr_capacity,
-        rgba_f32,
-        width,
-        height,
-    ) {
+    match decode_jxl_gain_map(jhgm_box, target_hdr_capacity, rgba_f32, width, height) {
         Ok((gain_metadata, gain_width, gain_height, gain_rgba)) => {
             let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
             let mut composed = Vec::with_capacity(expected_len);
@@ -569,8 +555,8 @@ fn jxl_frame_ticks_to_delay_ms(basic_info: &libjxl_sys::JxlBasicInfo, ticks: u32
     } else {
         let num = basic_info.animation.tps_numerator.max(1) as u128;
         let den = basic_info.animation.tps_denominator.max(1) as u128;
-        ((ticks as u128).saturating_mul(1000).saturating_mul(den) / num)
-            .min(u128::from(u64::MAX)) as u64
+        ((ticks as u128).saturating_mul(1000).saturating_mul(den) / num).min(u128::from(u64::MAX))
+            as u64
     };
     if raw_ms == 0 || raw_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS as u64 {
         DEFAULT_ANIMATION_DELAY_MS as u64
@@ -635,9 +621,8 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
 
     // libjxl default for associated alpha is premultiplied RGB; our HDR/tone-map path expects
     // straight (unpremultiplied) linear RGB + separate alpha (`jxl/decode.h` — must set before decode).
-    let unpremul_st = unsafe {
-        libjxl_sys::JxlDecoderSetUnpremultiplyAlpha(decoder.0, libjxl_sys::JXL_TRUE)
-    };
+    let unpremul_st =
+        unsafe { libjxl_sys::JxlDecoderSetUnpremultiplyAlpha(decoder.0, libjxl_sys::JXL_TRUE) };
     if unpremul_st != libjxl_sys::JXL_DEC_SUCCESS {
         log::warn!(
             "JxlDecoderSetUnpremultiplyAlpha failed (libjxl status {unpremul_st}); colors may be wrong for premultiplied alpha"
@@ -782,8 +767,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                                 )?
                             } else {
                                 crate::loader::cheap_hdr_sdr_placeholder_rgba8(
-                                    hdr.width,
-                                    hdr.height,
+                                    hdr.width, hdr.height,
                                 )?
                             }
                         };
@@ -917,9 +901,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
                 k_extra_channel_index = jxl_find_black_extra_channel_index(decoder.0, &info);
                 if let Some(idx) = k_extra_channel_index {
-                    log::debug!(
-                        "[JXL] CMYK-style K (black) extra channel found at index {idx}"
-                    );
+                    log::debug!("[JXL] CMYK-style K (black) extra channel found at index {idx}");
                 }
                 basic_info = Some(info);
             }
@@ -939,8 +921,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 // can be overridden by libjxl's color management (and for non-
                 // XYB CMYK sources both happen to be the same CMYK profile).
                 if k_extra_channel_index.is_some() && cmyk_source_icc.is_empty() {
-                    if let Some(icc) =
-                        jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
+                    if let Some(icc) = jxl_decoder_copy_target_original_icc(decoder.0.cast_const())
                     {
                         log::debug!(
                             "[JXL] captured {} byte CMYK source ICC for lcms2 transform",
@@ -1031,8 +1012,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                             idx,
                         )
                     };
-                    if st == libjxl_sys::JXL_DEC_SUCCESS
-                        && k_size % std::mem::size_of::<f32>() == 0
+                    if st == libjxl_sys::JXL_DEC_SUCCESS && k_size % std::mem::size_of::<f32>() == 0
                     {
                         k_f32 = vec![0.0; k_size / std::mem::size_of::<f32>()];
                         let set_st = unsafe {
@@ -1152,7 +1132,8 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
             }
             libjxl_sys::JXL_DEC_JPEG_RECONSTRUCTION | libjxl_sys::JXL_DEC_JPEG_NEED_MORE_OUTPUT => {
                 return Err(
-                    "JPEG XL JPEG reconstruction stream is not supported by this viewer".to_string(),
+                    "JPEG XL JPEG reconstruction stream is not supported by this viewer"
+                        .to_string(),
                 );
             }
             status => {
@@ -1446,16 +1427,15 @@ fn hdr_metadata_from_icc_rgb_xyz_primaries_for_jxl_float(icc: &[u8]) -> Option<H
         [2, 1, 0],
     ];
 
-    let multiset_close =
-        |obs: [(f64, f64); 3], tgt: [(f64, f64); 3], eps: f64| {
-            PERMS.iter().any(|perm| {
-                (0..3).all(|i| {
-                    let p = obs[perm[i]];
-                    let t = tgt[i];
-                    (p.0 - t.0).hypot(p.1 - t.1) <= eps
-                })
+    let multiset_close = |obs: [(f64, f64); 3], tgt: [(f64, f64); 3], eps: f64| {
+        PERMS.iter().any(|perm| {
+            (0..3).all(|i| {
+                let p = obs[perm[i]];
+                let t = tgt[i];
+                (p.0 - t.0).hypot(p.1 - t.1) <= eps
             })
-        };
+        })
+    };
 
     let color_primaries = if multiset_close(observed, BT2020, 0.08) {
         9u16
@@ -1720,9 +1700,7 @@ fn jxl_decoder_copy_target_data_icc(decoder: *const libjxl_sys::JxlDecoder) -> O
 /// color management — for CMYK-style sources it's a CMYK ICC profile that we
 /// feed into lcms2 to compose CMYK→sRGB.
 #[cfg(feature = "jpegxl")]
-fn jxl_decoder_copy_target_original_icc(
-    decoder: *const libjxl_sys::JxlDecoder,
-) -> Option<Vec<u8>> {
+fn jxl_decoder_copy_target_original_icc(decoder: *const libjxl_sys::JxlDecoder) -> Option<Vec<u8>> {
     jxl_decoder_copy_icc_for_target(decoder, libjxl_sys::JXL_COLOR_PROFILE_TARGET_ORIGINAL)
 }
 
@@ -1732,20 +1710,13 @@ fn jxl_decoder_copy_icc_for_target(
     target: libjxl_sys::JxlColorProfileTarget,
 ) -> Option<Vec<u8>> {
     let mut icc_size = 0_usize;
-    let st = unsafe {
-        libjxl_sys::JxlDecoderGetICCProfileSize(decoder, target, &mut icc_size)
-    };
+    let st = unsafe { libjxl_sys::JxlDecoderGetICCProfileSize(decoder, target, &mut icc_size) };
     if st != libjxl_sys::JXL_DEC_SUCCESS || icc_size == 0 {
         return None;
     }
     let mut icc = vec![0_u8; icc_size];
     let st2 = unsafe {
-        libjxl_sys::JxlDecoderGetColorAsICCProfile(
-            decoder,
-            target,
-            icc.as_mut_ptr(),
-            icc.len(),
-        )
+        libjxl_sys::JxlDecoderGetColorAsICCProfile(decoder, target, icc.as_mut_ptr(), icc.len())
     };
     (st2 == libjxl_sys::JXL_DEC_SUCCESS).then_some(icc)
 }
@@ -1762,8 +1733,7 @@ fn jxl_apply_preferred_profile_from_target_data_icc(decoder: *mut libjxl_sys::Jx
         return;
     };
     let HdrColorProfile::Cicp {
-        color_primaries,
-        ..
+        color_primaries, ..
     } = meta.color_profile
     else {
         return;
@@ -1877,12 +1847,12 @@ mod tests {
     #[cfg(feature = "jpegxl")]
     use crate::hdr::jpegxl::read_jxl_gain_map_bundle;
     use crate::hdr::jpegxl::{
-        is_jxl_header, jxl_color_encoding_to_metadata, JXL_TRANSFER_FUNCTION_HLG,
-        JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ, JXL_TRANSFER_FUNCTION_SRGB,
+        JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,
+        JXL_TRANSFER_FUNCTION_SRGB, is_jxl_header, jxl_color_encoding_to_metadata,
     };
-    use crate::hdr::types::{HdrImageMetadata, HdrReference, HdrTransferFunction};
     #[cfg(feature = "jpegxl")]
     use crate::hdr::types::HdrColorSpace;
+    use crate::hdr::types::{HdrImageMetadata, HdrReference, HdrTransferFunction};
 
     #[test]
     fn jxl_header_detection_accepts_codestream_and_container() {
@@ -1904,7 +1874,8 @@ mod tests {
 
     #[test]
     fn jxl_linear_transfer_maps_for_float_decoder_output() {
-        let metadata = jxl_color_encoding_to_metadata(9, JXL_TRANSFER_FUNCTION_LINEAR, Some(1000.0));
+        let metadata =
+            jxl_color_encoding_to_metadata(9, JXL_TRANSFER_FUNCTION_LINEAR, Some(1000.0));
 
         assert_eq!(metadata.transfer_function, HdrTransferFunction::Linear);
         assert_eq!(metadata.reference, HdrReference::Unknown);
@@ -2042,9 +2013,15 @@ mod tests {
         );
         match got {
             crate::loader::ImageData::Animated(frames) => {
-                assert!(frames.len() > 1, "expected animation, got {} frames", frames.len());
+                assert!(
+                    frames.len() > 1,
+                    "expected animation, got {} frames",
+                    frames.len()
+                );
             }
-            crate::loader::ImageData::Static(_) => panic!("expected ImageData::Animated, got Static"),
+            crate::loader::ImageData::Static(_) => {
+                panic!("expected ImageData::Animated, got Static")
+            }
             crate::loader::ImageData::Tiled(_) => panic!("expected ImageData::Animated, got Tiled"),
             crate::loader::ImageData::Hdr { .. } => panic!("expected ImageData::Animated, got Hdr"),
             crate::loader::ImageData::HdrTiled { .. } => {
@@ -2058,7 +2035,8 @@ mod tests {
     fn conformance_bench_oriented_brg_input_jxl_color_space_when_sample_present() {
         // libjxl HDR conformance: `bench_oriented_brg/input.jxl` — decoded pixels described by
         // `JXL_COLOR_PROFILE_TARGET_DATA` ICC (BT.709 primaries); see read_jxl_metadata order.
-        let path = std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
+        let path =
+            std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
         if !path.is_file() {
             return;
         }
@@ -2083,7 +2061,8 @@ mod tests {
     #[cfg(feature = "jpegxl")]
     #[test]
     fn conformance_bench_oriented_brg_float_pixel_range_when_sample_present() {
-        let path = std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
+        let path =
+            std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
         if !path.is_file() {
             return;
         }
@@ -2116,7 +2095,8 @@ mod tests {
     #[test]
     fn conformance_bench_oriented_brg_sdr_fallback_mean_not_washed_when_sample_present() {
         use crate::hdr::types::HdrToneMapSettings;
-        let path = std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
+        let path =
+            std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
         if !path.is_file() {
             return;
         }
@@ -2187,12 +2167,7 @@ mod tests {
             )
             .expect("decode jxl"),
         );
-        let crate::loader::ImageData::Hdr {
-            fallback,
-            hdr,
-            ..
-        } = img
-        else {
+        let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
             panic!("expected ImageData::Hdr");
         };
         let jxl_w = hdr.width as usize;
@@ -2303,7 +2278,10 @@ mod tests {
                     );
                     eprintln!(
                         "TARGET_ORIGINAL color: status={cs} color_space={} primaries={} transfer={} rendering_intent={}",
-                        color.color_space, color.primaries, color.transfer_function, color.rendering_intent
+                        color.color_space,
+                        color.primaries,
+                        color.transfer_function,
+                        color.rendering_intent
                     );
                     let mut color_data: libjxl_sys::JxlColorEncoding = std::mem::zeroed();
                     let ds = libjxl_sys::JxlDecoderGetColorAsEncodedProfile(
@@ -2313,9 +2291,7 @@ mod tests {
                     );
                     eprintln!(
                         "TARGET_DATA color: status={ds} color_space={} primaries={} transfer={}",
-                        color_data.color_space,
-                        color_data.primaries,
-                        color_data.transfer_function
+                        color_data.color_space, color_data.primaries, color_data.transfer_function
                     );
                     break;
                 } else if st == libjxl_sys::JXL_DEC_ERROR
@@ -2438,7 +2414,10 @@ mod tests {
                     width = info.xsize;
                     height = info.ysize;
                     k_idx = super::jxl_find_black_extra_channel_index(decoder, &info);
-                    assert!(k_idx.is_some(), "expected a JXL_CHANNEL_BLACK extra channel");
+                    assert!(
+                        k_idx.is_some(),
+                        "expected a JXL_CHANNEL_BLACK extra channel"
+                    );
                 } else if st == libjxl_sys::JXL_DEC_COLOR_ENCODING {
                     let mut icc_size = 0_usize;
                     assert_eq!(
@@ -2534,7 +2513,8 @@ mod tests {
         let mut rgba_out = vec![0.0_f32; n_pixels as usize * 4];
         let in_profile = libjxl_sys::CmsProfile::open_from_mem(&source_icc)
             .expect("lcms could not parse CMYK ICC");
-        let out_profile = libjxl_sys::CmsProfile::new_srgb().expect("lcms could not build sRGB profile");
+        let out_profile =
+            libjxl_sys::CmsProfile::new_srgb().expect("lcms could not build sRGB profile");
         // djxl converts CMYK→sRGB with the destination's rendering intent.
         // For its `ColorEncoding::SRGB(false)` target the default intent is
         // perceptual (matches `INTENT_PERCEPTUAL = 0`).
@@ -2758,7 +2738,10 @@ mod tests {
 
             // Try several compositing models and report mean diff to ref.png.
             let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
-            assert_eq!((ref_img.width(), ref_img.height()), (info.xsize, info.ysize));
+            assert_eq!(
+                (ref_img.width(), ref_img.height()),
+                (info.xsize, info.ysize)
+            );
             let ref_bytes = ref_img.into_raw();
 
             let try_compose = |name: &str, compose: fn(f32, f32, f32, f32) -> [f32; 3]| {
@@ -2793,12 +2776,18 @@ mod tests {
             try_compose("RGB * (1 - K)          ", |r, g, b, k| {
                 [r * (1.0 - k), g * (1.0 - k), b * (1.0 - k)]
             });
-            try_compose("RGB * K                ", |r, g, b, k| [r * k, g * k, b * k]);
+            try_compose("RGB * K                ", |r, g, b, k| {
+                [r * k, g * k, b * k]
+            });
             try_compose("min(RGB, K)            ", |r, g, b, k| {
                 [r.min(k), g.min(k), b.min(k)]
             });
             try_compose("RGB - (1 - K)          ", |r, g, b, k| {
-                [(r - (1.0 - k)).max(0.0), (g - (1.0 - k)).max(0.0), (b - (1.0 - k)).max(0.0)]
+                [
+                    (r - (1.0 - k)).max(0.0),
+                    (g - (1.0 - k)).max(0.0),
+                    (b - (1.0 - k)).max(0.0),
+                ]
             });
 
             // Find the 5 worst-mismatch pixels using the raw RGB output, dump (x, y, JXL, K, ref).
@@ -2974,10 +2963,7 @@ mod tests {
         );
         let ours = fallback.rgba();
         let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
-        assert_eq!(
-            (hdr.width, hdr.height),
-            (ref_img.width(), ref_img.height())
-        );
+        assert_eq!((hdr.width, hdr.height), (ref_img.width(), ref_img.height()));
         let r = ref_img.into_raw();
         let n = (ours.len() / 4) as i64;
         let (mut sr, mut sg, mut sb) = (0_i64, 0_i64, 0_i64);
@@ -3026,8 +3012,10 @@ mod tests {
     #[test]
     fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present() {
         use crate::hdr::types::HdrToneMapSettings;
-        let jxl_path = std::path::Path::new(r"F:\HDR\conformance\testcases\patches_lossless\input.jxl");
-        let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases\patches_lossless\ref.png");
+        let jxl_path =
+            std::path::Path::new(r"F:\HDR\conformance\testcases\patches_lossless\input.jxl");
+        let ref_path =
+            std::path::Path::new(r"F:\HDR\conformance\testcases\patches_lossless\ref.png");
         if !jxl_path.is_file() || !ref_path.is_file() {
             return;
         }
@@ -3062,10 +3050,7 @@ mod tests {
         );
         let ours = fallback.rgba();
         let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
-        assert_eq!(
-            (hdr.width, hdr.height),
-            (ref_img.width(), ref_img.height())
-        );
+        assert_eq!((hdr.width, hdr.height), (ref_img.width(), ref_img.height()));
         let r = ref_img.into_raw();
         let n = (ours.len() / 4) as i64;
         let (mut sr, mut sg, mut sb) = (0_i64, 0_i64, 0_i64);
@@ -3126,13 +3111,22 @@ mod tests {
         }
 
         let linear_zero = make(0, &[]);
-        assert_eq!(super::icc_trc_kind(&linear_zero), Some(HdrTransferFunction::Linear));
+        assert_eq!(
+            super::icc_trc_kind(&linear_zero),
+            Some(HdrTransferFunction::Linear)
+        );
 
         let linear_one = make(1, &[0x01, 0x00]); // u8.8 = 1.0
-        assert_eq!(super::icc_trc_kind(&linear_one), Some(HdrTransferFunction::Linear));
+        assert_eq!(
+            super::icc_trc_kind(&linear_one),
+            Some(HdrTransferFunction::Linear)
+        );
 
         let gamma_22 = make(1, &[0x02, 0x33]); // u8.8 ≈ 2.2
-        assert_eq!(super::icc_trc_kind(&gamma_22), Some(HdrTransferFunction::Gamma));
+        assert_eq!(
+            super::icc_trc_kind(&gamma_22),
+            Some(HdrTransferFunction::Gamma)
+        );
 
         let lut = make(1024, &[0u8; 2048]);
         assert_eq!(super::icc_trc_kind(&lut), Some(HdrTransferFunction::Srgb));
@@ -3178,10 +3172,7 @@ mod tests {
         );
         let ours = fallback.rgba();
         let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
-        assert_eq!(
-            (hdr.width, hdr.height),
-            (ref_img.width(), ref_img.height())
-        );
+        assert_eq!((hdr.width, hdr.height), (ref_img.width(), ref_img.height()));
         let r = ref_img.into_raw();
         let total = (ours.len() / 4) as f64;
         let (mut sr, mut sg, mut sb) = (0_i64, 0_i64, 0_i64);
@@ -3194,7 +3185,10 @@ mod tests {
             sr += dr as i64;
             sg += dg as i64;
             sb += db as i64;
-            let m = dr.unsigned_abs().max(dg.unsigned_abs()).max(db.unsigned_abs());
+            let m = dr
+                .unsigned_abs()
+                .max(dg.unsigned_abs())
+                .max(db.unsigned_abs());
             if m == 0 {
                 exact += 1;
             }
@@ -3230,7 +3224,11 @@ mod tests {
     /// modes, patches, ...). Skipped silently when the conformance corpus is
     /// not present on the host.
     #[cfg(feature = "jpegxl")]
-    fn diagnose_conformance_pair(name: &str, jxl_path: &std::path::Path, ref_path: &std::path::Path) {
+    fn diagnose_conformance_pair(
+        name: &str,
+        jxl_path: &std::path::Path,
+        ref_path: &std::path::Path,
+    ) {
         use crate::hdr::types::HdrToneMapSettings;
         if !jxl_path.is_file() || !ref_path.is_file() {
             eprintln!("[{name}] skipped — conformance file not present");
@@ -3252,15 +3250,26 @@ mod tests {
                 } else if st == libjxl_sys::JXL_DEC_COLOR_ENCODING {
                     eprintln!(
                         "[{name}] dims={}x{} bits={} float={} num_color={} num_extra={} have_anim={} intensity_target={} min_nits={} alpha_bits={}",
-                        info.xsize, info.ysize, info.bits_per_sample,
+                        info.xsize,
+                        info.ysize,
+                        info.bits_per_sample,
                         info.exponent_bits_per_sample,
-                        info.num_color_channels, info.num_extra_channels,
-                        info.have_animation, info.intensity_target, info.min_nits,
+                        info.num_color_channels,
+                        info.num_extra_channels,
+                        info.have_animation,
+                        info.intensity_target,
+                        info.min_nits,
                         info.alpha_bits,
                     );
                     for i in 0..info.num_extra_channels {
-                        let mut ec = std::mem::MaybeUninit::<libjxl_sys::JxlExtraChannelInfo>::zeroed();
-                        if libjxl_sys::JxlDecoderGetExtraChannelInfo(decoder.cast_const(), i as usize, ec.as_mut_ptr()) == libjxl_sys::JXL_DEC_SUCCESS {
+                        let mut ec =
+                            std::mem::MaybeUninit::<libjxl_sys::JxlExtraChannelInfo>::zeroed();
+                        if libjxl_sys::JxlDecoderGetExtraChannelInfo(
+                            decoder.cast_const(),
+                            i as usize,
+                            ec.as_mut_ptr(),
+                        ) == libjxl_sys::JXL_DEC_SUCCESS
+                        {
                             let ec = ec.assume_init();
                             eprintln!(
                                 "[{name}]   extra channel #{i}: type={} bits={}",
@@ -3269,19 +3278,38 @@ mod tests {
                         }
                     }
                     let mut orig_size = 0_usize;
-                    libjxl_sys::JxlDecoderGetICCProfileSize(decoder.cast_const(), libjxl_sys::JXL_COLOR_PROFILE_TARGET_ORIGINAL, &mut orig_size);
+                    libjxl_sys::JxlDecoderGetICCProfileSize(
+                        decoder.cast_const(),
+                        libjxl_sys::JXL_COLOR_PROFILE_TARGET_ORIGINAL,
+                        &mut orig_size,
+                    );
                     let mut data_size = 0_usize;
-                    libjxl_sys::JxlDecoderGetICCProfileSize(decoder.cast_const(), libjxl_sys::JXL_COLOR_PROFILE_TARGET_DATA, &mut data_size);
+                    libjxl_sys::JxlDecoderGetICCProfileSize(
+                        decoder.cast_const(),
+                        libjxl_sys::JXL_COLOR_PROFILE_TARGET_DATA,
+                        &mut data_size,
+                    );
                     let mut enc: libjxl_sys::JxlColorEncoding = std::mem::zeroed();
-                    let enc_st = libjxl_sys::JxlDecoderGetColorAsEncodedProfile(decoder.cast_const(), libjxl_sys::JXL_COLOR_PROFILE_TARGET_DATA, &mut enc);
+                    let enc_st = libjxl_sys::JxlDecoderGetColorAsEncodedProfile(
+                        decoder.cast_const(),
+                        libjxl_sys::JXL_COLOR_PROFILE_TARGET_DATA,
+                        &mut enc,
+                    );
                     eprintln!(
                         "[{name}] icc_orig={} icc_data={} encoded_st={} (cs={} wp={} prim={} tf={} ri={})",
-                        orig_size, data_size, enc_st,
-                        enc.color_space, enc.white_point, enc.primaries,
-                        enc.transfer_function, enc.rendering_intent
+                        orig_size,
+                        data_size,
+                        enc_st,
+                        enc.color_space,
+                        enc.white_point,
+                        enc.primaries,
+                        enc.transfer_function,
+                        enc.rendering_intent
                     );
                     break;
-                } else if st == libjxl_sys::JXL_DEC_ERROR || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT {
+                } else if st == libjxl_sys::JXL_DEC_ERROR
+                    || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT
+                {
                     break;
                 }
             }
@@ -3296,7 +3324,10 @@ mod tests {
             tone,
         ) {
             Ok(img) => crate::loader::apply_exif_orientation_to_image_data(jxl_path, img),
-            Err(e) => { eprintln!("[{name}] decode failed: {e}"); return; }
+            Err(e) => {
+                eprintln!("[{name}] decode failed: {e}");
+                return;
+            }
         };
         let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
             eprintln!("[{name}] unexpected ImageData variant");
@@ -3307,7 +3338,10 @@ mod tests {
         if (hdr.width, hdr.height) != (ref_img.width(), ref_img.height()) {
             eprintln!(
                 "[{name}] dim mismatch jxl={}x{} ref={}x{}",
-                hdr.width, hdr.height, ref_img.width(), ref_img.height()
+                hdr.width,
+                hdr.height,
+                ref_img.width(),
+                ref_img.height()
             );
             return;
         }
@@ -3321,13 +3355,28 @@ mod tests {
             let cg = j[1] as i32 - r[1] as i32;
             let cb = j[2] as i32 - r[2] as i32;
             let ca = j[3] as i32 - r[3] as i32;
-            dr += cr as i64; dg += cg as i64; db += cb as i64; da += ca as i64;
+            dr += cr as i64;
+            dg += cg as i64;
+            db += cb as i64;
+            da += ca as i64;
             mr = mr.max(cr.unsigned_abs());
             mg = mg.max(cg.unsigned_abs());
             mb = mb.max(cb.unsigned_abs());
             ma = ma.max(ca.unsigned_abs());
-            let max_abs = cr.unsigned_abs().max(cg.unsigned_abs()).max(cb.unsigned_abs());
-            let bin = match max_abs { 0=>0, 1..=3=>1, 4..=7=>2, 8..=15=>3, 16..=31=>4, 32..=63=>5, 64..=127=>6, _=>7 };
+            let max_abs = cr
+                .unsigned_abs()
+                .max(cg.unsigned_abs())
+                .max(cb.unsigned_abs());
+            let bin = match max_abs {
+                0 => 0,
+                1..=3 => 1,
+                4..=7 => 2,
+                8..=15 => 3,
+                16..=31 => 4,
+                32..=63 => 5,
+                64..=127 => 6,
+                _ => 7,
+            };
             buckets[bin] += 1;
         }
         eprintln!(
@@ -3336,7 +3385,10 @@ mod tests {
             dg as f64 / n as f64,
             db as f64 / n as f64,
             da as f64 / n as f64,
-            mr, mg, mb, ma,
+            mr,
+            mg,
+            mb,
+            ma,
             buckets,
         );
     }
@@ -3348,9 +3400,19 @@ mod tests {
         // / histogram for a handful of conformance pairs. Drop by name into
         // `cargo test -- --nocapture diagnose_conformance` when investigating
         // a new SDR-fallback regression.
-        for case in ["bench_oriented_brg", "blendmodes", "patches", "cmyk_layers", "bike"] {
-            let jxl = std::path::Path::new(r"F:\HDR\conformance\testcases").join(case).join("input.jxl");
-            let png = std::path::Path::new(r"F:\HDR\conformance\testcases").join(case).join("ref.png");
+        for case in [
+            "bench_oriented_brg",
+            "blendmodes",
+            "patches",
+            "cmyk_layers",
+            "bike",
+        ] {
+            let jxl = std::path::Path::new(r"F:\HDR\conformance\testcases")
+                .join(case)
+                .join("input.jxl");
+            let png = std::path::Path::new(r"F:\HDR\conformance\testcases")
+                .join(case)
+                .join("ref.png");
             diagnose_conformance_pair(case, &jxl, &png);
         }
     }
@@ -3374,7 +3436,9 @@ mod tests {
     #[test]
     fn diagnose_blendmodes_frame_count_when_sample_present() {
         let path = std::path::Path::new(r"F:\HDR\conformance\testcases\blendmodes\input.jxl");
-        if !path.is_file() { return; }
+        if !path.is_file() {
+            return;
+        }
         let bytes = std::fs::read(path).expect("read");
         let mut frame_count = 0_u32;
         let mut full_image_count = 0_u32;
@@ -3396,20 +3460,31 @@ mod tests {
             let mut buf: Vec<f32> = Vec::new();
             loop {
                 let st = libjxl_sys::JxlDecoderProcessInput(decoder);
-                if st == libjxl_sys::JXL_DEC_FRAME { frame_count += 1; }
-                else if st == libjxl_sys::JXL_DEC_FULL_IMAGE { full_image_count += 1; }
-                else if st == libjxl_sys::JXL_DEC_NEED_IMAGE_OUT_BUFFER {
+                if st == libjxl_sys::JXL_DEC_FRAME {
+                    frame_count += 1;
+                } else if st == libjxl_sys::JXL_DEC_FULL_IMAGE {
+                    full_image_count += 1;
+                } else if st == libjxl_sys::JXL_DEC_NEED_IMAGE_OUT_BUFFER {
                     let mut size = 0_usize;
                     libjxl_sys::JxlDecoderImageOutBufferSize(decoder.cast_const(), &pf, &mut size);
                     buf.resize(size / 4, 0.0);
-                    libjxl_sys::JxlDecoderSetImageOutBuffer(decoder, &pf, buf.as_mut_ptr().cast(), size);
+                    libjxl_sys::JxlDecoderSetImageOutBuffer(
+                        decoder,
+                        &pf,
+                        buf.as_mut_ptr().cast(),
+                        size,
+                    );
+                } else if st == libjxl_sys::JXL_DEC_SUCCESS || st == libjxl_sys::JXL_DEC_ERROR {
+                    break;
+                } else if st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT {
+                    break;
                 }
-                else if st == libjxl_sys::JXL_DEC_SUCCESS || st == libjxl_sys::JXL_DEC_ERROR { break; }
-                else if st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT { break; }
             }
             libjxl_sys::JxlDecoderDestroy(decoder);
         }
-        eprintln!("[blendmodes] JXL_DEC_FRAME fired {frame_count}× JXL_DEC_FULL_IMAGE fired {full_image_count}×");
+        eprintln!(
+            "[blendmodes] JXL_DEC_FRAME fired {frame_count}× JXL_DEC_FULL_IMAGE fired {full_image_count}×"
+        );
     }
 
     /// Hunt for pixels with the largest channel diff between our SDR fallback
@@ -3422,7 +3497,9 @@ mod tests {
         use crate::hdr::types::HdrToneMapSettings;
         let jxl_path = std::path::Path::new(r"F:\HDR\conformance\testcases\blendmodes\input.jxl");
         let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases\blendmodes\ref.png");
-        if !jxl_path.is_file() || !ref_path.is_file() { return; }
+        if !jxl_path.is_file() || !ref_path.is_file() {
+            return;
+        }
         let bytes = std::fs::read(jxl_path).expect("read jxl");
         let img = crate::loader::apply_exif_orientation_to_image_data(
             jxl_path,
@@ -3431,9 +3508,12 @@ mod tests {
                 HdrToneMapSettings::default().target_hdr_capacity(),
                 HdrToneMapSettings::default().target_hdr_capacity(),
                 HdrToneMapSettings::default(),
-            ).expect("decode"),
+            )
+            .expect("decode"),
         );
-        let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else { return };
+        let crate::loader::ImageData::Hdr { fallback, hdr, .. } = img else {
+            return;
+        };
         let our = fallback.rgba().to_vec();
         let r = image::open(ref_path).expect("ref").to_rgba8().into_raw();
         let w = hdr.width as usize;
@@ -3458,9 +3538,18 @@ mod tests {
             let f = &hdr.rgba_f32[f_i..f_i + 4];
             eprintln!(
                 "[worst] ({x:4},{y:4}) diff={diff} ours=({},{},{},a:{}) ref=({},{},{},a:{}) f32=({:.3},{:.3},{:.3},a:{:.3})",
-                our[i], our[i + 1], our[i + 2], our[i + 3],
-                r[i], r[i + 1], r[i + 2], r[i + 3],
-                f[0], f[1], f[2], f[3]
+                our[i],
+                our[i + 1],
+                our[i + 2],
+                our[i + 3],
+                r[i],
+                r[i + 1],
+                r[i + 2],
+                r[i + 3],
+                f[0],
+                f[1],
+                f[2],
+                f[3]
             );
         }
     }
@@ -3469,9 +3558,15 @@ mod tests {
     #[test]
     fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
         for case in ["blendmodes", "patches", "bench_oriented_brg", "bike"] {
-            let jxl_path = std::path::Path::new(r"F:\HDR\conformance\testcases").join(case).join("input.jxl");
-            let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases").join(case).join("ref.png");
-            if !jxl_path.is_file() || !ref_path.is_file() { continue; }
+            let jxl_path = std::path::Path::new(r"F:\HDR\conformance\testcases")
+                .join(case)
+                .join("input.jxl");
+            let ref_path = std::path::Path::new(r"F:\HDR\conformance\testcases")
+                .join(case)
+                .join("ref.png");
+            if !jxl_path.is_file() || !ref_path.is_file() {
+                continue;
+            }
             let bytes = std::fs::read(&jxl_path).expect("read jxl");
             let ref_img = image::open(&ref_path).expect("decode ref.png").to_rgba8();
             let (rw, rh) = (ref_img.width(), ref_img.height());
@@ -3502,28 +3597,46 @@ mod tests {
                         width = info.xsize;
                     } else if st == libjxl_sys::JXL_DEC_NEED_IMAGE_OUT_BUFFER {
                         let mut size = 0_usize;
-                        libjxl_sys::JxlDecoderImageOutBufferSize(decoder.cast_const(), &pixel_format, &mut size);
+                        libjxl_sys::JxlDecoderImageOutBufferSize(
+                            decoder.cast_const(),
+                            &pixel_format,
+                            &mut size,
+                        );
                         rgba_f32.resize(size / std::mem::size_of::<f32>(), 0.0);
-                        libjxl_sys::JxlDecoderSetImageOutBuffer(decoder, &pixel_format, rgba_f32.as_mut_ptr().cast(), size);
-                    } else if st == libjxl_sys::JXL_DEC_FULL_IMAGE { break; }
-                    else if st == libjxl_sys::JXL_DEC_ERROR || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT { break; }
+                        libjxl_sys::JxlDecoderSetImageOutBuffer(
+                            decoder,
+                            &pixel_format,
+                            rgba_f32.as_mut_ptr().cast(),
+                            size,
+                        );
+                    } else if st == libjxl_sys::JXL_DEC_FULL_IMAGE {
+                        break;
+                    } else if st == libjxl_sys::JXL_DEC_ERROR
+                        || st == libjxl_sys::JXL_DEC_NEED_MORE_INPUT
+                    {
+                        break;
+                    }
                 }
                 libjxl_sys::JxlDecoderDestroy(decoder);
             }
-            if width == 0 || rgba_f32.is_empty() { continue; }
+            if width == 0 || rgba_f32.is_empty() {
+                continue;
+            }
             // Pick 6 sample pixels evenly spaced
             let samples: [(u32, u32); 6] = [
-                (rw / 8,     rh / 8    ),
-                (rw / 4,     rh / 4    ),
-                (rw / 2,     rh / 4    ),
-                (rw / 2,     rh / 2    ),
-                (rw * 3 / 4, rh / 2    ),
+                (rw / 8, rh / 8),
+                (rw / 4, rh / 4),
+                (rw / 2, rh / 4),
+                (rw / 2, rh / 2),
+                (rw * 3 / 4, rh / 2),
                 (rw * 3 / 4, rh * 3 / 4),
             ];
             eprintln!("\n--- {case} ({rw}x{rh}) — float vs ref.png ---");
             for (x, y) in samples {
                 let i = (y as usize * width as usize + x as usize) * 4;
-                if i + 2 >= rgba_f32.len() { continue; }
+                if i + 2 >= rgba_f32.len() {
+                    continue;
+                }
                 let r = rgba_f32[i];
                 let g = rgba_f32[i + 1];
                 let b = rgba_f32[i + 2];
@@ -3537,11 +3650,7 @@ mod tests {
                     super::linear_to_srgb_u8(g),
                     super::linear_to_srgb_u8(b),
                 );
-                let ref_pix = (
-                    ref_bytes[i],
-                    ref_bytes[i + 1],
-                    ref_bytes[i + 2],
-                );
+                let ref_pix = (ref_bytes[i], ref_bytes[i + 1], ref_bytes[i + 2]);
                 eprintln!(
                     "  ({x:4},{y:4}) f32=({r:.3},{g:.3},{b:.3}) direct={direct:?} linear->srgb={linear_to_srgb:?} ref={ref_pix:?}"
                 );

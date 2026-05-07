@@ -61,10 +61,7 @@ pub enum HdrEnvironmentProbe {
     /// The monitor where the window is expected to spawn reports active HDR
     /// signaling — keep the `Rgba16Float` swap chain so we can drive scRGB
     /// native presentation.
-    SpawnMonitorHdr {
-        label: String,
-        origin: &'static str,
-    },
+    SpawnMonitorHdr { label: String, origin: &'static str },
     /// The monitor where the window is expected to spawn is SDR (HDR disabled in
     /// Windows Settings, or physically SDR panel) — force
     /// `preferred_target_format` to `None` so eframe selects an SDR
@@ -76,10 +73,7 @@ pub enum HdrEnvironmentProbe {
     /// monitor probe asks the (patched) egui-wgpu Painter to hot-swap the
     /// swap-chain format to `Rgba16Float`. Conversely, dragging back onto an
     /// SDR monitor swaps it back to `Bgra8Unorm`.
-    SpawnMonitorSdr {
-        label: String,
-        origin: &'static str,
-    },
+    SpawnMonitorSdr { label: String, origin: &'static str },
     /// Probe failed (DXGI error, non-Windows platform, etc.) — keep whatever the
     /// caller-supplied policy decided. The runtime monitor probe will still
     /// gate the rendering path correctly, this just leaves the swap-chain
@@ -259,8 +253,8 @@ mod tests {
     use crate::hdr::monitor::HdrMonitorSelection;
     use crate::hdr::surface::{
         HdrEnvironmentProbe, HdrSurfaceSelection, choose_native_hdr_surface_format,
-        desired_target_format_for_active_monitor,
-        initial_monitor_selection_from_environment_probe, native_hdr_surface_blocker,
+        desired_target_format_for_active_monitor, initial_monitor_selection_from_environment_probe,
+        native_hdr_surface_blocker,
     };
 
     fn hdr_selection() -> HdrMonitorSelection {
@@ -319,7 +313,12 @@ mod tests {
 
     #[test]
     fn probe_unavailable_yields_no_seed() {
-        assert!(initial_monitor_selection_from_environment_probe(&HdrEnvironmentProbe::ProbeUnavailable).is_none());
+        assert!(
+            initial_monitor_selection_from_environment_probe(
+                &HdrEnvironmentProbe::ProbeUnavailable
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -472,8 +471,7 @@ mod tests {
     fn environment_probe_runs_on_windows_when_enabled() {
         // We can't assert the exact outcome (depends on the test machine), but we can assert
         // the probe yields one of the well-defined variants and the format follows the variant.
-        let (format, probe) =
-            super::preferred_native_hdr_target_format_for_environment(true, None);
+        let (format, probe) = super::preferred_native_hdr_target_format_for_environment(true, None);
         match &probe {
             super::HdrEnvironmentProbe::SpawnMonitorHdr { origin, .. } => {
                 assert_eq!(format, Some(wgpu::TextureFormat::Rgba16Float));
@@ -506,8 +504,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn environment_probe_unavailable_does_not_prefer_float_without_spawn_classification() {
-        let (format, probe) =
-            super::preferred_native_hdr_target_format_for_environment(true, None);
+        let (format, probe) = super::preferred_native_hdr_target_format_for_environment(true, None);
         if probe == super::HdrEnvironmentProbe::ProbeUnavailable {
             assert_eq!(
                 format, None,

@@ -60,8 +60,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn open_music_dir_dialog(&mut self, frame: &eframe::Frame) {
-        if let Some(dir) =
-            crate::app::rfd_parent::file_dialog_for_main_window(frame).pick_folder()
+        if let Some(dir) = crate::app::rfd_parent::file_dialog_for_main_window(frame).pick_folder()
         {
             self.settings.music_path = Some(dir.clone());
             self.restart_audio_if_enabled();

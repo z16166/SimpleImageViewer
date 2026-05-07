@@ -24,14 +24,14 @@ use crate::hdr::gain_map::{
     gain_map_metadata_diagnostic, sample_gain_map_rgb,
 };
 #[cfg(feature = "avif-native")]
-use std::ffi::CStr;
+use crate::hdr::types::{
+    DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat,
+};
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "avif-native")]
-use crate::hdr::types::{
-    DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat,
-};
+use std::ffi::CStr;
 #[cfg(feature = "avif-native")]
 use std::sync::Arc;
 
@@ -118,13 +118,15 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         return Ok(None);
     }
 
-    let seq = unsafe { libavif_sys::siv_avif_decoder_image_sequence_track_present(decoder.as_ptr()) };
+    let seq =
+        unsafe { libavif_sys::siv_avif_decoder_image_sequence_track_present(decoder.as_ptr()) };
     let count = unsafe { libavif_sys::siv_avif_decoder_get_image_count(decoder.as_ptr()) };
     if seq == 0 || count <= 1 {
         return Ok(None);
     }
 
-    let count = usize::try_from(count).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
+    let count =
+        usize::try_from(count).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
 
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
@@ -149,7 +151,9 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         }
         let rgba = decode_avif_image_rgba8_packed(img_ptr, img_ref, &result_to_string)?;
 
-        let delay_ms = (timing.duration * 1000.0).round().clamp(0.0, u32::MAX as f64) as u32;
+        let delay_ms = (timing.duration * 1000.0)
+            .round()
+            .clamp(0.0, u32::MAX as f64) as u32;
         let delay_ms = if delay_ms <= MIN_ANIMATION_DELAY_THRESHOLD_MS {
             DEFAULT_ANIMATION_DELAY_MS
         } else {
@@ -218,11 +222,7 @@ pub(crate) fn avif_irot_imir_to_exif_orientation(
 
 #[cfg(feature = "avif-native")]
 pub(crate) fn avif_transforms_to_exif_orientation(image: &libavif_sys::avifImage) -> u16 {
-    avif_irot_imir_to_exif_orientation(
-        image.transformFlags,
-        image.irot.angle,
-        image.imir.axis,
-    )
+    avif_irot_imir_to_exif_orientation(image.transformFlags, image.irot.angle, image.imir.axis)
 }
 
 /// After [`libavif_sys::avifDecoderParse`], `decoder->image` is filled from the container (incl. `irot` /
@@ -303,8 +303,8 @@ pub(crate) fn avif_cicp_to_metadata(
 #[cfg(feature = "avif-native")]
 #[allow(dead_code)]
 pub(crate) fn decode_avif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
-    let mmap = crate::mmap_util::map_file(path)
-        .map_err(|err| format!("Failed to read AVIF: {err}"))?;
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
     decode_avif_hdr_bytes(&mmap[..])
 }
 
@@ -323,8 +323,8 @@ pub(crate) fn decode_avif_hdr_with_target_capacity(
     path: &std::path::Path,
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    let mmap = crate::mmap_util::map_file(path)
-        .map_err(|err| format!("Failed to read AVIF: {err}"))?;
+    let mmap =
+        crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;
     decode_avif_hdr_bytes_with_target_capacity(&mmap[..], target_hdr_capacity)
 }
 
@@ -352,10 +352,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     // Request gain-map items first (`AVIF_IMAGE_CONTENT_ALL`). Some inputs fail when the decoder
     // walks optional gain-map associations; retry with color+alpha only.
     let content_flag_attempts: [(u32, &'static str); 2] = [
-        (
-            libavif_sys::AVIF_IMAGE_CONTENT_ALL,
-            "color+alpha+gainmap",
-        ),
+        (libavif_sys::AVIF_IMAGE_CONTENT_ALL, "color+alpha+gainmap"),
         (
             libavif_sys::AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA,
             "color+alpha",
@@ -451,7 +448,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                         transfer_function: HdrTransferFunction::Pq,
                         reference: HdrReference::DisplayReferred,
                         color_profile: HdrColorProfile::Cicp {
-                            color_primaries: 1, // BT.709 (sRGB primaries)
+                            color_primaries: 1,           // BT.709 (sRGB primaries)
                             transfer_characteristics: 16, // PQ
                             matrix_coefficients: 0,
                             full_range: true,
@@ -462,7 +459,9 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                     metadata.gain_map = Some(HdrGainMapMetadata {
                         source: "AVIF",
                         target_hdr_capacity: Some(target_hdr_capacity),
-                        diagnostic: format!("{diagnostic} (libavif avifImageApplyGainMap → PQ BT.709)"),
+                        diagnostic: format!(
+                            "{diagnostic} (libavif avifImageApplyGainMap → PQ BT.709)"
+                        ),
                         capped_display_referred: false,
                     });
                     return Ok(HdrImageBuffer {
@@ -527,8 +526,11 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                 let r = rgba_u16[index] as f32 / scale;
                 let g = rgba_u16[index + 1] as f32 / scale;
                 let b = rgba_u16[index + 2] as f32 / scale;
-                let rgb_display_linear =
-                    decode_transfer_to_display_linear([r, g, b], metadata.transfer_function, sdr_white);
+                let rgb_display_linear = decode_transfer_to_display_linear(
+                    [r, g, b],
+                    metadata.transfer_function,
+                    sdr_white,
+                );
                 let rgb_linear_srgb =
                     linear_primary_to_linear_srgb(rgb_display_linear, color_space, &metadata);
                 let sdr_rgba = [
@@ -664,9 +666,7 @@ fn apply_icc_to_srgb_via_lcms(rgba: &mut [f32], source_icc: &[u8]) -> bool {
         return false;
     }
     if pixel_count > u32::MAX as usize {
-        log::warn!(
-            "[AVIF] ICC transform skipped: {pixel_count} pixels exceeds lcms2 u32 limit"
-        );
+        log::warn!("[AVIF] ICC transform skipped: {pixel_count} pixels exceeds lcms2 u32 limit");
         return false;
     }
 
@@ -809,7 +809,9 @@ fn avif_image_tone_map_pq_rgba32f(
 }
 
 #[cfg(feature = "avif-native")]
-fn copy_avif_tone_mapped_rgbaf16_to_rgba32f(rgb: &libavif_sys::avifRGBImage) -> Result<Vec<f32>, String> {
+fn copy_avif_tone_mapped_rgbaf16_to_rgba32f(
+    rgb: &libavif_sys::avifRGBImage,
+) -> Result<Vec<f32>, String> {
     if rgb.isFloat == 0 || rgb.depth != 16 || rgb.format != libavif_sys::AVIF_RGB_FORMAT_RGBA {
         return Err(format!(
             "unexpected libavif tone-mapped RGB (isFloat={} depth={} format={})",
@@ -824,9 +826,7 @@ fn copy_avif_tone_mapped_rgbaf16_to_rgba32f(rgb: &libavif_sys::avifRGBImage) -> 
     let row_bytes = rgb.rowBytes as usize;
     let mut out = Vec::with_capacity(w * h * 4);
     for y in 0..h {
-        let row = unsafe {
-            std::slice::from_raw_parts(rgb.pixels.add(y * row_bytes), w * 8)
-        };
+        let row = unsafe { std::slice::from_raw_parts(rgb.pixels.add(y * row_bytes), w * 8) };
         for x in 0..w {
             let i = x * 8;
             let r = f16_bits_to_f32(u16::from_le_bytes([row[i], row[i + 1]]));
@@ -884,7 +884,9 @@ fn rgb_channel_max_f(rgb_depth: u32) -> f32 {
 /// behaviour (not an ad‑hoc “fix libavif” patch). ICTCP / chroma-derived CL codes use the same NCL
 /// approximation. See decode path comment on Chimera-style **mis-tagged** MC=10.
 #[cfg(feature = "avif-native")]
-fn avif_matrix_fallback_for_yuv_to_rgb(mc: libavif_sys::avifMatrixCoefficients) -> Option<libavif_sys::avifMatrixCoefficients> {
+fn avif_matrix_fallback_for_yuv_to_rgb(
+    mc: libavif_sys::avifMatrixCoefficients,
+) -> Option<libavif_sys::avifMatrixCoefficients> {
     match mc {
         3 => Some(libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_NCL),
         m if m == libavif_sys::AVIF_MATRIX_COEFFICIENTS_BT2020_CL => {
@@ -918,7 +920,10 @@ fn avif_reformat_snapshot(image_ref: &libavif_sys::avifImage) -> AvifYuvRgbRefor
 }
 
 #[cfg(feature = "avif-native")]
-unsafe fn avif_restore_reformat_snap(image: *mut libavif_sys::avifImage, snap: &AvifYuvRgbReformatSnap) {
+unsafe fn avif_restore_reformat_snap(
+    image: *mut libavif_sys::avifImage,
+    snap: &AvifYuvRgbReformatSnap,
+) {
     unsafe {
         (*image).matrixCoefficients = snap.matrix_coefficients;
         (*image).yuvRange = snap.yuv_range;

@@ -607,7 +607,9 @@ impl ImageViewerApp {
 
             log::debug!(
                 "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
-                self.current_index, prefetch_gen, self.generation
+                self.current_index,
+                prefetch_gen,
+                self.generation
             );
         } else {
             // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
@@ -1167,8 +1169,7 @@ impl ImageViewerApp {
                         continue;
                     }
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
-                        self.loader
-                            .repush(LoaderOutput::HdrSdrFallback(update));
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
                         break;
                     }
@@ -1614,17 +1615,17 @@ impl ImageViewerApp {
                 // 2. Update prefetched TileManagers (survivor results won't match here since
                 // the TileManager was already promoted out of prefetched_tiles, skip for them).
                 if !is_prefetch_survivor {
-                if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
-                    if update.generation == tm.generation {
-                        log::debug!(
-                            "[App] HQ preview applied for prefetched index {} ({}x{})",
-                            update.index,
-                            preview.width,
-                            preview.height
-                        );
-                        tm.set_preview(preview.clone(), ctx);
+                    if let Some(tm) = self.prefetched_tiles.get_mut(&update.index) {
+                        if update.generation == tm.generation {
+                            log::debug!(
+                                "[App] HQ preview applied for prefetched index {} ({}x{})",
+                                update.index,
+                                preview.width,
+                                preview.height
+                            );
+                            tm.set_preview(preview.clone(), ctx);
+                        }
                     }
-                }
                 } // end !is_prefetch_survivor
 
                 // 3. Update global texture cache (so instant-flips also get HQ texture).
@@ -1921,8 +1922,22 @@ mod tests {
         let mut cache = HashMap::new();
         let mut current = None;
 
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&initial)), "test.exr");
-        cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(Arc::clone(&refined)), "test.exr");
+        cache_hdr_tiled_preview_state(
+            7,
+            7,
+            &mut cache,
+            &mut current,
+            Some(Arc::clone(&initial)),
+            "test.exr",
+        );
+        cache_hdr_tiled_preview_state(
+            7,
+            7,
+            &mut cache,
+            &mut current,
+            Some(Arc::clone(&refined)),
+            "test.exr",
+        );
         cache_hdr_tiled_preview_state(7, 7, &mut cache, &mut current, Some(smaller), "test.exr");
 
         let cached = cache.get(&7).expect("preview should be cached");

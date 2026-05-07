@@ -2,8 +2,7 @@
 
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-static TILED_THRESHOLD_TEST_LOCK: LazyLock<Mutex<()>> =
-    LazyLock::new(|| Mutex::new(()));
+static TILED_THRESHOLD_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 pub(crate) struct TiledThresholdOverride {
     old_threshold: u64,

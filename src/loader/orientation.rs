@@ -24,7 +24,10 @@ use super::types::{AnimationFrame, DecodedImage, ImageData, TiledImageSource};
 /// AVIF, JXL). Probed monitor headroom can exceed [`HdrToneMapSettings::max_display_nits`];
 /// using the larger value applies more gain-map weight than the same settings use for SDR
 /// previews and Reinhard tone mapping, so the HDR float plane appears too bright.
-pub(crate) fn hdr_gain_map_decode_capacity(hdr_target_capacity: f32, hdr_tone_map: &HdrToneMapSettings) -> f32 {
+pub(crate) fn hdr_gain_map_decode_capacity(
+    hdr_target_capacity: f32,
+    hdr_tone_map: &HdrToneMapSettings,
+) -> f32 {
     hdr_target_capacity.min(hdr_tone_map.target_hdr_capacity())
 }
 
@@ -84,7 +87,8 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
             let h = source.height();
             let vec = (*full_px).clone();
             let (ow, oh, opx) = crate::libtiff_loader::apply_orientation_buffer(vec, w, h, o);
-            let rebuilt = crate::loader::tiled_sources::MemoryImageSource::new(ow, oh, Arc::new(opx));
+            let rebuilt =
+                crate::loader::tiled_sources::MemoryImageSource::new(ow, oh, Arc::new(opx));
             ImageData::Tiled(Arc::new(rebuilt))
         }
         ImageData::Animated(frames) => {

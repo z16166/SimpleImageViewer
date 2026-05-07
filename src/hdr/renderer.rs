@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference, HdrToneMapSettings,
-    HdrTransferFunction,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 use eframe::{
     egui,
@@ -1559,11 +1559,7 @@ mod tests {
             max_display_nits: 1000.0,
             ..HdrToneMapSettings::default()
         };
-        let s = libavif_tone_map_native_display_scale(
-            &metadata,
-            HdrColorSpace::LinearSrgb,
-            &tone,
-        );
+        let s = libavif_tone_map_native_display_scale(&metadata, HdrColorSpace::LinearSrgb, &tone);
         assert!((s - 203.0 / 1000.0).abs() < 1e-5);
     }
 

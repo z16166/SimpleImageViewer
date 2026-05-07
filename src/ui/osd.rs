@@ -166,8 +166,8 @@ impl OsdRenderer {
             } else {
                 crate::constants::OSD_ERROR_OFFSET
             };
-            let err_pos = screen_rect.left_bottom()
-                + Vec2::new(crate::constants::OSD_MARGIN, -err_offset_y);
+            let err_pos =
+                screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -err_offset_y);
             ui.painter().text(
                 err_pos,
                 Align2::LEFT_BOTTOM,

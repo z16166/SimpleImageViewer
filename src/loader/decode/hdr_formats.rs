@@ -19,8 +19,8 @@
 use crate::hdr::tiled::HdrTiledSource;
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    apply_exif_orientation_to_hdr_pair, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    DecodedImage, ImageData, TiledImageSource,
+    DecodedImage, ImageData, TiledImageSource, apply_exif_orientation_to_hdr_pair,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -50,11 +50,8 @@ pub(crate) fn load_hdr(
         }
         Err(err) => return Err(err),
     };
-    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-        &hdr,
-        hdr_target_capacity,
-        &hdr_tone_map,
-    )?;
+    let pixels =
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))
@@ -88,8 +85,10 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
         if source.has_subsampled_channels() {
             let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-            let fallback: Arc<dyn TiledImageSource> =
-                Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr), hdr_tone_map));
+            let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
+                Arc::clone(&hdr),
+                hdr_tone_map,
+            ));
             log::info!(
                 "[Loader] subsampled EXR {}x{} kept as disk-backed HDR tiles.",
                 hdr.width(),
@@ -98,14 +97,17 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
             return Ok(Some(ImageData::HdrTiled { hdr, fallback }));
         }
         if source.requires_disk_backed_decode() {
-            return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map).map(Some);
+            return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map)
+                .map(Some);
         }
         return Ok(None);
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-    let fallback: Arc<dyn TiledImageSource> =
-        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr), hdr_tone_map));
+    let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
+        Arc::clone(&hdr),
+        hdr_tone_map,
+    ));
     log::info!(
         "[Loader] EXR {}x{} routed to disk-backed HDR tiles.",
         hdr.width(),
@@ -129,11 +131,8 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
         metadata: tile.metadata.clone(),
         rgba_f32: Arc::clone(&tile.rgba_f32),
     };
-    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-        &hdr,
-        hdr_target_capacity,
-        &hdr_tone_map,
-    )?;
+    let pixels =
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
     log::info!(
         "[Loader] EXR {}x{} routed to static HDR via disk-backed decoder: {}",
@@ -145,7 +144,10 @@ pub(crate) fn exr_tiled_source_to_static_hdr(
     Ok(make_hdr_image_data(hdr, fallback))
 }
 
-pub(crate) fn try_load_disk_backed_radiance_hdr(path: &Path, hdr_tone_map: HdrToneMapSettings) -> Result<Option<ImageData>, String> {
+pub(crate) fn try_load_disk_backed_radiance_hdr(
+    path: &Path,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<Option<ImageData>, String> {
     let source = crate::hdr::radiance_tiled::RadianceHdrTiledImageSource::open(path)?;
     let pixel_count = source.width() as u64 * source.height() as u64;
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
@@ -155,8 +157,10 @@ pub(crate) fn try_load_disk_backed_radiance_hdr(path: &Path, hdr_tone_map: HdrTo
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-    let fallback: Arc<dyn TiledImageSource> =
-        Arc::new(HdrSdrTiledFallbackSource::new(Arc::clone(&hdr), hdr_tone_map));
+    let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
+        Arc::clone(&hdr),
+        hdr_tone_map,
+    ));
     log::info!(
         "[Loader] Radiance HDR {}x{} routed to disk-backed HDR tiles.",
         hdr.width(),
@@ -236,8 +240,7 @@ pub(crate) fn load_detected_exr(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    if let Some(image_data) =
-        try_load_disk_backed_exr_hdr(path, hdr_target_capacity, hdr_tone_map)?
+    if let Some(image_data) = try_load_disk_backed_exr_hdr(path, hdr_target_capacity, hdr_tone_map)?
     {
         return Ok(image_data);
     }
@@ -253,11 +256,8 @@ pub(crate) fn load_detected_exr(
         }
         Err(err) => return Err(err),
     };
-    let pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-        &hdr,
-        hdr_target_capacity,
-        &hdr_tone_map,
-    )?;
+    let pixels =
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
     let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
     let (hdr, fallback) = apply_exif_orientation_to_hdr_pair(path, hdr, fallback);
     Ok(make_hdr_image_data(hdr, fallback))

@@ -51,9 +51,8 @@ unsafe impl Sync for OpenExrCoreReadContext {}
 fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> {
     let filename = CString::new(path.to_string_lossy().as_bytes()).ok()?;
     let mut out = [0.0_f32; 8];
-    let code = unsafe {
-        sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr())
-    };
+    let code =
+        unsafe { sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr()) };
     (code == 0).then_some(out)
 }
 
@@ -83,14 +82,11 @@ fn openexr_luminance_weights_from_chromaticities_xy(ch: &[f32; 8]) -> Option<[f3
 
     let d = rx * (by - gy) + bx * (gy - ry) + gx * (ry - by);
 
-    let sr_n = x * (by - gy)
-        - gx * (y_white * (by - 1.0) + by * (x + z))
+    let sr_n = x * (by - gy) - gx * (y_white * (by - 1.0) + by * (x + z))
         + bx * (y_white * (gy - 1.0) + gy * (x + z));
-    let sg_n = x * (ry - by)
-        + rx * (y_white * (by - 1.0) + by * (x + z))
+    let sg_n = x * (ry - by) + rx * (y_white * (by - 1.0) + by * (x + z))
         - bx * (y_white * (ry - 1.0) + ry * (x + z));
-    let sb_n = x * (gy - ry)
-        - rx * (y_white * (gy - 1.0) + gy * (x + z))
+    let sb_n = x * (gy - ry) - rx * (y_white * (gy - 1.0) + gy * (x + z))
         + gx * (y_white * (ry - 1.0) + ry * (x + z));
 
     if d.abs() < 1.0
@@ -345,7 +341,9 @@ impl OpenExrCoreReadContext {
         })
     }
 
-    pub(crate) fn infer_exr_display_color_space_for_path(path: &Path) -> crate::hdr::types::HdrColorSpace {
+    pub(crate) fn infer_exr_display_color_space_for_path(
+        path: &Path,
+    ) -> crate::hdr::types::HdrColorSpace {
         match imf_exr_chromaticities_from_path(path) {
             Some(ch) => hdr_color_space_from_chromaticities_xy(&ch),
             None => crate::hdr::types::HdrColorSpace::LinearSrgb,
@@ -470,19 +468,13 @@ impl OpenExrCoreReadContext {
 
                 let fetched = chunk_work
                     .par_iter()
-                    .map(|(chunk, ox, oy)| {
-                        self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy))
-                    })
+                    .map(|(chunk, ox, oy)| self.fetch_decoded_chunk(part_index, chunk, (*ox, *oy)))
                     .collect::<Result<Vec<_>, String>>()?;
 
                 let tile_rect = (x, y, width, height);
                 for i in 0..fetched.len() {
                     let fetch = &fetched[i];
-                    let copy_ms = copy_decoded_chunk_to_tile(
-                        &fetch.decoded,
-                        tile_rect,
-                        &mut rgba,
-                    )?;
+                    let copy_ms = copy_decoded_chunk_to_tile(&fetch.decoded, tile_rect, &mut rgba)?;
                     #[cfg(feature = "tile-debug")]
                     {
                         let (chunk, chunk_origin_x, chunk_origin_y) = &chunk_work[i];
@@ -1392,7 +1384,9 @@ fn scanline_preview_source_row_budget(requested_preview_width: u32) -> u32 {
 }
 
 fn scanline_preview_decode_parallelism(unique_chunks: usize) -> usize {
-    let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let cpuses = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     let cap = (cpuses * 3 / 4).clamp(16, 32);
     cap.min(unique_chunks.max(1))
 }
@@ -1672,12 +1666,17 @@ mod tests {
             "Imf should read chromaticities from Carrots.exr header"
         );
         assert_eq!(cs, HdrColorSpace::Aces2065_1);
-        assert!(max_rgb[0] > 0.01 || max_rgb[1] > 0.01 || max_rgb[2] > 0.01, "rgb should not be flat black");
+        assert!(
+            max_rgb[0] > 0.01 || max_rgb[1] > 0.01 || max_rgb[2] > 0.01,
+            "rgb should not be flat black"
+        );
     }
 
     #[test]
     fn aces_ap0_chromaticities_heuristic_triggers() {
-        let ap0 = [0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767];
+        let ap0 = [
+            0.7347_f32, 0.2653, 0.0, 1.0, 0.0001, -0.077, 0.32168, 0.33767,
+        ];
         assert!(super::chromaticities_looks_like_aces_ap0(&ap0));
         assert_eq!(
             super::hdr_color_space_from_chromaticities_xy(&ap0),
@@ -1909,7 +1908,9 @@ mod tests {
 
     #[test]
     fn scanline_preview_decode_parallelism_is_bounded() {
-        let cpuses = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let cpuses = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         let cap = (cpuses * 3 / 4).clamp(16, 32);
         assert_eq!(super::scanline_preview_decode_parallelism(0), 1);
         assert_eq!(super::scanline_preview_decode_parallelism(1), 1);

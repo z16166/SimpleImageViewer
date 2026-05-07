@@ -5,11 +5,11 @@ use std::sync::Arc;
 use crate::hdr::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrToneMapSettings,
 };
-use crate::loader::{DecodedImage, ImageData};
 use crate::loader::decode::assemble::make_hdr_image_data_for_limit;
 use crate::loader::decode::hdr_formats::load_hdr;
+use crate::loader::{DecodedImage, ImageData};
 
-use super::support::{lock_tiled_threshold_for_test, TiledThresholdOverride};
+use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 
 #[test]
 fn supported_hdr_image_data_keeps_float_buffer_with_sdr_fallback() {

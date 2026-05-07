@@ -456,7 +456,9 @@ fn main() -> eframe::Result {
         .window_inner_size
         .map(|[w, h]| [w as f32, h as f32])
         .unwrap_or([1280.0, 800.0]);
-    let saved_outer_position = settings.window_outer_position.map(|[x, y]| [x as f32, y as f32]);
+    let saved_outer_position = settings
+        .window_outer_position
+        .map(|[x, y]| [x as f32, y as f32]);
     let saved_maximized = settings.window_maximized;
 
     let mut viewport = egui::ViewportBuilder::default()

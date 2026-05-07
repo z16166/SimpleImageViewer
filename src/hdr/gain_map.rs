@@ -214,11 +214,7 @@ pub(crate) fn gain_map_weight(metadata: GainMapMetadata, target_hdr_capacity: f3
     }
     let display_log2 = target_hdr_capacity.max(f32::MIN_POSITIVE).log2();
     let w = ((display_log2 - base_log2) / denom).clamp(0.0, 1.0);
-    if alt_log2 < base_log2 {
-        -w
-    } else {
-        w
-    }
+    if alt_log2 < base_log2 { -w } else { w }
 }
 
 pub(crate) fn sample_gain_map_rgb(

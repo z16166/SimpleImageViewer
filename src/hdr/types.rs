@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 
@@ -142,12 +142,15 @@ impl HdrImageMetadata {
                 color_primaries: 9, ..
             } => HdrColorSpace::Rec2020Linear,
             HdrColorProfile::Cicp {
-                color_primaries: 11 | 12, ..
+                color_primaries: 11 | 12,
+                ..
             } => HdrColorSpace::DisplayP3Linear,
             HdrColorProfile::Cicp {
                 color_primaries: 1, ..
             } => HdrColorSpace::LinearSrgb,
-            HdrColorProfile::Icc(ref data) => embedded_icc_profile_color_space_hint(data.as_slice()),
+            HdrColorProfile::Icc(ref data) => {
+                embedded_icc_profile_color_space_hint(data.as_slice())
+            }
             _ => HdrColorSpace::Unknown,
         }
     }
@@ -198,7 +201,7 @@ impl Default for HdrImageMetadata {
 fn embedded_icc_profile_color_space_hint(icc: &[u8]) -> HdrColorSpace {
     #[cfg(feature = "jpegxl")]
     {
-        use crate::hdr::icc_primaries_lcms::{classify_embedded_icc_primaries, EmbeddedIccHint};
+        use crate::hdr::icc_primaries_lcms::{EmbeddedIccHint, classify_embedded_icc_primaries};
         match classify_embedded_icc_primaries(icc) {
             EmbeddedIccHint::Classified(cs) => cs,
             EmbeddedIccHint::RgbPrimariesUnmatched | EmbeddedIccHint::IccPrimariesNotReadable => {
@@ -251,7 +254,10 @@ fn log_unrecognized_embedded_icc_profile_once(icc: &[u8]) {
     let preview_n = len.min(ICC_UNRECOGNIZED_LOG_HEX_BYTES);
     let head_hex = icc_bytes_to_lower_hex(&icc[..preview_n]);
     let tail_note = if len > ICC_UNRECOGNIZED_LOG_HEX_BYTES {
-        format!(" [log truncated: first {} of {} bytes as hex]", preview_n, len)
+        format!(
+            " [log truncated: first {} of {} bytes as hex]",
+            preview_n, len
+        )
     } else {
         String::new()
     };

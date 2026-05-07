@@ -26,11 +26,12 @@ mod texture_cache;
 mod tiled_sources;
 mod types;
 
-#[allow(unused_imports)] // Re-export-only surface for `crate::loader::*`; rustc may lint `MONITOR_PREVIEW_CAP`.
-pub use preview_caps::{
-    hq_preview_max_side, refresh_hq_preview_monitor_cap, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT,
-};
 pub use orchestrator::ImageLoader;
+#[allow(unused_imports)]
+// Re-export-only surface for `crate::loader::*`; rustc may lint `MONITOR_PREVIEW_CAP`.
+pub use preview_caps::{
+    MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side, refresh_hq_preview_monitor_cap,
+};
 pub use texture_cache::TextureCache;
 pub use types::*;
 

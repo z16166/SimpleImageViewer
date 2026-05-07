@@ -22,7 +22,9 @@ use std::path::PathBuf;
 
 use super::hdr_formats::{load_detected_exr, load_hdr};
 use super::jpeg::load_jpeg_with_target_capacity;
-use super::modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity};
+use super::modern::{
+    load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity,
+};
 use super::raster::{load_gif, load_png, load_static, load_webp};
 
 const DETECTION_BUFFER_SIZE: usize = 16;
@@ -37,11 +39,9 @@ pub(crate) fn load_by_image_format(
         image::ImageFormat::Png => load_png(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::Gif => load_gif(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::WebP => load_webp(path, hdr_target_capacity, hdr_tone_map),
-        image::ImageFormat::Tiff => crate::libtiff_loader::load_via_libtiff(
-            path,
-            hdr_target_capacity,
-            hdr_tone_map,
-        ),
+        image::ImageFormat::Tiff => {
+            crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map)
+        }
         // Standard single-frame formats handled by load_static
         image::ImageFormat::Jpeg => {
             load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
@@ -54,7 +54,9 @@ pub(crate) fn load_by_image_format(
         | image::ImageFormat::Farbfeld
         | image::ImageFormat::Qoi => load_static(path, hdr_target_capacity, hdr_tone_map),
         // `image` is built without `avif` (ravif); libavif-only (`load_avif_with_target_capacity`).
-        image::ImageFormat::Avif => load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+        image::ImageFormat::Avif => {
+            load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map)
+        }
         image::ImageFormat::Hdr => load_hdr(path, hdr_target_capacity, hdr_tone_map),
         image::ImageFormat::OpenExr => load_detected_exr(path, hdr_target_capacity, hdr_tone_map),
         _ => Err(rust_i18n::t!(

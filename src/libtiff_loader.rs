@@ -16,8 +16,8 @@
 
 use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrToneMapSettings, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use libtiff_viewer as lib;
@@ -1219,12 +1219,7 @@ fn to_srgb_8(linear: f32) -> u8 {
     (s * 255.0) as u8
 }
 
-fn tiff_ieee_scene_linear_eligible(
-    sample_format: u16,
-    bps: u16,
-    photo: u16,
-    spp: u16,
-) -> bool {
+fn tiff_ieee_scene_linear_eligible(sample_format: u16, bps: u16, photo: u16, spp: u16) -> bool {
     if sample_format != lib::SAMPLEFORMAT_IEEEFP || !matches!(bps, 16 | 32 | 64) {
         return false;
     }
@@ -1246,12 +1241,12 @@ fn read_ieee_sample_f32(buf: &[u8], sample_index: usize, bps: u16) -> f32 {
         }
         32 => unsafe {
             f32::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(sample_index * 4) as *const u32,
+                buf.as_ptr().add(sample_index * 4) as *const u32
             ))
         },
         64 => unsafe {
             f64::from_bits(std::ptr::read_unaligned(
-                buf.as_ptr().add(sample_index * 8) as *const u64,
+                buf.as_ptr().add(sample_index * 8) as *const u64
             )) as f32
         },
         _ => 0.0_f32,
@@ -1281,10 +1276,7 @@ fn ieee_grayscale_float_global_max_sample(
 ) -> Result<f32, String> {
     let mut gmax = f32::NEG_INFINITY;
     for y in 0..height {
-        if unsafe {
-            lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0)
-        } <= 0
-        {
+        if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
             return Err(format!(
                 "IEEE TIFF (white-ref scan): TIFFReadScanline failed at row {y}"
             ));
@@ -1358,10 +1350,7 @@ fn decode_ieee_scene_linear_rgba32f(
 
     if config == CONFIG_CONTIG {
         for y in 0..height {
-            if unsafe {
-                lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0)
-            } <= 0
-            {
+            if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
                 return Err(format!("IEEE TIFF: TIFFReadScanline failed at row {y}"));
             }
             let row_off = y as usize * width as usize * 4;
@@ -1537,9 +1526,8 @@ fn decode_logl_logluv_scene_linear_rgba32f(
             ));
         }
         for y in 0..height {
-            if unsafe {
-                lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
-            } <= 0
+            if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
+                <= 0
             {
                 return Err(format!("LogLuv HDR: TIFFReadScanline failed at row {y}"));
             }
@@ -1572,9 +1560,8 @@ fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
-                if unsafe {
-                    lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
-                } <= 0
+                if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
+                    <= 0
                 {
                     return Err(format!("LogL HDR: TIFFReadScanline failed at row {y}"));
                 }
@@ -1597,9 +1584,8 @@ fn decode_logl_logluv_scene_linear_rgba32f(
                 ));
             }
             for y in 0..height {
-                if unsafe {
-                    lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0)
-                } <= 0
+                if unsafe { lib::TIFFReadScanline(tif, scanline.as_mut_ptr() as *mut c_void, y, 0) }
+                    <= 0
                 {
                     return Err(format!("LogL HDR: TIFFReadScanline failed at row {y}"));
                 }
@@ -1730,19 +1716,11 @@ pub fn load_via_libtiff(
         lib::TIFFGetField(handle.ptr, lib::TIFFTAG_ORIENTATION, &mut orientation);
 
         let mut sample_format: u16 = lib::SAMPLEFORMAT_UINT;
-        lib::TIFFGetField(
-            handle.ptr,
-            lib::TIFFTAG_SAMPLEFORMAT,
-            &mut sample_format,
-        );
+        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_SAMPLEFORMAT, &mut sample_format);
         let mut spp: u16 = 0;
         lib::TIFFGetField(handle.ptr, lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
         let mut planar_config: u16 = CONFIG_CONTIG;
-        lib::TIFFGetField(
-            handle.ptr,
-            lib::TIFFTAG_PLANARCONFIG,
-            &mut planar_config,
-        );
+        lib::TIFFGetField(handle.ptr, lib::TIFFTAG_PLANARCONFIG, &mut planar_config);
 
         let pixel_count_pre = width as u64 * height as u64;
         if tiff_ieee_scene_linear_eligible(sample_format, bps, photo, spp)
@@ -2111,8 +2089,8 @@ mod tests {
                 path.display()
             );
             let tone = crate::hdr::types::HdrToneMapSettings::default();
-            let img = load_via_libtiff(&path, 1.0, tone)
-                .unwrap_or_else(|e| panic!("load {name}: {e}"));
+            let img =
+                load_via_libtiff(&path, 1.0, tone).unwrap_or_else(|e| panic!("load {name}: {e}"));
             match &img {
                 ImageData::Hdr { hdr, .. } => {
                     assert_eq!(hdr.width, 64, "{name}");
