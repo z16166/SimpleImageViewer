@@ -76,10 +76,22 @@ unsafe extern "C" fn tiff_seek_proc(
     whence: c_int,
 ) -> lib::toff_t {
     let ctx = unsafe { &mut *(handle as *mut TiffMmapContext) };
+    let mmap_len = ctx.mmap.len() as u64;
+    let len_i64 = ctx.mmap.len() as i64;
     match whence {
-        0 => ctx.offset = off,                                         // SEEK_SET
-        1 => ctx.offset = (ctx.offset as i64 + off as i64) as u64,     // SEEK_CUR
-        2 => ctx.offset = (ctx.mmap.len() as i64 + off as i64) as u64, // SEEK_END
+        0 => ctx.offset = off.min(mmap_len), // SEEK_SET
+        1 => {
+            // SEEK_CUR: interpret `off` as signed per libtiff conventions (see `toff_t as i64`).
+            let next = (ctx.offset as i64)
+                .saturating_add(off as i64)
+                .clamp(0, len_i64);
+            ctx.offset = next as u64;
+        }
+        2 => {
+            // SEEK_END
+            let next = len_i64.saturating_add(off as i64).clamp(0, len_i64);
+            ctx.offset = next as u64;
+        }
         _ => {}
     }
     ctx.offset
