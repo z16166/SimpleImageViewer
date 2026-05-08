@@ -18,6 +18,9 @@ use std::path::Path;
 
 use super::types::DecodedImage;
 
+/// Cap for EXIF `JPEGInterchangeFormatLength` allocations (untrusted metadata).
+const MAX_EXIF_THUMB_BYTES: usize = 64 * 1024 * 1024;
+
 pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
     use exif::Reader;
     use std::io::{Read, Seek, SeekFrom};
@@ -36,8 +39,12 @@ pub(crate) fn extract_exif_thumbnail(path: &Path) -> Option<DecodedImage> {
             .and_then(|f| f.value.get_uint(0));
 
         if let (Some(off), Some(len)) = (offset, length) {
+            let len_usize = len as usize;
+            if len_usize == 0 || len_usize > MAX_EXIF_THUMB_BYTES {
+                return None;
+            }
             reader.seek(SeekFrom::Start(off as u64)).ok()?;
-            let mut blob = vec![0u8; len as usize];
+            let mut blob = vec![0u8; len_usize];
             if reader.read_exact(&mut blob).is_ok() {
                 if let Ok(img) = image::load_from_memory(&blob) {
                     let rgba = img.into_rgba8();

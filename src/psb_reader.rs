@@ -444,20 +444,16 @@ pub fn open_tiled_source(path: &Path) -> Result<PsbTiledSource, String> {
         }
     }
 
-    // Cache capacity: must hold at least (workers × tile_height × channels) rows
-    // to avoid thrashing when multiple workers decode tiles concurrently.
-    // moka handles LRU eviction and concurrent access internally.
-    let tile_size = crate::tile_cache::get_tile_size() as usize;
-    let worker_count = std::thread::available_parallelism()
-        .map(|n| (n.get() / 2).clamp(4, 12))
-        .unwrap_or(4);
-    const ROW_CACHE_BUDGET: usize = 512 * 1024 * 1024; // 512MB
-    let row_bytes = width as usize;
-    let budget_rows = ROW_CACHE_BUDGET / row_bytes.max(1);
-    let min_rows = channels as usize * tile_size * worker_count;
-    let cache_capacity = budget_rows.max(min_rows);
+    // Row cache: bounded by total decompressed bytes (`ROW_CACHE_BUDGET`), not entry count, so
+    // ultra-wide rows cannot inflate the eviction budget (each entry weighs `decode_row.len()`).
+    const ROW_CACHE_BUDGET: u64 = 512 * 1024 * 1024; // total decompressed row bytes
 
-    let row_cache = moka::sync::Cache::new(cache_capacity as u64);
+    let row_cache = moka::sync::Cache::builder()
+        .max_capacity(ROW_CACHE_BUDGET)
+        .weigher(|_key: &(u32, u32), value: &Arc<Vec<u8>>| {
+            u32::try_from(value.len()).unwrap_or(u32::MAX)
+        })
+        .build();
 
     Ok(PsbTiledSource {
         path: path.to_path_buf(),

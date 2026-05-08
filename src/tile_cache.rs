@@ -540,10 +540,10 @@ impl TileManager {
         // We subtract a tiny epsilon from max bounds to avoid including an extra tile when
         // the viewport edge aligns exactly with a tile boundary.
         let ts = get_tile_size() as f32;
-        let min_col = (px_min_x / ts).floor() as u32;
-        let max_col = ((px_max_x - 0.01) / ts).floor() as u32;
-        let min_row = (px_min_y / ts).floor() as u32;
-        let max_row = ((px_max_y - 0.01) / ts).floor() as u32;
+        let min_col = (px_min_x.max(0.0) / ts).floor() as u32;
+        let max_col = ((px_max_x - 0.01).max(0.0) / ts).floor() as u32;
+        let min_row = (px_min_y.max(0.0) / ts).floor() as u32;
+        let max_row = ((px_max_y - 0.01).max(0.0) / ts).floor() as u32;
 
         let total_cols = self.cols();
         let total_rows = self.rows();
