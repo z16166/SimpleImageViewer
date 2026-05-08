@@ -416,6 +416,11 @@ impl ImageViewerApp {
         self.current_image_res = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
+        // Match `navigate_to` / file-open semantics: prior folder's manual zoom and rotation
+        // must not carry over (fit scale is multiplied by `zoom_factor`, so a leftover ~7.5×
+        // reads as ~232% OSD instead of ~31% on a fresh directory).
+        self.zoom_factor = 1.0;
+        self.current_rotation = 0;
         self.error_message = None;
         self.is_font_error = false;
         self.scanning = true;
@@ -962,6 +967,12 @@ impl ImageViewerApp {
                                 if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
                                     cache.clear();
                                 }
+
+                                // Indices and cache entries were just invalidated by the global sort;
+                                // reset view state so pan/zoom/rotation cannot refer to stale layout.
+                                self.zoom_factor = 1.0;
+                                self.pan_offset = Vec2::ZERO;
+                                self.current_rotation = 0;
 
                                 // Re-resolve position after global sort (indices may have shifted)
                                 self.resolve_initial_position();
