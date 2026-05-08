@@ -1092,6 +1092,15 @@ impl ImageViewerApp {
 
         // ── 2. Process results from the background ImageLoader ──
         //
+        // Generation vs `prefetch_prev_generation` (why Preview is special):
+        // `handle_preview_update` accepts HQ preview results whose `generation` equals
+        // `prefetch_prev_generation` for the current index, because refinement can finish after
+        // we bump `self.generation` when promoting a prefetched `TileManager`. `LoaderOutput::Image`
+        // uses no analogous bypass: decoded images are keyed to the generation from the active
+        // `request_load` / refinement request (`do_load` tracks that generation), so they either match
+        // `self.generation` in `gen_match` below or must be dropped; extending the prefetch survivor rule
+        // here would widen the stale-result window without a matching in-flight Image pipeline.
+        //
         // QUOTA DESIGN:
         //   - We count each ctx.load_texture() call as one "upload slot".
         //   - Tile results and Refined notifications do NOT consume slots
