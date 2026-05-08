@@ -155,13 +155,13 @@ impl ImageViewerApp {
 
                     let mut res_w = 0u32;
                     let mut res_h = 0u32;
-                    let mut mode_tag = "STATIC";
+                    let mut mode_tag = t!("osd.mode.static").to_string();
 
                     if self.tiled_canvas_matches_current_index() {
                         if let Some(tm) = &self.tile_manager {
                             res_w = tm.full_width;
                             res_h = tm.full_height;
-                            mode_tag = "TILED";
+                            mode_tag = t!("osd.mode.tiled").to_string();
                         }
                     } else if let Some((w, h)) = self.current_image_res {
                         res_w = w;
@@ -169,7 +169,7 @@ impl ImageViewerApp {
                         let threshold = crate::tile_cache::TILED_THRESHOLD
                             .load(std::sync::atomic::Ordering::Relaxed);
                         if w as u64 * h as u64 > threshold {
-                            mode_tag = "TILED";
+                            mode_tag = t!("osd.mode.tiled").to_string();
                         }
                     }
 

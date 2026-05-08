@@ -90,6 +90,10 @@ hdr.osd.tag_with_color: "HDR · %{color} · %{render} · %{output}"
 hdr.osd.tag_without_color: "HDR · %{render} · %{output}"
 hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 
+# OSD (on-screen display) mode tag for large-image path
+osd.mode.static: "STATIC"
+osd.mode.tiled: "TILED"
+
 # Scale mode
 scale.fit: "Fit to Window"
 scale.original: "Original Size"
