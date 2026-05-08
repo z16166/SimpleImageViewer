@@ -400,6 +400,7 @@ impl ImageViewerApp {
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
         self.settings.last_image_dir = Some(dir.clone());
         self.image_files.clear();
+        self.file_byte_len_by_index.clear();
         self.current_index = 0;
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
@@ -779,10 +780,11 @@ impl ImageViewerApp {
 
             let path = &self.image_files[idx];
 
-            let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let file_size = self.file_byte_len_by_index.get(idx).copied().unwrap_or(0);
 
-            // After the guaranteed first image, enforce the byte budget
-            if count > 0 && new_bytes + file_size > budget {
+            // After the guaranteed first image, enforce the byte budget.
+            // Sizes come from the scanner thread; unknown (0) skips the byte gate.
+            if count > 0 && file_size > 0 && new_bytes.saturating_add(file_size) > budget {
                 break;
             }
 
@@ -822,9 +824,13 @@ impl ImageViewerApp {
                         // ROLLBACK: Restore the file to the in-memory list if it failed to delete.
                         // We use the original index to maintain order.
                         if original_idx <= self.image_files.len() {
-                            self.image_files.insert(original_idx, path);
+                            self.image_files.insert(original_idx, path.clone());
+                            let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.insert(original_idx, sz);
                         } else {
-                            self.image_files.push(path);
+                            self.image_files.push(path.clone());
+                            let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.push(sz);
                         }
 
                         // Restore viewer state to ensure consistency.
@@ -894,9 +900,12 @@ impl ImageViewerApp {
             match rx.try_recv() {
                 Ok(msg) => {
                     match msg {
-                        ScanMessage::Batch(mut batch) => {
+                        ScanMessage::Batch(batch) => {
                             let is_first_batch = self.image_files.is_empty();
-                            self.image_files.append(&mut batch);
+                            for (path, len) in batch {
+                                self.image_files.push(path);
+                                self.file_byte_len_by_index.push(len);
+                            }
 
                             let count = self.image_files.len();
                             self.status_message =
@@ -922,7 +931,19 @@ impl ImageViewerApp {
                                 self.status_message = t!("status.not_found").to_string();
                             } else {
                                 // Re-sort the full list now that all batches have arrived.
-                                self.image_files.sort();
+                                debug_assert_eq!(
+                                    self.image_files.len(),
+                                    self.file_byte_len_by_index.len()
+                                );
+                                let mut combined: Vec<(PathBuf, u64)> =
+                                    std::mem::take(&mut self.image_files)
+                                        .into_iter()
+                                        .zip(std::mem::take(&mut self.file_byte_len_by_index))
+                                        .collect();
+                                combined.sort_by(|a, b| a.0.cmp(&b.0));
+                                let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+                                self.image_files = paths;
+                                self.file_byte_len_by_index = sizes;
 
                                 // CRITICAL: Global sort finished - all previous index-based caches
                                 // and pending loads are now potentially stale/incorrect.

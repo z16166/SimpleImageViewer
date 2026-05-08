@@ -196,10 +196,39 @@ impl ImageViewerApp {
 
         let (file_op_tx, file_op_rx) = crossbeam_channel::unbounded();
 
+        let file_op_tx_for_menu_worker = file_op_tx.clone();
+        let (lightweight_file_op_tx, lightweight_file_op_rx) =
+            crossbeam_channel::unbounded::<crate::app::LightweightFileOpJob>();
+        std::thread::Builder::new()
+            .name("siv-context-file-ops".into())
+            .spawn(move || {
+                while let Ok(job) = lightweight_file_op_rx.recv() {
+                    match job {
+                        crate::app::LightweightFileOpJob::Exif(path) => {
+                            let data = crate::app::extract_exif(&path);
+                            let _ = file_op_tx_for_menu_worker
+                                .send(crate::app::FileOpResult::Exif(path, data));
+                        }
+                        crate::app::LightweightFileOpJob::Xmp(path) => {
+                            let data = crate::app::extract_xmp(&path);
+                            let _ = file_op_tx_for_menu_worker
+                                .send(crate::app::FileOpResult::Xmp(path, data));
+                        }
+                        crate::app::LightweightFileOpJob::Wallpaper => {
+                            let current_wallpaper = wallpaper::get().ok();
+                            let _ = file_op_tx_for_menu_worker
+                                .send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
+                        }
+                    }
+                }
+            })
+            .expect("spawn siv-context-file-ops worker");
+
         let mut app = Self {
             save_tx,
             initial_image,
             image_files: Vec::new(),
+            file_byte_len_by_index: Vec::new(),
             current_index: 0,
             scan_rx: None,
             scan_cancel: None,
@@ -271,6 +300,7 @@ impl ImageViewerApp {
             preload_budget_backward: budget_bwd,
             file_op_rx,
             file_op_tx,
+            lightweight_file_op_tx,
             context_menu_pos: None,
             current_rotation: 0,
             save_error_rx,
