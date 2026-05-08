@@ -125,8 +125,10 @@ impl Drop for TiffHandle {
     }
 }
 
+// A LibTIFF `TIFF` handle is not documented as safe for concurrent use from multiple threads.
+// `LibTiffTiledSource` / `LibTiffScanlineSource` store handles in a Mutex-backed pool so only one
+// thread uses each handle at a time.
 unsafe impl Send for TiffHandle {}
-unsafe impl Sync for TiffHandle {}
 
 fn create_tiff_handle(mmap: Arc<Mmap>, path: &Path) -> Result<TiffHandle, String> {
     let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
@@ -193,9 +195,6 @@ impl LibTiffTiledSource {
         }
     }
 }
-
-unsafe impl Send for LibTiffTiledSource {}
-unsafe impl Sync for LibTiffTiledSource {}
 
 fn extract_embedded_thumbnail(
     tif: *mut lib::TIFF,
@@ -543,9 +542,6 @@ impl LibTiffScanlineSource {
         Some(data)
     }
 }
-
-unsafe impl Send for LibTiffScanlineSource {}
-unsafe impl Sync for LibTiffScanlineSource {}
 
 impl TiledImageSource for LibTiffScanlineSource {
     fn width(&self) -> u32 {
