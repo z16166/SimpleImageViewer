@@ -85,6 +85,9 @@ impl ImageViewerApp {
         if !path_to_delete.exists() {
             // Just remove from list if it's already gone
             self.image_files.remove(self.current_index);
+            if self.current_index < self.file_byte_len_by_index.len() {
+                self.file_byte_len_by_index.remove(self.current_index);
+            }
         } else {
             // CRITICAL: Drop all resources holding the file BEFORE attempting to delete it.
             // On Windows, WIC's IStream and memmap2 will keep the file locked if we don't drop them.
@@ -117,6 +120,9 @@ impl ImageViewerApp {
             });
 
             self.image_files.remove(original_index);
+            if original_index < self.file_byte_len_by_index.len() {
+                self.file_byte_len_by_index.remove(original_index);
+            }
         }
 
         // Deletion shifts indices, so every index-keyed cache must be rebuilt.

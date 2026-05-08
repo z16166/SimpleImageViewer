@@ -57,21 +57,23 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
     false
 }
 
-/// Returns true if the file is a legal local file (exists, is a file, size > 0, and not offline).
-/// Note: This performs a syscall (metadata) and should be called after extension filtering.
-fn is_valid_file(path: &Path) -> bool {
-    if let Ok(meta) = std::fs::metadata(path) {
-        // Checking size and file type first as they are fundamental.
-        meta.len() > 0 && meta.is_file() && !is_offline_meta(&meta)
-    } else {
-        false
+/// Returns the file size when the path is a valid local regular file (>0 bytes, not offline).
+/// This performs an `metadata` syscall and should only run after cheap extension filtering.
+fn validated_byte_len_if_file(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    let len = meta.len();
+    if len == 0 || !meta.is_file() || is_offline_meta(&meta) {
+        return None;
     }
+    Some(len)
 }
 
 /// Messages sent from the scan thread to the UI thread.
 pub enum ScanMessage {
     /// An incremental batch of discovered files (already filtered, not yet globally sorted).
-    Batch(Vec<PathBuf>),
+    /// The `u64` is the byte length from the same [`std::fs::metadata`] probe used during scan,
+    /// so the UI thread can budget preloads without additional syscalls.
+    Batch(Vec<(PathBuf, u64)>),
     /// Scanning is complete. No more batches will follow.
     Done,
 }
@@ -87,7 +89,7 @@ pub fn scan_directory(
 ) {
     std::thread::spawn(move || {
         if recursive {
-            let mut batch = Vec::with_capacity(BATCH_SIZE);
+            let mut batch: Vec<(PathBuf, u64)> = Vec::with_capacity(BATCH_SIZE);
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
@@ -110,10 +112,10 @@ pub fn scan_directory(
                     if is_img {
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
-                        if is_valid_file(&path) {
-                            batch.push(path);
+                        if let Some(len) = validated_byte_len_if_file(&path) {
+                            batch.push((path, len));
                             if batch.len() >= BATCH_SIZE {
-                                batch.sort();
+                                batch.sort_by(|a, b| a.0.cmp(&b.0));
                                 let _ = tx.send(ScanMessage::Batch(std::mem::take(&mut batch)));
                                 batch.reserve(BATCH_SIZE);
                             }
@@ -123,11 +125,11 @@ pub fn scan_directory(
             }
 
             if !batch.is_empty() {
-                batch.sort();
+                batch.sort_by(|a, b| a.0.cmp(&b.0));
                 let _ = tx.send(ScanMessage::Batch(batch));
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut files: Vec<PathBuf> = Vec::new();
+            let mut files: Vec<(PathBuf, u64)> = Vec::new();
             for e in entries.flatten() {
                 if cancel.load(Ordering::Relaxed) {
                     log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
@@ -140,11 +142,14 @@ pub fn scan_directory(
                     .map(|ext| is_supported_extension(ext))
                     .unwrap_or(false);
 
-                if is_supported && is_valid_file(&e.path()) {
-                    files.push(e.path());
+                if is_supported {
+                    let p = e.path();
+                    if let Some(len) = validated_byte_len_if_file(&p) {
+                        files.push((p, len));
+                    }
                 }
             }
-            files.sort();
+            files.sort_by(|a, b| a.0.cmp(&b.0));
             if !files.is_empty() {
                 let _ = tx.send(ScanMessage::Batch(files));
             }

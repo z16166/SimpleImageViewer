@@ -452,12 +452,13 @@ impl ImageViewerApp {
                 crate::ui::dialogs::exif::State::new_loading(path.clone()),
             ));
 
-            let tx = self.file_op_tx.clone();
             let path_clone = path.clone();
-            std::thread::spawn(move || {
-                let data = crate::app::extract_exif(&path_clone);
-                let _ = tx.send(crate::app::FileOpResult::Exif(path_clone, data));
-            });
+            if let Err(e) = self
+                .lightweight_file_op_tx
+                .send(crate::app::LightweightFileOpJob::Exif(path_clone))
+            {
+                log::warn!("EXIF context-menu job queue send failed: {}", e);
+            }
 
             self.context_menu_pos = None;
         }
@@ -467,12 +468,13 @@ impl ImageViewerApp {
                 crate::ui::dialogs::xmp::State::new_loading(path.clone()),
             ));
 
-            let tx = self.file_op_tx.clone();
             let path_clone = path.clone();
-            std::thread::spawn(move || {
-                let data = crate::app::extract_xmp(&path_clone);
-                let _ = tx.send(crate::app::FileOpResult::Xmp(path_clone, data));
-            });
+            if let Err(e) = self
+                .lightweight_file_op_tx
+                .send(crate::app::LightweightFileOpJob::Xmp(path_clone))
+            {
+                log::warn!("XMP context-menu job queue send failed: {}", e);
+            }
             self.context_menu_pos = None;
         }
 
@@ -518,11 +520,12 @@ impl ImageViewerApp {
                 crate::ui::dialogs::wallpaper::State::new_loading(),
             ));
 
-            let tx = self.file_op_tx.clone();
-            std::thread::spawn(move || {
-                let current_wallpaper = wallpaper::get().ok();
-                let _ = tx.send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
-            });
+            if let Err(e) = self
+                .lightweight_file_op_tx
+                .send(crate::app::LightweightFileOpJob::Wallpaper)
+            {
+                log::warn!("Wallpaper context-menu job queue send failed: {}", e);
+            }
             self.context_menu_pos = None;
         }
 

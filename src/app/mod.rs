@@ -255,6 +255,15 @@ pub enum FileOpResult {
     Wallpaper(Option<String>),
 }
 
+/// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).
+/// Serialized so rapid menu clicks cannot spawn an unbounded number of threads.
+#[derive(Debug)]
+pub(crate) enum LightweightFileOpJob {
+    Exif(PathBuf),
+    Xmp(PathBuf),
+    Wallpaper,
+}
+
 /// Window placement we mirror from `egui::ViewportInfo` each frame and persist
 /// to `siv_settings.yaml` on `on_exit`. The whole struct is filled in only
 /// when `outer_rect` is known (otherwise we don't have a stable position to
@@ -308,6 +317,8 @@ pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
     pub(crate) image_files: Vec<PathBuf>,
+    /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
+    pub(crate) file_byte_len_by_index: Vec<u64>,
     pub(crate) current_index: usize,
     pub(crate) initial_image: Option<PathBuf>,
     pub(crate) scanning: bool,
@@ -458,6 +469,7 @@ pub struct ImageViewerApp {
     // Async file operations (deletion, etc.)
     pub(crate) file_op_rx: Receiver<FileOpResult>,
     pub(crate) file_op_tx: Sender<FileOpResult>,
+    pub(crate) lightweight_file_op_tx: Sender<LightweightFileOpJob>,
 
     // Debounce for mouse wheel navigation
     pub(crate) last_mouse_wheel_nav: f64,
