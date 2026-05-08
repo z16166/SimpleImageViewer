@@ -500,6 +500,59 @@ pub(crate) struct PendingAnimUpload {
     next_frame: usize,
 }
 
+impl ImageViewerApp {
+    fn focus_and_unminimize_window(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::ipc::force_foreground();
+    }
+
+    /// Shared handler for IPC open-file requests (`OpenImage` vs `OpenImageNoRecursive`).
+    fn handle_ipc_open_image(&mut self, path: PathBuf, ctx: &egui::Context, no_recursive: bool) {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+
+        let same_dir = self
+            .settings
+            .last_image_dir
+            .as_ref()
+            .map(|d| d == &parent.to_path_buf())
+            .unwrap_or(false);
+
+        if same_dir && !self.image_files.is_empty() {
+            if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
+                if self.settings.auto_switch {
+                    self.settings.auto_switch = false;
+                }
+                self.navigate_to(pos);
+            } else {
+                self.initial_image = Some(path.clone());
+                if no_recursive {
+                    self.settings.recursive = false;
+                }
+                if self.settings.auto_switch {
+                    self.settings.auto_switch = false;
+                }
+                self.load_directory(parent.to_path_buf());
+            }
+        } else {
+            self.settings.last_image_dir = Some(parent.to_path_buf());
+            if no_recursive {
+                self.settings.recursive = false;
+            }
+            self.queue_save();
+            self.initial_image = Some(path.clone());
+            if self.settings.auto_switch {
+                self.settings.auto_switch = false;
+            }
+            self.load_directory(parent.to_path_buf());
+        }
+
+        Self::focus_and_unminimize_window(ctx);
+    }
+}
+
 impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self) {
         if self.settings.resume_last_image && !self.image_files.is_empty() {
@@ -603,91 +656,15 @@ impl eframe::App for ImageViewerApp {
             match msg {
                 IpcMessage::OpenImage(path) => {
                     log::info!("IPC: open image {:?}", path);
-                    if let Some(parent) = path.parent() {
-                        let same_dir = self
-                            .settings
-                            .last_image_dir
-                            .as_ref()
-                            .map(|d| d == &parent.to_path_buf())
-                            .unwrap_or(false);
-
-                        if same_dir && !self.image_files.is_empty() {
-                            // Same directory: just find and jump to the target image
-                            if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
-                                if self.settings.auto_switch {
-                                    self.settings.auto_switch = false;
-                                }
-                                self.navigate_to(pos);
-                            } else {
-                                // File not in our list (maybe newly added) — full rescan
-                                self.initial_image = Some(path.clone());
-                                if self.settings.auto_switch {
-                                    self.settings.auto_switch = false;
-                                }
-                                self.load_directory(parent.to_path_buf());
-                            }
-                        } else {
-                            // Different directory — full scan
-                            self.settings.last_image_dir = Some(parent.to_path_buf());
-                            self.queue_save();
-                            self.initial_image = Some(path.clone());
-                            if self.settings.auto_switch {
-                                self.settings.auto_switch = false;
-                            }
-                            self.load_directory(parent.to_path_buf());
-                        }
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        crate::ipc::force_foreground();
-                    }
+                    self.handle_ipc_open_image(path, ctx, false);
                 }
                 IpcMessage::OpenImageNoRecursive(path) => {
                     log::info!("IPC: open image (no-recursive) {:?}", path);
-                    if let Some(parent) = path.parent() {
-                        let same_dir = self
-                            .settings
-                            .last_image_dir
-                            .as_ref()
-                            .map(|d| d == &parent.to_path_buf())
-                            .unwrap_or(false);
-
-                        if same_dir && !self.image_files.is_empty() {
-                            // Same directory: just jump, no rescan needed
-                            if let Some(pos) = self.image_files.iter().position(|p| p == &path) {
-                                if self.settings.auto_switch {
-                                    self.settings.auto_switch = false;
-                                }
-                                self.navigate_to(pos);
-                            } else {
-                                // Newly added file — rescan without recursive
-                                self.initial_image = Some(path.clone());
-                                self.settings.recursive = false;
-                                if self.settings.auto_switch {
-                                    self.settings.auto_switch = false;
-                                }
-                                self.load_directory(parent.to_path_buf());
-                            }
-                        } else {
-                            // Different directory — scan without recursive (persisted to disk).
-                            self.settings.last_image_dir = Some(parent.to_path_buf());
-                            self.settings.recursive = false;
-                            self.queue_save();
-                            self.initial_image = Some(path.clone());
-                            if self.settings.auto_switch {
-                                self.settings.auto_switch = false;
-                            }
-                            self.load_directory(parent.to_path_buf());
-                        }
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        crate::ipc::force_foreground();
-                    }
+                    self.handle_ipc_open_image(path, ctx, true);
                 }
                 IpcMessage::Focus => {
                     log::info!("IPC received empty ping, requesting window focus");
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    crate::ipc::force_foreground();
+                    Self::focus_and_unminimize_window(ctx);
                 }
             }
         }

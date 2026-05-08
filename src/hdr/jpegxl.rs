@@ -185,34 +185,13 @@ pub(crate) fn jxl_color_encoding_to_metadata(
     transfer_characteristics: u16,
     intensity_target_nits: Option<f32>,
 ) -> HdrImageMetadata {
-    let transfer_function = match transfer_characteristics {
-        JXL_TRANSFER_FUNCTION_LINEAR => HdrTransferFunction::Linear,
-        JXL_TRANSFER_FUNCTION_SRGB => HdrTransferFunction::Srgb,
-        JXL_TRANSFER_FUNCTION_PQ => HdrTransferFunction::Pq,
-        JXL_TRANSFER_FUNCTION_HLG => HdrTransferFunction::Hlg,
-        _ => HdrTransferFunction::Unknown,
-    };
-    let reference = match transfer_function {
-        HdrTransferFunction::Pq => HdrReference::DisplayReferred,
-        HdrTransferFunction::Hlg => HdrReference::SceneLinear,
-        _ => HdrReference::Unknown,
-    };
-
-    HdrImageMetadata {
-        transfer_function,
-        reference,
-        color_profile: HdrColorProfile::Cicp {
-            color_primaries,
-            transfer_characteristics,
-            matrix_coefficients: 0,
-            full_range: true,
-        },
-        luminance: HdrLuminanceMetadata {
-            mastering_max_nits: intensity_target_nits,
-            ..HdrLuminanceMetadata::default()
-        },
-        gain_map: None,
-    }
+    crate::hdr::cicp::cicp_to_metadata(
+        color_primaries,
+        transfer_characteristics,
+        0,
+        true,
+        intensity_target_nits,
+    )
 }
 
 #[cfg(feature = "jpegxl")]

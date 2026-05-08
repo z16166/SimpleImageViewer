@@ -16,6 +16,7 @@
 
 pub mod avif;
 pub mod capabilities;
+pub(crate) mod cicp;
 pub mod decode;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
