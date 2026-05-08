@@ -686,6 +686,95 @@ impl TiffStripCachingSource {
 struct HugeTiffStrideDecoder;
 
 impl HugeTiffStrideDecoder {
+    fn write_stride_preview_pixel_u8(
+        dst: &mut [u8],
+        dst_offset: usize,
+        buf: &[u8],
+        src_offset: usize,
+        samples: u32,
+        is_cmyk: bool,
+    ) {
+        let end = src_offset.saturating_add(samples as usize);
+        if end > buf.len() {
+            return;
+        }
+        match samples {
+            3 => {
+                dst[dst_offset] = buf[src_offset];
+                dst[dst_offset + 1] = buf[src_offset + 1];
+                dst[dst_offset + 2] = buf[src_offset + 2];
+                dst[dst_offset + 3] = 255;
+            }
+            4 if is_cmyk => {
+                let c = buf[src_offset] as f32 / 255.0;
+                let m = buf[src_offset + 1] as f32 / 255.0;
+                let y = buf[src_offset + 2] as f32 / 255.0;
+                let k = buf[src_offset + 3] as f32 / 255.0;
+                dst[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
+                dst[dst_offset + 1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
+                dst[dst_offset + 2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
+                dst[dst_offset + 3] = 255;
+            }
+            4 => {
+                dst[dst_offset..dst_offset + 4].copy_from_slice(&buf[src_offset..src_offset + 4]);
+            }
+            1 => {
+                let g = buf[src_offset];
+                dst[dst_offset] = g;
+                dst[dst_offset + 1] = g;
+                dst[dst_offset + 2] = g;
+                dst[dst_offset + 3] = 255;
+            }
+            _ => {}
+        }
+    }
+
+    fn write_stride_preview_pixel_u16(
+        dst: &mut [u8],
+        dst_offset: usize,
+        buf: &[u16],
+        src_offset: usize,
+        samples: u32,
+        is_cmyk: bool,
+    ) {
+        let end = src_offset.saturating_add(samples as usize);
+        if end > buf.len() {
+            return;
+        }
+        match samples {
+            3 => {
+                dst[dst_offset] = (buf[src_offset] >> 8) as u8;
+                dst[dst_offset + 1] = (buf[src_offset + 1] >> 8) as u8;
+                dst[dst_offset + 2] = (buf[src_offset + 2] >> 8) as u8;
+                dst[dst_offset + 3] = 255;
+            }
+            4 if is_cmyk => {
+                let c = (buf[src_offset] >> 8) as f32 / 255.0;
+                let m = (buf[src_offset + 1] >> 8) as f32 / 255.0;
+                let y = (buf[src_offset + 2] >> 8) as f32 / 255.0;
+                let k = (buf[src_offset + 3] >> 8) as f32 / 255.0;
+                dst[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
+                dst[dst_offset + 1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
+                dst[dst_offset + 2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
+                dst[dst_offset + 3] = 255;
+            }
+            4 => {
+                dst[dst_offset] = (buf[src_offset] >> 8) as u8;
+                dst[dst_offset + 1] = (buf[src_offset + 1] >> 8) as u8;
+                dst[dst_offset + 2] = (buf[src_offset + 2] >> 8) as u8;
+                dst[dst_offset + 3] = (buf[src_offset + 3] >> 8) as u8;
+            }
+            1 => {
+                let g = (buf[src_offset] >> 8) as u8;
+                dst[dst_offset] = g;
+                dst[dst_offset + 1] = g;
+                dst[dst_offset + 2] = g;
+                dst[dst_offset + 3] = 255;
+            }
+            _ => {}
+        }
+    }
+
     /// Multi-threaded, Zero-Allocation Stride-Reader using Rayon + Mmap.
     fn decode_preview(
         path: &Path,
@@ -778,32 +867,14 @@ impl HugeTiffStrideDecoder {
                         continue;
                     }
 
-                    if samples == 3 {
-                        preview_pixels[dst_offset] = mmap[src_offset];
-                        preview_pixels[dst_offset + 1] = mmap[src_offset + 1];
-                        preview_pixels[dst_offset + 2] = mmap[src_offset + 2];
-                        preview_pixels[dst_offset + 3] = 255;
-                    } else if samples == 4 {
-                        if is_cmyk {
-                            let c = mmap[src_offset] as f32 / 255.0;
-                            let m = mmap[src_offset + 1] as f32 / 255.0;
-                            let y = mmap[src_offset + 2] as f32 / 255.0;
-                            let k = mmap[src_offset + 3] as f32 / 255.0;
-                            preview_pixels[dst_offset] = (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset + 1] = (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset + 2] = (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                            preview_pixels[dst_offset + 3] = 255;
-                        } else {
-                            preview_pixels[dst_offset..dst_offset + 4]
-                                .copy_from_slice(&mmap[src_offset..src_offset + 4]);
-                        }
-                    } else if samples == 1 {
-                        let g = mmap[src_offset];
-                        preview_pixels[dst_offset] = g;
-                        preview_pixels[dst_offset + 1] = g;
-                        preview_pixels[dst_offset + 2] = g;
-                        preview_pixels[dst_offset + 3] = 255;
-                    }
+                    Self::write_stride_preview_pixel_u8(
+                        &mut preview_pixels,
+                        dst_offset,
+                        &mmap[..],
+                        src_offset,
+                        samples,
+                        is_cmyk,
+                    );
                 }
             }
         } else {
@@ -861,84 +932,27 @@ impl HugeTiffStrideDecoder {
                     let src_offset = ((y_in_chunk * chunk_w + x_in_chunk) * samples) as usize;
                     let dst_offset = dst_y_offset + (tx as usize) * 4;
 
-                    if let Some(chunk_data) = chunk_cache.get(&chunk_idx) {
-                        match chunk_data {
-                            DecodingResult::U8(v) => {
-                                if src_offset + (samples as usize) <= v.len() {
-                                    if samples == 3 {
-                                        preview_pixels[dst_offset] = v[src_offset];
-                                        preview_pixels[dst_offset + 1] = v[src_offset + 1];
-                                        preview_pixels[dst_offset + 2] = v[src_offset + 2];
-                                        preview_pixels[dst_offset + 3] = 255;
-                                    } else if samples == 4 {
-                                        if is_cmyk {
-                                            let c = v[src_offset] as f32 / 255.0;
-                                            let m = v[src_offset + 1] as f32 / 255.0;
-                                            let y = v[src_offset + 2] as f32 / 255.0;
-                                            let k = v[src_offset + 3] as f32 / 255.0;
-                                            preview_pixels[dst_offset] =
-                                                (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 1] =
-                                                (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 2] =
-                                                (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 3] = 255;
-                                        } else {
-                                            preview_pixels[dst_offset..dst_offset + 4]
-                                                .copy_from_slice(&v[src_offset..src_offset + 4]);
-                                        }
-                                    } else if samples == 1 {
-                                        let g = v[src_offset];
-                                        preview_pixels[dst_offset] = g;
-                                        preview_pixels[dst_offset + 1] = g;
-                                        preview_pixels[dst_offset + 2] = g;
-                                        preview_pixels[dst_offset + 3] = 255;
-                                    }
-                                }
-                            }
-                            DecodingResult::U16(v) => {
-                                // ZERO ALLOCATION: We shift bits exactly when writing to the canvas.
-                                if src_offset + (samples as usize) <= v.len() {
-                                    if samples == 3 {
-                                        preview_pixels[dst_offset] = (v[src_offset] >> 8) as u8;
-                                        preview_pixels[dst_offset + 1] =
-                                            (v[src_offset + 1] >> 8) as u8;
-                                        preview_pixels[dst_offset + 2] =
-                                            (v[src_offset + 2] >> 8) as u8;
-                                        preview_pixels[dst_offset + 3] = 255;
-                                    } else if samples == 4 {
-                                        if is_cmyk {
-                                            let c = (v[src_offset] >> 8) as f32 / 255.0;
-                                            let m = (v[src_offset + 1] >> 8) as f32 / 255.0;
-                                            let y = (v[src_offset + 2] >> 8) as f32 / 255.0;
-                                            let k = (v[src_offset + 3] >> 8) as f32 / 255.0;
-                                            preview_pixels[dst_offset] =
-                                                (255.0 * (1.0 - c) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 1] =
-                                                (255.0 * (1.0 - m) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 2] =
-                                                (255.0 * (1.0 - y) * (1.0 - k)) as u8;
-                                            preview_pixels[dst_offset + 3] = 255;
-                                        } else {
-                                            preview_pixels[dst_offset] = (v[src_offset] >> 8) as u8;
-                                            preview_pixels[dst_offset + 1] =
-                                                (v[src_offset + 1] >> 8) as u8;
-                                            preview_pixels[dst_offset + 2] =
-                                                (v[src_offset + 2] >> 8) as u8;
-                                            preview_pixels[dst_offset + 3] =
-                                                (v[src_offset + 3] >> 8) as u8;
-                                        }
-                                    } else if samples == 1 {
-                                        let g = (v[src_offset] >> 8) as u8;
-                                        preview_pixels[dst_offset] = g;
-                                        preview_pixels[dst_offset + 1] = g;
-                                        preview_pixels[dst_offset + 2] = g;
-                                        preview_pixels[dst_offset + 3] = 255;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
+                    let Some(chunk_data) = chunk_cache.get(&chunk_idx) else {
+                        continue;
+                    };
+                    match chunk_data {
+                        DecodingResult::U8(v) => Self::write_stride_preview_pixel_u8(
+                            &mut preview_pixels,
+                            dst_offset,
+                            v,
+                            src_offset,
+                            samples,
+                            is_cmyk,
+                        ),
+                        DecodingResult::U16(v) => Self::write_stride_preview_pixel_u16(
+                            &mut preview_pixels,
+                            dst_offset,
+                            v,
+                            src_offset,
+                            samples,
+                            is_cmyk,
+                        ),
+                        _ => {}
                     }
                 }
             }

@@ -236,6 +236,68 @@ impl WicTiledSource {
             }
         }
     }
+
+    /// Flip/rotate per `transform_options` when non-zero; on error returns `cached` unchanged.
+    fn apply_wic_transform(
+        factory: &IWICImagingFactory,
+        cached: IWICBitmapSource,
+        transform_options: WICBitmapTransformOptions,
+    ) -> IWICBitmapSource {
+        if transform_options == WICBitmapTransformOptions(0) {
+            return cached;
+        }
+        unsafe {
+            let Ok(rotator) = factory.CreateBitmapFlipRotator() else {
+                return cached;
+            };
+            if rotator.Initialize(&cached, transform_options).is_err() {
+                return cached;
+            }
+            rotator.cast::<IWICBitmapSource>().unwrap_or(cached)
+        }
+    }
+
+    /// Downscaled multi-frame preview (e.g. pyramid TIFF): pick a suitable secondary frame and render.
+    fn try_get_preview_from_secondary_frame(
+        &self,
+        factory: &IWICImagingFactory,
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        let Ok(frame_count) = (unsafe { self.decoder.GetFrameCount() }) else {
+            return None;
+        };
+        if frame_count <= 1 {
+            return None;
+        }
+        for frame_index in 1..frame_count {
+            let Ok(f) = (unsafe { self.decoder.GetFrame(frame_index) }) else {
+                continue;
+            };
+            let mut fw = 0;
+            let mut fh = 0;
+            if unsafe { f.GetSize(&mut fw, &mut fh) }.is_err() {
+                continue;
+            }
+            if fw <= 512 || fw >= self.physical_width / 2 {
+                continue;
+            }
+            let Ok(f_src) = f.cast::<IWICBitmapSource>() else {
+                continue;
+            };
+            let f_cached = Self::wrap_with_cache(factory, &f_src);
+            let f_final = Self::apply_wic_transform(factory, f_cached, self.transform_options);
+            let Some(res) = render_source_to_pixels(&f_final, factory) else {
+                continue;
+            };
+            log::info!(
+                "WIC: Using secondary frame {} as preview ({}x{})",
+                frame_index,
+                fw,
+                fh
+            );
+            return Some(res);
+        }
+        None
+    }
 }
 
 // `Send`/`Sync`: COM pointers are opaque to rustc. We expose `Arc<WicTiledSource>` to tile workers
@@ -320,19 +382,11 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                         // thrashing. Embedded thumbnails can be up to 4096px+ on modern
                         // cameras, making this a real performance concern.
                         let thumb_cached = Self::wrap_with_cache(factory, &thumb_src);
-                        let mut thumb_final = thumb_cached.clone();
-                        if self.transform_options != WICBitmapTransformOptions(0) {
-                            if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                if rotator
-                                    .Initialize(&thumb_cached, self.transform_options)
-                                    .is_ok()
-                                {
-                                    if let Ok(src) = rotator.cast::<IWICBitmapSource>() {
-                                        thumb_final = src;
-                                    }
-                                }
-                            }
-                        }
+                        let thumb_final = Self::apply_wic_transform(
+                            factory,
+                            thumb_cached,
+                            self.transform_options,
+                        );
                         if let Some(res) = render_source_to_pixels(&thumb_final, &factory) {
                             log::info!(
                                 "WIC [Idx={}]: Successfully rendered embedded thumbnail",
@@ -358,50 +412,8 @@ impl crate::loader::TiledImageSource for WicTiledSource {
                 );
             }
 
-            // Path 2: Check for secondary downscaled frames (e.g. Pyramid TIFFs)
-            if let Ok(count) = self.decoder.GetFrameCount() {
-                if count > 1 {
-                    for i in 1..count {
-                        if let Ok(f) = self.decoder.GetFrame(i) {
-                            let mut fw = 0;
-                            let mut fh = 0;
-                            if f.GetSize(&mut fw, &mut fh).is_ok() {
-                                // If it's a good intermediate size, use it
-                                if fw > 512 && fw < self.physical_width / 2 {
-                                    log::info!(
-                                        "WIC: Using secondary frame {} as preview ({}x{})",
-                                        i,
-                                        fw,
-                                        fh
-                                    );
-                                    if let Ok(f_src) = f.cast::<IWICBitmapSource>() {
-                                        let f_cached = Self::wrap_with_cache(factory, &f_src);
-                                        let mut f_final = f_cached.clone();
-                                        if self.transform_options != WICBitmapTransformOptions(0) {
-                                            if let Ok(rotator) = factory.CreateBitmapFlipRotator() {
-                                                if rotator
-                                                    .Initialize(&f_cached, self.transform_options)
-                                                    .is_ok()
-                                                {
-                                                    if let Ok(src) =
-                                                        rotator.cast::<IWICBitmapSource>()
-                                                    {
-                                                        f_final = src;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if let Some(res) =
-                                            render_source_to_pixels(&f_final, &factory)
-                                        {
-                                            return res;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(res) = self.try_get_preview_from_secondary_frame(factory) {
+                return res;
             }
 
             // Path 3: Try Native Decoder Source Transform (Fastest if supported)
