@@ -179,6 +179,29 @@ pub(crate) fn append_hdr_pixel_from_sdr_and_gain(
     rgba_f32.extend_from_slice(&pixel);
 }
 
+/// Recovers one **alternate-rendition** (HDR-side) linear channel from the baseline SDR sample,
+/// one normalized gain-map sample, and decoded **ISO/IEC 21496-1** descriptor fields (`GainMapMin` /
+/// `GainMapMax` / `Gamma` / `OffsetSDR` / `OffsetHDR`; headroom capacities map to [`GainMapMetadata`]).
+///
+/// Formal clause numbering varies by TS/IS edition; align field spellings with the serialized metadata
+/// in the ISO document (**alternate vs. baseline rendition**, logarithmic boosts, offsets).
+///
+/// The maths matches the interoperability profile used alongside MPF JPEG gain maps (Ultra HDR tooling,
+/// libavif `avifImageApplyGainMap`, etc.). Steps:
+///
+/// 1. **Display headroom blend `w`** ([`gain_map_weight`]): map `HDRCapacityMin` / `HDRCapacityMax` and the
+///    viewer peak linear ratio [`target_hdr_capacity`] onto a clamped **`[0,1]`** scalar by interpolating in
+///    **log₂** headroom—not in linear luminance ratio.
+///
+/// 2. **`Gamma`** shaping on the coefficient: `gain_value.powf(1.0 / gamma)` turns encoded map samples into
+///    the perceptual weight multiplied by the `GainMapMin`…`GainMapMax` span.
+///
+/// 3. **Exponent in log₂ (stops)**: `gain_map_min + (gain_map_max - gain_map_min) * shaped * w`, then
+///    **`boost = 2^log_boost`**—so `GainMapMin`/`GainMapMax` act as logarithmic boosts between baseline and
+///    alternate light levels.
+///
+/// 4. **Offsets + clamp**: invert the baseline sRGB curve to scene-linear, add **OffsetSDR**, multiply by
+///    **`boost`**, subtract **OffsetHDR**, discard negative results (alternate cannot go below mapped black).
 pub(crate) fn recover_hdr_channel_from_sdr_and_gain(
     sdr_channel: u8,
     gain_value: f32,
@@ -187,7 +210,10 @@ pub(crate) fn recover_hdr_channel_from_sdr_and_gain(
     target_hdr_capacity: f32,
 ) -> f32 {
     let channel_index = channel_index.min(2);
+
     let gain_weight = gain_map_weight(metadata, target_hdr_capacity);
+
+    // Log₂ exponent → `boost`, then alternate linear sample (doc steps 3–4).
     let log_boost = metadata.gain_map_min[channel_index]
         + (metadata.gain_map_max[channel_index] - metadata.gain_map_min[channel_index])
             * gain_value.powf(1.0 / metadata.gamma[channel_index].max(f32::MIN_POSITIVE))
