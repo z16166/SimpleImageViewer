@@ -238,7 +238,16 @@ impl WicTiledSource {
     }
 }
 
-// WIC interfaces are thread-safe for reading if COM was initialized as COINIT_MULTITHREADED.
+// `Send`/`Sync`: COM pointers are opaque to rustc. We expose `Arc<WicTiledSource>` to tile workers
+// that decode in parallel (`extract_tile`).
+//
+// Threading contract (see Microsoft Learn, "Multi-threaded apartment support in WIC"):
+// - Workers use [`ComGuard`] (`CoInitializeEx` + `COINIT_MULTITHREADED`, i.e. MTA), matching WIC's
+//   documented model for concurrent calls from multiple threads inside the MTA—not STA.
+// - In-box WIC codecs from Windows 7 onward are documented for MTA; third-party codecs may vary.
+//
+// This is still `unsafe`: Rust cannot prove COM/WIC or arbitrary decoder DLLs are free of data
+// races; correctness relies on the above coinit discipline and codec behavior.
 unsafe impl Send for WicTiledSource {}
 unsafe impl Sync for WicTiledSource {}
 
