@@ -298,13 +298,15 @@ fn build_compose_orientation_chain_table() -> [[u8; 9]; 9] {
 fn brute_compose_orientation_row_col(acc: u16, primitive_next: u16) -> u16 {
     const W: u32 = 5;
     const H: u32 = 4;
+    // Tiny synthetic buffer (5×4): regenerate per candidate instead of cloning the full Vec for
+    // each orientation probe (build table once at process start; hot path is decode, not here).
     let base = synth_gradient_rgba8(W, H);
-    let (w1, h1, mid) = crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, acc);
+    let (w1, h1, mid) = crate::libtiff_loader::apply_orientation_buffer(base, W, H, acc);
     let (wf, hf, composed) =
         crate::libtiff_loader::apply_orientation_buffer(mid, w1, h1, primitive_next);
     for cand in 1..=8u16 {
         let (wc, hc, pc) =
-            crate::libtiff_loader::apply_orientation_buffer(base.clone(), W, H, cand);
+            crate::libtiff_loader::apply_orientation_buffer(synth_gradient_rgba8(W, H), W, H, cand);
         if wc == wf && hc == hf && pc == composed {
             return cand;
         }

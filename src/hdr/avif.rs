@@ -49,6 +49,17 @@ fn avif_ftyp_major_brand(bytes: &[u8]) -> Option<[u8; 4]> {
     Some([bytes[8], bytes[9], bytes[10], bytes[11]])
 }
 
+#[cfg(feature = "avif-native")]
+fn libavif_result_to_string(result: libavif_sys::avifResult) -> String {
+    unsafe {
+        let ptr = libavif_sys::avifResultToString(result);
+        if ptr.is_null() {
+            return format!("libavif error {result}");
+        }
+        CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    }
+}
+
 /// Decode an AVIF **image sequence** (`moov` / `avis`) into SDR RGBA8 frames + delays for the
 /// existing animated-image pipeline. `bytes` must stay alive for the whole parse (libavif keeps a
 /// pointer). Returns `Ok(None)` if the file is not a multi-frame track sequence (caller uses static HDR decode).
@@ -61,16 +72,6 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
 ) -> Result<Option<Vec<(std::time::Duration, u32, u32, Vec<u8>)>>, String> {
     use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
     use std::time::Duration;
-
-    fn result_to_string(result: libavif_sys::avifResult) -> String {
-        unsafe {
-            let ptr = libavif_sys::avifResultToString(result);
-            if ptr.is_null() {
-                return format!("libavif error {result}");
-            }
-            CStr::from_ptr(ptr).to_string_lossy().into_owned()
-        }
-    }
 
     let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
         return Err("Failed to create libavif decoder".to_string());
@@ -98,7 +99,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
             if r != libavif_sys::AVIF_RESULT_OK {
                 return Err(format!(
                     "libavif SetSource(TRACKS): {}",
-                    result_to_string(r)
+                    libavif_result_to_string(r)
                 ));
             }
         }
@@ -108,7 +109,10 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         libavif_sys::avifDecoderSetIOMemory(decoder.as_ptr(), bytes.as_ptr(), bytes.len())
     };
     if r != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!("libavif SetIOMemory: {}", result_to_string(r)));
+        return Err(format!(
+            "libavif SetIOMemory: {}",
+            libavif_result_to_string(r)
+        ));
     }
 
     let r = unsafe { libavif_sys::avifDecoderParse(decoder.as_ptr()) };
@@ -130,7 +134,10 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
     for _ in 0..count {
         let r = unsafe { libavif_sys::avifDecoderNextImage(decoder.as_ptr()) };
         if r != libavif_sys::AVIF_RESULT_OK {
-            return Err(format!("libavif NextImage: {}", result_to_string(r)));
+            return Err(format!(
+                "libavif NextImage: {}",
+                libavif_result_to_string(r)
+            ));
         }
 
         let mut timing = std::mem::MaybeUninit::<libavif_sys::avifImageTiming>::zeroed();
@@ -147,7 +154,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         if img_ref.width == 0 || img_ref.height == 0 {
             return Err("libavif sequence frame has zero size".to_string());
         }
-        let rgba = decode_avif_image_rgba8_packed(img_ptr, img_ref, &result_to_string)?;
+        let rgba = decode_avif_image_rgba8_packed(img_ptr, img_ref, &libavif_result_to_string)?;
 
         let delay_ms = (timing.duration * 1000.0)
             .round()
@@ -312,16 +319,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
-    fn result_to_string(result: libavif_sys::avifResult) -> String {
-        unsafe {
-            let ptr = libavif_sys::avifResultToString(result);
-            if ptr.is_null() {
-                return format!("libavif error {result}");
-            }
-            CStr::from_ptr(ptr).to_string_lossy().into_owned()
-        }
-    }
-
     // Universal-viewer policy: immediately after each `avifDecoderCreate()`, force
     // `decoder->strictFlags = AVIF_STRICT_DISABLED` (0) — same as idiomatic C/C++ — so every
     // strictFlags-gated check in libavif is off (legacy encoders, missing alpha `ispe`, etc.).
@@ -370,7 +367,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
             break;
         }
 
-        let msg = result_to_string(result);
+        let msg = libavif_result_to_string(result);
         if attempt_idx == 0 {
             log::debug!(
                 "[AVIF] libavif decode with {} failed ({msg}); retrying with color+alpha only",
@@ -419,7 +416,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                 image.as_ptr(),
                 image_ref.gainMap,
                 target_hdr_capacity,
-                &result_to_string,
+                &libavif_result_to_string,
             ) {
                 Ok(rgba_f32) => {
                     let luminance = metadata.luminance;
@@ -484,12 +481,12 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     }
 
     let (rgba_u16, rgb_out_depth) =
-        decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &result_to_string)?;
+        decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string)?;
 
     // Software fallback (e.g. ICC + gain map: `avifImageApplyGainMap` returns NOT_IMPLEMENTED).
     // Base RGB from `avifImageYUVToRGB` uses the image CICP transfer before ISO gain-map recovery.
     if let Some((gain_metadata, gain_width, gain_height, gain_rgba)) =
-        decode_avif_gain_map(image_ref, &result_to_string)
+        decode_avif_gain_map(image_ref, &libavif_result_to_string)
     {
         let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
         let mut rgba_f32 =

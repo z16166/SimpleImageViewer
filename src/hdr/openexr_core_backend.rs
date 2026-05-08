@@ -9,12 +9,13 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use memmap2::Mmap;
 use openexr_core_sys as sys;
 
 const DEFAULT_DECODED_CHUNK_CACHE_BYTES: usize = 512 * 1024 * 1024;
@@ -301,17 +302,159 @@ impl OpenExrCoreDecodedChunkCache {
     }
 }
 
+#[derive(Clone)]
+struct ExrMmapReadCookie {
+    mmap: Arc<Mmap>,
+}
+
+/// OpenEXRCore expects `pread`-like threading semantics — backing store is immutable mapped bytes.
+unsafe extern "C" fn openexr_read_mmap(
+    _ctxt: sys::ExrConstContext,
+    userdata: *mut c_void,
+    buffer: *mut c_void,
+    sz: u64,
+    offset: u64,
+    _error_cb: *mut c_void,
+) -> i64 {
+    if userdata.is_null() || buffer.is_null() {
+        return -1;
+    }
+
+    let cookie = unsafe { &*userdata.cast::<ExrMmapReadCookie>() };
+    let slice = cookie.mmap.as_ref();
+    let len = slice.len();
+    let Ok(off) = usize::try_from(offset) else {
+        return -1;
+    };
+    let Ok(n) = usize::try_from(sz) else {
+        return -1;
+    };
+    let Some(end) = off.checked_add(n) else {
+        return -1;
+    };
+    if end > len {
+        return -1;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(slice.as_ptr().add(off), buffer.cast::<u8>(), n);
+    }
+    sz as i64
+}
+
+unsafe extern "C" fn openexr_query_mmap_size(
+    _ctxt: sys::ExrConstContext,
+    userdata: *mut c_void,
+) -> i64 {
+    if userdata.is_null() {
+        return -1;
+    }
+    let cookie = unsafe { &*userdata.cast::<ExrMmapReadCookie>() };
+    cookie.mmap.len() as i64
+}
+
+unsafe extern "C" fn openexr_destroy_mmap_cookie(
+    _ctxt: sys::ExrConstContext,
+    userdata: *mut c_void,
+    _failed: c_int,
+) {
+    if userdata.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(userdata.cast::<ExrMmapReadCookie>()));
+    }
+}
+
+fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrContextInitializer {
+    sys::ExrContextInitializer {
+        size: std::mem::size_of::<sys::ExrContextInitializer>(),
+        error_handler_fn: None,
+        alloc_fn: None,
+        free_fn: None,
+        user_data: cookie,
+        read_fn: Some(openexr_read_mmap),
+        size_fn: Some(openexr_query_mmap_size),
+        write_fn: None,
+        destroy_fn: Some(openexr_destroy_mmap_cookie),
+        max_image_width: -2,
+        max_image_height: -2,
+        max_tile_width: -2,
+        max_tile_height: -2,
+        zip_level: -2,
+        dwa_quality: -1.0,
+        flags: 0,
+        pad: [0u8; 4],
+    }
+}
+
 impl OpenExrCoreReadContext {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let filename = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| format!("EXR path contains an interior NUL: {}", path.display()))?;
+
         let mut raw = ptr::null_mut();
-        exr_result(unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null()) })?;
-        if raw.is_null() {
-            return Err(format!(
-                "OpenEXRCore returned a null context for {}",
-                path.display()
-            ));
+
+        match crate::mmap_util::map_file(path) {
+            Ok(m) => {
+                let mmap_arc = Arc::new(m);
+                let cookie = Box::new(ExrMmapReadCookie {
+                    mmap: Arc::clone(&mmap_arc),
+                });
+                let cookie_ptr = Box::into_raw(cookie).cast::<c_void>();
+                let ctxt_init = openexr_memory_map_initializer(cookie_ptr);
+
+                match exr_result(unsafe {
+                    sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init)
+                }) {
+                    Ok(()) => {
+                        if raw.is_null() {
+                            unsafe {
+                                openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
+                            }
+                            return Err(format!(
+                                "OpenEXRCore returned a null context for {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        unsafe {
+                            openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
+                        }
+                        log::debug!(
+                            "EXR mmap read via OpenEXRCore failed ({}); falling back to file I/O for {}",
+                            e,
+                            path.display()
+                        );
+                        raw = ptr::null_mut();
+                        exr_result(unsafe {
+                            sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null())
+                        })?;
+                        if raw.is_null() {
+                            return Err(format!(
+                                "OpenEXRCore returned a null context for {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(map_err) => {
+                log::debug!(
+                    "EXR mmap unavailable ({}); using file-handle reader for {}",
+                    map_err,
+                    path.display()
+                );
+                exr_result(unsafe {
+                    sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null())
+                })?;
+                if raw.is_null() {
+                    return Err(format!(
+                        "OpenEXRCore returned a null context for {}",
+                        path.display()
+                    ));
+                }
+            }
         }
 
         let mut part_count = 0;
