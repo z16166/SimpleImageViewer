@@ -1497,7 +1497,11 @@ impl ImageViewerApp {
     }
 
     fn install_image_error(&mut self, idx: usize, error: &str) {
-        let path_str = self.image_files[idx].display().to_string();
+        let path_str = self
+            .image_files
+            .get(idx)
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| format!("[index {idx} absent after rescan]"));
         log::error!(
             "Failed to load image at index {} ({}): {error}",
             idx,
@@ -1531,6 +1535,15 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn handle_preview_update(&mut self, update: PreviewResult, ctx: &egui::Context) {
+        let Some(path_for_logs) = self.image_files.get(update.index) else {
+            log::warn!(
+                "[App] Preview update discarded (index {} out of range; list len {})",
+                update.index,
+                self.image_files.len()
+            );
+            return;
+        };
+
         // CRITICAL: Drop any stale preview results.
         // This prevents out-of-date HQ previews from repopulating the cache after
         // a directory rescan (which shifts indices) or file deletion.
@@ -1543,7 +1556,7 @@ impl ImageViewerApp {
             && self.prefetch_prev_generation == Some(update.generation);
 
         if update.generation != self.generation && !is_prefetch_survivor {
-            let file_name = self.image_files[update.index]
+            let file_name = path_for_logs
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
@@ -1559,7 +1572,7 @@ impl ImageViewerApp {
         // Once we have accepted the prefetch-survivor result, clear the slot so future
         // results with the old generation are correctly rejected.
         if is_prefetch_survivor {
-            let file_name = self.image_files[update.index]
+            let file_name = path_for_logs
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
@@ -1689,7 +1702,16 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn log_large_image(&self, idx: usize, w: u32, h: u32) {
-        let file_name = self.image_files[idx]
+        let Some(path) = self.image_files.get(idx) else {
+            log::debug!(
+                "[App] Skipped large-image log (index {}, {}×{}) — file list shorter than index",
+                idx,
+                w,
+                h
+            );
+            return;
+        };
+        let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
@@ -1766,7 +1788,15 @@ impl ImageViewerApp {
         idx: usize,
         preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     ) {
-        let file_name = self.image_files[idx]
+        let Some(path) = self.image_files.get(idx) else {
+            log::warn!(
+                "[App] Skipped HDR tiled preview cache for index {} (out of range; list len {})",
+                idx,
+                self.image_files.len()
+            );
+            return;
+        };
+        let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
