@@ -169,15 +169,19 @@ pub(crate) fn libjxl_probe_orientation_from_path(path: &std::path::Path) -> Opti
 // - **ICC v4 `cicp` tag** (optional in profiles): carries ITU-T **H.273** codes; we map those
 //   when present. Otherwise we derive primaries from ICC `rXYZ`/`gXYZ`/`bXYZ` per ICC.1.
 //
-// `JxlTransferFunction` discriminant values from libjxl `jxl/color_encoding.h`
-/// (`JXL_TRANSFER_FUNCTION_*`). These are **not** ITU-T H.273 CICP
-/// `transfer_characteristics` codes (numeric overlap is incidental).
+// libjxl `JxlTransferFunction` values (`jxl/color_encoding.h`). **Linear / sRGB / PQ / HLG**
+// discriminants intentionally match ITU-T H.273 `transfer_characteristics` — reuse `hdr::cicp`.
+/// BT.709 / BT.601 OETF family (see `JXL_TRANSFER_FUNCTION_*` in libjxl headers).
 pub(crate) const JXL_TRANSFER_FUNCTION_709: u16 = 1;
+/// LibjXL “gamma”; not a fixed H.273 code.
 pub(crate) const JXL_TRANSFER_FUNCTION_GAMMA: u16 = 65535;
-pub(crate) const JXL_TRANSFER_FUNCTION_LINEAR: u16 = 8;
-pub(crate) const JXL_TRANSFER_FUNCTION_SRGB: u16 = 13;
-pub(crate) const JXL_TRANSFER_FUNCTION_PQ: u16 = 16;
-pub(crate) const JXL_TRANSFER_FUNCTION_HLG: u16 = 18;
+pub(crate) const JXL_TRANSFER_FUNCTION_LINEAR: u16 = crate::hdr::cicp::H273_TRANSFER_LINEAR;
+pub(crate) const JXL_TRANSFER_FUNCTION_SRGB: u16 =
+    crate::hdr::cicp::H273_TRANSFER_IEC61966_2_1_SRGB;
+pub(crate) const JXL_TRANSFER_FUNCTION_PQ: u16 =
+    crate::hdr::cicp::H273_TRANSFER_SMPTE_ST2084_FOR_PQ;
+pub(crate) const JXL_TRANSFER_FUNCTION_HLG: u16 =
+    crate::hdr::cicp::H273_TRANSFER_ARIB_STD_B67_FOR_HLG;
 
 #[allow(dead_code)]
 pub(crate) fn jxl_color_encoding_to_metadata(

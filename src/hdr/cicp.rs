@@ -23,6 +23,17 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 
+/// Coded **`transfer_characteristics`** values (**ITU-T H.273**), same integers as MPEG / MP4
+/// **`TransferCharacteristics`** and AVIF **`colr` / Cicp**.
+///
+/// See H.273 Table 2 (Transfer characteristics) — we only wire the subsets this viewer maps into
+/// [`HdrTransferFunction`]; other codes still flow through untouched in [`HdrImageMetadata`] via
+/// [`HdrColorProfile::Cicp`].
+pub(crate) const H273_TRANSFER_LINEAR: u16 = 8;
+pub(crate) const H273_TRANSFER_IEC61966_2_1_SRGB: u16 = 13;
+pub(crate) const H273_TRANSFER_SMPTE_ST2084_FOR_PQ: u16 = 16;
+pub(crate) const H273_TRANSFER_ARIB_STD_B67_FOR_HLG: u16 = 18;
+
 pub(crate) fn cicp_to_metadata(
     color_primaries: u16,
     transfer_characteristics: u16,
@@ -31,10 +42,10 @@ pub(crate) fn cicp_to_metadata(
     intensity_target_nits: Option<f32>,
 ) -> HdrImageMetadata {
     let transfer_function = match transfer_characteristics {
-        8 => HdrTransferFunction::Linear,
-        13 => HdrTransferFunction::Srgb,
-        16 => HdrTransferFunction::Pq,
-        18 => HdrTransferFunction::Hlg,
+        H273_TRANSFER_LINEAR => HdrTransferFunction::Linear,
+        H273_TRANSFER_IEC61966_2_1_SRGB => HdrTransferFunction::Srgb,
+        H273_TRANSFER_SMPTE_ST2084_FOR_PQ => HdrTransferFunction::Pq,
+        H273_TRANSFER_ARIB_STD_B67_FOR_HLG => HdrTransferFunction::Hlg,
         _ => HdrTransferFunction::Unknown,
     };
     let reference = match transfer_function {
