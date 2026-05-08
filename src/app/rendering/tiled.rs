@@ -14,13 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::plan::RenderShape;
+use crate::app::rendering::geometry::PlaneLayout;
+use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
 use crate::app::{ImageViewerApp, TransitionStyle};
+use crate::hdr::tiled::HdrTiledSource;
 use crate::loader::{TileDecodeSource, TilePixelKind};
-use crate::tile_cache::{PendingTileKey, TileCoord, TileStatus};
+use crate::tile_cache::{PendingTileKey, TileCoord, TileManager, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -389,6 +391,116 @@ fn is_tiled_plane_active(effective_scale: f32, threshold: f32) -> bool {
     effective_scale >= threshold
 }
 
+fn enqueue_hdr_plane_tile_decode(
+    loader: &mut crate::loader::ImageLoader,
+    current_index: usize,
+    tm: &mut TileManager,
+    budget: &mut TileRequestBudget,
+    plane_backend: PlaneBackendKind,
+    coord: TileCoord,
+    visit_idx: usize,
+    tile_visits_len: usize,
+    is_primary_visible: bool,
+    hdr_source: &Arc<dyn HdrTiledSource>,
+) {
+    if !budget.try_mark_pending(
+        &mut tm.pending_tiles,
+        tile_pending_key_for_backend(coord, plane_backend),
+        is_primary_visible,
+    ) {
+        return;
+    }
+    let Some(source) = tile_decode_source_for_backend(plane_backend, None, Some(hdr_source)) else {
+        return;
+    };
+    loader.request_tile(
+        current_index,
+        tm.generation,
+        tile_request_priority(tile_visits_len, visit_idx),
+        source,
+        coord.col,
+        coord.row,
+    );
+}
+
+/// HDR tiled plane: enqueue decode on cache miss, otherwise draw cached RGBA32F.
+fn draw_hdr_plane_tile_visit(
+    ui: &mut egui::Ui,
+    screen_rect: Rect,
+    layout: &PlaneLayout,
+    render_plan: &RenderPlan,
+    plane_backend: PlaneBackendKind,
+    hdr_source_for_frame: Option<&Arc<dyn HdrTiledSource>>,
+    tm: &mut TileManager,
+    budget: &mut TileRequestBudget,
+    primary_visible_coords: &HashSet<TileCoord>,
+    tile_visits_len: usize,
+    visit_idx: usize,
+    coord: TileCoord,
+    tile_screen_rect: Rect,
+    rotation_steps: i32,
+    loader: &mut crate::loader::ImageLoader,
+    current_index: usize,
+    tone_map: crate::hdr::types::HdrToneMapSettings,
+    #[cfg_attr(not(feature = "tile-debug"), allow(unused_variables))] show_tile_debug_osd: bool,
+) {
+    let Some(hdr_source) = hdr_source_for_frame else {
+        return;
+    };
+    let is_primary_visible = primary_visible_coords.contains(&coord);
+    let (tile_x, tile_y, tile_w, tile_h) = hdr_tile_cache_key_for_coord(hdr_source.as_ref(), coord);
+
+    let Some(hdr_tile) = hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h) else {
+        enqueue_hdr_plane_tile_decode(
+            loader,
+            current_index,
+            tm,
+            budget,
+            plane_backend,
+            coord,
+            visit_idx,
+            tile_visits_len,
+            is_primary_visible,
+            hdr_source,
+        );
+        return;
+    };
+
+    if !should_draw_tiled_tile_plane_for_backend(plane_backend, TiledPlaneKind::Hdr, true) {
+        return;
+    }
+
+    let pivot = layout.pivot;
+    let unclipped_hdr_rect = tile_plane_rect_for_tile(tile_screen_rect, pivot, rotation_steps);
+
+    draw_plane(
+        ui,
+        screen_rect,
+        unclipped_hdr_rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        layout,
+        PlaneDrawSource::HdrTile {
+            tile: hdr_tile,
+            tone_map,
+            target_format: render_plan
+                .target_format
+                .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
+            output_mode: render_plan.output_mode,
+            rotation_steps: rotation_steps as u32,
+            alpha: 1.0,
+        },
+    );
+
+    #[cfg(feature = "tile-debug")]
+    if show_tile_debug_osd {
+        use crate::app::rendering::plane::clipped_plane_rect_and_uv;
+
+        if let Some((hdr_rect, _)) = clipped_plane_rect_and_uv(unclipped_hdr_rect, screen_rect) {
+            draw_tile_debug_border(ui, hdr_rect, pivot, None);
+        }
+    }
+}
+
 #[cfg(test)]
 fn tile_kind_uses_shared_schedule_policy(
     _pixel_kind: TilePixelKind,
@@ -692,8 +804,9 @@ impl ImageViewerApp {
             );
 
             {
-                let tm = self.tile_manager.as_mut().unwrap();
-                let pivot = dest.center();
+                let current_index = self.current_index;
+                let loader = &mut self.loader;
+                let tone_map = self.hdr_renderer.tone_map;
                 #[cfg(feature = "tile-debug")]
                 let rot = if rotation != 0 {
                     Some(egui::emath::Rot2::from_angle(angle))
@@ -701,76 +814,30 @@ impl ImageViewerApp {
                     None
                 };
 
+                let tm = self.tile_manager.as_mut().unwrap();
+
                 for (idx, (coord, tile_screen_rect, uv)) in tile_visits.iter().enumerate() {
                     if tile_plane_kind_for_backend(plane_backend) == TiledPlaneKind::Hdr {
-                        if let Some(hdr_source) = hdr_source_for_frame.as_ref() {
-                            let is_primary_visible = primary_visible_coords.contains(coord);
-                            let (tile_x, tile_y, tile_w, tile_h) =
-                                hdr_tile_cache_key_for_coord(hdr_source.as_ref(), *coord);
-                            let Some(hdr_tile) =
-                                hdr_source.cached_tile_rgba32f_arc(tile_x, tile_y, tile_w, tile_h)
-                            else {
-                                if tile_request_budget.try_mark_pending(
-                                    &mut tm.pending_tiles,
-                                    tile_pending_key_for_backend(*coord, plane_backend),
-                                    is_primary_visible,
-                                ) {
-                                    if let Some(source) = tile_decode_source_for_backend(
-                                        plane_backend,
-                                        None,
-                                        Some(hdr_source),
-                                    ) {
-                                        self.loader.request_tile(
-                                            self.current_index,
-                                            tm.generation,
-                                            tile_request_priority(tile_visits.len(), idx),
-                                            source,
-                                            coord.col,
-                                            coord.row,
-                                        );
-                                    }
-                                }
-                                continue;
-                            };
-                            if !should_draw_tiled_tile_plane_for_backend(
-                                plane_backend,
-                                TiledPlaneKind::Hdr,
-                                true,
-                            ) {
-                                continue;
-                            }
-
-                            let unclipped_hdr_rect =
-                                tile_plane_rect_for_tile(*tile_screen_rect, pivot, rotation);
-                            draw_plane(
-                                ui,
-                                screen_rect,
-                                unclipped_hdr_rect,
-                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                &layout,
-                                PlaneDrawSource::HdrTile {
-                                    tile: hdr_tile,
-                                    tone_map: self.hdr_renderer.tone_map,
-                                    target_format: render_plan
-                                        .target_format
-                                        .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
-                                    output_mode: render_plan.output_mode,
-                                    rotation_steps: rotation as u32,
-                                    alpha: 1.0,
-                                },
-                            );
-
-                            #[cfg(feature = "tile-debug")]
-                            if self.settings.show_osd {
-                                use crate::app::rendering::plane::clipped_plane_rect_and_uv;
-
-                                if let Some((hdr_rect, _)) =
-                                    clipped_plane_rect_and_uv(unclipped_hdr_rect, screen_rect)
-                                {
-                                    draw_tile_debug_border(ui, hdr_rect, pivot, None);
-                                }
-                            }
-                        }
+                        draw_hdr_plane_tile_visit(
+                            ui,
+                            screen_rect,
+                            &layout,
+                            &render_plan,
+                            plane_backend,
+                            hdr_source_for_frame.as_ref(),
+                            tm,
+                            &mut tile_request_budget,
+                            &primary_visible_coords,
+                            tile_visits.len(),
+                            idx,
+                            *coord,
+                            *tile_screen_rect,
+                            rotation,
+                            loader,
+                            current_index,
+                            tone_map,
+                            self.settings.show_osd,
+                        );
                         continue;
                     }
 
@@ -801,7 +868,7 @@ impl ImageViewerApp {
                             // DEBUG: Visual confirmation of high-res tile placement
                             #[cfg(feature = "tile-debug")]
                             if self.settings.show_osd {
-                                draw_tile_debug_border(ui, *tile_screen_rect, pivot, rot);
+                                draw_tile_debug_border(ui, *tile_screen_rect, layout.pivot, rot);
                             }
                         }
                         TileStatus::Pending(needs_request) => {
@@ -822,8 +889,8 @@ impl ImageViewerApp {
                                     Some(source),
                                     hdr_source_for_frame.as_ref(),
                                 ) {
-                                    self.loader.request_tile(
-                                        self.current_index,
+                                    loader.request_tile(
+                                        current_index,
                                         generation,
                                         priority,
                                         source,
