@@ -42,32 +42,13 @@ pub(crate) fn heif_nclx_to_metadata(
     matrix_coefficients: u16,
     full_range: bool,
 ) -> HdrImageMetadata {
-    // ITU-T H.273 CICP transfer characteristics (not libjxl enums).
-    let transfer_function = match transfer_characteristics {
-        8 => HdrTransferFunction::Linear,
-        13 => HdrTransferFunction::Srgb,
-        16 => HdrTransferFunction::Pq,
-        18 => HdrTransferFunction::Hlg,
-        _ => HdrTransferFunction::Unknown,
-    };
-    let reference = match transfer_function {
-        HdrTransferFunction::Pq => HdrReference::DisplayReferred,
-        HdrTransferFunction::Hlg => HdrReference::SceneLinear,
-        _ => HdrReference::Unknown,
-    };
-
-    HdrImageMetadata {
-        transfer_function,
-        reference,
-        color_profile: HdrColorProfile::Cicp {
-            color_primaries,
-            transfer_characteristics,
-            matrix_coefficients,
-            full_range,
-        },
-        luminance: HdrLuminanceMetadata::default(),
-        gain_map: None,
-    }
+    crate::hdr::cicp::cicp_to_metadata(
+        color_primaries,
+        transfer_characteristics,
+        matrix_coefficients,
+        full_range,
+        None,
+    )
 }
 
 #[cfg(feature = "heif-native")]
