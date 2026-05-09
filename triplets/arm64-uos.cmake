@@ -1,0 +1,20 @@
+set(VCPKG_TARGET_ARCHITECTURE arm64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+
+# 核心修复：强制指定 CPU_TYPE，解决 UOS 架构识别问题
+set(VCPKG_C_FLAGS "-DCPU_TYPE=arm64")
+set(VCPKG_CXX_FLAGS "-DCPU_TYPE=arm64")
+
+set(VCPKG_C_COMPILER "$ENV{HOME}/gcc16/bin/gcc")
+set(VCPKG_CXX_COMPILER "$ENV{HOME}/gcc16/bin/g++")
+
+# 备选：如果还报错，可以再加上这行
+#list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS "-DCPU_TYPE=arm64" "-DWITH_SIMD=ON")
+
+# 补全旧版系统头文件中缺失的 ARM64 硬件特性常量
+# HWCAP2_SVE2 的值在 Linux 内核中定义为 (1 << 1)，即 2
+set(VCPKG_C_FLAGS "${VCPKG_C_FLAGS} -DHWCAP2_SVE2=2")
+set(VCPKG_CXX_FLAGS "${VCPKG_CXX_FLAGS} -DHWCAP2_SVE2=2")
+
