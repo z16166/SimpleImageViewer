@@ -1,0 +1,129 @@
+# Prune GitHub Packages NuGet versions uploaded by vcpkg binary caching.
+# Requires a PAT with read:packages + delete:packages in repository secret DELETE_PACKAGES_PAT
+# (the default GITHUB_TOKEN cannot delete packages).
+#
+# Scheduled runs default to api_scope=user. For Organization-owned GPRs, set repository variable
+# NUGET_PRUNE_API_SCOPE=org or run via workflow_dispatch with api_scope=org.
+
+name: NuGet packages prune (GPR / vcpkg)
+
+on:
+  schedule:
+    - cron: "0 2 * * 0" # Sunday 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep_versions:
+        description: Keep the newest N versions per package; older versions are deleted.
+        type: number
+        default: 1
+      api_scope:
+        description: >-
+          user = LIST /user/packages (packages owned by the PAT account).
+          org = LIST /orgs/OWNER/packages with OWNER = github.repository_owner (GitHub Organization).
+        type: choice
+        options: [user, org]
+        default: user
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Prune old NuGet package versions
+        env:
+          GH_TOKEN: ${{ secrets.DELETE_PACKAGES_PAT }}
+          OWNER: ${{ github.repository_owner }}
+          API_SCOPE_FALLBACK: ${{ vars.NUGET_PRUNE_API_SCOPE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Set repository secret DELETE_PACKAGES_PAT (fine-grained or classic PAT with read:packages + delete:packages for this repo/owner)."
+            exit 1
+          fi
+
+          KEEP_RAW="${{ github.event.inputs.keep_versions }}"
+          if [[ -z "${KEEP_RAW}" ]]; then
+            KEEP_VERSIONS=1
+          else
+            KEEP_VERSIONS="${KEEP_RAW}"
+          fi
+          if ! [[ "${KEEP_VERSIONS}" =~ ^[0-9]+$ ]] || [[ "${KEEP_VERSIONS}" -lt 0 ]]; then
+            echo "::error::keep_versions must be a non-negative integer (got: ${KEEP_VERSIONS})"
+            exit 1
+          fi
+          if [[ "${KEEP_VERSIONS}" -eq 0 ]]; then
+            echo "::warning::keep_versions=0 will delete ALL versions of every NuGet package (use only if intentional)."
+          fi
+
+          API_SCOPE="${{ github.event.inputs.api_scope }}"
+          if [[ -z "${API_SCOPE}" ]]; then
+            API_SCOPE="${API_SCOPE_FALLBACK:-user}"
+          fi
+          if [[ "${API_SCOPE}" == org ]]; then
+            API_BASE="/orgs/${OWNER}"
+          else
+            API_BASE="/user"
+          fi
+
+          echo "API base: ${API_BASE}"
+          echo "KEEP_VERSIONS (newest retained per package): ${KEEP_VERSIONS}"
+
+          echo "Listing NuGet packages..."
+          mapfile -t PACKAGES < <(
+            gh api --paginate -H "Accept: application/vnd.github+json" \
+              "${API_BASE}/packages?package_type=nuget" -q '.[].name' 2>/dev/null || true
+          )
+
+          if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+            echo "No NuGet packages found; nothing to do."
+            exit 0
+          fi
+
+          echo "Found ${#PACKAGES[@]} package(s)."
+
+          for PKG in "${PACKAGES[@]}"; do
+            [[ -z "${PKG}" ]] && continue
+            echo "::group::Package: ${PKG}"
+            PKG_ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${PKG}")"
+
+            VURL="${API_BASE}/packages/nuget/${PKG_ENC}/versions"
+            if ! VERSIONS_JSON="$(gh api --paginate -H "Accept: application/vnd.github+json" "${VURL}" 2>/dev/null)"; then
+              echo "::warning::Failed to list versions for ${PKG}; skip."
+              echo "::endgroup::"
+              continue
+            fi
+
+            OLD_IDS="$(
+              echo "${VERSIONS_JSON}" | jq -s --argjson k "${KEEP_VERSIONS}" '
+                flatten
+                | sort_by(.updated_at // "")
+                | reverse
+                | .[$k:]
+                | .[]
+                | .id
+              ' -r
+            )"
+
+            if [[ -z "${OLD_IDS}" ]]; then
+              echo "Nothing to delete (version count ≤ ${KEEP_VERSIONS})."
+              echo "::endgroup::"
+              continue
+            fi
+
+            while IFS= read -r VID; do
+              [[ -z "${VID}" ]] && continue
+              echo "Deleting version id ${VID} ..."
+              gh api --method DELETE -H "Accept: application/vnd.github+json" \
+                "${API_BASE}/packages/nuget/${PKG_ENC}/versions/${VID}" || {
+                echo "::warning::DELETE failed for ${PKG} version ${VID}"
+              }
+            done <<< "${OLD_IDS}"
+
+            echo "::endgroup::"
+          done
+
+          echo "NuGet prune finished."
