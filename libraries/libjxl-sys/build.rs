@@ -6,18 +6,28 @@ fn main() {
     let (installed_dir, vcpkg_triplet) = configure_vcpkg_triplet();
     let mut config = vcpkg::Config::new();
     config.cargo_metadata(true);
+    config.target_triplet(&vcpkg_triplet);
 
     match config.find_package("libjxl") {
         Ok(lib) => {
             for include in lib.include_paths {
                 println!("cargo:include={}", include.display());
             }
-            // Pick up Little CMS 2 alongside libjxl. Per vcpkg, libjxl does not
-            // declare lcms2 as a dependency, but lcms2 is present in the same
-            // installed dir (typically as a transitive dep of libheif/libavif).
-            // We need it for the CMYK→sRGB transform path on JXL files with a
-            // black extra channel.
-            let _ = config.find_package("lcms2");
+            // Little CMS 2: needed for CMYK→sRGB when JXL has a black extra channel (see lcms extern in lib.rs).
+            // Do **not** call `find_package("lcms2")` on the same `Config` after libjxl: vcpkg-rs leaves
+            // `required_libs` populated, so a second `find_package` skips re-resolution but still re-emits
+            // every `rustc-link-lib`, which duplicates native libs and rustc reports
+            // "overriding linking modifiers from command line is not supported".
+            let has_lcms2 = lib.found_names.iter().any(|n| {
+                let l = n.to_lowercase();
+                l == "lcms2" || l == "lcms"
+            });
+            if !has_lcms2 {
+                let mut lcms_cfg = vcpkg::Config::new();
+                lcms_cfg.cargo_metadata(true);
+                lcms_cfg.target_triplet(&vcpkg_triplet);
+                let _ = lcms_cfg.find_package("lcms2");
+            }
         }
         Err(err) => {
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");

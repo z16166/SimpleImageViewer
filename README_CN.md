@@ -128,44 +128,9 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 | Windows 10/11 (x64 / arm64) | ✅ 原生支持 |
 | Windows 7+ (x64) | ✅ 提供专门的 Win7 x64 兼容版（可在 Win7 及以上系统运行）* |
 | macOS（Apple Silicon / Intel） | ✅ 原生支持 |
-| Linux (x64 / arm64) | ✅ 需要音频库（见下文） |
+| Linux (x64 / arm64) | ✅ 原生支持 |
 
 *\*Windows 7 注意事项：系统必须升级至 **Service Pack 1 (SP1)** 并安装 **KB2670838**（Windows 7 平台更新/图形增强补丁），且显卡驱动需支持 **DirectX 11**。*
-
----
-
-## 编译说明
-
-### 前置条件
-
-- [Rust](https://rustup.rs/) 1.85+（edition 2024）
-- **Linux** 系统需安装音频库：
-  ```bash
-  sudo apt install libasound2-dev   # Debian / Ubuntu
-  sudo dnf install alsa-lib-devel   # Fedora
-  ```
-
-### 编译步骤
-
-```bash
-git clone git@github.com:z16166/SimpleImageViewer.git
-cd SimpleImageViewer
-
-# 开发版本（含调试信息）
-cargo run
-
-# 发布版本（优化构建）
-cargo build --release
-# 输出：target/release/SimpleImageViewer（Windows 下为 SimpleImageViewer.exe）
-```
-
-### 可选：重新生成应用图标
-
-```bash
-cargo run --bin make_ico   # 将 assets/icon.jpg 转换为 assets/icon.ico
-```
-
----
 
 ---
 

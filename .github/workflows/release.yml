@@ -28,18 +28,28 @@ on:
           - aarch64-apple-darwin
           - x86_64-apple-darwin
           - legacy-win7
+      clear_dnf_cache:
+        description: "Linux only: delete workspace .ci-cache/dnf before build (cold dnf; use sparingly)."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
+  packages: write
 
 env:
   # When dispatching manually with release_tag set, checkout and release use that tag; otherwise use the triggering ref.
   CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  MONKEY_SDK_VERSION: "1270"
+  MONKEY_SDK_VERSION: "1293"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
   MACOSX_DEPLOYMENT_TARGET: "11.0"
+  # vcpkg accepts at most: nuget,<url>[,read|readwrite] — token cannot be a 4th segment (parse error).
+  # Use apikeys in nuget.config (below) so nuget push finds an API key for GPR.
+  VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json,readwrite"
+  VCPKG_NUGET_REPOSITORY: "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+  VCPKG_KEEP_ENV_VARS: "PKG_CONFIG;M4;AUTOCONF;AUTOMAKE;LIBTOOL;GETTEXT;VCPKG_MAKE_BUILD_TRIPLET"
 
 jobs:
   # GitHub does not allow `matrix.*` in job-level `if`; filter the matrix here instead.
@@ -62,18 +72,20 @@ jobs:
               {
                   "os": "ubuntu-latest",
                   "target": "x86_64-unknown-linux-gnu",
-                  "vcpkg_cache_suffix": "focal-glibc231",
+                  "vcpkg_cache_suffix": "alma8-el8",
                   "binary_name": "SimpleImageViewer",
                   "archive_ext": ".tar.gz",
                   "use_cross": True,
+                  "linux_alma8": True,
               },
               {
-                  "os": "ubuntu-latest",
+                  "os": "ubuntu-24.04-arm",
                   "target": "aarch64-unknown-linux-gnu",
-                  "vcpkg_cache_suffix": "jammy-glibc235",
+                  "vcpkg_cache_suffix": "alma8-el8",
                   "binary_name": "SimpleImageViewer",
                   "archive_ext": ".tar.gz",
                   "use_cross": True,
+                  "linux_alma8": True,
               },
               {
                   "os": "windows-latest",
@@ -135,17 +147,31 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.matrix-prep.outputs.include_json) }}
+    env:
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'arm64-linux-v8a' || (matrix.target == 'x86_64-unknown-linux-gnu' && 'x64-linux' || 'na') }}
+      VCPKG_HOST_TRIPLET: ${{ contains(matrix.os, 'windows') && 'x64-windows' || (contains(matrix.os, 'macos') && 'x64-osx' || 'x64-linux') }}
+      # Ubuntu host: system pkg-config. macOS: Homebrew on PATH. Windows: unset here; see Install pkg-config step.
+      PKG_CONFIG: ${{ contains(matrix.os, 'ubuntu') && '/usr/bin/pkg-config' || (contains(matrix.os, 'macos') && 'pkg-config' || '') }}
+      # Hosted macOS/Windows images may set VCPKG_FORCE_SYSTEM_BINARIES; vcpkg then refuses to
+      # download its bundled NuGet and GPR binary caching fails with "Could not fetch nuget".
+      VCPKG_FORCE_SYSTEM_BINARIES: ""
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
+      - name: Clear dnf workspace cache (manual opt-in)
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && github.event.inputs.clear_dnf_cache == 'true'
+        run: rm -rf "${{ github.workspace }}/.ci-cache/dnf"
+
       - name: Setup NASM
+        if: runner.os != 'Linux'
         uses: ilammy/setup-nasm@v1
 
       - name: Export vcpkg triplet
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           if [[ "${{ matrix.target }}" == *"windows"* ]]; then
@@ -155,83 +181,157 @@ jobs:
           elif [[ "${{ matrix.target }}" == *"apple-darwin"* ]]; then
             if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-osx" >> $GITHUB_ENV;
             elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=arm64-osx" >> $GITHUB_ENV; fi
-          elif [[ "${{ matrix.target }}" == *"linux"* ]]; then
-            if [[ "${{ matrix.target }}" == "x86_64"* ]]; then echo "VCPKG_DEFAULT_TRIPLET=x64-linux" >> $GITHUB_ENV;
-            elif [[ "${{ matrix.target }}" == "aarch64"* ]]; then 
-              echo "VCPKG_DEFAULT_TRIPLET=arm64-linux" >> $GITHUB_ENV;
-              # Pin GCC 12 cross compiler (matches ubuntu:22.04 vcpkg container + arm64-toolchain.cmake).
-              echo "CC=/usr/bin/aarch64-linux-gnu-gcc-12" >> $GITHUB_ENV;
-              echo "CXX=/usr/bin/aarch64-linux-gnu-g++-12" >> $GITHUB_ENV;
-            fi
           fi
 
-      - name: Install cross-compiler (Ubuntu ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          # Noble default cross is often newer; pin GCC 12 to match ubuntu:22.04 vcpkg Docker build.
-          sudo apt-get install -y gcc-12-aarch64-linux-gnu g++-12-aarch64-linux-gnu binutils-aarch64-linux-gnu
-          
-      - name: Configure CMake Toolchain (ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          cat <<EOF > arm64-toolchain.cmake
-          set(CMAKE_SYSTEM_NAME Linux)
-          set(CMAKE_SYSTEM_PROCESSOR aarch64)
-          set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc-12)
-          set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++-12)
-          EOF
-          echo "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/arm64-toolchain.cmake" >> $GITHUB_ENV
+      - name: Restore vcpkg + dnf caches (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v5
+        with:
+          path: |
+            vcpkg_installed
+            .ci-cache/dnf
+          key: vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'scripts/ci/alma8-linux-build.sh', 'triplets/arm64-linux-v8a.cmake', 'triplets/x64-linux.cmake', 'vcpkg-overlays/libyuv/portfile.cmake', 'vcpkg-overlays/libyuv/linux-arm64-libyuv-as.cmake', 'vcpkg-overlays/libyuv/cmake.diff', 'vcpkg-overlays/libyuv/arm64-disable-dotprod-i8mm.patch', 'vcpkg-overlays/x265/portfile.cmake') }}
+          restore-keys: |
+            vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-
 
-      - name: Setup vcpkg
+      - name: Prepare vcpkg checkout (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=$(jq -r '."builtin-baseline"' vcpkg.json)
+          [[ -n "$BASE" && "$BASE" != "null" ]]
+          rm -rf vcpkg
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git vcpkg
+          git config --global --add safe.directory "${{ github.workspace }}/vcpkg"
+          git -C vcpkg checkout "$BASE"
+
+      - name: Setup vcpkg (Windows / macOS)
+        if: runner.os != 'Linux'
         uses: lukka/run-vcpkg@v11
         with:
           runVcpkgInstall: false
           vcpkgJsonGlob: 'vcpkg.json'
           vcpkgConfigurationJsonGlob: 'vcpkg-configuration.json'
 
-      - name: Install vcpkg dependencies
+      - name: Ensure dnf cache dir (Linux host)
+        if: runner.os == 'Linux'
+        run: mkdir -p "${{ github.workspace }}/.ci-cache/dnf"
+
+      - name: Configure vcpkg NuGet Binary Source
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
-              echo "vcpkg in ubuntu:20.04 — matches cross-rs glibc (glibc 2.31) for x64-linux static libs"
-              IMG=ubuntu:20.04
-              INNER=/work/scripts/ci/vcpkg_inner_focal_x64.sh
-            elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-              echo "vcpkg in ubuntu:22.04 + GCC 12 cross for arm64-linux"
-              IMG=ubuntu:22.04
-              INNER=/work/scripts/ci/vcpkg_inner_jammy.sh
-            else
-              echo "unexpected Linux target: ${{ matrix.target }}"
-              exit 1
-            fi
-            # Adjust the toolchain file path for the container
-            # Do not rely on GITHUB_ENV here; always mount the same path the workflow step wrote.
-            DOCKER_TOOLCHAIN=""
-            if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-              DOCKER_TOOLCHAIN="/work/arm64-toolchain.cmake"
-            fi
-            
-            # Change permissions so Docker doesn't create root-owned cache files that fail later steps
-            mkdir -p vcpkg_installed
-            chmod -R 777 vcpkg_installed
+          cat <<EOF > nuget.config
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <add key="GitHub" value="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <GitHub>
+                <add key="Username" value="${{ github.actor }}" />
+                <add key="ClearTextPassword" value="${{ secrets.GITHUB_TOKEN }}" />
+              </GitHub>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
 
-            # Transient mirror failures can yield fake "broken packages"; retries + fail on partial "Failed to fetch" in inner script.
-            docker run --rm \
-              -v "${{ github.workspace }}:/work" \
-              -v "$VCPKG_ROOT:/vcpkg" \
-              -w /work \
-              -e "VCPKG_DEFAULT_TRIPLET=${VCPKG_DEFAULT_TRIPLET}" \
-              -e "VCPKG_CHAINLOAD_TOOLCHAIN_FILE=${DOCKER_TOOLCHAIN}" \
-              "${IMG}" \
-              bash "${INNER}"
+      - name: Build in AlmaLinux 8 container (glibc 2.28)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          mkdir -p "$WS/.ci-cache/dnf"
+          if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
+            DOCKER_PLATFORM=linux/arm64
           else
-            echo "DEBUG: Current PWD is $(pwd)"
-            echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
-            echo "DEBUG: Checking overlay directory existence:"
-            ls -la "$(pwd)/vcpkg-overlays" || echo "Directory not found!"
-            vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays"
+            DOCKER_PLATFORM=linux/amd64
+          fi
+          docker run --rm \
+            --platform "${DOCKER_PLATFORM}" \
+            -v "${WS}:/workspace" \
+            -v "${WS}/.ci-cache/dnf:/var/cache/dnf" \
+            -w /workspace \
+            -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            -e GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}" \
+            -e GITHUB_ACTOR="${{ github.actor }}" \
+            -e "VCPKG_BINARY_SOURCES=${{ env.VCPKG_BINARY_SOURCES }}" \
+            -e MONKEY_SDK_VERSION="${{ env.MONKEY_SDK_VERSION }}" \
+            -e MONKEY_SDK_DIR="${{ env.MONKEY_SDK_DIR }}" \
+            almalinux:8 \
+            bash /workspace/scripts/ci/alma8-linux-build.sh "${{ matrix.target }}"
+          sudo chown -R "$(id -u):$(id -g)" "$WS" || true
+
+      - name: Restore vcpkg_installed (Windows / macOS)
+        if: runner.os != 'Linux'
+        uses: actions/cache@v5
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/libyuv/portfile.cmake', 'vcpkg-overlays/libyuv/linux-arm64-libyuv-as.cmake', 'vcpkg-overlays/libyuv/cmake.diff', 'vcpkg-overlays/libyuv/arm64-disable-dotprod-i8mm.patch', 'vcpkg-overlays/x265/portfile.cmake') }}
+          restore-keys: |
+            vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-
+
+      - name: Configure vcpkg NuGet Binary Source
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cat <<EOF > nuget.config
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <add key="GitHub" value="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <GitHub>
+                <add key="Username" value="${{ github.actor }}" />
+                <add key="ClearTextPassword" value="${{ secrets.GITHUB_TOKEN }}" />
+              </GitHub>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
+
+      - name: macOS vcpkg binary sources (no Mono / GPR NuGet)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # vcpkg runs NuGet.exe under Mono on macOS; GitHub-hosted runners do not provide Mono
+          # and vcpkg cannot bootstrap it ("Could not fetch mono"). Skip GitHub Packages binary
+          # cache here; persist dependencies via the vcpkg_installed Actions cache instead.
+          echo "VCPKG_BINARY_SOURCES=clear" >> "$GITHUB_ENV"
+
+      - name: Install pkg-config (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite -y --no-progress
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $exe = (Get-Command pkg-config -ErrorAction Stop).Source
+          Write-Host "Using PKG_CONFIG=$exe"
+          Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG=$exe"
+
+      - name: Install vcpkg dependencies
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset VCPKG_FORCE_SYSTEM_BINARIES
+          echo "DEBUG: Current PWD is $(pwd)"
+          export NUGET_CONFIGFILE="${{ github.workspace }}/nuget.config"
+          if vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays" --overlay-triplets="$(pwd)/triplets" 2>&1 | tee vcpkg_build.log; then
+            :
+          else
+            echo "::error::vcpkg install failed. Showing only paths vcpkg printed (lines ending in .log)."
+            (grep -iE '\.log$' vcpkg_build.log || true) | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sort -u | while read -r log_file; do
+              [[ -z "$log_file" ]] && continue
+              if [[ -f "$log_file" ]]; then
+                echo "::group::vcpkg failure log: $log_file"
+                cat "$log_file"
+                echo "::endgroup::"
+              fi
+            done
+            exit 1
           fi
 
       - name: Collect vcpkg failure logs (Linux)
@@ -239,9 +339,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p vcpkg-failure-logs
-          root="${VCPKG_ROOT:-}"
-          if [[ -z "$root" || ! -d "$root/buildtrees" ]]; then
-            echo "No VCPKG_ROOT or buildtrees (skipping artifact staging)"
+          root="${{ github.workspace }}/vcpkg"
+          if [[ ! -d "$root/buildtrees" ]]; then
+            echo "No vcpkg buildtrees (skipping artifact staging)"
             exit 0
           fi
           n=0
@@ -258,21 +358,12 @@ jobs:
 
       - name: Upload vcpkg failure logs (Linux)
         if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vcpkg-logs-${{ matrix.target }}
           path: vcpkg-failure-logs/
           if-no-files-found: ignore
 
-      - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            vcpkg_installed
-            ${{ github.workspace }}/vcpkg_installed
-          key: vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
-          restore-keys: |
-            vcpkg-${{ matrix.target }}-${{ matrix.vcpkg_cache_suffix }}-
 
       - name: Setup Monkey's Audio SDK (Windows)
         if: runner.os == 'Windows'
@@ -283,8 +374,8 @@ jobs:
           if (!(Test-Path "${{ env.MONKEY_SDK_DIR }}")) { New-Item -ItemType Directory -Force -Path "${{ env.MONKEY_SDK_DIR }}" }
           Copy-Item -Path "temp_monkey/*" -Destination "${{ env.MONKEY_SDK_DIR }}/" -Recurse -Force
 
-      - name: Setup Monkey's Audio SDK (Non-Windows)
-        if: runner.os != 'Windows'
+      - name: Setup Monkey's Audio SDK (macOS)
+        if: runner.os == 'macOS'
         run: |
           curl -L https://monkeysaudio.com/files/MAC_${{ env.MONKEY_SDK_VERSION }}_SDK.zip -o monkey_sdk.zip
           unzip monkey_sdk.zip -d temp_monkey
@@ -292,6 +383,7 @@ jobs:
           cp -rn temp_monkey/* ${{ env.MONKEY_SDK_DIR }}/
 
       - name: Export NASM path for build scripts
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           NASM_BIN=$(which nasm || which nasm.exe || echo "")
@@ -303,34 +395,20 @@ jobs:
             echo "ERROR: nasm not found in PATH after setup" && exit 1
           fi
 
-      - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux' && !matrix.use_cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-        if: "!matrix.use_cross"
+        if: runner.os != 'Linux'
 
       - name: Rust Cache
+        if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v22-ci-profile
           key: ${{ matrix.target }}
-
-      - name: Build cross aarch64 Jammy image (match vcpkg / glibc)
-        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
-        shell: bash
-        run: bash scripts/ci/build_cross_aarch64_jammy_image.sh
-
-      - name: Build Release (Cross)
-        if: matrix.use_cross
-        shell: bash
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-          cross build --release --target ${{ matrix.target }}
+          env-vars: CC_x86_64_unknown_linux_gnu CXX_x86_64_unknown_linux_gnu CC_aarch64_unknown_linux_gnu CXX_aarch64_unknown_linux_gnu
 
       - name: Build Release (Native)
         if: "!matrix.use_cross"
@@ -339,29 +417,31 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          cargo build --release --target ${{ matrix.target }}
-
-      - name: Run SIMD Parity Tests (Cross)
-        if: matrix.use_cross
-        run: cross test --release --target ${{ matrix.target }} simd_swizzle
+          cargo build --profile ci --target ${{ matrix.target }}
 
       - name: Run SIMD Parity Tests (Native)
         if: "!matrix.use_cross && matrix.target != 'aarch64-pc-windows-msvc'"
-        run: cargo test --release --target ${{ matrix.target }} simd_swizzle
+        run: cargo test --profile ci --target ${{ matrix.target }} simd_swizzle
 
       - name: Check glibc compatibility
         if: runner.os == 'Linux'
         run: |
           BINARY="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
-          if [ -f "$BINARY" ]; then
-            echo "Checking glibc version requirements for $BINARY"
-            # Extract highest GLIBC version from symbol versions
-            MAX_GLIBC=$(strings "$BINARY" | grep "^GLIBC_2" | sort -V | tail -n 1)
-            echo "Maximum GLIBC version required: $MAX_GLIBC"
-            # Also show shared library dependencies
-            readelf -d "$BINARY" | grep NEEDED || true
+          if [ ! -f "$BINARY" ]; then
+            echo "::error::Linux release binary missing at $BINARY (cannot verify glibc / libstdc++)."
+            exit 1
+          fi
+          echo "Checking glibc version requirements for $BINARY"
+          # Extract highest GLIBC version from symbol versions
+          MAX_GLIBC=$(strings "$BINARY" | grep "^GLIBC_2" | sort -V | tail -n 1)
+          echo "Maximum GLIBC version required: $MAX_GLIBC"
+          # also show whether libstdc++ stayed dynamic (expect: no NEEDED libstdc++.so if fully satisfied from .a)
+          readelf -d "$BINARY" | grep NEEDED || true
+          if readelf -d "$BINARY" | grep -q 'libstdc\+\+\.so'; then
+            echo "::error::Binary must not list libstdc++.so in NEEDED; use .cargo/g++-lld-wrap.sh as linker + -static-libstdc++ (see .cargo/config.toml); or SIV_NO_LLD=1 with bfd ld."
+            exit 1
           else
-            echo "Binary not found at $BINARY"
+            echo "OK: no libstdc++.so in NEEDED (libstdc++ linked statically)."
           fi
 
       - name: Package Artifacts (Windows)
@@ -369,7 +449,7 @@ jobs:
         shell: pwsh
         run: |
           $archiveName = "SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
-          $binarySrc = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          $binarySrc = "target/${{ matrix.target }}/ci/${{ matrix.binary_name }}"
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
@@ -381,7 +461,7 @@ jobs:
         run: |
           ARCHIVE_NAME="SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           mkdir -p staging/assets
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} staging/
+          cp target/${{ matrix.target }}/ci/${{ matrix.binary_name }} staging/
           cp README.md README_CN.md LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
           cd staging && zip -r ../$ARCHIVE_NAME . && cd ..
@@ -399,7 +479,7 @@ jobs:
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.target }}
           path: ${{ env.ARCHIVE_NAME }}
@@ -408,7 +488,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $pdbPath = "target/${{ matrix.target }}/release/SimpleImageViewer.pdb"
+          $pdbPath = "target/${{ matrix.target }}/ci/SimpleImageViewer.pdb"
           if (Test-Path $pdbPath) {
             $zipName = "SimpleImageViewer-${{ matrix.target }}-pdb.zip"
             Compress-Archive -Path $pdbPath -DestinationPath $zipName
@@ -417,7 +497,7 @@ jobs:
 
       - name: Upload PDB artifact (Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pdb-${{ matrix.target }}
           path: ${{ env.PDB_ZIP }}
@@ -428,9 +508,11 @@ jobs:
     if: |-
       ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'legacy-win7' }}
     runs-on: windows-latest
+    env:
+      VCPKG_FORCE_SYSTEM_BINARIES: ""
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
@@ -460,17 +542,60 @@ jobs:
           vcpkgJsonGlob: 'vcpkg.json'
           vcpkgConfigurationJsonGlob: 'vcpkg-configuration.json'
 
+      - name: Configure vcpkg NuGet Binary Source
+        shell: bash
+        run: |
+          cat <<EOF > nuget.config
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <add key="GitHub" value="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" />
+            </packageSources>
+            <packageSourceCredentials>
+              <GitHub>
+                <add key="Username" value="${{ github.actor }}" />
+                <add key="ClearTextPassword" value="${{ secrets.GITHUB_TOKEN }}" />
+              </GitHub>
+            </packageSourceCredentials>
+          </configuration>
+          EOF
+
+      - name: Install pkg-config (Windows)
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite -y --no-progress
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $exe = (Get-Command pkg-config -ErrorAction Stop).Source
+          Write-Host "Using PKG_CONFIG=$exe"
+          Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG=$exe"
+
       - name: Install vcpkg dependencies
         shell: bash
         run: |
+          set -euo pipefail
+          unset VCPKG_FORCE_SYSTEM_BINARIES
           echo "DEBUG: Current PWD is $(pwd)"
           echo "DEBUG: GITHUB_WORKSPACE is $GITHUB_WORKSPACE"
+          export NUGET_CONFIGFILE="${{ github.workspace }}/nuget.config"
           echo "DEBUG: Checking overlay directory existence:"
           ls -la "$(pwd)/vcpkg-overlays" || echo "Directory not found!"
-          vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays" --overlay-triplets="$(pwd)/vcpkg-overlays/triplets"
+          if vcpkg install --triplet="$VCPKG_DEFAULT_TRIPLET" --overlay-ports="$(pwd)/vcpkg-overlays" --overlay-triplets="$(pwd)/vcpkg-overlays/triplets" 2>&1 | tee vcpkg_build.log; then
+            :
+          else
+            echo "::error::vcpkg install failed. Showing only paths vcpkg printed (lines ending in .log)."
+            (grep -iE '\.log$' vcpkg_build.log || true) | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sort -u | while read -r log_file; do
+              [[ -z "$log_file" ]] && continue
+              if [[ -f "$log_file" ]]; then
+                echo "::group::vcpkg failure log: $log_file"
+                cat "$log_file"
+                echo "::endgroup::"
+              fi
+            done
+            exit 1
+          fi
 
       - name: Cache vcpkg artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vcpkg_installed
           key: vcpkg-win7-legacy-x64-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -501,14 +626,26 @@ jobs:
       - name: Download VC-LTL5 and YY-Thunks
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z" -OutFile "VC-LTL.7z"
-          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Lib.zip" -OutFile "YY-Thunks-Lib.zip"
-          Invoke-WebRequest -Uri "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1-Beta.2/YY-Thunks-Objs.zip" -OutFile "YY-Thunks-Objs.zip"
-          
+          $ProgressPreference = 'SilentlyContinue'
+          function Get-RemoteFile([string] $Url, [string] $Out) {
+            for ($i = 1; $i -le 6; $i++) {
+              Remove-Item -Force -ErrorAction SilentlyContinue $Out
+              & curl.exe -fL --connect-timeout 60 --retry 5 --retry-delay 10 `
+                -H "User-Agent: curl/SimpleImageViewer-CI" -o $Out $Url
+              if ($LASTEXITCODE -eq 0 -and (Test-Path $Out) -and ((Get-Item $Out).Length -gt 0)) {
+                return
+              }
+              Write-Warning "Download attempt $i failed for $Url (exit $LASTEXITCODE)"
+              Start-Sleep -Seconds (20 * $i)
+            }
+            throw "Failed to download after retries: $Url"
+          }
+          Get-RemoteFile "https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.3.1/VC-LTL-Binary.7z" "VC-LTL.7z"
+          Get-RemoteFile "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1/YY-Thunks-Lib.zip" "YY-Thunks-Lib.zip"
+          Get-RemoteFile "https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.1/YY-Thunks-Objs.zip" "YY-Thunks-Objs.zip"
           7z x VC-LTL.7z -oVC-LTL5
           Expand-Archive -Path YY-Thunks-Lib.zip -DestinationPath YY-Thunks -Force
           Expand-Archive -Path YY-Thunks-Objs.zip -DestinationPath YY-Thunks -Force
-          
           echo "VC_LTL=$pwd\VC-LTL5" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "YY_THUNKS=$pwd\YY-Thunks" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -522,7 +659,7 @@ jobs:
           YY_THUNKS: ${{ env.YY_THUNKS }}
         run: |
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          thunk --os win7 --arch x64 -- --release --features legacy_win7
+          thunk --os win7 --arch x64 -- --profile ci --features legacy_win7
 
 
 
@@ -530,7 +667,7 @@ jobs:
         shell: pwsh
         run: |
           $archiveName = "SimpleImageViewer-win7-x64.zip"
-          $binarySrc = "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.exe"
+          $binarySrc = "target/win7_build/x86_64-pc-windows-msvc/ci/SimpleImageViewer.exe"
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
@@ -547,7 +684,7 @@ jobs:
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-win7-x64
           path: ${{ env.ARCHIVE_NAME }}
@@ -555,7 +692,7 @@ jobs:
       - name: Archive PDB symbols (Win7)
         shell: pwsh
         run: |
-          $pdbPath = "target/win7_build/x86_64-pc-windows-msvc/release/SimpleImageViewer.pdb"
+          $pdbPath = "target/win7_build/x86_64-pc-windows-msvc/ci/SimpleImageViewer.pdb"
           if (Test-Path $pdbPath) {
             $zipName = "SimpleImageViewer-win7-x64-pdb.zip"
             Compress-Archive -Path $pdbPath -DestinationPath $zipName
@@ -563,7 +700,7 @@ jobs:
           }
 
       - name: Upload PDB artifact (Win7)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pdb-win7-x64
           path: ${{ env.PDB_ZIP }}
@@ -576,7 +713,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ env.CHECKOUT_REF }}
@@ -598,7 +735,7 @@ jobs:
           echo "============================="
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true

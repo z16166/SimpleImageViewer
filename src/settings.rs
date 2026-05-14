@@ -156,7 +156,9 @@ pub struct Settings {
     pub raw_high_quality: bool,
 
     // HDR tone mapping
-    #[serde(default = "default_true")]
+    /// Request a native HDR swap chain (Windows scRGB / macOS EDR). Ignored on Linux: use
+    /// [`Settings::hdr_native_surface_enabled_effective`] for runtime behavior.
+    #[serde(default = "default_hdr_native_surface_enabled")]
     pub hdr_native_surface_enabled: bool,
     #[serde(default)]
     pub hdr_exposure_ev: f32,
@@ -196,6 +198,17 @@ fn default_interval() -> f32 {
 }
 fn default_true() -> bool {
     true
+}
+
+fn default_hdr_native_surface_enabled() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 fn default_volume() -> f32 {
     1.0
@@ -255,7 +268,7 @@ impl Default for Settings {
             last_music_cue_track: None,
             audio_device: None,
             raw_high_quality: false,
-            hdr_native_surface_enabled: true,
+            hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
             hdr_exposure_ev: 0.0,
             hdr_sdr_white_nits: default_hdr_sdr_white_nits(),
             hdr_max_display_nits: default_hdr_max_display_nits(),
@@ -340,6 +353,20 @@ pub fn settings_path() -> PathBuf {
 }
 
 impl Settings {
+    /// Native HDR swap-chain requests (runtime). Always `false` on Linux — we only tone-map to
+    /// SDR there; the stored [`Settings::hdr_native_surface_enabled`] is clamped on load/save.
+    #[inline]
+    pub fn hdr_native_surface_enabled_effective(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            false
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.hdr_native_surface_enabled
+        }
+    }
+
     pub fn hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
         crate::hdr::types::HdrToneMapSettings {
             exposure_ev: self.hdr_exposure_ev,
@@ -360,7 +387,7 @@ impl Settings {
                         .hdr_max_display_nits
                         .clamp(100.0, 10_000.0)
                         .max(hdr_sdr_white_nits);
-                    return Self {
+                    let merged = Self {
                         auto_switch_interval: s.auto_switch_interval.clamp(0.5, 300.0),
                         volume: s.volume.clamp(0.0, 1.0),
                         font_size: s.font_size.clamp(12.0, 72.0),
@@ -370,6 +397,17 @@ impl Settings {
                         hdr_max_display_nits,
                         ..s
                     };
+                    #[cfg(target_os = "linux")]
+                    {
+                        return Self {
+                            hdr_native_surface_enabled: false,
+                            ..merged
+                        };
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        return merged;
+                    }
                 }
                 Err(e) => eprintln!("[settings] parse error: {e}"),
             }
@@ -379,7 +417,19 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         let path = settings_path();
-        match serde_yaml::to_string(self) {
+        let payload = {
+            #[cfg(target_os = "linux")]
+            {
+                let mut s = self.clone();
+                s.hdr_native_surface_enabled = false;
+                s
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                self.clone()
+            }
+        };
+        match serde_yaml::to_string(&payload) {
             Ok(text) => std::fs::write(&path, text).map_err(|e| e.to_string()),
             Err(e) => Err(format!("[settings] serialize error: {e}")),
         }
@@ -406,16 +456,42 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_enable_native_hdr_surface_request() {
+    fn default_settings_native_hdr_surface_follows_platform() {
         let settings = Settings::default();
 
+        #[cfg(target_os = "linux")]
+        assert!(!settings.hdr_native_surface_enabled);
+        #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
     }
 
     #[test]
-    fn missing_native_hdr_surface_setting_defaults_to_enabled() {
+    fn hdr_native_surface_enabled_effective_is_false_on_linux_even_if_storage_true() {
+        #[cfg(target_os = "linux")]
+        {
+            let settings = Settings {
+                hdr_native_surface_enabled: true,
+                ..Settings::default()
+            };
+            assert!(!settings.hdr_native_surface_enabled_effective());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let settings = Settings {
+                hdr_native_surface_enabled: true,
+                ..Settings::default()
+            };
+            assert!(settings.hdr_native_surface_enabled_effective());
+        }
+    }
+
+    #[test]
+    fn missing_native_hdr_surface_setting_uses_platform_default() {
         let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
 
+        #[cfg(target_os = "linux")]
+        assert!(!settings.hdr_native_surface_enabled);
+        #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
     }
 

@@ -14,7 +14,97 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Linux: if `CARGO_TARGET_*_LINKER` points at `gcc` (not `g++`), the final link often omits libstdc++
+/// or mishandles vcpkg C++ archives (`condition_variable`, sized `operator delete`, etc.).
+fn linux_warn_if_cpp_linker_is_wrong() {
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let key = match arch.as_str() {
+        "x86_64" => "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
+        "aarch64" => "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        _ => return,
+    };
+    if let Ok(linker) = std::env::var(key) {
+        let base = Path::new(&linker)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(linker.as_str());
+        let is_gcc = base == "gcc" || base.ends_with("-gcc");
+        let is_gxx = base == "g++" || base.ends_with("-g++") || base == "c++" || base.ends_with("-c++");
+        if is_gcc && !is_gxx {
+            println!(
+                "cargo:warning=Linux needs a C++ link driver (g++), not {linker} ({key}). \
+                 Use `.cargo/config.toml` default or export {key}=g++ — gcc causes missing libstdc++ symbols."
+            );
+        }
+    }
+}
+
+/// Trailing full paths to `libstdc++.a` for GNU bfd `ld` when mixed static `.a` + `-bundle` pull C++ objects
+/// late (e.g. libde265). LLVM lld ignores single-pass ordering; repeating stays safe with `-fuse-ld=lld`.
+fn linux_link_libstdcxx_a_last() {
+    println!("cargo:rerun-if-env-changed=CXX");
+
+    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+    let output = std::process::Command::new(&cxx)
+        .arg("-print-file-name=libstdc++.a")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!("simple-image-viewer (linux): failed to run `{cxx} -print-file-name=libstdc++.a`: {e}")
+        });
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "simple-image-viewer (linux): `{cxx} -print-file-name=libstdc++.a` failed with {}: {stderr}",
+            output.status
+        );
+    }
+
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() || path_str == "libstdc++.a" {
+        panic!(
+            "simple-image-viewer (linux): `{cxx}` did not resolve libstdc++.a (got {path_str:?}). \
+             Install libstdc++ dev/static for your toolchain or set CXX."
+        );
+    }
+
+    let libstd = Path::new(&path_str);
+    if !libstd.is_file() {
+        panic!(
+            "simple-image-viewer (linux): libstdc++.a not found at {} (from `{cxx} -print-file-name=libstdc++.a`)",
+            libstd.display()
+        );
+    }
+
+    let p = libstd.display();
+    println!("cargo:rustc-link-arg={}", p);
+    println!("cargo:rustc-link-arg={}", p);
+}
+
+/// When `SIV_CI_LINK_MAP` is set, write a link map (`-Map=`) for the **this package's** link only (not deps),
+/// so CI can grep what pulled `libstdc++.so.6`. Path is stable for Alma: `target/simple-image-viewer-final.link.map`.
+fn linux_ci_link_map(manifest_dir: &Path) {
+    let enabled = matches!(
+        std::env::var("SIV_CI_LINK_MAP").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    );
+    if !enabled {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=SIV_CI_LINK_MAP");
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
+
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("target"));
+    let map_path = target_root.join("simple-image-viewer-final.link.map");
+    println!(
+        "cargo:rustc-link-arg=-Wl,-Map={}",
+        map_path.to_string_lossy().replace('\\', "/")
+    );
+}
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -25,6 +115,41 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.png").display()
     );
+
+    // vcpkg libtiff pkg-config lists webpdecoder/webpmux but not libwebp; tif_webp.c still
+    // needs encoder APIs. Do not use cargo:rustc-link-lib here: Cargo splits native libs away from
+    // adjacent rustc-link-arg, so --push-state/--pop-state ended up empty while -lwebp was moved
+    // early and dropped under -Wl,--as-needed before libtiff.a.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "linux" {
+        linux_warn_if_cpp_linker_is_wrong();
+        let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+        let vcpkg_triplet = std::env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| {
+            match target_arch.as_str() {
+                "x86_64" => "x64-linux".to_string(),
+                "aarch64" => "arm64-linux".to_string(),
+                _ => String::new(),
+            }
+        });
+        if !vcpkg_triplet.is_empty() {
+            let lib_dir = manifest_dir
+                .join("vcpkg_installed")
+                .join(&vcpkg_triplet)
+                .join("lib");
+            let webp_a = lib_dir.join("libwebp.a");
+            let sharpyuv_a = lib_dir.join("libsharpyuv.a");
+            if webp_a.is_file() && sharpyuv_a.is_file() {
+                println!("cargo:rustc-link-arg=-Wl,--push-state,--no-as-needed");
+                println!("cargo:rustc-link-arg={}", webp_a.display());
+                println!("cargo:rustc-link-arg={}", sharpyuv_a.display());
+                println!("cargo:rustc-link-arg=-Wl,--pop-state");
+            }
+        }
+
+        linux_ci_link_map(&manifest_dir);
+
+        linux_link_libstdcxx_a_last();
+    }
 
     // Generate the ICO from the source image (PNG)
     let src = manifest_dir.join("assets/icon.png");

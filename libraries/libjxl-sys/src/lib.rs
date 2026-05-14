@@ -499,7 +499,8 @@ pub const LCMS_TYPE_CMYK_FLT: cmsUInt32Number = 0x00460024;
 /// untouched (lcms2 keeps "extra" channels as a copy from input to output).
 pub const LCMS_TYPE_RGBA_FLT: cmsUInt32Number = 0x0044009C;
 
-#[link(name = "lcms2", kind = "static")]
+// lcms2: link only via build.rs (vcpkg / rustc-link-lib). Do not add #[link] on this extern block —
+// it can conflict with Cargo link metadata (+bundle vs static:-bundle= on Linux).
 unsafe extern "C" {
     /// Builds an `cmsHPROFILE` from raw ICC bytes. Returns NULL on failure.
     pub fn cmsOpenProfileFromMem(

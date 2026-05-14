@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.3] - 2026-05-13
+
+### Linux
+- **HDR presentation**: Linux builds do not request HDR / wide-color swapchains from the window system.
+- **`libstdc++`**: The GNU C++ runtime is linked statically; released binaries no longer list `libstdc++.so.6` in `DT_NEEDED`.
+- **glibc baseline**: Linux binaries are built against **glibc 2.28** (for example **Debian 10** and **UnionTech UOS**).
+- **Audio**: ALSA is linked statically so end users are not required to match a particular `libasound.so` from the distro.
+
+
 ## [2.0.2] - 2026-05-07
 
 ### Added / improved

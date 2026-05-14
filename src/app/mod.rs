@@ -789,7 +789,7 @@ impl eframe::App for ImageViewerApp {
         // spawn-time HDR detection that already chose the correct initial
         // format.
         if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
-            self.settings.hdr_native_surface_enabled,
+            self.settings.hdr_native_surface_enabled_effective(),
             self.hdr_monitor_state.selection(),
         ) && Some(desired_format) != self.hdr_target_format
         {
@@ -804,7 +804,7 @@ impl eframe::App for ImageViewerApp {
                 desired_format,
                 self.hdr_monitor_state.selection().map(|s| s.label.as_str()),
                 self.hdr_monitor_state.selection().map(|s| s.hdr_supported),
-                self.settings.hdr_native_surface_enabled,
+                self.settings.hdr_native_surface_enabled_effective(),
             );
             self.requested_target_format.request(desired_format);
             ctx.request_repaint();

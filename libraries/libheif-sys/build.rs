@@ -1,3 +1,14 @@
+/// On Linux, Rust defaults to `static:+bundle`, which copies archive members into dependent rlibs.
+/// That defers C++ objects (e.g. from `libheif.a`) until after `libstdc++.a` is scanned and can force
+/// `libstdc++.so.6` into `DT_NEEDED`. `static:-bundle` keeps the `.a` for the final link only.
+fn rustc_link_lib_static(name: &str) {
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "linux" {
+        println!("cargo:rustc-link-lib=static:-bundle={name}");
+    } else {
+        println!("cargo:rustc-link-lib=static={name}");
+    }
+}
+
 fn main() {
     unsafe {
         std::env::set_var("VCPKG_ALL_STATIC", "1");
@@ -6,6 +17,7 @@ fn main() {
     let (installed_dir, vcpkg_triplet) = configure_vcpkg_triplet();
     let mut config = vcpkg::Config::new();
     config.cargo_metadata(true);
+    config.target_triplet(&vcpkg_triplet);
 
     match config.find_package("libheif") {
         Ok(lib) => {
@@ -30,7 +42,7 @@ fn main() {
                 println_libheif_optional_codec_libs_static(&installed_dir, &vcpkg_triplet);
             } else if !has_brotli_enc {
                 // UNCI compressor uses encoder API (BrotliEncoder*); manifest-mode libs often omit brotlienc.
-                println!("cargo:rustc-link-lib=static=brotlienc");
+                rustc_link_lib_static("brotlienc");
             }
         }
         Err(err) => {
@@ -64,13 +76,13 @@ fn println_libheif_core_static_libs() {
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let is_msvc = target_os == "windows" && target_env == "msvc";
 
-    println!("cargo:rustc-link-lib=static=heif");
+    rustc_link_lib_static("heif");
     if is_msvc {
-        println!("cargo:rustc-link-lib=static=libde265");
-        println!("cargo:rustc-link-lib=static=x265-static");
+        rustc_link_lib_static("libde265");
+        rustc_link_lib_static("x265-static");
     } else {
-        println!("cargo:rustc-link-lib=static=de265");
-        println!("cargo:rustc-link-lib=static=x265");
+        rustc_link_lib_static("de265");
+        rustc_link_lib_static("x265");
     }
 }
 
@@ -82,12 +94,12 @@ fn println_libheif_core_static_libs() {
 /// `vcpkg_check_features` key does not match the feature name (`openh264` vs `h264-decoder`);
 /// add `openh264` here if you enable a fixed port or use a global vcpkg tree that links it.
 fn println_libheif_optional_codec_libs_static(installed_dir: &std::path::Path, vcpkg_triplet: &str) {
-    println!("cargo:rustc-link-lib=static=openjp2");
-    println!("cargo:rustc-link-lib=static=jpeg");
-    println!("cargo:rustc-link-lib=static=dav1d");
-    println!("cargo:rustc-link-lib=static=brotlienc");
-    println!("cargo:rustc-link-lib=static=brotlidec");
-    println!("cargo:rustc-link-lib=static=brotlicommon");
+    rustc_link_lib_static("openjp2");
+    rustc_link_lib_static("jpeg");
+    rustc_link_lib_static("dav1d");
+    rustc_link_lib_static("brotlienc");
+    rustc_link_lib_static("brotlidec");
+    rustc_link_lib_static("brotlicommon");
     println_static_zlib_for_vcpkg_installed(installed_dir, vcpkg_triplet);
 }
 
@@ -114,42 +126,39 @@ fn println_static_zlib_for_vcpkg_installed(installed_dir: &std::path::Path, vcpk
     if msvc_windows {
         for dir in &dirs {
             if dir.join("zlibstatic.lib").exists() {
-                println!("cargo:rustc-link-lib=static=zlibstatic");
+                rustc_link_lib_static("zlibstatic");
                 return;
             }
             if dir.join("zlib.lib").exists() {
-                println!("cargo:rustc-link-lib=static=zlib");
+                rustc_link_lib_static("zlib");
                 return;
             }
             let stem = if profile == "release" { "zs" } else { "zsd" };
             if dir.join(format!("{stem}.lib")).exists() {
-                println!("cargo:rustc-link-lib=static={stem}");
+                rustc_link_lib_static(stem);
                 return;
             }
         }
-        println!(
-            "cargo:rustc-link-lib=static={}",
-            if profile == "release" { "zs" } else { "zsd" }
-        );
+        rustc_link_lib_static(if profile == "release" { "zs" } else { "zsd" });
         return;
     }
 
     for dir in &dirs {
         if dir.join("zlibstatic.lib").exists() {
-            println!("cargo:rustc-link-lib=static=zlibstatic");
+            rustc_link_lib_static("zlibstatic");
             return;
         }
         if dir.join("zlib.lib").exists() {
-            println!("cargo:rustc-link-lib=static=zlib");
+            rustc_link_lib_static("zlib");
             return;
         }
         if dir.join("libz-ng.a").exists() || dir.join("z-ng.lib").exists() {
-            println!("cargo:rustc-link-lib=static=z-ng");
+            rustc_link_lib_static("z-ng");
             return;
         }
     }
 
-    println!("cargo:rustc-link-lib=static=z");
+    rustc_link_lib_static("z");
 }
 
 fn configure_vcpkg_triplet() -> (std::path::PathBuf, String) {
@@ -167,7 +176,7 @@ fn configure_vcpkg_triplet() -> (std::path::PathBuf, String) {
             ("macos", "x86_64") => "x64-osx".to_string(),
             ("macos", "aarch64") => "arm64-osx".to_string(),
             ("linux", "x86_64") => "x64-linux".to_string(),
-            ("linux", "aarch64") => "arm64-linux".to_string(),
+            ("linux", "aarch64") => "arm64-linux-v8a".to_string(),
             _ => "x64-windows-static".to_string(),
         }
     });
@@ -176,6 +185,7 @@ fn configure_vcpkg_triplet() -> (std::path::PathBuf, String) {
         unsafe {
             std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir);
             std::env::set_var("VCPKG_TARGET_TRIPLET", &vcpkg_triplet);
+            std::env::set_var("VCPKGRS_TRIPLET", &vcpkg_triplet);
         }
     }
 

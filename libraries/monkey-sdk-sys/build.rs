@@ -40,6 +40,9 @@ fn main() {
 
         let mut build = cc::Build::new();
         build.cpp(true);
+        if target_os == "linux" {
+            build.cpp_link_stdlib(None);
+        }
 
         // Add include paths
         let maclib_inc = sdk_root.join("Source").join("MACLib");
@@ -142,6 +145,9 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.cpp(true);
+    if target_os == "linux" {
+        build.cpp_link_stdlib(None);
+    }
 
     for include in &include_paths {
         build.include(include);

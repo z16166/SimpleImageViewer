@@ -38,11 +38,19 @@ fn main() {
 
     let mut build = cc::Build::new();
     build.cpp(true);
+    if target_os == "linux" {
+        build.cpp_link_stdlib(None);
+    }
 
     match &vcpkg_lib {
         Ok(lib) => {
             for include in &lib.include_paths {
                 build.include(include);
+            }
+            if target_os == "linux" {
+                let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
+                println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                println!("cargo:rustc-link-lib=static=sharpyuv");
             }
         }
         Err(e) => {
@@ -138,11 +146,11 @@ fn main() {
     if target_os != "windows" {
         println!("cargo:rustc-link-lib=m");
 
-        // Always link C++ standard library on Unix, regardless of vcpkg mode
+        // macOS: system libc++. Linux: do not emit dylib=stdc++ — that forces NEEDED libstdc++.so.6
+        // and defeats `.cargo/config.toml` / CI `RUSTFLAGS` `-static-libstdc++` for release binaries.
         if target_os == "macos" {
             println!("cargo:rustc-link-lib=dylib=c++");
         } else if target_os == "linux" {
-            println!("cargo:rustc-link-lib=dylib=stdc++");
             // Explicitly dynamically link libc to assist rust-lld in resolving glibc 2.38+ symbols
             // like __isoc23_strtol that may be referenced by statically compiled vcpkg C dependencies.
             println!("cargo:rustc-link-lib=dylib=c");

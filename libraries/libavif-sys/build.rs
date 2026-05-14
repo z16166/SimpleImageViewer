@@ -6,6 +6,9 @@ fn main() {
     let (installed_dir, vcpkg_triplet) = configure_vcpkg_triplet();
     let mut config = vcpkg::Config::new();
     config.cargo_metadata(true);
+    // vcpkg-rs only maps a few Rust targets in msvc_target(); Linux aarch64 is not one of them, so
+    // find_package would return NotMSVC unless the triplet is set here (or VCPKGRS_TRIPLET is set).
+    config.target_triplet(&vcpkg_triplet);
     let mut include_paths = Vec::new();
 
     match config.find_package("libavif") {
@@ -56,7 +59,7 @@ fn configure_vcpkg_triplet() -> (std::path::PathBuf, String) {
             ("macos", "x86_64") => "x64-osx".to_string(),
             ("macos", "aarch64") => "arm64-osx".to_string(),
             ("linux", "x86_64") => "x64-linux".to_string(),
-            ("linux", "aarch64") => "arm64-linux".to_string(),
+            ("linux", "aarch64") => "arm64-linux-v8a".to_string(),
             _ => "x64-windows-static".to_string(),
         }
     });
@@ -65,6 +68,8 @@ fn configure_vcpkg_triplet() -> (std::path::PathBuf, String) {
         unsafe {
             std::env::set_var("VCPKG_INSTALLED_DIR", &installed_dir);
             std::env::set_var("VCPKG_TARGET_TRIPLET", &vcpkg_triplet);
+            // Other -sys crates using only the env (no Config::target_triplet) read VCPKGRS_TRIPLET.
+            std::env::set_var("VCPKGRS_TRIPLET", &vcpkg_triplet);
         }
     }
 

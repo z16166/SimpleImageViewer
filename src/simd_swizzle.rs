@@ -315,6 +315,8 @@ unsafe fn interleave_rgba_sse41(
 }
 
 #[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline(never)]
 unsafe fn interleave_rgba_neon(
     r: &[u8],
     g: &[u8],
@@ -375,6 +377,8 @@ pub fn interleave_rgb_packed_to_rgba_packed(src: &[u8], dst: &mut [u8]) {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline(never)]
 unsafe fn interleave_rgb_with_alpha_neon(
     r: &[u8],
     g: &[u8],
@@ -423,6 +427,8 @@ unsafe fn interleave_rgb_packed_to_rgba_avx2(
 }
 
 #[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline(never)]
 unsafe fn interleave_rgb_packed_to_rgba_neon(
     src: &[u8],
     dst: &mut [u8],

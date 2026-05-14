@@ -39,6 +39,19 @@ fn main() {
             for include in lib.include_paths {
                 println!("cargo:include={}", include.display());
             }
+            if target_os == "linux" {
+                let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
+                let webp_a = lib_dir.join("libwebp.a");
+                let sharpyuv_a = lib_dir.join("libsharpyuv.a");
+                if webp_a.is_file() && sharpyuv_a.is_file() {
+                    // Only rustc-link-arg (not link-lib): Cargo reorders link-lib away from
+                    // push/pop so -lwebp can be dropped under --as-needed before libtiff.a.
+                    println!("cargo:rustc-link-arg=-Wl,--push-state,--no-as-needed");
+                    println!("cargo:rustc-link-arg={}", webp_a.display());
+                    println!("cargo:rustc-link-arg={}", sharpyuv_a.display());
+                    println!("cargo:rustc-link-arg=-Wl,--pop-state");
+                }
+            }
         }
         Err(e) => {
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");

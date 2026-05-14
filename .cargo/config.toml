@@ -12,8 +12,26 @@ rustflags = [
 ]
 
 # Linux Compatibility Note:
-# To ensure compatibility with older Linux distributions (e.g. Ubuntu 20.04+),
-# it is recommended to build the application on a system with an older GLIBC version.
+# CI Linux releases are built in AlmaLinux 8 (glibc 2.28) with gcc-toolset-15; matching that environment
+# locally avoids pulling in newer glibc symbols.
+#
+# `g++` + LLVM lld via `.cargo/g++-lld-wrap.sh` (invokes `g++ -fuse-ld=lld` before rustc's argv).
+# Rust's `cargo:rustc-link-arg=-fuse-ld=lld` is not always honored as a GCC driver flag; the wrapper is reliable.
+# Install `lld` so `ld.lld` is on PATH. For bfd ld only: `export SIV_NO_LLD=1` (see wrapper script).
+# Do not set `CARGO_TARGET_*_LINKER` to plain `gcc`.
+#
+# Static libstdc++/libgcc: vcpkg C++ archives + `cc` bridges. Linux `-sys` crates use `cpp_link_stdlib(None)`;
+# `openexr-core-sys` adds `rustc-link-lib=static=stdc++` where needed.
+#
+# Alma CI strips bare "-lstdc++" from vcpkg *.pc where helpful and filters system pkg-config --libs.
+# Patched vcpkg-rs emits `static:-bundle=` on Linux so `.a` members are not packed into upstream rlibs.
+
+[target.x86_64-unknown-linux-gnu]
+linker = ".cargo/g++-lld-wrap.sh"
+rustflags = [
+    "-C", "link-arg=-static-libstdc++",
+    "-C", "link-arg=-static-libgcc",
+]
 
 # ── Windows MSVC: static-link the CRT (no VCRUNTIME*.dll dependency) ──────────
 [target.x86_64-pc-windows-msvc]
@@ -24,3 +42,15 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Linux aarch64: avoid SVE/SME and optional extensions that SIGILL older ARMv8.0 hardware (e.g. UOS VMs).
+# Triplet `arm64-linux-v8a` adds matching -march/-mcpu for vcpkg C/C++ builds.
+[target.aarch64-unknown-linux-gnu]
+linker = ".cargo/g++-lld-wrap.sh"
+rustflags = [
+    "-C", "link-arg=-static-libstdc++",
+    "-C", "link-arg=-static-libgcc",
+    "-C", "target-cpu=cortex-a53",
+    "-C", "target-feature=-crc,-lse,-sve,-sve2,-sve2p1,-sve2p2,-sve2p3",
+    "-C", "target-feature=-sme,-sme2,-sme2p1,-sme2p2,-sme2p3,-sme-f64f64,-sme-i16i64,-sme-b16b16",
+]

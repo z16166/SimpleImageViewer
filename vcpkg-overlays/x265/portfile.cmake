@@ -33,6 +33,17 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
     list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
 endif()
 
+if(VCPKG_TARGET_IS_LINUX AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+    # Cross build uses Zig -mcpu=cortex_a53. x265 enables DotProd/I8MM/SVE for CROSS_COMPILE_ARM64
+    # but per-file -march is not reliably honored; disable extensions above baseline Neon (matches libyuv).
+    list(APPEND OPTIONS
+        "-DENABLE_NEON_DOTPROD=OFF"
+        "-DENABLE_NEON_I8MM=OFF"
+        "-DENABLE_SVE=OFF"
+        "-DENABLE_SVE2=OFF"
+    )
+endif()
+
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ENABLE_SHARED)
 
 vcpkg_cmake_configure(
