@@ -1,6 +1,8 @@
 # Build artifacts
 target/
 **/target/
+.codex-target/
+
 # Ignore sub-crate lock files but keep root lock file
 **/Cargo.lock
 !/Cargo.lock

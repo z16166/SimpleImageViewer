@@ -31,7 +31,8 @@ fn linux_warn_if_cpp_linker_is_wrong() {
             .and_then(|s| s.to_str())
             .unwrap_or(linker.as_str());
         let is_gcc = base == "gcc" || base.ends_with("-gcc");
-        let is_gxx = base == "g++" || base.ends_with("-g++") || base == "c++" || base.ends_with("-c++");
+        let is_gxx =
+            base == "g++" || base.ends_with("-g++") || base == "c++" || base.ends_with("-c++");
         if is_gcc && !is_gxx {
             println!(
                 "cargo:warning=Linux needs a C++ link driver (g++), not {linker} ({key}). \
@@ -124,13 +125,12 @@ fn main() {
     if target_os == "linux" {
         linux_warn_if_cpp_linker_is_wrong();
         let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-        let vcpkg_triplet = std::env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| {
-            match target_arch.as_str() {
+        let vcpkg_triplet =
+            std::env::var("VCPKG_DEFAULT_TRIPLET").unwrap_or_else(|_| match target_arch.as_str() {
                 "x86_64" => "x64-linux".to_string(),
                 "aarch64" => "arm64-linux".to_string(),
                 _ => String::new(),
-            }
-        });
+            });
         if !vcpkg_triplet.is_empty() {
             let lib_dir = manifest_dir
                 .join("vcpkg_installed")

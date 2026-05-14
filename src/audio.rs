@@ -52,6 +52,7 @@ const NORM_I8: f32 = 128.0;
 const NORM_I16: f32 = 32768.0;
 const NORM_I24: f32 = 8388608.0;
 const NORM_I32: f32 = 2147483648.0;
+const AUDIO_HW_POS_ZERO_GRACE: Duration = Duration::from_millis(500);
 
 #[cfg(windows)]
 unsafe extern "C" {
@@ -1287,6 +1288,8 @@ struct AudioLoopState {
     last_backend_attempt: Option<Instant>,
     sink_base_pos: Duration,
     last_hw_pos: Duration,
+    hw_pos_zero_since: Option<Instant>,
+    hw_pos_zero_fallback_active: bool,
     shutdown_flag: Arc<AtomicBool>,
 }
 
@@ -1315,6 +1318,8 @@ impl AudioLoopState {
     fn reanchor_playback_clock_for_new_segment(&mut self) {
         self.current_file_start = Instant::now();
         self.total_paused = Duration::ZERO;
+        self.hw_pos_zero_since = None;
+        self.hw_pos_zero_fallback_active = false;
         if self.paused {
             self.paused_at = Some(Instant::now());
         } else {
@@ -1340,6 +1345,8 @@ impl AudioLoopState {
             last_backend_attempt: None,
             sink_base_pos: Duration::ZERO,
             last_hw_pos: Duration::ZERO,
+            hw_pos_zero_since: None,
+            hw_pos_zero_fallback_active: false,
             shutdown_flag,
         }
     }
@@ -1611,23 +1618,34 @@ impl AudioLoopState {
         };
         if let Some(source) = open_source(&path, next_t.start, &self.shutdown_flag) {
             if self.ensure_backend(slots) {
-                if let Some(ref p) = self.backend_player {
+                let next_track_ok = if let Some(ref p) = self.backend_player {
                     p.clear();
                     self.sink_base_pos = p.get_pos();
                     p.append(source);
-                    p.play();
+                    self.last_seek_offset = next_t.start;
+                    self.last_hw_pos = Duration::ZERO;
+                    true
+                } else {
+                    false
+                };
+                if next_track_ok {
+                    self.reanchor_playback_clock_for_new_segment();
+                    if let Some(p) = self.backend_player.as_ref() {
+                        if !self.paused {
+                            p.play();
+                        } else {
+                            p.pause();
+                        }
+                    }
+                    slots
+                        .pos_ms
+                        .store(next_t.start.as_millis() as u64, Ordering::Relaxed);
+                    let meta =
+                        format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
+                    set_metadata(&slots.meta_slot, Some(meta));
+                    set_cue_track(&slots.cue_track_slot, Some(current_idx + 1));
                 }
             }
-            self.last_seek_offset = next_t.start;
-            self.current_file_start = Instant::now();
-            self.total_paused = Duration::ZERO;
-            self.paused_at = None;
-            slots
-                .pos_ms
-                .store(next_t.start.as_millis() as u64, Ordering::Relaxed);
-            let meta = format!("{}. {} - {}", next_t.number, next_t.title, next_t.performer);
-            set_metadata(&slots.meta_slot, Some(meta));
-            set_cue_track(&slots.cue_track_slot, Some(current_idx + 1));
         }
     }
 
@@ -1656,22 +1674,33 @@ impl AudioLoopState {
         };
         if let Some(source) = open_source(&path, target_t.start, &self.shutdown_flag) {
             if self.ensure_backend(slots) {
-                if let Some(ref p) = self.backend_player {
+                let prev_track_ok = if let Some(ref p) = self.backend_player {
                     p.clear();
+                    self.sink_base_pos = p.get_pos();
                     p.append(source);
-                    p.play();
+                    self.last_seek_offset = target_t.start;
+                    self.last_hw_pos = Duration::ZERO;
+                    true
+                } else {
+                    false
+                };
+                if prev_track_ok {
+                    self.reanchor_playback_clock_for_new_segment();
+                    if let Some(p) = self.backend_player.as_ref() {
+                        if !self.paused {
+                            p.play();
+                        } else {
+                            p.pause();
+                        }
+                    }
+                    let meta = format!(
+                        "{}. {} - {}",
+                        target_t.number, target_t.title, target_t.performer
+                    );
+                    set_metadata(&slots.meta_slot, Some(meta));
+                    set_cue_track(&slots.cue_track_slot, Some(target_idx));
                 }
             }
-            self.last_seek_offset = target_t.start;
-            self.current_file_start = Instant::now();
-            self.total_paused = Duration::ZERO;
-            self.paused_at = None;
-            let meta = format!(
-                "{}. {} - {}",
-                target_t.number, target_t.title, target_t.performer
-            );
-            set_metadata(&slots.meta_slot, Some(meta));
-            set_cue_track(&slots.cue_track_slot, Some(target_idx));
         }
     }
 
@@ -1778,10 +1807,7 @@ impl AudioLoopState {
                             };
                             if cue_seek_ok {
                                 self.reanchor_playback_clock_for_new_segment();
-                                let meta = format!(
-                                    "{}. {} - {}",
-                                    t.number, t.title, t.performer
-                                );
+                                let meta = format!("{}. {} - {}", t.number, t.title, t.performer);
                                 set_metadata(&slots.meta_slot, Some(meta));
                                 set_cue_track(&slots.cue_track_slot, Some(track_idx));
                             }
@@ -1890,13 +1916,38 @@ impl AudioLoopState {
         if self.stopped {
             slots.pos_ms.store(0, Ordering::Relaxed);
             slots.dur_ms.store(0, Ordering::Relaxed);
-        } else if self.backend_player.is_some() {
-            // Prefer a wall-clock segment position: on some output devices (e.g. certain
-            // CPAL/WASAPI sinks on Windows, or ALSA/PipeWire "rate converter" / null-style
-            // devices on Linux), `rodio::Player::get_pos()` can stay at zero while audio still plays.
+            self.hw_pos_zero_since = None;
+            self.hw_pos_zero_fallback_active = false;
+        } else if let Some(ref p) = self.backend_player {
+            let hw_pos = p.get_pos().saturating_sub(self.sink_base_pos);
             let segment_pos = self.playback_elapsed_since_current_stream();
-            self.last_hw_pos = segment_pos;
-            let mut raw_abs_pos = segment_pos.saturating_add(self.last_seek_offset);
+            let effective_segment_pos = if hw_pos > Duration::ZERO {
+                if self.hw_pos_zero_fallback_active {
+                    log::info!("[AUDIO] Hardware position recovered; leaving wall-clock fallback.");
+                }
+                self.hw_pos_zero_since = None;
+                self.hw_pos_zero_fallback_active = false;
+                hw_pos
+            } else {
+                let zero_since = self.hw_pos_zero_since.get_or_insert_with(Instant::now);
+                if !self.hw_pos_zero_fallback_active
+                    && segment_pos >= AUDIO_HW_POS_ZERO_GRACE
+                    && zero_since.elapsed() >= AUDIO_HW_POS_ZERO_GRACE
+                {
+                    self.hw_pos_zero_fallback_active = true;
+                    log::warn!(
+                        "[AUDIO] Hardware position stuck at 0 for {:?}; using wall-clock fallback.",
+                        zero_since.elapsed()
+                    );
+                }
+                if self.hw_pos_zero_fallback_active {
+                    segment_pos
+                } else {
+                    hw_pos
+                }
+            };
+            self.last_hw_pos = effective_segment_pos;
+            let mut raw_abs_pos = effective_segment_pos.saturating_add(self.last_seek_offset);
             let cap_ms = slots.dur_ms.load(Ordering::Relaxed);
             if cap_ms > 0 {
                 raw_abs_pos = raw_abs_pos.min(Duration::from_millis(cap_ms));
