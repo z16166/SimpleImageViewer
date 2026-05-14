@@ -539,7 +539,7 @@ fn main() -> eframe::Result {
 
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
-            settings.hdr_native_surface_enabled,
+            settings.hdr_native_surface_enabled_effective(),
             settings.window_outer_position,
         );
     let initial_hdr_monitor_selection =
@@ -547,7 +547,7 @@ fn main() -> eframe::Result {
             &hdr_environment_probe,
         );
     for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
-        settings.hdr_native_surface_enabled,
+        settings.hdr_native_surface_enabled_effective(),
         preferred_hdr_target_format,
     ) {
         log::info!("{diagnostic}");

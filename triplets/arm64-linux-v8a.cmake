@@ -1,0 +1,15 @@
+# Native ARM64 Linux (AlmaLinux 8 CI): baseline ARMv8-A + Cortex-A53 — no SVE/dotprod probes from host defaults.
+set(VCPKG_TARGET_ARCHITECTURE arm64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+set(VCPKG_C_FLAGS "-march=armv8-a -mcpu=cortex-a53 -DHAVE_JPEG_WRITE_ICC_PROFILE=1 -Wno-error=date-time -DZIG_ARM64_OPENEXR_ABI=17")
+set(VCPKG_CXX_FLAGS "-march=armv8-a -mcpu=cortex-a53 -DHAVE_JPEG_WRITE_ICC_PROFILE=1 -Wno-error=date-time -DZIG_ARM64_OPENEXR_ABI=17")
+
+if(NOT DEFINED VCPKG_CHAINLOAD_TOOLCHAIN_FILE)
+  if("$ENV{VCPKG_CHAINLOAD_TOOLCHAIN_FILE}" STREQUAL "")
+    set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/toolchains/linux.cmake")
+  else()
+    set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "$ENV{VCPKG_CHAINLOAD_TOOLCHAIN_FILE}")
+  endif()
+endif()

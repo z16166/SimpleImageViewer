@@ -1,0 +1,277 @@
+diff --git a/include/libyuv/compare_row.h b/include/libyuv/compare_row.h
+index ec0e331..c615127 100644
+--- a/include/libyuv/compare_row.h
++++ b/include/libyuv/compare_row.h
+@@ -61,9 +61,11 @@ extern "C" {
+ #if !defined(LIBYUV_DISABLE_NEON) && defined(__aarch64__)
+ #define HAS_HASHDJB2_NEON
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ #define HAS_HAMMINGDISTANCE_NEON_DOTPROD
+ #define HAS_SUMSQUAREERROR_NEON_DOTPROD
+ #endif
++#endif
+ 
+ #if !defined(LIBYUV_DISABLE_MSA) && defined(__mips_msa)
+ #define HAS_HAMMINGDISTANCE_MSA
+diff --git a/include/libyuv/row.h b/include/libyuv/row.h
+index f892177..ac05c9c 100644
+--- a/include/libyuv/row.h
++++ b/include/libyuv/row.h
+@@ -537,6 +537,7 @@ extern "C" {
+ #define HAS_P410TOAR30ROW_NEON
+ #define HAS_P410TOARGBROW_NEON
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ #define HAS_ABGRTOYJROW_NEON_DOTPROD
+ #define HAS_ABGRTOYROW_NEON_DOTPROD
+ #define HAS_ARGBGRAYROW_NEON_DOTPROD
+@@ -546,7 +547,9 @@ extern "C" {
+ #define HAS_BGRATOYROW_NEON_DOTPROD
+ #define HAS_RGBATOYJROW_NEON_DOTPROD
+ #define HAS_RGBATOYROW_NEON_DOTPROD
++#endif
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
+ #define HAS_ABGRTOUVJROW_NEON_I8MM
+ #define HAS_ABGRTOUVROW_NEON_I8MM
+ #define HAS_ARGBCOLORMATRIXROW_NEON_I8MM
+@@ -557,6 +560,7 @@ extern "C" {
+ #define HAS_BGRATOUVROW_NEON_I8MM
+ #define HAS_RGBATOUVROW_NEON_I8MM
+ #endif
++#endif
+ 
+ // The following are available on AArch64 SVE platforms:
+ #if !defined(LIBYUV_DISABLE_SVE) && defined(__aarch64__)
+diff --git a/source/compare_neon64.cc b/source/compare_neon64.cc
+index 756f83c..4a3073f 100644
+--- a/source/compare_neon64.cc
++++ b/source/compare_neon64.cc
+@@ -153,6 +153,7 @@ uint32_t HashDjb2_NEON(const uint8_t* src, int count, uint32_t seed) {
+   return hash;
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ uint32_t HammingDistance_NEON_DotProd(const uint8_t* src_a,
+                                       const uint8_t* src_b,
+                                       int count) {
+@@ -215,6 +216,8 @@ uint32_t SumSquareError_NEON_DotProd(const uint8_t* src_a,
+   return sse;
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ #endif  // !defined(LIBYUV_DISABLE_NEON) && defined(__aarch64__)
+ 
+ #ifdef __cplusplus
+diff --git a/source/row_neon64.cc b/source/row_neon64.cc
+index c0fdc6d..af9beda 100644
+--- a/source/row_neon64.cc
++++ b/source/row_neon64.cc
+@@ -2778,6 +2778,8 @@ static void ARGBToUV444MatrixRow_NEON(
+         "v27", "v28", "v29");
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ static void ARGBToUV444MatrixRow_NEON_I8MM(
+     const uint8_t* src_argb,
+     uint8_t* dst_u,
+@@ -2815,6 +2817,8 @@ static void ARGBToUV444MatrixRow_NEON_I8MM(
+         "v29");
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ // RGB to BT601 coefficients
+ // UB   0.875 coefficient = 112
+ // UG -0.5781 coefficient = -74
+@@ -2834,6 +2838,8 @@ void ARGBToUV444Row_NEON(const uint8_t* src_argb,
+                             &kARGBI601UVConstants);
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ void ARGBToUV444Row_NEON_I8MM(const uint8_t* src_argb,
+                               uint8_t* dst_u,
+                               uint8_t* dst_v,
+@@ -2842,6 +2848,8 @@ void ARGBToUV444Row_NEON_I8MM(const uint8_t* src_argb,
+                                  &kARGBI601UVConstants);
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ // RGB to JPEG coefficients
+ // UB  0.500    coefficient = 128
+ // UG -0.33126  coefficient = -85
+@@ -2861,6 +2869,8 @@ void ARGBToUVJ444Row_NEON(const uint8_t* src_argb,
+                             &kARGBJPEGUVConstants);
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ void ARGBToUVJ444Row_NEON_I8MM(const uint8_t* src_argb,
+                                uint8_t* dst_u,
+                                uint8_t* dst_v,
+@@ -2869,6 +2879,8 @@ void ARGBToUVJ444Row_NEON_I8MM(const uint8_t* src_argb,
+                                  &kARGBJPEGUVConstants);
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ #define RGBTOUV_SETUP_REG                                                  \
+   "movi       v20.8h, #112          \n" /* UB/VR coefficient  (0.875)   */ \
+   "movi       v21.8h, #74           \n" /* UG coefficient    (-0.5781)  */ \
+@@ -3448,6 +3460,8 @@ void ARGB4444ToUVRow_NEON(const uint8_t* src_argb4444,
+   );
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ // Process any of ARGB, ABGR, BGRA, RGBA, by adjusting the uvconstants layout.
+ static void ABCDToUVMatrixRow_NEON_I8MM(const uint8_t* src,
+                                         int src_stride,
+@@ -3619,6 +3633,8 @@ void ABGRToUVJRow_NEON_I8MM(const uint8_t* src_abgr,
+                               kABGRToUVJCoefficients);
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ void RGB565ToYRow_NEON(const uint8_t* src_rgb565, uint8_t* dst_y, int width) {
+   asm volatile(
+       "movi        v24.16b, #25                  \n"  // B * 0.1016 coefficient
+@@ -3754,6 +3770,7 @@ static void ARGBToYMatrixRow_NEON(const uint8_t* src_argb,
+         "v17");
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ static void ARGBToYMatrixRow_NEON_DotProd(
+     const uint8_t* src_argb,
+     uint8_t* dst_y,
+@@ -3789,6 +3806,8 @@ static void ARGBToYMatrixRow_NEON_DotProd(
+         "v17");
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ // RGB to JPeg coefficients
+ // B * 0.1140 coefficient = 29
+ // G * 0.5870 coefficient = 150
+@@ -3796,8 +3815,10 @@ static void ARGBToYMatrixRow_NEON_DotProd(
+ // Add 0.5
+ static const struct RgbConstants kRgb24JPEGConstants = {{29, 150, 77, 0},
+                                                         0x0080};
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ static const struct RgbConstants kRgb24JPEGDotProdConstants = {{0, 29, 150, 77},
+                                                                0x0080};
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ 
+ static const struct RgbConstants kRawJPEGConstants = {{77, 150, 29, 0}, 0x0080};
+ 
+@@ -3809,12 +3830,16 @@ static const struct RgbConstants kRawJPEGConstants = {{77, 150, 29, 0}, 0x0080};
+ 
+ static const struct RgbConstants kRgb24I601Constants = {{25, 129, 66, 0},
+                                                         0x1080};
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ static const struct RgbConstants kRgb24I601DotProdConstants = {{0, 25, 129, 66},
+                                                                0x1080};
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ 
+ static const struct RgbConstants kRawI601Constants = {{66, 129, 25, 0}, 0x1080};
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ static const struct RgbConstants kRawI601DotProdConstants = {{0, 66, 129, 25},
+                                                              0x1080};
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
+ 
+ void ARGBToYRow_NEON(const uint8_t* src_argb, uint8_t* dst_y, int width) {
+   ARGBToYMatrixRow_NEON(src_argb, dst_y, width, &kRgb24I601Constants);
+@@ -3832,6 +3857,8 @@ void ABGRToYJRow_NEON(const uint8_t* src_abgr, uint8_t* dst_yj, int width) {
+   ARGBToYMatrixRow_NEON(src_abgr, dst_yj, width, &kRawJPEGConstants);
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ void ARGBToYRow_NEON_DotProd(const uint8_t* src_argb,
+                              uint8_t* dst_y,
+                              int width) {
+@@ -3856,6 +3883,8 @@ void ABGRToYJRow_NEON_DotProd(const uint8_t* src_abgr,
+   ARGBToYMatrixRow_NEON_DotProd(src_abgr, dst_yj, width, &kRawJPEGConstants);
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ // RGBA expects first value to be A and ignored, then 3 values to contain RGB.
+ // Same code as ARGB, except the LD4
+ static void RGBAToYMatrixRow_NEON(const uint8_t* src_rgba,
+@@ -3903,6 +3932,8 @@ void BGRAToYRow_NEON(const uint8_t* src_bgra, uint8_t* dst_y, int width) {
+   RGBAToYMatrixRow_NEON(src_bgra, dst_y, width, &kRawI601Constants);
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ void RGBAToYRow_NEON_DotProd(const uint8_t* src_rgba,
+                              uint8_t* dst_y,
+                              int width) {
+@@ -3930,6 +3961,8 @@ void BGRAToYRow_NEON_DotProd(const uint8_t* src_bgra,
+                                 &kRawI601DotProdConstants);
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ static void RGBToYMatrixRow_NEON(const uint8_t* src_rgb,
+                                  uint8_t* dst_y,
+                                  int width,
+@@ -4398,6 +4431,8 @@ static const uvec8 kARGBGrayRowCoeffs = {29, 150, 77, 0};
+ static const uvec8 kARGBGrayRowIndices = {0, 0, 0, 19, 2, 2, 2, 23,
+                                           4, 4, 4, 27, 6, 6, 6, 31};
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ void ARGBGrayRow_NEON_DotProd(const uint8_t* src_argb,
+                               uint8_t* dst_argb,
+                               int width) {
+@@ -4426,6 +4461,8 @@ void ARGBGrayRow_NEON_DotProd(const uint8_t* src_argb,
+       : "cc", "memory", "v0", "v1", "v2", "v3", "v24", "v25");
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ // Convert 8 ARGB pixels (32 bytes) to 8 Sepia ARGB pixels.
+ //    b = (r * 35 + g * 68 + b * 17) >> 7
+ //    g = (r * 45 + g * 88 + b * 22) >> 7
+@@ -4471,6 +4508,8 @@ static const uvec8 kARGBSepiaRowCoeffs = {17, 68, 35, 0,  22, 88,
+                                           45, 0,  24, 98, 50, 0};
+ static const uvec8 kARGBSepiaRowAlphaIndices = {3, 7, 11, 15, 19, 23, 27, 31};
+ 
++#if !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ void ARGBSepiaRow_NEON_DotProd(uint8_t* dst_argb, int width) {
+   asm volatile(
+       "ld3r        {v20.4s, v21.4s, v22.4s}, [%[coeffs]] \n"
+@@ -4508,6 +4547,8 @@ void ARGBSepiaRow_NEON_DotProd(uint8_t* dst_argb, int width) {
+         "v21", "v22", "v24", "v25", "v26", "v28", "v29", "v30");
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_DOTPROD)
++
+ // Tranform 8 ARGB pixels (32 bytes) with color matrix.
+ // TODO(fbarchard): Was same as Sepia except matrix is provided.  This function
+ // needs to saturate.  Consider doing a non-saturating version.
+@@ -4570,6 +4611,7 @@ void ARGBColorMatrixRow_NEON(const uint8_t* src_argb,
+         "v17", "v18", "v19", "v22", "v23", "v24", "v25");
+ }
+ 
++#if !defined(LIBYUV_DISABLE_NEON_I8MM)
+ void ARGBColorMatrixRow_NEON_I8MM(const uint8_t* src_argb,
+                                   uint8_t* dst_argb,
+                                   const int8_t* matrix_argb,
+@@ -4626,6 +4668,8 @@ void ARGBColorMatrixRow_NEON_I8MM(const uint8_t* src_argb,
+         "v22", "v23", "v31");
+ }
+ 
++#endif  // !defined(LIBYUV_DISABLE_NEON_I8MM)
++
+ // Multiply 2 rows of ARGB pixels together, 8 pixels at a time.
+ void ARGBMultiplyRow_NEON(const uint8_t* src_argb,
+                           const uint8_t* src_argb1,

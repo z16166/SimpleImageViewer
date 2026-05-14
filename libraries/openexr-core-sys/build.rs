@@ -1,3 +1,55 @@
+use std::path::Path;
+
+/// `rustc-link-lib=static=stdc++` only resolves if `libstdc++.a` is on a `-L` path; it lives under
+/// the toolchain (not vcpkg). Query the same C++ driver as `.cargo/config.toml` (`linker = "g++"`).
+fn link_linux_libstdcxx_static() {
+    println!("cargo:rerun-if-env-changed=CXX");
+
+    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+    let output = std::process::Command::new(&cxx)
+        .arg("-print-file-name=libstdc++.a")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "openexr-core-sys (linux): failed to run `{cxx} -print-file-name=libstdc++.a`: {e}"
+            )
+        });
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "openexr-core-sys (linux): `{cxx} -print-file-name=libstdc++.a` failed with {}: {stderr}",
+            output.status
+        );
+    }
+
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() || path_str == "libstdc++.a" {
+        panic!(
+            "openexr-core-sys (linux): `{cxx}` did not resolve libstdc++.a (got {path_str:?}). \
+             Install the static libstdc++ package for your distro (e.g. libstdc++-static) or set CXX."
+        );
+    }
+
+    let libstd = Path::new(&path_str);
+    if !libstd.is_file() {
+        panic!(
+            "openexr-core-sys (linux): libstdc++.a not found at {} (from `{cxx} -print-file-name=libstdc++.a`)",
+            libstd.display()
+        );
+    }
+
+    let Some(dir) = libstd.parent() else {
+        panic!(
+            "openexr-core-sys (linux): no directory for libstdc++ path {}",
+            libstd.display()
+        );
+    };
+
+    println!("cargo:rustc-link-search=native={}", dir.display());
+    println!("cargo:rustc-link-lib=static=stdc++");
+}
+
 fn main() {
     unsafe {
         std::env::set_var("VCPKG_ALL_STATIC", "1");
@@ -30,12 +82,35 @@ fn main() {
     }
 
     let mut config = vcpkg::Config::new();
-    config.cargo_metadata(true);
+    // Linux + g++: vcpkg-generated link metadata order/peers are unreliable; emit a single explicit
+    // static chain (same as fallback) after probing includes only.
+    config.cargo_metadata(target_os != "linux");
 
     let include_dirs = match config.find_package("openexr") {
         Ok(lib) => {
             for include in &lib.include_paths {
                 println!("cargo:include={}", include.display());
+            }
+            if target_os == "linux" {
+                let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
+                if !lib_dir.exists() {
+                    panic!(
+                        "openexr (linux): expected vcpkg lib dir at {}",
+                        lib_dir.display()
+                    );
+                }
+                println!("cargo:rustc-link-search=native={}", lib_dir.display());
+                println!("cargo:rustc-link-lib=static=OpenEXRCore-3_4");
+                println!("cargo:rustc-link-lib=static=OpenEXR-3_4");
+                println!("cargo:rustc-link-lib=static=Iex-3_4");
+                println!("cargo:rustc-link-lib=static=IlmThread-3_4");
+                println!("cargo:rustc-link-lib=static=Imath-3_2");
+                println!("cargo:rustc-link-lib=static=openjph");
+                println!("cargo:rustc-link-lib=static=deflate");
+                println!("cargo:rustc-link-lib=static=z");
+                println!("cargo:rustc-link-lib=dylib=m");
+                // `cpp_link_stdlib(None)` silences cc's dynamic stdc++; need `libstdc++.a` dir for `static=stdc++`.
+                link_linux_libstdcxx_static();
             }
             lib.include_paths.clone()
         }
@@ -70,8 +145,8 @@ fn main() {
                 if target_os == "macos" {
                     println!("cargo:rustc-link-lib=dylib=c++");
                 } else if target_os == "linux" {
-                    println!("cargo:rustc-link-lib=dylib=stdc++");
                     println!("cargo:rustc-link-lib=dylib=m");
+                    link_linux_libstdcxx_static();
                 }
             }
             vec![include_dir]
@@ -82,6 +157,11 @@ fn main() {
     println!("cargo:rerun-if-changed={}", cpp.display());
     let mut build = cc::Build::new();
     build.cpp(true);
+    // Linux: `link_linux_libstdcxx_static()` adds toolchain `-L` + `static=stdc++`; pair with
+    // `-static-libstdc++` in `.cargo/config.toml` for the final artifact.
+    if target_os == "linux" {
+        build.cpp_link_stdlib(None);
+    }
     build.file(&cpp);
     for inc in &include_dirs {
         build.include(inc);

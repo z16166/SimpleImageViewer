@@ -117,44 +117,9 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | Windows 10/11 (x64 / arm64) | ✅ Native support |
 | Windows 7+ (x64) | ✅ Specialized Win7 x64 release package is compatible with Windows 7 and above* |
 | macOS (Apple Silicon / Intel) | ✅ Native support |
-| Linux (x64 / arm64) | ✅ Requires audio libraries (see below) |
+| Linux (x64 / arm64) | ✅ Native support |
 
 *\*Note for Windows 7: Requires **Service Pack 1 (SP1)**, **KB2670838** (Platform Update for Windows 7), and a GPU driver that supports **DirectX 11**.*
-
----
-
-## Building from Source
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) 1.85+ (edition 2024)
-- On **Linux**: `libasound2-dev` (ALSA) or PipeWire
-  ```bash
-  sudo apt install libasound2-dev   # Debian / Ubuntu
-  sudo dnf install alsa-lib-devel   # Fedora
-  ```
-
-### Build
-
-```bash
-git clone git@github.com:z16166/SimpleImageViewer.git
-cd SimpleImageViewer
-
-# Development build
-cargo run
-
-# Optimised release build
-cargo build --release
-# Output: target/release/SimpleImageViewer (or SimpleImageViewer.exe on Windows)
-```
-
-### Optional: Regenerate the app icon
-
-```bash
-cargo run --bin make_ico   # converts assets/icon.jpg → assets/icon.ico
-```
-
----
 
 ---
 

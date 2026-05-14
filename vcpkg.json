@@ -1,7 +1,7 @@
 {
   "name": "simple-image-viewer",
   "version-string": "1.5.1",
-  "builtin-baseline": "ec3ad1c0b013c51116b7eed2ae25bcfc38e639e9",
+  "builtin-baseline": "99a97de2cb371449d4fb9dc970f2ac562d689ec2",
   "dependencies": [
     {
       "name": "tiff",
@@ -44,6 +44,11 @@
     },
     "libde265",
     "libjxl",
-    "zlib"
+    "zlib",
+    {
+      "name": "alsa",
+      "platform": "linux"
+    },
+    "lcms"
   ]
 }

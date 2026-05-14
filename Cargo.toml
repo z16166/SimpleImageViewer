@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.0.2"
+version = "2.0.3"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -51,7 +51,14 @@ psd = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }
 quick-xml = "0.39"
-wgpu = { version = "29", default-features = false, features = ["dx12", "vulkan", "metal", "wgsl"] }
+wgpu = { version = "29", default-features = false, features = [
+    "dx12",
+    "vulkan",
+    "metal",
+    "wgsl",
+    "gles",
+    "parking_lot",
+] }
 memmap2 = "0.9"
 mimalloc = "0.1.48"
 moka = { version = "0.12.15", features = ["sync"] }
@@ -126,16 +133,33 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [patch.crates-io]
 egui-wgpu = { path = "patched-crates/egui-wgpu" }
+alsa-sys = { path = "patched-crates/alsa-sys" }
+# vcpkg-rs 0.2.15 emits rustc-link-lib without `static=` on Linux/macOS; patched crate uses archives + optional LLD (root `build.rs`).
+vcpkg = { path = "patched-crates/vcpkg" }
 
+# Local `cargo build --release`: fast link (no LTO); still optimized.
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 1
+lto = "off"
+codegen-units = 4
 # Do NOT strip symbols: on MSVC targets `strip = true` deletes the .pdb
 # entirely, making crash dumps useless.  `strip = "debuginfo"` keeps the
 # .pdb but strips DWARF from the binary (relevant for cross-compiled ELF).
 # The .pdb is NOT shipped to users but archived separately in CI.
 strip = "debuginfo"
+
+# CI / shipped binaries: same LTO as `release` by default (`off` on Alma: fat LTO + vcpkg C++ can still
+# surprise with bfd ld; `.cargo/g++-lld-wrap.sh` runs `g++ -fuse-ld=lld` unless `SIV_NO_LLD=1`). `codegen-units = 1`.
+# Override: `CARGO_PROFILE_CI_LTO=thin|fat`.
+# Use `cargo build --profile ci` → target/ci/.
+[profile.ci]
+inherits = "release"
+lto = "off"
+codegen-units = 1
+
+# Optional local aarch64-linux triple name; same fast settings as `release` (see `.cargo/config.toml` ARM flags).
+[profile.release-a64-linux]
+inherits = "release"
 
 [profile.dev]
 opt-level = 0

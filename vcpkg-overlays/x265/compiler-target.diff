@@ -8,7 +8,7 @@ diff --git a/source/CMakeLists.txt b/source/CMakeLists.txt
  
 +    # GCC rejects --target= when driving AArch64 asm; Clang needs it when cross-compiling.
 +    if(CMAKE_CXX_COMPILER_TARGET AND (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"))
-+        list(PREPEND ARM_ARGS "--target=${CMAKE_CXX_COMPILER_TARGET}")
++        list(PREPEND ARM_ARGS "-target" "${CMAKE_CXX_COMPILER_TARGET}")
 +    endif()
 +
      if(ARM OR CROSS_COMPILE_ARM)

@@ -121,8 +121,6 @@ dependencies = [
 [[package]]
 name = "alsa-sys"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04"
 dependencies = [
  "libc",
  "pkg-config",
@@ -4531,7 +4529,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "bytemuck",
  "cc",
@@ -5468,8 +5466,6 @@ dependencies = [
 [[package]]
 name = "vcpkg"
 version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vello_common"
@@ -5837,6 +5833,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "js-sys",
  "log",
+ "parking_lot",
  "portable-atomic",
  "profiling",
  "raw-window-handle",

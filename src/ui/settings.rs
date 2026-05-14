@@ -1025,8 +1025,11 @@ fn draw_settings_right_col(
             }
         });
 
-        ui.add_space(8.0);
-        draw_hdr_section(app, ui);
+        #[cfg(not(target_os = "linux"))]
+        {
+            ui.add_space(8.0);
+            draw_hdr_section(app, ui);
+        }
     });
 }
 
