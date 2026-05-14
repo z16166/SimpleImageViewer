@@ -3,6 +3,7 @@
 # Rust
 target/
 **/target/
+.codex-target/
 
 # vcpkg / C++ deps
 vcpkg_installed/
