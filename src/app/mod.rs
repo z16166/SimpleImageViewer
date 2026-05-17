@@ -402,6 +402,8 @@ pub struct ImageViewerApp {
 
     // Cached system font families
     pub(crate) font_families: Vec<String>,
+    /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
+    pub(crate) font_families_rx: Option<Receiver<Vec<String>>>,
     pub(crate) temp_font_size: Option<f32>,
 
     // Cached state
@@ -678,6 +680,21 @@ impl eframe::App for ImageViewerApp {
                     log::info!("IPC received empty ping, requesting window focus");
                     Self::focus_and_unminimize_window(ctx);
                 }
+            }
+        }
+
+        if let Some(rx) = self.font_families_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(families) => {
+                    self.font_families = families;
+                    self.font_families_rx = None;
+                    ctx.request_repaint();
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    log::warn!("[Core] Font enumeration finished without sending a result");
+                    self.font_families_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
             }
         }
 
