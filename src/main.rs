@@ -58,25 +58,19 @@ mod wgpu_preprobe_cache;
 #[cfg(target_os = "windows")]
 mod windows_utils;
 
-/// Load the application icon from the embedded PNG bytes.
+/// Window/taskbar icon: 256×256 RGBA produced in `build.rs` (Lanczos3, same as former runtime path).
 fn load_icon() -> egui::IconData {
-    let bytes = include_bytes!("../assets/icon.png");
-    match image::load_from_memory(bytes) {
-        Ok(img) => {
-            use image::GenericImageView;
-            use image::imageops::FilterType;
-            let img = img.resize_exact(256, 256, FilterType::Lanczos3);
-            let (w, h) = img.dimensions();
-            egui::IconData {
-                rgba: img.to_rgba8().into_raw(),
-                width: w,
-                height: h,
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to load app icon: {e}");
-            egui::IconData::default()
-        }
+    const W: u32 = 256;
+    const H: u32 = 256;
+    let rgba = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/siv_window_icon_rgba256.bin"
+    ));
+    debug_assert_eq!(rgba.len(), (W * H * 4) as usize);
+    egui::IconData {
+        rgba: rgba.to_vec(),
+        width: W,
+        height: H,
     }
 }
 

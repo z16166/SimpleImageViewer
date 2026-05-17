@@ -109,6 +109,7 @@ fn linux_ci_link_map(manifest_dir: &Path) {
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=locales");
@@ -164,6 +165,11 @@ fn main() {
         eprintln!("build.rs: assets/icon.png not found, skipping ICO generation");
     }
 
+    match emit_viewport_icon_rgba(&manifest_dir, &out_dir) {
+        Ok(()) => {}
+        Err(e) => panic!("build.rs: emit_viewport_icon_rgba failed: {e}"),
+    }
+
     // Embed Windows resources (icon + metadata) into the PE
     // Compile C++ WASAPI helper and Windows resources
     #[cfg(target_os = "windows")]
@@ -192,6 +198,33 @@ fn main() {
             println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
         }
     }
+}
+
+/// 256×256 RGBA8 for [`egui::IconData`], matching runtime `load_icon` resize (Lanczos3).
+/// Written to `OUT_DIR` so `main.rs` can `include_bytes!` without decoding PNG at startup.
+fn emit_viewport_icon_rgba(
+    manifest_dir: &Path,
+    out_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use image::imageops::FilterType;
+
+    const W: u32 = 256;
+    const H: u32 = 256;
+    let src = manifest_dir.join("assets/icon.png");
+    let dst = out_dir.join("siv_window_icon_rgba256.bin");
+
+    let raw: Vec<u8> = if src.is_file() {
+        let img = image::open(&src)?;
+        img.resize_exact(W, H, FilterType::Lanczos3)
+            .to_rgba8()
+            .into_raw()
+    } else {
+        vec![0u8; (W * H * 4) as usize]
+    };
+
+    debug_assert_eq!(raw.len(), (W * H * 4) as usize);
+    std::fs::write(&dst, raw)?;
+    Ok(())
 }
 
 /// Convert a PNG to a multi-resolution ICO (16, 32, 48, 64, 128, 256 px).
