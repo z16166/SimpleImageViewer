@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.4] - 2026-05-15
+
+### Improved
+- **Startup speed**: The app should reach its window noticeably faster, especially after you have run it once on the same PC. The first launch still does a bit more setup; later launches skip repeat work where it is safe to do so.
+
+### Fixed
+- **Music HUD (virtual machines)**: The on-screen music progress bar could appear stuck or not advance in some virtual-machine setups; timing updates should now keep moving more reliably while a track is playing.
+
+
 ## [2.0.3] - 2026-05-13
 
 ### Linux
