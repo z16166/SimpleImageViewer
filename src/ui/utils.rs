@@ -33,8 +33,8 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     // Non-interactive (scrollbar tracks, separator lines, etc.)
     visuals.widgets.noninteractive.bg_fill = palette.widget_bg;
     visuals.widgets.noninteractive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, palette.text_muted);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, palette.text_muted);
 
     // Inactive: bg_fill ??checkbox/scrollbar idle; weak_bg_fill ??button backgrounds
     visuals.widgets.inactive.bg_fill = if palette.is_dark {
@@ -43,8 +43,8 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         Color32::from_gray(210) // Slightly darker for better light-mode visibility (idle scrollbar)
     };
     visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.widget_border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.text_normal);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, palette.text_normal);
 
     // Harden opaque backgrounds for other states to avoid "Performance Mode" transparency glitches
     visuals.widgets.hovered.bg_fill = if palette.is_dark {
@@ -61,7 +61,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
     // Thematic hover background for menus and dropdowns
     if palette.is_dark {
         visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
     } else {
         // Light Mode: Very subtle tint + color the text itself to avoid "muddy" look
         let hover_base_color = palette.accent;
@@ -71,11 +71,11 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
             hover_base_color.b(),
             20, // Very airy
         );
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
         // The text turns indigo
     }
 
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.widget_border_hover);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.widget_border_hover);
 
     // Active: bg_fill ??scrollbar drag; weak_bg_fill ??button press
     visuals.widgets.active.bg_fill = palette.accent;
@@ -90,7 +90,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         )
     };
     visuals.widgets.active.bg_stroke = egui::Stroke::new(
-        1.0,
+        1.0_f32,
         if palette.is_dark {
             Color32::WHITE
         } else {
@@ -98,7 +98,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         },
     );
     visuals.widgets.active.fg_stroke = egui::Stroke::new(
-        1.0,
+        1.0_f32,
         if palette.is_dark {
             Color32::WHITE
         } else {
@@ -111,7 +111,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
         // Dark Mode: keep selected states fully opaque and neutral to avoid
         // Windows "best performance" compositing glitches and unexpected blue highlights.
         visuals.selection.bg_fill = Color32::from_gray(78);
-        visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_gray(210));
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, Color32::from_gray(210));
     } else {
         // Light Mode: Use a delicate outline + soft fill instead of a solid block
         // Increased thickness to 2.0 for better hierarchy as requested
@@ -121,7 +121,7 @@ pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette)
             palette.accent2.b(),
             30,
         );
-        visuals.selection.stroke = egui::Stroke::new(2.0, palette.accent2);
+        visuals.selection.stroke = egui::Stroke::new(2.0_f32, palette.accent2);
     }
 
     ctx.set_visuals(visuals);
@@ -270,6 +270,18 @@ pub fn get_system_font_families() -> Vec<String> {
     families
 }
 
+/// Font list used until [`get_system_font_families`] finishes on a background thread.
+/// Ensures the settings combo always contains the persisted family name.
+pub fn startup_font_family_list(settings: &Settings) -> Vec<String> {
+    let mut out = vec!["System Default".to_string()];
+    if settings.font_family != "System Default"
+        && !out.iter().any(|s| s == &settings.font_family)
+    {
+        out.push(settings.font_family.clone());
+    }
+    out
+}
+
 pub fn copy_file_to_clipboard(path: &str) {
     use clipboard_rs::{Clipboard, ClipboardContext};
     if let Ok(ctx) = ClipboardContext::new() {
@@ -308,12 +320,12 @@ pub fn styled_button_widget<'a>(
             if palette.is_dark {
                 visuals.widgets.inactive.weak_bg_fill = palette.widget_bg;
                 visuals.widgets.inactive.bg_stroke =
-                    egui::Stroke::new(1.0, Color32::from_gray(100));
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+                    egui::Stroke::new(1.0_f32, Color32::from_gray(100));
+                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
 
                 visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, Color32::from_gray(180));
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, Color32::WHITE);
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5_f32, Color32::from_gray(180));
+                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
 
                 ui.add(
                     egui::Button::new(label.color(Color32::WHITE))
@@ -326,8 +338,8 @@ pub fn styled_button_widget<'a>(
                     palette.accent.b(),
                     10,
                 );
-                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5, palette.accent);
-                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+                visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5_f32, palette.accent);
+                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
 
                 visuals.widgets.hovered.weak_bg_fill = Color32::from_rgba_unmultiplied(
                     palette.accent.r(),
@@ -335,8 +347,8 @@ pub fn styled_button_widget<'a>(
                     palette.accent.b(),
                     40,
                 );
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.accent);
-                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, palette.accent);
+                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
+                visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
 
                 ui.add(
                     egui::Button::new(label.color(palette.accent))
@@ -365,7 +377,7 @@ pub fn path_display_box(
         .fill(palette.widget_bg)
         .inner_margin(egui::Margin::symmetric(6, 4))
         .corner_radius(egui::CornerRadius::same(4))
-        .stroke(egui::Stroke::new(1.0, palette.widget_border))
+        .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
         .show(ui, |ui| {
             ui.set_width(width);
             ui.add(egui::Label::new(text.color(text_color).small()).truncate());

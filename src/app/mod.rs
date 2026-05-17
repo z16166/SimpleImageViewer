@@ -402,6 +402,8 @@ pub struct ImageViewerApp {
 
     // Cached system font families
     pub(crate) font_families: Vec<String>,
+    /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
+    pub(crate) font_families_rx: Option<Receiver<Vec<String>>>,
     pub(crate) temp_font_size: Option<f32>,
 
     // Cached state
@@ -604,6 +606,9 @@ impl eframe::App for ImageViewerApp {
         //   - WIC's CCodecFactory destructor calls MFShutdown which waits for internal timer threads
         //   - main thread's D3D12 adapter drop calls FreeLibrary which needs the loader lock
         // Settings are already persisted above, so this is safe.
+        #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+        crate::take_and_join_dx12_cache_validate_thread();
+
         #[cfg(target_os = "windows")]
         std::process::exit(0);
     }
@@ -678,6 +683,21 @@ impl eframe::App for ImageViewerApp {
                     log::info!("IPC received empty ping, requesting window focus");
                     Self::focus_and_unminimize_window(ctx);
                 }
+            }
+        }
+
+        if let Some(rx) = self.font_families_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(families) => {
+                    self.font_families = families;
+                    self.font_families_rx = None;
+                    ctx.request_repaint();
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    log::warn!("[Core] Font enumeration finished without sending a result");
+                    self.font_families_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
             }
         }
 

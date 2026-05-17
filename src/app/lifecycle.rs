@@ -5,7 +5,9 @@ use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::SystemThemeCache;
-use crate::ui::utils::{get_system_font_families, setup_fonts, setup_visuals};
+use crate::ui::utils::{
+    get_system_font_families, setup_fonts, setup_visuals, startup_font_family_list,
+};
 use eframe::egui::{self, Vec2};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -224,6 +226,34 @@ impl ImageViewerApp {
             })
             .expect("spawn siv-context-file-ops worker");
 
+        let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
+        let font_enumeration_rx = match std::thread::Builder::new()
+            .name("font-families".to_string())
+            .spawn(move || {
+                let t0 = Instant::now();
+                let families = get_system_font_families();
+                log::info!(
+                    "[startup] system font enumeration (background): {} ms, {} families",
+                    t0.elapsed().as_millis(),
+                    families.len()
+                );
+                let _ = font_families_tx.send(families);
+            }) {
+            Ok(_) => Some(font_families_rx),
+            Err(e) => {
+                log::error!(
+                    "[Core] Failed to spawn font-families thread, falling back to sync enumeration: {}",
+                    e
+                );
+                None
+            }
+        };
+        let font_families = if font_enumeration_rx.is_some() {
+            startup_font_family_list(&settings)
+        } else {
+            get_system_font_families()
+        };
+
         let mut app = Self {
             save_tx,
             initial_image,
@@ -266,7 +296,8 @@ impl ImageViewerApp {
             is_font_error: false,
             modal_generation: 0,
             pending_fullscreen: None,
-            font_families: get_system_font_families(),
+            font_families,
+            font_families_rx: font_enumeration_rx,
             temp_font_size: None,
             generation: 0,
             prefetch_prev_generation: None,

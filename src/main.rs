@@ -26,6 +26,7 @@ rust_i18n::i18n!("locales");
 
 mod app;
 use eframe::egui;
+use std::time::Instant;
 mod audio;
 mod constants;
 mod formats;
@@ -51,28 +52,25 @@ mod ui;
 #[cfg(target_os = "windows")]
 mod wic;
 
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+mod wgpu_preprobe_cache;
+
 #[cfg(target_os = "windows")]
 mod windows_utils;
 
-/// Load the application icon from the embedded PNG bytes.
+/// Window/taskbar icon: 256×256 RGBA produced in `build.rs` (Lanczos3, same as former runtime path).
 fn load_icon() -> egui::IconData {
-    let bytes = include_bytes!("../assets/icon.png");
-    match image::load_from_memory(bytes) {
-        Ok(img) => {
-            use image::GenericImageView;
-            use image::imageops::FilterType;
-            let img = img.resize_exact(256, 256, FilterType::Lanczos3);
-            let (w, h) = img.dimensions();
-            egui::IconData {
-                rgba: img.to_rgba8().into_raw(),
-                width: w,
-                height: h,
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to load app icon: {e}");
-            egui::IconData::default()
-        }
+    const W: u32 = 256;
+    const H: u32 = 256;
+    let rgba = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/siv_window_icon_rgba256.bin"
+    ));
+    debug_assert_eq!(rgba.len(), (W * H * 4) as usize);
+    egui::IconData {
+        rgba: rgba.to_vec(),
+        width: W,
+        height: H,
     }
 }
 
@@ -378,6 +376,221 @@ fn setup_panic_hook() {
     }));
 }
 
+/// Field-diagnostic timings for cold start (look for `[startup]` in logs).
+fn startup_log_phase(prev: &mut Instant, t0: Instant, label: &'static str) {
+    let now = Instant::now();
+    log::info!(
+        "[startup] {:42} +{:5} ms   total {:6} ms",
+        label,
+        now.duration_since(*prev).as_millis(),
+        now.duration_since(t0).as_millis()
+    );
+    *prev = now;
+}
+
+/// Result of the Windows-only wgpu adapter pre-probe (see `spawn_dx12_preprobe_thread`).
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+#[derive(Clone, Copy)]
+struct Dx12PreprobeOutcome {
+    has_real_dx12: bool,
+    enumerate_ms: u128,
+    adapter_count: usize,
+}
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
+    let wgpu_probe_start = Instant::now();
+    let instance = eframe::wgpu::Instance::new(
+        eframe::wgpu::InstanceDescriptor::new_without_display_handle(),
+    );
+    let adapters =
+        pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
+    let enumerate_ms = wgpu_probe_start.elapsed().as_millis() as u128;
+
+    let has_real_dx12 = adapters.iter().any(|a| {
+        let info = a.get_info();
+        info.backend == eframe::wgpu::Backend::Dx12
+            && matches!(
+                info.device_type,
+                eframe::wgpu::DeviceType::DiscreteGpu | eframe::wgpu::DeviceType::IntegratedGpu
+            )
+    });
+
+    Dx12PreprobeOutcome {
+        has_real_dx12,
+        enumerate_ms,
+        adapter_count: adapters.len(),
+    }
+}
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn apply_dx12_preprobe_to_wgpu_setup(
+    wgpu_setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew,
+    force_dx12: bool,
+    from_yaml_cache: bool,
+) {
+    if force_dx12 {
+        if from_yaml_cache {
+            log::info!(
+                "[startup] wgpu preprobe cache: force_dx12=true — DX12 + HighPerformance (edit siv_wgpu_preprobe_cache.yaml if wrong)"
+            );
+        } else {
+            log::info!(
+                "Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend."
+            );
+        }
+        wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+        wgpu_setup.power_preference = eframe::wgpu::PowerPreference::HighPerformance;
+    } else if from_yaml_cache {
+        log::info!(
+            "[startup] wgpu preprobe cache: force_dx12=false — default backend selection (edit siv_wgpu_preprobe_cache.yaml if wrong)"
+        );
+    } else {
+        log::info!(
+            "No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection."
+        );
+    }
+}
+
+/// Runs [`dx12_preprobe_outcome`] on a dedicated thread and sends the result to the main thread.
+/// Used when no yaml cache exists — the main thread must [`std::sync::mpsc::Receiver::recv`]
+/// before [`eframe::run_native`] to apply backends.
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn spawn_dx12_preprobe_thread() -> std::sync::mpsc::Receiver<Option<Dx12PreprobeOutcome>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let spawn_res = std::thread::Builder::new()
+        .name("wgpu-dx12-preprobe".into())
+        .spawn(move || {
+            let to_send =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                    Ok(o) => Some(o),
+                    Err(_) => {
+                        log::error!(
+                            "[startup] wgpu dx12 preprobe panicked; using default backends, not updating cache"
+                        );
+                        None
+                    }
+                };
+            if tx.send(to_send).is_err() {
+                log::warn!("[startup] wgpu dx12 preprobe: main thread receiver dropped");
+            }
+        });
+    if let Err(e) = spawn_res {
+        log::error!(
+            "[startup] Failed to spawn wgpu-dx12-preprobe thread ({}); running probe on main thread",
+            e
+        );
+        let to_send =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                Ok(o) => Some(o),
+                Err(_) => {
+                    log::error!(
+                        "[startup] wgpu dx12 preprobe (main thread) panicked; not updating cache"
+                    );
+                    None
+                }
+            };
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let _ = tx.send(to_send);
+        return rx;
+    }
+    rx
+}
+
+/// When yaml cache was applied on the main thread, re-probe in the background without blocking.
+/// If the live result disagrees with the cache, rewrite yaml so the **next** launch matches hardware
+/// (this session keeps the optimistic cache-backed `WgpuSetup`).
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn spawn_dx12_cache_validate_thread(
+    cached_force_dx12: bool,
+) -> Option<std::thread::JoinHandle<()>> {
+    let path = wgpu_preprobe_cache::cache_path();
+    let spawn_res = std::thread::Builder::new()
+        .name("wgpu-dx12-cache-validate".into())
+        .spawn(move || {
+            let outcome =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                    Ok(o) => o,
+                    Err(_) => {
+                        log::error!(
+                            "[startup] wgpu dx12 cache-validate panicked; leaving yaml unchanged"
+                        );
+                        return;
+                    }
+                };
+            if outcome.has_real_dx12 != cached_force_dx12 {
+                log::warn!(
+                    "[startup] wgpu preprobe: background validate found stale yaml (cached force_dx12={} vs probe {}); rewriting {} for next launch (current session unchanged)",
+                    cached_force_dx12,
+                    outcome.has_real_dx12,
+                    path.display(),
+                );
+                if let Err(e) = wgpu_preprobe_cache::save(outcome.has_real_dx12) {
+                    log::warn!(
+                        "[startup] failed to save wgpu preprobe cache {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            } else {
+                log::info!(
+                    "[startup] wgpu preprobe: background validate agrees with yaml (force_dx12={}, {} ms, {} adapters)",
+                    outcome.has_real_dx12,
+                    outcome.enumerate_ms,
+                    outcome.adapter_count,
+                );
+            }
+        });
+    match spawn_res {
+        Ok(h) => Some(h),
+        Err(e) => {
+            log::error!(
+                "[startup] Failed to spawn wgpu-dx12-cache-validate thread: {}",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Join a validate-thread handle (used from [`take_and_join_dx12_cache_validate_thread`] on exit).
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn join_dx12_cache_validate_thread(jh: Option<std::thread::JoinHandle<()>>) {
+    if let Some(h) = jh {
+        if let Err(e) = h.join() {
+            log::warn!(
+                "[on_exit] wgpu-dx12-cache-validate thread panicked: {:?}",
+                e
+            );
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+static DX12_CACHE_VALIDATE_JOIN_ON_EXIT: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+pub(crate) fn register_dx12_cache_validate_join_for_exit(handle: std::thread::JoinHandle<()>) {
+    let mut slot = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if slot.replace(handle).is_some() {
+        log::warn!("[startup] wgpu dx12 cache-validate join slot overwritten");
+    }
+}
+
+/// Called from [`ImageViewerApp::on_exit`] before `process::exit` on Windows so the validate
+/// thread can finish writing `siv_wgpu_preprobe_cache.yaml` (see `join_dx12_cache_validate_thread`).
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+pub(crate) fn take_and_join_dx12_cache_validate_thread() {
+    let h = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    join_dx12_cache_validate_thread(h);
+}
+
 fn main() -> eframe::Result {
     #[cfg(target_os = "windows")]
     {
@@ -413,6 +626,8 @@ fn main() -> eframe::Result {
     }
 
     // 3. Primary Instance Initialization
+    let startup_t0 = Instant::now();
+    let mut prev = startup_t0;
 
     // Install the Windows SEH exception filter as early as possible.
     // This catches native crashes (ACCESS_VIOLATION, STACK_OVERFLOW, etc.)
@@ -423,14 +638,28 @@ fn main() -> eframe::Result {
 
     let mut settings = settings::Settings::load();
     init_logging(&settings);
+    startup_log_phase(
+        &mut prev,
+        startup_t0,
+        "seh + Settings::load + init_logging",
+    );
+
     let env_info = log_env_info();
+    startup_log_phase(&mut prev, startup_t0, "log_env_info");
+
     hdr::tiled::configure_hdr_tile_cache_budget_from_system_memory();
+    startup_log_phase(&mut prev, startup_t0, "hdr_tile_cache_budget");
 
     #[cfg(target_os = "windows")]
     {
         wic::init_rayon_with_com();
         wic::spawn_wic_discovery();
     }
+    startup_log_phase(
+        &mut prev,
+        startup_t0,
+        "wic_init_rayon + spawn_wic_discovery",
+    );
 
     // Initialize locale — detect from OS if not yet configured
     if settings.language.is_empty() {
@@ -440,7 +669,42 @@ fn main() -> eframe::Result {
 
     // NOW setup the panic hook - with logging AND correct language ready
     setup_panic_hook();
+    startup_log_phase(&mut prev, startup_t0, "locale + set_locale + panic_hook");
 
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    let cached_preprobe: Option<wgpu_preprobe_cache::WgpuPreprobeCache> =
+        match wgpu_preprobe_cache::load() {
+            Some(cache) if cache.format_version == wgpu_preprobe_cache::FORMAT_VERSION => {
+                Some(cache)
+            }
+            Some(cache) => {
+                log::warn!(
+                    "[startup] wgpu preprobe cache has unsupported format_version {} in {}; ignoring",
+                    cache.format_version,
+                    wgpu_preprobe_cache::cache_path().display(),
+                );
+                None
+            }
+            None => None,
+        };
+
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    let (dx12_cache_validate_join, dx12_preprobe_rx): (
+        Option<std::thread::JoinHandle<()>>,
+        Option<std::sync::mpsc::Receiver<Option<Dx12PreprobeOutcome>>>,
+    ) = if let Some(ref cache) = cached_preprobe {
+        (
+            spawn_dx12_cache_validate_thread(cache.force_dx12),
+            None,
+        )
+    } else {
+        (None, Some(spawn_dx12_preprobe_thread()))
+    };
+
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    if let Some(h) = dx12_cache_validate_join {
+        register_dx12_cache_validate_join_for_exit(h);
+    }
     // Apply command-line overrides to settings
     if let Some(ref path) = initial_image {
         if let Some(parent) = path.parent() {
@@ -461,6 +725,9 @@ fn main() -> eframe::Result {
         .map(|[x, y]| [x as f32, y as f32]);
     let saved_maximized = settings.window_maximized;
 
+    let app_icon = load_icon();
+    startup_log_phase(&mut prev, startup_t0, "load_icon");
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("app.title").to_string())
         .with_inner_size(saved_inner_size)
@@ -468,10 +735,11 @@ fn main() -> eframe::Result {
         .with_decorations(true)
         .with_fullscreen(fullscreen)
         .with_maximized(saved_maximized)
-        .with_icon(load_icon());
+        .with_icon(app_icon);
     if let Some(pos) = saved_outer_position {
         viewport = viewport.with_position(pos);
     }
+    startup_log_phase(&mut prev, startup_t0, "viewport_builder + overrides");
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
@@ -505,43 +773,42 @@ fn main() -> eframe::Result {
         }
     });
 
-    // Explicit hardware probing to prioritize DX12 on modern Windows
+    startup_log_phase(
+        &mut prev,
+        startup_t0,
+        "wgpu_setup_body (device_descriptor)",
+    );
+
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-    {
-        // Use a temporary instance to probe adapter capabilities
-        let instance = eframe::wgpu::Instance::new(
-            eframe::wgpu::InstanceDescriptor::new_without_display_handle(),
+    if let Some(ref cache) = cached_preprobe {
+        apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, cache.force_dx12, true);
+        log::info!(
+            "[startup] wgpu preprobe: applied cache {} (main thread will not wait; background thread validates)",
+            wgpu_preprobe_cache::cache_path().display()
         );
-        let adapters =
-            pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
-
-        let has_real_dx12 = adapters.iter().any(|a| {
-            let info = a.get_info();
-            info.backend == eframe::wgpu::Backend::Dx12
-                && matches!(
-                    info.device_type,
-                    eframe::wgpu::DeviceType::DiscreteGpu | eframe::wgpu::DeviceType::IntegratedGpu
-                )
-        });
-
-        if has_real_dx12 {
-            log::info!(
-                "Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend."
-            );
-            wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
-            wgpu_setup.power_preference = eframe::wgpu::PowerPreference::HighPerformance;
-        } else {
-            log::info!(
-                "No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection."
-            );
-        }
+        startup_log_phase(
+            &mut prev,
+            startup_t0,
+            "wgpu dx12 preprobe (yaml cache; no recv wait)",
+        );
     }
 
+    let hdr_spawn_start = Instant::now();
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
             settings.hdr_native_surface_enabled_effective(),
             settings.window_outer_position,
         );
+    log::info!(
+        "[startup] hdr spawn-monitor / native surface preset: {} ms",
+        hdr_spawn_start.elapsed().as_millis()
+    );
+    startup_log_phase(
+        &mut prev,
+        startup_t0,
+        "hdr_preferred_format + environment_probe",
+    );
+
     let initial_hdr_monitor_selection =
         crate::hdr::surface::initial_monitor_selection_from_environment_probe(
             &hdr_environment_probe,
@@ -576,6 +843,48 @@ fn main() -> eframe::Result {
     // leaving it on silently overrides our recall.
     let center_window_on_open = saved_outer_position.is_none();
 
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
+        let recv_wait = Instant::now();
+        let maybe_outcome = dx12_preprobe_rx
+            .recv()
+            .expect("wgpu dx12 preprobe thread exited without sending a result");
+        let main_wait_ms = recv_wait.elapsed().as_millis();
+
+        if let Some(outcome) = maybe_outcome {
+            let probe_force = outcome.has_real_dx12;
+            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, probe_force, false);
+            if let Err(e) = wgpu_preprobe_cache::save(probe_force) {
+                log::warn!(
+                    "[startup] failed to save wgpu preprobe cache {}: {}",
+                    wgpu_preprobe_cache::cache_path().display(),
+                    e
+                );
+            } else {
+                log::info!(
+                    "[startup] wgpu preprobe: wrote cache {}",
+                    wgpu_preprobe_cache::cache_path().display()
+                );
+            }
+            log::info!(
+                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
+                outcome.enumerate_ms,
+                outcome.adapter_count,
+                main_wait_ms
+            );
+        } else {
+            log::error!(
+                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
+                wgpu_preprobe_cache::cache_path().display()
+            );
+        }
+        startup_log_phase(
+            &mut prev,
+            startup_t0,
+            "wgpu dx12 preprobe recv + apply",
+        );
+    }
+
     let native_options = eframe::NativeOptions {
         viewport,
         centered: center_window_on_open,
@@ -592,6 +901,16 @@ fn main() -> eframe::Result {
         dithering: preferred_hdr_target_format.is_none(),
         ..Default::default()
     };
+    startup_log_phase(
+        &mut prev,
+        startup_t0,
+        "hdr diagnostics + NativeOptions (before run_native)",
+    );
+
+    log::info!(
+        "[startup] Main-thread prep before window/event loop: {} ms total",
+        prev.duration_since(startup_t0).as_millis()
+    );
 
     let result = eframe::run_native(
         "Simple Image Viewer",
@@ -608,6 +927,11 @@ fn main() -> eframe::Result {
             )) as Box<dyn eframe::App>)
         }),
     );
+
+    // If `run_native` returns `Err`, `on_exit` may not run; still join so yaml can finish.
+    // Normal Windows close uses `process::exit` from `on_exit` after the first join (slot empty).
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    take_and_join_dx12_cache_validate_thread();
 
     // Force exit: the audio thread may hold CPAL/WASAPI resources whose
     // cleanup blocks indefinitely on Windows once the event loop is gone.

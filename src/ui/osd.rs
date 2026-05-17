@@ -203,7 +203,7 @@ impl OsdRenderer {
         ui.painter().rect_stroke(
             hud_rect,
             CornerRadius::same(8),
-            Stroke::new(1.0, palette.accent2.linear_multiply(0.3)),
+            Stroke::new(1.0_f32, palette.accent2.linear_multiply(0.3)),
             StrokeKind::Outside,
         );
 
