@@ -606,6 +606,9 @@ impl eframe::App for ImageViewerApp {
         //   - WIC's CCodecFactory destructor calls MFShutdown which waits for internal timer threads
         //   - main thread's D3D12 adapter drop calls FreeLibrary which needs the loader lock
         // Settings are already persisted above, so this is safe.
+        #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+        crate::take_and_join_dx12_cache_validate_thread();
+
         #[cfg(target_os = "windows")]
         std::process::exit(0);
     }

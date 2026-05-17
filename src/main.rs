@@ -423,6 +423,7 @@ fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
     }
 }
 
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 fn apply_dx12_preprobe_to_wgpu_setup(
     wgpu_setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew,
     force_dx12: bool,
@@ -455,23 +456,22 @@ fn apply_dx12_preprobe_to_wgpu_setup(
 /// Used when no yaml cache exists — the main thread must [`std::sync::mpsc::Receiver::recv`]
 /// before [`eframe::run_native`] to apply backends.
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-fn spawn_dx12_preprobe_thread() -> std::sync::mpsc::Receiver<Dx12PreprobeOutcome> {
+fn spawn_dx12_preprobe_thread() -> std::sync::mpsc::Receiver<Option<Dx12PreprobeOutcome>> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let spawn_res = std::thread::Builder::new()
         .name("wgpu-dx12-preprobe".into())
         .spawn(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome))
-                .unwrap_or_else(|_| {
-                    log::error!(
-                        "[startup] wgpu dx12 preprobe panicked; using default backend selection"
-                    );
-                    Dx12PreprobeOutcome {
-                        has_real_dx12: false,
-                        enumerate_ms: 0,
-                        adapter_count: 0,
+            let to_send =
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                    Ok(o) => Some(o),
+                    Err(_) => {
+                        log::error!(
+                            "[startup] wgpu dx12 preprobe panicked; using default backends, not updating cache"
+                        );
+                        None
                     }
-                });
-            if tx.send(outcome).is_err() {
+                };
+            if tx.send(to_send).is_err() {
                 log::warn!("[startup] wgpu dx12 preprobe: main thread receiver dropped");
             }
         });
@@ -480,9 +480,18 @@ fn spawn_dx12_preprobe_thread() -> std::sync::mpsc::Receiver<Dx12PreprobeOutcome
             "[startup] Failed to spawn wgpu-dx12-preprobe thread ({}); running probe on main thread",
             e
         );
-        let outcome = dx12_preprobe_outcome();
+        let to_send =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                Ok(o) => Some(o),
+                Err(_) => {
+                    log::error!(
+                        "[startup] wgpu dx12 preprobe (main thread) panicked; not updating cache"
+                    );
+                    None
+                }
+            };
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let _ = tx.send(outcome);
+        let _ = tx.send(to_send);
         return rx;
     }
     rx
@@ -500,17 +509,15 @@ fn spawn_dx12_cache_validate_thread(
         .name("wgpu-dx12-cache-validate".into())
         .spawn(move || {
             let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome))
-                    .unwrap_or_else(|_| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dx12_preprobe_outcome)) {
+                    Ok(o) => o,
+                    Err(_) => {
                         log::error!(
                             "[startup] wgpu dx12 cache-validate panicked; leaving yaml unchanged"
                         );
-                        Dx12PreprobeOutcome {
-                            has_real_dx12: false,
-                            enumerate_ms: 0,
-                            adapter_count: 0,
-                        }
-                    });
+                        return;
+                    }
+                };
             if outcome.has_real_dx12 != cached_force_dx12 {
                 log::warn!(
                     "[startup] wgpu preprobe: background validate found stale yaml (cached force_dx12={} vs probe {}); rewriting {} for next launch (current session unchanged)",
@@ -546,7 +553,7 @@ fn spawn_dx12_cache_validate_thread(
     }
 }
 
-/// Wait for [`spawn_dx12_cache_validate_thread`] so yaml can be flushed before `process::exit`.
+/// Join a validate-thread handle (used from [`take_and_join_dx12_cache_validate_thread`] on exit).
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 fn join_dx12_cache_validate_thread(jh: Option<std::thread::JoinHandle<()>>) {
     if let Some(h) = jh {
@@ -557,6 +564,31 @@ fn join_dx12_cache_validate_thread(jh: Option<std::thread::JoinHandle<()>>) {
             );
         }
     }
+}
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+static DX12_CACHE_VALIDATE_JOIN_ON_EXIT: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+pub(crate) fn register_dx12_cache_validate_join_for_exit(handle: std::thread::JoinHandle<()>) {
+    let mut slot = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if slot.replace(handle).is_some() {
+        log::warn!("[startup] wgpu dx12 cache-validate join slot overwritten");
+    }
+}
+
+/// Called from [`ImageViewerApp::on_exit`] before `process::exit` on Windows so the validate
+/// thread can finish writing `siv_wgpu_preprobe_cache.yaml` (see `join_dx12_cache_validate_thread`).
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+pub(crate) fn take_and_join_dx12_cache_validate_thread() {
+    let h = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    join_dx12_cache_validate_thread(h);
 }
 
 fn main() -> eframe::Result {
@@ -659,7 +691,7 @@ fn main() -> eframe::Result {
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     let (dx12_cache_validate_join, dx12_preprobe_rx): (
         Option<std::thread::JoinHandle<()>>,
-        Option<std::sync::mpsc::Receiver<Dx12PreprobeOutcome>>,
+        Option<std::sync::mpsc::Receiver<Option<Dx12PreprobeOutcome>>>,
     ) = if let Some(ref cache) = cached_preprobe {
         (
             spawn_dx12_cache_validate_thread(cache.force_dx12),
@@ -669,6 +701,10 @@ fn main() -> eframe::Result {
         (None, Some(spawn_dx12_preprobe_thread()))
     };
 
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    if let Some(h) = dx12_cache_validate_join {
+        register_dx12_cache_validate_join_for_exit(h);
+    }
     // Apply command-line overrides to settings
     if let Some(ref path) = initial_image {
         if let Some(parent) = path.parent() {
@@ -810,33 +846,38 @@ fn main() -> eframe::Result {
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
         let recv_wait = Instant::now();
-        let outcome = dx12_preprobe_rx
+        let maybe_outcome = dx12_preprobe_rx
             .recv()
             .expect("wgpu dx12 preprobe thread exited without sending a result");
         let main_wait_ms = recv_wait.elapsed().as_millis();
 
-        let probe_force = outcome.has_real_dx12;
-
-        apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, probe_force, false);
-        if let Err(e) = wgpu_preprobe_cache::save(probe_force) {
-            log::warn!(
-                "[startup] failed to save wgpu preprobe cache {}: {}",
-                wgpu_preprobe_cache::cache_path().display(),
-                e
+        if let Some(outcome) = maybe_outcome {
+            let probe_force = outcome.has_real_dx12;
+            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, probe_force, false);
+            if let Err(e) = wgpu_preprobe_cache::save(probe_force) {
+                log::warn!(
+                    "[startup] failed to save wgpu preprobe cache {}: {}",
+                    wgpu_preprobe_cache::cache_path().display(),
+                    e
+                );
+            } else {
+                log::info!(
+                    "[startup] wgpu preprobe: wrote cache {}",
+                    wgpu_preprobe_cache::cache_path().display()
+                );
+            }
+            log::info!(
+                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
+                outcome.enumerate_ms,
+                outcome.adapter_count,
+                main_wait_ms
             );
         } else {
-            log::info!(
-                "[startup] wgpu preprobe: wrote cache {}",
+            log::error!(
+                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
                 wgpu_preprobe_cache::cache_path().display()
             );
         }
-
-        log::info!(
-            "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
-            outcome.enumerate_ms,
-            outcome.adapter_count,
-            main_wait_ms
-        );
         startup_log_phase(
             &mut prev,
             startup_t0,
@@ -887,8 +928,10 @@ fn main() -> eframe::Result {
         }),
     );
 
+    // If `run_native` returns `Err`, `on_exit` may not run; still join so yaml can finish.
+    // Normal Windows close uses `process::exit` from `on_exit` after the first join (slot empty).
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-    join_dx12_cache_validate_thread(dx12_cache_validate_join);
+    take_and_join_dx12_cache_validate_thread();
 
     // Force exit: the audio thread may hold CPAL/WASAPI resources whose
     // cleanup blocks indefinitely on Windows once the event loop is gone.
