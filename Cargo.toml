@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.0.4"
+version = "2.0.5"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -28,7 +28,7 @@ image = { version = "0.25", default-features = false, features = [
 parking_lot = "0.12"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3", "flac", "wav", "vorbis", "symphonia-mp3", "symphonia-flac", "symphonia-wav", "symphonia-vorbis", "symphonia-aac"] }
 symphonia = { version = "0.5", features = ["all"] }
-lofty = "0.23"
+lofty = "0.24"
 encoding_rs = "0.8"
 rfd = "0.17"
 walkdir = "2"
@@ -91,7 +91,7 @@ jpegxl = ["dep:libjxl-sys"]
 hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "shellapi"] }
+winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi"] }
 winreg = "0.11"
 windows = { version = "0.58", features = [
     "Win32_Foundation",

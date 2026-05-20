@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.92"
 name = "egui-wgpu"
-version = "0.34.1"
+version = "0.34.2"
 authors = [
     "Nils Hasenbanck <nils@hasenbanck.de>",
     "embotech <opensource@embotech.com>",
@@ -89,12 +89,12 @@ version = "1.24.0"
 version = "0.2.11"
 
 [dependencies.egui]
-version = "0.34.1"
+version = "0.34.2"
 optional = true
 default-features = false
 
 [dependencies.epaint]
-version = "0.34.1"
+version = "0.34.2"
 features = ["bytemuck"]
 default-features = false
 

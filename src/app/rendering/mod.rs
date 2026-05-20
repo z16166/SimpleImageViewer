@@ -221,6 +221,10 @@ impl ImageViewerApp {
                         );
                     }
                 }
+
+                // Wheel navigation/zoom: run after the canvas is allocated so egui hover
+                // heuristics in `logic()` cannot swallow scroll (see `handle_main_window_wheel_input`).
+                self.handle_main_window_wheel_input(ui.ctx());
             });
     }
 }

@@ -3,7 +3,7 @@ use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
 use crate::ui::{hud as ui_hud, settings as ui_settings};
-use eframe::egui::{self, Context, Key, Vec2};
+use eframe::egui::{self, Context, Event, Key, MouseWheelUnit, Vec2};
 use rust_i18n::t;
 use std::time::{Duration, Instant};
 
@@ -50,23 +50,9 @@ impl ImageViewerApp {
 
     /// Layer 1: Input handling for the main window (normal operation).
     fn handle_main_window_input(&mut self, ctx: &Context) {
-        let wants_ptr = ctx.egui_is_using_pointer() || ctx.is_pointer_over_egui();
-
-        // 1. Collect flags and inputs
         let mut action: Option<AppAction> = None;
-        let mut scroll_delta = egui::Vec2::ZERO;
-        let mut zoom_delta = 1.0_f32;
-        let mut is_ctrl_pressed = false;
-        let mut is_alt_pressed = false;
-        let mut mouse_pos: Option<egui::Pos2> = None;
 
         ctx.input(|i| {
-            scroll_delta = i.smooth_scroll_delta;
-            zoom_delta = i.zoom_delta();
-            is_ctrl_pressed = i.modifiers.command;
-            is_alt_pressed = i.modifiers.alt;
-            mouse_pos = i.pointer.latest_pos();
-
             action = self.map_key_to_action(i);
         });
 
@@ -76,22 +62,85 @@ impl ImageViewerApp {
             ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Tab));
         }
 
-        // 2. Dispatch Keyboard Actions
         if let Some(act) = action {
             self.dispatch_action(act, ctx);
         }
+    }
 
-        // 3. Dispatch Mouse Actions (Scroll/Zoom)
-        if !wants_ptr {
-            self.handle_mouse_input(
-                ctx,
-                scroll_delta,
-                zoom_delta,
-                is_ctrl_pressed,
-                is_alt_pressed,
-                mouse_pos,
-            );
+    /// Mouse wheel for image navigation/zoom. Called from [`super::rendering::draw_image_canvas_ui`]
+    /// after the central panel is built so scroll deltas are not dropped by pointer-hover guards
+    /// in [`Self::handle_main_window_input`].
+    pub(crate) fn handle_main_window_wheel_input(&mut self, ctx: &Context) {
+        if self.active_modal.is_some() || self.show_settings {
+            return;
         }
+
+        let (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos) =
+            Self::collect_wheel_input(ctx);
+
+        self.handle_mouse_input(
+            ctx,
+            scroll_delta,
+            zoom_delta,
+            is_ctrl_pressed,
+            is_alt_pressed,
+            mouse_pos,
+        );
+    }
+
+    fn collect_wheel_input(ctx: &Context) -> (Vec2, f32, bool, bool, Option<egui::Pos2>) {
+        let (line_scroll_speed, scroll_zoom_speed, zoom_modifier) = ctx.options(|o| {
+            let io = &o.input_options;
+            (
+                io.line_scroll_speed,
+                io.scroll_zoom_speed,
+                io.zoom_modifier,
+            )
+        });
+
+        ctx.input(|i| {
+            let mut scroll_delta = i.smooth_scroll_delta;
+            let mut zoom_delta = i.zoom_delta();
+            let is_ctrl_pressed = i.modifiers.ctrl || i.modifiers.command;
+            let is_alt_pressed = i.modifiers.alt;
+            let mouse_pos = i.pointer.latest_pos();
+
+            // Fallback when smoothing has not accumulated yet this frame.
+            if scroll_delta == Vec2::ZERO || zoom_delta == 1.0 {
+                for event in &i.events {
+                    let Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                        ..
+                    } = event
+                    else {
+                        continue;
+                    };
+
+                    let mut d = *delta;
+                    match unit {
+                        MouseWheelUnit::Line => d *= line_scroll_speed,
+                        MouseWheelUnit::Page => {
+                            let size = i.viewport_rect().size();
+                            d.x *= size.x;
+                            d.y *= size.y;
+                        }
+                        MouseWheelUnit::Point => {}
+                    }
+
+                    if modifiers.matches_any(zoom_modifier) {
+                        if zoom_delta == 1.0 {
+                            zoom_delta *= (scroll_zoom_speed * (d.x + d.y)).exp();
+                        }
+                    } else if scroll_delta == Vec2::ZERO {
+                        scroll_delta += d;
+                    }
+                }
+            }
+
+            (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos)
+        })
     }
 
     /// Future-proofing: Map a key press to a logical application action.

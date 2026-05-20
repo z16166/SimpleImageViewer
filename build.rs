@@ -117,6 +117,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.png").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("assets/icon.ico").display()
+    );
 
     // vcpkg libtiff pkg-config lists webpdecoder/webpmux but not libwebp; tif_webp.c still
     // needs encoder APIs. Do not use cargo:rustc-link-lib here: Cargo splits native libs away from
@@ -152,29 +156,24 @@ fn main() {
         linux_link_libstdcxx_a_last();
     }
 
-    // Generate the ICO from the source image (PNG)
-    let src = manifest_dir.join("assets/icon.png");
-    let dst = manifest_dir.join("assets/icon.ico");
+    let icon_png = manifest_dir.join("assets/icon.png");
+    let icon_ico = manifest_dir.join("assets/icon.ico");
+    ensure_icon_ico(&icon_png, &icon_ico);
 
-    if src.exists() {
-        match png_to_ico(&src, &dst) {
-            Ok(_) => println!("cargo:warning=icon.ico generated from icon.png"),
-            Err(e) => eprintln!("build.rs: icon conversion failed: {e}"),
+    // Non-Windows: embed 256×256 RGBA for `ViewportBuilder::with_icon`. Windows reads the same
+    // pixels from the PE icon resource (winresource id 1) so the exe only carries one icon copy.
+    if target_os != "windows" {
+        match emit_viewport_icon_rgba(&manifest_dir, &out_dir) {
+            Ok(()) => {}
+            Err(e) => panic!("build.rs: emit_viewport_icon_rgba failed: {e}"),
         }
-    } else {
-        eprintln!("build.rs: assets/icon.png not found, skipping ICO generation");
-    }
-
-    match emit_viewport_icon_rgba(&manifest_dir, &out_dir) {
-        Ok(()) => {}
-        Err(e) => panic!("build.rs: emit_viewport_icon_rgba failed: {e}"),
     }
 
     // Embed Windows resources (icon + metadata) into the PE
     // Compile C++ WASAPI helper and Windows resources
     #[cfg(target_os = "windows")]
     {
-        embed_resources(&dst);
+        embed_resources(&icon_ico);
 
         let mut b = cc::Build::new();
         b.cpp(true);
@@ -198,6 +197,60 @@ fn main() {
             println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
         }
     }
+}
+
+/// True when `icon.ico` is missing or older than `icon.png`.
+fn ico_needs_regeneration(src_png: &Path, dst_ico: &Path) -> bool {
+    if !src_png.is_file() {
+        return false;
+    }
+    if !dst_ico.is_file() {
+        return true;
+    }
+    let Ok(src_mtime) = src_png.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+    let Ok(dst_mtime) = dst_ico.metadata().and_then(|m| m.modified()) else {
+        return true;
+    };
+    src_mtime > dst_mtime
+}
+
+/// `assets/icon.png` is the source of truth. Regenerate `assets/icon.ico` only when ICO is
+/// missing or PNG is newer; do not rewrite ICO on every build.
+fn ensure_icon_ico(src_png: &Path, dst_ico: &Path) {
+    if src_png.is_file() {
+        if ico_needs_regeneration(src_png, dst_ico) {
+            if let Err(e) = png_to_ico(src_png, dst_ico) {
+                panic!(
+                    "build.rs: failed to generate {} from {}: {e}",
+                    dst_ico.display(),
+                    src_png.display()
+                );
+            }
+            if !dst_ico.is_file() {
+                panic!(
+                    "build.rs: {} was not created from {}",
+                    dst_ico.display(),
+                    src_png.display()
+                );
+            }
+        }
+        return;
+    }
+
+    if dst_ico.is_file() {
+        println!(
+            "cargo:warning=assets/icon.png missing; using existing {}",
+            dst_ico.display()
+        );
+        return;
+    }
+
+    println!(
+        "cargo:warning=assets/icon.png and assets/icon.ico are both missing; \
+         Windows builds will embed version info only (default application icon)"
+    );
 }
 
 /// 256×256 RGBA8 for [`egui::IconData`], matching runtime `load_icon` resize (Lanczos3).
@@ -227,60 +280,44 @@ fn emit_viewport_icon_rgba(
     Ok(())
 }
 
-/// Convert a PNG to a multi-resolution ICO (16, 32, 48, 64, 128, 256 px).
+/// Convert `assets/icon.png` (or any image format the `image` crate can read) to a multi-resolution ICO.
+///
+/// Always encodes 32-bit RGBA PNG frames so Windows keeps per-pixel alpha (PNG-in-ICO).
 fn png_to_ico(
     src: &std::path::Path,
     dst: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use image::ImageFormat;
+    use image::ExtendedColorType;
+    use image::codecs::ico::{IcoEncoder, IcoFrame};
     use image::imageops::FilterType;
     use std::fs::File;
-    use std::io::{BufWriter, Write};
+    use std::io::BufWriter;
 
-    let src_img = image::open(src)?;
+    // Sniff container format: the file is named `.png` but may be JPEG/WebP from external tools.
+    let src_rgba = image::ImageReader::open(src)?
+        .with_guessed_format()?
+        .decode()?
+        .to_rgba8();
+    if !src_rgba.pixels().any(|px| px[3] < 255) {
+        println!(
+            "cargo:warning=icon.png has no transparent pixels; \
+             re-export as RGBA PNG if the icon should have a transparent background"
+        );
+    }
     let sizes: &[u32] = &[16, 32, 48, 64, 128, 256];
 
-    // Encode each size as a PNG blob (PNG-in-ICO, supported Windows Vista+)
-    let mut blobs: Vec<Vec<u8>> = Vec::with_capacity(sizes.len());
+    let mut frames = Vec::with_capacity(sizes.len());
     for &sz in sizes {
-        let scaled = src_img.resize_exact(sz, sz, FilterType::Lanczos3);
-        let mut buf = Vec::new();
-        scaled.write_to(&mut std::io::Cursor::new(&mut buf), ImageFormat::Png)?;
-        blobs.push(buf);
+        let scaled = image::imageops::resize(&src_rgba, sz, sz, FilterType::Lanczos3);
+        frames.push(IcoFrame::as_png(
+            scaled.as_raw(),
+            sz,
+            sz,
+            ExtendedColorType::Rgba8,
+        )?);
     }
 
-    let count = sizes.len() as u16;
-    let header_sz = 6u32;
-    let entry_sz = 16u32 * count as u32;
-    let mut data_offset = header_sz + entry_sz;
-
-    let mut offsets: Vec<u32> = Vec::with_capacity(blobs.len());
-    for blob in &blobs {
-        offsets.push(data_offset);
-        data_offset += blob.len() as u32;
-    }
-
-    let mut out = BufWriter::new(File::create(dst)?);
-
-    // ICONDIR
-    out.write_all(&0u16.to_le_bytes())?; // reserved
-    out.write_all(&1u16.to_le_bytes())?; // type = ICON
-    out.write_all(&count.to_le_bytes())?;
-
-    // ICONDIRENTRY array
-    for (i, &sz) in sizes.iter().enumerate() {
-        let dim = if sz >= 256 { 0u8 } else { sz as u8 };
-        out.write_all(&[dim, dim, 0u8, 0u8])?;
-        out.write_all(&1u16.to_le_bytes())?;
-        out.write_all(&32u16.to_le_bytes())?;
-        out.write_all(&(blobs[i].len() as u32).to_le_bytes())?;
-        out.write_all(&offsets[i].to_le_bytes())?;
-    }
-
-    for blob in &blobs {
-        out.write_all(blob)?;
-    }
-
+    IcoEncoder::new(BufWriter::new(File::create(dst)?)).encode_images(&frames)?;
     Ok(())
 }
 
@@ -288,8 +325,13 @@ fn png_to_ico(
 fn embed_resources(ico_path: &std::path::Path) {
     let mut res = winresource::WindowsResource::new();
 
-    if ico_path.exists() {
+    if ico_path.is_file() {
         res.set_icon(&ico_path.display().to_string());
+    } else {
+        println!(
+            "cargo:warning={} not found; PE resources will not include a custom application icon",
+            ico_path.display()
+        );
     }
 
     // 1. Get version from Cargo.toml
