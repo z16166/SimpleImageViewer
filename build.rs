@@ -117,6 +117,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("assets/icon.png").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("assets/icon.ico").display()
+    );
 
     // vcpkg libtiff pkg-config lists webpdecoder/webpmux but not libwebp; tif_webp.c still
     // needs encoder APIs. Do not use cargo:rustc-link-lib here: Cargo splits native libs away from
@@ -158,16 +162,20 @@ fn main() {
 
     if src.exists() {
         match png_to_ico(&src, &dst) {
-            Ok(_) => println!("cargo:warning=icon.ico generated from icon.png"),
+            Ok(()) => {}
             Err(e) => eprintln!("build.rs: icon conversion failed: {e}"),
         }
     } else {
         eprintln!("build.rs: assets/icon.png not found, skipping ICO generation");
     }
 
-    match emit_viewport_icon_rgba(&manifest_dir, &out_dir) {
-        Ok(()) => {}
-        Err(e) => panic!("build.rs: emit_viewport_icon_rgba failed: {e}"),
+    // Non-Windows: embed 256×256 RGBA for `ViewportBuilder::with_icon`. Windows reads the same
+    // pixels from the PE icon resource (winresource id 1) so the exe only carries one icon copy.
+    if target_os != "windows" {
+        match emit_viewport_icon_rgba(&manifest_dir, &out_dir) {
+            Ok(()) => {}
+            Err(e) => panic!("build.rs: emit_viewport_icon_rgba failed: {e}"),
+        }
     }
 
     // Embed Windows resources (icon + metadata) into the PE
