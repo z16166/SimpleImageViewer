@@ -6,8 +6,8 @@ All notable changes to this project will be documented in this file.
 ## [2.0.5] - 2026-05-20
 
 ### Improved
-- **App icon**: New colorful aperture-style icon with a cleaner transparent background on Windows and Linux.
-- **Windows icons**: The taskbar and title bar now use the same icon source, so they stay in sync after you update the artwork.
+- **App icon**: New colorful aperture-style icon with a cleaner transparent background.
+- **Windows**: The taskbar and title bar now use the same icon source, so they stay in sync when the artwork is updated.
 
 ### Fixed
 - **Mouse wheel**: Scrolling to move between images and **Ctrl + scroll** to zoom work again in the main viewer area.
