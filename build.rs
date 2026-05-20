@@ -156,18 +156,9 @@ fn main() {
         linux_link_libstdcxx_a_last();
     }
 
-    // Generate the ICO from the source image (PNG)
-    let src = manifest_dir.join("assets/icon.png");
-    let dst = manifest_dir.join("assets/icon.ico");
-
-    if src.exists() {
-        match png_to_ico(&src, &dst) {
-            Ok(()) => {}
-            Err(e) => eprintln!("build.rs: icon conversion failed: {e}"),
-        }
-    } else {
-        eprintln!("build.rs: assets/icon.png not found, skipping ICO generation");
-    }
+    let icon_png = manifest_dir.join("assets/icon.png");
+    let icon_ico = manifest_dir.join("assets/icon.ico");
+    ensure_icon_ico(&icon_png, &icon_ico);
 
     // Non-Windows: embed 256×256 RGBA for `ViewportBuilder::with_icon`. Windows reads the same
     // pixels from the PE icon resource (winresource id 1) so the exe only carries one icon copy.
@@ -182,7 +173,7 @@ fn main() {
     // Compile C++ WASAPI helper and Windows resources
     #[cfg(target_os = "windows")]
     {
-        embed_resources(&dst);
+        embed_resources(&icon_ico);
 
         let mut b = cc::Build::new();
         b.cpp(true);
@@ -206,6 +197,60 @@ fn main() {
             println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
         }
     }
+}
+
+/// True when `icon.ico` is missing or older than `icon.png`.
+fn ico_needs_regeneration(src_png: &Path, dst_ico: &Path) -> bool {
+    if !src_png.is_file() {
+        return false;
+    }
+    if !dst_ico.is_file() {
+        return true;
+    }
+    let Ok(src_mtime) = src_png.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+    let Ok(dst_mtime) = dst_ico.metadata().and_then(|m| m.modified()) else {
+        return true;
+    };
+    src_mtime > dst_mtime
+}
+
+/// `assets/icon.png` is the source of truth. Regenerate `assets/icon.ico` only when ICO is
+/// missing or PNG is newer; do not rewrite ICO on every build.
+fn ensure_icon_ico(src_png: &Path, dst_ico: &Path) {
+    if src_png.is_file() {
+        if ico_needs_regeneration(src_png, dst_ico) {
+            if let Err(e) = png_to_ico(src_png, dst_ico) {
+                panic!(
+                    "build.rs: failed to generate {} from {}: {e}",
+                    dst_ico.display(),
+                    src_png.display()
+                );
+            }
+            if !dst_ico.is_file() {
+                panic!(
+                    "build.rs: {} was not created from {}",
+                    dst_ico.display(),
+                    src_png.display()
+                );
+            }
+        }
+        return;
+    }
+
+    if dst_ico.is_file() {
+        println!(
+            "cargo:warning=assets/icon.png missing; using existing {}",
+            dst_ico.display()
+        );
+        return;
+    }
+
+    println!(
+        "cargo:warning=assets/icon.png and assets/icon.ico are both missing; \
+         Windows builds will embed version info only (default application icon)"
+    );
 }
 
 /// 256×256 RGBA8 for [`egui::IconData`], matching runtime `load_icon` resize (Lanczos3).
@@ -235,7 +280,7 @@ fn emit_viewport_icon_rgba(
     Ok(())
 }
 
-/// Convert a PNG to a multi-resolution ICO (16, 32, 48, 64, 128, 256 px).
+/// Convert `assets/icon.png` (or any image format the `image` crate can read) to a multi-resolution ICO.
 ///
 /// Always encodes 32-bit RGBA PNG frames so Windows keeps per-pixel alpha (PNG-in-ICO).
 fn png_to_ico(
@@ -248,7 +293,11 @@ fn png_to_ico(
     use std::fs::File;
     use std::io::BufWriter;
 
-    let src_rgba = image::open(src)?.to_rgba8();
+    // Sniff container format: the file is named `.png` but may be JPEG/WebP from external tools.
+    let src_rgba = image::ImageReader::open(src)?
+        .with_guessed_format()?
+        .decode()?
+        .to_rgba8();
     if !src_rgba.pixels().any(|px| px[3] < 255) {
         println!(
             "cargo:warning=icon.png has no transparent pixels; \
@@ -276,8 +325,13 @@ fn png_to_ico(
 fn embed_resources(ico_path: &std::path::Path) {
     let mut res = winresource::WindowsResource::new();
 
-    if ico_path.exists() {
+    if ico_path.is_file() {
         res.set_icon(&ico_path.display().to_string());
+    } else {
+        println!(
+            "cargo:warning={} not found; PE resources will not include a custom application icon",
+            ico_path.display()
+        );
     }
 
     // 1. Get version from Cargo.toml
