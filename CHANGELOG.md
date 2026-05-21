@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.6] - 2026-05-21
+
+### Fixed
+- **Windows ARM64 only**: Pinned the bundled mimalloc C library so the app no longer crashes on startup on native ARM64 Windows (including Parallels VMs). Other platforms are unchanged.
+
+
 ## [2.0.5] - 2026-05-20
 
 ### Improved
@@ -11,7 +17,6 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Mouse wheel**: Scrolling to move between images and **Ctrl + scroll** to zoom work again in the main viewer area.
-- **Windows ARM64 only**: Pinned the bundled mimalloc C library so the app no longer crashes on startup on native ARM64 Windows (including Parallels VMs). Other platforms are unchanged.
 
 
 ## [2.0.4] - 2026-05-15
