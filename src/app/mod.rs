@@ -356,6 +356,11 @@ pub struct ImageViewerApp {
     /// HDR to SDR shows the new mode once, but moving back to HDR never
     /// updates).
     pub(crate) active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+    /// When the active monitor expects PQ-encoded UI in `Rgb10a2Unorm`, the
+    /// app sets this mailbox; KWin KMS HDR offload uses gamma 2.2 instead.
+    pub(crate) requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
+    pub(crate) gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
+    rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
@@ -515,6 +520,11 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn effective_hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
+        self.settings
+            .hdr_tone_map_settings_for_monitor(self.hdr_monitor_state.selection())
+    }
+
     fn focus_and_unminimize_window(ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -793,6 +803,30 @@ impl eframe::App for ImageViewerApp {
             self.hdr_monitor_state.selection(),
         );
         self.hdr_capabilities.output_mode = output_mode;
+
+        let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.hdr_target_format,
+            self.hdr_monitor_state.selection(),
+        );
+        if matches!(
+            self.hdr_target_format,
+            Some(wgpu::TextureFormat::Rgb10a2Unorm)
+        ) {
+            let wants_pq = render_output_mode.rgb10a2_uses_pq_shader();
+            if self.rgb10a2_pq_encode_requested != wants_pq {
+                self.rgb10a2_pq_encode_requested = wants_pq;
+                self.requested_rgb10a2_pq_encode.request(wants_pq);
+            }
+            let tone = self.effective_hdr_tone_map_settings();
+            let scale =
+                tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+            self.gamma22_display_scale.set(scale);
+        }
+        let tone = self.effective_hdr_tone_map_settings();
+        if tone != self.hdr_renderer.tone_map {
+            self.hdr_renderer.tone_map = tone;
+            self.loader.set_hdr_tone_map_settings(tone);
+        }
 
         // If the active monitor's HDR capability disagrees with the current
         // swap-chain target format, ask the Painter to hot-swap. This is what
@@ -1245,6 +1279,9 @@ mod tests {
             max_full_frame_luminance_nits: Some(600.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+            native_surface_encoding: Some(
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+            ),
         };
 
         assert_eq!(
@@ -1271,6 +1308,9 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: Some(2.5),
             hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+            native_surface_encoding: Some(
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+            ),
         };
 
         assert_eq!(

@@ -30,21 +30,54 @@ use wayland_protocols::wp::color_management::v1::client::{
     wp_image_description_v1,
 };
 #[cfg(target_os = "linux")]
-use wayland_protocols::wp::color_management::v1::client::wp_color_manager_v1::TransferFunction;
+use wayland_protocols::wp::color_management::v1::client::wp_color_manager_v1::{
+    Primaries, TransferFunction,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WaylandTransferFunction {
     Srgb,
+    /// Pure gamma curve from `tf_power` (exponent × 10000).
+    GammaPower(f32),
+    Gamma22,
+    Bt1886,
+    /// IEC 61966-2-1 compound curve (wp_color_management v2).
+    CompoundPower24,
     St2084,
     Hlg,
     Unknown,
 }
 
+/// KWin SDR descriptions default to ~200 nits peak; EDID HDR peaks are typically ≥400.
+const KWIN_HDR_OFFLOAD_MIN_PEAK_LUMINANCE_NITS: f32 = 400.0;
+
 pub(crate) fn hdr_supported_from_transfer_function(tf: WaylandTransferFunction) -> bool {
-    matches!(
-        tf,
-        WaylandTransferFunction::St2084 | WaylandTransferFunction::Hlg
-    )
+    hdr_supported_from_wayland_probe(tf, None)
+}
+
+pub(crate) fn hdr_supported_from_wayland_probe(
+    tf: WaylandTransferFunction,
+    max_luminance_nits: Option<f32>,
+) -> bool {
+    match tf {
+        WaylandTransferFunction::St2084 | WaylandTransferFunction::Hlg => true,
+        // Plasma HDR + performance KMS offload: output description stays gamma 2.2 while
+        // the kernel path uses PQ. Peak luminance from EDID (often 400–600 on laptops)
+        // distinguishes this from plain SDR (~200 nits in KWin defaults).
+        WaylandTransferFunction::Gamma22 | WaylandTransferFunction::CompoundPower24
+            if max_luminance_nits.is_some_and(|n| n >= KWIN_HDR_OFFLOAD_MIN_PEAK_LUMINANCE_NITS) =>
+        {
+            true
+        }
+        WaylandTransferFunction::GammaPower(exponent)
+            if (2.19..=2.21).contains(&exponent)
+                && max_luminance_nits
+                    .is_some_and(|n| n >= KWIN_HDR_OFFLOAD_MIN_PEAK_LUMINANCE_NITS) =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,12 +89,22 @@ pub(crate) struct WaylandOutputRect {
     pub height: i32,
 }
 
+fn native_surface_encoding_from_transfer(tf: WaylandTransferFunction) -> super::HdrNativeSurfaceEncoding {
+    use super::HdrNativeSurfaceEncoding;
+    match tf {
+        WaylandTransferFunction::St2084 | WaylandTransferFunction::Hlg => {
+            HdrNativeSurfaceEncoding::PqHdr10
+        }
+        _ => HdrNativeSurfaceEncoding::Gamma22Electrical,
+    }
+}
+
 pub(crate) fn wayland_output_selection(
     label: String,
     tf: WaylandTransferFunction,
     max_luminance_nits: Option<f32>,
 ) -> HdrMonitorSelection {
-    let hdr_supported = hdr_supported_from_transfer_function(tf);
+    let hdr_supported = hdr_supported_from_wayland_probe(tf, max_luminance_nits);
     HdrMonitorSelection {
         hdr_supported,
         label,
@@ -69,6 +112,8 @@ pub(crate) fn wayland_output_selection(
         max_full_frame_luminance_nits: None,
         max_hdr_capacity: None,
         hdr_capacity_source: hdr_supported.then_some("Wayland wp_color_management"),
+        native_surface_encoding: hdr_supported
+            .then_some(native_surface_encoding_from_transfer(tf)),
     }
 }
 
@@ -148,10 +193,17 @@ pub(crate) fn pick_output_index(
 pub(crate) fn transfer_function_from_protocol(tf: TransferFunction) -> WaylandTransferFunction {
     match tf {
         TransferFunction::Srgb | TransferFunction::ExtSrgb => WaylandTransferFunction::Srgb,
+        TransferFunction::Gamma22 => WaylandTransferFunction::Gamma22,
+        TransferFunction::Bt1886 => WaylandTransferFunction::Bt1886,
+        TransferFunction::CompoundPower24 => WaylandTransferFunction::CompoundPower24,
         TransferFunction::St2084Pq => WaylandTransferFunction::St2084,
         TransferFunction::Hlg => WaylandTransferFunction::Hlg,
         _ => WaylandTransferFunction::Unknown,
     }
+}
+
+pub(crate) fn transfer_function_from_tf_power(eexp: u32) -> WaylandTransferFunction {
+    WaylandTransferFunction::GammaPower(eexp as f32 / 10_000.0)
 }
 
 #[cfg(target_os = "linux")]
@@ -185,6 +237,8 @@ struct ImageDescriptionState {
     failed: bool,
     transfer_function: Option<WaylandTransferFunction>,
     max_luminance_nits: Option<f32>,
+    reference_luminance_nits: Option<f32>,
+    primaries: Option<Primaries>,
     info_requested: bool,
     info_done: bool,
 }
@@ -197,6 +251,8 @@ impl Default for ImageDescriptionState {
             failed: false,
             transfer_function: None,
             max_luminance_nits: None,
+            reference_luminance_nits: None,
+            primaries: None,
             info_requested: false,
             info_done: false,
         }
@@ -341,6 +397,14 @@ impl ProbeState {
             self.selected_output_label.clone(),
             tf,
             self.image_state.max_luminance_nits,
+        );
+
+        log::debug!(
+            "[HDR] Wayland image description: tf={tf:?} primaries={:?} \
+             max_luminance_nits={:?} reference_luminance_nits={:?}",
+            self.image_state.primaries,
+            selection.max_luminance_nits,
+            self.image_state.reference_luminance_nits,
         );
 
         log::info!(
@@ -545,20 +609,48 @@ impl Dispatch<wp_image_description_info_v1::WpImageDescriptionInfoV1, ()> for Pr
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wp_image_description_info_v1::Event::TfNamed { tf } => {
-                if let WEnum::Value(tf) = tf {
-                    state.image_state.transfer_function = Some(transfer_function_from_protocol(tf));
+            wp_image_description_info_v1::Event::TfNamed { tf } => match tf {
+                WEnum::Value(tf) => {
+                    let mapped = transfer_function_from_protocol(tf);
+                    log::debug!(
+                        "[HDR] Wayland image info tf_named: protocol={tf:?} mapped={mapped:?}"
+                    );
+                    state.image_state.transfer_function = Some(mapped);
+                }
+                other => {
+                    log::debug!("[HDR] Wayland image info tf_named: unmapped wire value {other:?}");
+                }
+            },
+            wp_image_description_info_v1::Event::TfPower { eexp } => {
+                let mapped = transfer_function_from_tf_power(eexp);
+                log::debug!(
+                    "[HDR] Wayland image info tf_power: eexp={eexp} exponent={} mapped={mapped:?}",
+                    eexp as f32 / 10_000.0,
+                );
+                state.image_state.transfer_function = Some(mapped);
+            }
+            wp_image_description_info_v1::Event::PrimariesNamed { primaries } => {
+                if let WEnum::Value(primaries) = primaries {
+                    log::debug!("[HDR] Wayland image info primaries_named: {primaries:?}");
+                    state.image_state.primaries = Some(primaries);
                 }
             }
             wp_image_description_info_v1::Event::Luminances {
+                min_lum,
                 max_lum,
                 reference_lum,
-                ..
             } => {
+                log::debug!(
+                    "[HDR] Wayland image info luminances: min={min_lum} max={max_lum} reference={reference_lum}"
+                );
+                state.image_state.reference_luminance_nits =
+                    finite_positive_luminance(reference_lum as f32);
                 state.image_state.max_luminance_nits = finite_positive_luminance(max_lum as f32)
-                    .or_else(|| finite_positive_luminance(reference_lum as f32));
+                    .or_else(|| state.image_state.reference_luminance_nits);
+                let _ = min_lum;
             }
             wp_image_description_info_v1::Event::TargetLuminance { max_lum, .. } => {
+                log::debug!("[HDR] Wayland image info target_luminance: max={max_lum}");
                 if state.image_state.max_luminance_nits.is_none() {
                     state.image_state.max_luminance_nits =
                         finite_positive_luminance(max_lum as f32);
@@ -684,6 +776,26 @@ mod tests {
         assert!(!hdr_supported_from_transfer_function(
             WaylandTransferFunction::Srgb
         ));
+    }
+
+    #[test]
+    fn kwin_gamma22_with_edid_peak_luminance_counts_as_hdr() {
+        assert!(hdr_supported_from_wayland_probe(
+            WaylandTransferFunction::Gamma22,
+            Some(450.0),
+        ));
+        assert!(!hdr_supported_from_wayland_probe(
+            WaylandTransferFunction::Gamma22,
+            Some(200.0),
+        ));
+    }
+
+    #[test]
+    fn gamma22_maps_from_protocol() {
+        assert_eq!(
+            transfer_function_from_protocol(TransferFunction::Gamma22),
+            WaylandTransferFunction::Gamma22
+        );
     }
 
     #[test]

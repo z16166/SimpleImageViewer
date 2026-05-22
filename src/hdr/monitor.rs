@@ -81,6 +81,18 @@ impl HdrMonitorSignature {
     }
 }
 
+/// How native HDR pixel values should be encoded into the swap chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrNativeSurfaceEncoding {
+    /// Windows scRGB / macOS EDR linear float.
+    LinearScRgb,
+    /// HDR10 PQ in `Rgb10a2Unorm` (compositor advertises ST 2084).
+    PqHdr10,
+    /// Gamma 2.2 electrical in `Rgb10a2Unorm` — KWin KMS HDR offload when
+    /// `wp_color_management` reports `gamma22` and applies PQ at the kernel.
+    Gamma22Electrical,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdrMonitorSelection {
     pub hdr_supported: bool,
@@ -89,6 +101,7 @@ pub struct HdrMonitorSelection {
     pub max_full_frame_luminance_nits: Option<f32>,
     pub max_hdr_capacity: Option<f32>,
     pub hdr_capacity_source: Option<&'static str>,
+    pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
 }
 
 #[derive(Debug)]
@@ -274,7 +287,10 @@ pub fn effective_render_output_mode(
     if !selection.hdr_supported {
         return HdrRenderOutputMode::SdrToneMapped;
     }
-    HdrRenderOutputMode::for_target_format(target_format)
+    HdrRenderOutputMode::for_target_format(
+        target_format,
+        selection.native_surface_encoding,
+    )
 }
 
 pub fn effective_capability_output_mode(
@@ -366,6 +382,7 @@ fn macos_edr_selection_from_values(
         max_full_frame_luminance_nits: None,
         max_hdr_capacity: capacity,
         hdr_capacity_source: source,
+        native_surface_encoding: hdr_supported.then_some(HdrNativeSurfaceEncoding::LinearScRgb),
     }
 }
 
@@ -425,6 +442,8 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         ),
                         max_hdr_capacity: None,
                         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+                        native_surface_encoding: hdr_supported
+                            .then_some(HdrNativeSurfaceEncoding::LinearScRgb),
                     });
                 }
             }
@@ -1096,6 +1115,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
         };
         let hdr = HdrMonitorSelection {
             hdr_supported: true,
@@ -1104,6 +1124,7 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+            native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
         };
 
         assert_eq!(

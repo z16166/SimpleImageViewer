@@ -178,7 +178,7 @@ impl ImageViewerApp {
 
     fn adjust_hdr_exposure_by_ev(&mut self, delta_ev: f32, ctx: &Context) {
         self.settings.hdr_exposure_ev = (self.settings.hdr_exposure_ev + delta_ev).clamp(-8.0, 8.0);
-        let tone = self.settings.hdr_tone_map_settings();
+        let tone = self.effective_hdr_tone_map_settings();
         self.hdr_renderer.tone_map = tone;
         self.loader.set_hdr_tone_map_settings(tone);
         self.refresh_ultra_hdr_decode_capacity(ctx);

@@ -364,12 +364,28 @@ impl Settings {
     }
 
     pub fn hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
+        self.hdr_tone_map_settings_for_monitor(None)
+    }
+
+    /// Applies probed panel peak luminance when available so native HDR output
+    /// is scaled to the active display rather than a generic 1000 nit default.
+    pub fn hdr_tone_map_settings_for_monitor(
+        &self,
+        monitor: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+    ) -> crate::hdr::types::HdrToneMapSettings {
+        let mut max_display_nits = self
+            .hdr_max_display_nits
+            .max(self.hdr_sdr_white_nits.max(1.0));
+        if let Some(probed_peak) = monitor
+            .and_then(|selection| selection.max_luminance_nits)
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            max_display_nits = max_display_nits.min(probed_peak).max(self.hdr_sdr_white_nits);
+        }
         crate::hdr::types::HdrToneMapSettings {
             exposure_ev: self.hdr_exposure_ev,
             sdr_white_nits: self.hdr_sdr_white_nits,
-            max_display_nits: self
-                .hdr_max_display_nits
-                .max(self.hdr_sdr_white_nits.max(1.0)),
+            max_display_nits,
         }
     }
 
@@ -521,5 +537,29 @@ mod tests {
 
         assert_eq!(tone_map.sdr_white_nits, 300.0);
         assert_eq!(tone_map.max_display_nits, 300.0);
+    }
+
+    #[test]
+    fn hdr_tone_map_settings_cap_max_display_nits_to_probed_peak() {
+        let settings = Settings {
+            hdr_sdr_white_nits: 203.0,
+            hdr_max_display_nits: 1000.0,
+            ..Settings::default()
+        };
+        let monitor = crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: "eDP-1".to_string(),
+            max_luminance_nits: Some(450.0),
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("Wayland wp_color_management"),
+            native_surface_encoding: Some(
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::Gamma22Electrical,
+            ),
+        };
+
+        let tone_map = settings.hdr_tone_map_settings_for_monitor(Some(&monitor));
+
+        assert_eq!(tone_map.max_display_nits, 450.0);
     }
 }

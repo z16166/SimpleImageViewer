@@ -902,6 +902,8 @@ fn main() -> eframe::Result {
     // egui-wgpu Painter polls it every frame and hot-swaps the swap-chain
     // target format.
     let requested_target_format = eframe::egui_wgpu::RequestedSurfaceFormat::new();
+    let requested_rgb10a2_pq_encode = eframe::egui_wgpu::RequestedRgb10a2PqEncode::new();
+    let gamma22_display_scale = eframe::egui_wgpu::Gamma22DisplayScale::new();
 
     // Reverse-direction mailbox: the painter publishes the live active
     // swap-chain format here after every successful runtime hot-swap. We
@@ -970,6 +972,8 @@ fn main() -> eframe::Result {
             preferred_target_format: preferred_hdr_target_format,
             requested_target_format: requested_target_format.clone(),
             active_target_format: active_target_format.clone(),
+            requested_rgb10a2_pq_encode: requested_rgb10a2_pq_encode.clone(),
+            gamma22_display_scale: gamma22_display_scale.clone(),
             ..Default::default()
         },
         // Dithering assumes SDR gamma-space output. Leave it off when we ask
@@ -999,6 +1003,8 @@ fn main() -> eframe::Result {
                 ipc_rx,
                 requested_target_format,
                 active_target_format,
+                requested_rgb10a2_pq_encode,
+                gamma22_display_scale,
                 initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)
         }),

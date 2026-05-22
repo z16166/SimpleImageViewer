@@ -464,6 +464,7 @@ impl Painter {
             renderer.recreate_pipeline_for_target_format(
                 &render_state.device,
                 requested_format,
+                None,
             );
         }
         render_state.target_format = requested_format;
@@ -497,6 +498,31 @@ impl Painter {
             // surface reconfigure until paint time as usual.
             s.needs_reconfigure = true;
         }
+    }
+
+    fn try_apply_runtime_rgb10a2_pq_switch(&mut self, viewport_id: ViewportId) {
+        let Some(requested_pq) = self.configuration.requested_rgb10a2_pq_encode.take() else {
+            return;
+        };
+        let Some(render_state) = self.render_state.as_mut() else {
+            return;
+        };
+        if render_state.target_format != wgpu::TextureFormat::Rgb10a2Unorm {
+            return;
+        }
+        let mut renderer = render_state.renderer.write();
+        if renderer.rgb10a2_pq_framebuffer() == requested_pq {
+            return;
+        }
+        log::info!(
+            "egui-wgpu: hot-swapping Rgb10a2 UI encoding pq={requested_pq}"
+        );
+        renderer.recreate_pipeline_for_target_format(
+            &render_state.device,
+            render_state.target_format,
+            Some(requested_pq),
+        );
+        let _ = viewport_id;
     }
 
     pub fn on_window_resized(
@@ -596,7 +622,9 @@ impl Painter {
         };
 
         let user_cmd_bufs = {
+            let scale = self.configuration.gamma22_display_scale.get();
             let mut renderer = render_state.renderer.write();
+            renderer.set_gamma22_display_scale(scale);
             for (id, image_delta) in &textures_delta.set {
                 renderer.update_texture(
                     &render_state.device,
@@ -680,6 +708,14 @@ impl Painter {
             let framebuffer_clear_color = renderer::clear_color_for_framebuffer_format(
                 clear_color,
                 output_frame.texture.format(),
+                {
+                    let renderer = render_state.renderer.read();
+                    renderer.rgb10a2_pq_framebuffer()
+                },
+                {
+                    let renderer = render_state.renderer.read();
+                    renderer.gamma22_display_scale()
+                },
             );
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui_render"),
@@ -824,6 +860,7 @@ impl Painter {
         // `frame.wgpu_render_state().target_format`, so all downstream
         // pipelines rebuild in sync.
         self.try_apply_runtime_target_format_switch(viewport_id);
+        self.try_apply_runtime_rgb10a2_pq_switch(viewport_id);
 
         vsync_sec
     }

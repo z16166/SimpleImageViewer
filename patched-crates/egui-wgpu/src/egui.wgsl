@@ -15,6 +15,9 @@ struct Locals {
     /// 1 to do manual filtering for more predictable kittest snapshot images.
     /// See also https://github.com/emilk/egui/issues/5295
     predictable_texture_filtering: u32,
+
+    /// SDR white / panel peak scale for KWin gamma 2.2 HDR swap chains.
+    gamma22_display_scale: f32,
 };
 @group(0) @binding(0) var<uniform> r_locals: Locals;
 
@@ -174,6 +177,23 @@ fn fs_main_pq_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
     let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
     let out_color_pq = display_linear_to_pq(out_color_linear);
     return vec4<f32>(out_color_pq, out_color_gamma.a);
+}
+
+const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
+
+@fragment
+fn fs_main_gamma22_hdr_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
+    // KWin KMS HDR offload expects gamma 2.2 electrical values in Rgb10a2Unorm.
+    // Scale SDR-linear UI so 1.0 maps to panel SDR white, not peak luminance.
+    let tex_gamma = sample_texture(in);
+    var out_color_gamma = in.color * tex_gamma;
+    if r_locals.dithering == 1 {
+        let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
+        out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
+    }
+    let linear = linear_from_gamma_rgb(out_color_gamma.rgb) * r_locals.gamma22_display_scale;
+    let electrical = pow(max(linear, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
+    return vec4<f32>(electrical, out_color_gamma.a);
 }
 
 @fragment

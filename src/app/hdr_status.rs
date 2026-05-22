@@ -138,6 +138,7 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
+            native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb),
         }
     }
 

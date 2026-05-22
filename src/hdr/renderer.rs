@@ -34,14 +34,25 @@ pub enum HdrRenderOutputMode {
     SdrToneMapped = 0,
     /// Linear scRGB / EDR (`Rgba16Float`, `Rgba32Float`).
     NativeHdr = 1,
-    /// PQ HDR10 (`Rgb10a2Unorm` + `VK_COLOR_SPACE_HDR10_ST2084_EXT`).
+    /// PQ HDR10 (`Rgb10a2Unorm` + compositor ST 2084).
     NativeHdrPq = 2,
+    /// Gamma 2.2 electrical for KWin KMS HDR offload (`Rgb10a2Unorm`).
+    NativeHdrGamma22 = 3,
 }
 
 impl HdrRenderOutputMode {
-    pub fn for_target_format(target_format: wgpu::TextureFormat) -> Self {
+    pub fn for_target_format(
+        target_format: wgpu::TextureFormat,
+        native_surface_encoding: Option<crate::hdr::monitor::HdrNativeSurfaceEncoding>,
+    ) -> Self {
+        use crate::hdr::monitor::HdrNativeSurfaceEncoding;
         match target_format {
-            wgpu::TextureFormat::Rgb10a2Unorm => Self::NativeHdrPq,
+            wgpu::TextureFormat::Rgb10a2Unorm => match native_surface_encoding {
+                Some(HdrNativeSurfaceEncoding::PqHdr10) => Self::NativeHdrPq,
+                Some(HdrNativeSurfaceEncoding::Gamma22Electrical) => Self::NativeHdrGamma22,
+                Some(HdrNativeSurfaceEncoding::LinearScRgb) => Self::NativeHdrGamma22,
+                None => Self::NativeHdrGamma22,
+            },
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => Self::NativeHdr,
             format if crate::hdr::surface::is_native_hdr_surface_format(Some(format)) => {
                 Self::NativeHdr
@@ -51,20 +62,30 @@ impl HdrRenderOutputMode {
     }
 
     pub fn is_native_hdr(self) -> bool {
-        matches!(self, Self::NativeHdr | Self::NativeHdrPq)
+        matches!(
+            self,
+            Self::NativeHdr | Self::NativeHdrPq | Self::NativeHdrGamma22
+        )
     }
 
     pub fn as_diagnostic_label(self) -> &'static str {
         match self {
             Self::NativeHdr => "native_hdr",
             Self::NativeHdrPq => "native_hdr_pq",
+            Self::NativeHdrGamma22 => "native_hdr_gamma22",
             Self::SdrToneMapped => "sdr_tone_mapped",
         }
+    }
+
+    pub fn rgb10a2_uses_pq_shader(self) -> bool {
+        matches!(self, Self::NativeHdrPq)
     }
 }
 
 pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
-    let output_mode = target_format.map(HdrRenderOutputMode::for_target_format);
+    let output_mode = target_format.map(|format| {
+        HdrRenderOutputMode::for_target_format(format, None)
+    });
     [
         format!("[HDR] render_target_format={target_format:?}"),
         format!(
@@ -77,7 +98,11 @@ pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>)
 }
 
 pub fn hdr_egui_overlay_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
-    let shader_entry_point = target_format.map(egui_wgpu::egui_framebuffer_shader_entry_point);
+    let shader_entry_point = target_format.map(|format| {
+        let rgb10a2_pq = matches!(format, wgpu::TextureFormat::Rgb10a2Unorm)
+            && HdrRenderOutputMode::for_target_format(format, None) == HdrRenderOutputMode::NativeHdrPq;
+        egui_wgpu::egui_framebuffer_shader_entry_point(format, rgb10a2_pq)
+    });
     [
         format!("[HDR] egui_overlay_target_format={target_format:?}"),
         format!(
@@ -97,6 +122,8 @@ const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
 const OUTPUT_MODE_NATIVE_HDR_PQ: u32 = 2u;
+const OUTPUT_MODE_NATIVE_HDR_GAMMA22: u32 = 3u;
+const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
@@ -322,6 +349,20 @@ fn encode_native_hdr_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
     return display_linear_to_pq(linear, settings);
 }
 
+fn gamma22_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    return pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
+}
+
+fn encode_native_hdr_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // KWin performance HDR: compositor advertises gamma 2.2 and applies PQ at KMS.
+    let exposure_scale = exp2(settings.exposure_ev);
+    let display_scale =
+        settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
+    let linear =
+        sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale * display_scale);
+    return gamma22_from_linear_rgb(linear);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let positions = array<vec2<f32>, 3>(
@@ -352,6 +393,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var rgb: vec3<f32>;
     if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_PQ {
         rgb = encode_native_hdr_pq(source_rgb, tone_map);
+    } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_GAMMA22 {
+        rgb = encode_native_hdr_gamma22(source_rgb, tone_map);
     } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
         rgb = encode_native_hdr(source_rgb, tone_map);
     } else {
@@ -1873,20 +1916,40 @@ mod tests {
 
     #[test]
     fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
+        use crate::hdr::monitor::HdrNativeSurfaceEncoding;
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgba16Float,
+                None,
+            ),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba32Float),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgba32Float,
+                None,
+            ),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgb10a2Unorm),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                Some(HdrNativeSurfaceEncoding::PqHdr10),
+            ),
             HdrRenderOutputMode::NativeHdrPq
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Bgra8Unorm),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                Some(HdrNativeSurfaceEncoding::Gamma22Electrical),
+            ),
+            HdrRenderOutputMode::NativeHdrGamma22
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Bgra8Unorm,
+                None,
+            ),
             HdrRenderOutputMode::SdrToneMapped
         );
     }
@@ -1967,6 +2030,8 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_PQ"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_pq"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_GAMMA22"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_gamma22"));
     }
 
     #[test]

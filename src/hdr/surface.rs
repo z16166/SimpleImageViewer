@@ -131,6 +131,9 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_full_frame_luminance_nits: None,
                 max_hdr_capacity: None,
                 hdr_capacity_source: Some("spawn DXGI probe"),
+                native_surface_encoding: Some(
+                    crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+                ),
             })
         }
         HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
@@ -141,6 +144,7 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_full_frame_luminance_nits: None,
                 max_hdr_capacity: None,
                 hdr_capacity_source: None,
+                native_surface_encoding: None,
             })
         }
         HdrEnvironmentProbe::ProbeUnavailable => None,
@@ -267,7 +271,7 @@ pub fn native_hdr_surface_blocker(format: Option<wgpu::TextureFormat>) -> Option
 
 #[cfg(test)]
 mod tests {
-    use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::monitor::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
     use crate::hdr::surface::{
         HdrEnvironmentProbe, HdrSurfaceSelection, choose_native_hdr_surface_format,
         desired_target_format_for_active_monitor, initial_monitor_selection_from_environment_probe,
@@ -282,6 +286,7 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
+            native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
         }
     }
 
@@ -293,6 +298,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
         }
     }
 
