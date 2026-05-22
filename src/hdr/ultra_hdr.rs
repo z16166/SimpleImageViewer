@@ -394,6 +394,13 @@ fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String
     })
 }
 
+/// Adobe XMP `hdrgm:HDRCapacity*` values are **log₂ headroom** (same as ISO
+/// `base_hdr_headroom` / `alternate_hdr_headroom`), not linear luminance ratios.
+/// [`GainMapMetadata::hdr_capacity_*`] stores linear peak/SDR ratios (`2^headroom`).
+fn hdr_capacity_ratio_from_xmp_headroom(headroom_log2: f32) -> f32 {
+    2.0_f32.powf(headroom_log2.max(0.0))
+}
+
 fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
     let segments = primary_metadata_segments(gain_map_jpeg)?;
     for segment in segments
@@ -424,15 +431,20 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
+        let hdr_capacity_min = hdr_capacity_ratio_from_xmp_headroom(
+            attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
+        );
+        let hdr_capacity_max = attribute_f32(&text, "hdrgm:HDRCapacityMax")
+            .map(hdr_capacity_ratio_from_xmp_headroom)
+            .unwrap_or_else(|| hdr_capacity_ratio_from_xmp_headroom(max_gain_map_max));
         return validate_gain_map_metadata(GainMapMetadata {
             gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
             gain_map_max,
             gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
             offset_sdr: attribute_rgb_f32(&text, "hdrgm:OffsetSDR").unwrap_or([1.0 / 64.0; 3]),
             offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
-            hdr_capacity_min: attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
-            hdr_capacity_max: attribute_f32(&text, "hdrgm:HDRCapacityMax")
-                .unwrap_or(max_gain_map_max),
+            hdr_capacity_min,
+            hdr_capacity_max,
         });
     }
 
@@ -868,8 +880,36 @@ mod tests {
 
         let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse gain map metadata");
 
-        assert_eq!(metadata.hdr_capacity_min, 1.25);
-        assert_eq!(metadata.hdr_capacity_max, 4.5);
+        assert!((metadata.hdr_capacity_min - 2.0_f32.powf(1.25)).abs() < 0.001);
+        assert!((metadata.hdr_capacity_max - 2.0_f32.powf(4.5)).abs() < 0.001);
+    }
+
+    #[test]
+    fn gain_map_metadata_parses_paris_xmp_headroom_as_log2() {
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="3.7"
+              hdrgm:HDRCapacityMin="0"
+              hdrgm:HDRCapacityMax="3.5"/>
+        "#,
+        );
+
+        let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse paris-class XMP");
+        assert!((metadata.hdr_capacity_min - 1.0).abs() < 0.001);
+        assert!((metadata.hdr_capacity_max - 2.0_f32.powf(3.5)).abs() < 0.001);
+
+        let tone = crate::hdr::types::HdrToneMapSettings {
+            max_display_nits: 450.0,
+            ..Default::default()
+        };
+        let weight = gain_map_weight(metadata, tone.target_hdr_capacity());
+        assert!(
+            weight < 0.4,
+            "Paris-class headroom should not apply ~full gain-map weight on 450 nit display (got {weight})"
+        );
     }
 
     #[test]
@@ -1121,6 +1161,78 @@ mod tests {
         assert!((rgba[0] - 2.0).abs() < 0.001);
         assert!((rgba[1] - 4.0).abs() < 0.001);
         assert!((rgba[2] - 8.0).abs() < 0.001);
+    }
+
+    /// `cargo test probe_paris_gainmap -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual probe against libavif paris gain-map JPEGs"]
+    fn probe_paris_gainmap_jpegs() {
+        use crate::hdr::decode::linear_srgb_linear_to_srgb_u8;
+        use crate::hdr::gain_map::gain_map_metadata_diagnostic;
+        use std::path::Path;
+
+        let tone = crate::hdr::types::HdrToneMapSettings {
+            max_display_nits: 450.0,
+            ..Default::default()
+        };
+        let capacity = tone.target_hdr_capacity();
+
+        for name in [
+            "paris_exif_xmp_gainmap_bigendian.jpg",
+            "paris_exif_xmp_gainmap_littleendian.jpg",
+            "paris_exif_xmp_icc_gainmap_bigendian.jpg",
+            "paris_exif_xmp_icc.jpg",
+        ] {
+            let path = Path::new("/home/happy/Downloads/HDR/libavif/tests/data").join(name);
+            if !path.is_file() {
+                eprintln!("skip {}", path.display());
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("read");
+            if let Ok(info) = inspect_ultra_hdr_jpeg_bytes(&bytes) {
+                eprintln!("{name}: ultra_hdr={}", info.is_ultra_hdr);
+            }
+            if let Ok(gm_jpeg) = extract_gain_map_jpeg_bytes(&bytes) {
+                let meta = gain_map_metadata(&gm_jpeg).expect("gain meta");
+                eprintln!(
+                    "{name}: gain meta: {}",
+                    gain_map_metadata_diagnostic(meta, capacity)
+                );
+            }
+            if let Ok(hdr) =
+                decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity)
+            {
+                let cx = hdr.width as usize / 2;
+                let cy = hdr.height as usize / 2;
+                let i = (cy * hdr.width as usize + cx) * 4;
+                let rgb = [
+                    hdr.rgba_f32[i],
+                    hdr.rgba_f32[i + 1],
+                    hdr.rgba_f32[i + 2],
+                ];
+                let sdr = [
+                    linear_srgb_linear_to_srgb_u8(rgb[0]),
+                    linear_srgb_linear_to_srgb_u8(rgb[1]),
+                    linear_srgb_linear_to_srgb_u8(rgb[2]),
+                ];
+                eprintln!("{name}: hdr linear center {rgb:?} sdr8 {sdr:?}");
+                if name.contains("gainmap") {
+                    assert!(
+                        rgb[0] < 1.5 && rgb[1] < 1.5 && rgb[2] < 1.5,
+                        "{name} center linear should stay in display range after headroom fix"
+                    );
+                }
+                continue;
+            }
+            let (_, _, rgba) = libjpeg_turbo::decode_to_rgba(&bytes).expect("sdr decode");
+            let cx = rgba.len() / 4 / 2;
+            eprintln!(
+                "{name}: baseline sdr center [{}, {}, {}]",
+                rgba[cx * 4],
+                rgba[cx * 4 + 1],
+                rgba[cx * 4 + 2]
+            );
+        }
     }
 
     #[test]
