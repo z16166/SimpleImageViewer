@@ -1,10 +1,42 @@
 //! Linux Vulkan HDR10 swap-chain metadata (`VK_EXT_hdr_metadata`).
 //!
 //! Color space for `Rgb10a2Unorm` is selected at swapchain creation in our
-//! patched `wgpu-hal`. This module applies ST 2086 static metadata after each
-//! `surface.configure`, analogous to the Windows DXGI `SetColorSpace1` hook.
+//! patched `wgpu-hal` via [`wgpu_hal::linux_swapchain`]. ST 2086 static metadata
+//! is applied only for PQ/HDR10 swap chains, analogous to the Windows DXGI
+//! `SetColorSpace1` hook.
 
 #![expect(unsafe_code)]
+
+#[cfg(target_os = "linux")]
+use wgpu_hal::linux_swapchain::{LinuxRgb10a2VkColorSpace, preferred_linux_rgb10a2_vk_color_space};
+
+/// Sync the patched Vulkan swap-chain color-space preference with the active
+/// `Rgb10a2Unorm` UI encoding (PQ vs gamma 2.2 electrical).
+#[cfg(target_os = "linux")]
+pub fn linux_sync_rgb10a2_vk_color_space(format: wgpu::TextureFormat, pq_framebuffer: bool) {
+    if format != wgpu::TextureFormat::Rgb10a2Unorm {
+        return;
+    }
+    wgpu_hal::linux_swapchain::set_linux_rgb10a2_vk_color_space(if pq_framebuffer {
+        LinuxRgb10a2VkColorSpace::Hdr10St2084
+    } else {
+        LinuxRgb10a2VkColorSpace::SrgbNonLinear
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn linux_sync_rgb10a2_vk_color_space(_format: wgpu::TextureFormat, _pq_framebuffer: bool) {}
+
+#[cfg(target_os = "linux")]
+pub fn linux_rgb10a2_uses_hdr10_st2084(format: wgpu::TextureFormat) -> bool {
+    format == wgpu::TextureFormat::Rgb10a2Unorm
+        && preferred_linux_rgb10a2_vk_color_space() == LinuxRgb10a2VkColorSpace::Hdr10St2084
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn linux_rgb10a2_uses_hdr10_st2084(_format: wgpu::TextureFormat) -> bool {
+    false
+}
 
 /// Default HDR10 metadata when the monitor probe has not yet supplied values.
 #[derive(Debug, Clone, Copy)]

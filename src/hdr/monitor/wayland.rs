@@ -44,6 +44,8 @@ pub(crate) enum WaylandTransferFunction {
     /// IEC 61966-2-1 compound curve (wp_color_management v2).
     CompoundPower24,
     St2084,
+    /// BT.2100 HLG from `wp_color_management`. Native **output** is not implemented (see
+    /// `hdr_supported_from_wayland_probe`); HLG **input** decode exists for AVIF/JXL/etc.
     Hlg,
     Unknown,
 }
@@ -60,7 +62,14 @@ pub(crate) fn hdr_supported_from_wayland_probe(
     max_luminance_nits: Option<f32>,
 ) -> bool {
     match tf {
-        WaylandTransferFunction::St2084 | WaylandTransferFunction::Hlg => true,
+        WaylandTransferFunction::St2084 => true,
+        // Full native HLG output is not implemented yet. Would need BT.2100 HLG OETF in the
+        // HDR plane + egui shaders, `HdrNativeSurfaceEncoding::Hlg`, and Vulkan
+        // `HDR10_HLG_EXT` (not just `HDR10_ST2084_EXT`). Linux desktop compositors today
+        // expose ST 2084 or KWin gamma-2.2 offload, not HLG swap chains; HLG content is
+        // decoded on input and shown via PQ/gamma2.2/SDR paths. Fail closed here rather
+        // than mis-declare PQ/HDR10 (the previous bug).
+        WaylandTransferFunction::Hlg => false,
         // Plasma HDR + performance KMS offload: output description stays gamma 2.2 while
         // the kernel path uses PQ. Peak luminance from EDID (often 400–600 on laptops)
         // distinguishes this from plain SDR (~200 nits in KWin defaults).
@@ -89,13 +98,20 @@ pub(crate) struct WaylandOutputRect {
     pub height: i32,
 }
 
-fn native_surface_encoding_from_transfer(tf: WaylandTransferFunction) -> super::HdrNativeSurfaceEncoding {
+fn native_surface_encoding_from_transfer(
+    tf: WaylandTransferFunction,
+) -> Option<super::HdrNativeSurfaceEncoding> {
     use super::HdrNativeSurfaceEncoding;
     match tf {
-        WaylandTransferFunction::St2084 | WaylandTransferFunction::Hlg => {
-            HdrNativeSurfaceEncoding::PqHdr10
-        }
-        _ => HdrNativeSurfaceEncoding::Gamma22Electrical,
+        WaylandTransferFunction::St2084 => Some(HdrNativeSurfaceEncoding::PqHdr10),
+        WaylandTransferFunction::Gamma22
+        | WaylandTransferFunction::CompoundPower24
+        |         WaylandTransferFunction::GammaPower(_) => Some(HdrNativeSurfaceEncoding::Gamma22Electrical),
+        // No `HdrNativeSurfaceEncoding::Hlg` — see HLG fail-closed note above.
+        WaylandTransferFunction::Hlg
+        | WaylandTransferFunction::Srgb
+        | WaylandTransferFunction::Bt1886
+        | WaylandTransferFunction::Unknown => None,
     }
 }
 
@@ -113,7 +129,8 @@ pub(crate) fn wayland_output_selection(
         max_hdr_capacity: None,
         hdr_capacity_source: hdr_supported.then_some("Wayland wp_color_management"),
         native_surface_encoding: hdr_supported
-            .then_some(native_surface_encoding_from_transfer(tf)),
+            .then(|| native_surface_encoding_from_transfer(tf))
+            .flatten(),
     }
 }
 
@@ -764,11 +781,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pq_and_hlg_are_hdr() {
+    fn st2084_is_hdr() {
         assert!(hdr_supported_from_transfer_function(
             WaylandTransferFunction::St2084
         ));
-        assert!(hdr_supported_from_transfer_function(WaylandTransferFunction::Hlg));
+    }
+
+    #[test]
+    fn hlg_is_not_treated_as_native_hdr() {
+        assert!(!hdr_supported_from_transfer_function(WaylandTransferFunction::Hlg));
+        assert_eq!(
+            native_surface_encoding_from_transfer(WaylandTransferFunction::Hlg),
+            None
+        );
     }
 
     #[test]

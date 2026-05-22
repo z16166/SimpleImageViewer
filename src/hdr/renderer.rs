@@ -245,6 +245,8 @@ fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
 }
 
 fn hlg_to_scene_linear(rgb: vec3<f32>) -> vec3<f32> {
+    // BT.2100 HLG EOTF inverse (input decode only). No matching `scene_linear_to_hlg`
+    // OETF or `NativeHdrHlg` swap-chain path — see `hdr/monitor/wayland.rs`.
     let a = 0.17883277;
     let b = 0.28466892;
     let c = 0.55991073;

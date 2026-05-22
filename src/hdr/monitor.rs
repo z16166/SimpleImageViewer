@@ -82,6 +82,10 @@ impl HdrMonitorSignature {
 }
 
 /// How native HDR pixel values should be encoded into the swap chain.
+///
+/// There is intentionally no HLG variant: Wayland/Linux v1 targets ST 2084 PQ and KWin
+/// gamma-2.2 electrical offload. HLG file decode (`hlg_to_scene_linear`) exists for
+/// content; compositor-native HLG output would need HLG OETF + `HDR10_HLG_EXT` end-to-end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrNativeSurfaceEncoding {
     /// Windows scRGB / macOS EDR linear float.

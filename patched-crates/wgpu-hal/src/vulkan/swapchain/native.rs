@@ -168,7 +168,13 @@ impl Surface for NativeSurface {
         let color_space = if cfg!(target_os = "linux")
             && config.format == wgt::TextureFormat::Rgb10a2Unorm
         {
-            vk::ColorSpaceKHR::HDR10_ST2084_EXT
+            use crate::linux_swapchain::{
+                preferred_linux_rgb10a2_vk_color_space, LinuxRgb10a2VkColorSpace,
+            };
+            match preferred_linux_rgb10a2_vk_color_space() {
+                LinuxRgb10a2VkColorSpace::Hdr10St2084 => vk::ColorSpaceKHR::HDR10_ST2084_EXT,
+                LinuxRgb10a2VkColorSpace::SrgbNonLinear => vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            }
         } else if config.format == wgt::TextureFormat::Rgba16Float {
             // Enable wide color gamut mode
             // Vulkan swapchain for Android only supports DISPLAY_P3_NONLINEAR_EXT and EXTENDED_SRGB_LINEAR_EXT

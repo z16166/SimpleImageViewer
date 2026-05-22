@@ -136,16 +136,28 @@ impl Painter {
         windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
 
         #[cfg(target_os = "linux")]
-        if let Some(metadata) =
-            crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(render_state.target_format)
         {
-            crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
-                &surface_state.surface,
-                &render_state.device,
-                &render_state.adapter,
+            let pq = render_state
+                .renderer
+                .read()
+                .rgb10a2_pq_framebuffer();
+            crate::vulkan_hdr::linux_sync_rgb10a2_vk_color_space(
                 render_state.target_format,
-                metadata,
+                pq,
             );
+            if crate::vulkan_hdr::linux_rgb10a2_uses_hdr10_st2084(render_state.target_format) {
+                if let Some(metadata) = crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(
+                    render_state.target_format,
+                ) {
+                    crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
+                        &surface_state.surface,
+                        &render_state.device,
+                        &render_state.adapter,
+                        render_state.target_format,
+                        metadata,
+                    );
+                }
+            }
         }
     }
 
@@ -522,6 +534,16 @@ impl Painter {
             render_state.target_format,
             Some(requested_pq),
         );
+        #[cfg(target_os = "linux")]
+        {
+            crate::vulkan_hdr::linux_sync_rgb10a2_vk_color_space(
+                render_state.target_format,
+                requested_pq,
+            );
+            if let Some(surface_state) = self.surfaces.get_mut(&viewport_id) {
+                surface_state.needs_reconfigure = true;
+            }
+        }
         let _ = viewport_id;
     }
 

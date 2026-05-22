@@ -134,6 +134,11 @@ default-features = false
 version = "0.38"
 default-features = false
 
+[target.'cfg(target_os = "linux")'.dependencies.wgpu-hal]
+path = "../wgpu-hal"
+default-features = false
+features = ["vulkan"]
+
 # Windows-only: we need raw DXGI access (IDXGISwapChain3::SetColorSpace1) to
 # keep the swap-chain color space in sync with its format whenever the app
 # hot-swaps between an SDR `Bgra8Unorm` and an HDR scRGB `Rgba16Float`

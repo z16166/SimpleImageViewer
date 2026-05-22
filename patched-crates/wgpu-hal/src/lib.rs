@@ -263,6 +263,10 @@ pub mod noop;
 #[cfg(vulkan)]
 pub mod vulkan;
 
+/// Linux-only swap-chain color-space preference for patched HDR presentation.
+#[cfg(all(target_os = "linux", vulkan))]
+pub mod linux_swapchain;
+
 pub mod auxil;
 pub mod api {
     #[cfg(dx12)]
