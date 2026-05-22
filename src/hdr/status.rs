@@ -80,7 +80,7 @@ pub fn hdr_output_label(capabilities: &HdrCapabilities) -> String {
         match capabilities.output_mode {
             HdrOutputMode::WindowsScRgb => t!("hdr.output.windows_scrgb").to_string(),
             HdrOutputMode::MacOsEdr => t!("hdr.output.macos_edr").to_string(),
-            HdrOutputMode::WaylandHdr => t!("hdr.output.native_hdr").to_string(),
+            HdrOutputMode::WaylandHdr => t!("hdr.output.wayland_hdr").to_string(),
             HdrOutputMode::SdrToneMapped => t!("hdr.output.native_hdr").to_string(),
         }
     } else {
