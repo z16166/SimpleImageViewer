@@ -92,8 +92,8 @@ pub enum HdrNativeSurfaceEncoding {
     LinearScRgb,
     /// HDR10 PQ in `Rgb10a2Unorm` (compositor advertises ST 2084).
     PqHdr10,
-    /// Gamma 2.2 electrical in `Rgb10a2Unorm` — KWin KMS HDR offload when
-    /// `wp_color_management` reports `gamma22` and applies PQ at the kernel.
+    /// Legacy gamma 2.2 electrical path; retained for shader dispatch only.
+    #[allow(dead_code)]
     Gamma22Electrical,
 }
 
@@ -315,6 +315,14 @@ pub fn effective_capability_output_mode(
             }
         }
     }
+}
+
+/// Merge Wayland monitor metadata with Vulkan WSI gates on Linux.
+pub fn effective_monitor_selection(
+    wp: Option<&HdrMonitorSelection>,
+    wsi: crate::hdr::wsi_probe::WsiHdrSurfaceGates,
+) -> Option<HdrMonitorSelection> {
+    crate::hdr::wsi_probe::linux_effective_monitor_selection(wp, wsi)
 }
 
 /// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for

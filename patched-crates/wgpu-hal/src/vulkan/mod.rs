@@ -33,6 +33,8 @@ mod instance;
 mod sampler;
 mod semaphore_list;
 mod swapchain;
+#[cfg(target_os = "linux")]
+pub mod linux_surface_probe;
 
 pub use adapter::PhysicalDeviceFeatures;
 

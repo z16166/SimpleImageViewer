@@ -46,21 +46,22 @@ impl ImageViewerApp {
             has_sdr_fallback,
             self.hdr_target_format,
             complex_transition_active,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         )
     }
 
     pub(crate) fn current_hdr_osd_tag(&self) -> Option<String> {
         let render_path = self.current_hdr_render_path()?;
+        let monitor_label = self
+            .effective_hdr_monitor_selection()
+            .map(|selection| selection.label);
         hdr_osd_tag(
             true,
             render_path,
             self.current_hdr_color_space(),
             &self.hdr_capabilities,
             Some(self.ultra_hdr_decode_capacity),
-            self.hdr_monitor_state
-                .selection()
-                .map(|selection| selection.label.as_str()),
+            monitor_label.as_deref(),
         )
     }
 

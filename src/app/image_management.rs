@@ -267,7 +267,7 @@ impl ImageViewerApp {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
             self.effective_hdr_tone_map_settings(),
             self.hdr_capabilities.output_mode,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         )
     }
 

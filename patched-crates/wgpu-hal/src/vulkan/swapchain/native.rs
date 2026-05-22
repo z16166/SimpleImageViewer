@@ -32,6 +32,16 @@ impl NativeSurface {
     pub fn as_raw(&self) -> vk::SurfaceKHR {
         self.raw
     }
+
+    pub(crate) fn raw_surface_formats(
+        &self,
+        physical_device: vk::PhysicalDevice,
+    ) -> Result<Vec<vk::SurfaceFormatKHR>, vk::Result> {
+        unsafe {
+            self.functor
+                .get_physical_device_surface_formats(physical_device, self.raw)
+        }
+    }
 }
 
 impl Surface for NativeSurface {

@@ -51,7 +51,7 @@ impl HdrRenderOutputMode {
                 Some(HdrNativeSurfaceEncoding::PqHdr10) => Self::NativeHdrPq,
                 Some(HdrNativeSurfaceEncoding::Gamma22Electrical) => Self::NativeHdrGamma22,
                 Some(HdrNativeSurfaceEncoding::LinearScRgb) => Self::NativeHdrGamma22,
-                None => Self::NativeHdrGamma22,
+                None => Self::SdrToneMapped,
             },
             wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => Self::NativeHdr,
             format if crate::hdr::surface::is_native_hdr_surface_format(Some(format)) => {
@@ -1972,6 +1972,13 @@ mod tests {
                 Some(HdrNativeSurfaceEncoding::Gamma22Electrical),
             ),
             HdrRenderOutputMode::NativeHdrGamma22
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                None,
+            ),
+            HdrRenderOutputMode::SdrToneMapped
         );
         assert_eq!(
             HdrRenderOutputMode::for_target_format(

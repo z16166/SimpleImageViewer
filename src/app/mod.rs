@@ -360,6 +360,8 @@ pub struct ImageViewerApp {
     /// app sets this mailbox; KWin KMS HDR offload uses gamma 2.2 instead.
     pub(crate) requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
     pub(crate) gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
+    /// Vulkan WSI HDR gates published by the painter after the first surface configure.
+    pub(crate) vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
     rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
@@ -520,9 +522,21 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn effective_hdr_monitor_selection(&self) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
+        let wsi = self.vulkan_wsi_hdr_gates.get();
+        crate::hdr::monitor::effective_monitor_selection(
+            self.hdr_monitor_state.selection(),
+            crate::hdr::wsi_probe::WsiHdrSurfaceGates {
+                hdr10_st2084_rgb10a2: wsi.hdr10_st2084_rgb10a2,
+                extended_srgb_linear_rgba16f: wsi.extended_srgb_linear_rgba16f,
+                probed: wsi.probed,
+            },
+        )
+    }
+
     pub(crate) fn effective_hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
         self.settings
-            .hdr_tone_map_settings_for_monitor(self.hdr_monitor_state.selection())
+            .hdr_tone_map_settings_for_monitor(self.effective_hdr_monitor_selection().as_ref())
     }
 
     fn focus_and_unminimize_window(ctx: &egui::Context) {
@@ -800,13 +814,13 @@ impl eframe::App for ImageViewerApp {
             .refresh_from_viewport(ctx, now, hdr_content_visible);
         let output_mode = crate::hdr::monitor::effective_capability_output_mode(
             self.hdr_target_format,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         );
         self.hdr_capabilities.output_mode = output_mode;
 
         let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
             self.hdr_target_format,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         );
         if matches!(
             self.hdr_target_format,
@@ -817,10 +831,15 @@ impl eframe::App for ImageViewerApp {
                 self.rgb10a2_pq_encode_requested = wants_pq;
                 self.requested_rgb10a2_pq_encode.request(wants_pq);
             }
-            let tone = self.effective_hdr_tone_map_settings();
-            let scale =
-                tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
-            self.gamma22_display_scale.set(scale);
+            if matches!(
+                render_output_mode,
+                crate::hdr::renderer::HdrRenderOutputMode::NativeHdrGamma22
+            ) {
+                let tone = self.effective_hdr_tone_map_settings();
+                let scale =
+                    tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+                self.gamma22_display_scale.set(scale);
+            }
         }
         let tone = self.effective_hdr_tone_map_settings();
         if tone != self.hdr_renderer.tone_map {
@@ -844,9 +863,10 @@ impl eframe::App for ImageViewerApp {
         // format.
         if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
             self.settings.hdr_native_surface_enabled_effective(),
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         ) && Some(desired_format) != self.hdr_target_format
         {
+            let effective_monitor = self.effective_hdr_monitor_selection();
             // Log every time we *issue* a new request (not every frame); the
             // Painter logs separately when it accepts or rejects it. This is
             // the diagnostic chain we use to debug the cross-monitor
@@ -856,8 +876,8 @@ impl eframe::App for ImageViewerApp {
                  monitor={:?} hdr_supported={:?} native_surface_enabled={}",
                 self.hdr_target_format,
                 desired_format,
-                self.hdr_monitor_state.selection().map(|s| s.label.as_str()),
-                self.hdr_monitor_state.selection().map(|s| s.hdr_supported),
+                effective_monitor.as_ref().map(|s| s.label.as_str()),
+                effective_monitor.as_ref().map(|s| s.hdr_supported),
                 self.settings.hdr_native_surface_enabled_effective(),
             );
             self.requested_target_format.request(desired_format);

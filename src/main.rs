@@ -904,6 +904,7 @@ fn main() -> eframe::Result {
     let requested_target_format = eframe::egui_wgpu::RequestedSurfaceFormat::new();
     let requested_rgb10a2_pq_encode = eframe::egui_wgpu::RequestedRgb10a2PqEncode::new();
     let gamma22_display_scale = eframe::egui_wgpu::Gamma22DisplayScale::new();
+    let vulkan_wsi_hdr_gates = eframe::egui_wgpu::VulkanWsiHdrGatesMailbox::new();
 
     // Reverse-direction mailbox: the painter publishes the live active
     // swap-chain format here after every successful runtime hot-swap. We
@@ -974,6 +975,7 @@ fn main() -> eframe::Result {
             active_target_format: active_target_format.clone(),
             requested_rgb10a2_pq_encode: requested_rgb10a2_pq_encode.clone(),
             gamma22_display_scale: gamma22_display_scale.clone(),
+            vulkan_wsi_hdr_gates: vulkan_wsi_hdr_gates.clone(),
             ..Default::default()
         },
         // Dithering assumes SDR gamma-space output. Leave it off when we ask
@@ -1005,6 +1007,7 @@ fn main() -> eframe::Result {
                 active_target_format,
                 requested_rgb10a2_pq_encode,
                 gamma22_display_scale,
+                vulkan_wsi_hdr_gates,
                 initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)
         }),

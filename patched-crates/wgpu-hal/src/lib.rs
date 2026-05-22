@@ -267,6 +267,10 @@ pub mod vulkan;
 #[cfg(all(target_os = "linux", vulkan))]
 pub mod linux_swapchain;
 
+/// Linux Vulkan WSI `(format, color_space)` diagnostics for HDR migration.
+#[cfg(all(target_os = "linux", vulkan))]
+pub use vulkan::linux_surface_probe;
+
 pub mod auxil;
 pub mod api {
     #[cfg(dx12)]

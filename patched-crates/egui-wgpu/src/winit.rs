@@ -121,6 +121,13 @@ impl Painter {
             .surface
             .configure(&render_state.device, &surf_config);
 
+        #[cfg(target_os = "linux")]
+        crate::vulkan_hdr::linux_log_vulkan_hdr_surface_probe_once(
+            &surface_state.surface,
+            &render_state.adapter,
+            &config.vulkan_wsi_hdr_gates,
+        );
+
         // Windows: keep the DXGI swap-chain color space in sync with the
         // configured format. wgpu-hal uses `IDXGISwapChain::ResizeBuffers`
         // to apply format changes, and ResizeBuffers does **not** touch the

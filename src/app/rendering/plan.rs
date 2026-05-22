@@ -102,7 +102,7 @@ impl ImageViewerApp {
             has_hdr_plane,
             has_sdr_fallback,
             self.hdr_target_format,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         )
     }
 }

@@ -363,10 +363,6 @@ impl Settings {
         self.hdr_native_surface_enabled
     }
 
-    pub fn hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
-        self.hdr_tone_map_settings_for_monitor(None)
-    }
-
     /// Applies probed panel peak luminance when available so native HDR output
     /// is scaled to the active display rather than a generic 1000 nit default.
     pub fn hdr_tone_map_settings_for_monitor(
@@ -533,7 +529,7 @@ mod tests {
             ..Settings::default()
         };
 
-        let tone_map = settings.hdr_tone_map_settings();
+        let tone_map = settings.hdr_tone_map_settings_for_monitor(None);
 
         assert_eq!(tone_map.sdr_white_nits, 300.0);
         assert_eq!(tone_map.max_display_nits, 300.0);
@@ -554,7 +550,7 @@ mod tests {
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Wayland wp_color_management"),
             native_surface_encoding: Some(
-                crate::hdr::monitor::HdrNativeSurfaceEncoding::Gamma22Electrical,
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10,
             ),
         };
 

@@ -38,6 +38,63 @@ pub fn linux_rgb10a2_uses_hdr10_st2084(_format: wgpu::TextureFormat) -> bool {
     false
 }
 
+/// Log raw Vulkan WSI surface `(format, color_space)` pairs once per process.
+#[cfg(target_os = "linux")]
+pub fn linux_log_vulkan_hdr_surface_probe_once(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    gates: &crate::VulkanWsiHdrGatesMailbox,
+) {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    if LOGGED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if adapter.get_info().backend != wgpu::Backend::Vulkan {
+        log::info!(
+            "[HDR] Vulkan WSI surface probe skipped: backend={:?}",
+            adapter.get_info().backend
+        );
+        return;
+    }
+
+    let result = (|| {
+        // SAFETY: hal handles are valid for the duration of the wgpu objects.
+        let hal_surface = unsafe { surface.as_hal::<wgpu::hal::api::Vulkan>() }
+            .ok_or("wgpu::Surface::as_hal<Vulkan> returned None")?;
+        let hal_adapter = unsafe { adapter.as_hal::<wgpu::hal::api::Vulkan>() }
+            .ok_or("wgpu::Adapter::as_hal<Vulkan> returned None")?;
+        wgpu_hal::linux_surface_probe::probe_hdr_surface(&hal_adapter, &hal_surface)
+    })();
+
+    match result {
+        Ok(probe) => {
+            log::info!(
+                "[HDR] Vulkan WSI surface probe: wgpu_adapter={}",
+                adapter.get_info().name
+            );
+            wgpu_hal::linux_surface_probe::log_hdr_surface_probe(&probe);
+            gates.set(crate::VulkanWsiHdrGates {
+                hdr10_st2084_rgb10a2: probe.hdr10_st2084_rgb10a2,
+                extended_srgb_linear_rgba16f: probe.extended_srgb_linear_rgba16f,
+                probed: true,
+            });
+        }
+        Err(err) => {
+            log::warn!("[HDR] Vulkan WSI surface probe failed: {err}");
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn linux_log_vulkan_hdr_surface_probe_once(
+    _surface: &wgpu::Surface<'_>,
+    _adapter: &wgpu::Adapter,
+    _gates: &crate::VulkanWsiHdrGatesMailbox,
+) {
+}
+
 /// Default HDR10 metadata when the monitor probe has not yet supplied values.
 #[derive(Debug, Clone, Copy)]
 pub struct VulkanHdrMetadata {
