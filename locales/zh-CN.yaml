@@ -69,6 +69,7 @@ hdr.sdr_white_hint: "主要影响 SDR 色调映射输出和 Ultra HDR/JPEG_R 解
 hdr.max_display_hint: "主要影响 SDR 色调映射输出和 Ultra HDR/JPEG_R 解码容量；原生 HDR 的 EXR/Radiance 输出变化可能较小。"
 hdr.native_surface_enabled: "请求原生 HDR 表面"
 hdr.native_surface_restart_hint: "重启后生效；如果 HDR 模式下界面颜色异常，可关闭此项。"
+hdr.wayland_only_hint: "原生 HDR 显示需要 Wayland 会话，且混排器已启用 HDR。"
 hdr.render_path.float_plane: "图像平面"
 hdr.render_path.float_tile_plane: "瓦片平面"
 hdr.render_path.sdr_fallback: "SDR 回退"

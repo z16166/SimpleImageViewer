@@ -1030,6 +1030,20 @@ fn draw_settings_right_col(
             ui.add_space(8.0);
             draw_hdr_section(app, ui);
         }
+        #[cfg(target_os = "linux")]
+        {
+            if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+                ui.add_space(8.0);
+                draw_hdr_section(app, ui);
+            } else {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(t!("hdr.wayland_only_hint"))
+                        .color(app.cached_palette.text_muted)
+                        .small(),
+                );
+            }
+        }
     });
 }
 

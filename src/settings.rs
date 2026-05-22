@@ -156,8 +156,8 @@ pub struct Settings {
     pub raw_high_quality: bool,
 
     // HDR tone mapping
-    /// Request a native HDR swap chain (Windows scRGB / macOS EDR). Ignored on Linux: use
-    /// [`Settings::hdr_native_surface_enabled_effective`] for runtime behavior.
+    /// Request a native HDR swap chain (Windows scRGB / macOS EDR / Wayland HDR10).
+    /// On Linux X11 this is ignored; use [`Settings::hdr_native_surface_enabled_effective`].
     #[serde(default = "default_hdr_native_surface_enabled")]
     pub hdr_native_surface_enabled: bool,
     #[serde(default)]
@@ -201,12 +201,9 @@ fn default_true() -> bool {
 }
 
 fn default_hdr_native_surface_enabled() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        false
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
+    if cfg!(target_os = "linux") {
+        crate::hdr::platform::linux_native_hdr_platform_eligible()
+    } else {
         true
     }
 }
@@ -353,18 +350,17 @@ pub fn settings_path() -> PathBuf {
 }
 
 impl Settings {
-    /// Native HDR swap-chain requests (runtime). Always `false` on Linux — we only tone-map to
-    /// SDR there; the stored [`Settings::hdr_native_surface_enabled`] is clamped on load/save.
+    /// Native HDR swap-chain requests (runtime). False on Linux X11; on Linux Wayland
+    /// follows [`Settings::hdr_native_surface_enabled`].
     #[inline]
     pub fn hdr_native_surface_enabled_effective(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            false
+            if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+                return false;
+            }
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            self.hdr_native_surface_enabled
-        }
+        self.hdr_native_surface_enabled
     }
 
     pub fn hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
@@ -399,10 +395,13 @@ impl Settings {
                     };
                     #[cfg(target_os = "linux")]
                     {
-                        return Self {
-                            hdr_native_surface_enabled: false,
-                            ..merged
-                        };
+                        if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+                            return Self {
+                                hdr_native_surface_enabled: false,
+                                ..merged
+                            };
+                        }
+                        return merged;
                     }
                     #[cfg(not(target_os = "linux"))]
                     {
@@ -421,7 +420,9 @@ impl Settings {
             #[cfg(target_os = "linux")]
             {
                 let mut s = self.clone();
-                s.hdr_native_surface_enabled = false;
+                if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+                    s.hdr_native_surface_enabled = false;
+                }
                 s
             }
             #[cfg(not(target_os = "linux"))]
@@ -460,29 +461,31 @@ mod tests {
         let settings = Settings::default();
 
         #[cfg(target_os = "linux")]
-        assert!(!settings.hdr_native_surface_enabled);
+        {
+            assert_eq!(
+                settings.hdr_native_surface_enabled,
+                crate::hdr::platform::linux_native_hdr_platform_eligible()
+            );
+        }
         #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
     }
 
     #[test]
-    fn hdr_native_surface_enabled_effective_is_false_on_linux_even_if_storage_true() {
+    fn hdr_native_surface_enabled_effective_respects_linux_session() {
+        let settings = Settings {
+            hdr_native_surface_enabled: true,
+            ..Settings::default()
+        };
         #[cfg(target_os = "linux")]
         {
-            let settings = Settings {
-                hdr_native_surface_enabled: true,
-                ..Settings::default()
-            };
-            assert!(!settings.hdr_native_surface_enabled_effective());
+            assert_eq!(
+                settings.hdr_native_surface_enabled_effective(),
+                crate::hdr::platform::linux_native_hdr_platform_eligible()
+            );
         }
         #[cfg(not(target_os = "linux"))]
-        {
-            let settings = Settings {
-                hdr_native_surface_enabled: true,
-                ..Settings::default()
-            };
-            assert!(settings.hdr_native_surface_enabled_effective());
-        }
+        assert!(settings.hdr_native_surface_enabled_effective());
     }
 
     #[test]
@@ -490,7 +493,10 @@ mod tests {
         let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
 
         #[cfg(target_os = "linux")]
-        assert!(!settings.hdr_native_surface_enabled);
+        assert_eq!(
+            settings.hdr_native_surface_enabled,
+            crate::hdr::platform::linux_native_hdr_platform_eligible()
+        );
         #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
     }
