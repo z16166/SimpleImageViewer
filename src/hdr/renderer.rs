@@ -167,6 +167,16 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
     return rgb / (vec3<f32>(1.0) + rgb);
 }
 
+fn reinhard_tone_map_luminance_preserved(rgb: vec3<f32>) -> vec3<f32> {
+    // Rec.709 luma; matches default OpenEXR `computeYw` for BT.709 chromaticities.
+    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    if (luma <= 1e-8) {
+        return vec3<f32>(0.0);
+    }
+    let mapped_luma = luma / (1.0 + luma);
+    return rgb * (mapped_luma / luma);
+}
+
 fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
     let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
     return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
@@ -361,7 +371,7 @@ fn encode_scene_linear_kwin_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -
     let display_scale =
         settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
     let scrgb = sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
-    let mapped = reinhard_tone_map(scrgb);
+    let mapped = reinhard_tone_map_luminance_preserved(scrgb);
     let peak_linear = mapped * display_scale;
     return gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
 }
@@ -2053,7 +2063,8 @@ mod tests {
     #[test]
     fn scene_linear_gamma22_tone_maps_in_scrgb_before_peak_scale() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("let mapped = reinhard_tone_map(scrgb);"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("let mapped = reinhard_tone_map_luminance_preserved(scrgb);"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("let peak_linear = mapped * display_scale;"));
         assert!(
             !HDR_IMAGE_PLANE_SHADER.contains("return encode_sdr(rgb, settings);"),

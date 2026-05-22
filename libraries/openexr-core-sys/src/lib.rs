@@ -297,6 +297,15 @@ unsafe extern "C" {
         path: *const c_char,
         out_rg_bw_xy: *mut f32,
     ) -> c_int;
+
+    /// Flatten a scanline RGBA or Y/Ry/By image via Imf::RgbaInputFile (standard chroma reconstruction).
+    pub fn siv_imf_rgba_input_scanline_flatten_rgba(
+        path: *const c_char,
+        out_rgba: *mut f32,
+        out_len: usize,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    ) -> c_int;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -9,6 +9,7 @@
 #include <OpenEXR/ImfDeepScanLineInputFile.h>
 #include <OpenEXR/ImfFrameBuffer.h>
 #include <OpenEXR/ImfInputFile.h>
+#include <OpenEXR/ImfRgbaFile.h>
 #include <half.h>
 
 #include <algorithm>
@@ -267,5 +268,65 @@ siv_imf_input_file_chromaticities_f32 (const char* path, float* out_rg_bw_xy)
     catch (...)
     {
         return -3;
+    }
+}
+
+/// Flatten a luminance/chroma (Y / RY / BY) or RGBA scanline image via Imf::RgbaInputFile.
+/// Applies OpenEXR's standard chroma reconstruction and YCA→RGBA conversion.
+extern "C" int
+siv_imf_rgba_input_scanline_flatten_rgba (
+    const char* path, float* out_rgba, std::size_t out_len, unsigned* out_w, unsigned* out_h)
+{
+    if (!path || !out_rgba || !out_w || !out_h)
+        return -1;
+    *out_w = 0;
+    *out_h = 0;
+
+    try
+    {
+        RgbaInputFile file (path);
+        const Header& header = file.header ();
+        if (header.type () != "scanlineimage")
+            return -4;
+
+        Imath::Box2i dw = header.dataWindow ();
+        int xmin       = dw.min.x;
+        int ymin       = dw.min.y;
+        int width      = dw.max.x - dw.min.x + 1;
+        int height     = dw.max.y - dw.min.y + 1;
+        std::size_t need =
+            static_cast<std::size_t> (width) * static_cast<std::size_t> (height) * 4u;
+        *out_w         = static_cast<unsigned> (width);
+        *out_h         = static_cast<unsigned> (height);
+        if (out_len < need)
+            return -5;
+
+        Array2D<Rgba> pixels (height, width);
+        file.setFrameBuffer (&pixels[-ymin][-xmin], 1, width);
+        file.readPixels (dw.min.y, dw.max.y);
+
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                const Rgba& p = pixels[y][x];
+                std::size_t di =
+                    (static_cast<std::size_t> (y) * static_cast<std::size_t> (width) +
+                     static_cast<std::size_t> (x)) *
+                    4u;
+                out_rgba[di + 0] = halfToFloat (p.r);
+                out_rgba[di + 1] = halfToFloat (p.g);
+                out_rgba[di + 2] = halfToFloat (p.b);
+                out_rgba[di + 3] = halfToFloat (p.a);
+            }
+        }
+
+        *out_w = static_cast<unsigned> (width);
+        *out_h = static_cast<unsigned> (height);
+        return 0;
+    }
+    catch (...)
+    {
+        return -2;
     }
 }
