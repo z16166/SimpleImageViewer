@@ -49,11 +49,28 @@ pub(crate) struct OpenExrCoreReadContext {
 unsafe impl Send for OpenExrCoreReadContext {}
 unsafe impl Sync for OpenExrCoreReadContext {}
 
+fn imf_mmap_for_path(path: &Path) -> Result<Mmap, String> {
+    crate::mmap_util::map_file(path)
+}
+
+fn imf_debug_name_cstr(path: &Path) -> Option<CString> {
+    sys::imf_io::path_utf8_cstr(path).ok()
+}
+
 fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> {
-    let filename = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    let mmap = imf_mmap_for_path(path).ok()?;
+    let debug = imf_debug_name_cstr(path);
     let mut out = [0.0_f32; 8];
-    let code =
-        unsafe { sys::siv_imf_input_file_chromaticities_f32(filename.as_ptr(), out.as_mut_ptr()) };
+    let code = unsafe {
+        sys::siv_imf_input_file_chromaticities_f32_bytes(
+            mmap.as_ptr().cast::<c_void>(),
+            mmap.len(),
+            debug
+                .as_ref()
+                .map_or(ptr::null(), |label| label.as_ptr()),
+            out.as_mut_ptr(),
+        )
+    };
     (code == 0).then_some(out)
 }
 
@@ -126,14 +143,18 @@ pub(crate) fn deep_scanline_flatten_rgba_via_imf(
     expected_w: u32,
     expected_h: u32,
 ) -> Result<Vec<f32>, String> {
-    let filename = CString::new(path.to_string_lossy().as_bytes())
-        .map_err(|_| format!("EXR path contains an interior NUL: {}", path.display()))?;
+    let mmap = imf_mmap_for_path(path)?;
+    let debug = imf_debug_name_cstr(path);
     let mut rgba = vec![0.0_f32; expected_w as usize * expected_h as usize * 4];
     let mut w = 0u32;
     let mut h = 0u32;
     let code = unsafe {
-        sys::siv_imf_deep_scanline_flatten_rgba(
-            filename.as_ptr(),
+        sys::siv_imf_deep_scanline_flatten_rgba_bytes(
+            mmap.as_ptr().cast::<c_void>(),
+            mmap.len(),
+            debug
+                .as_ref()
+                .map_or(ptr::null(), |label| label.as_ptr()),
             rgba.as_mut_ptr(),
             rgba.len(),
             &mut w,
@@ -182,14 +203,18 @@ pub(crate) fn is_luminance_chroma_scanline_part(part: &OpenExrCorePartInfo) -> b
 }
 
 pub(crate) fn rgba_input_scanline_flatten_rgba_via_imf(path: &Path) -> Result<Vec<f32>, String> {
-    let filename = CString::new(path.to_string_lossy().as_bytes())
-        .map_err(|_| format!("EXR path contains an interior NUL: {}", path.display()))?;
+    let mmap = imf_mmap_for_path(path)?;
+    let debug = imf_debug_name_cstr(path);
     let mut rgba = vec![0.0_f32; 4];
     let mut w = 0u32;
     let mut h = 0u32;
     let mut code = unsafe {
-        sys::siv_imf_rgba_input_scanline_flatten_rgba(
-            filename.as_ptr(),
+        sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
+            mmap.as_ptr().cast::<c_void>(),
+            mmap.len(),
+            debug
+                .as_ref()
+                .map_or(ptr::null(), |label| label.as_ptr()),
             rgba.as_mut_ptr(),
             rgba.len(),
             &mut w,
@@ -200,8 +225,12 @@ pub(crate) fn rgba_input_scanline_flatten_rgba_via_imf(path: &Path) -> Result<Ve
         let need = w as usize * h as usize * 4;
         rgba = vec![0.0_f32; need];
         code = unsafe {
-            sys::siv_imf_rgba_input_scanline_flatten_rgba(
-                filename.as_ptr(),
+            sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
+                mmap.as_ptr().cast::<c_void>(),
+                mmap.len(),
+                debug
+                    .as_ref()
+                    .map_or(ptr::null(), |label| label.as_ptr()),
                 rgba.as_mut_ptr(),
                 rgba.len(),
                 &mut w,
@@ -475,8 +504,8 @@ fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrContextInitial
 
 impl OpenExrCoreReadContext {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let filename = CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| format!("EXR path contains an interior NUL: {}", path.display()))?;
+        let filename = sys::imf_io::path_utf8_cstr(path)
+            .map_err(|err| format!("{err} for {}", path.display()))?;
 
         let mut raw = ptr::null_mut();
 
@@ -1919,16 +1948,133 @@ fn exr_result(result: sys::ExrResult) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use crate::hdr::types::HdrColorSpace;
+    use openexr_core_sys as sys;
+    use std::path::PathBuf;
+
+    fn openexr_images_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
+            .or_else(|| {
+                Some(PathBuf::from(
+                    "/home/happy/Downloads/HDR/openexr-images",
+                ))
+            })
+            .filter(|path| path.is_dir())
+    }
+
+    #[test]
+    fn imf_bytes_entry_points_reject_empty_or_null_input() {
+        let mut rgba = 0.0_f32;
+        let mut w = 0u32;
+        let mut h = 0u32;
+        let mut chroma = [0.0_f32; 8];
+
+        assert_eq!(
+            unsafe {
+                sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    &mut rgba,
+                    1,
+                    &mut w,
+                    &mut h,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            unsafe {
+                sys::siv_imf_deep_scanline_flatten_rgba_bytes(
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    &mut rgba,
+                    1,
+                    &mut w,
+                    &mut h,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            unsafe {
+                sys::siv_imf_input_file_chromaticities_f32_bytes(
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    chroma.as_mut_ptr(),
+                )
+            },
+            -1
+        );
+    }
+
+    #[test]
+    fn imf_deep_scanline_flatten_when_corpus_present() {
+        let Some(root) = openexr_images_root() else {
+            eprintln!("skipping IMF deep flatten test; set SIV_OPENEXR_IMAGES_DIR");
+            return;
+        };
+        let path = root.join("v2/LowResLeftView/Balls.exr");
+        if !path.is_file() {
+            eprintln!(
+                "skipping IMF deep flatten test; missing {}",
+                path.display()
+            );
+            return;
+        }
+
+        let ctx = super::OpenExrCoreReadContext::open(&path).expect("open exr");
+        let part = ctx.part(0).expect("part 0");
+        assert_eq!(part.storage, sys::EXR_STORAGE_DEEP_SCANLINE);
+
+        let flat = super::deep_scanline_flatten_rgba_via_imf(&path, part.width, part.height)
+            .expect("imf deep flatten");
+        assert_eq!(
+            flat.len(),
+            part.width as usize * part.height as usize * 4,
+            "flatten buffer size"
+        );
+        assert!(
+            flat.iter().all(|value| value.is_finite()),
+            "deep flatten output must be finite"
+        );
+        assert!(
+            flat.chunks_exact(4).any(|px| px[0] > 0.0 || px[1] > 0.0 || px[2] > 0.0),
+            "deep flatten should contain non-black RGB"
+        );
+    }
+
+    #[test]
+    fn imf_rgba_scanline_flatten_supports_utf8_path_via_mmap_when_corpus_present() {
+        let Some(root) = openexr_images_root() else {
+            return;
+        };
+        let path = root.join("LuminanceChroma/Flowers.exr");
+        if !path.is_file() {
+            return;
+        }
+        let label = sys::imf_io::path_utf8_cstr(&path).expect("utf8 label");
+        assert!(label.to_str().expect("label").contains("Flowers.exr"));
+        let flat = super::rgba_input_scanline_flatten_rgba_via_imf(&path).expect("flatten");
+        assert!(!flat.is_empty());
+        assert!(flat.iter().all(|v| v.is_finite()));
+    }
 
     #[test]
     fn carrots_exr_chromaticities_and_preview_stats_when_corpus_present() {
-        let path = std::path::Path::new(r"F:\HDR\openexr-images\ScanLines\Carrots.exr");
-        if !path.exists() {
+        let Some(root) = openexr_images_root() else {
+            return;
+        };
+        let path = root.join("ScanLines/Carrots.exr");
+        if !path.is_file() {
             return;
         }
-        let ch = super::imf_exr_chromaticities_from_path(path);
-        let cs = super::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(path);
-        let ctx = super::OpenExrCoreReadContext::open(path).expect("openexr core");
+        let ch = super::imf_exr_chromaticities_from_path(&path);
+        let cs = super::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(&path);
+        let ctx = super::OpenExrCoreReadContext::open(&path).expect("openexr core");
         let preview = ctx
             .extract_scanline_rgba32f_preview_nearest(0, 64, 64)
             .expect("preview");
@@ -2238,14 +2384,15 @@ mod tests {
 
     #[test]
     fn luminance_chroma_exr_decodes_via_imf_rgba_input_when_corpus_present() {
-        for path in [
-            "/home/happy/Downloads/HDR/openexr-images/LuminanceChroma/Flowers.exr",
-            "/home/happy/Downloads/HDR/openexr-images/LuminanceChroma/MtTamNorth.exr",
-        ] {
-            let path = std::path::Path::new(path);
-            if !path.exists() {
+        let Some(root) = openexr_images_root() else {
+            return;
+        };
+        for relative in ["LuminanceChroma/Flowers.exr", "LuminanceChroma/MtTamNorth.exr"] {
+            let path = root.join(relative);
+            if !path.is_file() {
                 continue;
             }
+            let path = path.as_path();
             let ctx = super::OpenExrCoreReadContext::open(path).expect("open exr");
             let part = ctx.part(0).expect("part 0");
             assert!(
