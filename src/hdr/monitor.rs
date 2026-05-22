@@ -21,6 +21,9 @@ use eframe::egui;
 use super::renderer::HdrRenderOutputMode;
 use super::types::HdrOutputMode;
 
+#[cfg(target_os = "linux")]
+mod wayland;
+
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
@@ -284,6 +287,8 @@ pub fn effective_capability_output_mode(
                 HdrOutputMode::WindowsScRgb
             } else if cfg!(target_os = "macos") {
                 HdrOutputMode::MacOsEdr
+            } else if cfg!(target_os = "linux") {
+                HdrOutputMode::WaylandHdr
             } else {
                 HdrOutputMode::SdrToneMapped
             }
@@ -316,7 +321,18 @@ pub fn active_monitor_hdr_status(
     macos_active_monitor_hdr_status()
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn active_monitor_hdr_status(
+    viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        wayland::active_monitor_hdr_status(viewport_outer_rect_screen_px)
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn active_monitor_hdr_status(
     _viewport_outer_rect_screen_px: Option<[i32; 4]>,
 ) -> Result<HdrMonitorSelection, String> {
@@ -650,7 +666,17 @@ pub fn any_active_output_supports_hdr() -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn any_active_output_supports_hdr() -> Result<bool, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        Err("pre-creation HDR availability probing is not yet implemented on Linux Wayland".to_string())
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[allow(dead_code)]
 pub fn any_active_output_supports_hdr() -> Result<bool, String> {
     Err("pre-creation HDR availability probing is only implemented on Windows".to_string())
@@ -795,7 +821,25 @@ pub fn spawn_monitor_hdr_status(
     Err("spawn monitor was not matched to any DXGI output".to_string())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn spawn_monitor_hdr_status(
+    saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        wayland::spawn_monitor_hdr_status(saved_window_top_left)
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn spawn_monitor_hdr_status(
+    _saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
+    Err("spawn-monitor HDR probing is only implemented on Windows".to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn spawn_monitor_hdr_status(
     _saved_window_top_left: Option<[i32; 2]>,
 ) -> Result<SpawnMonitorHdrProbe, String> {
@@ -1120,6 +1164,27 @@ mod tests {
             ),
             HdrOutputMode::MacOsEdr
         );
+    }
+
+    #[test]
+    fn linux_wayland_eligibility_gates_probe_error_message() {
+        assert!(
+            !crate::hdr::platform::wayland_session_from_display_var(Some(":0")),
+            "X11-style display should not be treated as Wayland"
+        );
+        #[cfg(target_os = "linux")]
+        if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+            let err = active_monitor_hdr_status(None).unwrap_err();
+            assert!(
+                err.contains("Wayland session"),
+                "expected Wayland gate error, got: {err}"
+            );
+            let spawn_err = spawn_monitor_hdr_status(None).unwrap_err();
+            assert!(
+                spawn_err.contains("Wayland session"),
+                "expected Wayland gate error, got: {spawn_err}"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

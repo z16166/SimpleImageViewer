@@ -275,6 +275,7 @@ pub enum HdrOutputMode {
     SdrToneMapped,
     WindowsScRgb,
     MacOsEdr,
+    WaylandHdr,
 }
 
 #[allow(dead_code)]

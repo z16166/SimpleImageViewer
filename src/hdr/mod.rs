@@ -26,6 +26,7 @@ pub(crate) mod icc_primaries_lcms;
 pub mod jpegxl;
 pub(crate) mod logluv_decode;
 pub mod monitor;
+pub mod platform;
 pub(crate) mod openexr_core_backend;
 pub mod radiance_tiled;
 pub mod renderer;

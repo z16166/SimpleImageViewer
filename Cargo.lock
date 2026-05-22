@@ -4586,6 +4586,8 @@ dependencies = [
  "ttf-parser",
  "walkdir",
  "wallpaper",
+ "wayland-client",
+ "wayland-protocols",
  "wgpu",
  "winapi",
  "windows 0.58.0",
