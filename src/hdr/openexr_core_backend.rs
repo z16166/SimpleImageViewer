@@ -1336,13 +1336,18 @@ impl OpenExrCoreReadContext {
                             true,
                         );
                         let [wr, wg, wb] = self.exr_luma_weights;
-                        let r = y * (1.0 + ry_ratio);
-                        let b = y * (1.0 + by_ratio);
-                        let g = (y - wr * r - wb * b) / wg;
-
-                        rgba[dest] = r;
-                        rgba[dest + 1] = g;
-                        rgba[dest + 2] = b;
+                        if ry_ratio == 0.0 && by_ratio == 0.0 {
+                            rgba[dest] = y;
+                            rgba[dest + 1] = y;
+                            rgba[dest + 2] = y;
+                        } else {
+                            let r = (ry_ratio + 1.0) * y;
+                            let b = (by_ratio + 1.0) * y;
+                            let g = (y - wr * r - wb * b) / wg;
+                            rgba[dest] = r;
+                            rgba[dest + 1] = g;
+                            rgba[dest + 2] = b;
+                        }
                     } else if r_idx.is_some() || g_idx.is_some() || b_idx.is_some() {
                         rgba[dest] = r_idx
                             .map(|i| {

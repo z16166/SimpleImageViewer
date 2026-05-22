@@ -127,7 +127,7 @@ const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
-/// Must match `HdrColorSpace::DisplayP3Linear as u32`.
+// Must match HdrColorSpace::DisplayP3Linear as u32.
 const INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR: u32 = 6u;
 const INPUT_TRANSFER_LINEAR: u32 = 0u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
@@ -140,7 +140,7 @@ struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
     max_display_nits: f32,
-    /// 1.0 except libavif tone-mapped display-referred linear (matches `encode_sdr` peak scaler).
+    // 1.0 except libavif tone-mapped display-referred linear (matches encode_sdr peak scaler).
     native_display_scale: f32,
     rotation_steps: u32,
     alpha: f32,
@@ -149,7 +149,7 @@ struct ToneMapSettings {
     input_transfer_function: u32,
     input_reference: u32,
     _pad0: u32,
-    /// WGSL aligns `vec2<f32>` to 8 bytes; implicit padding before `uv_min` (Rust needs it explicit).
+    // WGSL aligns vec2<f32> to 8 bytes; implicit padding before uv_min.
     _wgsl_pad_before_uv: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
@@ -167,19 +167,29 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
     return rgb / (vec3<f32>(1.0) + rgb);
 }
 
-fn reinhard_tone_map_luminance_preserved(rgb: vec3<f32>) -> vec3<f32> {
-    // Rec.709 luma; matches default OpenEXR `computeYw` for BT.709 chromaticities.
-    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    if (luma <= 1e-8) {
-        return vec3<f32>(0.0);
+fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    // NaN is the only value where `c != c`; clamp finite range (±Inf → ±MAX_FINITE_HDR_VALUE).
+    var safe = rgb;
+    if (safe.r != safe.r) {
+        safe.r = 0.0;
     }
-    let mapped_luma = luma / (1.0 + luma);
-    return rgb * (mapped_luma / luma);
+    if (safe.g != safe.g) {
+        safe.g = 0.0;
+    }
+    if (safe.b != safe.b) {
+        safe.b = 0.0;
+    }
+    return clamp(
+        safe,
+        vec3<f32>(-MAX_FINITE_HDR_VALUE),
+        vec3<f32>(MAX_FINITE_HDR_VALUE),
+    );
 }
 
-fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
-    let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
-    return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
+// Scene/display linear after exposure and optional display-referred peak scaler (libavif capped path).
+fn exposed_linear_rgb(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let exposure_scale = exp2(settings.exposure_ev);
+    return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
 }
 
 fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
@@ -344,49 +354,37 @@ fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
     return pow(num / den, vec3<f32>(m2));
 }
 
+// Scene-referred linear to display-referred before KWin gamma 2.2 OETF (same Reinhard as encode_sdr).
+fn scene_linear_to_display_referred(scrgb: vec3<f32>) -> vec3<f32> {
+    return reinhard_tone_map(scrgb);
+}
+
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // scRGB / Rgba16Float / Rgba32Float native HDR is **linear** (1.0 = SDR white reference).
-    // The OS compositor (Windows scRGB, macOS EDR) maps linear values to the display's actual
-    // luminance. Applying γ2.2 here lifts shadows ~3.4× and washes contrast on physically
-    // non-HDR panels advertising HDR support (conformance `bench_oriented_brg`).
-    let exposure_scale = exp2(settings.exposure_ev);
-    return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
+    // scRGB / EDR: linear (1.0 = SDR white). Compositor tone-maps to panel (Windows / macOS).
+    return exposed_linear_rgb(rgb, settings);
 }
 
 fn encode_native_hdr_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // Wayland HDR10 swap chains store PQ-encoded values in Rgb10a2Unorm.
-    let exposure_scale = exp2(settings.exposure_ev);
-    let linear = sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
-    return display_linear_to_pq(linear, settings);
+    // SMPTE ST 2084 (PQ) for HDR10 swap chains.
+    return display_linear_to_pq(exposed_linear_rgb(rgb, settings), settings);
 }
 
 fn gamma22_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
     return pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
 }
 
-fn encode_scene_linear_kwin_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // Match `hdr_to_sdr_rgba8` for Linear transfer: tone-map in scRGB (1.0 = SDR white),
-    // then map display-referred linear to KWin peak-normalized electrical (gamma 2.2 OETF).
-    let exposure_scale = exp2(settings.exposure_ev);
-    let display_scale =
-        settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
-    let scrgb = sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
-    let mapped = reinhard_tone_map_luminance_preserved(scrgb);
-    let peak_linear = mapped * display_scale;
-    return gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
-}
-
 fn encode_native_hdr_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // KWin performance HDR: compositor advertises gamma 2.2 and applies PQ at KMS.
-    if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR) {
-        return encode_scene_linear_kwin_gamma22(rgb, settings);
-    }
-    let exposure_scale = exp2(settings.exposure_ev);
+    // KWin gamma 2.2 electrical framebuffer: map SDR white to panel peak, then IEC 61966-2-2 OETF.
     let display_scale =
         settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
-    let linear =
-        sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale * display_scale);
-    return gamma22_from_linear_rgb(linear);
+    let exposed = exposed_linear_rgb(rgb, settings);
+    var peak_linear: vec3<f32>;
+    if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR) {
+        peak_linear = scene_linear_to_display_referred(exposed) * display_scale;
+    } else {
+        peak_linear = exposed * display_scale;
+    }
+    return gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
 }
 
 @vertex
@@ -1898,9 +1896,9 @@ mod tests {
     #[test]
     fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("safe.r != safe.r"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("const MAX_FINITE_HDR_VALUE: f32"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE))"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp("));
     }
 
     #[test]
@@ -2061,14 +2059,21 @@ mod tests {
     }
 
     #[test]
-    fn scene_linear_gamma22_tone_maps_in_scrgb_before_peak_scale() {
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("let mapped = reinhard_tone_map_luminance_preserved(scrgb);"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("let peak_linear = mapped * display_scale;"));
+    fn native_hdr_encoders_share_exposed_linear_rgb() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn exposed_linear_rgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("return exposed_linear_rgb(rgb, settings);"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("display_linear_to_pq(exposed_linear_rgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("exposed_linear_rgb(rgb, settings) * display_scale")
+            || HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn scene_linear_to_display_referred"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
         assert!(
-            !HDR_IMAGE_PLANE_SHADER.contains("return encode_sdr(rgb, settings);"),
-            "scene-linear KWin gamma22 must not reuse encode_sdr (pre-scales before Reinhard)"
+            HDR_IMAGE_PLANE_SHADER.contains("if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR)"),
+            "scene-linear needs display-referred mapping before KWin gamma 2.2 OETF"
         );
     }
 

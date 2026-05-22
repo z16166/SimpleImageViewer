@@ -45,8 +45,6 @@ pub struct ExrTiledImageSource {
     storage: i32,
     color_space: HdrColorSpace,
     has_subsampled_channels: bool,
-    /// Luminance/chroma scanline images decoded once via Imf::RgbaInputFile (standard chroma reconstruction).
-    imf_scanline_rgba: Option<Arc<Vec<f32>>>,
     tile_cache: Mutex<HdrTileCache>,
     scanline_band_prefills: Mutex<HashSet<(u32, u32)>>,
     scanline_band_prefills_ready: Condvar,
@@ -95,16 +93,6 @@ impl ExrTiledImageSource {
             crate::hdr::openexr_core_backend::OpenExrCoreReadContext::infer_exr_display_color_space_for_path(
                 path,
             );
-        let imf_scanline_rgba =
-            if crate::hdr::openexr_core_backend::is_luminance_chroma_scanline_part(&part) {
-                Some(Arc::new(
-                    crate::hdr::openexr_core_backend::rgba_input_scanline_flatten_rgba_via_imf(
-                        path,
-                    )?,
-                ))
-            } else {
-                None
-            };
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -115,7 +103,6 @@ impl ExrTiledImageSource {
             storage: part.storage,
             color_space,
             has_subsampled_channels,
-            imf_scanline_rgba,
             tile_cache: Mutex::new(HdrTileCache::new(max_cache_bytes)),
             scanline_band_prefills: Mutex::new(HashSet::new()),
             scanline_band_prefills_ready: Condvar::new(),
@@ -372,29 +359,15 @@ impl HdrTiledSource for ExrTiledImageSource {
 
         let context = exr_file_context("extract EXR HDR tile", &self.path);
         let tile = catch_exr_panic(&context, || {
-            let rgba = if let Some(full) = &self.imf_scanline_rgba {
-                crate::hdr::openexr_core_backend::extract_rgba32f_tile_from_flat_buffer(
-                    full,
-                    self.width,
-                    self.height,
-                    x,
-                    y,
-                    width,
-                    height,
-                )?
-            } else {
-                self.context
-                    .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height)?
-                    .rgba
-            };
-            Ok(rgba)
+            self.context
+                .extract_scanline_rgba32f_tile(self.part_index, x, y, width, height)
         })?;
         let tile = Arc::new(HdrTileBuffer::new_with_metadata(
-            width,
-            height,
+            tile.width,
+            tile.height,
             self.color_space,
             HdrImageMetadata::from_color_space(self.color_space),
-            Arc::new(tile),
+            Arc::new(tile.rgba),
         ));
 
         if let Ok(mut cache) = self.tile_cache.lock() {
