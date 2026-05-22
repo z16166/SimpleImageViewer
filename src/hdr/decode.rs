@@ -347,6 +347,9 @@ fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
 
 /// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).
 ///
+/// SMPTE ST 2084 / BT.2100 PQ reference luminance (10 000 cd/m²).
+const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
+
 /// Normative: **ITU-R BT.2100-3** Table 4 (PQ system reference EOTF); same rational coefficients as
 /// **SMPTE ST 2084** and the HDR plane WGSL in `renderer.rs`.
 pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
@@ -360,6 +363,23 @@ pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> 
     let denominator = (c2 - c3 * code_m2).max(0.000001);
     let absolute_nits = 10000.0 * (numerator / denominator).powf(1.0 / m1);
     absolute_nits / sdr_white_nits.max(1.0)
+}
+
+/// PQ OETF (display-linear nits → non-linear code). Inverse of [`pq_nonlinear_to_display_linear`].
+pub(crate) fn display_linear_nits_to_pq(nits: f32) -> f32 {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    if !nits.is_finite() {
+        return nits;
+    }
+    let normalized = nits.max(0.0) / PQ_REFERENCE_LUMINANCE_NITS;
+    let lm1 = normalized.powf(m1);
+    let num = c1 + c2 * lm1;
+    let den = 1.0 + c3 * lm1;
+    (num / den).powf(m2)
 }
 
 /// BT.2100 HLG OETF inverse (scene linear), matching `hlg_to_scene_linear` in `renderer.rs`.
@@ -596,6 +616,21 @@ mod tests {
         let sdr = hdr_to_sdr_rgba8(&buffer, 16.0).expect("tone map extreme finite buffer");
 
         assert_eq!(sdr, vec![255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
+        let code = super::display_linear_nits_to_pq(203.0);
+        assert!(
+            (code - 0.580_688_88).abs() < 1e-4,
+            "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
+        );
+        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
+        let round_trip = super::pq_nonlinear_to_display_linear(code, 203.0);
+        assert!(
+            (round_trip - 1.0).abs() < 1e-3,
+            "PQ encode/decode round trip for SDR white: expected 1.0, got {round_trip}"
+        );
     }
 
     #[test]

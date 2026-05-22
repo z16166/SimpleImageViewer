@@ -98,12 +98,13 @@ fn display_linear_nits_to_pq(nits: f32) -> f32 {
     const C1: f32 = 3424.0 / 4096.0;
     const C2: f32 = 2413.0 / 128.0;
     const C3: f32 = 2392.0 / 128.0;
+    const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
 
     if !nits.is_finite() {
         return nits;
     }
-    let nits = nits.max(0.0);
-    let lm1 = nits.powf(M1);
+    let normalized = nits.max(0.0) / PQ_REFERENCE_LUMINANCE_NITS;
+    let lm1 = normalized.powf(M1);
     let num = C1 + C2 * lm1;
     let den = 1.0 + C3 * lm1;
     (num / den).powf(M2)
@@ -1489,6 +1490,16 @@ mod clear_color_tests {
         assert!(approx_eq(pq[1], display_linear_nits_to_pq(linear[1])));
         assert!(approx_eq(pq[2], display_linear_nits_to_pq(linear[2])));
         assert_eq!(pq[3], gamma[3]);
+    }
+
+    #[test]
+    fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
+        let code = display_linear_nits_to_pq(203.0);
+        assert!(
+            (code - 0.580_688_88).abs() < 1e-4,
+            "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
+        );
+        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
     }
 
     #[test]

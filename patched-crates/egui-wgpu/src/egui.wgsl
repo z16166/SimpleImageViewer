@@ -61,6 +61,7 @@ fn gamma_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
 
 // Matches `DEFAULT_SDR_WHITE_NITS` in SimpleImageViewer's HDR tone-map settings.
 const EGUI_PQ_SDR_WHITE_NITS: f32 = 203.0;
+const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
 
 fn display_linear_to_pq(rgb: vec3<f32>) -> vec3<f32> {
     let m1 = 2610.0 / 16384.0;
@@ -69,7 +70,8 @@ fn display_linear_to_pq(rgb: vec3<f32>) -> vec3<f32> {
     let c2 = 2413.0 / 128.0;
     let c3 = 2392.0 / 128.0;
     let nits = max(rgb * EGUI_PQ_SDR_WHITE_NITS, vec3<f32>(0.0));
-    let lm1 = pow(nits, vec3<f32>(m1));
+    let normalized = nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS);
+    let lm1 = pow(normalized, vec3<f32>(m1));
     let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
     let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
     return pow(num / den, vec3<f32>(m2));

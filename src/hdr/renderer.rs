@@ -118,6 +118,7 @@ pub const HDR_IMAGE_PLANE_SHADER: &str = r#"
 const MAX_FINITE_HDR_VALUE: f32 = 65504.0;
 // Current SDR fallback approximates standard display gamma encoding.
 const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
+const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
 // Keeps generated UVs inside the texture for the fullscreen triangle edge.
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
@@ -348,7 +349,8 @@ fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
     let c2 = 2413.0 / 128.0;
     let c3 = 2392.0 / 128.0;
     let nits = max(rgb * settings.sdr_white_nits, vec3<f32>(0.0));
-    let lm1 = pow(nits, vec3<f32>(m1));
+    let normalized = nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS);
+    let lm1 = pow(normalized, vec3<f32>(m1));
     let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
     let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
     return pow(num / den, vec3<f32>(m2));
@@ -2054,6 +2056,8 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_PQ"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_pq"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS)"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_GAMMA22"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_gamma22"));
     }
