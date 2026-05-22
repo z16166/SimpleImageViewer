@@ -129,6 +129,7 @@ const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
 /// Must match `HdrColorSpace::DisplayP3Linear as u32`.
 const INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR: u32 = 6u;
+const INPUT_TRANSFER_LINEAR: u32 = 0u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
 const INPUT_TRANSFER_PQ: u32 = 2u;
 const INPUT_TRANSFER_HLG: u32 = 3u;
@@ -353,8 +354,23 @@ fn gamma22_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
     return pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
 }
 
+fn encode_scene_linear_kwin_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // Match `hdr_to_sdr_rgba8` for Linear transfer: tone-map in scRGB (1.0 = SDR white),
+    // then map display-referred linear to KWin peak-normalized electrical (gamma 2.2 OETF).
+    let exposure_scale = exp2(settings.exposure_ev);
+    let display_scale =
+        settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
+    let scrgb = sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
+    let mapped = reinhard_tone_map(scrgb);
+    let peak_linear = mapped * display_scale;
+    return gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
+}
+
 fn encode_native_hdr_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     // KWin performance HDR: compositor advertises gamma 2.2 and applies PQ at KMS.
+    if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR) {
+        return encode_scene_linear_kwin_gamma22(rgb, settings);
+    }
     let exposure_scale = exp2(settings.exposure_ev);
     let display_scale =
         settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
@@ -2032,6 +2048,17 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_GAMMA22"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_gamma22"));
+    }
+
+    #[test]
+    fn scene_linear_gamma22_tone_maps_in_scrgb_before_peak_scale() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("let mapped = reinhard_tone_map(scrgb);"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("let peak_linear = mapped * display_scale;"));
+        assert!(
+            !HDR_IMAGE_PLANE_SHADER.contains("return encode_sdr(rgb, settings);"),
+            "scene-linear KWin gamma22 must not reuse encode_sdr (pre-scales before Reinhard)"
+        );
     }
 
     #[test]
