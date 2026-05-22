@@ -134,6 +134,19 @@ impl Painter {
         // configure restores the expected behavior.
         #[cfg(target_os = "windows")]
         windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
+
+        #[cfg(target_os = "linux")]
+        if let Some(metadata) =
+            crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(render_state.target_format)
+        {
+            crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
+                &surface_state.surface,
+                &render_state.device,
+                &render_state.adapter,
+                render_state.target_format,
+                metadata,
+            );
+        }
     }
 
     /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`]

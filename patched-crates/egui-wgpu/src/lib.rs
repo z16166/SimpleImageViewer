@@ -22,6 +22,7 @@ pub use wgpu;
 mod renderer;
 
 mod setup;
+mod vulkan_hdr;
 
 pub use renderer::*;
 pub use setup::{

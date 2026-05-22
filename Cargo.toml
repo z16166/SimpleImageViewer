@@ -138,6 +138,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [patch.crates-io]
 egui-wgpu = { path = "patched-crates/egui-wgpu" }
+wgpu-hal = { path = "patched-crates/wgpu-hal" }
 alsa-sys = { path = "patched-crates/alsa-sys" }
 # vcpkg-rs 0.2.15 emits rustc-link-lib without `static=` on Linux/macOS; patched crate uses archives + optional LLD (root `build.rs`).
 vcpkg = { path = "patched-crates/vcpkg" }

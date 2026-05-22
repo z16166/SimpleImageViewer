@@ -1187,6 +1187,7 @@ name = "egui-wgpu"
 version = "0.34.2"
 dependencies = [
  "ahash",
+ "ash",
  "bytemuck",
  "document-features",
  "egui",
@@ -5916,8 +5917,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31f8e1a9e7a8512f276f7c62e018c7fa8d60954303fed2e5750114332049193f"
 dependencies = [
  "android_system_properties",
  "arrayvec 0.7.6",
