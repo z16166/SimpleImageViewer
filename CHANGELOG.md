@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.0.7] - 2026-05-22
+
+### Fixed
+- **Windows ARM64 only**: Startup no longer probes the OpenGL/WGL backend during wgpu adapter enumeration (uses DX12/Vulkan only). Fixes a first-launch crash in `strlen` inside GLES/WGL init on native ARM64 Windows and Parallels VMs. x64 Windows is unchanged.
+
+
 ## [2.0.6] - 2026-05-21
 
 ### Fixed

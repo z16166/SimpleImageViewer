@@ -416,6 +416,41 @@ fn startup_log_phase(prev: &mut Instant, t0: Instant, label: &'static str) {
     *prev = now;
 }
 
+/// Backends used for Windows wgpu adapter enumeration at startup.
+///
+/// On **Windows ARM64**, `Backends::all()` also enables GLES/WGL; `wgpu_hal` then calls
+/// `glow::get_parameter_indexed_string`, which can pass null into `strlen` and crash (WoA / VM).
+/// Use `PRIMARY` (DX12 + Vulkan) only — same as normal desktop Windows without the GL fallback.
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+fn windows_wgpu_probe_backends() -> eframe::wgpu::Backends {
+    if let Some(backends) = eframe::wgpu::Backends::from_env() {
+        return backends;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        eframe::wgpu::Backends::PRIMARY
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        eframe::wgpu::Backends::all()
+    }
+}
+
+/// Default instance backends for [`eframe::egui_wgpu::WgpuSetupCreateNew`] on Windows ARM64.
+#[cfg(all(target_os = "windows", target_arch = "aarch64", not(feature = "legacy_win7")))]
+fn apply_windows_arm64_default_wgpu_backends(
+    wgpu_setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew,
+) {
+    if eframe::wgpu::Backends::from_env().is_some() {
+        return;
+    }
+    wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
+    log::info!(
+        "[startup] Windows ARM64: wgpu backends {:?} (OpenGL/WGL disabled)",
+        wgpu_setup.instance_descriptor.backends
+    );
+}
+
 /// Result of the Windows-only wgpu adapter pre-probe (see `spawn_dx12_preprobe_thread`).
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 #[derive(Clone, Copy)]
@@ -431,8 +466,9 @@ fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
     let instance = eframe::wgpu::Instance::new(
         eframe::wgpu::InstanceDescriptor::new_without_display_handle(),
     );
-    let adapters =
-        pollster::block_on(instance.enumerate_adapters(eframe::wgpu::Backends::all()));
+    let probe_backends = windows_wgpu_probe_backends();
+    log::info!("[startup] wgpu dx12 preprobe: enumerate backends {:?}", probe_backends);
+    let adapters = pollster::block_on(instance.enumerate_adapters(probe_backends));
     let enumerate_ms = wgpu_probe_start.elapsed().as_millis() as u128;
 
     let has_real_dx12 = adapters.iter().any(|a| {
@@ -770,6 +806,8 @@ fn main() -> eframe::Result {
     startup_log_phase(&mut prev, startup_t0, "viewport_builder + overrides");
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    #[cfg(all(target_os = "windows", target_arch = "aarch64", not(feature = "legacy_win7")))]
+    apply_windows_arm64_default_wgpu_backends(&mut wgpu_setup);
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
         let info = adapter.get_info();
         log::info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
