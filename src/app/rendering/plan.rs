@@ -102,7 +102,7 @@ impl ImageViewerApp {
             has_hdr_plane,
             has_sdr_fallback,
             self.hdr_target_format,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         )
     }
 }
@@ -123,7 +123,7 @@ pub(crate) fn select_render_backend(
     has_hdr_target: bool,
     output_mode: HdrRenderOutputMode,
 ) -> PlaneBackendKind {
-    if has_hdr_plane && has_hdr_target && output_mode == HdrRenderOutputMode::NativeHdr {
+    if has_hdr_plane && has_hdr_target && output_mode.is_native_hdr() {
         PlaneBackendKind::Hdr
     } else if has_hdr_plane && !has_sdr_fallback {
         PlaneBackendKind::Hdr
@@ -242,6 +242,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
         };
         let hdr_monitor = crate::hdr::monitor::HdrMonitorSelection {
             hdr_supported: true,
@@ -250,6 +251,9 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
+            native_surface_encoding: Some(
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+            ),
         };
 
         let sdr_plan = super::build_render_plan_for_state(

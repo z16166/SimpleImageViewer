@@ -20,13 +20,26 @@ pub enum HdrSurfaceSelection {
     Unavailable { reason: &'static str },
 }
 
+const LINUX_WAYLAND_HDR_FORMATS: &[wgpu::TextureFormat] = &[
+    wgpu::TextureFormat::Rgb10a2Unorm,
+    wgpu::TextureFormat::Rgba16Float,
+];
+
 pub fn choose_native_hdr_surface_format(formats: &[wgpu::TextureFormat]) -> HdrSurfaceSelection {
-    for preferred in [
-        wgpu::TextureFormat::Rgba16Float,
-        wgpu::TextureFormat::Rgba32Float,
-    ] {
-        if formats.contains(&preferred) {
-            return HdrSurfaceSelection::NativeHdr(preferred);
+    if cfg!(target_os = "linux") {
+        for preferred in LINUX_WAYLAND_HDR_FORMATS {
+            if formats.contains(preferred) {
+                return HdrSurfaceSelection::NativeHdr(*preferred);
+            }
+        }
+    } else {
+        for preferred in [
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureFormat::Rgba32Float,
+        ] {
+            if formats.contains(&preferred) {
+                return HdrSurfaceSelection::NativeHdr(preferred);
+            }
         }
     }
 
@@ -38,6 +51,9 @@ pub fn choose_native_hdr_surface_format(formats: &[wgpu::TextureFormat]) -> HdrS
 pub fn preferred_native_hdr_target_format_for_platform() -> Option<wgpu::TextureFormat> {
     if cfg!(any(target_os = "windows", target_os = "macos")) {
         Some(wgpu::TextureFormat::Rgba16Float)
+    } else if cfg!(target_os = "linux") && crate::hdr::platform::linux_native_hdr_platform_eligible()
+    {
+        Some(wgpu::TextureFormat::Rgb10a2Unorm)
     } else {
         None
     }
@@ -115,6 +131,9 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_full_frame_luminance_nits: None,
                 max_hdr_capacity: None,
                 hdr_capacity_source: Some("spawn DXGI probe"),
+                native_surface_encoding: Some(
+                    crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+                ),
             })
         }
         HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
@@ -125,6 +144,7 @@ pub fn initial_monitor_selection_from_environment_probe(
                 max_full_frame_luminance_nits: None,
                 max_hdr_capacity: None,
                 hdr_capacity_source: None,
+                native_surface_encoding: None,
             })
         }
         HdrEnvironmentProbe::ProbeUnavailable => None,
@@ -190,13 +210,14 @@ pub fn preferred_native_hdr_target_format_for_environment(
 /// Decision tree (matches the existing [`crate::hdr::monitor::effective_render_output_mode`]
 /// gate so the swap-chain format and the renderer's HDR/SDR path always agree):
 /// 1. User disabled HDR native presentation → `Some(Bgra8Unorm)`.
-/// 2. Platform doesn't support native HDR (Linux today) → `Some(Bgra8Unorm)`.
+/// 2. Platform doesn't support native HDR (Linux X11) → `Some(Bgra8Unorm)`.
 /// 3. Active monitor probe is missing → `None` (keep whatever spawn-time
 ///    decided; do not thrash).
 /// 4. Active monitor reports `hdr_supported = false` → `Some(Bgra8Unorm)`;
 ///    we never want to drive scRGB onto an SDR panel.
-/// 5. Active monitor reports `hdr_supported = true` → `Some(<platform float
-///    format>)` — `Rgba16Float` on Windows / macOS.
+/// 5. Active monitor reports `hdr_supported = true` → `Some(<platform HDR
+///    format>)` — `Rgba16Float` on Windows / macOS, `Rgb10a2Unorm` on Linux
+///    Wayland.
 pub fn desired_target_format_for_active_monitor(
     native_surface_enabled: bool,
     selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
@@ -250,7 +271,7 @@ pub fn native_hdr_surface_blocker(format: Option<wgpu::TextureFormat>) -> Option
 
 #[cfg(test)]
 mod tests {
-    use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::monitor::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
     use crate::hdr::surface::{
         HdrEnvironmentProbe, HdrSurfaceSelection, choose_native_hdr_surface_format,
         desired_target_format_for_active_monitor, initial_monitor_selection_from_environment_probe,
@@ -265,6 +286,7 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("test"),
+            native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
         }
     }
 
@@ -276,6 +298,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
         }
     }
 
@@ -362,12 +385,43 @@ mod tests {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[test]
     fn desired_target_format_stays_sdr_on_platforms_without_native_hdr() {
-        // Linux currently has no shipping native HDR presentation in wgpu —
-        // we must not request `Rgba16Float` even when the monitor reports HDR.
+        if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+            return;
+        }
+        // Linux X11 has no shipping native HDR presentation in wgpu —
+        // we must not request an HDR swap chain even when the monitor reports HDR.
         let hdr = hdr_selection();
         assert_eq!(
             desired_target_format_for_active_monitor(true, Some(&hdr)),
             Some(wgpu::TextureFormat::Bgra8Unorm)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn desired_target_format_returns_rgb10a2_on_hdr_monitor_when_wayland_eligible() {
+        if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+            return;
+        }
+        let hdr = hdr_selection();
+        assert_eq!(
+            desired_target_format_for_active_monitor(true, Some(&hdr)),
+            Some(wgpu::TextureFormat::Rgb10a2Unorm)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prefers_rgb10a2_for_linux_wayland_native_hdr_surface() {
+        let selection = choose_native_hdr_surface_format(&[
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureFormat::Rgb10a2Unorm,
+        ]);
+
+        assert_eq!(
+            selection,
+            HdrSurfaceSelection::NativeHdr(wgpu::TextureFormat::Rgb10a2Unorm)
         );
     }
 
@@ -410,6 +464,12 @@ mod tests {
             native_hdr_surface_blocker(Some(wgpu::TextureFormat::Rgba16Float)),
             None
         );
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                native_hdr_surface_blocker(Some(wgpu::TextureFormat::Rgb10a2Unorm)),
+                None
+            );
+        }
     }
 
     #[test]
@@ -423,9 +483,13 @@ mod tests {
     }
 
     #[test]
-    fn platform_native_hdr_request_is_limited_to_windows_and_macos() {
+    fn platform_native_hdr_request_respects_os_and_session() {
         let expected = if cfg!(any(target_os = "windows", target_os = "macos")) {
             Some(wgpu::TextureFormat::Rgba16Float)
+        } else if cfg!(target_os = "linux")
+            && crate::hdr::platform::linux_native_hdr_platform_eligible()
+        {
+            Some(wgpu::TextureFormat::Rgb10a2Unorm)
         } else {
             None
         };

@@ -599,6 +599,38 @@ mod tests {
     }
 
     #[test]
+    fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
+        fn display_linear_nits_to_pq(nits: f32) -> f32 {
+            const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
+            let m1 = 2610.0 / 16384.0;
+            let m2 = 2523.0 / 32.0;
+            let c1 = 3424.0 / 4096.0;
+            let c2 = 2413.0 / 128.0;
+            let c3 = 2392.0 / 128.0;
+            if !nits.is_finite() {
+                return nits;
+            }
+            let normalized = nits.max(0.0) / PQ_REFERENCE_LUMINANCE_NITS;
+            let lm1 = normalized.powf(m1);
+            let num = c1 + c2 * lm1;
+            let den = 1.0 + c3 * lm1;
+            (num / den).powf(m2)
+        }
+
+        let code = display_linear_nits_to_pq(203.0);
+        assert!(
+            (code - 0.580_688_88).abs() < 1e-4,
+            "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
+        );
+        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
+        let round_trip = super::pq_nonlinear_to_display_linear(code, 203.0);
+        assert!(
+            (round_trip - 1.0).abs() < 1e-3,
+            "PQ encode/decode round trip for SDR white: expected 1.0, got {round_trip}"
+        );
+    }
+
+    #[test]
     fn pq_transfer_eotf_and_rec2020_matrix_produce_reasonable_sdr_fallback() {
         let mut meta = HdrImageMetadata::default();
         meta.transfer_function = HdrTransferFunction::Pq;

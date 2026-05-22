@@ -8,12 +8,41 @@ use wgpu::util::DeviceExt as _;
 
 pub fn egui_framebuffer_shader_entry_point(
     output_color_format: wgpu::TextureFormat,
+    rgb10a2_pq_framebuffer: bool,
 ) -> &'static str {
-    if egui_framebuffer_expects_linear_writes(output_color_format) {
+    if output_color_format == wgpu::TextureFormat::Rgb10a2Unorm && rgb10a2_pq_framebuffer {
+        "fs_main_pq_framebuffer"
+    } else if output_color_format == wgpu::TextureFormat::Rgb10a2Unorm {
+        "fs_main_gamma22_hdr_framebuffer"
+    } else if egui_framebuffer_expects_linear_writes(output_color_format) {
         "fs_main_linear_framebuffer"
     } else {
         "fs_main_gamma_framebuffer"
     }
+}
+
+/// Diffuse white (nits) for PQ UI output; matches SimpleImageViewer tone-map defaults.
+const EGUI_PQ_SDR_WHITE_NITS: f32 = 203.0;
+
+pub fn egui_framebuffer_expects_pq_writes(
+    output_color_format: wgpu::TextureFormat,
+    rgb10a2_pq_framebuffer: bool,
+) -> bool {
+    output_color_format == wgpu::TextureFormat::Rgb10a2Unorm && rgb10a2_pq_framebuffer
+}
+
+pub fn egui_framebuffer_expects_gamma22_hdr_writes(
+    output_color_format: wgpu::TextureFormat,
+    rgb10a2_pq_framebuffer: bool,
+) -> bool {
+    output_color_format == wgpu::TextureFormat::Rgb10a2Unorm && !rgb10a2_pq_framebuffer
+}
+
+fn gamma22_electrical_from_srgb_gamma(channel: f32, display_scale: f32) -> f32 {
+    let linear = srgb_gamma_channel_to_linear(channel);
+    let mapped = linear / (1.0 + linear.max(0.0));
+    let peak = (mapped * display_scale).clamp(0.0, 1.0);
+    peak.powf(1.0 / 2.2)
 }
 
 /// Returns `true` when the supplied swap-chain/framebuffer format expects
@@ -63,6 +92,24 @@ pub fn srgb_gamma_channel_to_linear(x: f32) -> f32 {
     }
 }
 
+fn display_linear_nits_to_pq(nits: f32) -> f32 {
+    const M1: f32 = 2610.0 / 16384.0;
+    const M2: f32 = 2523.0 / 32.0;
+    const C1: f32 = 3424.0 / 4096.0;
+    const C2: f32 = 2413.0 / 128.0;
+    const C3: f32 = 2392.0 / 128.0;
+    const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
+
+    if !nits.is_finite() {
+        return nits;
+    }
+    let normalized = nits.max(0.0) / PQ_REFERENCE_LUMINANCE_NITS;
+    let lm1 = normalized.powf(M1);
+    let num = C1 + C2 * lm1;
+    let den = 1.0 + C3 * lm1;
+    (num / den).powf(M2)
+}
+
 /// Transforms the `clear_color` that `eframe` supplies (sRGB gamma RGB +
 /// straight alpha) into the color space expected by the current swap-chain
 /// format, matching the conversion the egui fragment shader performs for
@@ -74,7 +121,31 @@ pub fn srgb_gamma_channel_to_linear(x: f32) -> f32 {
 pub fn clear_color_for_framebuffer_format(
     clear_color: [f32; 4],
     output_color_format: wgpu::TextureFormat,
+    rgb10a2_pq_framebuffer: bool,
+    gamma22_display_scale: f32,
 ) -> [f32; 4] {
+    if egui_framebuffer_expects_pq_writes(output_color_format, rgb10a2_pq_framebuffer) {
+        let linear = [
+            srgb_gamma_channel_to_linear(clear_color[0]),
+            srgb_gamma_channel_to_linear(clear_color[1]),
+            srgb_gamma_channel_to_linear(clear_color[2]),
+        ];
+        return [
+            display_linear_nits_to_pq(linear[0] * EGUI_PQ_SDR_WHITE_NITS),
+            display_linear_nits_to_pq(linear[1] * EGUI_PQ_SDR_WHITE_NITS),
+            display_linear_nits_to_pq(linear[2] * EGUI_PQ_SDR_WHITE_NITS),
+            clear_color[3],
+        ];
+    }
+    if egui_framebuffer_expects_gamma22_hdr_writes(output_color_format, rgb10a2_pq_framebuffer) {
+        let scale = gamma22_display_scale.max(0.0);
+        return [
+            gamma22_electrical_from_srgb_gamma(clear_color[0], scale),
+            gamma22_electrical_from_srgb_gamma(clear_color[1], scale),
+            gamma22_electrical_from_srgb_gamma(clear_color[2], scale),
+            clear_color[3],
+        ];
+    }
     if egui_framebuffer_expects_linear_writes(output_color_format) {
         [
             srgb_gamma_channel_to_linear(clear_color[0]),
@@ -225,12 +296,13 @@ impl ScreenDescriptor {
 struct UniformBuffer {
     screen_size_in_points: [f32; 2],
     dithering: u32,
-
-    /// 1 to do manual filtering for more predictable kittest snapshot images.
-    ///
-    /// See also <https://github.com/emilk/egui/issues/5295>.
     predictable_texture_filtering: u32,
+    gamma22_display_scale: f32,
+    /// WGSL `Locals` rounds struct size to 24 bytes (vec2 alignment).
+    _wgsl_pad: u32,
 }
+
+const _: () = assert!(std::mem::size_of::<UniformBuffer>() == 24);
 
 struct SlicedBuffer {
     buffer: wgpu::Buffer,
@@ -321,6 +393,10 @@ pub struct Renderer {
     /// [`Renderer::recreate_pipeline_for_target_format`] can short-circuit on
     /// no-op requests.
     output_color_format: wgpu::TextureFormat,
+    /// When true and `output_color_format` is `Rgb10a2Unorm`, UI is PQ-encoded
+    /// for HDR10 compositors; KWin KMS HDR offload expects gamma 2.2 instead.
+    rgb10a2_pq_framebuffer: bool,
+    gamma22_display_scale: f32,
 
     index_buffer: SlicedBuffer,
     vertex_buffer: SlicedBuffer,
@@ -367,6 +443,8 @@ impl Renderer {
                 screen_size_in_points: [0.0, 0.0],
                 dithering: u32::from(options.dithering),
                 predictable_texture_filtering: u32::from(options.predictable_texture_filtering),
+                gamma22_display_scale: 1.0,
+                _wgsl_pad: 0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -432,6 +510,7 @@ impl Renderer {
         let pipeline = create_egui_pipeline(
             device,
             output_color_format,
+            false,
             &options,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
@@ -445,6 +524,8 @@ impl Renderer {
         Self {
             pipeline,
             output_color_format,
+            rgb10a2_pq_framebuffer: false,
+            gamma22_display_scale: 1.0,
             vertex_buffer: SlicedBuffer {
                 buffer: create_vertex_buffer(device, VERTEX_BUFFER_START_CAPACITY),
                 slices: Vec::with_capacity(64),
@@ -488,18 +569,35 @@ impl Renderer {
         &mut self,
         device: &wgpu::Device,
         output_color_format: wgpu::TextureFormat,
+        rgb10a2_pq_framebuffer: Option<bool>,
     ) {
-        if self.output_color_format == output_color_format {
+        let pq = rgb10a2_pq_framebuffer.unwrap_or(self.rgb10a2_pq_framebuffer);
+        if self.output_color_format == output_color_format && self.rgb10a2_pq_framebuffer == pq {
             return;
         }
         self.pipeline = create_egui_pipeline(
             device,
             output_color_format,
+            pq,
             &self.options,
             &self.uniform_bind_group_layout,
             &self.texture_bind_group_layout,
         );
         self.output_color_format = output_color_format;
+        self.rgb10a2_pq_framebuffer = pq;
+    }
+
+    /// Whether PQ-encoded UI writes are active for `Rgb10a2Unorm`.
+    pub fn rgb10a2_pq_framebuffer(&self) -> bool {
+        self.rgb10a2_pq_framebuffer
+    }
+
+    pub fn gamma22_display_scale(&self) -> f32 {
+        self.gamma22_display_scale
+    }
+
+    pub fn set_gamma22_display_scale(&mut self, scale: f32) {
+        self.gamma22_display_scale = scale.clamp(0.0, f32::MAX);
     }
 
     /// The surface target format the current pipeline is compiled against.
@@ -959,6 +1057,8 @@ impl Renderer {
             screen_size_in_points,
             dithering: u32::from(self.options.dithering),
             predictable_texture_filtering: u32::from(self.options.predictable_texture_filtering),
+            gamma22_display_scale: self.gamma22_display_scale,
+            _wgsl_pad: 0,
         };
         if uniform_buffer_content != self.previous_uniform_buffer_content {
             profiling::scope!("update uniforms");
@@ -1167,6 +1267,7 @@ fn create_index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
 fn create_egui_pipeline(
     device: &wgpu::Device,
     output_color_format: wgpu::TextureFormat,
+    rgb10a2_pq_framebuffer: bool,
     options: &RendererOptions,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
@@ -1235,7 +1336,10 @@ fn create_egui_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: &module,
-            entry_point: Some(egui_framebuffer_shader_entry_point(output_color_format)),
+            entry_point: Some(egui_framebuffer_shader_entry_point(
+                output_color_format,
+                rgb10a2_pq_framebuffer,
+            )),
             targets: &[Some(wgpu::ColorTargetState {
                 format: output_color_format,
                 blend: Some(wgpu::BlendState {
@@ -1310,15 +1414,23 @@ fn renderer_impl_send_sync() {
 #[test]
 fn hdr_float_target_uses_linear_framebuffer_shader_for_sdr_ui() {
     assert_eq!(
-        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba16Float),
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba16Float, false),
         "fs_main_linear_framebuffer"
     );
     assert_eq!(
-        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba32Float),
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgba32Float, false),
         "fs_main_linear_framebuffer"
     );
     assert_eq!(
-        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Bgra8Unorm),
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgb10a2Unorm, true),
+        "fs_main_pq_framebuffer"
+    );
+    assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgb10a2Unorm, false),
+        "fs_main_gamma22_hdr_framebuffer"
+    );
+    assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Bgra8Unorm, false),
         "fs_main_gamma_framebuffer"
     );
 }
@@ -1335,7 +1447,7 @@ mod clear_color_tests {
     fn linear_target_receives_linearized_clear_color() {
         // Default eframe panel background: sRGB (12, 12, 12, 180).
         let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
-        let linear = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgba16Float);
+        let linear = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgba16Float, false, 1.0);
 
         // 12/255 ≈ 0.0471 sRGB-gamma; canonical sRGB EOTF ((x+0.055)/1.055)^2.4
         // ≈ 0.003676 linear. That is ~13× dimmer than the 0.0471 raw value
@@ -1357,7 +1469,7 @@ mod clear_color_tests {
     fn srgb_target_receives_linearized_clear_color() {
         let gamma = [0.5, 0.5, 0.5, 1.0];
         let linear =
-            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8UnormSrgb);
+            clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8UnormSrgb, false, 1.0);
         // sRGB 0.5 ≈ linear 0.214
         assert!(approx_eq(linear[0], 0.214_041_13));
         assert!(approx_eq(linear[1], 0.214_041_13));
@@ -1366,9 +1478,34 @@ mod clear_color_tests {
     }
 
     #[test]
+    fn pq_target_receives_pq_encoded_clear_color() {
+        let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
+        let pq = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgb10a2Unorm, true, 1.0);
+        let linear = [
+            srgb_gamma_channel_to_linear(gamma[0]) * EGUI_PQ_SDR_WHITE_NITS,
+            srgb_gamma_channel_to_linear(gamma[1]) * EGUI_PQ_SDR_WHITE_NITS,
+            srgb_gamma_channel_to_linear(gamma[2]) * EGUI_PQ_SDR_WHITE_NITS,
+        ];
+        assert!(approx_eq(pq[0], display_linear_nits_to_pq(linear[0])));
+        assert!(approx_eq(pq[1], display_linear_nits_to_pq(linear[1])));
+        assert!(approx_eq(pq[2], display_linear_nits_to_pq(linear[2])));
+        assert_eq!(pq[3], gamma[3]);
+    }
+
+    #[test]
+    fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
+        let code = display_linear_nits_to_pq(203.0);
+        assert!(
+            (code - 0.580_688_88).abs() < 1e-4,
+            "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
+        );
+        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
+    }
+
+    #[test]
     fn gamma_target_preserves_clear_color() {
         let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
-        let out = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8Unorm);
+        let out = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Bgra8Unorm, false, 1.0);
         assert_eq!(out, gamma);
     }
 
@@ -1377,11 +1514,15 @@ mod clear_color_tests {
         let zero = clear_color_for_framebuffer_format(
             [0.0, 0.0, 0.0, 1.0],
             wgpu::TextureFormat::Rgba16Float,
+            false,
+            1.0,
         );
         assert_eq!(zero, [0.0, 0.0, 0.0, 1.0]);
         let one = clear_color_for_framebuffer_format(
             [1.0, 1.0, 1.0, 1.0],
             wgpu::TextureFormat::Rgba16Float,
+            false,
+            1.0,
         );
         assert!(approx_eq(one[0], 1.0));
         assert!(approx_eq(one[1], 1.0));
@@ -1395,7 +1536,25 @@ mod clear_color_tests {
         let over = clear_color_for_framebuffer_format(
             [3.5, 3.5, 3.5, 1.0],
             wgpu::TextureFormat::Rgba16Float,
+            false,
+            1.0,
         );
         assert_eq!(over, [3.5, 3.5, 3.5, 1.0]);
+    }
+
+    #[test]
+    fn gamma22_hdr_target_scales_sdr_clear_color() {
+        let gamma = [1.0, 1.0, 1.0, 1.0];
+        let scale = 203.0 / 450.0;
+        let out = clear_color_for_framebuffer_format(
+            gamma,
+            wgpu::TextureFormat::Rgb10a2Unorm,
+            false,
+            scale,
+        );
+        let expected = gamma22_electrical_from_srgb_gamma(1.0, scale);
+        assert!((out[0] - expected).abs() <= 1e-5);
+        assert!((out[1] - expected).abs() <= 1e-5);
+        assert!((out[2] - expected).abs() <= 1e-5);
     }
 }

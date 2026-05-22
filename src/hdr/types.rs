@@ -275,10 +275,11 @@ pub enum HdrOutputMode {
     SdrToneMapped,
     WindowsScRgb,
     MacOsEdr,
+    WaylandHdr,
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HdrToneMapSettings {
     pub exposure_ev: f32,
     pub sdr_white_nits: f32,

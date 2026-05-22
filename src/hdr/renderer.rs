@@ -32,28 +32,60 @@ pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrRenderOutputMode {
     SdrToneMapped = 0,
+    /// Linear scRGB / EDR (`Rgba16Float`, `Rgba32Float`).
     NativeHdr = 1,
+    /// PQ HDR10 (`Rgb10a2Unorm` + compositor ST 2084).
+    NativeHdrPq = 2,
+    /// Gamma 2.2 electrical for KWin KMS HDR offload (`Rgb10a2Unorm`).
+    NativeHdrGamma22 = 3,
 }
 
 impl HdrRenderOutputMode {
-    pub fn for_target_format(target_format: wgpu::TextureFormat) -> Self {
-        if crate::hdr::surface::is_native_hdr_surface_format(Some(target_format)) {
-            Self::NativeHdr
-        } else {
-            Self::SdrToneMapped
+    pub fn for_target_format(
+        target_format: wgpu::TextureFormat,
+        native_surface_encoding: Option<crate::hdr::monitor::HdrNativeSurfaceEncoding>,
+    ) -> Self {
+        use crate::hdr::monitor::HdrNativeSurfaceEncoding;
+        match target_format {
+            wgpu::TextureFormat::Rgb10a2Unorm => match native_surface_encoding {
+                Some(HdrNativeSurfaceEncoding::PqHdr10) => Self::NativeHdrPq,
+                Some(HdrNativeSurfaceEncoding::Gamma22Electrical) => Self::NativeHdrGamma22,
+                Some(HdrNativeSurfaceEncoding::LinearScRgb) => Self::NativeHdrGamma22,
+                None => Self::SdrToneMapped,
+            },
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => Self::NativeHdr,
+            format if crate::hdr::surface::is_native_hdr_surface_format(Some(format)) => {
+                Self::NativeHdr
+            }
+            _ => Self::SdrToneMapped,
         }
+    }
+
+    pub fn is_native_hdr(self) -> bool {
+        matches!(
+            self,
+            Self::NativeHdr | Self::NativeHdrPq | Self::NativeHdrGamma22
+        )
     }
 
     pub fn as_diagnostic_label(self) -> &'static str {
         match self {
             Self::NativeHdr => "native_hdr",
+            Self::NativeHdrPq => "native_hdr_pq",
+            Self::NativeHdrGamma22 => "native_hdr_gamma22",
             Self::SdrToneMapped => "sdr_tone_mapped",
         }
+    }
+
+    pub fn rgb10a2_uses_pq_shader(self) -> bool {
+        matches!(self, Self::NativeHdrPq)
     }
 }
 
 pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
-    let output_mode = target_format.map(HdrRenderOutputMode::for_target_format);
+    let output_mode = target_format.map(|format| {
+        HdrRenderOutputMode::for_target_format(format, None)
+    });
     [
         format!("[HDR] render_target_format={target_format:?}"),
         format!(
@@ -66,7 +98,11 @@ pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>)
 }
 
 pub fn hdr_egui_overlay_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
-    let shader_entry_point = target_format.map(egui_wgpu::egui_framebuffer_shader_entry_point);
+    let shader_entry_point = target_format.map(|format| {
+        let rgb10a2_pq = matches!(format, wgpu::TextureFormat::Rgb10a2Unorm)
+            && HdrRenderOutputMode::for_target_format(format, None) == HdrRenderOutputMode::NativeHdrPq;
+        egui_wgpu::egui_framebuffer_shader_entry_point(format, rgb10a2_pq)
+    });
     [
         format!("[HDR] egui_overlay_target_format={target_format:?}"),
         format!(
@@ -82,14 +118,19 @@ pub const HDR_IMAGE_PLANE_SHADER: &str = r#"
 const MAX_FINITE_HDR_VALUE: f32 = 65504.0;
 // Current SDR fallback approximates standard display gamma encoding.
 const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
+const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
 // Keeps generated UVs inside the texture for the fullscreen triangle edge.
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
+const OUTPUT_MODE_NATIVE_HDR_PQ: u32 = 2u;
+const OUTPUT_MODE_NATIVE_HDR_GAMMA22: u32 = 3u;
+const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
-/// Must match `HdrColorSpace::DisplayP3Linear as u32`.
+// Must match HdrColorSpace::DisplayP3Linear as u32.
 const INPUT_COLOR_SPACE_DISPLAY_P3_LINEAR: u32 = 6u;
+const INPUT_TRANSFER_LINEAR: u32 = 0u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
 const INPUT_TRANSFER_PQ: u32 = 2u;
 const INPUT_TRANSFER_HLG: u32 = 3u;
@@ -100,7 +141,7 @@ struct ToneMapSettings {
     exposure_ev: f32,
     sdr_white_nits: f32,
     max_display_nits: f32,
-    /// 1.0 except libavif tone-mapped display-referred linear (matches `encode_sdr` peak scaler).
+    // 1.0 except libavif tone-mapped display-referred linear (matches encode_sdr peak scaler).
     native_display_scale: f32,
     rotation_steps: u32,
     alpha: f32,
@@ -109,7 +150,7 @@ struct ToneMapSettings {
     input_transfer_function: u32,
     input_reference: u32,
     _pad0: u32,
-    /// WGSL aligns `vec2<f32>` to 8 bytes; implicit padding before `uv_min` (Rust needs it explicit).
+    // WGSL aligns vec2<f32> to 8 bytes; implicit padding before uv_min.
     _wgsl_pad_before_uv: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
@@ -128,8 +169,28 @@ fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
 }
 
 fn sanitize_hdr_rgb(rgb: vec3<f32>) -> vec3<f32> {
-    let positive = select(vec3<f32>(0.0), rgb, rgb > vec3<f32>(0.0));
-    return min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE));
+    // NaN is the only value where `c != c`; clamp finite range (±Inf → ±MAX_FINITE_HDR_VALUE).
+    var safe = rgb;
+    if (safe.r != safe.r) {
+        safe.r = 0.0;
+    }
+    if (safe.g != safe.g) {
+        safe.g = 0.0;
+    }
+    if (safe.b != safe.b) {
+        safe.b = 0.0;
+    }
+    return clamp(
+        safe,
+        vec3<f32>(-MAX_FINITE_HDR_VALUE),
+        vec3<f32>(MAX_FINITE_HDR_VALUE),
+    );
+}
+
+// Scene/display linear after exposure and optional display-referred peak scaler (libavif capped path).
+fn exposed_linear_rgb(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let exposure_scale = exp2(settings.exposure_ev);
+    return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
 }
 
 fn rec2020_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
@@ -184,6 +245,8 @@ fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
 }
 
 fn hlg_to_scene_linear(rgb: vec3<f32>) -> vec3<f32> {
+    // BT.2100 HLG EOTF inverse (input decode only). No matching `scene_linear_to_hlg`
+    // OETF or `NativeHdrHlg` swap-chain path — see `hdr/monitor/wayland.rs`.
     let a = 0.17883277;
     let b = 0.28466892;
     let c = 0.55991073;
@@ -281,13 +344,51 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
 }
 
+fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let nits = max(rgb * settings.sdr_white_nits, vec3<f32>(0.0));
+    let normalized = nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS);
+    let lm1 = pow(normalized, vec3<f32>(m1));
+    let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
+    let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
+    return pow(num / den, vec3<f32>(m2));
+}
+
+// Scene-referred linear → display-referred before KWin gamma 2.2 OETF (same Reinhard as encode_sdr).
+fn scene_linear_to_display_referred(scrgb: vec3<f32>) -> vec3<f32> {
+    return reinhard_tone_map(scrgb);
+}
+
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
-    // scRGB / Rgba16Float / Rgba32Float native HDR is **linear** (1.0 = SDR white reference).
-    // The OS compositor (Windows scRGB, macOS EDR) maps linear values to the display's actual
-    // luminance. Applying γ2.2 here lifts shadows ~3.4× and washes contrast on physically
-    // non-HDR panels advertising HDR support (conformance `bench_oriented_brg`).
-    let exposure_scale = exp2(settings.exposure_ev);
-    return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
+    // scRGB / EDR: linear (1.0 = SDR white). Compositor tone-maps to panel (Windows / macOS).
+    return exposed_linear_rgb(rgb, settings);
+}
+
+fn encode_native_hdr_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // SMPTE ST 2084 (PQ) for HDR10 swap chains.
+    return display_linear_to_pq(exposed_linear_rgb(rgb, settings), settings);
+}
+
+fn gamma22_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    return pow(max(rgb, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
+}
+
+fn encode_native_hdr_gamma22(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // KWin gamma 2.2 electrical framebuffer: map SDR white to panel peak, then IEC 61966-2-2 OETF.
+    let display_scale =
+        settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
+    let exposed = exposed_linear_rgb(rgb, settings);
+    var peak_linear: vec3<f32>;
+    if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR) {
+        peak_linear = scene_linear_to_display_referred(exposed) * display_scale;
+    } else {
+        peak_linear = exposed * display_scale;
+    }
+    return gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
 }
 
 @vertex
@@ -318,7 +419,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
     let source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
     var rgb: vec3<f32>;
-    if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
+    if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_PQ {
+        rgb = encode_native_hdr_pq(source_rgb, tone_map);
+    } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_GAMMA22 {
+        rgb = encode_native_hdr_gamma22(source_rgb, tone_map);
+    } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
         rgb = encode_native_hdr(source_rgb, tone_map);
     } else {
         rgb = encode_sdr(source_rgb, tone_map);
@@ -1795,9 +1900,9 @@ mod tests {
     #[test]
     fn shader_sanitizes_non_finite_hdr_rgb_before_tone_mapping() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sanitize_hdr_rgb"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("rgb > vec3<f32>(0.0)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("safe.r != safe.r"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("const MAX_FINITE_HDR_VALUE: f32"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("min(positive, vec3<f32>(MAX_FINITE_HDR_VALUE))"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("clamp("));
     }
 
     #[test]
@@ -1838,17 +1943,48 @@ mod tests {
     }
 
     #[test]
-    fn render_mode_uses_native_hdr_for_float_targets_only() {
+    fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
+        use crate::hdr::monitor::HdrNativeSurfaceEncoding;
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgba16Float,
+                None,
+            ),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba32Float),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgba32Float,
+                None,
+            ),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Bgra8Unorm),
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                Some(HdrNativeSurfaceEncoding::PqHdr10),
+            ),
+            HdrRenderOutputMode::NativeHdrPq
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                Some(HdrNativeSurfaceEncoding::Gamma22Electrical),
+            ),
+            HdrRenderOutputMode::NativeHdrGamma22
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Rgb10a2Unorm,
+                None,
+            ),
+            HdrRenderOutputMode::SdrToneMapped
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(
+                wgpu::TextureFormat::Bgra8Unorm,
+                None,
+            ),
             HdrRenderOutputMode::SdrToneMapped
         );
     }
@@ -1922,6 +2058,35 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("let src_a = clamp(hdr.a, 0.0, 1.0)"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("a_out * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
+    }
+
+    #[test]
+    fn native_hdr_pq_shader_encodes_pq_for_rgb10a2_target() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_PQ"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_pq"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_GAMMA22"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_gamma22"));
+    }
+
+    #[test]
+    fn native_hdr_encoders_share_exposed_linear_rgb() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn exposed_linear_rgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("return exposed_linear_rgb(rgb, settings);"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("display_linear_to_pq(exposed_linear_rgb"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("exposed_linear_rgb(rgb, settings) * display_scale")
+            || HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn scene_linear_to_display_referred"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
+        assert!(
+            HDR_IMAGE_PLANE_SHADER.contains("if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR)"),
+            "scene-linear needs display-referred mapping before KWin gamma 2.2 OETF"
+        );
     }
 
     #[test]

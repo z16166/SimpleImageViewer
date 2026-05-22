@@ -887,11 +887,24 @@ fn main() -> eframe::Result {
     }
     log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
 
+    #[cfg(target_os = "linux")]
+    {
+        log::info!(
+            "[HDR] linux session: wayland={} platform_eligible={} native_surface_request_effective={}",
+            crate::hdr::platform::is_wayland_session(),
+            crate::hdr::platform::linux_native_hdr_platform_eligible(),
+            settings.hdr_native_surface_enabled_effective(),
+        );
+    }
+
     // Shared mailbox the app writes into when the active monitor's HDR
     // capability changes (drag between HDR and SDR monitor); the patched
     // egui-wgpu Painter polls it every frame and hot-swaps the swap-chain
     // target format.
     let requested_target_format = eframe::egui_wgpu::RequestedSurfaceFormat::new();
+    let requested_rgb10a2_pq_encode = eframe::egui_wgpu::RequestedRgb10a2PqEncode::new();
+    let gamma22_display_scale = eframe::egui_wgpu::Gamma22DisplayScale::new();
+    let vulkan_wsi_hdr_gates = eframe::egui_wgpu::VulkanWsiHdrGatesMailbox::new();
 
     // Reverse-direction mailbox: the painter publishes the live active
     // swap-chain format here after every successful runtime hot-swap. We
@@ -960,6 +973,9 @@ fn main() -> eframe::Result {
             preferred_target_format: preferred_hdr_target_format,
             requested_target_format: requested_target_format.clone(),
             active_target_format: active_target_format.clone(),
+            requested_rgb10a2_pq_encode: requested_rgb10a2_pq_encode.clone(),
+            gamma22_display_scale: gamma22_display_scale.clone(),
+            vulkan_wsi_hdr_gates: vulkan_wsi_hdr_gates.clone(),
             ..Default::default()
         },
         // Dithering assumes SDR gamma-space output. Leave it off when we ask
@@ -989,6 +1005,9 @@ fn main() -> eframe::Result {
                 ipc_rx,
                 requested_target_format,
                 active_target_format,
+                requested_rgb10a2_pq_encode,
+                gamma22_display_scale,
+                vulkan_wsi_hdr_gates,
                 initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)
         }),

@@ -215,9 +215,9 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             .settings
             .hdr_max_display_nits
             .max(app.settings.hdr_sdr_white_nits);
-        app.hdr_renderer.tone_map = app.settings.hdr_tone_map_settings();
+        app.hdr_renderer.tone_map = app.effective_hdr_tone_map_settings();
         app.loader
-            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
+            .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
         app.refresh_ultra_hdr_decode_capacity(ui.ctx());
         app.queue_save();
         ui.ctx().request_repaint();
@@ -1029,6 +1029,20 @@ fn draw_settings_right_col(
         {
             ui.add_space(8.0);
             draw_hdr_section(app, ui);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+                ui.add_space(8.0);
+                draw_hdr_section(app, ui);
+            } else {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(t!("hdr.wayland_only_hint"))
+                        .color(app.cached_palette.text_muted)
+                        .small(),
+                );
+            }
         }
     });
 }

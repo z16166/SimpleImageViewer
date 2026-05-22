@@ -21,6 +21,9 @@ use eframe::egui;
 use super::renderer::HdrRenderOutputMode;
 use super::types::HdrOutputMode;
 
+#[cfg(target_os = "linux")]
+mod wayland;
+
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
@@ -78,6 +81,22 @@ impl HdrMonitorSignature {
     }
 }
 
+/// How native HDR pixel values should be encoded into the swap chain.
+///
+/// There is intentionally no HLG variant: Wayland/Linux v1 targets ST 2084 PQ and KWin
+/// gamma-2.2 electrical offload. HLG file decode (`hlg_to_scene_linear`) exists for
+/// content; compositor-native HLG output would need HLG OETF + `HDR10_HLG_EXT` end-to-end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HdrNativeSurfaceEncoding {
+    /// Windows scRGB / macOS EDR linear float.
+    LinearScRgb,
+    /// HDR10 PQ in `Rgb10a2Unorm` (compositor advertises ST 2084).
+    PqHdr10,
+    /// Legacy gamma 2.2 electrical path; retained for shader dispatch only.
+    #[allow(dead_code)]
+    Gamma22Electrical,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdrMonitorSelection {
     pub hdr_supported: bool,
@@ -86,6 +105,7 @@ pub struct HdrMonitorSelection {
     pub max_full_frame_luminance_nits: Option<f32>,
     pub max_hdr_capacity: Option<f32>,
     pub hdr_capacity_source: Option<&'static str>,
+    pub native_surface_encoding: Option<HdrNativeSurfaceEncoding>,
 }
 
 #[derive(Debug)]
@@ -271,7 +291,10 @@ pub fn effective_render_output_mode(
     if !selection.hdr_supported {
         return HdrRenderOutputMode::SdrToneMapped;
     }
-    HdrRenderOutputMode::for_target_format(target_format)
+    HdrRenderOutputMode::for_target_format(
+        target_format,
+        selection.native_surface_encoding,
+    )
 }
 
 pub fn effective_capability_output_mode(
@@ -279,17 +302,27 @@ pub fn effective_capability_output_mode(
     selection: Option<&HdrMonitorSelection>,
 ) -> HdrOutputMode {
     match effective_render_output_mode(target_format, selection) {
-        HdrRenderOutputMode::NativeHdr => {
+        HdrRenderOutputMode::SdrToneMapped => HdrOutputMode::SdrToneMapped,
+        _ => {
             if cfg!(target_os = "windows") {
                 HdrOutputMode::WindowsScRgb
             } else if cfg!(target_os = "macos") {
                 HdrOutputMode::MacOsEdr
+            } else if cfg!(target_os = "linux") {
+                HdrOutputMode::WaylandHdr
             } else {
                 HdrOutputMode::SdrToneMapped
             }
         }
-        HdrRenderOutputMode::SdrToneMapped => HdrOutputMode::SdrToneMapped,
     }
+}
+
+/// Merge Wayland monitor metadata with Vulkan WSI gates on Linux.
+pub fn effective_monitor_selection(
+    wp: Option<&HdrMonitorSelection>,
+    wsi: crate::hdr::wsi_probe::WsiHdrSurfaceGates,
+) -> Option<HdrMonitorSelection> {
+    crate::hdr::wsi_probe::linux_effective_monitor_selection(wp, wsi)
 }
 
 /// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for
@@ -316,7 +349,18 @@ pub fn active_monitor_hdr_status(
     macos_active_monitor_hdr_status()
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn active_monitor_hdr_status(
+    viewport_outer_rect_screen_px: Option<[i32; 4]>,
+) -> Result<HdrMonitorSelection, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        wayland::active_monitor_hdr_status(viewport_outer_rect_screen_px)
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn active_monitor_hdr_status(
     _viewport_outer_rect_screen_px: Option<[i32; 4]>,
 ) -> Result<HdrMonitorSelection, String> {
@@ -350,6 +394,7 @@ fn macos_edr_selection_from_values(
         max_full_frame_luminance_nits: None,
         max_hdr_capacity: capacity,
         hdr_capacity_source: source,
+        native_surface_encoding: hdr_supported.then_some(HdrNativeSurfaceEncoding::LinearScRgb),
     }
 }
 
@@ -409,6 +454,8 @@ fn dxgi_hdr_selection_for_monitor_handle(
                         ),
                         max_hdr_capacity: None,
                         hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+                        native_surface_encoding: hdr_supported
+                            .then_some(HdrNativeSurfaceEncoding::LinearScRgb),
                     });
                 }
             }
@@ -650,7 +697,17 @@ pub fn any_active_output_supports_hdr() -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn any_active_output_supports_hdr() -> Result<bool, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        Err("pre-creation HDR availability probing is not yet implemented on Linux Wayland".to_string())
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[allow(dead_code)]
 pub fn any_active_output_supports_hdr() -> Result<bool, String> {
     Err("pre-creation HDR availability probing is only implemented on Windows".to_string())
@@ -795,7 +852,25 @@ pub fn spawn_monitor_hdr_status(
     Err("spawn monitor was not matched to any DXGI output".to_string())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn spawn_monitor_hdr_status(
+    saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
+    if crate::hdr::platform::linux_native_hdr_platform_eligible() {
+        wayland::spawn_monitor_hdr_status(saved_window_top_left)
+    } else {
+        Err("HDR probing requires a Wayland session".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn spawn_monitor_hdr_status(
+    _saved_window_top_left: Option<[i32; 2]>,
+) -> Result<SpawnMonitorHdrProbe, String> {
+    Err("spawn-monitor HDR probing is only implemented on Windows".to_string())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn spawn_monitor_hdr_status(
     _saved_window_top_left: Option<[i32; 2]>,
 ) -> Result<SpawnMonitorHdrProbe, String> {
@@ -1052,6 +1127,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
         };
         let hdr = HdrMonitorSelection {
             hdr_supported: true,
@@ -1060,6 +1136,7 @@ mod tests {
             max_full_frame_luminance_nits: Some(500.0),
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
+            native_surface_encoding: Some(HdrNativeSurfaceEncoding::LinearScRgb),
         };
 
         assert_eq!(
@@ -1120,6 +1197,27 @@ mod tests {
             ),
             HdrOutputMode::MacOsEdr
         );
+    }
+
+    #[test]
+    fn linux_wayland_eligibility_gates_probe_error_message() {
+        assert!(
+            !crate::hdr::platform::wayland_session_from_display_var(Some(":0")),
+            "X11-style display should not be treated as Wayland"
+        );
+        #[cfg(target_os = "linux")]
+        if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
+            let err = active_monitor_hdr_status(None).unwrap_err();
+            assert!(
+                err.contains("Wayland session"),
+                "expected Wayland gate error, got: {err}"
+            );
+            let spawn_err = spawn_monitor_hdr_status(None).unwrap_err();
+            assert!(
+                spawn_err.contains("Wayland session"),
+                "expected Wayland gate error, got: {spawn_err}"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

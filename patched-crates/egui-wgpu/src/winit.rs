@@ -121,6 +121,13 @@ impl Painter {
             .surface
             .configure(&render_state.device, &surf_config);
 
+        #[cfg(target_os = "linux")]
+        crate::vulkan_hdr::linux_log_vulkan_hdr_surface_probe_once(
+            &surface_state.surface,
+            &render_state.adapter,
+            &config.vulkan_wsi_hdr_gates,
+        );
+
         // Windows: keep the DXGI swap-chain color space in sync with the
         // configured format. wgpu-hal uses `IDXGISwapChain::ResizeBuffers`
         // to apply format changes, and ResizeBuffers does **not** touch the
@@ -134,6 +141,31 @@ impl Painter {
         // configure restores the expected behavior.
         #[cfg(target_os = "windows")]
         windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
+
+        #[cfg(target_os = "linux")]
+        {
+            let pq = render_state
+                .renderer
+                .read()
+                .rgb10a2_pq_framebuffer();
+            crate::vulkan_hdr::linux_sync_rgb10a2_vk_color_space(
+                render_state.target_format,
+                pq,
+            );
+            if crate::vulkan_hdr::linux_rgb10a2_uses_hdr10_st2084(render_state.target_format) {
+                if let Some(metadata) = crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(
+                    render_state.target_format,
+                ) {
+                    crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
+                        &surface_state.surface,
+                        &render_state.device,
+                        &render_state.adapter,
+                        render_state.target_format,
+                        metadata,
+                    );
+                }
+            }
+        }
     }
 
     /// Updates (or clears) the [`winit::window::Window`] associated with the [`Painter`]
@@ -451,6 +483,7 @@ impl Painter {
             renderer.recreate_pipeline_for_target_format(
                 &render_state.device,
                 requested_format,
+                None,
             );
         }
         render_state.target_format = requested_format;
@@ -484,6 +517,41 @@ impl Painter {
             // surface reconfigure until paint time as usual.
             s.needs_reconfigure = true;
         }
+    }
+
+    fn try_apply_runtime_rgb10a2_pq_switch(&mut self, viewport_id: ViewportId) {
+        let Some(requested_pq) = self.configuration.requested_rgb10a2_pq_encode.take() else {
+            return;
+        };
+        let Some(render_state) = self.render_state.as_mut() else {
+            return;
+        };
+        if render_state.target_format != wgpu::TextureFormat::Rgb10a2Unorm {
+            return;
+        }
+        let mut renderer = render_state.renderer.write();
+        if renderer.rgb10a2_pq_framebuffer() == requested_pq {
+            return;
+        }
+        log::info!(
+            "egui-wgpu: hot-swapping Rgb10a2 UI encoding pq={requested_pq}"
+        );
+        renderer.recreate_pipeline_for_target_format(
+            &render_state.device,
+            render_state.target_format,
+            Some(requested_pq),
+        );
+        #[cfg(target_os = "linux")]
+        {
+            crate::vulkan_hdr::linux_sync_rgb10a2_vk_color_space(
+                render_state.target_format,
+                requested_pq,
+            );
+            if let Some(surface_state) = self.surfaces.get_mut(&viewport_id) {
+                surface_state.needs_reconfigure = true;
+            }
+        }
+        let _ = viewport_id;
     }
 
     pub fn on_window_resized(
@@ -583,7 +651,9 @@ impl Painter {
         };
 
         let user_cmd_bufs = {
+            let scale = self.configuration.gamma22_display_scale.get();
             let mut renderer = render_state.renderer.write();
+            renderer.set_gamma22_display_scale(scale);
             for (id, image_delta) in &textures_delta.set {
                 renderer.update_texture(
                     &render_state.device,
@@ -667,6 +737,14 @@ impl Painter {
             let framebuffer_clear_color = renderer::clear_color_for_framebuffer_format(
                 clear_color,
                 output_frame.texture.format(),
+                {
+                    let renderer = render_state.renderer.read();
+                    renderer.rgb10a2_pq_framebuffer()
+                },
+                {
+                    let renderer = render_state.renderer.read();
+                    renderer.gamma22_display_scale()
+                },
             );
             let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui_render"),
@@ -811,6 +889,7 @@ impl Painter {
         // `frame.wgpu_render_state().target_format`, so all downstream
         // pipelines rebuild in sync.
         self.try_apply_runtime_target_format_switch(viewport_id);
+        self.try_apply_runtime_rgb10a2_pq_switch(viewport_id);
 
         vsync_sec
     }

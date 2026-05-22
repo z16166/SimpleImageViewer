@@ -265,9 +265,9 @@ impl ImageViewerApp {
 
     pub(crate) fn effective_ultra_hdr_decode_capacity(&self) -> f32 {
         crate::app::ultra_hdr_decode_capacity_for_output_mode(
-            self.settings.hdr_tone_map_settings(),
+            self.effective_hdr_tone_map_settings(),
             self.hdr_capabilities.output_mode,
-            self.hdr_monitor_state.selection(),
+            self.effective_hdr_monitor_selection().as_ref(),
         )
     }
 
@@ -282,7 +282,7 @@ impl ImageViewerApp {
         self.ultra_hdr_decode_capacity = next_capacity;
         self.loader.set_hdr_target_capacity(next_capacity);
         self.loader
-            .set_hdr_tone_map_settings(self.settings.hdr_tone_map_settings());
+            .set_hdr_tone_map_settings(self.effective_hdr_tone_map_settings());
         log::info!(
             "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}",
             previous_capacity,

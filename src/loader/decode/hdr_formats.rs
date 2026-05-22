@@ -83,24 +83,8 @@ pub(crate) fn try_load_disk_backed_exr_hdr(
     let tiled_limit = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
     let max_side = source.width().max(source.height());
     if pixel_count < tiled_limit && max_side <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-        if source.has_subsampled_channels() {
-            let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);
-            let fallback: Arc<dyn TiledImageSource> = Arc::new(HdrSdrTiledFallbackSource::new(
-                Arc::clone(&hdr),
-                hdr_tone_map,
-            ));
-            log::info!(
-                "[Loader] subsampled EXR {}x{} kept as disk-backed HDR tiles.",
-                hdr.width(),
-                hdr.height()
-            );
-            return Ok(Some(ImageData::HdrTiled { hdr, fallback }));
-        }
-        if source.requires_disk_backed_decode() {
-            return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map)
-                .map(Some);
-        }
-        return Ok(None);
+        return exr_tiled_source_to_static_hdr(path, source, hdr_target_capacity, hdr_tone_map)
+            .map(Some);
     }
 
     let hdr: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(source);

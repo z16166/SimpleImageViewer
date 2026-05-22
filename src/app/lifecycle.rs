@@ -27,6 +27,9 @@ impl ImageViewerApp {
         ipc_rx: crossbeam_channel::Receiver<IpcMessage>,
         requested_target_format: eframe::egui_wgpu::RequestedSurfaceFormat,
         active_target_format: eframe::egui_wgpu::ActiveSurfaceFormat,
+        requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
+        gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
+        vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
         initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
     ) -> Self {
         if settings.fullscreen {
@@ -99,14 +102,16 @@ impl ImageViewerApp {
         let hdr_capabilities =
             crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
         let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
-        hdr_renderer.tone_map = settings.hdr_tone_map_settings();
+        hdr_renderer.tone_map = settings.hdr_tone_map_settings_for_monitor(
+            initial_hdr_monitor_selection.as_ref(),
+        );
         let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
         let initial_hdr_output_mode = crate::hdr::monitor::effective_capability_output_mode(
             hdr_target_format,
             initial_hdr_monitor_selection.as_ref(),
         );
         let ultra_hdr_decode_capacity = crate::app::ultra_hdr_decode_capacity_for_output_mode(
-            settings.hdr_tone_map_settings(),
+            settings.hdr_tone_map_settings_for_monitor(initial_hdr_monitor_selection.as_ref()),
             initial_hdr_output_mode,
             initial_hdr_monitor_selection.as_ref(),
         );
@@ -274,6 +279,10 @@ impl ImageViewerApp {
             cached_window_placement: None,
             requested_target_format,
             active_target_format,
+            requested_rgb10a2_pq_encode,
+            gamma22_display_scale,
+            vulkan_wsi_hdr_gates,
+            rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
@@ -350,10 +359,19 @@ impl ImageViewerApp {
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
             log::info!("{diagnostic}");
         }
+        #[cfg(target_os = "linux")]
+        {
+            log::info!(
+                "[HDR] linux presentation: wayland_session={} hdr_platform_eligible={} output_mode={:?}",
+                crate::hdr::platform::is_wayland_session(),
+                crate::hdr::platform::linux_native_hdr_platform_eligible(),
+                app.hdr_capabilities.output_mode,
+            );
+        }
         app.loader
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader
-            .set_hdr_tone_map_settings(app.settings.hdr_tone_map_settings());
+            .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits

@@ -15,6 +15,9 @@ struct Locals {
     /// 1 to do manual filtering for more predictable kittest snapshot images.
     /// See also https://github.com/emilk/egui/issues/5295
     predictable_texture_filtering: u32,
+
+    /// SDR white / panel peak scale for KWin gamma 2.2 HDR swap chains.
+    gamma22_display_scale: f32,
 };
 @group(0) @binding(0) var<uniform> r_locals: Locals;
 
@@ -54,6 +57,24 @@ fn gamma_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
     let lower = rgb * vec3<f32>(12.92);
     let higher = vec3<f32>(1.055) * pow(rgb, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
     return select(higher, lower, cutoff);
+}
+
+// Matches `DEFAULT_SDR_WHITE_NITS` in SimpleImageViewer's HDR tone-map settings.
+const EGUI_PQ_SDR_WHITE_NITS: f32 = 203.0;
+const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
+
+fn display_linear_to_pq(rgb: vec3<f32>) -> vec3<f32> {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let nits = max(rgb * EGUI_PQ_SDR_WHITE_NITS, vec3<f32>(0.0));
+    let normalized = nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS);
+    let lm1 = pow(normalized, vec3<f32>(m1));
+    let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
+    let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
+    return pow(num / den, vec3<f32>(m2));
 }
 
 // 0-1 sRGBA gamma  from  0-1 linear
@@ -145,6 +166,43 @@ fn fs_main_linear_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
     return vec4<f32>(out_color_linear, out_color_gamma.a);
+}
+
+@fragment
+fn fs_main_pq_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
+    let tex_gamma = sample_texture(in);
+    var out_color_gamma = in.color * tex_gamma;
+    if r_locals.dithering == 1 {
+        let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
+        out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
+    }
+    let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
+    let out_color_pq = display_linear_to_pq(out_color_linear);
+    return vec4<f32>(out_color_pq, out_color_gamma.a);
+}
+
+fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
+    return rgb / (vec3<f32>(1.0) + rgb);
+}
+
+const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
+
+@fragment
+fn fs_main_gamma22_hdr_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
+    // KWin KMS HDR offload expects gamma 2.2 electrical values in Rgb10a2Unorm.
+    // Match SimpleImageViewer HDR image-plane `encode_native_hdr_gamma22` for scene-linear
+    // content so SDR/JPEG companions (egui texture blit) match EXR on the same output.
+    let tex_gamma = sample_texture(in);
+    var out_color_gamma = in.color * tex_gamma;
+    if r_locals.dithering == 1 {
+        let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
+        out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
+    }
+    let linear = linear_from_gamma_rgb(out_color_gamma.rgb);
+    let mapped = reinhard_tone_map(linear);
+    let peak = clamp(mapped * r_locals.gamma22_display_scale, vec3<f32>(0.0), vec3<f32>(1.0));
+    let electrical = pow(peak, vec3<f32>(INVERSE_GAMMA22));
+    return vec4<f32>(electrical, out_color_gamma.a);
 }
 
 @fragment

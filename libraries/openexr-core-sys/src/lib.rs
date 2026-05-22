@@ -8,6 +8,8 @@
 
 use libc::{c_char, c_int, c_void, size_t};
 
+pub mod imf_io;
+
 pub type ExrResult = i32;
 pub type ExrContext = *mut c_void;
 pub type ExrConstContext = *const c_void;
@@ -291,11 +293,50 @@ unsafe extern "C" {
         out_h: *mut u32,
     ) -> c_int;
 
+    /// Same as [`siv_imf_deep_scanline_flatten_rgba`] but reads from an in-memory buffer
+    /// (e.g. a Rust memory map). Prefer this for Unicode file paths.
+    pub fn siv_imf_deep_scanline_flatten_rgba_bytes(
+        data: *const c_void,
+        data_len: size_t,
+        debug_name_utf8: *const c_char,
+        out_rgba: *mut f32,
+        out_len: usize,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    ) -> c_int;
+
     /// Read `chromaticities` from file header via Imf::InputFile (works for scanline and deep headers).
     /// Returns 0 on success (8 floats: Rxy, Gxy, Bxy, Wxy), -2 if attribute missing, -3 on other failure.
     pub fn siv_imf_input_file_chromaticities_f32(
         path: *const c_char,
         out_rg_bw_xy: *mut f32,
+    ) -> c_int;
+
+    pub fn siv_imf_input_file_chromaticities_f32_bytes(
+        data: *const c_void,
+        data_len: size_t,
+        debug_name_utf8: *const c_char,
+        out_rg_bw_xy: *mut f32,
+    ) -> c_int;
+
+    /// Flatten a scanline RGBA or Y/Ry/By image via Imf::RgbaInputFile (standard chroma reconstruction).
+    pub fn siv_imf_rgba_input_scanline_flatten_rgba(
+        path: *const c_char,
+        out_rgba: *mut f32,
+        out_len: usize,
+        out_w: *mut u32,
+        out_h: *mut u32,
+    ) -> c_int;
+
+    /// Same as [`siv_imf_rgba_input_scanline_flatten_rgba`] but reads from an in-memory buffer.
+    pub fn siv_imf_rgba_input_scanline_flatten_rgba_bytes(
+        data: *const c_void,
+        data_len: size_t,
+        debug_name_utf8: *const c_char,
+        out_rgba: *mut f32,
+        out_len: usize,
+        out_w: *mut u32,
+        out_h: *mut u32,
     ) -> c_int;
 }
 

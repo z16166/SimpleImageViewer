@@ -109,14 +109,6 @@ impl ExrTiledImageSource {
         })
     }
 
-    pub(crate) fn requires_disk_backed_decode(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn has_subsampled_channels(&self) -> bool {
-        self.has_subsampled_channels
-    }
-
     fn should_prefill_scanline_band(&self, x: u32, y: u32, width: u32, height: u32) -> bool {
         if self.storage != openexr_core_sys::EXR_STORAGE_SCANLINE {
             return false;

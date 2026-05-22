@@ -399,7 +399,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         image_ref.yuvRange == libavif_sys::AVIF_RANGE_FULL,
     )
     .with_clli(image_ref.clli.maxCLL, image_ref.clli.maxPALL);
-    let color_space = metadata.color_space_hint();
 
     // Prefer AOMedia **libavif** `avifImageApplyGainMap` (`gainmap.c`): same YUV→RGB + tone map
     // path as the public API. `hdrHeadroom` is **log₂( HDR white / SDR white )** per `avif.h`.
@@ -482,6 +481,9 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
 
     let (rgba_u16, rgb_out_depth) =
         decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string)?;
+
+    let metadata = avif_yuv_to_rgb_output_metadata(&metadata, image_ref);
+    let color_space = metadata.color_space_hint();
 
     // Software fallback (e.g. ICC + gain map: `avifImageApplyGainMap` returns NOT_IMPLEMENTED).
     // Base RGB from `avifImageYUVToRGB` uses the image CICP transfer before ISO gain-map recovery.
@@ -571,10 +573,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     // The lcms2 transform produces **sRGB-OETF-encoded floats in [0,1]** which the WGSL shader
     // then linearises via `srgb_to_linear`. Falls through to CICP interpretation when the file
     // has no ICC, when lcms2 is unavailable (build without `jpegxl`), or when the transform fails.
-    //
-    // **Do not** run ICC→sRGB when CICP already selects **PQ or HLG**: pixels are HDR display codes
-    // for the WGSL `decode_input_transfer` path; lcms perceptual transforms assume SDR-like encodings
-    // and will skew hue (often a blue cast on BT.2020 PQ content with an embedded profile).
     let icc_slice = avif_image_icc_bytes(image_ref);
     let hdr_transfer_from_cicp = matches!(
         metadata.transfer_function,
@@ -852,6 +850,38 @@ fn rgb_channel_max_f(rgb_depth: u32) -> f32 {
         return u16::MAX as f32;
     }
     ((1u32 << rgb_depth).saturating_sub(1)).max(1) as f32
+}
+
+/// Maps container CICP to shader transfer after [`libavif_sys::avifImageYUVToRGB`].
+#[cfg(feature = "avif-native")]
+fn avif_yuv_to_rgb_output_metadata(
+    cicp_metadata: &HdrImageMetadata,
+    image_ref: &libavif_sys::avifImage,
+) -> HdrImageMetadata {
+    use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
+
+    let mut metadata = cicp_metadata.clone();
+    if image_ref.gainMap.is_null()
+        && matches!(
+            metadata.transfer_function,
+            HdrTransferFunction::Pq | HdrTransferFunction::Hlg
+        )
+    {
+        log::debug!(
+            "[AVIF] YUV→RGB buffer uses display gamma (not PQ/HLG codes); \
+             shader transfer {:?} → sRGB / linear sRGB (CICP tf={} primaries={} matrix={})",
+            metadata.transfer_function,
+            image_ref.transferCharacteristics,
+            image_ref.colorPrimaries,
+            image_ref.matrixCoefficients,
+        );
+        metadata.transfer_function = HdrTransferFunction::Srgb;
+        metadata.reference = HdrReference::Unknown;
+        // Numeric values match libavif PNG export / paired SDR references (BT.709-like RGB),
+        // not PQ codes in BT.2020 linear light — skip Rec.2020 primary conversion in WGSL.
+        metadata.color_profile = HdrColorProfile::LinearSrgb;
+    }
+    metadata
 }
 
 /// Matrices libavif’s RGB reformat path does not implement directly (`reformat.c` /
@@ -1353,6 +1383,71 @@ mod tests {
         assert_eq!(
             super::avif_irot_imir_to_exif_orientation(IROT | IMIR, 3, 1),
             5
+        );
+    }
+
+    #[test]
+    fn avif_yuv_to_rgb_metadata_overrides_pq_hlg_without_gain_map() {
+        use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
+
+        let cicp = avif_cicp_to_metadata(9, 16, 9, true);
+        assert_eq!(cicp.transfer_function, HdrTransferFunction::Pq);
+
+        let image = libavif_sys::avifImage {
+            gainMap: std::ptr::null_mut(),
+            transferCharacteristics: 16,
+            colorPrimaries: 9,
+            matrixCoefficients: 9,
+            ..unsafe { std::mem::zeroed() }
+        };
+        let adjusted = super::avif_yuv_to_rgb_output_metadata(&cicp, &image);
+        assert_eq!(adjusted.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(adjusted.reference, HdrReference::Unknown);
+        assert_eq!(adjusted.color_profile, HdrColorProfile::LinearSrgb);
+    }
+
+    /// Local probe: `cargo test probe_netflix_cosmos -- --ignored --nocapture`
+    #[cfg(feature = "avif-native")]
+    #[test]
+    #[ignore = "manual probe against Netflix cosmos AVIF on disk"]
+    fn probe_netflix_cosmos_raw_decode() {
+        use crate::hdr::decode::{decode_transfer_to_display_linear, hdr_to_sdr_rgba8_with_tone_settings};
+        use crate::hdr::types::HdrToneMapSettings;
+        use std::path::Path;
+
+        let path = Path::new(
+            "/home/happy/Downloads/HDR/av1-avif/testFiles/Netflix/avif/hdr_cosmos07296_cicp9-16-9_yuv444_full_qp40.avif",
+        );
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read avif");
+        let hdr = super::decode_avif_hdr_bytes(&bytes).expect("decode avif");
+        let cx = hdr.width as usize / 2;
+        let cy = hdr.height as usize / 2;
+        let i = (cy * hdr.width as usize + cx) * 4;
+        let raw = [
+            hdr.rgba_f32[i],
+            hdr.rgba_f32[i + 1],
+            hdr.rgba_f32[i + 2],
+        ];
+        eprintln!("metadata tf={:?} cs={:?}", hdr.metadata.transfer_function, hdr.color_space);
+        eprintln!("center raw f32 RGB = {raw:?}");
+        let tone = HdrToneMapSettings {
+            max_display_nits: 450.0,
+            ..HdrToneMapSettings::default()
+        };
+        let linear = decode_transfer_to_display_linear(raw, hdr.metadata.transfer_function, tone.sdr_white_nits);
+        eprintln!("center display-linear = {linear:?}");
+        assert!(
+            linear[0] < 1.5 && linear[1] < 1.5 && linear[2] < 1.5,
+            "PQ double-decode would push linear values far above 1.0"
+        );
+        let sdr = hdr_to_sdr_rgba8_with_tone_settings(&hdr, 0.0, &tone).expect("sdr");
+        eprintln!(
+            "center sdr rgba8 = [{}, {}, {}]",
+            sdr[i], sdr[i + 1], sdr[i + 2]
         );
     }
 }

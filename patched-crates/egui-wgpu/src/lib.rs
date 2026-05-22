@@ -22,6 +22,7 @@ pub use wgpu;
 mod renderer;
 
 mod setup;
+mod vulkan_hdr;
 
 pub use renderer::*;
 pub use setup::{
@@ -335,6 +336,111 @@ impl RequestedSurfaceFormat {
     }
 }
 
+/// Mailbox the application uses to tell the painter whether `Rgb10a2Unorm`
+/// swap chains expect PQ-encoded UI (HDR10 compositors) or gamma 2.2 electrical
+/// values (KWin KMS HDR offload).
+#[derive(Clone, Default)]
+pub struct RequestedRgb10a2PqEncode {
+    inner: Arc<std::sync::Mutex<Option<bool>>>,
+}
+
+impl std::fmt::Debug for RequestedRgb10a2PqEncode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestedRgb10a2PqEncode")
+            .field("pending", &self.peek())
+            .finish()
+    }
+}
+
+impl RequestedRgb10a2PqEncode {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn request(&self, pq_encode: bool) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(pq_encode);
+        }
+    }
+
+    pub fn peek(&self) -> Option<bool> {
+        self.inner.lock().ok().and_then(|s| *s)
+    }
+
+    pub fn take(&self) -> Option<bool> {
+        self.inner.lock().ok().and_then(|mut s| s.take())
+    }
+}
+
+/// Live SDR-white / panel-peak scale for KWin gamma 2.2 HDR UI output.
+#[derive(Clone, Default)]
+pub struct Gamma22DisplayScale {
+    inner: Arc<std::sync::Mutex<f32>>,
+}
+
+impl std::fmt::Debug for Gamma22DisplayScale {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gamma22DisplayScale")
+            .field("scale", &self.get())
+            .finish()
+    }
+}
+
+impl Gamma22DisplayScale {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(1.0)),
+        }
+    }
+
+    pub fn set(&self, scale: f32) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = scale.clamp(0.0, f32::MAX);
+        }
+    }
+
+    pub fn get(&self) -> f32 {
+        self.inner.lock().map(|s| *s).unwrap_or(1.0)
+    }
+}
+
+/// Vulkan WSI `(format, color_space)` HDR gates published after the first surface probe.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct VulkanWsiHdrGates {
+    pub hdr10_st2084_rgb10a2: bool,
+    pub extended_srgb_linear_rgba16f: bool,
+    pub probed: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct VulkanWsiHdrGatesMailbox {
+    inner: Arc<std::sync::Mutex<VulkanWsiHdrGates>>,
+}
+
+impl std::fmt::Debug for VulkanWsiHdrGatesMailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanWsiHdrGatesMailbox")
+            .field("gates", &self.get())
+            .finish()
+    }
+}
+
+impl VulkanWsiHdrGatesMailbox {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, gates: VulkanWsiHdrGates) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = gates;
+        }
+    }
+
+    pub fn get(&self) -> VulkanWsiHdrGates {
+        self.inner.lock().map(|s| *s).unwrap_or_default()
+    }
+}
+
 /// Reverse-direction mailbox that the painter uses to publish the **current
 /// active** swap-chain target format back to the application.
 ///
@@ -429,6 +535,15 @@ pub struct WgpuConfiguration {
     /// OSD / shader-mode state in sync after cross-monitor drags.
     /// See [`ActiveSurfaceFormat`] for the contract.
     pub active_target_format: ActiveSurfaceFormat,
+
+    /// When the active monitor uses `Rgb10a2Unorm`, selects PQ vs gamma 2.2 UI encoding.
+    pub requested_rgb10a2_pq_encode: RequestedRgb10a2PqEncode,
+
+    /// SDR white / panel peak scale for gamma 2.2 HDR UI on `Rgb10a2Unorm`.
+    pub gamma22_display_scale: Gamma22DisplayScale,
+
+    /// Vulkan WSI HDR surface gates (`HDR10_ST2084_EXT`, etc.) from the first probe.
+    pub vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox,
 
     /// How to create the wgpu adapter & device
     pub wgpu_setup: WgpuSetup,
@@ -581,6 +696,9 @@ impl std::fmt::Debug for WgpuConfiguration {
             preferred_target_format,
             requested_target_format,
             active_target_format,
+            requested_rgb10a2_pq_encode,
+            gamma22_display_scale,
+            vulkan_wsi_hdr_gates,
             wgpu_setup,
             on_surface_status: _,
         } = self;
@@ -594,6 +712,9 @@ impl std::fmt::Debug for WgpuConfiguration {
             .field("preferred_target_format", &preferred_target_format)
             .field("requested_target_format", &requested_target_format)
             .field("active_target_format", &active_target_format)
+            .field("requested_rgb10a2_pq_encode", &requested_rgb10a2_pq_encode)
+            .field("gamma22_display_scale", &gamma22_display_scale)
+            .field("vulkan_wsi_hdr_gates", &vulkan_wsi_hdr_gates)
             .finish_non_exhaustive()
     }
 }
@@ -606,6 +727,9 @@ impl Default for WgpuConfiguration {
             preferred_target_format: None,
             requested_target_format: RequestedSurfaceFormat::new(),
             active_target_format: ActiveSurfaceFormat::new(),
+            requested_rgb10a2_pq_encode: RequestedRgb10a2PqEncode::new(),
+            gamma22_display_scale: Gamma22DisplayScale::new(),
+            vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox::new(),
             // No display handle available at this point — callers should replace this with
             // `WgpuSetup::from_display_handle(...)` before creating the instance if one is available.
             wgpu_setup: WgpuSetup::without_display_handle(),
