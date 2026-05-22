@@ -32,21 +32,32 @@ pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrRenderOutputMode {
     SdrToneMapped = 0,
+    /// Linear scRGB / EDR (`Rgba16Float`, `Rgba32Float`).
     NativeHdr = 1,
+    /// PQ HDR10 (`Rgb10a2Unorm` + `VK_COLOR_SPACE_HDR10_ST2084_EXT`).
+    NativeHdrPq = 2,
 }
 
 impl HdrRenderOutputMode {
     pub fn for_target_format(target_format: wgpu::TextureFormat) -> Self {
-        if crate::hdr::surface::is_native_hdr_surface_format(Some(target_format)) {
-            Self::NativeHdr
-        } else {
-            Self::SdrToneMapped
+        match target_format {
+            wgpu::TextureFormat::Rgb10a2Unorm => Self::NativeHdrPq,
+            wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float => Self::NativeHdr,
+            format if crate::hdr::surface::is_native_hdr_surface_format(Some(format)) => {
+                Self::NativeHdr
+            }
+            _ => Self::SdrToneMapped,
         }
+    }
+
+    pub fn is_native_hdr(self) -> bool {
+        matches!(self, Self::NativeHdr | Self::NativeHdrPq)
     }
 
     pub fn as_diagnostic_label(self) -> &'static str {
         match self {
             Self::NativeHdr => "native_hdr",
+            Self::NativeHdrPq => "native_hdr_pq",
             Self::SdrToneMapped => "sdr_tone_mapped",
         }
     }
@@ -85,6 +96,7 @@ const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 // Keeps generated UVs inside the texture for the fullscreen triangle edge.
 const MAX_UV_CLAMP: f32 = 0.999999;
 const OUTPUT_MODE_NATIVE_HDR: u32 = 1u;
+const OUTPUT_MODE_NATIVE_HDR_PQ: u32 = 2u;
 const INPUT_COLOR_SPACE_REC2020_LINEAR: u32 = 2u;
 const INPUT_COLOR_SPACE_ACES2065_1: u32 = 3u;
 const INPUT_COLOR_SPACE_XYZ: u32 = 4u;
@@ -281,6 +293,19 @@ fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
 }
 
+fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let nits = max(rgb * settings.sdr_white_nits, vec3<f32>(0.0));
+    let lm1 = pow(nits, vec3<f32>(m1));
+    let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
+    let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
+    return pow(num / den, vec3<f32>(m2));
+}
+
 fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     // scRGB / Rgba16Float / Rgba32Float native HDR is **linear** (1.0 = SDR white reference).
     // The OS compositor (Windows scRGB, macOS EDR) maps linear values to the display's actual
@@ -288,6 +313,13 @@ fn encode_native_hdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     // non-HDR panels advertising HDR support (conformance `bench_oriented_brg`).
     let exposure_scale = exp2(settings.exposure_ev);
     return sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
+}
+
+fn encode_native_hdr_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
+    // Wayland HDR10 swap chains store PQ-encoded values in Rgb10a2Unorm.
+    let exposure_scale = exp2(settings.exposure_ev);
+    let linear = sanitize_hdr_rgb(rgb * exposure_scale * settings.native_display_scale);
+    return display_linear_to_pq(linear, settings);
 }
 
 @vertex
@@ -318,7 +350,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
     let source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
     var rgb: vec3<f32>;
-    if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
+    if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_PQ {
+        rgb = encode_native_hdr_pq(source_rgb, tone_map);
+    } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
         rgb = encode_native_hdr(source_rgb, tone_map);
     } else {
         rgb = encode_sdr(source_rgb, tone_map);
@@ -1838,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn render_mode_uses_native_hdr_for_float_targets_only() {
+    fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
         assert_eq!(
             HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba16Float),
             HdrRenderOutputMode::NativeHdr
@@ -1846,6 +1880,10 @@ mod tests {
         assert_eq!(
             HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba32Float),
             HdrRenderOutputMode::NativeHdr
+        );
+        assert_eq!(
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgb10a2Unorm),
+            HdrRenderOutputMode::NativeHdrPq
         );
         assert_eq!(
             HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Bgra8Unorm),
@@ -1922,6 +1960,13 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("let src_a = clamp(hdr.a, 0.0, 1.0)"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("a_out * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
+    }
+
+    #[test]
+    fn native_hdr_pq_shader_encodes_pq_for_rgb10a2_target() {
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_PQ"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_pq"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
     }
 
     #[test]

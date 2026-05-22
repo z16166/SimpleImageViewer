@@ -123,7 +123,7 @@ pub(crate) fn select_render_backend(
     has_hdr_target: bool,
     output_mode: HdrRenderOutputMode,
 ) -> PlaneBackendKind {
-    if has_hdr_plane && has_hdr_target && output_mode == HdrRenderOutputMode::NativeHdr {
+    if has_hdr_plane && has_hdr_target && output_mode.is_native_hdr() {
         PlaneBackendKind::Hdr
     } else if has_hdr_plane && !has_sdr_fallback {
         PlaneBackendKind::Hdr

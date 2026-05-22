@@ -9,11 +9,20 @@ use wgpu::util::DeviceExt as _;
 pub fn egui_framebuffer_shader_entry_point(
     output_color_format: wgpu::TextureFormat,
 ) -> &'static str {
-    if egui_framebuffer_expects_linear_writes(output_color_format) {
+    if egui_framebuffer_expects_pq_writes(output_color_format) {
+        "fs_main_pq_framebuffer"
+    } else if egui_framebuffer_expects_linear_writes(output_color_format) {
         "fs_main_linear_framebuffer"
     } else {
         "fs_main_gamma_framebuffer"
     }
+}
+
+/// Diffuse white (nits) for PQ UI output; matches SimpleImageViewer tone-map defaults.
+const EGUI_PQ_SDR_WHITE_NITS: f32 = 203.0;
+
+pub fn egui_framebuffer_expects_pq_writes(output_color_format: wgpu::TextureFormat) -> bool {
+    output_color_format == wgpu::TextureFormat::Rgb10a2Unorm
 }
 
 /// Returns `true` when the supplied swap-chain/framebuffer format expects
@@ -63,6 +72,23 @@ pub fn srgb_gamma_channel_to_linear(x: f32) -> f32 {
     }
 }
 
+fn display_linear_nits_to_pq(nits: f32) -> f32 {
+    const M1: f32 = 2610.0 / 16384.0;
+    const M2: f32 = 2523.0 / 32.0;
+    const C1: f32 = 3424.0 / 4096.0;
+    const C2: f32 = 2413.0 / 128.0;
+    const C3: f32 = 2392.0 / 128.0;
+
+    if !nits.is_finite() {
+        return nits;
+    }
+    let nits = nits.max(0.0);
+    let lm1 = nits.powf(M1);
+    let num = C1 + C2 * lm1;
+    let den = 1.0 + C3 * lm1;
+    (num / den).powf(M2)
+}
+
 /// Transforms the `clear_color` that `eframe` supplies (sRGB gamma RGB +
 /// straight alpha) into the color space expected by the current swap-chain
 /// format, matching the conversion the egui fragment shader performs for
@@ -75,6 +101,19 @@ pub fn clear_color_for_framebuffer_format(
     clear_color: [f32; 4],
     output_color_format: wgpu::TextureFormat,
 ) -> [f32; 4] {
+    if egui_framebuffer_expects_pq_writes(output_color_format) {
+        let linear = [
+            srgb_gamma_channel_to_linear(clear_color[0]),
+            srgb_gamma_channel_to_linear(clear_color[1]),
+            srgb_gamma_channel_to_linear(clear_color[2]),
+        ];
+        return [
+            display_linear_nits_to_pq(linear[0] * EGUI_PQ_SDR_WHITE_NITS),
+            display_linear_nits_to_pq(linear[1] * EGUI_PQ_SDR_WHITE_NITS),
+            display_linear_nits_to_pq(linear[2] * EGUI_PQ_SDR_WHITE_NITS),
+            clear_color[3],
+        ];
+    }
     if egui_framebuffer_expects_linear_writes(output_color_format) {
         [
             srgb_gamma_channel_to_linear(clear_color[0]),
@@ -1318,6 +1357,10 @@ fn hdr_float_target_uses_linear_framebuffer_shader_for_sdr_ui() {
         "fs_main_linear_framebuffer"
     );
     assert_eq!(
+        egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Rgb10a2Unorm),
+        "fs_main_pq_framebuffer"
+    );
+    assert_eq!(
         egui_framebuffer_shader_entry_point(wgpu::TextureFormat::Bgra8Unorm),
         "fs_main_gamma_framebuffer"
     );
@@ -1363,6 +1406,21 @@ mod clear_color_tests {
         assert!(approx_eq(linear[1], 0.214_041_13));
         assert!(approx_eq(linear[2], 0.214_041_13));
         assert_eq!(linear[3], 1.0);
+    }
+
+    #[test]
+    fn pq_target_receives_pq_encoded_clear_color() {
+        let gamma = [12.0 / 255.0, 12.0 / 255.0, 12.0 / 255.0, 180.0 / 255.0];
+        let pq = clear_color_for_framebuffer_format(gamma, wgpu::TextureFormat::Rgb10a2Unorm);
+        let linear = [
+            srgb_gamma_channel_to_linear(gamma[0]) * EGUI_PQ_SDR_WHITE_NITS,
+            srgb_gamma_channel_to_linear(gamma[1]) * EGUI_PQ_SDR_WHITE_NITS,
+            srgb_gamma_channel_to_linear(gamma[2]) * EGUI_PQ_SDR_WHITE_NITS,
+        ];
+        assert!(approx_eq(pq[0], display_linear_nits_to_pq(linear[0])));
+        assert!(approx_eq(pq[1], display_linear_nits_to_pq(linear[1])));
+        assert!(approx_eq(pq[2], display_linear_nits_to_pq(linear[2])));
+        assert_eq!(pq[3], gamma[3]);
     }
 
     #[test]

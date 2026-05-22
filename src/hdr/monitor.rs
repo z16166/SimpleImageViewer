@@ -282,7 +282,8 @@ pub fn effective_capability_output_mode(
     selection: Option<&HdrMonitorSelection>,
 ) -> HdrOutputMode {
     match effective_render_output_mode(target_format, selection) {
-        HdrRenderOutputMode::NativeHdr => {
+        HdrRenderOutputMode::SdrToneMapped => HdrOutputMode::SdrToneMapped,
+        _ => {
             if cfg!(target_os = "windows") {
                 HdrOutputMode::WindowsScRgb
             } else if cfg!(target_os = "macos") {
@@ -293,7 +294,6 @@ pub fn effective_capability_output_mode(
                 HdrOutputMode::SdrToneMapped
             }
         }
-        HdrRenderOutputMode::SdrToneMapped => HdrOutputMode::SdrToneMapped,
     }
 }
 

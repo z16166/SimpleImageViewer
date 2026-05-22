@@ -56,6 +56,22 @@ fn gamma_from_linear_rgb(rgb: vec3<f32>) -> vec3<f32> {
     return select(higher, lower, cutoff);
 }
 
+// Matches `DEFAULT_SDR_WHITE_NITS` in SimpleImageViewer's HDR tone-map settings.
+const EGUI_PQ_SDR_WHITE_NITS: f32 = 203.0;
+
+fn display_linear_to_pq(rgb: vec3<f32>) -> vec3<f32> {
+    let m1 = 2610.0 / 16384.0;
+    let m2 = 2523.0 / 32.0;
+    let c1 = 3424.0 / 4096.0;
+    let c2 = 2413.0 / 128.0;
+    let c3 = 2392.0 / 128.0;
+    let nits = max(rgb * EGUI_PQ_SDR_WHITE_NITS, vec3<f32>(0.0));
+    let lm1 = pow(nits, vec3<f32>(m1));
+    let num = vec3<f32>(c1) + vec3<f32>(c2) * lm1;
+    let den = vec3<f32>(1.0) + vec3<f32>(c3) * lm1;
+    return pow(num / den, vec3<f32>(m2));
+}
+
 // 0-1 sRGBA gamma  from  0-1 linear
 fn gamma_from_linear_rgba(linear_rgba: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(gamma_from_linear_rgb(linear_rgba.rgb), linear_rgba.a);
@@ -145,6 +161,19 @@ fn fs_main_linear_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
     return vec4<f32>(out_color_linear, out_color_gamma.a);
+}
+
+@fragment
+fn fs_main_pq_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
+    let tex_gamma = sample_texture(in);
+    var out_color_gamma = in.color * tex_gamma;
+    if r_locals.dithering == 1 {
+        let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
+        out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
+    }
+    let out_color_linear = linear_from_gamma_rgb(out_color_gamma.rgb);
+    let out_color_pq = display_linear_to_pq(out_color_linear);
+    return vec4<f32>(out_color_pq, out_color_gamma.a);
 }
 
 @fragment
