@@ -354,7 +354,7 @@ fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> 
     return pow(num / den, vec3<f32>(m2));
 }
 
-// Scene-referred linear to display-referred before KWin gamma 2.2 OETF (same Reinhard as encode_sdr).
+// Scene-referred linear → display-referred before KWin gamma 2.2 OETF (same Reinhard as encode_sdr).
 fn scene_linear_to_display_referred(scrgb: vec3<f32>) -> vec3<f32> {
     return reinhard_tone_map(scrgb);
 }
@@ -2068,7 +2068,6 @@ mod tests {
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
-        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn scene_linear_to_display_referred"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
         assert!(

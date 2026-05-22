@@ -39,8 +39,10 @@ pub fn egui_framebuffer_expects_gamma22_hdr_writes(
 }
 
 fn gamma22_electrical_from_srgb_gamma(channel: f32, display_scale: f32) -> f32 {
-    let linear = srgb_gamma_channel_to_linear(channel) * display_scale;
-    linear.max(0.0).powf(1.0 / 2.2)
+    let linear = srgb_gamma_channel_to_linear(channel);
+    let mapped = linear / (1.0 + linear.max(0.0));
+    let peak = (mapped * display_scale).clamp(0.0, 1.0);
+    peak.powf(1.0 / 2.2)
 }
 
 /// Returns `true` when the supplied swap-chain/framebuffer format expects

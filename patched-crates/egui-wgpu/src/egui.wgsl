@@ -179,20 +179,27 @@ fn fs_main_pq_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(out_color_pq, out_color_gamma.a);
 }
 
+fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
+    return rgb / (vec3<f32>(1.0) + rgb);
+}
+
 const INVERSE_GAMMA22: f32 = 1.0 / 2.2;
 
 @fragment
 fn fs_main_gamma22_hdr_framebuffer(in: VertexOutput) -> @location(0) vec4<f32> {
     // KWin KMS HDR offload expects gamma 2.2 electrical values in Rgb10a2Unorm.
-    // Scale SDR-linear UI so 1.0 maps to panel SDR white, not peak luminance.
+    // Match SimpleImageViewer HDR image-plane `encode_native_hdr_gamma22` for scene-linear
+    // content so SDR/JPEG companions (egui texture blit) match EXR on the same output.
     let tex_gamma = sample_texture(in);
     var out_color_gamma = in.color * tex_gamma;
     if r_locals.dithering == 1 {
         let out_color_gamma_rgb = dither_interleaved(out_color_gamma.rgb, 256.0, in.position);
         out_color_gamma = vec4<f32>(out_color_gamma_rgb, out_color_gamma.a);
     }
-    let linear = linear_from_gamma_rgb(out_color_gamma.rgb) * r_locals.gamma22_display_scale;
-    let electrical = pow(max(linear, vec3<f32>(0.0)), vec3<f32>(INVERSE_GAMMA22));
+    let linear = linear_from_gamma_rgb(out_color_gamma.rgb);
+    let mapped = reinhard_tone_map(linear);
+    let peak = clamp(mapped * r_locals.gamma22_display_scale, vec3<f32>(0.0), vec3<f32>(1.0));
+    let electrical = pow(peak, vec3<f32>(INVERSE_GAMMA22));
     return vec4<f32>(electrical, out_color_gamma.a);
 }
 
