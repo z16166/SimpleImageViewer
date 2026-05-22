@@ -175,22 +175,38 @@ impl Surface for NativeSurface {
             None => vk::SwapchainKHR::null(),
         };
 
-        let color_space = if cfg!(target_os = "linux")
-            && config.format == wgt::TextureFormat::Rgb10a2Unorm
-        {
-            use crate::linux_swapchain::{
-                preferred_linux_rgb10a2_vk_color_space, LinuxRgb10a2VkColorSpace,
-            };
-            match preferred_linux_rgb10a2_vk_color_space() {
-                LinuxRgb10a2VkColorSpace::Hdr10St2084 => vk::ColorSpaceKHR::HDR10_ST2084_EXT,
-                LinuxRgb10a2VkColorSpace::SrgbNonLinear => vk::ColorSpaceKHR::SRGB_NONLINEAR,
+        // `cfg!` does not gate name resolution; `linux_swapchain` exists only on Linux builds.
+        let color_space = {
+            #[cfg(target_os = "linux")]
+            {
+                if config.format == wgt::TextureFormat::Rgb10a2Unorm {
+                    use crate::linux_swapchain::{
+                        preferred_linux_rgb10a2_vk_color_space, LinuxRgb10a2VkColorSpace,
+                    };
+                    match preferred_linux_rgb10a2_vk_color_space() {
+                        LinuxRgb10a2VkColorSpace::Hdr10St2084 => {
+                            vk::ColorSpaceKHR::HDR10_ST2084_EXT
+                        }
+                        LinuxRgb10a2VkColorSpace::SrgbNonLinear => {
+                            vk::ColorSpaceKHR::SRGB_NONLINEAR
+                        }
+                    }
+                } else if config.format == wgt::TextureFormat::Rgba16Float {
+                    // Enable wide color gamut mode
+                    // Vulkan swapchain for Android only supports DISPLAY_P3_NONLINEAR_EXT and EXTENDED_SRGB_LINEAR_EXT
+                    vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
+                } else {
+                    vk::ColorSpaceKHR::SRGB_NONLINEAR
+                }
             }
-        } else if config.format == wgt::TextureFormat::Rgba16Float {
-            // Enable wide color gamut mode
-            // Vulkan swapchain for Android only supports DISPLAY_P3_NONLINEAR_EXT and EXTENDED_SRGB_LINEAR_EXT
-            vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
-        } else {
-            vk::ColorSpaceKHR::SRGB_NONLINEAR
+            #[cfg(not(target_os = "linux"))]
+            {
+                if config.format == wgt::TextureFormat::Rgba16Float {
+                    vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
+                } else {
+                    vk::ColorSpaceKHR::SRGB_NONLINEAR
+                }
+            }
         };
 
         let original_format = device.shared.private_caps.map_texture_format(config.format);
