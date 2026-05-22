@@ -226,10 +226,15 @@ fn deep_openexr_standard_sample_loads_hdr_float_content() {
 
 #[test]
 fn disk_backed_exr_probe_accepts_subsampled_yc_sample() {
-    let path = std::path::PathBuf::from(r"F:\HDR\openexr-images\Chromaticities\Rec709_YC.exr");
+    let Some(root) = openexr_images_root() else {
+        eprintln!("skipping OpenEXR YC sample test; set SIV_OPENEXR_IMAGES_DIR");
+        return;
+    };
+    let path = root.join("Chromaticities/Rec709_YC.exr");
     if !path.is_file() {
         eprintln!(
-            "skipping OpenEXR YC sample test; set up F:\\HDR\\openexr-images or SIV_OPENEXR_IMAGES_DIR"
+            "skipping OpenEXR YC sample test; missing {}",
+            path.display()
         );
         return;
     }
@@ -237,7 +242,31 @@ fn disk_backed_exr_probe_accepts_subsampled_yc_sample() {
     let image_data = try_load_disk_backed_exr_hdr(&path, 1.0, HdrToneMapSettings::default())
         .expect("probe should load subsampled YC EXR");
 
-    assert!(matches!(image_data, Some(ImageData::HdrTiled { .. })));
+    assert!(
+        matches!(image_data, Some(ImageData::Hdr { .. })),
+        "subsampled EXR below tile threshold should decode to static HDR, not viewer tiles"
+    );
+}
+
+#[test]
+fn subsampled_exr_below_tile_threshold_routes_to_static_hdr() {
+    let path = openexr_images_root()
+        .map(|root| root.join("LuminanceChroma/MtTamNorth.exr"))
+        .filter(|path| path.is_file());
+    let Some(path) = path else {
+        eprintln!(
+            "skipping MtTamNorth static routing test; set SIV_OPENEXR_IMAGES_DIR to openexr-images"
+        );
+        return;
+    };
+
+    let image_data = try_load_disk_backed_exr_hdr(&path, 1.0, HdrToneMapSettings::default())
+        .expect("probe should load MtTamNorth EXR");
+
+    let Some(ImageData::Hdr { hdr, .. }) = image_data else {
+        panic!("expected small subsampled EXR to route to static HDR image data");
+    };
+    assert_eq!((hdr.width, hdr.height), (1198, 796));
 }
 
 #[test]
