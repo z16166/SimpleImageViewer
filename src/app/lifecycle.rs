@@ -350,6 +350,15 @@ impl ImageViewerApp {
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
             log::info!("{diagnostic}");
         }
+        #[cfg(target_os = "linux")]
+        {
+            log::info!(
+                "[HDR] linux presentation: wayland_session={} hdr_platform_eligible={} output_mode={:?}",
+                crate::hdr::platform::is_wayland_session(),
+                crate::hdr::platform::linux_native_hdr_platform_eligible(),
+                app.hdr_capabilities.output_mode,
+            );
+        }
         app.loader
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader

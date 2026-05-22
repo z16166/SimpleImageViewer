@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 
 ## [2.0.7] - 2026-05-22
 
+### Added
+- **Linux Wayland HDR presentation (experimental)**: Native HDR10 swap chains on Wayland when the compositor exposes HDR via color management (`wp_color_management`; KDE Plasma 6 / GNOME 50+ with Mesa ≥ 25.1). Prefers 10-bit HDR surfaces (`Rgb10a2Unorm`). X11 sessions remain SDR tone-mapped. NVIDIA proprietary Linux drivers may not yet expose the required Vulkan HDR extensions.
+
+### Changed
+- **Linux HDR settings**: The native HDR surface toggle is available under Wayland; X11 sessions show an explanatory hint instead.
+
 ### Fixed
 - **Windows ARM64 only**: Startup no longer probes the OpenGL/WGL backend during wgpu adapter enumeration (uses DX12/Vulkan only). Fixes a first-launch crash in `strlen` inside GLES/WGL init on native ARM64 Windows and Parallels VMs. x64 Windows is unchanged.
 

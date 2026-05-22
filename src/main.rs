@@ -887,6 +887,16 @@ fn main() -> eframe::Result {
     }
     log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
 
+    #[cfg(target_os = "linux")]
+    {
+        log::info!(
+            "[HDR] linux session: wayland={} platform_eligible={} native_surface_request_effective={}",
+            crate::hdr::platform::is_wayland_session(),
+            crate::hdr::platform::linux_native_hdr_platform_eligible(),
+            settings.hdr_native_surface_enabled_effective(),
+        );
+    }
+
     // Shared mailbox the app writes into when the active monitor's HDR
     // capability changes (drag between HDR and SDR monitor); the patched
     // egui-wgpu Painter polls it every frame and hot-swaps the swap-chain
