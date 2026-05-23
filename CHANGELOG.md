@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.1.1] - 2026-05-23
+
+### Added
+- **Linux HDR10 metadata (per image)**: On Wayland HDR10 PQ swap chains, the viewer now submits `VK_EXT_hdr_metadata` (ST 2086) when you open or switch HDR images—**MaxCLL** / **MaxFALL** follow the current picture instead of using fixed defaults. Applies to **all native HDR decode paths** (AVIF, HEIF/HEIC, JPEG XL, Ultra HDR JPEG_R, OpenEXR, Radiance `.hdr`/`.pic`, float/LogLuv TIFF, and tiled large images).
+
+### Improved
+- **Linux HDR10 color metadata**: Mastering display primaries in the Vulkan HDR infoframe use **BT.2020 + D65**, matching the HDR10 PQ pipeline.
+- **Ultra HDR JPEG_R**: Gain-map headroom is mapped into luminance hints so MaxCLL can be derived from container metadata before pixel scanning.
+
+### Fixed
+- **AVIF HDR PQ colour** (since **2.1.0**; note added in this release): PQ AVIF decoded through YUV→RGB—including Microsoft **Chimera** (`Chimera_10bit_…_with_HDR_metadata.avif`)—no longer look oversaturated on **Windows** and **Linux**. The viewer treats `libavif` RGB output as **display sRGB gamma**, not PQ code values (avoids a second PQ EOTF in the HDR shader), and applies BT.2020 **matrix MC=10→NCL** fallback for Chimera-class payloads where the container tag does not match the coded luma/chroma.
+
 ## [2.1.0] - 2026-05-22
 
 ### Added

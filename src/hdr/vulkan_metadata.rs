@@ -1,0 +1,260 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+//! Build [`eframe::egui_wgpu::VulkanHdrMetadata`] from decoded HDR image metadata.
+//!
+//! This module is **format-agnostic**: every HDR decode path produces
+//! [`HdrImageMetadata`] + optional [`HdrImageBuffer`] pixels. Vulkan ST 2086
+//! metadata is derived from that unified representation, not from individual
+//! file extensions.
+//!
+//! | Source | MaxCLL / peak hint | MaxFALL | Notes |
+//! |--------|-------------------|---------|-------|
+//! | AVIF (PQ/HLG) | CLLI `max_cll_nits` | CLLI `max_fall_nits` | Container metadata |
+//! | HEIF / HEIC | CICP transfer + optional scan | scan / 0 | PQ/HLG via NCLX |
+//! | JPEG XL (float HDR) | `intensity_target` or scan | scan / 0 | libjxl basic info |
+//! | Ultra HDR JPEG_R | Gain-map `hdr_capacity_max` or scan | scan / 0 | ISO / XMP headroom |
+//! | EXR / Radiance `.hdr` | Pixel scan (scene-linear) | scan / 0 | No container CLLI |
+//! | Float / LogLuv TIFF | Pixel scan (scene-linear) | scan / 0 | IEEE float / LogLuv decode |
+//! | Tiled HDR | `HdrTiledSource::metadata()` + preview scan | preview scan / 0 | Preview refines peak |
+
+use eframe::egui_wgpu::VulkanHdrMetadata;
+
+use super::decode::{hlg_nonlinear_to_scene_linear, pq_nonlinear_to_absolute_nits};
+use super::types::{
+    HdrColorSpace, HdrImageBuffer, HdrLuminanceMetadata, HdrTransferFunction,
+    DEFAULT_SDR_WHITE_NITS,
+};
+
+const DEFAULT_MASTERING_MAX_NITS: f32 = 1000.0;
+const DEFAULT_MASTERING_MIN_NITS: f32 = 0.005;
+const MAX_PEAK_SCAN_SAMPLES: usize = 1_048_576;
+
+/// Resolve MaxCLL (nits) for swap-chain metadata across all HDR formats.
+///
+/// Priority: container MaxCLL → subsampled pixel peak → container mastering
+/// peak (`intensity_target`, gain-map headroom, …) → none.
+pub fn content_peak_nits(
+    luminance: &HdrLuminanceMetadata,
+    buffer: Option<&HdrImageBuffer>,
+) -> Option<f32> {
+    if let Some(max_cll) = luminance
+        .max_cll_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        return Some(max_cll);
+    }
+
+    if let Some(buffer) = buffer {
+        if let Some(peak) = estimate_max_cll_nits(buffer) {
+            return Some(peak);
+        }
+    }
+
+    luminance
+        .mastering_max_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// Build swap-chain ST 2086 metadata for the current HDR image.
+pub fn vulkan_hdr_metadata_from_luminance(
+    luminance: &HdrLuminanceMetadata,
+    content_peak_nits: Option<f32>,
+) -> VulkanHdrMetadata {
+    let max_cll = content_peak_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_MASTERING_MAX_NITS);
+
+    let max_fall = luminance
+        .max_fall_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0);
+
+    let mastering_max = luminance
+        .mastering_max_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(max_cll.max(DEFAULT_MASTERING_MAX_NITS));
+
+    let min_luminance = luminance
+        .mastering_min_nits
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(DEFAULT_MASTERING_MIN_NITS);
+
+    VulkanHdrMetadata {
+        mastering_max_luminance_nits: mastering_max,
+        max_content_light_level_nits: max_cll,
+        max_frame_average_luminance_nits: max_fall,
+        min_luminance_nits: min_luminance,
+    }
+}
+
+/// Estimate MaxCLL (nits) by subsampling decoded pixel values.
+pub fn estimate_max_cll_nits(buffer: &HdrImageBuffer) -> Option<f32> {
+    let pixel_count = buffer
+        .width
+        .checked_mul(buffer.height)?
+        .min(buffer.rgba_f32.len() as u32 / 4) as usize;
+    if pixel_count == 0 {
+        return None;
+    }
+
+    let stride = (pixel_count / MAX_PEAK_SCAN_SAMPLES).max(1);
+    let sdr_white = buffer
+        .metadata
+        .luminance
+        .sdr_white_nits
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_SDR_WHITE_NITS);
+    let transfer = buffer.metadata.transfer_function;
+
+    let mut peak_nits = 0.0_f32;
+    for (index, pixel) in buffer.rgba_f32.chunks_exact(4).enumerate() {
+        if index % stride != 0 {
+            continue;
+        }
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        let nits = pixel_rgb_to_peak_nits(rgb, buffer.color_space, transfer, sdr_white);
+        if nits.is_finite() {
+            peak_nits = peak_nits.max(nits);
+        }
+    }
+
+    (peak_nits > 0.0 && peak_nits.is_finite()).then_some(peak_nits)
+}
+
+fn pixel_rgb_to_peak_nits(
+    rgb: [f32; 3],
+    color_space: HdrColorSpace,
+    transfer: HdrTransferFunction,
+    sdr_white_nits: f32,
+) -> f32 {
+    match transfer {
+        HdrTransferFunction::Pq => rgb
+            .map(|code| pq_nonlinear_to_absolute_nits(code.clamp(0.0, 1.0)))
+            .into_iter()
+            .fold(0.0_f32, f32::max),
+        HdrTransferFunction::Hlg => {
+            let linear = rgb.map(|code| hlg_nonlinear_to_scene_linear(code.clamp(0.0, 1.0)));
+            linear_luminance(linear, color_space) * sdr_white_nits
+        }
+        HdrTransferFunction::Linear | HdrTransferFunction::Srgb => {
+            let linear = if matches!(transfer, HdrTransferFunction::Srgb) {
+                rgb.map(srgb_nonlinear_to_linear)
+            } else {
+                rgb
+            };
+            let lum = linear_luminance(linear, color_space);
+            if lum <= 1.5 {
+                lum * sdr_white_nits
+            } else {
+                lum
+            }
+        }
+        HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => {
+            linear_luminance(rgb, color_space) * sdr_white_nits
+        }
+    }
+}
+
+fn linear_luminance(linear_rgb: [f32; 3], color_space: HdrColorSpace) -> f32 {
+    let weights = match color_space {
+        HdrColorSpace::Rec2020Linear => [0.2627_f32, 0.6780, 0.0593],
+        _ => [0.2126_f32, 0.7152, 0.0722],
+    };
+    (weights[0] * linear_rgb[0] + weights[1] * linear_rgb[1] + weights[2] * linear_rgb[2]).max(0.0)
+}
+
+fn srgb_nonlinear_to_linear(channel: f32) -> f32 {
+    let channel = channel.clamp(0.0, 1.0);
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrPixelFormat, HdrReference};
+
+    #[test]
+    fn vulkan_metadata_prefers_container_max_cll_over_estimated_peak() {
+        let luminance = HdrLuminanceMetadata {
+            max_cll_nits: Some(4000.0),
+            max_fall_nits: Some(350.0),
+            mastering_max_nits: Some(1000.0),
+            ..HdrLuminanceMetadata::default()
+        };
+        let metadata = vulkan_hdr_metadata_from_luminance(&luminance, Some(800.0));
+        assert_eq!(metadata.max_content_light_level_nits, 800.0);
+        let peak = content_peak_nits(&luminance, None);
+        assert_eq!(peak, Some(4000.0));
+        let metadata = vulkan_hdr_metadata_from_luminance(&luminance, peak);
+        assert_eq!(metadata.max_content_light_level_nits, 4000.0);
+        assert_eq!(metadata.max_frame_average_luminance_nits, 350.0);
+        assert_eq!(metadata.mastering_max_luminance_nits, 1000.0);
+    }
+
+    #[test]
+    fn vulkan_metadata_uses_estimated_peak_when_clli_missing() {
+        let luminance = HdrLuminanceMetadata::default();
+        let metadata = vulkan_hdr_metadata_from_luminance(&luminance, Some(1800.0));
+        assert_eq!(metadata.max_content_light_level_nits, 1800.0);
+        assert_eq!(metadata.mastering_max_luminance_nits, 1800.0);
+    }
+
+    #[test]
+    fn content_peak_falls_back_to_mastering_max_without_buffer() {
+        let luminance = HdrLuminanceMetadata {
+            mastering_max_nits: Some(2550.0),
+            ..HdrLuminanceMetadata::default()
+        };
+        assert_eq!(content_peak_nits(&luminance, None), Some(2550.0));
+    }
+
+    #[test]
+    fn estimate_max_cll_from_pq_buffer_finds_brightest_code_value() {
+        let mut rgba = vec![0.0_f32; 16];
+        rgba[8] = 0.75;
+        let buffer = HdrImageBuffer {
+            width: 2,
+            height: 2,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: HdrImageMetadata {
+                transfer_function: HdrTransferFunction::Pq,
+                reference: HdrReference::DisplayReferred,
+                ..HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear)
+            },
+            rgba_f32: rgba.into(),
+        };
+        let peak = estimate_max_cll_nits(&buffer).expect("peak");
+        assert!(
+            peak > 900.0,
+            "PQ code 0.75 should map to high nits, got {peak}"
+        );
+    }
+
+    #[test]
+    fn estimate_max_cll_from_scene_linear_radiance_hdr_values() {
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata {
+                transfer_function: HdrTransferFunction::Linear,
+                reference: HdrReference::SceneLinear,
+                ..HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb)
+            },
+            rgba_f32: vec![8.0, 8.0, 8.0, 1.0].into(),
+        };
+        assert_eq!(estimate_max_cll_nits(&buffer), Some(8.0));
+    }
+}

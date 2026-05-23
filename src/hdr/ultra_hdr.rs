@@ -24,7 +24,8 @@ use std::cell::Cell;
 
 use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    iso_gain_map_metadata, sample_gain_map_rgb, validate_gain_map_metadata,
+    iso_gain_map_metadata, luminance_hints_from_gain_map, sample_gain_map_rgb,
+    validate_gain_map_metadata,
 };
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
@@ -99,6 +100,12 @@ fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
     )
 }
 
+fn hdr_metadata_for_ultra_hdr_gain_map(gain: GainMapMetadata) -> HdrImageMetadata {
+    let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    metadata.luminance = luminance_hints_from_gain_map(gain);
+    metadata
+}
+
 pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
@@ -138,7 +145,7 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
-        metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+        metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
         rgba_f32: Arc::new(rgba_f32),
     })
 }
@@ -276,6 +283,10 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
         HdrColorSpace::LinearSrgb
     }
 
+    fn metadata(&self) -> HdrImageMetadata {
+        hdr_metadata_for_ultra_hdr_gain_map(self.metadata)
+    }
+
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
         crate::hdr::tiled::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
     }
@@ -354,7 +365,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             width,
             height,
             HdrColorSpace::LinearSrgb,
-            HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            hdr_metadata_for_ultra_hdr_gain_map(self.metadata),
             Arc::new(rgba_f32),
         ));
 

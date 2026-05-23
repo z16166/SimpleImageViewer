@@ -35,4 +35,5 @@ pub mod surface;
 pub mod tiled;
 pub mod types;
 pub mod ultra_hdr;
+pub mod vulkan_metadata;
 pub mod wsi_probe;

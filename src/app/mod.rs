@@ -16,6 +16,7 @@
 
 // ── Submodules ──────────────────────────────────────────────────────────────
 pub(crate) mod hdr_status;
+pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;
 pub(crate) mod input;
 pub(crate) mod lifecycle;
@@ -362,6 +363,9 @@ pub struct ImageViewerApp {
     pub(crate) gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
     /// Vulkan WSI HDR gates published by the painter after the first surface configure.
     pub(crate) vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
+    /// Per-content ST 2086 metadata for Linux `vkSetHdrMetadataEXT`.
+    pub(crate) requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
+    last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
     rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
@@ -888,6 +892,7 @@ impl eframe::App for ImageViewerApp {
         self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
         self.refresh_ultra_hdr_decode_capacity(ctx);
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
+        self.sync_linux_vulkan_hdr_metadata();
 
         // Automatic theme refresh (for System theme trailing detection)
         // Only reconstructs palette when theme actually changes (avoids per-frame allocation)
