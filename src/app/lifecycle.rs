@@ -288,6 +288,7 @@ impl ImageViewerApp {
             requested_vulkan_hdr_metadata,
             #[cfg(target_os = "linux")]
             last_vulkan_hdr_metadata: None,
+            last_logged_swap_chain_format_request: None,
             rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
             current_hdr_image: None,

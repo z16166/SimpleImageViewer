@@ -48,10 +48,10 @@ impl ImageViewerApp {
                 None => crate::hdr::vulkan_metadata::default_vulkan_hdr_metadata_for_sdr_view(),
             };
 
-            // Always republish: the painter mailbox is consumed on apply and swap-chain
-            // reconfigure falls back to defaults when peek() is empty. Dedup only gates logs.
+            // Republish every frame (mailbox must stay populated for swap-chain
+            // reconfigure). Log only when metadata changes.
             if self.last_vulkan_hdr_metadata != Some(vk_metadata) {
-                log::info!(
+                log::debug!(
                     "[HDR] Vulkan swap-chain metadata: max_cll={} nits, max_fall={} nits, mastering_max={} nits",
                     vk_metadata.max_content_light_level_nits,
                     vk_metadata.max_frame_average_luminance_nits,
