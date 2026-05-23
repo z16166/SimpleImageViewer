@@ -3,6 +3,12 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.1.2] - 2026-05-24
+
+### Improved (Windows)
+- **Crash diagnostics**: Windows now registers a lightweight **vectored exception handler** alongside the existing top-level crash filter so serious native faults can leave a clearer **early breadcrumb** (when possible) before heavier crash reporting runs. Most users never see this; it mainly helps pinpoint rare **hard exits** during support.
+
+
 ## [2.1.1] - 2026-05-23
 
 ### Added

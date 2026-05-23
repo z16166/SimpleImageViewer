@@ -23,6 +23,12 @@
 //! | Float / LogLuv TIFF | Pixel scan (scene-linear) | scan / 0 | IEEE float / LogLuv decode |
 //! | Tiled HDR | `HdrTiledSource::metadata()` + preview scan | preview scan / 0 | Preview refines peak |
 
+// Linux Vulkan HDR sync loads this API; other targets only reference it via `cfg(test)` here.
+#![cfg_attr(
+    not(any(test, target_os = "linux")),
+    allow(dead_code)
+)]
+
 use eframe::egui_wgpu::VulkanHdrMetadata;
 
 use super::decode::{hlg_nonlinear_to_scene_linear, pq_nonlinear_to_absolute_nits};

@@ -1013,6 +1013,7 @@ fn main() -> eframe::Result {
                 requested_rgb10a2_pq_encode,
                 gamma22_display_scale,
                 vulkan_wsi_hdr_gates,
+                #[cfg(target_os = "linux")]
                 requested_vulkan_hdr_metadata,
                 initial_hdr_monitor_selection.clone(),
             )) as Box<dyn eframe::App>)

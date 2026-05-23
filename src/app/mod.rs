@@ -363,8 +363,10 @@ pub struct ImageViewerApp {
     pub(crate) gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
     /// Vulkan WSI HDR gates published by the painter after the first surface configure.
     pub(crate) vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
-    /// Per-content ST 2086 metadata for Linux `vkSetHdrMetadataEXT`.
+    /// Per-content ST 2086 metadata for Linux `vkSetHdrMetadataEXT` (app-owned mailbox mirror).
+    #[cfg(target_os = "linux")]
     pub(crate) requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
+    #[cfg(target_os = "linux")]
     last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
     rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
