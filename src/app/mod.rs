@@ -368,6 +368,8 @@ pub struct ImageViewerApp {
     pub(crate) requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
     #[cfg(target_os = "linux")]
     last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
+    /// Dedupes swap-chain format mismatch diagnostics while a hot-swap is pending.
+    last_logged_swap_chain_format_request: Option<wgpu::TextureFormat>,
     rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
@@ -873,21 +875,22 @@ impl eframe::App for ImageViewerApp {
         ) && Some(desired_format) != self.hdr_target_format
         {
             let effective_monitor = self.effective_hdr_monitor_selection();
-            // Log every time we *issue* a new request (not every frame); the
-            // Painter logs separately when it accepts or rejects it. This is
-            // the diagnostic chain we use to debug the cross-monitor
-            // hot-swap end-to-end.
-            log::info!(
-                "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
-                 monitor={:?} hdr_supported={:?} native_surface_enabled={}",
-                self.hdr_target_format,
-                desired_format,
-                effective_monitor.as_ref().map(|s| s.label.as_str()),
-                effective_monitor.as_ref().map(|s| s.hdr_supported),
-                self.settings.hdr_native_surface_enabled_effective(),
-            );
+            if self.last_logged_swap_chain_format_request != Some(desired_format) {
+                log::debug!(
+                    "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
+                     monitor={:?} hdr_supported={:?} native_surface_enabled={}",
+                    self.hdr_target_format,
+                    desired_format,
+                    effective_monitor.as_ref().map(|s| s.label.as_str()),
+                    effective_monitor.as_ref().map(|s| s.hdr_supported),
+                    self.settings.hdr_native_surface_enabled_effective(),
+                );
+                self.last_logged_swap_chain_format_request = Some(desired_format);
+            }
             self.requested_target_format.request(desired_format);
             ctx.request_repaint();
+        } else {
+            self.last_logged_swap_chain_format_request = None;
         }
         self.hdr_capabilities.available =
             output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;

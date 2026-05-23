@@ -41,6 +41,9 @@ pub struct Painter {
     surfaces: ViewportIdMap<SurfaceState>,
     capture_tx: CaptureSender,
     capture_rx: CaptureReceiver,
+    /// Last ST 2086 payload applied via `vkSetHdrMetadataEXT` (dedupe per-frame work/logs).
+    #[cfg(target_os = "linux")]
+    last_applied_vulkan_hdr_metadata: Option<crate::VulkanHdrMetadata>,
 }
 
 impl Painter {
@@ -81,6 +84,9 @@ impl Painter {
 
             capture_tx,
             capture_rx,
+
+            #[cfg(target_os = "linux")]
+            last_applied_vulkan_hdr_metadata: None,
         }
     }
 
@@ -574,7 +580,11 @@ impl Painter {
         let Some(surface_state) = self.surfaces.get(&viewport_id) else {
             return;
         };
-        log::info!(
+        if self.last_applied_vulkan_hdr_metadata == Some(metadata) {
+            return;
+        }
+        self.last_applied_vulkan_hdr_metadata = Some(metadata);
+        log::debug!(
             "egui-wgpu: applying runtime Vulkan HDR metadata \
              (max_cll={} nits, max_fall={} nits)",
             metadata.max_content_light_level_nits,
