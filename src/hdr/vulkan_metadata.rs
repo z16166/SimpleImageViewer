@@ -27,7 +27,7 @@ use eframe::egui_wgpu::VulkanHdrMetadata;
 
 use super::decode::{hlg_nonlinear_to_scene_linear, pq_nonlinear_to_absolute_nits};
 use super::types::{
-    HdrColorSpace, HdrImageBuffer, HdrLuminanceMetadata, HdrTransferFunction,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata, HdrTransferFunction,
     DEFAULT_SDR_WHITE_NITS,
 };
 
@@ -59,6 +59,21 @@ pub fn content_peak_nits(
     luminance
         .mastering_max_nits
         .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// ST 2086 metadata for an HDR swap chain when the current view has **no**
+/// decoded HDR plane (SDR still / fallback on an HDR10 PQ surface).
+pub fn default_vulkan_hdr_metadata_for_sdr_view() -> VulkanHdrMetadata {
+    vulkan_hdr_metadata_from_luminance(&HdrLuminanceMetadata::default(), None)
+}
+
+/// Build swap-chain ST 2086 metadata from unified decode metadata + optional pixels.
+pub fn vulkan_hdr_metadata_for_content(
+    image_metadata: &HdrImageMetadata,
+    scan_buffer: Option<&HdrImageBuffer>,
+) -> VulkanHdrMetadata {
+    let peak = content_peak_nits(&image_metadata.luminance, scan_buffer);
+    vulkan_hdr_metadata_from_luminance(&image_metadata.luminance, peak)
 }
 
 /// Build swap-chain ST 2086 metadata for the current HDR image.
@@ -148,12 +163,9 @@ fn pixel_rgb_to_peak_nits(
             } else {
                 rgb
             };
-            let lum = linear_luminance(linear, color_space);
-            if lum <= 1.5 {
-                lum * sdr_white_nits
-            } else {
-                lum
-            }
+            // Match HDR plane PQ encode: `display_linear_to_pq` treats linear input as
+            // display-referred where 1.0 = SDR white → nits = rgb * sdr_white_nits.
+            linear_luminance(linear, color_space) * sdr_white_nits
         }
         HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => {
             linear_luminance(rgb, color_space) * sdr_white_nits
@@ -181,7 +193,10 @@ fn srgb_nonlinear_to_linear(channel: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrPixelFormat, HdrReference};
+    use crate::hdr::types::{
+        HdrColorSpace, HdrImageMetadata, HdrLuminanceMetadata, HdrPixelFormat, HdrReference,
+        DEFAULT_SDR_WHITE_NITS,
+    };
 
     #[test]
     fn vulkan_metadata_prefers_container_max_cll_over_estimated_peak() {
@@ -255,6 +270,47 @@ mod tests {
             },
             rgba_f32: vec![8.0, 8.0, 8.0, 1.0].into(),
         };
-        assert_eq!(estimate_max_cll_nits(&buffer), Some(8.0));
+        let expected = 8.0 * DEFAULT_SDR_WHITE_NITS;
+        assert_eq!(estimate_max_cll_nits(&buffer), Some(expected));
+    }
+
+    #[test]
+    fn estimate_max_cll_from_linear_display_referred_matches_pq_shader_scale() {
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            rgba_f32: vec![2.0, 2.0, 2.0, 1.0].into(),
+        };
+        let peak = estimate_max_cll_nits(&buffer).expect("peak");
+        let expected = 2.0 * DEFAULT_SDR_WHITE_NITS;
+        assert!(
+            (peak - expected).abs() < 0.01,
+            "linear 2.0 should map to ~{expected} nits, got {peak}"
+        );
+    }
+
+    #[test]
+    fn default_sdr_view_metadata_uses_conservative_swap_chain_defaults() {
+        let metadata = default_vulkan_hdr_metadata_for_sdr_view();
+        assert_eq!(metadata.max_content_light_level_nits, 1000.0);
+        assert_eq!(metadata.max_frame_average_luminance_nits, 0.0);
+    }
+
+    #[test]
+    fn sdr_view_default_differs_from_bright_hdr_content_metadata() {
+        let sdr = default_vulkan_hdr_metadata_for_sdr_view();
+        let luminance = HdrLuminanceMetadata {
+            max_cll_nits: Some(4000.0),
+            max_fall_nits: Some(350.0),
+            ..HdrLuminanceMetadata::default()
+        };
+        let hdr = vulkan_hdr_metadata_from_luminance(&luminance, Some(4000.0));
+        assert_ne!(
+            sdr.max_content_light_level_nits,
+            hdr.max_content_light_level_nits
+        );
     }
 }
