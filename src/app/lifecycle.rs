@@ -30,6 +30,7 @@ impl ImageViewerApp {
         requested_rgb10a2_pq_encode: eframe::egui_wgpu::RequestedRgb10a2PqEncode,
         gamma22_display_scale: eframe::egui_wgpu::Gamma22DisplayScale,
         vulkan_wsi_hdr_gates: eframe::egui_wgpu::VulkanWsiHdrGatesMailbox,
+        requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
         initial_hdr_monitor_selection: Option<crate::hdr::monitor::HdrMonitorSelection>,
     ) -> Self {
         if settings.fullscreen {
@@ -282,6 +283,8 @@ impl ImageViewerApp {
             requested_rgb10a2_pq_encode,
             gamma22_display_scale,
             vulkan_wsi_hdr_gates,
+            requested_vulkan_hdr_metadata,
+            last_vulkan_hdr_metadata: None,
             rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
             current_hdr_image: None,

@@ -345,25 +345,29 @@ fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).
+/// PQ non-linear code value (0–1) → absolute luminance in nits.
 ///
 /// Normative: **ITU-R BT.2100-3** Table 4 (PQ system reference EOTF); same rational coefficients as
 /// **SMPTE ST 2084** and the HDR plane WGSL in `renderer.rs`.
-pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
+pub(crate) fn pq_nonlinear_to_absolute_nits(code: f32) -> f32 {
     let m1 = 2610.0 / 16384.0;
     let m2 = 2523.0 / 32.0;
     let c1 = 3424.0 / 4096.0;
     let c2 = 2413.0 / 128.0;
     let c3 = 2392.0 / 128.0;
-    let code_m2 = code.powf(1.0 / m2);
+    let code_m2 = code.clamp(0.0, 1.0).powf(1.0 / m2);
     let numerator = (code_m2 - c1).max(0.0);
     let denominator = (c2 - c3 * code_m2).max(0.000001);
-    let absolute_nits = 10000.0 * (numerator / denominator).powf(1.0 / m1);
-    absolute_nits / sdr_white_nits.max(1.0)
+    10_000.0 * (numerator / denominator).powf(1.0 / m1)
+}
+
+/// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).
+pub(crate) fn pq_nonlinear_to_display_linear(code: f32, sdr_white_nits: f32) -> f32 {
+    pq_nonlinear_to_absolute_nits(code) / sdr_white_nits.max(1.0)
 }
 
 /// BT.2100 HLG OETF inverse (scene linear), matching `hlg_to_scene_linear` in `renderer.rs`.
-fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
+pub(crate) fn hlg_nonlinear_to_scene_linear(e_prime: f32) -> f32 {
     let a = 0.17883277_f32;
     let b = 0.28466892_f32;
     let c = 0.55991073_f32;

@@ -33,6 +33,7 @@ impl NativeSurface {
         self.raw
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn raw_surface_formats(
         &self,
         physical_device: vk::PhysicalDevice,

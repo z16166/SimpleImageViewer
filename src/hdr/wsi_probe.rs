@@ -8,7 +8,9 @@
 
 //! Linux Vulkan WSI `(format, color_space)` gates for native HDR presentation.
 
-use super::monitor::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
+use super::monitor::HdrMonitorSelection;
+#[cfg(any(target_os = "linux", test))]
+use super::monitor::HdrNativeSurfaceEncoding;
 
 /// Subset of [`wgpu_hal::linux_surface_probe::VulkanHdrSurfaceProbe`] published by egui-wgpu.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -19,6 +21,7 @@ pub struct WsiHdrSurfaceGates {
     pub probed: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl WsiHdrSurfaceGates {
     pub fn hdr_native_presentation_available(self) -> bool {
         self.probed && (self.hdr10_st2084_rgb10a2 || self.extended_srgb_linear_rgba16f)

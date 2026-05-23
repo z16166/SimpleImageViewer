@@ -153,9 +153,15 @@ impl Painter {
                 pq,
             );
             if crate::vulkan_hdr::linux_rgb10a2_uses_hdr10_st2084(render_state.target_format) {
-                if let Some(metadata) = crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(
-                    render_state.target_format,
-                ) {
+                let metadata = config
+                    .requested_vulkan_hdr_metadata
+                    .peek()
+                    .or_else(|| {
+                        crate::vulkan_hdr::default_vulkan_hdr_metadata_for_format(
+                            render_state.target_format,
+                        )
+                    });
+                if let Some(metadata) = metadata {
                     crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
                         &surface_state.surface,
                         &render_state.device,
@@ -554,6 +560,35 @@ impl Painter {
         let _ = viewport_id;
     }
 
+    #[cfg(target_os = "linux")]
+    fn try_apply_runtime_vulkan_hdr_metadata(&mut self, viewport_id: ViewportId) {
+        let Some(metadata) = self.configuration.requested_vulkan_hdr_metadata.take() else {
+            return;
+        };
+        let Some(render_state) = self.render_state.as_ref() else {
+            return;
+        };
+        if !crate::vulkan_hdr::linux_rgb10a2_uses_hdr10_st2084(render_state.target_format) {
+            return;
+        }
+        let Some(surface_state) = self.surfaces.get(&viewport_id) else {
+            return;
+        };
+        log::info!(
+            "egui-wgpu: applying runtime Vulkan HDR metadata \
+             (max_cll={} nits, max_fall={} nits)",
+            metadata.max_content_light_level_nits,
+            metadata.max_frame_average_luminance_nits
+        );
+        crate::vulkan_hdr::linux_vulkan_set_swap_chain_hdr_metadata(
+            &surface_state.surface,
+            &render_state.device,
+            &render_state.adapter,
+            render_state.target_format,
+            metadata,
+        );
+    }
+
     pub fn on_window_resized(
         &mut self,
         viewport_id: ViewportId,
@@ -890,6 +925,8 @@ impl Painter {
         // pipelines rebuild in sync.
         self.try_apply_runtime_target_format_switch(viewport_id);
         self.try_apply_runtime_rgb10a2_pq_switch(viewport_id);
+        #[cfg(target_os = "linux")]
+        self.try_apply_runtime_vulkan_hdr_metadata(viewport_id);
 
         vsync_sec
     }

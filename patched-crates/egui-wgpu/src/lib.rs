@@ -29,6 +29,7 @@ pub use setup::{
     EguiDisplayHandle, NativeAdapterSelectorMethod, WgpuSetup, WgpuSetupCreateNew,
     WgpuSetupExisting,
 };
+pub use vulkan_hdr::VulkanHdrMetadata;
 
 /// Helpers for capturing screenshots of the UI.
 #[cfg(feature = "capture")]
@@ -441,6 +442,41 @@ impl VulkanWsiHdrGatesMailbox {
     }
 }
 
+/// Mailbox the application uses to push per-content ST 2086 metadata to the
+/// painter (`vkSetHdrMetadataEXT`) without rebuilding the swap chain.
+#[derive(Clone, Default)]
+pub struct RequestedVulkanHdrMetadata {
+    inner: Arc<std::sync::Mutex<Option<VulkanHdrMetadata>>>,
+}
+
+impl std::fmt::Debug for RequestedVulkanHdrMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestedVulkanHdrMetadata")
+            .field("pending", &self.peek())
+            .finish()
+    }
+}
+
+impl RequestedVulkanHdrMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn request(&self, metadata: VulkanHdrMetadata) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(metadata);
+        }
+    }
+
+    pub fn peek(&self) -> Option<VulkanHdrMetadata> {
+        self.inner.lock().ok().and_then(|s| *s)
+    }
+
+    pub fn take(&self) -> Option<VulkanHdrMetadata> {
+        self.inner.lock().ok().and_then(|mut s| s.take())
+    }
+}
+
 /// Reverse-direction mailbox that the painter uses to publish the **current
 /// active** swap-chain target format back to the application.
 ///
@@ -544,6 +580,9 @@ pub struct WgpuConfiguration {
 
     /// Vulkan WSI HDR surface gates (`HDR10_ST2084_EXT`, etc.) from the first probe.
     pub vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox,
+
+    /// Per-content HDR10 ST 2086 metadata for `vkSetHdrMetadataEXT` on Linux.
+    pub requested_vulkan_hdr_metadata: RequestedVulkanHdrMetadata,
 
     /// How to create the wgpu adapter & device
     pub wgpu_setup: WgpuSetup,
@@ -699,6 +738,7 @@ impl std::fmt::Debug for WgpuConfiguration {
             requested_rgb10a2_pq_encode,
             gamma22_display_scale,
             vulkan_wsi_hdr_gates,
+            requested_vulkan_hdr_metadata,
             wgpu_setup,
             on_surface_status: _,
         } = self;
@@ -715,6 +755,7 @@ impl std::fmt::Debug for WgpuConfiguration {
             .field("requested_rgb10a2_pq_encode", &requested_rgb10a2_pq_encode)
             .field("gamma22_display_scale", &gamma22_display_scale)
             .field("vulkan_wsi_hdr_gates", &vulkan_wsi_hdr_gates)
+            .field("requested_vulkan_hdr_metadata", &requested_vulkan_hdr_metadata)
             .finish_non_exhaustive()
     }
 }
@@ -730,6 +771,7 @@ impl Default for WgpuConfiguration {
             requested_rgb10a2_pq_encode: RequestedRgb10a2PqEncode::new(),
             gamma22_display_scale: Gamma22DisplayScale::new(),
             vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox::new(),
+            requested_vulkan_hdr_metadata: RequestedVulkanHdrMetadata::new(),
             // No display handle available at this point — callers should replace this with
             // `WgpuSetup::from_display_handle(...)` before creating the instance if one is available.
             wgpu_setup: WgpuSetup::without_display_handle(),

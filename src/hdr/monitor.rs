@@ -91,6 +91,7 @@ pub enum HdrNativeSurfaceEncoding {
     /// Windows scRGB / macOS EDR linear float.
     LinearScRgb,
     /// HDR10 PQ in `Rgb10a2Unorm` (compositor advertises ST 2084).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     PqHdr10,
     /// Legacy gamma 2.2 electrical path; retained for shader dispatch only.
     #[allow(dead_code)]

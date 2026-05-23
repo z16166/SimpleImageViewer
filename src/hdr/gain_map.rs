@@ -243,6 +243,20 @@ pub(crate) fn gain_map_weight(metadata: GainMapMetadata, target_hdr_capacity: f3
     if alt_log2 < base_log2 { -w } else { w }
 }
 
+/// ST 2086 hints from ISO / XMP Ultra HDR gain-map headroom (linear peak / SDR white ratios).
+pub(crate) fn luminance_hints_from_gain_map(
+    metadata: GainMapMetadata,
+) -> crate::hdr::types::HdrLuminanceMetadata {
+    use crate::hdr::types::{HdrLuminanceMetadata, DEFAULT_SDR_WHITE_NITS};
+
+    let peak_ratio = metadata.hdr_capacity_max.max(f32::MIN_POSITIVE);
+    let peak_nits = peak_ratio * DEFAULT_SDR_WHITE_NITS;
+    HdrLuminanceMetadata {
+        mastering_max_nits: Some(peak_nits),
+        ..HdrLuminanceMetadata::default()
+    }
+}
+
 pub(crate) fn sample_gain_map_rgb(
     gain_rgba: &[u8],
     gain_width: u32,
@@ -434,7 +448,8 @@ impl<'a> ByteReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compose_gain_map_pixel, parse_iso_gain_map_metadata};
+    use super::{compose_gain_map_pixel, luminance_hints_from_gain_map, parse_iso_gain_map_metadata};
+    use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
     fn minimal_iso_metadata() -> Vec<u8> {
         let mut out = Vec::new();
@@ -472,5 +487,15 @@ mod tests {
 
         assert!(full_hdr[0] > sdr_only[0] * 3.9);
         assert_eq!(full_hdr[3], 1.0);
+    }
+
+    #[test]
+    fn luminance_hints_from_gain_map_maps_headroom_to_nits() {
+        let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
+        let hints = luminance_hints_from_gain_map(metadata);
+        assert_eq!(
+            hints.mastering_max_nits,
+            Some(4.0 * DEFAULT_SDR_WHITE_NITS)
+        );
     }
 }
