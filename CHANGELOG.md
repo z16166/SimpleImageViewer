@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.1.3] - 2026-05-24
+
+### Fixed
+- **Linux HDR10 metadata (ST 2086)**: MaxCLL / MaxFALL sent to the Wayland HDR10 PQ swap chain are now validated against the **ST 2084 PQ reference luminance** (10,000 nits). Extreme linear EXR peaks and invalid container CLLI values no longer reach `vkSetHdrMetadataEXT`, avoiding compositor protocol errors on pathological content.
+
+### Improved
+- **Linux HDR diagnostics**: Per-frame Vulkan HDR metadata and swap-chain format mismatch messages are logged at **debug** level only; duplicate `vkSetHdrMetadataEXT` calls are skipped when the payload is unchanged.
+
+
 ## [2.1.2] - 2026-05-24
 
 ### Improved (Windows)
