@@ -562,7 +562,7 @@ impl Painter {
 
     #[cfg(target_os = "linux")]
     fn try_apply_runtime_vulkan_hdr_metadata(&mut self, viewport_id: ViewportId) {
-        let Some(metadata) = self.configuration.requested_vulkan_hdr_metadata.take() else {
+        let Some(metadata) = self.configuration.requested_vulkan_hdr_metadata.peek() else {
             return;
         };
         let Some(render_state) = self.render_state.as_ref() else {

@@ -16,6 +16,10 @@ impl ImageViewerApp {
     /// Works for every HDR decode path (AVIF, HEIF, JXL, Ultra HDR JPEG, EXR,
     /// Radiance HDR, float TIFF, tiled sources, …) via unified
     /// [`HdrImageMetadata`] + optional pixel peak scan.
+    ///
+    /// When the active view is SDR-only but the swap chain remains HDR10 PQ
+    /// (HDR monitor), conservative default metadata is published so the
+    /// compositor does not keep the previous image's MaxCLL / MaxFALL.
     pub(crate) fn sync_linux_vulkan_hdr_metadata(&mut self) {
         #[cfg(not(target_os = "linux"))]
         {
@@ -29,37 +33,37 @@ impl ImageViewerApp {
                 self.effective_hdr_monitor_selection().as_ref(),
             );
             if !render_mode.rgb10a2_uses_pq_shader() {
+                self.reset_linux_vulkan_hdr_metadata_state();
                 return;
             }
 
-            let Some((image_metadata, scan_buffer)) = self.current_hdr_vulkan_metadata_inputs()
-            else {
-                return;
+            let vk_metadata = match self.current_hdr_vulkan_metadata_inputs() {
+                Some((image_metadata, scan_buffer)) => {
+                    crate::hdr::vulkan_metadata::vulkan_hdr_metadata_for_content(
+                        &image_metadata,
+                        scan_buffer,
+                    )
+                }
+                None => crate::hdr::vulkan_metadata::default_vulkan_hdr_metadata_for_sdr_view(),
             };
 
-            let peak = crate::hdr::vulkan_metadata::content_peak_nits(
-                &image_metadata.luminance,
-                scan_buffer,
-            );
-
-            let vk_metadata = crate::hdr::vulkan_metadata::vulkan_hdr_metadata_from_luminance(
-                &image_metadata.luminance,
-                peak,
-            );
-
-            if self.last_vulkan_hdr_metadata == Some(vk_metadata) {
-                return;
+            // Always republish: the painter mailbox is consumed on apply and swap-chain
+            // reconfigure falls back to defaults when peek() is empty. Dedup only gates logs.
+            if self.last_vulkan_hdr_metadata != Some(vk_metadata) {
+                log::info!(
+                    "[HDR] Vulkan swap-chain metadata: max_cll={} nits, max_fall={} nits, mastering_max={} nits",
+                    vk_metadata.max_content_light_level_nits,
+                    vk_metadata.max_frame_average_luminance_nits,
+                    vk_metadata.mastering_max_luminance_nits,
+                );
             }
-
-            log::info!(
-                "[HDR] Vulkan swap-chain metadata: max_cll={} nits, max_fall={} nits, mastering_max={} nits",
-                vk_metadata.max_content_light_level_nits,
-                vk_metadata.max_frame_average_luminance_nits,
-                vk_metadata.mastering_max_luminance_nits,
-            );
             self.last_vulkan_hdr_metadata = Some(vk_metadata);
             self.requested_vulkan_hdr_metadata.request(vk_metadata);
         }
+    }
+
+    fn reset_linux_vulkan_hdr_metadata_state(&mut self) {
+        self.last_vulkan_hdr_metadata = None;
     }
 
     fn current_hdr_vulkan_metadata_inputs(
@@ -88,5 +92,93 @@ impl ImageViewerApp {
         }
 
         None
+    }
+}
+
+/// Resolve ST 2086 metadata for Linux HDR10 PQ sync (unit-testable).
+#[cfg(test)]
+pub(crate) fn linux_vulkan_hdr_metadata_for_view(
+    has_hdr_source: bool,
+    image_metadata: Option<&HdrImageMetadata>,
+    scan_buffer: Option<&HdrImageBuffer>,
+) -> eframe::egui_wgpu::VulkanHdrMetadata {
+    if has_hdr_source {
+        let metadata = image_metadata.expect("metadata required with HDR source");
+        crate::hdr::vulkan_metadata::vulkan_hdr_metadata_for_content(metadata, scan_buffer)
+    } else {
+        crate::hdr::vulkan_metadata::default_vulkan_hdr_metadata_for_sdr_view()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::linux_vulkan_hdr_metadata_for_view;
+    use crate::hdr::types::{
+        HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata, HdrPixelFormat,
+        HdrReference, HdrTransferFunction,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn sdr_view_without_hdr_source_uses_default_metadata() {
+        let metadata = linux_vulkan_hdr_metadata_for_view(false, None, None);
+        assert_eq!(metadata.max_content_light_level_nits, 1000.0);
+        assert_eq!(metadata.max_frame_average_luminance_nits, 0.0);
+    }
+
+    #[test]
+    fn hdr_source_uses_container_clli_over_sdr_default() {
+        let image_metadata = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Pq,
+            reference: HdrReference::DisplayReferred,
+            luminance: HdrLuminanceMetadata {
+                max_cll_nits: Some(2500.0),
+                max_fall_nits: Some(180.0),
+                ..HdrLuminanceMetadata::default()
+            },
+            ..HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear)
+        };
+        let metadata = linux_vulkan_hdr_metadata_for_view(true, Some(&image_metadata), None);
+        assert_eq!(metadata.max_content_light_level_nits, 2500.0);
+        assert_eq!(metadata.max_frame_average_luminance_nits, 180.0);
+    }
+
+    #[test]
+    fn switching_from_hdr_to_sdr_view_resets_to_default_metadata() {
+        let hdr_meta = HdrImageMetadata {
+            transfer_function: HdrTransferFunction::Pq,
+            reference: HdrReference::DisplayReferred,
+            luminance: HdrLuminanceMetadata {
+                max_cll_nits: Some(4000.0),
+                ..HdrLuminanceMetadata::default()
+            },
+            ..HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear)
+        };
+        let hdr = linux_vulkan_hdr_metadata_for_view(true, Some(&hdr_meta), None);
+        let sdr = linux_vulkan_hdr_metadata_for_view(false, None, None);
+        assert_ne!(hdr.max_content_light_level_nits, sdr.max_content_light_level_nits);
+        assert_eq!(sdr.max_content_light_level_nits, 1000.0);
+    }
+
+    #[test]
+    fn hdr_source_with_linear_buffer_uses_pixel_peak_not_sdr_default() {
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
+        };
+        let metadata = linux_vulkan_hdr_metadata_for_view(
+            true,
+            Some(&buffer.metadata),
+            Some(&buffer),
+        );
+        assert!(
+            metadata.max_content_light_level_nits > 400.0,
+            "linear 2.0 should exceed SDR default, got {}",
+            metadata.max_content_light_level_nits
+        );
     }
 }
