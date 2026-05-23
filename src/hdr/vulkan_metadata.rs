@@ -130,6 +130,7 @@ pub fn vulkan_hdr_metadata_from_luminance(
     let max_fall = luminance
         .max_fall_nits
         .and_then(|value| validated_st2086_content_luminance(Some(value)))
+        .map(|fall| fall.min(max_cll))
         .unwrap_or(0.0);
 
     let mastering_max = luminance
@@ -387,6 +388,18 @@ mod tests {
         assert_eq!(content_peak_nits(&luminance, None), None);
         let metadata = vulkan_hdr_metadata_from_luminance(&luminance, None);
         assert_eq!(metadata.max_content_light_level_nits, DEFAULT_MASTERING_MAX_NITS);
+    }
+
+    #[test]
+    fn max_fall_is_clamped_to_max_cll_for_st2086_consistency() {
+        let luminance = HdrLuminanceMetadata {
+            max_cll_nits: Some(1000.0),
+            max_fall_nits: Some(4000.0),
+            ..HdrLuminanceMetadata::default()
+        };
+        let metadata = vulkan_hdr_metadata_from_luminance(&luminance, Some(1000.0));
+        assert_eq!(metadata.max_content_light_level_nits, 1000.0);
+        assert_eq!(metadata.max_frame_average_luminance_nits, 1000.0);
     }
 
     #[test]

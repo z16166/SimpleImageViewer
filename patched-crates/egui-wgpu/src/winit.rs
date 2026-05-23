@@ -41,9 +41,9 @@ pub struct Painter {
     surfaces: ViewportIdMap<SurfaceState>,
     capture_tx: CaptureSender,
     capture_rx: CaptureReceiver,
-    /// Last ST 2086 payload applied via `vkSetHdrMetadataEXT` (dedupe per-frame work/logs).
+    /// Last ST 2086 payload applied via `vkSetHdrMetadataEXT` per viewport (dedupe per-frame work/logs).
     #[cfg(target_os = "linux")]
-    last_applied_vulkan_hdr_metadata: Option<crate::VulkanHdrMetadata>,
+    last_applied_vulkan_hdr_metadata: ViewportIdMap<Option<crate::VulkanHdrMetadata>>,
 }
 
 impl Painter {
@@ -86,7 +86,7 @@ impl Painter {
             capture_rx,
 
             #[cfg(target_os = "linux")]
-            last_applied_vulkan_hdr_metadata: None,
+            last_applied_vulkan_hdr_metadata: Default::default(),
         }
     }
 
@@ -580,10 +580,11 @@ impl Painter {
         let Some(surface_state) = self.surfaces.get(&viewport_id) else {
             return;
         };
-        if self.last_applied_vulkan_hdr_metadata == Some(metadata) {
+        if self.last_applied_vulkan_hdr_metadata.get(&viewport_id) == Some(&Some(metadata)) {
             return;
         }
-        self.last_applied_vulkan_hdr_metadata = Some(metadata);
+        self.last_applied_vulkan_hdr_metadata
+            .insert(viewport_id, Some(metadata));
         log::debug!(
             "egui-wgpu: applying runtime Vulkan HDR metadata \
              (max_cll={} nits, max_fall={} nits)",
@@ -960,6 +961,9 @@ impl Painter {
         self.depth_texture_view
             .retain(|id, _| active_viewports.contains(id));
         self.msaa_texture_view
+            .retain(|id, _| active_viewports.contains(id));
+        #[cfg(target_os = "linux")]
+        self.last_applied_vulkan_hdr_metadata
             .retain(|id, _| active_viewports.contains(id));
     }
 
