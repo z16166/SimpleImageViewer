@@ -7,6 +7,7 @@
 // (at your option) any later version.
 
 use crate::app::ImageViewerApp;
+#[cfg(target_os = "linux")]
 use crate::hdr::types::{HdrImageBuffer, HdrImageMetadata};
 
 impl ImageViewerApp {
@@ -62,10 +63,12 @@ impl ImageViewerApp {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn reset_linux_vulkan_hdr_metadata_state(&mut self) {
         self.last_vulkan_hdr_metadata = None;
     }
 
+    #[cfg(target_os = "linux")]
     fn current_hdr_vulkan_metadata_inputs(
         &self,
     ) -> Option<(HdrImageMetadata, Option<&HdrImageBuffer>)> {
@@ -99,8 +102,8 @@ impl ImageViewerApp {
 #[cfg(test)]
 pub(crate) fn linux_vulkan_hdr_metadata_for_view(
     has_hdr_source: bool,
-    image_metadata: Option<&HdrImageMetadata>,
-    scan_buffer: Option<&HdrImageBuffer>,
+    image_metadata: Option<&crate::hdr::types::HdrImageMetadata>,
+    scan_buffer: Option<&crate::hdr::types::HdrImageBuffer>,
 ) -> eframe::egui_wgpu::VulkanHdrMetadata {
     if has_hdr_source {
         let metadata = image_metadata.expect("metadata required with HDR source");
