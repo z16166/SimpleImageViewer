@@ -51,6 +51,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::PCWSTR;
 
+const CRASH_PATH_WIDE_CAPACITY: usize = 512;
+const PROBE_REPORT_BUFFER_SIZE: usize = 1024;
+const TEXT_REPORT_BUFFER_SIZE: usize = 4096;
+
 /// Guard to prevent reentrant invocations of the unhandled exception filter.
 static SEH_ENTERED: AtomicBool = AtomicBool::new(false);
 /// Ensure the vectored handler probe writes at most once per process.
@@ -64,9 +68,30 @@ static LAST_FATAL_EXCEPTION_THREAD: AtomicU32 = AtomicU32::new(0);
 static CRASH_OUTPUT_PATHS: OnceLock<Option<CrashOutputPaths>> = OnceLock::new();
 
 struct CrashOutputPaths {
-    report_path: [u16; 512],
-    dump_path: [u16; 512],
-    probe_path: [u16; 512],
+    report_path: [u16; CRASH_PATH_WIDE_CAPACITY],
+    dump_path: [u16; CRASH_PATH_WIDE_CAPACITY],
+    probe_path: [u16; CRASH_PATH_WIDE_CAPACITY],
+}
+
+/// Minimal stack-only RAII wrapper for Win32 handles used inside the crash
+/// path. No allocation, no indirection: it only guarantees `CloseHandle` on
+/// every return path so helper functions cannot accidentally leak handles.
+struct ScopedHandle(HANDLE);
+
+impl ScopedHandle {
+    fn raw(&self) -> HANDLE {
+        self.0
+    }
+}
+
+impl Drop for ScopedHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 impl CrashOutputPaths {
@@ -79,9 +104,9 @@ impl CrashOutputPaths {
         let probe = base_dir.join(crate::constants::CRASH_PROBE_FILENAME);
 
         let mut paths = Self {
-            report_path: [0u16; 512],
-            dump_path: [0u16; 512],
-            probe_path: [0u16; 512],
+            report_path: [0u16; CRASH_PATH_WIDE_CAPACITY],
+            dump_path: [0u16; CRASH_PATH_WIDE_CAPACITY],
+            probe_path: [0u16; CRASH_PATH_WIDE_CAPACITY],
         };
         if path_to_wide(&report, &mut paths.report_path) == 0
             || path_to_wide(&dump, &mut paths.dump_path) == 0
@@ -178,7 +203,7 @@ unsafe fn write_probe_report(path: PCWSTR, exception_info: *const EXCEPTION_POIN
         return;
     };
 
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; PROBE_REPORT_BUFFER_SIZE];
     let mut pos = 0usize;
     pos = append_str(
         &mut buf,
@@ -222,7 +247,7 @@ unsafe fn write_probe_report(path: PCWSTR, exception_info: *const EXCEPTION_POIN
         }
     }
 
-    flush_stack_buffer(handle, &buf[..pos]);
+    write_buffer_to_handle(&handle, &buf[..pos]);
 }
 
 unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS) {
@@ -230,7 +255,7 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
         return;
     };
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; TEXT_REPORT_BUFFER_SIZE];
     let mut pos = 0usize;
 
     pos = append_str(
@@ -364,7 +389,7 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
         "--------------------------------------------\r\n",
     );
 
-    flush_stack_buffer(handle, &buf[..pos]);
+    write_buffer_to_handle(&handle, &buf[..pos]);
 }
 
 unsafe fn write_minidump(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS) {
@@ -376,6 +401,10 @@ unsafe fn write_minidump(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS
     let pid = unsafe { GetCurrentProcessId() };
     let tid = unsafe { GetCurrentThreadId() };
 
+    // `MiniDumpWithDataSegs` includes globals that are often critical for
+    // state-corruption debugging. `MiniDumpWithHandleData` keeps Win32 handle
+    // context, and `MiniDumpWithThreadInfo` preserves thread start addresses /
+    // timings with modest dump growth.
     let dump_type = MINIDUMP_TYPE(
         0x00000001 | // MiniDumpWithDataSegs
         0x00000004 | // MiniDumpWithHandleData
@@ -392,17 +421,19 @@ unsafe fn write_minidump(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS
         let _ = MiniDumpWriteDump(
             process,
             pid,
-            handle,
+            handle.raw(),
             dump_type,
             Some(&exception_param),
             None,
             None,
         );
-        let _ = CloseHandle(handle);
     }
 }
 
-unsafe fn open_output_file(path: PCWSTR) -> Option<HANDLE> {
+/// Open a crash-output file using plain Win32 APIs only. The returned handle
+/// is wrapped in stack-only RAII so callers do not need to remember a separate
+/// `CloseHandle` path while already executing in crash context.
+unsafe fn open_output_file(path: PCWSTR) -> Option<ScopedHandle> {
     let handle = unsafe {
         CreateFileW(
             path,
@@ -415,19 +446,24 @@ unsafe fn open_output_file(path: PCWSTR) -> Option<HANDLE> {
         )
     };
     match handle {
-        Ok(h) if !h.is_invalid() => Some(h),
+        Ok(h) if !h.is_invalid() => Some(ScopedHandle(h)),
         _ => None,
     }
 }
 
-fn flush_stack_buffer(handle: HANDLE, buf: &[u8]) {
+/// Best-effort stack-buffer write used by the crash-report text emitters.
+/// The handle lifetime is owned by [`ScopedHandle`], so this helper writes only
+/// and does not silently close resources.
+fn write_buffer_to_handle(handle: &ScopedHandle, buf: &[u8]) {
     let mut written = 0u32;
     unsafe {
-        let _ = WriteFile(handle, Some(buf), Some(&mut written), None);
-        let _ = CloseHandle(handle);
+        let _ = WriteFile(handle.raw(), Some(buf), Some(&mut written), None);
     }
 }
 
+/// Native exceptions worth probing before the top-level unhandled filter has a
+/// chance to run. We intentionally exclude noisy first-chance events such as
+/// breakpoints and single-step traps.
 fn is_fatal_native_exception(code: NTSTATUS) -> bool {
     matches!(
         code,
@@ -454,6 +490,9 @@ fn is_fatal_native_exception(code: NTSTATUS) -> bool {
     )
 }
 
+/// Convert a Rust `Path` to a null-terminated UTF-16 stack buffer for Win32
+/// file APIs. Returns the number of UTF-16 code units written, excluding the
+/// trailing NUL, or `0` if the destination buffer is too small.
 fn path_to_wide(path: &std::path::Path, buf: &mut [u16]) -> usize {
     use std::os::windows::ffi::OsStrExt;
     let mut i = 0;
@@ -468,6 +507,8 @@ fn path_to_wide(path: &std::path::Path, buf: &mut [u16]) -> usize {
     i
 }
 
+/// Append a UTF-8 string slice into a fixed-size byte buffer and return the
+/// next write position, truncating when the remaining capacity is exhausted.
 fn append_str(buf: &mut [u8], pos: usize, s: &str) -> usize {
     let bytes = s.as_bytes();
     let avail = buf.len().saturating_sub(pos);
@@ -476,6 +517,7 @@ fn append_str(buf: &mut [u8], pos: usize, s: &str) -> usize {
     pos + n
 }
 
+/// Append a 32-bit value as uppercase hexadecimal without heap allocation.
 fn append_hex32(buf: &mut [u8], pos: usize, val: u32) -> usize {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut tmp = [0u8; 8];
@@ -485,6 +527,7 @@ fn append_hex32(buf: &mut [u8], pos: usize, val: u32) -> usize {
     append_str(buf, pos, unsafe { core::str::from_utf8_unchecked(&tmp) })
 }
 
+/// Append a 64-bit value as uppercase hexadecimal without heap allocation.
 fn append_hex64(buf: &mut [u8], pos: usize, val: u64) -> usize {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut tmp = [0u8; 16];
@@ -494,6 +537,7 @@ fn append_hex64(buf: &mut [u8], pos: usize, val: u64) -> usize {
     append_str(buf, pos, unsafe { core::str::from_utf8_unchecked(&tmp) })
 }
 
+/// Append a named register line in the form `RAX = 0x...`.
 fn append_reg(buf: &mut [u8], pos: usize, name: &str, val: u64) -> usize {
     let mut pos = append_str(buf, pos, name);
     pos = append_str(buf, pos, " = 0x");
@@ -501,6 +545,7 @@ fn append_reg(buf: &mut [u8], pos: usize, name: &str, val: u64) -> usize {
     append_str(buf, pos, "\r\n")
 }
 
+/// Map common SEH exception codes to stable text for crash reports.
 fn exception_code_name(code: NTSTATUS) -> &'static str {
     match code {
         EXCEPTION_ACCESS_VIOLATION => "ACCESS_VIOLATION",
