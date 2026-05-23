@@ -16,18 +16,18 @@
 
 //! Windows SEH (Structured Exception Handling) crash capture.
 //!
-//! This module installs a global unhandled exception filter that fires for
-//! native-level crashes (ACCESS_VIOLATION, STACK_OVERFLOW, etc.) which bypass
-//! Rust's panic machinery.  When triggered it:
+//! This module installs both:
+//! 1. A top-level unhandled exception filter for final crash capture.
+//! 2. A vectored exception handler probe that runs earlier in the SEH chain.
 //!
-//! 1. Writes a human-readable crash report to `crash_report.txt`
-//! 2. Generates a minidump (`.dmp`) file for offline WinDbg analysis
-//!
-//! **Signal-safety**: The handler avoids Rust heap allocations and uses only
-//! Win32 stack-based I/O (`WriteFile` with stack buffers) since the process
-//! heap may already be corrupted at the point of the exception.
+//! The vectored handler is intentionally lightweight and only emits a small
+//! breadcrumb file for fatal native exception codes. This helps distinguish
+//! "the process never raised a native exception for us" from
+//! "a native exception happened but the top-level unhandled filter was replaced
+//! or could not finish".
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{
     BOOL, CloseHandle, EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ARRAY_BOUNDS_EXCEEDED,
@@ -43,92 +43,193 @@ use windows::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, WriteFile,
 };
 use windows::Win32::System::Diagnostics::Debug::{
-    EXCEPTION_POINTERS, EXCEPTION_RECORD, MINIDUMP_EXCEPTION_INFORMATION, MINIDUMP_TYPE,
-    MiniDumpWriteDump, SetUnhandledExceptionFilter,
+    AddVectoredExceptionHandler, EXCEPTION_POINTERS, EXCEPTION_RECORD,
+    MINIDUMP_EXCEPTION_INFORMATION, MINIDUMP_TYPE, MiniDumpWriteDump, SetUnhandledExceptionFilter,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
 };
 use windows::core::PCWSTR;
 
-/// Guard to prevent reentrant invocations of the exception handler.
+/// Guard to prevent reentrant invocations of the unhandled exception filter.
 static SEH_ENTERED: AtomicBool = AtomicBool::new(false);
+/// Ensure the vectored handler probe writes at most once per process.
+static PROBE_WRITTEN: AtomicBool = AtomicBool::new(false);
+/// Cache whether the unhandled exception filter ever actually fired.
+static TOP_LEVEL_FILTER_ENTERED: AtomicBool = AtomicBool::new(false);
+/// Snapshot from the earliest fatal native exception seen by the vectored probe.
+static LAST_FATAL_EXCEPTION_CODE: AtomicU32 = AtomicU32::new(0);
+static LAST_FATAL_EXCEPTION_ADDRESS: AtomicU64 = AtomicU64::new(0);
+static LAST_FATAL_EXCEPTION_THREAD: AtomicU32 = AtomicU32::new(0);
+static CRASH_OUTPUT_PATHS: OnceLock<Option<CrashOutputPaths>> = OnceLock::new();
 
-/// Install the global SEH handler.  Call as early as possible in `main()`.
+struct CrashOutputPaths {
+    report_path: [u16; 512],
+    dump_path: [u16; 512],
+    probe_path: [u16; 512],
+}
+
+impl CrashOutputPaths {
+    fn new() -> Option<Self> {
+        let base_dir = crate::settings::settings_path();
+        let base_dir = base_dir.parent().unwrap_or(std::path::Path::new("."));
+
+        let report = base_dir.join(crate::constants::CRASH_REPORT_FILENAME);
+        let dump = base_dir.join(crate::constants::CRASH_DUMP_FILENAME);
+        let probe = base_dir.join(crate::constants::CRASH_PROBE_FILENAME);
+
+        let mut paths = Self {
+            report_path: [0u16; 512],
+            dump_path: [0u16; 512],
+            probe_path: [0u16; 512],
+        };
+        if path_to_wide(&report, &mut paths.report_path) == 0
+            || path_to_wide(&dump, &mut paths.dump_path) == 0
+            || path_to_wide(&probe, &mut paths.probe_path) == 0
+        {
+            return None;
+        }
+        Some(paths)
+    }
+}
+
+/// Install the Windows crash handlers. Call as early as possible in `main()`.
 pub fn install() {
+    let _ = CRASH_OUTPUT_PATHS.get_or_init(CrashOutputPaths::new);
+    unsafe {
+        let _ = AddVectoredExceptionHandler(1, Some(vectored_exception_handler));
+        SetUnhandledExceptionFilter(Some(unhandled_exception_filter));
+    }
+}
+
+/// Re-assert our top-level unhandled exception filter after library init that
+/// might have replaced it.
+pub fn reinstall_top_level_filter() {
     unsafe {
         SetUnhandledExceptionFilter(Some(unhandled_exception_filter));
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exception filter callback
-// ---------------------------------------------------------------------------
+unsafe extern "system" fn vectored_exception_handler(
+    exception_info: *mut EXCEPTION_POINTERS,
+) -> i32 {
+    const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 
-/// The actual callback invoked by Windows when an unhandled SEH exception
-/// occurs.  This function MUST be signal-safe: no Rust heap allocations,
-/// no `format!`, no `String`, no `println!`.
+    let Some(paths) = CRASH_OUTPUT_PATHS.get().and_then(Option::as_ref) else {
+        return EXCEPTION_CONTINUE_SEARCH;
+    };
+    if PROBE_WRITTEN.load(Ordering::Relaxed) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if exception_info.is_null() {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    let ei = unsafe { &*exception_info };
+    if ei.ExceptionRecord.is_null() {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    let rec = unsafe { &*ei.ExceptionRecord };
+    let code = rec.ExceptionCode;
+    if !is_fatal_native_exception(code) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    LAST_FATAL_EXCEPTION_CODE.store(code.0 as u32, Ordering::Relaxed);
+    LAST_FATAL_EXCEPTION_ADDRESS.store(rec.ExceptionAddress as u64, Ordering::Relaxed);
+    LAST_FATAL_EXCEPTION_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+
+    if PROBE_WRITTEN
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        unsafe {
+            write_probe_report(PCWSTR(paths.probe_path.as_ptr()), exception_info);
+        }
+    }
+
+    EXCEPTION_CONTINUE_SEARCH
+}
+
 unsafe extern "system" fn unhandled_exception_filter(
     exception_info: *const EXCEPTION_POINTERS,
 ) -> i32 {
     const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
-    // Guard against reentrant calls (e.g., if writing the dump itself faults).
+    TOP_LEVEL_FILTER_ENTERED.store(true, Ordering::SeqCst);
     if SEH_ENTERED.swap(true, Ordering::SeqCst) {
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
-    // Resolve the crash report directory (same dir as settings.yaml).
-    // We pre-compute this once and keep it on the stack.
-    let base_dir = crate::settings::settings_path();
-    let base_dir = base_dir.parent().unwrap_or(std::path::Path::new("."));
+    let Some(paths) = CRASH_OUTPUT_PATHS.get().and_then(Option::as_ref) else {
+        return EXCEPTION_EXECUTE_HANDLER;
+    };
 
-    // --- 1. Write the text crash report ---
-    let report_path = base_dir.join(crate::constants::CRASH_REPORT_FILENAME);
     unsafe {
-        write_text_report(&report_path, exception_info);
-    }
-
-    // --- 2. Write the minidump ---
-    let dump_path = base_dir.join(crate::constants::CRASH_DUMP_FILENAME);
-    unsafe {
-        write_minidump(&dump_path, exception_info);
+        write_text_report(PCWSTR(paths.report_path.as_ptr()), exception_info);
+        write_minidump(PCWSTR(paths.dump_path.as_ptr()), exception_info);
     }
 
     EXCEPTION_EXECUTE_HANDLER
 }
 
-// ---------------------------------------------------------------------------
-// Text report (signal-safe, stack-only)
-// ---------------------------------------------------------------------------
-
-/// Write a human-readable crash report using only Win32 `WriteFile`.
-/// On failure this is best-effort; we silently continue.
-unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEPTION_POINTERS) {
-    // Convert path to wide string on the stack (max ~512 chars is plenty).
-    let mut wide_buf = [0u16; 512];
-    let wide_len = path_to_wide(path, &mut wide_buf);
-    if wide_len == 0 {
+unsafe fn write_probe_report(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS) {
+    let Some(handle) = (unsafe { open_output_file(path) }) else {
         return;
+    };
+
+    let mut buf = [0u8; 1024];
+    let mut pos = 0usize;
+    pos = append_str(
+        &mut buf,
+        pos,
+        "--- Simple Image Viewer Native Exception Probe ---\r\n",
+    );
+    pos = append_str(
+        &mut buf,
+        pos,
+        "This file is written by the vectored exception handler before the top-level unhandled exception filter.\r\n",
+    );
+    pos = append_str(&mut buf, pos, "Version: v");
+    pos = append_str(&mut buf, pos, env!("CARGO_PKG_VERSION"));
+    pos = append_str(&mut buf, pos, "\r\n");
+    pos = append_str(&mut buf, pos, "Top-level filter entered: ");
+    pos = append_str(
+        &mut buf,
+        pos,
+        if TOP_LEVEL_FILTER_ENTERED.load(Ordering::Relaxed) {
+            "yes"
+        } else {
+            "no"
+        },
+    );
+    pos = append_str(&mut buf, pos, "\r\n");
+
+    if !exception_info.is_null() {
+        let ei = unsafe { &*exception_info };
+        if !ei.ExceptionRecord.is_null() {
+            let rec = unsafe { &*ei.ExceptionRecord };
+            pos = append_str(&mut buf, pos, "Exception Code: 0x");
+            pos = append_hex32(&mut buf, pos, rec.ExceptionCode.0 as u32);
+            pos = append_str(&mut buf, pos, " (");
+            pos = append_str(&mut buf, pos, exception_code_name(rec.ExceptionCode));
+            pos = append_str(&mut buf, pos, ")\r\n");
+            pos = append_str(&mut buf, pos, "Exception Address: 0x");
+            pos = append_hex64(&mut buf, pos, rec.ExceptionAddress as u64);
+            pos = append_str(&mut buf, pos, "\r\nThread ID: 0x");
+            pos = append_hex32(&mut buf, pos, unsafe { GetCurrentThreadId() });
+            pos = append_str(&mut buf, pos, "\r\n");
+        }
     }
 
-    let handle = unsafe {
-        CreateFileW(
-            PCWSTR(wide_buf.as_ptr()),
-            0x40000000, // GENERIC_WRITE
-            FILE_SHARE_READ,
-            None,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            HANDLE::default(),
-        )
-    };
-    let handle = match handle {
-        Ok(h) if !h.is_invalid() => h,
-        _ => return,
+    flush_stack_buffer(handle, &buf[..pos]);
+}
+
+unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS) {
+    let Some(handle) = (unsafe { open_output_file(path) }) else {
+        return;
     };
 
-    // 4KB stack buffer for composing the report
     let mut buf = [0u8; 4096];
     let mut pos = 0usize;
 
@@ -157,7 +258,6 @@ unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEP
             pos = append_hex64(&mut buf, pos, rec.ExceptionAddress as u64);
             pos = append_str(&mut buf, pos, "\r\n");
 
-            // For ACCESS_VIOLATION, parameter[0] = read/write, parameter[1] = address
             if code == EXCEPTION_ACCESS_VIOLATION && rec.NumberParameters >= 2 {
                 let rw = rec.ExceptionInformation[0];
                 let addr = rec.ExceptionInformation[1];
@@ -179,7 +279,6 @@ unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEP
             }
         }
 
-        // Dump register context
         #[cfg(target_arch = "x86_64")]
         if !ei.ContextRecord.is_null() {
             let ctx = unsafe { &*ei.ContextRecord };
@@ -211,24 +310,48 @@ unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEP
             pos = append_reg(&mut buf, pos, "SP ", ctx.Sp);
             pos = append_reg(&mut buf, pos, "FP ", ctx.Anonymous.Anonymous.Fp);
             pos = append_reg(&mut buf, pos, "LR ", ctx.Anonymous.Anonymous.Lr);
-            // First 8 general-purpose registers
             for i in 0..8u32 {
                 let mut name = [b'X', b'0', b' '];
                 name[1] = b'0' + i as u8;
-                pos = append_str(&mut buf, pos, unsafe {
-                    core::str::from_utf8_unchecked(&name)
-                });
+                pos = append_str(
+                    &mut buf,
+                    pos,
+                    unsafe { core::str::from_utf8_unchecked(&name) },
+                );
                 pos = append_str(&mut buf, pos, " = 0x");
                 pos = append_hex64(&mut buf, pos, ctx.Anonymous.X[i as usize]);
                 pos = append_str(&mut buf, pos, "\r\n");
             }
         }
+    } else {
+        pos = append_str(
+            &mut buf,
+            pos,
+            "No EXCEPTION_POINTERS provided to the unhandled exception filter.\r\n",
+        );
+    }
+
+    let probe_code = LAST_FATAL_EXCEPTION_CODE.load(Ordering::Relaxed);
+    if probe_code != 0 {
+        pos = append_str(&mut buf, pos, "\r\nVectored Probe Snapshot:\r\n");
+        pos = append_str(&mut buf, pos, "Probe Exception Code: 0x");
+        pos = append_hex32(&mut buf, pos, probe_code);
+        pos = append_str(&mut buf, pos, "\r\nProbe Exception Address: 0x");
+        pos = append_hex64(&mut buf, pos, LAST_FATAL_EXCEPTION_ADDRESS.load(Ordering::Relaxed));
+        pos = append_str(&mut buf, pos, "\r\nProbe Thread ID: 0x");
+        pos = append_hex32(&mut buf, pos, LAST_FATAL_EXCEPTION_THREAD.load(Ordering::Relaxed));
+        pos = append_str(&mut buf, pos, "\r\n");
     }
 
     pos = append_str(
         &mut buf,
         pos,
         "\r\nA minidump (.dmp) file has also been generated in the same directory.\r\n",
+    );
+    pos = append_str(
+        &mut buf,
+        pos,
+        "If crash_probe.txt exists but this report is missing or incomplete, another component may have replaced the top-level unhandled exception filter.\r\n",
     );
     pos = append_str(
         &mut buf,
@@ -241,50 +364,18 @@ unsafe fn write_text_report(path: &std::path::Path, exception_info: *const EXCEP
         "--------------------------------------------\r\n",
     );
 
-    // Flush to disk
-    let mut written = 0u32;
-    unsafe {
-        let _ = WriteFile(handle, Some(&buf[..pos]), Some(&mut written), None);
-        let _ = CloseHandle(handle);
-    }
+    flush_stack_buffer(handle, &buf[..pos]);
 }
 
-// ---------------------------------------------------------------------------
-// Minidump via DbgHelp
-// ---------------------------------------------------------------------------
-
-/// Write a minidump using `MiniDumpWriteDump`.  This API is designed by
-/// Microsoft to be safe to call from within an exception filter.
-unsafe fn write_minidump(path: &std::path::Path, exception_info: *const EXCEPTION_POINTERS) {
-    let mut wide_buf = [0u16; 512];
-    let wide_len = path_to_wide(path, &mut wide_buf);
-    if wide_len == 0 {
+unsafe fn write_minidump(path: PCWSTR, exception_info: *const EXCEPTION_POINTERS) {
+    let Some(handle) = (unsafe { open_output_file(path) }) else {
         return;
-    }
-
-    let handle = unsafe {
-        CreateFileW(
-            PCWSTR(wide_buf.as_ptr()),
-            0x40000000, // GENERIC_WRITE
-            FILE_SHARE_READ,
-            None,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            HANDLE::default(),
-        )
-    };
-    let handle = match handle {
-        Ok(h) if !h.is_invalid() => h,
-        _ => return,
     };
 
     let process = unsafe { GetCurrentProcess() };
     let pid = unsafe { GetCurrentProcessId() };
     let tid = unsafe { GetCurrentThreadId() };
 
-    // MiniDumpWithDataSegs includes global variable segments — very helpful
-    // for diagnosing state-related crashes, adds only a few MB.
-    // MiniDumpWithThreadInfo includes thread times and start addresses.
     let dump_type = MINIDUMP_TYPE(
         0x00000001 | // MiniDumpWithDataSegs
         0x00000004 | // MiniDumpWithHandleData
@@ -307,33 +398,76 @@ unsafe fn write_minidump(path: &std::path::Path, exception_info: *const EXCEPTIO
             None,
             None,
         );
-
         let _ = CloseHandle(handle);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signal-safe helper functions (no heap, stack only)
-// ---------------------------------------------------------------------------
+unsafe fn open_output_file(path: PCWSTR) -> Option<HANDLE> {
+    let handle = unsafe {
+        CreateFileW(
+            path,
+            0x40000000,
+            FILE_SHARE_READ,
+            None,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        )
+    };
+    match handle {
+        Ok(h) if !h.is_invalid() => Some(h),
+        _ => None,
+    }
+}
 
-/// Convert a Rust `Path` to a null-terminated UTF-16 buffer on the stack.
-/// Returns the number of u16 characters written (excluding null terminator),
-/// or 0 on failure (path too long).
+fn flush_stack_buffer(handle: HANDLE, buf: &[u8]) {
+    let mut written = 0u32;
+    unsafe {
+        let _ = WriteFile(handle, Some(buf), Some(&mut written), None);
+        let _ = CloseHandle(handle);
+    }
+}
+
+fn is_fatal_native_exception(code: NTSTATUS) -> bool {
+    matches!(
+        code,
+        EXCEPTION_ACCESS_VIOLATION
+            | EXCEPTION_ARRAY_BOUNDS_EXCEEDED
+            | EXCEPTION_DATATYPE_MISALIGNMENT
+            | EXCEPTION_FLT_DENORMAL_OPERAND
+            | EXCEPTION_FLT_DIVIDE_BY_ZERO
+            | EXCEPTION_FLT_INEXACT_RESULT
+            | EXCEPTION_FLT_INVALID_OPERATION
+            | EXCEPTION_FLT_OVERFLOW
+            | EXCEPTION_FLT_STACK_CHECK
+            | EXCEPTION_FLT_UNDERFLOW
+            | EXCEPTION_GUARD_PAGE
+            | EXCEPTION_ILLEGAL_INSTRUCTION
+            | EXCEPTION_IN_PAGE_ERROR
+            | EXCEPTION_INT_DIVIDE_BY_ZERO
+            | EXCEPTION_INT_OVERFLOW
+            | EXCEPTION_INVALID_DISPOSITION
+            | EXCEPTION_INVALID_HANDLE
+            | EXCEPTION_NONCONTINUABLE_EXCEPTION
+            | EXCEPTION_PRIV_INSTRUCTION
+            | EXCEPTION_STACK_OVERFLOW
+    )
+}
+
 fn path_to_wide(path: &std::path::Path, buf: &mut [u16]) -> usize {
     use std::os::windows::ffi::OsStrExt;
     let mut i = 0;
     for c in path.as_os_str().encode_wide() {
         if i >= buf.len() - 1 {
-            return 0; // Path too long for our stack buffer
+            return 0;
         }
         buf[i] = c;
         i += 1;
     }
-    buf[i] = 0; // Null terminator
+    buf[i] = 0;
     i
 }
 
-/// Append a string slice to a fixed-size buffer.  Returns new position.
 fn append_str(buf: &mut [u8], pos: usize, s: &str) -> usize {
     let bytes = s.as_bytes();
     let avail = buf.len().saturating_sub(pos);
@@ -342,7 +476,6 @@ fn append_str(buf: &mut [u8], pos: usize, s: &str) -> usize {
     pos + n
 }
 
-/// Append a 32-bit value as uppercase hex to the buffer.
 fn append_hex32(buf: &mut [u8], pos: usize, val: u32) -> usize {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut tmp = [0u8; 8];
@@ -352,7 +485,6 @@ fn append_hex32(buf: &mut [u8], pos: usize, val: u32) -> usize {
     append_str(buf, pos, unsafe { core::str::from_utf8_unchecked(&tmp) })
 }
 
-/// Append a 64-bit value as uppercase hex to the buffer.
 fn append_hex64(buf: &mut [u8], pos: usize, val: u64) -> usize {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut tmp = [0u8; 16];
@@ -362,39 +494,37 @@ fn append_hex64(buf: &mut [u8], pos: usize, val: u64) -> usize {
     append_str(buf, pos, unsafe { core::str::from_utf8_unchecked(&tmp) })
 }
 
-/// Append a named register value (e.g., "RAX = 0x...\r\n").
 fn append_reg(buf: &mut [u8], pos: usize, name: &str, val: u64) -> usize {
-    let mut p = append_str(buf, pos, name);
-    p = append_str(buf, p, " = 0x");
-    p = append_hex64(buf, p, val);
-    append_str(buf, p, "\r\n")
+    let mut pos = append_str(buf, pos, name);
+    pos = append_str(buf, pos, " = 0x");
+    pos = append_hex64(buf, pos, val);
+    append_str(buf, pos, "\r\n")
 }
 
-/// Return a human-readable name for common exception codes.
 fn exception_code_name(code: NTSTATUS) -> &'static str {
     match code {
         EXCEPTION_ACCESS_VIOLATION => "ACCESS_VIOLATION",
-        EXCEPTION_STACK_OVERFLOW => "STACK_OVERFLOW",
+        EXCEPTION_ARRAY_BOUNDS_EXCEEDED => "ARRAY_BOUNDS_EXCEEDED",
+        EXCEPTION_BREAKPOINT => "BREAKPOINT",
+        EXCEPTION_DATATYPE_MISALIGNMENT => "DATATYPE_MISALIGNMENT",
+        EXCEPTION_FLT_DENORMAL_OPERAND => "FLT_DENORMAL_OPERAND",
+        EXCEPTION_FLT_DIVIDE_BY_ZERO => "FLT_DIVIDE_BY_ZERO",
+        EXCEPTION_FLT_INEXACT_RESULT => "FLT_INEXACT_RESULT",
+        EXCEPTION_FLT_INVALID_OPERATION => "FLT_INVALID_OPERATION",
+        EXCEPTION_FLT_OVERFLOW => "FLT_OVERFLOW",
+        EXCEPTION_FLT_STACK_CHECK => "FLT_STACK_CHECK",
+        EXCEPTION_FLT_UNDERFLOW => "FLT_UNDERFLOW",
+        EXCEPTION_GUARD_PAGE => "GUARD_PAGE",
         EXCEPTION_ILLEGAL_INSTRUCTION => "ILLEGAL_INSTRUCTION",
+        EXCEPTION_IN_PAGE_ERROR => "IN_PAGE_ERROR",
         EXCEPTION_INT_DIVIDE_BY_ZERO => "INT_DIVIDE_BY_ZERO",
         EXCEPTION_INT_OVERFLOW => "INT_OVERFLOW",
-        EXCEPTION_FLT_DIVIDE_BY_ZERO => "FLT_DIVIDE_BY_ZERO",
-        EXCEPTION_FLT_OVERFLOW => "FLT_OVERFLOW",
-        EXCEPTION_FLT_UNDERFLOW => "FLT_UNDERFLOW",
-        EXCEPTION_FLT_INEXACT_RESULT => "FLT_INEXACT_RESULT",
-        EXCEPTION_FLT_DENORMAL_OPERAND => "FLT_DENORMAL_OPERAND",
-        EXCEPTION_FLT_INVALID_OPERATION => "FLT_INVALID_OPERATION",
-        EXCEPTION_FLT_STACK_CHECK => "FLT_STACK_CHECK",
-        EXCEPTION_BREAKPOINT => "BREAKPOINT",
-        EXCEPTION_SINGLE_STEP => "SINGLE_STEP",
-        EXCEPTION_DATATYPE_MISALIGNMENT => "DATATYPE_MISALIGNMENT",
-        EXCEPTION_ARRAY_BOUNDS_EXCEEDED => "ARRAY_BOUNDS_EXCEEDED",
-        EXCEPTION_PRIV_INSTRUCTION => "PRIV_INSTRUCTION",
-        EXCEPTION_IN_PAGE_ERROR => "IN_PAGE_ERROR",
-        EXCEPTION_NONCONTINUABLE_EXCEPTION => "NONCONTINUABLE_EXCEPTION",
         EXCEPTION_INVALID_DISPOSITION => "INVALID_DISPOSITION",
-        EXCEPTION_GUARD_PAGE => "GUARD_PAGE",
         EXCEPTION_INVALID_HANDLE => "INVALID_HANDLE",
+        EXCEPTION_NONCONTINUABLE_EXCEPTION => "NONCONTINUABLE_EXCEPTION",
+        EXCEPTION_PRIV_INSTRUCTION => "PRIV_INSTRUCTION",
+        EXCEPTION_SINGLE_STEP => "SINGLE_STEP",
+        EXCEPTION_STACK_OVERFLOW => "STACK_OVERFLOW",
         _ => "UNKNOWN_EXCEPTION",
     }
 }
