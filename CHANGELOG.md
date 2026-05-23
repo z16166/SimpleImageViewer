@@ -15,6 +15,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **AVIF HDR PQ colour** (since **2.1.0**; note added in this release): PQ AVIF decoded through YUV→RGB—including Microsoft **Chimera** (`Chimera_10bit_…_with_HDR_metadata.avif`)—no longer look oversaturated on **Windows** and **Linux**. The viewer treats `libavif` RGB output as **display sRGB gamma**, not PQ code values (avoids a second PQ EOTF in the HDR shader), and applies BT.2020 **matrix MC=10→NCL** fallback for Chimera-class payloads where the container tag does not match the coded luma/chroma.
 
+### Notes
+- **Linux HDR scope (memo)**: Wayland native HDR on Linux targets **HDR10 PQ** via **`Rgb10a2Unorm`** (`HDR10_ST2084` + `VK_EXT_hdr_metadata`). **`Rgba16Float` scRGB / EDR** swap chains (the Windows-style linear float path) are **not planned for this release** and remain out of scope until compositor and driver support is clearer. X11 stays SDR tone-mapped.
+
 ## [2.1.0] - 2026-05-22
 
 ### Added
