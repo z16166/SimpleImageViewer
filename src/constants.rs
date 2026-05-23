@@ -103,6 +103,11 @@ pub const CRASH_REPORT_FILENAME: &str = "crash_report.txt";
 #[cfg(target_os = "windows")]
 pub const CRASH_DUMP_FILENAME: &str = "crash_dump.dmp";
 
+/// Filename for the first-chance native exception probe emitted by the Windows
+/// vectored exception handler.
+#[cfg(target_os = "windows")]
+pub const CRASH_PROBE_FILENAME: &str = "crash_probe.txt";
+
 /// Default fallback title for the error dialog when i18n is not yet available.
 pub const CRASH_DIALOG_FALLBACK_TITLE: &str = "Application Error";
 

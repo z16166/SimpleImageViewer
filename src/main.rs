@@ -991,6 +991,9 @@ fn main() -> eframe::Result {
         "hdr diagnostics + NativeOptions (before run_native)",
     );
 
+    #[cfg(target_os = "windows")]
+    seh_handler::reinstall_top_level_filter();
+
     log::info!(
         "[startup] Main-thread prep before window/event loop: {} ms total",
         prev.duration_since(startup_t0).as_millis()
