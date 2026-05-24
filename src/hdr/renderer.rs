@@ -82,10 +82,22 @@ impl HdrRenderOutputMode {
     }
 }
 
+/// When [`HdrRenderOutputMode::SdrToneMapped`] composites into **`Rgba8Unorm` / `Bgra8Unorm`**, the GPU stores
+/// fragment output **literally** in 8‑bit channels (`encode_sdr` must apply IEC 61966‑2‑1 / ~gamma OETF in WGSL).
+///
+/// **`Rgba8UnormSrgb` / `Bgra8UnormSrgb`** treat fragment output as **linear display RGB** and **apply sRGB encode on write**
+/// ([`wgpu` texture conventions](https://github.com/gfx-rs/wgpu/wiki/Texture-Color-Formats-and-Srgb-conversions)). Emitting pre‑encoded
+/// values from WGSL (**double‑OETF**) lifts mids / washes contrast (**「灰蒙蒙」** vs Chrome on SDR canvases).
+pub(crate) fn hdr_sdr_framebuffer_needs_manual_srgb_oetf(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+    )
+}
+
 pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
-    let output_mode = target_format.map(|format| {
-        HdrRenderOutputMode::for_target_format(format, None)
-    });
+    let output_mode =
+        target_format.map(|format| HdrRenderOutputMode::for_target_format(format, None));
     [
         format!("[HDR] render_target_format={target_format:?}"),
         format!(
@@ -100,7 +112,8 @@ pub fn hdr_render_output_diagnostics(target_format: Option<wgpu::TextureFormat>)
 pub fn hdr_egui_overlay_diagnostics(target_format: Option<wgpu::TextureFormat>) -> [String; 2] {
     let shader_entry_point = target_format.map(|format| {
         let rgb10a2_pq = matches!(format, wgpu::TextureFormat::Rgb10a2Unorm)
-            && HdrRenderOutputMode::for_target_format(format, None) == HdrRenderOutputMode::NativeHdrPq;
+            && HdrRenderOutputMode::for_target_format(format, None)
+                == HdrRenderOutputMode::NativeHdrPq;
         egui_wgpu::egui_framebuffer_shader_entry_point(format, rgb10a2_pq)
     });
     [
@@ -134,6 +147,8 @@ const INPUT_TRANSFER_LINEAR: u32 = 0u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
 const INPUT_TRANSFER_PQ: u32 = 2u;
 const INPUT_TRANSFER_HLG: u32 = 3u;
+// Must stay aligned with `HdrReference` discriminants pushed into ToneMapUniform.
+const INPUT_REFERENCE_SCENE_LINEAR: u32 = 0u;
 const HDR_DOWNSCALE_SAMPLE_GRID: u32 = 4u;
 const HDR_DOWNSCALE_MAX_FOOTPRINT: f32 = 8.0;
 
@@ -149,7 +164,9 @@ struct ToneMapSettings {
     input_color_space: u32,
     input_transfer_function: u32,
     input_reference: u32,
-    _pad0: u32,
+    /// `1`: `Rgba8Unorm` / `Bgra8Unorm` target — WGSL emits **IEC 61966‑2‑1** codes in `encode_sdr`.
+    /// `0`: `*UnormSrgb` (**GPU encodes**) or float/native paths — WGSL emits **linear** (~0–1) for writes.
+    sdr_manual_srgb_encode: u32,
     // WGSL aligns vec2<f32> to 8 bytes; implicit padding before uv_min.
     _wgsl_pad_before_uv: u32,
     uv_min: vec2<f32>,
@@ -336,12 +353,56 @@ fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
     return sum / f32(HDR_DOWNSCALE_SAMPLE_GRID * HDR_DOWNSCALE_SAMPLE_GRID);
 }
 
+// IEC 61966-2-1 sRGB opto-electronic transfer function (scalar, output 0..1).
+fn linear_srgb_scalar_to_encoded_srgb(linear: f32) -> f32 {
+    let c = clamp(linear, 0.0, 1.0);
+    if c <= 0.0031308 {
+        return c * 12.92;
+    }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
 fn encode_sdr(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let exposure_scale = exp2(settings.exposure_ev);
+    // Nielsen / IEC-style HEIF stills: transfer is sRGB PQ codes → treat like Chrome / unmanaged sRGB —
+    // Reinhard + 2.2 here washed mid-tones on SDR float-plane path (osd: "线性 sRGB…SDR色彩映射").
+    let use_piecewise_srgb = settings.input_transfer_function == INPUT_TRANSFER_SRGB &&
+        settings.input_reference != INPUT_REFERENCE_SCENE_LINEAR;
+    let manual_oetf = settings.sdr_manual_srgb_encode != 0u;
+
+    if use_piecewise_srgb {
+        let lr = sanitize_scalar_for_linear_srgb_encode(rgb.r * exposure_scale);
+        let lg = sanitize_scalar_for_linear_srgb_encode(rgb.g * exposure_scale);
+        let lb = sanitize_scalar_for_linear_srgb_encode(rgb.b * exposure_scale);
+        let linear_clamped = clamp(vec3<f32>(lr, lg, lb), vec3<f32>(0.0), vec3<f32>(1.0));
+        if (!manual_oetf) {
+            return linear_clamped;
+        }
+        return vec3<f32>(
+            linear_srgb_scalar_to_encoded_srgb(linear_clamped.r),
+            linear_srgb_scalar_to_encoded_srgb(linear_clamped.g),
+            linear_srgb_scalar_to_encoded_srgb(linear_clamped.b),
+        );
+    }
+
     let display_scale = settings.sdr_white_nits / max(settings.max_display_nits, settings.sdr_white_nits);
     let exposed = sanitize_hdr_rgb(rgb * exposure_scale * display_scale);
     let mapped = reinhard_tone_map(exposed);
-    return pow(clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(INVERSE_DISPLAY_GAMMA));
+    let clamped = clamp(mapped, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (!manual_oetf) {
+        return clamped;
+    }
+    return pow(clamped, vec3<f32>(INVERSE_DISPLAY_GAMMA));
+}
+
+fn sanitize_scalar_for_linear_srgb_encode(value: f32) -> f32 {
+    if value != value {
+        return 0.0;
+    }
+    if value <= 0.0 {
+        return 0.0;
+    }
+    return min(value, MAX_FINITE_HDR_VALUE);
 }
 
 fn display_linear_to_pq(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
@@ -675,6 +736,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.rotation_steps,
             self.alpha,
             self.output_mode,
+            self.target_format,
             self.image.metadata.color_space_hint(),
             self.image.metadata.transfer_function,
             self.image.metadata.reference,
@@ -790,6 +852,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.rotation_steps,
             self.alpha,
             self.output_mode,
+            self.target_format,
             self.tile.metadata.color_space_hint(),
             self.tile.metadata.transfer_function,
             self.tile.metadata.reference,
@@ -894,7 +957,8 @@ struct ToneMapUniform {
     input_color_space: u32,
     input_transfer_function: u32,
     input_reference: u32,
-    _pad0: u32,
+    /// See WGSL [`ToneMapSettings::sdr_manual_srgb_encode`].
+    sdr_manual_srgb_encode: u32,
     /// Matches WGSL uniform layout: `uv_min` starts at byte 48 (8-byte aligned).
     _wgsl_pad_before_uv: u32,
     uv_min: [f32; 2],
@@ -912,12 +976,15 @@ impl ToneMapUniform {
         rotation_steps: u32,
         alpha: f32,
         output_mode: HdrRenderOutputMode,
+        framebuffer_format: wgpu::TextureFormat,
         input_color_space: HdrColorSpace,
         input_transfer_function: HdrTransferFunction,
         input_reference: HdrReference,
         uv_rect: egui::Rect,
         native_display_scale: f32,
     ) -> Self {
+        let manual_srgb = output_mode == HdrRenderOutputMode::SdrToneMapped
+            && hdr_sdr_framebuffer_needs_manual_srgb_oetf(framebuffer_format);
         Self {
             exposure_ev: settings.exposure_ev,
             sdr_white_nits: settings.sdr_white_nits,
@@ -929,7 +996,7 @@ impl ToneMapUniform {
             input_color_space: input_color_space as u32,
             input_transfer_function: input_transfer_function as u32,
             input_reference: input_reference as u32,
-            _pad0: 0,
+            sdr_manual_srgb_encode: manual_srgb as u32,
             _wgsl_pad_before_uv: 0,
             uv_min: [uv_rect.min.x, uv_rect.min.y],
             uv_max: [uv_rect.max.x, uv_rect.max.y],
@@ -964,6 +1031,7 @@ fn tile_tone_map_uniform(
     rotation_steps: u32,
     alpha: f32,
     output_mode: HdrRenderOutputMode,
+    framebuffer_format: wgpu::TextureFormat,
     input_color_space: HdrColorSpace,
     input_transfer_function: HdrTransferFunction,
     input_reference: HdrReference,
@@ -975,6 +1043,7 @@ fn tile_tone_map_uniform(
         rotation_steps,
         alpha,
         output_mode,
+        framebuffer_format,
         input_color_space,
         input_transfer_function,
         input_reference,
@@ -988,6 +1057,7 @@ fn image_tone_map_uniform(
     rotation_steps: u32,
     alpha: f32,
     output_mode: HdrRenderOutputMode,
+    framebuffer_format: wgpu::TextureFormat,
     input_color_space: HdrColorSpace,
     input_transfer_function: HdrTransferFunction,
     input_reference: HdrReference,
@@ -999,6 +1069,7 @@ fn image_tone_map_uniform(
         rotation_steps,
         alpha,
         output_mode,
+        framebuffer_format,
         input_color_space,
         input_transfer_function,
         input_reference,
@@ -1154,6 +1225,7 @@ fn create_callback_resources(
             0,
             1.0,
             HdrRenderOutputMode::SdrToneMapped,
+            target_format,
             HdrColorSpace::LinearSrgb,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1675,6 +1747,7 @@ mod tests {
             6,
             0.5,
             HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Rgba16Float,
             HdrColorSpace::LinearSrgb,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1694,6 +1767,7 @@ mod tests {
             0,
             1.0,
             HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Rgba16Float,
             HdrColorSpace::LinearSrgb,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1718,6 +1792,7 @@ mod tests {
             5,
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
             HdrColorSpace::Rec2020Linear,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1729,6 +1804,7 @@ mod tests {
             5,
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
             HdrColorSpace::Rec2020Linear,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1746,6 +1822,32 @@ mod tests {
         assert_eq!(
             image_uniform.output_mode,
             HdrRenderOutputMode::SdrToneMapped as u32
+        );
+        assert_eq!(image_uniform.sdr_manual_srgb_encode, 0);
+        assert_eq!(tile_uniform.sdr_manual_srgb_encode, 0);
+    }
+
+    #[test]
+    fn tone_map_manual_srgb_oetf_plain_unorm_only() {
+        assert!(
+            crate::hdr::renderer::hdr_sdr_framebuffer_needs_manual_srgb_oetf(
+                wgpu::TextureFormat::Bgra8Unorm
+            )
+        );
+        assert!(
+            crate::hdr::renderer::hdr_sdr_framebuffer_needs_manual_srgb_oetf(
+                wgpu::TextureFormat::Rgba8Unorm
+            )
+        );
+        assert!(
+            !crate::hdr::renderer::hdr_sdr_framebuffer_needs_manual_srgb_oetf(
+                wgpu::TextureFormat::Bgra8UnormSrgb
+            )
+        );
+        assert!(
+            !crate::hdr::renderer::hdr_sdr_framebuffer_needs_manual_srgb_oetf(
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            )
         );
     }
 
@@ -1931,6 +2033,7 @@ mod tests {
             5,
             0.25,
             HdrRenderOutputMode::SdrToneMapped,
+            wgpu::TextureFormat::Bgra8Unorm,
             HdrColorSpace::LinearSrgb,
             HdrTransferFunction::Linear,
             HdrReference::Unknown,
@@ -1940,23 +2043,18 @@ mod tests {
 
         assert_eq!(uniform.rotation_steps, 1);
         assert_eq!(uniform.alpha, 0.25);
+        assert_eq!(uniform.sdr_manual_srgb_encode, 1);
     }
 
     #[test]
     fn render_mode_uses_native_hdr_for_float_and_pq_targets() {
         use crate::hdr::monitor::HdrNativeSurfaceEncoding;
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(
-                wgpu::TextureFormat::Rgba16Float,
-                None,
-            ),
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba16Float, None,),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(
-                wgpu::TextureFormat::Rgba32Float,
-                None,
-            ),
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgba32Float, None,),
             HdrRenderOutputMode::NativeHdr
         );
         assert_eq!(
@@ -1974,17 +2072,11 @@ mod tests {
             HdrRenderOutputMode::NativeHdrGamma22
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(
-                wgpu::TextureFormat::Rgb10a2Unorm,
-                None,
-            ),
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Rgb10a2Unorm, None,),
             HdrRenderOutputMode::SdrToneMapped
         );
         assert_eq!(
-            HdrRenderOutputMode::for_target_format(
-                wgpu::TextureFormat::Bgra8Unorm,
-                None,
-            ),
+            HdrRenderOutputMode::for_target_format(wgpu::TextureFormat::Bgra8Unorm, None,),
             HdrRenderOutputMode::SdrToneMapped
         );
     }
@@ -1996,6 +2088,7 @@ mod tests {
             0,
             1.0,
             HdrRenderOutputMode::NativeHdr,
+            wgpu::TextureFormat::Bgra8Unorm,
             HdrColorSpace::Rec2020Linear,
             HdrTransferFunction::Pq,
             HdrReference::DisplayReferred,
@@ -2004,6 +2097,7 @@ mod tests {
         );
 
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
+        assert_eq!(uniform.sdr_manual_srgb_encode, 0);
         assert_eq!(
             uniform.input_color_space,
             HdrColorSpace::Rec2020Linear as u32
@@ -2047,6 +2141,8 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn pq_to_display_linear"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn hlg_to_scene_linear"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn decode_input_transfer"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("sdr_manual_srgb_encode"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("manual_oetf"));
     }
 
     #[test]
@@ -2065,7 +2161,9 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_PQ"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_pq"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn display_linear_to_pq"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0"));
+        assert!(
+            HDR_IMAGE_PLANE_SHADER.contains("const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0")
+        );
         assert!(HDR_IMAGE_PLANE_SHADER.contains("nits / vec3<f32>(PQ_REFERENCE_LUMINANCE_NITS)"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("OUTPUT_MODE_NATIVE_HDR_GAMMA22"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr_gamma22"));
@@ -2076,15 +2174,22 @@ mod tests {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn exposed_linear_rgb"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("return exposed_linear_rgb(rgb, settings);"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("display_linear_to_pq(exposed_linear_rgb"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("exposed_linear_rgb(rgb, settings) * display_scale")
-            || HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
+        assert!(
+            HDR_IMAGE_PLANE_SHADER.contains("exposed_linear_rgb(rgb, settings) * display_scale")
+                || HDR_IMAGE_PLANE_SHADER
+                    .contains("scene_linear_to_display_referred(exposed) * display_scale")
+        );
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn encode_scene_linear_kwin_gamma22"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn compress_scene_linear_highlights"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("reinhard_tone_map_luminance_preserved"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn scene_linear_to_display_referred"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("scene_linear_to_display_referred(exposed) * display_scale"));
         assert!(
-            HDR_IMAGE_PLANE_SHADER.contains("if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR)"),
+            HDR_IMAGE_PLANE_SHADER
+                .contains("scene_linear_to_display_referred(exposed) * display_scale")
+        );
+        assert!(
+            HDR_IMAGE_PLANE_SHADER
+                .contains("if (settings.input_transfer_function == INPUT_TRANSFER_LINEAR)"),
             "scene-linear needs display-referred mapping before KWin gamma 2.2 OETF"
         );
     }

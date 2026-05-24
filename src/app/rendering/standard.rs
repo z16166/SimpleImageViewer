@@ -118,12 +118,15 @@ impl ImageViewerApp {
             .and_then(|current| current.image_for_index(self.current_index))
             .cloned();
         // `draw_standard_image` is only reached when `texture_cache.get(current_index)` returned
-        // `Some` (see `app::rendering::mod`), so the cached SDR fallback texture always exists
-        // here and `has_sdr_fallback = true`.
+        // `Some`. Static HDR installs always register [`ImageViewerApp::hdr_sdr_fallback_indices`];
+        // keep [`build_render_plan`]/[`crate::hdr::monitor::effective_render_output_mode`] inputs
+        // aligned with OSD (`hdr_status`) so FloatImagePlane is not advertised while drawing the
+        // SDR cache path due to bookkeeping drift (`install_static_hdr_image` missed the set).
+        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
         let render_plan = self.build_render_plan(
             RenderShape::Static,
             hdr_image.is_some(),
-            /* has_sdr_fallback */ true,
+            has_sdr_fallback,
         );
         if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating)
         {

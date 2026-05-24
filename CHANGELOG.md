@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.1.4] - 2026-05-23
+
+### Fixed
+- **HEIF / HEIC (HDR, no embedded colour descriptor)**: Stills whose container exposes **no NCLX colour box** and **no readable embedded ICC profile** previously inherited a **scene‑linear (`transfer = Linear`)** default. Normalised RGB from libheif is **display‑referred gamma**, so SDR previews looked **flat and milky** next to Chrome and the desktop photo stack. Metadata now follows the same **`sRGB`** transfer assumption as ICC‑tagged stills **without guessing primaries**.
+- **Static HDR bookkeeping**: Installing a static HDR asset now records the cached SDR fallback in `hdr_sdr_fallback_indices`; the viewer paint path uses the same **`has_sdr_fallback`** signal as **`hdr_status`**, avoiding **“float‑plane HDR” OSD** while the canvas is actually blitting the **tonemapped fallback texture**.
+- **SDR framebuffer path (HDR image‑plane shaders)**: On **`Rgba8Unorm` / `Bgra8Unorm`** targets — typical **Windows gamma** canvases — the HDR float‑plane **`encode_sdr`** path now distinguishes **manual piecewise sRGB OETF** in WGSL versus **\*UnormSrgb** surfaces where the GPU encodes linear output to gamma. Prevents **double gamma** (washed mid‑tones) when the HDR callback targets an 8‑bit **non‑`srgb`** surface.
+
+### Improved
+- **CICP (ITU‑T H.273)**: **`transfer_characteristics = 1` (BT.709)** and **`= 6` (SMPTE 170 BT.601‑like)** decode as **`Srgb`**, aligning phone / conformance HEIF with browser‑style unmanaged stills rather than **`Unknown`** (which skipped proper EOTF on the HDR plane).
+- **HEIF transfer refine**: **`Unknown`** CICP transfer with **colour primaries = 1 (BT.709 / sRGB chromaticities)** is promoted to **`Srgb`**, restoring contrast on **10‑bit** primaries after depth‑heuristic passes.
+- **CPU HDR→SDR tonemap fallback**: PQ and display‑referred **sRGB** masters can take the **IEC 61966‑2‑1** OETF curve instead of a generic **Reinhard + gamma** stack where that matches unmanaged browser output on physically SDR displays.
+- **Diagnostics**: **`INFO`** line per decoded HEIF primary — resolution, **`transfer_function`**, profile kind (**LinearSrgb / Cicp / Icc**), **`cicp (primaries, transfer)`**, optional mastering peak guess, auxiliary gain‑map hints.
+
+### Notes
+- Behaviour changes focus on **HEIF/HEIC** and **HDR SDR previews** when **Windows/native HDR surfaces are inactive** (`Bgra8Unorm`). Native HDR PQ / OpenEXR / Radiance paths are unchanged except where noted above.
+
+
 ## [2.1.3] - 2026-05-24
 
 ### Fixed

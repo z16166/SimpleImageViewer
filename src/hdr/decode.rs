@@ -27,7 +27,7 @@ use crate::hdr::tiled::HdrTiledSource;
 
 use super::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrToneMapSettings, HdrTransferFunction,
+    HdrReference, HdrToneMapSettings, HdrTransferFunction,
 };
 
 const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
@@ -285,7 +285,14 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
         let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
         let linear_srgb =
             linear_primary_to_linear_srgb(decoded, buffer.color_space, &buffer.metadata);
-        let encoded = encode_sdr_rgb8(linear_srgb, exposure_scale, peak_scale);
+        // Nielsen / Nokia conformance HEICs advertise sRGB PQ codes; Chrome renders them as ordinary
+        // display-referred sRGB masterings. Applying Reinhard + 2.2 (HDR→SDR filmic curve) washes
+        // blacks out vs browsers — use IEC 61966-2-1 OETF only for that case.
+        let encoded = if should_use_iec61966_tone_map_fallback(buffer, tf) {
+            encode_linear_display_referred_srgb8(linear_srgb, exposure_scale, peak_scale)
+        } else {
+            encode_sdr_rgb8(linear_srgb, exposure_scale, peak_scale)
+        };
         pixels.extend_from_slice(&[
             encoded[0],
             encoded[1],
@@ -446,6 +453,37 @@ fn xyz_to_linear_srgb(xyz: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// Plain **display‑referred linear sRGB** (after transfer + gamut matrices) → 8-bit sRGB codes,
+/// matching typical browser unmanaged sRGB pipelines (Chrome-like for HEIC stills).
+fn encode_linear_display_referred_srgb8(
+    linear_srgb: [f32; 3],
+    exposure_scale: f32,
+    peak_scale: f32,
+) -> [u8; 3] {
+    let scale = exposure_scale * peak_scale;
+    [
+        linear_srgb_linear_to_srgb_u8(sanitize_hdr_rgb(linear_srgb[0]) * scale),
+        linear_srgb_linear_to_srgb_u8(sanitize_hdr_rgb(linear_srgb[1]) * scale),
+        linear_srgb_linear_to_srgb_u8(sanitize_hdr_rgb(linear_srgb[2]) * scale),
+    ]
+}
+
+#[inline]
+fn use_direct_srgb_sdr_fallback(metadata: &HdrImageMetadata, tf: HdrTransferFunction) -> bool {
+    tf == HdrTransferFunction::Srgb && metadata.reference != HdrReference::SceneLinear
+}
+
+/// [`use_direct_srgb_sdr_fallback`] covers display‑referred sRGB mistags (`HdrTransferFunction::Srgb`).
+///
+/// **`HdrTransferFunction::Pq` (BT.2100 PQ):** PQ EOTF already yields display‑relative linear around SDR white;
+/// applying **`encode_sdr_rgb8`'s** Reinhard + ~2.2 on top visibly flattens mid‑tones and lifts blacks vs Chrome /
+/// system unmanaged HDR‑still previews on physically SDR panels (reports: Nokia / phone HEIC, OSD “线性 sRGB · SDR
+/// 色调映射”).
+#[inline]
+fn should_use_iec61966_tone_map_fallback(buffer: &HdrImageBuffer, tf: HdrTransferFunction) -> bool {
+    use_direct_srgb_sdr_fallback(&buffer.metadata, tf) || tf == HdrTransferFunction::Pq
+}
+
 fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
     let mut out = [0_u8; 3];
     for i in 0..3 {
@@ -507,7 +545,7 @@ mod tests {
     use super::*;
     use crate::hdr::types::{
         HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-        HdrToneMapSettings, HdrTransferFunction,
+        HdrReference, HdrToneMapSettings, HdrTransferFunction,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -517,6 +555,73 @@ mod tests {
             .map(PathBuf::from)
             .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
             .filter(|path| path.is_dir())
+    }
+
+    #[test]
+    fn srgb_transfer_sdr_fallback_uses_piecewise_srgb_curve_not_reinhard() {
+        let mut meta = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+        meta.transfer_function = HdrTransferFunction::Srgb;
+        meta.reference = HdrReference::DisplayReferred;
+
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: meta,
+            // Non-linear sRGB code ~0.5 → linear luminance (~0.214)
+            rgba_f32: Arc::new(vec![0.5_f32, 0.5_f32, 0.5_f32, 1.0]),
+        };
+
+        let sdr = hdr_to_sdr_rgba8(&buffer, 0.0).expect("sdr fallback");
+        let expected_lin = super::srgb_nonlinear_channel_to_linear(0.5);
+        let e0 = super::linear_srgb_linear_to_srgb_u8(expected_lin);
+        assert_eq!(sdr, vec![e0, e0, e0, 255]);
+    }
+
+    #[test]
+    fn pq_bt709_primaries_sdr_fallback_uses_iec_oetf_curve_not_reinhard() {
+        use crate::hdr::cicp::{self, H273_TRANSFER_SMPTE_ST2084_FOR_PQ};
+
+        let tone = HdrToneMapSettings::default();
+        let meta709 =
+            cicp::cicp_to_metadata(1, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 1, true, None);
+        assert_eq!(meta709.transfer_function, HdrTransferFunction::Pq);
+
+        let buffer = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: meta709.color_space_hint(),
+            metadata: meta709.clone(),
+            rgba_f32: Arc::new(vec![0.45_f32, 0.42_f32, 0.50_f32, 1.0]),
+        };
+
+        let sdr = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &tone).expect("sdr pq bt709");
+
+        let tf = buffer.metadata.transfer_function;
+        assert_eq!(tf, HdrTransferFunction::Pq);
+        let peak_scale =
+            tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+        let decoded = decode_transfer_to_display_linear(
+            [0.45_f32, 0.42_f32, 0.50_f32],
+            tf,
+            tone.sdr_white_nits,
+        );
+        let linear_srgb =
+            linear_primary_to_linear_srgb(decoded, buffer.color_space, &meta709);
+        let expected =
+            encode_linear_display_referred_srgb8(linear_srgb, 1.0_f32, peak_scale);
+        assert_eq!(sdr, vec![expected[0], expected[1], expected[2], 255]);
+
+        let meta2020 = cicp::cicp_to_metadata(9, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 9, true, None);
+        let buffer2020 = HdrImageBuffer {
+            color_space: meta2020.color_space_hint(),
+            metadata: meta2020,
+            ..buffer.clone()
+        };
+        let pq2020 = hdr_to_sdr_rgba8_with_tone_settings(&buffer2020, 0.0, &tone).expect("sdr pq2020");
+        assert_ne!(&sdr[..3], &pq2020[..3], "PQ+Rec2100 mastering should stay on Reinhard+2.2");
     }
 
     #[test]
