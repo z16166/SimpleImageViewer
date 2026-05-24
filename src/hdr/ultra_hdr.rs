@@ -1210,17 +1210,11 @@ mod tests {
                     gain_map_metadata_diagnostic(meta, capacity)
                 );
             }
-            if let Ok(hdr) =
-                decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity)
-            {
+            if let Ok(hdr) = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity) {
                 let cx = hdr.width as usize / 2;
                 let cy = hdr.height as usize / 2;
                 let i = (cy * hdr.width as usize + cx) * 4;
-                let rgb = [
-                    hdr.rgba_f32[i],
-                    hdr.rgba_f32[i + 1],
-                    hdr.rgba_f32[i + 2],
-                ];
+                let rgb = [hdr.rgba_f32[i], hdr.rgba_f32[i + 1], hdr.rgba_f32[i + 2]];
                 let sdr = [
                     linear_srgb_linear_to_srgb_u8(rgb[0]),
                     linear_srgb_linear_to_srgb_u8(rgb[1]),

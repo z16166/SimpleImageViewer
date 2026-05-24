@@ -247,7 +247,7 @@ pub(crate) fn gain_map_weight(metadata: GainMapMetadata, target_hdr_capacity: f3
 pub(crate) fn luminance_hints_from_gain_map(
     metadata: GainMapMetadata,
 ) -> crate::hdr::types::HdrLuminanceMetadata {
-    use crate::hdr::types::{HdrLuminanceMetadata, DEFAULT_SDR_WHITE_NITS};
+    use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrLuminanceMetadata};
 
     let peak_ratio = metadata.hdr_capacity_max.max(f32::MIN_POSITIVE);
     let peak_nits = peak_ratio * DEFAULT_SDR_WHITE_NITS;
@@ -448,7 +448,9 @@ impl<'a> ByteReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compose_gain_map_pixel, luminance_hints_from_gain_map, parse_iso_gain_map_metadata};
+    use super::{
+        compose_gain_map_pixel, luminance_hints_from_gain_map, parse_iso_gain_map_metadata,
+    };
     use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
     fn minimal_iso_metadata() -> Vec<u8> {
@@ -493,9 +495,6 @@ mod tests {
     fn luminance_hints_from_gain_map_maps_headroom_to_nits() {
         let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
         let hints = luminance_hints_from_gain_map(metadata);
-        assert_eq!(
-            hints.mastering_max_nits,
-            Some(4.0 * DEFAULT_SDR_WHITE_NITS)
-        );
+        assert_eq!(hints.mastering_max_nits, Some(4.0 * DEFAULT_SDR_WHITE_NITS));
     }
 }

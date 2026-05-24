@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
@@ -42,13 +43,28 @@ pub(crate) fn heif_nclx_to_metadata(
     matrix_coefficients: u16,
     full_range: bool,
 ) -> HdrImageMetadata {
-    crate::hdr::cicp::cicp_to_metadata(
+    let mut meta = cicp::cicp_to_metadata(
         color_primaries,
         transfer_characteristics,
         matrix_coefficients,
         full_range,
         None,
-    )
+    );
+    // **`cicp_to_metadata` is format-neutral** (H.273 1/6 → [`HdrTransferFunction::Bt709`]). For **HEIF
+    // stills**, **primaries 1** with **transfer 1/6** is overwhelmingly authored as **IEC sRGB-like**
+    // display codes — Chrome / OS viewers do **not** route that through BT.709 EOTF inverse + filmic
+    // Reinhard on SDR (which reads “灰蒙蒙”). Narrow this override to that common phone/camera case only;
+    // e.g. PQ / Rec.2020 mastering keeps strict `cicp` semantics from the block above.
+    if color_primaries == 1
+        && matches!(
+            transfer_characteristics,
+            H273_TRANSFER_ITU_BT709 | H273_TRANSFER_SMPTE170M
+        )
+    {
+        meta.transfer_function = HdrTransferFunction::Srgb;
+        meta.reference = HdrReference::Unknown;
+    }
+    meta
 }
 
 #[cfg(feature = "heif-native")]
@@ -586,7 +602,34 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         .as_ref()
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
-    decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)
+    let hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+    let cicp_px_tc = match &hdr.metadata.color_profile {
+        HdrColorProfile::Cicp {
+            color_primaries,
+            transfer_characteristics,
+            ..
+        } => Some((*color_primaries, *transfer_characteristics)),
+        _ => None,
+    };
+    let profile_tag = match &hdr.metadata.color_profile {
+        HdrColorProfile::LinearSrgb => "LinearSrgb",
+        HdrColorProfile::ColorSpace(_) => "ColorSpace",
+        HdrColorProfile::Cicp { .. } => "Cicp",
+        HdrColorProfile::Icc(_) => "Icc",
+        HdrColorProfile::Unknown => "Unknown",
+    };
+    log::info!(
+        "[HEIF] primary {}×{} color_hint={:?} transfer={:?} profile={} cicp(primaries,transfer)={:?} mastering_max_nits={:?} gain_map_aux_seen={}",
+        hdr.width,
+        hdr.height,
+        hdr.color_space,
+        hdr.metadata.transfer_function,
+        profile_tag,
+        cicp_px_tc,
+        hdr.metadata.luminance.mastering_max_nits,
+        hdr.metadata.gain_map.is_some(),
+    );
+    Ok(hdr)
 }
 
 /// Decode the primary HEIF tile to HDR float RGBA. Tries interleaved 16-bit RGBA first, then other
@@ -1542,7 +1585,24 @@ fn read_heif_metadata(handle: *const libheif_sys::heif_image_handle) -> HdrImage
         }
     }
 
-    HdrImageMetadata::default()
+    // No NCLX and no embedded ICC (or raw ICC read failed). Libheif still returns **display codes**
+    // normalized to 0–1 floats for 8/10/12-bit primaries — *not* scene-linear HDR.
+    //
+    // Do **not** use [`HdrImageMetadata::default`] (`Linear` skips EOTFs). **Bt709 + Reinhard** on SDR
+    // washes Nokia / `old_bridge_*` style stills vs Chrome — keep **sRGB-like** decode for this orphan path.
+    heif_metadata_without_embedded_colour_info()
+}
+
+/// Metadata when HEIF exposes **no** NCLX and **no** readable embedded ICC blob.
+#[cfg(feature = "heif-native")]
+fn heif_metadata_without_embedded_colour_info() -> HdrImageMetadata {
+    HdrImageMetadata {
+        transfer_function: HdrTransferFunction::Srgb,
+        reference: HdrReference::Unknown,
+        color_profile: HdrColorProfile::LinearSrgb,
+        luminance: HdrLuminanceMetadata::default(),
+        gain_map: None,
+    }
 }
 
 /// Apple-style **composite HDR HEIC**: NCLX may mark **PQ** while the **primary** decoded surface is
@@ -1556,6 +1616,36 @@ fn refine_heif_transfer_for_primary_bit_depth(
 ) {
     let luma = unsafe { libheif_sys::heif_image_handle_get_luma_bits_per_pixel(handle) }.max(0);
     apply_heif_transfer_depth_heuristics(luma, metadata);
+    apply_heif_unknown_transfer_bt709_primaries_fallback(metadata);
+}
+
+/// **`Unknown` transfer + primaries 1**: treat as unmanaged **IEC sRGB-like** PQ codes — same rationale
+/// as [`heif_nclx_to_metadata`] for transfer 1/6 (browser parity on SDR, avoids Reinhard “gray veil”).
+#[cfg(feature = "heif-native")]
+pub(crate) fn apply_heif_unknown_transfer_bt709_primaries_fallback(
+    metadata: &mut HdrImageMetadata,
+) {
+    if metadata.transfer_function != HdrTransferFunction::Unknown {
+        return;
+    }
+
+    let uses_bt709_primaries = matches!(
+        &metadata.color_profile,
+        HdrColorProfile::Cicp {
+            color_primaries: 1,
+            ..
+        }
+    );
+    if !uses_bt709_primaries {
+        return;
+    }
+
+    log::debug!(
+        "[HEIF] unknown CICP transfer with BT.709 chromaticities (primaries=1) — assuming sRGB-like display codes \
+         for HDR decode + SDR IEC path (Chrome-style unmanaged stills)."
+    );
+    metadata.transfer_function = HdrTransferFunction::Srgb;
+    metadata.reference = HdrReference::Unknown;
 }
 
 #[cfg(feature = "heif-native")]
@@ -1720,8 +1810,23 @@ fn heif_sample_bit_depth(
 mod tests {
     #[cfg(feature = "heif-native")]
     use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
+    use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
     use crate::hdr::heif::{heif_nclx_to_metadata, is_heif_brand};
-    use crate::hdr::types::{HdrReference, HdrTransferFunction};
+    use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
+
+    #[test]
+    fn heif_nclx_bt709_family_primaries_1_prefers_srgb_for_browser_still_parity() {
+        let bt709 = heif_nclx_to_metadata(1, H273_TRANSFER_ITU_BT709, 1, true);
+        assert_eq!(bt709.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(bt709.reference, HdrReference::Unknown);
+
+        let smpte = heif_nclx_to_metadata(1, H273_TRANSFER_SMPTE170M, 1, true);
+        assert_eq!(smpte.transfer_function, HdrTransferFunction::Srgb);
+
+        // Primaries **≠ 1** keeps strict `cicp` **Bt709** (mastering not a classic phone sRGB still).
+        let wide = heif_nclx_to_metadata(9, H273_TRANSFER_ITU_BT709, 9, false);
+        assert_eq!(wide.transfer_function, HdrTransferFunction::Bt709);
+    }
 
     #[test]
     fn heif_brand_detection_accepts_heic_family_and_generic_heif() {
@@ -1769,6 +1874,47 @@ mod tests {
         assert_eq!(m.transfer_function, HdrTransferFunction::Unknown);
         apply_heif_transfer_depth_heuristics(8, &mut m);
         assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_unknown_transfer_bt709_primaries_fallback_promotes_srgb_still_decode() {
+        use super::{
+            apply_heif_transfer_depth_heuristics,
+            apply_heif_unknown_transfer_bt709_primaries_fallback,
+        };
+
+        let mut m = heif_nclx_to_metadata(1, 99, 1, true);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Unknown);
+
+        apply_heif_transfer_depth_heuristics(10, &mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Unknown);
+
+        apply_heif_unknown_transfer_bt709_primaries_fallback(&mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(m.reference, HdrReference::Unknown);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_unknown_transfer_not_lifted_for_rec2020_primaries() {
+        use super::{
+            apply_heif_transfer_depth_heuristics,
+            apply_heif_unknown_transfer_bt709_primaries_fallback,
+        };
+
+        let mut m = heif_nclx_to_metadata(9, 99, 9, false);
+        apply_heif_transfer_depth_heuristics(10, &mut m);
+        apply_heif_unknown_transfer_bt709_primaries_fallback(&mut m);
+        assert_eq!(m.transfer_function, HdrTransferFunction::Unknown);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn heif_fallback_without_colour_boxes_is_srgb_transfer_not_scene_linear() {
+        let m = super::heif_metadata_without_embedded_colour_info();
+        assert_eq!(m.transfer_function, HdrTransferFunction::Srgb);
+        assert!(matches!(m.color_profile, HdrColorProfile::LinearSrgb));
     }
 
     #[cfg(feature = "heif-native")]

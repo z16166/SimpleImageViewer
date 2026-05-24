@@ -1411,7 +1411,9 @@ mod tests {
     #[test]
     #[ignore = "manual probe against Netflix cosmos AVIF on disk"]
     fn probe_netflix_cosmos_raw_decode() {
-        use crate::hdr::decode::{decode_transfer_to_display_linear, hdr_to_sdr_rgba8_with_tone_settings};
+        use crate::hdr::decode::{
+            decode_transfer_to_display_linear, hdr_to_sdr_rgba8_with_tone_settings,
+        };
         use crate::hdr::types::HdrToneMapSettings;
         use std::path::Path;
 
@@ -1427,18 +1429,21 @@ mod tests {
         let cx = hdr.width as usize / 2;
         let cy = hdr.height as usize / 2;
         let i = (cy * hdr.width as usize + cx) * 4;
-        let raw = [
-            hdr.rgba_f32[i],
-            hdr.rgba_f32[i + 1],
-            hdr.rgba_f32[i + 2],
-        ];
-        eprintln!("metadata tf={:?} cs={:?}", hdr.metadata.transfer_function, hdr.color_space);
+        let raw = [hdr.rgba_f32[i], hdr.rgba_f32[i + 1], hdr.rgba_f32[i + 2]];
+        eprintln!(
+            "metadata tf={:?} cs={:?}",
+            hdr.metadata.transfer_function, hdr.color_space
+        );
         eprintln!("center raw f32 RGB = {raw:?}");
         let tone = HdrToneMapSettings {
             max_display_nits: 450.0,
             ..HdrToneMapSettings::default()
         };
-        let linear = decode_transfer_to_display_linear(raw, hdr.metadata.transfer_function, tone.sdr_white_nits);
+        let linear = decode_transfer_to_display_linear(
+            raw,
+            hdr.metadata.transfer_function,
+            tone.sdr_white_nits,
+        );
         eprintln!("center display-linear = {linear:?}");
         assert!(
             linear[0] < 1.5 && linear[1] < 1.5 && linear[2] < 1.5,
@@ -1447,7 +1452,9 @@ mod tests {
         let sdr = hdr_to_sdr_rgba8_with_tone_settings(&hdr, 0.0, &tone).expect("sdr");
         eprintln!(
             "center sdr rgba8 = [{}, {}, {}]",
-            sdr[i], sdr[i + 1], sdr[i + 2]
+            sdr[i],
+            sdr[i + 1],
+            sdr[i + 2]
         );
     }
 }

@@ -1418,6 +1418,7 @@ impl ImageViewerApp {
     ) {
         self.remove_hdr_image_index(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
+        self.hdr_sdr_fallback_indices.insert(idx);
         if ultra_hdr_capacity_sensitive {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
@@ -1441,6 +1442,7 @@ impl ImageViewerApp {
         if !self.hdr_image_cache.contains_key(&idx) {
             return;
         }
+        self.hdr_sdr_fallback_indices.insert(idx);
         self.upload_static_sdr_texture(
             idx,
             &update.fallback,

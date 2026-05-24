@@ -170,20 +170,42 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         app.queue_save();
     }
 
+    let render_mode = crate::hdr::monitor::effective_render_output_mode(
+        app.hdr_target_format,
+        app.effective_hdr_monitor_selection().as_ref(),
+    );
+    let is_tone_mapped_sdr_output = matches!(
+        render_mode,
+        crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped
+    );
+
     let old = (
-        app.settings.hdr_exposure_ev,
+        (
+            app.settings.hdr_exposure_ev_native,
+            app.settings.hdr_exposure_ev_sdr,
+        ),
         app.settings.hdr_sdr_white_nits,
         app.settings.hdr_max_display_nits,
     );
 
     ui.horizontal(|ui| {
+        let exposure_slot = if is_tone_mapped_sdr_output {
+            &mut app.settings.hdr_exposure_ev_sdr
+        } else {
+            &mut app.settings.hdr_exposure_ev_native
+        };
+        let hint = if is_tone_mapped_sdr_output {
+            t!("hdr.exposure_hint_when_sdr_mapped_output")
+        } else {
+            t!("hdr.exposure_hint_when_native_hdr_output")
+        };
         ui.label(t!("hdr.exposure_ev"));
         ui.add(
-            egui::Slider::new(&mut app.settings.hdr_exposure_ev, -8.0..=8.0)
+            egui::Slider::new(exposure_slot, -8.0..=8.0)
                 .step_by(0.1)
                 .suffix(" EV"),
         )
-        .on_hover_text(t!("hdr.exposure_hint"));
+        .on_hover_text(hint);
     });
     ui.horizontal(|ui| {
         ui.label(t!("hdr.sdr_white_nits"));
@@ -206,7 +228,10 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 
     if old
         != (
-            app.settings.hdr_exposure_ev,
+            (
+                app.settings.hdr_exposure_ev_native,
+                app.settings.hdr_exposure_ev_sdr,
+            ),
             app.settings.hdr_sdr_white_nits,
             app.settings.hdr_max_display_nits,
         )

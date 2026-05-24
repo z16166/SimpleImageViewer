@@ -9,7 +9,7 @@
 //! Linux Vulkan WSI `(format, color_space)` gates for native HDR presentation.
 
 use super::monitor::HdrMonitorSelection;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use super::monitor::HdrNativeSurfaceEncoding;
 
 /// Subset of [`wgpu_hal::linux_surface_probe::VulkanHdrSurfaceProbe`] published by egui-wgpu.
@@ -56,9 +56,7 @@ pub fn linux_effective_monitor_selection(
 
     Some(HdrMonitorSelection {
         hdr_supported,
-        native_surface_encoding: hdr_supported
-            .then(|| native_surface_encoding)
-            .flatten(),
+        native_surface_encoding: hdr_supported.then(|| native_surface_encoding).flatten(),
         hdr_capacity_source: if hdr_supported {
             Some("Vulkan WSI surface formats")
         } else {
@@ -95,6 +93,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn wsi_hdr10_overrides_wp_gamma22_without_peak_nit_heuristic() {
         let merged = linux_effective_monitor_selection(
@@ -112,7 +111,10 @@ mod tests {
             merged.native_surface_encoding,
             Some(HdrNativeSurfaceEncoding::PqHdr10)
         );
-        assert_eq!(merged.hdr_capacity_source, Some("Vulkan WSI surface formats"));
+        assert_eq!(
+            merged.hdr_capacity_source,
+            Some("Vulkan WSI surface formats")
+        );
         assert_eq!(merged.max_luminance_nits, Some(450.0));
     }
 

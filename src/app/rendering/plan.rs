@@ -110,13 +110,18 @@ impl ImageViewerApp {
 /// Picks [`PlaneBackendKind`] given what content and display capabilities are available.
 ///
 /// Normally native scRGB HDR output rides the `Hdr` backend and everything else rides the
-/// cached `Sdr` texture fast path. The third branch — **`has_hdr_plane &&
-/// !has_sdr_fallback`** — upgrades the SDR-tone-mapped case to the `Hdr` backend so the HDR
-/// plane shader's `SdrToneMapped` output mode can stand in for the missing SDR texture.
-/// This covers HDR-only tiled sources (e.g. subsampled / luminance-chroma EXR such as
-/// `Flowers.exr`) on SDR panels, where otherwise `tile_manager.preview_texture` and
-/// `texture_cache` would both be empty and the draw surface would render blank until SDR
-/// tiles eventually arrive.
+/// cached `Sdr` texture fast path. Additional cases that upgrade to the **`Hdr`** backend so
+/// the WGSL viewer path runs (live exposure / nits, `encode_native_hdr` vs `encode_sdr`):
+///
+/// 1. **`has_hdr_plane && !has_sdr_fallback`** — HDR plane exists but CPU SDR fallback is
+///    missing (`Flowers.exr`-style tiling on SDR; otherwise blank until tiles arrive).
+/// 2. **`has_hdr_plane && has_hdr_target && output_mode == SdrToneMapped`** — an HDR float
+///    buffer is decoded but [`HdrRenderOutputMode::SdrToneMapped`] means we composite into an
+///    SDR swap chain: the cached SDR texture is baked from CPU tone-map settings at load time
+///    and **`set_hdr_tone_map_settings` does not re-upload it**. Routing through the HDR plane
+///    keeps sliders / EV responsive on ordinary monitors instead of silently no-op-ing.
+///
+/// Ordinary 8‑bit albums stay on `PlaneBackendKind::Sdr` because `has_hdr_plane` is false.
 pub(crate) fn select_render_backend(
     has_hdr_plane: bool,
     has_sdr_fallback: bool,
@@ -126,6 +131,8 @@ pub(crate) fn select_render_backend(
     if has_hdr_plane && has_hdr_target && output_mode.is_native_hdr() {
         PlaneBackendKind::Hdr
     } else if has_hdr_plane && !has_sdr_fallback {
+        PlaneBackendKind::Hdr
+    } else if has_hdr_plane && has_hdr_target && output_mode == HdrRenderOutputMode::SdrToneMapped {
         PlaneBackendKind::Hdr
     } else {
         PlaneBackendKind::Sdr
@@ -174,11 +181,6 @@ mod tests {
                 HdrRenderOutputMode::NativeHdr,
             ),
             (true, None, HdrRenderOutputMode::NativeHdr),
-            (
-                true,
-                Some(wgpu::TextureFormat::Rgba16Float),
-                HdrRenderOutputMode::SdrToneMapped,
-            ),
         ] {
             let plan = super::RenderPlan::new(
                 super::RenderShape::Tiled,
@@ -191,6 +193,20 @@ mod tests {
             assert_eq!(plan.backend, PlaneBackendKind::Sdr);
             assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Sdr);
         }
+    }
+
+    /// [`HdrRenderOutputMode::SdrToneMapped`] runs `encode_sdr` in WGSL; use [`PlaneBackendKind::Hdr`]
+    /// when a float HDR plane exists so exposure / sliders are not masked by stale CPU cache.
+    #[test]
+    fn render_plan_promotes_hdr_backend_for_tone_mapped_when_float_plane_targets_surface() {
+        let plan = super::RenderPlan::new(
+            super::RenderShape::Tiled,
+            true,
+            Some(wgpu::TextureFormat::Rgba16Float),
+            HdrRenderOutputMode::SdrToneMapped,
+        );
+        assert_eq!(plan.backend, PlaneBackendKind::Hdr);
+        assert_eq!(plan.active_plane, crate::loader::PixelPlaneKind::Hdr);
     }
 
     /// Correctness safety net for the `Flowers.exr` (LuminanceChroma EXR) bug: when the
@@ -222,15 +238,16 @@ mod tests {
         );
         assert_eq!(plan_no_hdr.backend, PlaneBackendKind::Sdr);
 
-        // Default builder still defaults `has_sdr_fallback = true` so ordinary SDR image
-        // content keeps the cached-texture fast path.
+        // With an HDR float plane + SDR output, bake-time CPU cache would ignore slider changes;
+        // [`select_render_backend`] upgrades to WGSL tone-map so exposure stays live.
         let plan_default = super::RenderPlan::new(
             super::RenderShape::Tiled,
             true,
             Some(wgpu::TextureFormat::Bgra8Unorm),
             HdrRenderOutputMode::SdrToneMapped,
         );
-        assert_eq!(plan_default.backend, PlaneBackendKind::Sdr);
+        assert_eq!(plan_default.backend, PlaneBackendKind::Hdr);
+        assert_eq!(plan_default.active_plane, crate::loader::PixelPlaneKind::Hdr);
     }
 
     #[test]
@@ -263,10 +280,10 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             Some(&non_hdr_monitor),
         );
-        assert_eq!(sdr_plan.backend, PlaneBackendKind::Sdr);
+        assert_eq!(sdr_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             sdr_plan.transition_policy,
-            super::RenderTransitionPolicy::SdrOnly
+            super::RenderTransitionPolicy::StaticHdrWithSdrComplexFallback
         );
 
         let hdr_plan = super::build_render_plan_for_state(
@@ -295,10 +312,9 @@ mod tests {
             super::RenderTransitionPolicy::TiledHdrWithSdrPreviewFallback
         );
 
-        // Defense-in-depth: when the monitor capability hasn't been probed yet (e.g. the
-        // OS-side enumeration silently failed because the egui main window title was
-        // localized), default to the SDR plane rather than optimistically routing through
-        // the scRGB native HDR pipeline on a possibly SDR-only display.
+        // Unknown probe: conservative `effective_render_output_mode` is `SdrToneMapped`, so HDR
+        // sources still composite through WGSL tone-map (`PlaneBackendKind::Hdr`) rather than
+        // native HDR — not the naive "SDR wallpaper" GPU path (`PlaneBackendKind::Sdr`).
         let unknown_monitor_plan = super::build_render_plan_for_state(
             super::RenderShape::Static,
             true,
@@ -306,10 +322,10 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             None,
         );
-        assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Sdr);
+        assert_eq!(unknown_monitor_plan.backend, PlaneBackendKind::Hdr);
         assert_eq!(
             unknown_monitor_plan.transition_policy,
-            super::RenderTransitionPolicy::SdrOnly
+            super::RenderTransitionPolicy::StaticHdrWithSdrComplexFallback
         );
     }
 }

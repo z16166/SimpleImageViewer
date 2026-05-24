@@ -51,7 +51,8 @@ pub fn choose_native_hdr_surface_format(formats: &[wgpu::TextureFormat]) -> HdrS
 pub fn preferred_native_hdr_target_format_for_platform() -> Option<wgpu::TextureFormat> {
     if cfg!(any(target_os = "windows", target_os = "macos")) {
         Some(wgpu::TextureFormat::Rgba16Float)
-    } else if cfg!(target_os = "linux") && crate::hdr::platform::linux_native_hdr_platform_eligible()
+    } else if cfg!(target_os = "linux")
+        && crate::hdr::platform::linux_native_hdr_platform_eligible()
     {
         Some(wgpu::TextureFormat::Rgb10a2Unorm)
     } else {

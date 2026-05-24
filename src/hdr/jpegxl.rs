@@ -312,9 +312,10 @@ fn jxl_sdr_grade_fallback_rgba8(
     // PQ / HLG → fall through to the HDR pipeline.
     let needs_srgb_oetf = match metadata.transfer_function {
         HdrTransferFunction::Linear => true,
-        HdrTransferFunction::Srgb | HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => {
-            false
-        }
+        HdrTransferFunction::Srgb
+        | HdrTransferFunction::Gamma
+        | HdrTransferFunction::Bt709
+        | HdrTransferFunction::Unknown => false,
         HdrTransferFunction::Pq | HdrTransferFunction::Hlg => return None,
     };
     let mut out = Vec::with_capacity(rgba_f32.len());
@@ -1640,15 +1641,15 @@ fn hdr_metadata_from_jxl_float_decode(color: &libjxl_sys::JxlColorEncoding) -> H
 /// `HdrTransferFunction` we use internally to decide how to quantize the float
 /// buffer for SDR fallback. Per empirical sampling of conformance files,
 /// libjxl preserves the codestream's encoding in the float buffer for
-/// Modular-mode files: TF=Linear → linear floats, TF=sRGB / 709 / Gamma →
-/// already-encoded floats. PQ / HLG signal HDR.
+/// Modular-mode files: TF=Linear → linear floats,
+/// TF=IEC sRGB (**13**) / BT.709 codestream (**1**, [`HdrTransferFunction::Bt709`]) / Gamma (**4**) / Unknown →
+/// preserve libjxl’s nonlinear floats; PQ / HLG (**16** / **18**) signal HDR.
 #[cfg(feature = "jpegxl")]
 fn jxl_internal_transfer_for_jxl_float_buffer(jxl_tf: i64) -> HdrTransferFunction {
     match jxl_tf {
         x if x == JXL_TRANSFER_FUNCTION_LINEAR as i64 => HdrTransferFunction::Linear,
-        x if x == JXL_TRANSFER_FUNCTION_SRGB as i64 || x == JXL_TRANSFER_FUNCTION_709 as i64 => {
-            HdrTransferFunction::Srgb
-        }
+        x if x == JXL_TRANSFER_FUNCTION_SRGB as i64 => HdrTransferFunction::Srgb,
+        x if x == JXL_TRANSFER_FUNCTION_709 as i64 => HdrTransferFunction::Bt709,
         x if x == JXL_TRANSFER_FUNCTION_PQ as i64 => HdrTransferFunction::Pq,
         x if x == JXL_TRANSFER_FUNCTION_HLG as i64 => HdrTransferFunction::Hlg,
         x if x == JXL_TRANSFER_FUNCTION_GAMMA as i64 => HdrTransferFunction::Gamma,

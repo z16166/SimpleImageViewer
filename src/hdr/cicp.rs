@@ -30,6 +30,11 @@ use crate::hdr::types::{
 /// [`HdrTransferFunction`]; other codes still flow through untouched in [`HdrImageMetadata`] via
 /// [`HdrColorProfile::Cicp`].
 pub(crate) const H273_TRANSFER_LINEAR: u16 = 8;
+/// ITU-T H.273 **`transfer_characteristics = 1`**: **BT.709 opto-electronic / inverse OETF** (not IEC 61966‑2‑1 sRGB).
+pub(crate) const H273_TRANSFER_ITU_BT709: u16 = 1;
+/// **SMPTE 170 / BT‑601-compatible** nonlinear transfer (**H.273** code **6**): same transfer parameters as BT.709
+/// for RGB in HD/broadcast mastering; wired to [`HdrTransferFunction::Bt709`].
+pub(crate) const H273_TRANSFER_SMPTE170M: u16 = 6;
 pub(crate) const H273_TRANSFER_IEC61966_2_1_SRGB: u16 = 13;
 pub(crate) const H273_TRANSFER_SMPTE_ST2084_FOR_PQ: u16 = 16;
 pub(crate) const H273_TRANSFER_ARIB_STD_B67_FOR_HLG: u16 = 18;
@@ -43,6 +48,7 @@ pub(crate) fn cicp_to_metadata(
 ) -> HdrImageMetadata {
     let transfer_function = match transfer_characteristics {
         H273_TRANSFER_LINEAR => HdrTransferFunction::Linear,
+        H273_TRANSFER_ITU_BT709 | H273_TRANSFER_SMPTE170M => HdrTransferFunction::Bt709,
         H273_TRANSFER_IEC61966_2_1_SRGB => HdrTransferFunction::Srgb,
         H273_TRANSFER_SMPTE_ST2084_FOR_PQ => HdrTransferFunction::Pq,
         H273_TRANSFER_ARIB_STD_B67_FOR_HLG => HdrTransferFunction::Hlg,
@@ -73,5 +79,38 @@ pub(crate) fn cicp_to_metadata(
         },
         luminance,
         gain_map: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::hdr::types::{HdrReference, HdrTransferFunction};
+
+    #[test]
+    fn cicp_bt709_transfer_maps_to_bt709_not_iec_srgb() {
+        let meta = cicp_to_metadata(
+            /* color_primaries */ 1,
+            H273_TRANSFER_ITU_BT709,
+            /* matrix */ 1,
+            true,
+            None,
+        );
+        assert_eq!(meta.transfer_function, HdrTransferFunction::Bt709);
+        assert_eq!(meta.reference, HdrReference::Unknown);
+    }
+
+    #[test]
+    fn cicp_transfer_13_keeps_explicit_srgb() {
+        let meta = cicp_to_metadata(1, H273_TRANSFER_IEC61966_2_1_SRGB, 1, true, None);
+        assert_eq!(meta.transfer_function, HdrTransferFunction::Srgb);
+    }
+
+    #[test]
+    fn cicp_transfer_6_maps_to_bt709_transfer() {
+        let meta = cicp_to_metadata(1, H273_TRANSFER_SMPTE170M, 1, true, None);
+        assert_eq!(meta.transfer_function, HdrTransferFunction::Bt709);
+        assert_eq!(meta.reference, HdrReference::Unknown);
     }
 }

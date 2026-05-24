@@ -530,7 +530,9 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
-    pub(crate) fn effective_hdr_monitor_selection(&self) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
+    pub(crate) fn effective_hdr_monitor_selection(
+        &self,
+    ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
         let wsi = self.vulkan_wsi_hdr_gates.get();
         crate::hdr::monitor::effective_monitor_selection(
             self.hdr_monitor_state.selection(),
@@ -543,8 +545,14 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn effective_hdr_tone_map_settings(&self) -> crate::hdr::types::HdrToneMapSettings {
-        self.settings
-            .hdr_tone_map_settings_for_monitor(self.effective_hdr_monitor_selection().as_ref())
+        let render_output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.hdr_target_format,
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        self.settings.hdr_tone_map_settings_for_monitor(
+            self.effective_hdr_monitor_selection().as_ref(),
+            render_output_mode,
+        )
     }
 
     fn focus_and_unminimize_window(ctx: &egui::Context) {
@@ -844,8 +852,7 @@ impl eframe::App for ImageViewerApp {
                 crate::hdr::renderer::HdrRenderOutputMode::NativeHdrGamma22
             ) {
                 let tone = self.effective_hdr_tone_map_settings();
-                let scale =
-                    tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+                let scale = tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
                 self.gamma22_display_scale.set(scale);
             }
         }
