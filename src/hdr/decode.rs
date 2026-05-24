@@ -26,8 +26,8 @@ use image::{ImageReader, Limits};
 use crate::hdr::tiled::HdrTiledSource;
 
 use super::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrToneMapSettings, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 
 const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
@@ -285,9 +285,10 @@ pub fn hdr_to_sdr_rgba8_with_tone_settings(
         let decoded = decode_transfer_to_display_linear(rgb_in, tf, tone.sdr_white_nits);
         let linear_srgb =
             linear_primary_to_linear_srgb(decoded, buffer.color_space, &buffer.metadata);
-        // Nielsen / Nokia conformance HEICs advertise sRGB PQ codes; Chrome renders them as ordinary
-        // display-referred sRGB masterings. Applying Reinhard + 2.2 (HDR→SDR filmic curve) washes
-        // blacks out vs browsers — use IEC 61966-2-1 OETF only for that case.
+        // Display‑referred **IEC 61966‑2‑1 sRGB**: browsers treat unmanaged stills without filmic HDR→SDR
+        // roll‑off; **`encode_sdr_rgb8`** Reinhard + ~2.2 crushes mids on those blobs.
+        // **PQ / BT.709 / scene‑linear masters** stay on **`encode_sdr_rgb8`** — matches **GPU Reinhard path**
+        // for PQ (see WGSL **`encode_sdr`**, `INPUT_TRANSFER_PQ`).
         let encoded = if should_use_iec61966_tone_map_fallback(buffer, tf) {
             encode_linear_display_referred_srgb8(linear_srgb, exposure_scale, peak_scale)
         } else {
@@ -318,6 +319,11 @@ pub(crate) fn decode_transfer_to_display_linear(
             srgb_nonlinear_channel_to_linear(rgb[1]),
             srgb_nonlinear_channel_to_linear(rgb[2]),
         ],
+        HdrTransferFunction::Bt709 => [
+            bt709_nonlinear_channel_to_linear(rgb[0]),
+            bt709_nonlinear_channel_to_linear(rgb[1]),
+            bt709_nonlinear_channel_to_linear(rgb[2]),
+        ],
         HdrTransferFunction::Pq => [
             pq_nonlinear_to_display_linear(clamp01(rgb[0]), sdr_white_nits),
             pq_nonlinear_to_display_linear(clamp01(rgb[1]), sdr_white_nits),
@@ -329,6 +335,22 @@ pub(crate) fn decode_transfer_to_display_linear(
             hlg_nonlinear_to_scene_linear(clamp01(rgb[2])),
         ],
         HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => rgb,
+    }
+}
+
+/// Inverse **BT.709 / SMPTE 170‑style opto-electronic transfer** (**ITU‑R BT.709** Annex 1 curve).
+///
+/// Codec / file **nonlinear display code** in 0–1 → nominal **linear‑light RGB** factor (unbounded nominal).
+///
+/// Distinct from IEC 61966‑2‑1 (`srgb_nonlinear_channel_to_linear`, [`HdrTransferFunction::Srgb`]).
+pub(crate) fn bt709_nonlinear_channel_to_linear(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    const BT709_LINEAR_SEGMENT_END: f32 = 0.018;
+    let breakpoint = BT709_LINEAR_SEGMENT_END * 4.5;
+    if c < breakpoint {
+        c / 4.5
+    } else {
+        ((c + 0.099) / 1.099).powf(1.0 / 0.45)
     }
 }
 
@@ -473,15 +495,11 @@ fn use_direct_srgb_sdr_fallback(metadata: &HdrImageMetadata, tf: HdrTransferFunc
     tf == HdrTransferFunction::Srgb && metadata.reference != HdrReference::SceneLinear
 }
 
-/// [`use_direct_srgb_sdr_fallback`] covers display‑referred sRGB mistags (`HdrTransferFunction::Srgb`).
-///
-/// **`HdrTransferFunction::Pq` (BT.2100 PQ):** PQ EOTF already yields display‑relative linear around SDR white;
-/// applying **`encode_sdr_rgb8`'s** Reinhard + ~2.2 on top visibly flattens mid‑tones and lifts blacks vs Chrome /
-/// system unmanaged HDR‑still previews on physically SDR panels (reports: Nokia / phone HEIC, OSD “线性 sRGB · SDR
-/// 色调映射”).
+/// [`use_direct_srgb_sdr_fallback`] only: unmanaged **IEC 61966‑2‑1 display‑referred** sRGB without filmic
+/// Reinhard. **PQ / BT.709 / scene-linear** use [`encode_sdr_rgb8`] (matches GPU **`encode_sdr`** for PQ).
 #[inline]
 fn should_use_iec61966_tone_map_fallback(buffer: &HdrImageBuffer, tf: HdrTransferFunction) -> bool {
-    use_direct_srgb_sdr_fallback(&buffer.metadata, tf) || tf == HdrTransferFunction::Pq
+    use_direct_srgb_sdr_fallback(&buffer.metadata, tf)
 }
 
 fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
@@ -580,12 +598,11 @@ mod tests {
     }
 
     #[test]
-    fn pq_bt709_primaries_sdr_fallback_uses_iec_oetf_curve_not_reinhard() {
+    fn pq_bt709_primaries_sdr_fallback_matches_reinhard_encode_path() {
         use crate::hdr::cicp::{self, H273_TRANSFER_SMPTE_ST2084_FOR_PQ};
 
         let tone = HdrToneMapSettings::default();
-        let meta709 =
-            cicp::cicp_to_metadata(1, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 1, true, None);
+        let meta709 = cicp::cicp_to_metadata(1, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 1, true, None);
         assert_eq!(meta709.transfer_function, HdrTransferFunction::Pq);
 
         let buffer = HdrImageBuffer {
@@ -601,17 +618,14 @@ mod tests {
 
         let tf = buffer.metadata.transfer_function;
         assert_eq!(tf, HdrTransferFunction::Pq);
-        let peak_scale =
-            tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+        let peak_scale = tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
         let decoded = decode_transfer_to_display_linear(
             [0.45_f32, 0.42_f32, 0.50_f32],
             tf,
             tone.sdr_white_nits,
         );
-        let linear_srgb =
-            linear_primary_to_linear_srgb(decoded, buffer.color_space, &meta709);
-        let expected =
-            encode_linear_display_referred_srgb8(linear_srgb, 1.0_f32, peak_scale);
+        let linear_srgb = linear_primary_to_linear_srgb(decoded, buffer.color_space, &meta709);
+        let expected = encode_sdr_rgb8(linear_srgb, 1.0_f32, peak_scale);
         assert_eq!(sdr, vec![expected[0], expected[1], expected[2], 255]);
 
         let meta2020 = cicp::cicp_to_metadata(9, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 9, true, None);
@@ -620,8 +634,89 @@ mod tests {
             metadata: meta2020,
             ..buffer.clone()
         };
-        let pq2020 = hdr_to_sdr_rgba8_with_tone_settings(&buffer2020, 0.0, &tone).expect("sdr pq2020");
-        assert_ne!(&sdr[..3], &pq2020[..3], "PQ+Rec2100 mastering should stay on Reinhard+2.2");
+        let pq2020 =
+            hdr_to_sdr_rgba8_with_tone_settings(&buffer2020, 0.0, &tone).expect("sdr pq2020");
+        assert_ne!(
+            &sdr[..3],
+            &pq2020[..3],
+            "PQ+Rec709 vs PQ+Rec2100 mastering should diverge via different gamut matrices"
+        );
+    }
+
+    /// PQ display-linear values above nominal SDR white must not follow the unmanaged **IEC** path
+    /// (hard clamp-to-1 before piecewise encode), which merges distinct highlight codes.
+    #[test]
+    fn pq_sdr_fallback_highlights_grade_with_reinhard_not_iec_hard_clip() {
+        use crate::hdr::cicp::{self, H273_TRANSFER_SMPTE_ST2084_FOR_PQ};
+
+        // Use a **smaller** peak scaler than default so PQ‑decoded linear is only moderately above
+        // SDR white: IEC clamp+OETF pins both highlights to 255, while Reinhard still rolls off below white.
+        let tone = HdrToneMapSettings {
+            max_display_nits: 400.0,
+            ..HdrToneMapSettings::default()
+        };
+        let peak_scale = tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+
+        let meta = cicp::cicp_to_metadata(1, H273_TRANSFER_SMPTE_ST2084_FOR_PQ, 1, true, None);
+        let tf = HdrTransferFunction::Pq;
+
+        fn decode_lin_r(tf: HdrTransferFunction, code_r: f32, sdr_white: f32) -> f32 {
+            decode_transfer_to_display_linear([code_r, 0.0_f32, 0.0_f32], tf, sdr_white)[0]
+        }
+
+        let c0 = 0.72_f32;
+        let c1 = 0.92_f32;
+        let lin0 = decode_lin_r(tf, c0, tone.sdr_white_nits);
+        let lin1 = decode_lin_r(tf, c1, tone.sdr_white_nits);
+        assert!(
+            lin0.is_finite()
+                && lin1.is_finite()
+                && lin1 > lin0 * 2.0
+                && lin0 * peak_scale > 1.0_f32
+                && lin1 * peak_scale > 1.0_f32,
+            "fixture: two PQ reds that IEC clamps to white but Reinhard distinguishes; lin0={lin0} lin1={lin1} peak_scale={peak_scale}"
+        );
+
+        let iec_byte0 = encode_linear_display_referred_srgb8([lin0, 0., 0.], 1.0, peak_scale)[0];
+        let iec_byte1 = encode_linear_display_referred_srgb8([lin1, 0., 0.], 1.0, peak_scale)[0];
+        assert_eq!(
+            iec_byte0, 255,
+            "IEC path should hard-clip boosted linear red ≥1 to max code"
+        );
+        assert_eq!(
+            iec_byte1, 255,
+            "IEC fixture: second highlight should clip too"
+        );
+
+        let buffer = HdrImageBuffer {
+            width: 2,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: meta.color_space_hint(),
+            metadata: meta,
+            rgba_f32: Arc::new(vec![c0, 0.0, 0.0, 1.0, c1, 0.0, 0.0, 1.0]),
+        };
+        let sdr = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &tone).expect("two px");
+        assert!(
+            sdr[0] < 255 && sdr[4] < 255,
+            "Reinhard path should roll off HDR peaks instead of pinning to 255: {:?}",
+            &sdr
+        );
+        assert_ne!(
+            sdr[0], sdr[4],
+            "PQ highlight gradation collapses under IEC clamp+OETF; Reinhard preserves separation"
+        );
+    }
+
+    #[test]
+    fn bt709_inverse_transfer_differs_from_iec_srgb_at_same_encoded_value() {
+        let v = 0.35_f32;
+        let b = super::bt709_nonlinear_channel_to_linear(v);
+        let s = super::srgb_nonlinear_channel_to_linear(v);
+        assert!(
+            (b - s).abs() > 0.002_f32,
+            "BT.709 inverse OETF differs from IEC sRGB at encoded {v}: b={b} s={s}"
+        );
     }
 
     #[test]
@@ -731,7 +826,10 @@ mod tests {
             (code - 0.580_688_88).abs() < 1e-4,
             "203 nit SDR white should map to ~0.5807 PQ code, got {code}"
         );
-        assert!(code < 1.0, "SDR white must stay inside PQ code range, got {code}");
+        assert!(
+            code < 1.0,
+            "SDR white must stay inside PQ code range, got {code}"
+        );
         let round_trip = super::pq_nonlinear_to_display_linear(code, 203.0);
         assert!(
             (round_trip - 1.0).abs() < 1e-3,

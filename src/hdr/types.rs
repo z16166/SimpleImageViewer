@@ -79,6 +79,9 @@ pub enum HdrTransferFunction {
     Hlg = 3,
     Gamma = 4,
     Unknown = 5,
+    /// **ITU-R BT.709**/**SMPTE 170M-style** opto-electronic inverse (HDR plane + CPU decode).
+    /// Distinct from [`Self::Srgb`] (IEC 61966-2‑1); **`H.273`** codes **1** and **6** map here — not **13**.
+    Bt709 = 6,
 }
 
 #[allow(dead_code)]
@@ -164,6 +167,7 @@ impl HdrImageMetadata {
             HdrTransferFunction::Hlg => "HLG",
             HdrTransferFunction::Gamma => "Gamma",
             HdrTransferFunction::Unknown => "Unknown",
+            HdrTransferFunction::Bt709 => "BT709",
         }
     }
 }
@@ -422,6 +426,29 @@ mod tests {
         };
 
         assert_eq!(metadata.transfer_short_label(), "PQ");
+    }
+
+    #[test]
+    fn hdr_transfer_function_discriminants_match_wgsl_constants() {
+        assert_eq!(HdrTransferFunction::Linear as u32, 0);
+        assert_eq!(HdrTransferFunction::Srgb as u32, 1);
+        assert_eq!(HdrTransferFunction::Pq as u32, 2);
+        assert_eq!(HdrTransferFunction::Hlg as u32, 3);
+        assert_eq!(HdrTransferFunction::Gamma as u32, 4);
+        assert_eq!(HdrTransferFunction::Unknown as u32, 5);
+        assert_eq!(HdrTransferFunction::Bt709 as u32, 6);
+    }
+
+    #[test]
+    fn hdr_metadata_bt709_label_for_osd() {
+        assert_eq!(
+            HdrImageMetadata {
+                transfer_function: HdrTransferFunction::Bt709,
+                ..HdrImageMetadata::default()
+            }
+            .transfer_short_label(),
+            "BT709"
+        );
     }
 
     #[test]

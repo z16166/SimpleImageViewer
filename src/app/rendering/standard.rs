@@ -123,11 +123,8 @@ impl ImageViewerApp {
         // aligned with OSD (`hdr_status`) so FloatImagePlane is not advertised while drawing the
         // SDR cache path due to bookkeeping drift (`install_static_hdr_image` missed the set).
         let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
-        let render_plan = self.build_render_plan(
-            RenderShape::Static,
-            hdr_image.is_some(),
-            has_sdr_fallback,
-        );
+        let render_plan =
+            self.build_render_plan(RenderShape::Static, hdr_image.is_some(), has_sdr_fallback);
         if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating)
         {
             self.transition_start = None;

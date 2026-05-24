@@ -338,11 +338,9 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
             for i in 0..8u32 {
                 let mut name = [b'X', b'0', b' '];
                 name[1] = b'0' + i as u8;
-                pos = append_str(
-                    &mut buf,
-                    pos,
-                    unsafe { core::str::from_utf8_unchecked(&name) },
-                );
+                pos = append_str(&mut buf, pos, unsafe {
+                    core::str::from_utf8_unchecked(&name)
+                });
                 pos = append_str(&mut buf, pos, " = 0x");
                 pos = append_hex64(&mut buf, pos, ctx.Anonymous.X[i as usize]);
                 pos = append_str(&mut buf, pos, "\r\n");
@@ -362,9 +360,17 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
         pos = append_str(&mut buf, pos, "Probe Exception Code: 0x");
         pos = append_hex32(&mut buf, pos, probe_code);
         pos = append_str(&mut buf, pos, "\r\nProbe Exception Address: 0x");
-        pos = append_hex64(&mut buf, pos, LAST_FATAL_EXCEPTION_ADDRESS.load(Ordering::Relaxed));
+        pos = append_hex64(
+            &mut buf,
+            pos,
+            LAST_FATAL_EXCEPTION_ADDRESS.load(Ordering::Relaxed),
+        );
         pos = append_str(&mut buf, pos, "\r\nProbe Thread ID: 0x");
-        pos = append_hex32(&mut buf, pos, LAST_FATAL_EXCEPTION_THREAD.load(Ordering::Relaxed));
+        pos = append_hex32(
+            &mut buf,
+            pos,
+            LAST_FATAL_EXCEPTION_THREAD.load(Ordering::Relaxed),
+        );
         pos = append_str(&mut buf, pos, "\r\n");
     }
 

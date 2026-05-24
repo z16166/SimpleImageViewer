@@ -530,7 +530,9 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
-    pub(crate) fn effective_hdr_monitor_selection(&self) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
+    pub(crate) fn effective_hdr_monitor_selection(
+        &self,
+    ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
         let wsi = self.vulkan_wsi_hdr_gates.get();
         crate::hdr::monitor::effective_monitor_selection(
             self.hdr_monitor_state.selection(),
@@ -844,8 +846,7 @@ impl eframe::App for ImageViewerApp {
                 crate::hdr::renderer::HdrRenderOutputMode::NativeHdrGamma22
             ) {
                 let tone = self.effective_hdr_tone_map_settings();
-                let scale =
-                    tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
+                let scale = tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
                 self.gamma22_display_scale.set(scale);
             }
         }

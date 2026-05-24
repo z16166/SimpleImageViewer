@@ -104,9 +104,8 @@ impl ImageViewerApp {
         let hdr_capabilities =
             crate::hdr::capabilities::detect_from_wgpu_state(cc.wgpu_render_state.as_ref());
         let mut hdr_renderer = crate::hdr::renderer::HdrImageRenderer::new();
-        hdr_renderer.tone_map = settings.hdr_tone_map_settings_for_monitor(
-            initial_hdr_monitor_selection.as_ref(),
-        );
+        hdr_renderer.tone_map =
+            settings.hdr_tone_map_settings_for_monitor(initial_hdr_monitor_selection.as_ref());
         let hdr_target_format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
         let initial_hdr_output_mode = crate::hdr::monitor::effective_capability_output_mode(
             hdr_target_format,

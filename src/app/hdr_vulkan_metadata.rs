@@ -159,7 +159,10 @@ mod tests {
         };
         let hdr = linux_vulkan_hdr_metadata_for_view(true, Some(&hdr_meta), None);
         let sdr = linux_vulkan_hdr_metadata_for_view(false, None, None);
-        assert_ne!(hdr.max_content_light_level_nits, sdr.max_content_light_level_nits);
+        assert_ne!(
+            hdr.max_content_light_level_nits,
+            sdr.max_content_light_level_nits
+        );
         assert_eq!(sdr.max_content_light_level_nits, 1000.0);
     }
 
@@ -173,11 +176,8 @@ mod tests {
             metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
             rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
         };
-        let metadata = linux_vulkan_hdr_metadata_for_view(
-            true,
-            Some(&buffer.metadata),
-            Some(&buffer),
-        );
+        let metadata =
+            linux_vulkan_hdr_metadata_for_view(true, Some(&buffer.metadata), Some(&buffer));
         assert!(
             metadata.max_content_light_level_nits > 400.0,
             "linear 2.0 should exceed SDR default, got {}",

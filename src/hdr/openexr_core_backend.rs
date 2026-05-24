@@ -65,9 +65,7 @@ fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> {
         sys::siv_imf_input_file_chromaticities_f32_bytes(
             mmap.as_ptr().cast::<c_void>(),
             mmap.len(),
-            debug
-                .as_ref()
-                .map_or(ptr::null(), |label| label.as_ptr()),
+            debug.as_ref().map_or(ptr::null(), |label| label.as_ptr()),
             out.as_mut_ptr(),
         )
     };
@@ -152,9 +150,7 @@ pub(crate) fn deep_scanline_flatten_rgba_via_imf(
         sys::siv_imf_deep_scanline_flatten_rgba_bytes(
             mmap.as_ptr().cast::<c_void>(),
             mmap.len(),
-            debug
-                .as_ref()
-                .map_or(ptr::null(), |label| label.as_ptr()),
+            debug.as_ref().map_or(ptr::null(), |label| label.as_ptr()),
             rgba.as_mut_ptr(),
             rgba.len(),
             &mut w,
@@ -212,9 +208,7 @@ pub(crate) fn rgba_input_scanline_flatten_rgba_via_imf(path: &Path) -> Result<Ve
         sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
             mmap.as_ptr().cast::<c_void>(),
             mmap.len(),
-            debug
-                .as_ref()
-                .map_or(ptr::null(), |label| label.as_ptr()),
+            debug.as_ref().map_or(ptr::null(), |label| label.as_ptr()),
             rgba.as_mut_ptr(),
             rgba.len(),
             &mut w,
@@ -228,9 +222,7 @@ pub(crate) fn rgba_input_scanline_flatten_rgba_via_imf(path: &Path) -> Result<Ve
             sys::siv_imf_rgba_input_scanline_flatten_rgba_bytes(
                 mmap.as_ptr().cast::<c_void>(),
                 mmap.len(),
-                debug
-                    .as_ref()
-                    .map_or(ptr::null(), |label| label.as_ptr()),
+                debug.as_ref().map_or(ptr::null(), |label| label.as_ptr()),
                 rgba.as_mut_ptr(),
                 rgba.len(),
                 &mut w,
@@ -264,8 +256,7 @@ pub(crate) fn extract_rgba32f_tile_from_flat_buffer(
         let src_start = src_y * row_stride + x as usize * 4;
         let src_end = src_start + width as usize * 4;
         let dst_start = row as usize * width as usize * 4;
-        out[dst_start..dst_start + width as usize * 4]
-            .copy_from_slice(&rgba[src_start..src_end]);
+        out[dst_start..dst_start + width as usize * 4].copy_from_slice(&rgba[src_start..src_end]);
     }
     Ok(out)
 }
@@ -1955,11 +1946,7 @@ mod tests {
         std::env::var_os("SIV_OPENEXR_IMAGES_DIR")
             .map(PathBuf::from)
             .or_else(|| Some(PathBuf::from(r"F:\HDR\openexr-images")))
-            .or_else(|| {
-                Some(PathBuf::from(
-                    "/home/happy/Downloads/HDR/openexr-images",
-                ))
-            })
+            .or_else(|| Some(PathBuf::from("/home/happy/Downloads/HDR/openexr-images")))
             .filter(|path| path.is_dir())
     }
 
@@ -2019,10 +2006,7 @@ mod tests {
         };
         let path = root.join("v2/LowResLeftView/Balls.exr");
         if !path.is_file() {
-            eprintln!(
-                "skipping IMF deep flatten test; missing {}",
-                path.display()
-            );
+            eprintln!("skipping IMF deep flatten test; missing {}", path.display());
             return;
         }
 
@@ -2042,7 +2026,8 @@ mod tests {
             "deep flatten output must be finite"
         );
         assert!(
-            flat.chunks_exact(4).any(|px| px[0] > 0.0 || px[1] > 0.0 || px[2] > 0.0),
+            flat.chunks_exact(4)
+                .any(|px| px[0] > 0.0 || px[1] > 0.0 || px[2] > 0.0),
             "deep flatten should contain non-black RGB"
         );
     }
@@ -2387,7 +2372,10 @@ mod tests {
         let Some(root) = openexr_images_root() else {
             return;
         };
-        for relative in ["LuminanceChroma/Flowers.exr", "LuminanceChroma/MtTamNorth.exr"] {
+        for relative in [
+            "LuminanceChroma/Flowers.exr",
+            "LuminanceChroma/MtTamNorth.exr",
+        ] {
             let path = root.join(relative);
             if !path.is_file() {
                 continue;

@@ -274,9 +274,7 @@ pub fn get_system_font_families() -> Vec<String> {
 /// Ensures the settings combo always contains the persisted family name.
 pub fn startup_font_family_list(settings: &Settings) -> Vec<String> {
     let mut out = vec!["System Default".to_string()];
-    if settings.font_family != "System Default"
-        && !out.iter().any(|s| s == &settings.font_family)
-    {
+    if settings.font_family != "System Default" && !out.iter().any(|s| s == &settings.font_family) {
         out.push(settings.font_family.clone());
     }
     out
@@ -324,7 +322,8 @@ pub fn styled_button_widget<'a>(
                 visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
 
                 visuals.widgets.hovered.weak_bg_fill = palette.widget_hover;
-                visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5_f32, Color32::from_gray(180));
+                visuals.widgets.hovered.bg_stroke =
+                    egui::Stroke::new(1.5_f32, Color32::from_gray(180));
                 visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, Color32::WHITE);
 
                 ui.add(

@@ -54,8 +54,7 @@ pub fn load() -> Option<WgpuPreprobeCache> {
 pub fn save(force_dx12: bool) -> std::io::Result<()> {
     let path = cache_path();
     let payload = WgpuPreprobeCache::new(force_dx12);
-    let yaml = serde_yaml::to_string(&payload).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })?;
+    let yaml = serde_yaml::to_string(&payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     std::fs::write(&path, yaml)
 }

@@ -147,6 +147,8 @@ const INPUT_TRANSFER_LINEAR: u32 = 0u;
 const INPUT_TRANSFER_SRGB: u32 = 1u;
 const INPUT_TRANSFER_PQ: u32 = 2u;
 const INPUT_TRANSFER_HLG: u32 = 3u;
+/// Must match [`HdrTransferFunction::Bt709`] as `u32` (not **4**/`5` — **`Gamma`/`Unknown`** omit dedicated WGSL branches).
+const INPUT_TRANSFER_BT709: u32 = 6u;
 // Must stay aligned with `HdrReference` discriminants pushed into ToneMapUniform.
 const INPUT_REFERENCE_SCENE_LINEAR: u32 = 0u;
 const HDR_DOWNSCALE_SAMPLE_GRID: u32 = 4u;
@@ -248,6 +250,13 @@ fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
     return select(high, low, rgb <= vec3<f32>(0.04045));
 }
 
+// BT.709 / SMPTE 170–style nonlinear code → nominal linear‑light (**ITU‑R BT.709** annex 1 OETF inverse).
+fn bt709_nonlinear_to_linear(rgb: vec3<f32>) -> vec3<f32> {
+    let low = rgb / vec3<f32>(4.5);
+    let high = pow((rgb + vec3<f32>(0.099)) / vec3<f32>(1.099), vec3<f32>(1.0 / 0.45));
+    return select(high, low, rgb < vec3<f32>(0.081));
+}
+
 fn pq_to_display_linear(rgb: vec3<f32>, settings: ToneMapSettings) -> vec3<f32> {
     let m1 = 2610.0 / 16384.0;
     let m2 = 2523.0 / 32.0;
@@ -275,6 +284,9 @@ fn hlg_to_scene_linear(rgb: vec3<f32>) -> vec3<f32> {
 fn decode_input_transfer(rgb: vec3<f32>, input_transfer_function: u32, settings: ToneMapSettings) -> vec3<f32> {
     if input_transfer_function == INPUT_TRANSFER_SRGB {
         return srgb_to_linear(rgb);
+    }
+    if input_transfer_function == INPUT_TRANSFER_BT709 {
+        return bt709_nonlinear_to_linear(rgb);
     }
     if input_transfer_function == INPUT_TRANSFER_PQ {
         return pq_to_display_linear(rgb, settings);
@@ -2138,7 +2150,9 @@ mod tests {
     fn shader_decodes_hdr_transfer_functions_before_color_conversion() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_TRANSFER_PQ"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_TRANSFER_HLG"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("INPUT_TRANSFER_BT709"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn pq_to_display_linear"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn bt709_nonlinear_to_linear"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn hlg_to_scene_linear"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn decode_input_transfer"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("sdr_manual_srgb_encode"));

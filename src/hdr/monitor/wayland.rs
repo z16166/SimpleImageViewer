@@ -21,17 +21,17 @@ use std::collections::HashMap;
 
 #[cfg(target_os = "linux")]
 use wayland_client::{
-    protocol::{wl_output, wl_pointer, wl_registry, wl_seat},
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum,
+    protocol::{wl_output, wl_pointer, wl_registry, wl_seat},
+};
+#[cfg(target_os = "linux")]
+use wayland_protocols::wp::color_management::v1::client::wp_color_manager_v1::{
+    Primaries, TransferFunction,
 };
 #[cfg(target_os = "linux")]
 use wayland_protocols::wp::color_management::v1::client::{
     wp_color_management_output_v1, wp_color_manager_v1, wp_image_description_info_v1,
     wp_image_description_v1,
-};
-#[cfg(target_os = "linux")]
-use wayland_protocols::wp::color_management::v1::client::wp_color_manager_v1::{
-    Primaries, TransferFunction,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,7 +125,10 @@ pub(crate) fn resolve_active_probe_point(
         let area = i64::from(right.saturating_sub(left)).max(0)
             * i64::from(bottom.saturating_sub(top)).max(0);
         if area >= MIN_PLAUSIBLE_OUTER_AREA {
-            return ([(left + right) / 2, (top + bottom) / 2], "viewport_outer_rect");
+            return (
+                [(left + right) / 2, (top + bottom) / 2],
+                "viewport_outer_rect",
+            );
         }
     }
     ([0, 0], "primary")
@@ -330,7 +333,8 @@ impl ProbeState {
         };
         let label = rects[index].label.clone();
         let Some((global_name, wl_output)) = self.outputs.values().find_map(|output| {
-            (output_label(output) == label).then_some((output.global_name, output.wl_output.clone()))
+            (output_label(output) == label)
+                .then_some((output.global_name, output.wl_output.clone()))
         }) else {
             self.fail("selected Wayland output was not found".to_string());
             return;
@@ -460,8 +464,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ProbeState {
                 );
             }
             "wp_color_manager_v1" if state.color_manager.is_none() => {
-                state.color_manager =
-                    Some(registry.bind(name, version.min(2), qh, ()));
+                state.color_manager = Some(registry.bind(name, version.min(2), qh, ()));
             }
             "wl_seat" => {
                 let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, version.min(7), qh, ());
@@ -575,7 +578,9 @@ impl Dispatch<wp_image_description_v1::WpImageDescriptionV1, u32> for ProbeState
             }
             wp_image_description_v1::Event::Failed { cause, msg } => {
                 state.image_state.failed = true;
-                state.fail(format!("Wayland image description failed ({cause:?}): {msg}"));
+                state.fail(format!(
+                    "Wayland image description failed ({cause:?}): {msg}"
+                ));
                 let _ = image_description;
             }
             _ => {}
@@ -657,8 +662,8 @@ fn run_probe(
 ) -> Result<ProbeState, String> {
     ensure_wayland_session()?;
 
-    let connection = Connection::connect_to_env()
-        .map_err(|err| format!("Wayland connection failed: {err}"))?;
+    let connection =
+        Connection::connect_to_env().map_err(|err| format!("Wayland connection failed: {err}"))?;
     let display = connection.display();
     let mut event_queue: EventQueue<ProbeState> = connection.new_event_queue();
     let qh = event_queue.handle();
@@ -757,7 +762,9 @@ mod tests {
 
     #[test]
     fn hlg_is_not_treated_as_native_hdr() {
-        assert!(!hdr_supported_from_wayland_probe(WaylandTransferFunction::Hlg));
+        assert!(!hdr_supported_from_wayland_probe(
+            WaylandTransferFunction::Hlg
+        ));
         assert_eq!(
             native_surface_encoding_from_transfer(WaylandTransferFunction::Hlg),
             None
@@ -773,7 +780,9 @@ mod tests {
 
     #[test]
     fn gamma22_with_high_peak_luminance_is_not_hdr_without_st2084() {
-        assert!(!hdr_supported_from_wayland_probe(WaylandTransferFunction::Gamma22));
+        assert!(!hdr_supported_from_wayland_probe(
+            WaylandTransferFunction::Gamma22
+        ));
         assert_eq!(
             native_surface_encoding_from_transfer(WaylandTransferFunction::Gamma22),
             None
@@ -798,16 +807,10 @@ mod tests {
         assert!(hdr.hdr_supported);
         assert_eq!(hdr.label, "HDR-1");
         assert_eq!(hdr.max_luminance_nits, Some(1000.0));
-        assert_eq!(
-            hdr.hdr_capacity_source,
-            Some("Wayland wp_color_management")
-        );
+        assert_eq!(hdr.hdr_capacity_source, Some("Wayland wp_color_management"));
 
-        let sdr = wayland_output_selection(
-            "SDR-1".to_string(),
-            WaylandTransferFunction::Srgb,
-            None,
-        );
+        let sdr =
+            wayland_output_selection("SDR-1".to_string(), WaylandTransferFunction::Srgb, None);
         assert!(!sdr.hdr_supported);
         assert_eq!(sdr.hdr_capacity_source, None);
     }

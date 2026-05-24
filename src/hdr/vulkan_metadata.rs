@@ -24,17 +24,16 @@
 //! | Tiled HDR | `HdrTiledSource::metadata()` + preview scan | preview scan / 0 | Preview refines peak |
 
 // Linux Vulkan HDR sync loads this API; other targets only reference it via `cfg(test)` here.
-#![cfg_attr(
-    not(any(test, target_os = "linux")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 
 use eframe::egui_wgpu::VulkanHdrMetadata;
 
-use super::decode::{hlg_nonlinear_to_scene_linear, pq_nonlinear_to_absolute_nits};
+use super::decode::{
+    bt709_nonlinear_channel_to_linear, hlg_nonlinear_to_scene_linear, pq_nonlinear_to_absolute_nits,
+};
 use super::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata, HdrTransferFunction,
-    DEFAULT_SDR_WHITE_NITS,
+    DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrLuminanceMetadata,
+    HdrTransferFunction,
 };
 
 const DEFAULT_MASTERING_MAX_NITS: f32 = 1000.0;
@@ -53,9 +52,7 @@ const HDR_PLANE_LINEAR_PRE_PQ_CAP: f32 = 65_504.0;
 /// ST 2086 **MaxCLL** / **MaxFALL** must be positive, finite cd/m² values that
 /// are representable on the HDR10 PQ presentation path (ST 2084 ceiling).
 fn is_representable_st2086_content_luminance(nits: f32) -> bool {
-    nits.is_finite()
-        && nits > 0.0
-        && nits <= ST2084_PQ_REFERENCE_LUMINANCE_NITS
+    nits.is_finite() && nits > 0.0 && nits <= ST2084_PQ_REFERENCE_LUMINANCE_NITS
 }
 
 fn validated_st2086_content_luminance(nits: Option<f32>) -> Option<f32> {
@@ -71,7 +68,7 @@ fn validated_st2086_mastering_luminance(nits: f32, fallback: f32) -> f32 {
 }
 
 fn sanitize_hdr_plane_linear(channel: f32) -> f32 {
-    if channel != channel {
+    if channel.is_nan() {
         0.0
     } else {
         channel.clamp(-HDR_PLANE_LINEAR_PRE_PQ_CAP, HDR_PLANE_LINEAR_PRE_PQ_CAP)
@@ -124,8 +121,8 @@ pub fn vulkan_hdr_metadata_from_luminance(
     luminance: &HdrLuminanceMetadata,
     content_peak_nits: Option<f32>,
 ) -> VulkanHdrMetadata {
-    let max_cll = validated_st2086_content_luminance(content_peak_nits)
-        .unwrap_or(DEFAULT_MASTERING_MAX_NITS);
+    let max_cll =
+        validated_st2086_content_luminance(content_peak_nits).unwrap_or(DEFAULT_MASTERING_MAX_NITS);
 
     let max_fall = luminance
         .max_fall_nits
@@ -210,11 +207,12 @@ fn pixel_rgb_to_peak_nits(
             // display-referred where 1.0 = SDR white → nits = rgb * sdr_white_nits.
             linear_luminance(linear, color_space) * sdr_white_nits
         }
+        HdrTransferFunction::Bt709 => {
+            let linear = rgb.map(bt709_nonlinear_channel_to_linear);
+            linear_luminance(linear, color_space) * sdr_white_nits
+        }
         HdrTransferFunction::Gamma | HdrTransferFunction::Unknown => {
-            linear_luminance(
-                rgb.map(sanitize_hdr_plane_linear),
-                color_space,
-            ) * sdr_white_nits
+            linear_luminance(rgb.map(sanitize_hdr_plane_linear), color_space) * sdr_white_nits
         }
     }
 }
@@ -240,8 +238,8 @@ fn srgb_nonlinear_to_linear(channel: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::hdr::types::{
-        HdrColorSpace, HdrImageMetadata, HdrLuminanceMetadata, HdrPixelFormat, HdrReference,
-        DEFAULT_SDR_WHITE_NITS,
+        DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrImageMetadata, HdrLuminanceMetadata,
+        HdrPixelFormat, HdrReference,
     };
 
     #[test]
@@ -376,7 +374,10 @@ mod tests {
         };
         assert_eq!(estimate_max_cll_nits(&buffer), None);
         let metadata = vulkan_hdr_metadata_for_content(&buffer.metadata, Some(&buffer));
-        assert_eq!(metadata.max_content_light_level_nits, DEFAULT_MASTERING_MAX_NITS);
+        assert_eq!(
+            metadata.max_content_light_level_nits,
+            DEFAULT_MASTERING_MAX_NITS
+        );
     }
 
     #[test]
@@ -387,7 +388,10 @@ mod tests {
         };
         assert_eq!(content_peak_nits(&luminance, None), None);
         let metadata = vulkan_hdr_metadata_from_luminance(&luminance, None);
-        assert_eq!(metadata.max_content_light_level_nits, DEFAULT_MASTERING_MAX_NITS);
+        assert_eq!(
+            metadata.max_content_light_level_nits,
+            DEFAULT_MASTERING_MAX_NITS
+        );
     }
 
     #[test]

@@ -33,8 +33,8 @@ impl OwnedAppIcon {
         use winapi::shared::windef::HICON;
         use winapi::um::libloaderapi::GetModuleHandleW;
         use winapi::um::winuser::{
-            DestroyIcon, GetIconInfo, LoadImageW, MAKEINTRESOURCEW, ICONINFO, IMAGE_ICON,
-            LR_DEFAULTSIZE,
+            DestroyIcon, GetIconInfo, ICONINFO, IMAGE_ICON, LR_DEFAULTSIZE, LoadImageW,
+            MAKEINTRESOURCEW,
         };
 
         unsafe {
@@ -190,7 +190,7 @@ impl DcBitmapSelection {
         bitmap: winapi::shared::windef::HBITMAP,
     ) -> Option<Self> {
         use winapi::shared::windef::HGDIOBJ;
-        use winapi::um::wingdi::{SelectObject, HGDI_ERROR};
+        use winapi::um::wingdi::{HGDI_ERROR, SelectObject};
 
         unsafe {
             let previous = SelectObject(dc, bitmap as HGDIOBJ);
@@ -211,9 +211,7 @@ impl Drop for DcBitmapSelection {
 
 /// Decode the application icon embedded in the PE (same `.ico` as the taskbar) into RGBA8.
 pub fn load_icon_rgba_from_pe() -> Option<(Vec<u8>, u32, u32)> {
-    use winapi::um::wingdi::{
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, GetDIBits,
-    };
+    use winapi::um::wingdi::{BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, GetDIBits};
 
     unsafe {
         let icon = OwnedAppIcon::load(PE_APP_ICON_ID)?;

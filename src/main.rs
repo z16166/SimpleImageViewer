@@ -90,10 +90,7 @@ fn load_icon() -> egui::IconData {
 fn load_icon_from_build_rgba() -> egui::IconData {
     const W: u32 = 256;
     const H: u32 = 256;
-    let rgba = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/siv_window_icon_rgba256.bin"
-    ));
+    let rgba = include_bytes!(concat!(env!("OUT_DIR"), "/siv_window_icon_rgba256.bin"));
     debug_assert_eq!(rgba.len(), (W * H * 4) as usize);
     egui::IconData {
         rgba: rgba.to_vec(),
@@ -437,7 +434,11 @@ fn windows_wgpu_probe_backends() -> eframe::wgpu::Backends {
 }
 
 /// Default instance backends for [`eframe::egui_wgpu::WgpuSetupCreateNew`] on Windows ARM64.
-#[cfg(all(target_os = "windows", target_arch = "aarch64", not(feature = "legacy_win7")))]
+#[cfg(all(
+    target_os = "windows",
+    target_arch = "aarch64",
+    not(feature = "legacy_win7")
+))]
 fn apply_windows_arm64_default_wgpu_backends(
     wgpu_setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew,
 ) {
@@ -463,11 +464,13 @@ struct Dx12PreprobeOutcome {
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
     let wgpu_probe_start = Instant::now();
-    let instance = eframe::wgpu::Instance::new(
-        eframe::wgpu::InstanceDescriptor::new_without_display_handle(),
-    );
+    let instance =
+        eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle());
     let probe_backends = windows_wgpu_probe_backends();
-    log::info!("[startup] wgpu dx12 preprobe: enumerate backends {:?}", probe_backends);
+    log::info!(
+        "[startup] wgpu dx12 preprobe: enumerate backends {:?}",
+        probe_backends
+    );
     let adapters = pollster::block_on(instance.enumerate_adapters(probe_backends));
     let enumerate_ms = wgpu_probe_start.elapsed().as_millis() as u128;
 
@@ -702,11 +705,7 @@ fn main() -> eframe::Result {
 
     let mut settings = settings::Settings::load();
     init_logging(&settings);
-    startup_log_phase(
-        &mut prev,
-        startup_t0,
-        "seh + Settings::load + init_logging",
-    );
+    startup_log_phase(&mut prev, startup_t0, "seh + Settings::load + init_logging");
 
     let env_info = log_env_info();
     startup_log_phase(&mut prev, startup_t0, "log_env_info");
@@ -757,10 +756,7 @@ fn main() -> eframe::Result {
         Option<std::thread::JoinHandle<()>>,
         Option<std::sync::mpsc::Receiver<Option<Dx12PreprobeOutcome>>>,
     ) = if let Some(ref cache) = cached_preprobe {
-        (
-            spawn_dx12_cache_validate_thread(cache.force_dx12),
-            None,
-        )
+        (spawn_dx12_cache_validate_thread(cache.force_dx12), None)
     } else {
         (None, Some(spawn_dx12_preprobe_thread()))
     };
@@ -806,7 +802,11 @@ fn main() -> eframe::Result {
     startup_log_phase(&mut prev, startup_t0, "viewport_builder + overrides");
 
     let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    #[cfg(all(target_os = "windows", target_arch = "aarch64", not(feature = "legacy_win7")))]
+    #[cfg(all(
+        target_os = "windows",
+        target_arch = "aarch64",
+        not(feature = "legacy_win7")
+    ))]
     apply_windows_arm64_default_wgpu_backends(&mut wgpu_setup);
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
         let info = adapter.get_info();
@@ -839,11 +839,7 @@ fn main() -> eframe::Result {
         }
     });
 
-    startup_log_phase(
-        &mut prev,
-        startup_t0,
-        "wgpu_setup_body (device_descriptor)",
-    );
+    startup_log_phase(&mut prev, startup_t0, "wgpu_setup_body (device_descriptor)");
 
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     if let Some(ref cache) = cached_preprobe {
@@ -958,11 +954,7 @@ fn main() -> eframe::Result {
                 wgpu_preprobe_cache::cache_path().display()
             );
         }
-        startup_log_phase(
-            &mut prev,
-            startup_t0,
-            "wgpu dx12 preprobe recv + apply",
-        );
+        startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
     }
 
     let native_options = eframe::NativeOptions {

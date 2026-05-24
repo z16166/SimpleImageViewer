@@ -91,11 +91,7 @@ impl ImageViewerApp {
     fn collect_wheel_input(ctx: &Context) -> (Vec2, f32, bool, bool, Option<egui::Pos2>) {
         let (line_scroll_speed, scroll_zoom_speed, zoom_modifier) = ctx.options(|o| {
             let io = &o.input_options;
-            (
-                io.line_scroll_speed,
-                io.scroll_zoom_speed,
-                io.zoom_modifier,
-            )
+            (io.line_scroll_speed, io.scroll_zoom_speed, io.zoom_modifier)
         });
 
         ctx.input(|i| {
@@ -139,7 +135,13 @@ impl ImageViewerApp {
                 }
             }
 
-            (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos)
+            (
+                scroll_delta,
+                zoom_delta,
+                is_ctrl_pressed,
+                is_alt_pressed,
+                mouse_pos,
+            )
         })
     }
 

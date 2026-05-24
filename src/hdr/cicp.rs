@@ -30,14 +30,10 @@ use crate::hdr::types::{
 /// [`HdrTransferFunction`]; other codes still flow through untouched in [`HdrImageMetadata`] via
 /// [`HdrColorProfile::Cicp`].
 pub(crate) const H273_TRANSFER_LINEAR: u16 = 8;
-/// ITU-T H.273 **`transfer_characteristics = 1`**: **BT.709** opto-electronic transfer (IEC 61966‑3 Annex B family).
-/// Aligned with [`crate::hdr::jpegxl::JXL_TRANSFER_FUNCTION_709`] → decode like **sRGB** for unmanaged stills —
-/// Nokia / browser HEICs often use **`primaries=1 transfer=1`**, previously fell through to **`Unknown`** and were
-/// passed through Reinhard unchanged on 10-bit primaries (`heif_transfer_depth_heuristics`).
+/// ITU-T H.273 **`transfer_characteristics = 1`**: **BT.709 opto-electronic / inverse OETF** (not IEC 61966‑2‑1 sRGB).
 pub(crate) const H273_TRANSFER_ITU_BT709: u16 = 1;
-/// **SMPTE 170 / BT‑601-compatible** nonlinear transfer (**H.273** code **6**). Common on camera / broadcast HEIC
-/// blobs; FFmpeg maps this into the same unmanaged “709-ish” PQ curve family as **`transfer=1`**. Untreated **`Unknown`**
-/// on the **`Rgba32Float`** HDR plane drives **Reinhard+2.2** and washes mid-tones vs Chrome/system reference.
+/// **SMPTE 170 / BT‑601-compatible** nonlinear transfer (**H.273** code **6**): same transfer parameters as BT.709
+/// for RGB in HD/broadcast mastering; wired to [`HdrTransferFunction::Bt709`].
 pub(crate) const H273_TRANSFER_SMPTE170M: u16 = 6;
 pub(crate) const H273_TRANSFER_IEC61966_2_1_SRGB: u16 = 13;
 pub(crate) const H273_TRANSFER_SMPTE_ST2084_FOR_PQ: u16 = 16;
@@ -52,9 +48,8 @@ pub(crate) fn cicp_to_metadata(
 ) -> HdrImageMetadata {
     let transfer_function = match transfer_characteristics {
         H273_TRANSFER_LINEAR => HdrTransferFunction::Linear,
-        H273_TRANSFER_ITU_BT709 | H273_TRANSFER_SMPTE170M | H273_TRANSFER_IEC61966_2_1_SRGB => {
-            HdrTransferFunction::Srgb
-        }
+        H273_TRANSFER_ITU_BT709 | H273_TRANSFER_SMPTE170M => HdrTransferFunction::Bt709,
+        H273_TRANSFER_IEC61966_2_1_SRGB => HdrTransferFunction::Srgb,
         H273_TRANSFER_SMPTE_ST2084_FOR_PQ => HdrTransferFunction::Pq,
         H273_TRANSFER_ARIB_STD_B67_FOR_HLG => HdrTransferFunction::Hlg,
         _ => HdrTransferFunction::Unknown,
@@ -94,7 +89,7 @@ mod tests {
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
 
     #[test]
-    fn cicp_bt709_transfer_maps_to_srgb_for_heif_browser_stills() {
+    fn cicp_bt709_transfer_maps_to_bt709_not_iec_srgb() {
         let meta = cicp_to_metadata(
             /* color_primaries */ 1,
             H273_TRANSFER_ITU_BT709,
@@ -102,7 +97,7 @@ mod tests {
             true,
             None,
         );
-        assert_eq!(meta.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(meta.transfer_function, HdrTransferFunction::Bt709);
         assert_eq!(meta.reference, HdrReference::Unknown);
     }
 
@@ -113,9 +108,9 @@ mod tests {
     }
 
     #[test]
-    fn cicp_transfer_6_maps_to_srgb_like_bt709_family() {
+    fn cicp_transfer_6_maps_to_bt709_transfer() {
         let meta = cicp_to_metadata(1, H273_TRANSFER_SMPTE170M, 1, true, None);
-        assert_eq!(meta.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(meta.transfer_function, HdrTransferFunction::Bt709);
         assert_eq!(meta.reference, HdrReference::Unknown);
     }
 }

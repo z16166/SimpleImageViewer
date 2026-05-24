@@ -376,7 +376,9 @@ impl Settings {
             .and_then(|selection| selection.max_luminance_nits)
             .filter(|value| value.is_finite() && *value > 0.0)
         {
-            max_display_nits = max_display_nits.min(probed_peak).max(self.hdr_sdr_white_nits);
+            max_display_nits = max_display_nits
+                .min(probed_peak)
+                .max(self.hdr_sdr_white_nits);
         }
         crate::hdr::types::HdrToneMapSettings {
             exposure_ev: self.hdr_exposure_ev,
@@ -549,9 +551,7 @@ mod tests {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: Some("Wayland wp_color_management"),
-            native_surface_encoding: Some(
-                crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10,
-            ),
+            native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10),
         };
 
         let tone_map = settings.hdr_tone_map_settings_for_monitor(Some(&monitor));

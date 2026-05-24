@@ -20,9 +20,7 @@ pub fn wayland_session_from_display_var(display: Option<&str>) -> bool {
 }
 
 pub fn is_wayland_session() -> bool {
-    wayland_session_from_display_var(
-        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
-    )
+    wayland_session_from_display_var(std::env::var("WAYLAND_DISPLAY").ok().as_deref())
 }
 
 /// Linux native HDR is Wayland-only in v1; X11 stays SDR.

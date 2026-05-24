@@ -292,10 +292,7 @@ pub fn effective_render_output_mode(
     if !selection.hdr_supported {
         return HdrRenderOutputMode::SdrToneMapped;
     }
-    HdrRenderOutputMode::for_target_format(
-        target_format,
-        selection.native_surface_encoding,
-    )
+    HdrRenderOutputMode::for_target_format(target_format, selection.native_surface_encoding)
 }
 
 pub fn effective_capability_output_mode(
@@ -702,7 +699,10 @@ pub fn any_active_output_supports_hdr() -> Result<bool, String> {
 #[allow(dead_code)]
 pub fn any_active_output_supports_hdr() -> Result<bool, String> {
     if crate::hdr::platform::linux_native_hdr_platform_eligible() {
-        Err("pre-creation HDR availability probing is not yet implemented on Linux Wayland".to_string())
+        Err(
+            "pre-creation HDR availability probing is not yet implemented on Linux Wayland"
+                .to_string(),
+        )
     } else {
         Err("HDR probing requires a Wayland session".to_string())
     }
