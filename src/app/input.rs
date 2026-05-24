@@ -178,8 +178,20 @@ impl ImageViewerApp {
         None
     }
 
+    /// Applies ±½ EV using the same rule as the settings exposure slider
+    /// (`crate::hdr::monitor::effective_render_output_mode`: native HDR exposes
+    /// `hdr_exposure_ev_native`, tone-mapped SDR output exposes `hdr_exposure_ev_sdr`).
     fn adjust_hdr_exposure_by_ev(&mut self, delta_ev: f32, ctx: &Context) {
-        self.settings.hdr_exposure_ev = (self.settings.hdr_exposure_ev + delta_ev).clamp(-8.0, 8.0);
+        let slot = match crate::hdr::monitor::effective_render_output_mode(
+            self.hdr_target_format,
+            self.effective_hdr_monitor_selection().as_ref(),
+        ) {
+            crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped => {
+                &mut self.settings.hdr_exposure_ev_sdr
+            }
+            _ => &mut self.settings.hdr_exposure_ev_native,
+        };
+        *slot = (*slot + delta_ev).clamp(-8.0, 8.0);
         let tone = self.effective_hdr_tone_map_settings();
         self.hdr_renderer.tone_map = tone;
         self.loader.set_hdr_tone_map_settings(tone);

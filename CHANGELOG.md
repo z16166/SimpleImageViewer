@@ -5,19 +5,26 @@ All notable changes to this project will be documented in this file.
 
 ## [2.1.4] - 2026-05-23
 
+### Added
+- **HDR OSD**: The HDR status bracket line (**`[ … ]`**), drawn **above** the usual index/zoom/`[STATIC|TILED]` row, now includes **current exposure in stops** (`· +n.n EV`). It reflects `effective_hdr_tone_map_settings()`, so swapping monitors or flipping between native HDR and SDR tone‑mapped composition updates the stops you are actually applying.
+- **HDR exposure settings**: Persisted **`hdr_exposure_ev_native`** and **`hdr_exposure_ev_sdr`** — separate EV for **native HDR swap chains** vs **tone‑mapping into an SDR framebuffer**. Legacy YAML keys **`hdr_exposure_ev`** still load (alias for the native slot). Settings UI tooltip text is mode‑aware (`locales/`).
+
 ### Fixed
 - **HEIF / HEIC (HDR, no embedded colour descriptor)**: Stills whose container exposes **no NCLX colour box** and **no readable embedded ICC profile** previously inherited a **scene‑linear (`transfer = Linear`)** default. Normalised RGB from libheif is **display‑referred gamma**, so SDR previews looked **flat and milky** next to Chrome and the desktop photo stack. Metadata now follows the same **`sRGB`** transfer assumption as ICC‑tagged stills **without guessing primaries**.
 - **Static HDR bookkeeping**: Installing a static HDR asset now records the cached SDR fallback in `hdr_sdr_fallback_indices`; the viewer paint path uses the same **`has_sdr_fallback`** signal as **`hdr_status`**, avoiding **“float‑plane HDR” OSD** while the canvas is actually blitting the **tonemapped fallback texture**.
+- **`hdr_status` / OSD bookkeeping drift**: **`current_hdr_render_path`** now respects **`hdr_image_cache`** / **`hdr_tiled_source_cache`** for the active index whenever **`CurrentHdr*`** pointers are transiently cleared, mirroring **`tiled_canvas_matches_current_index`** guidance so the HDR line (including EV) is not suppressed while HDR content still applies.
 - **SDR framebuffer path (HDR image‑plane shaders)**: On **`Rgba8Unorm` / `Bgra8Unorm`** targets — typical **Windows gamma** canvases — the HDR float‑plane **`encode_sdr`** path now distinguishes **manual piecewise sRGB OETF** in WGSL versus **\*UnormSrgb** surfaces where the GPU encodes linear output to gamma. Prevents **double gamma** (washed mid‑tones) when the HDR callback targets an 8‑bit **non‑`srgb`** surface.
+- **`SdrToneMapped` + HDR float plane**: When the conservative output mode stays **`HdrRenderOutputMode::SdrToneMapped`** yet the swap chain exposes a **`TextureFormat`** target (`Rgba16Float`, `Bgra8Unorm`, …) and decoding produced an HDR float plane, **`select_render_backend`** now promotes **`PlaneBackendKind::Hdr`** instead of pinning to the stale CPU‑baked SDR texture path. Exposure / sliders and keyboard ±½ EV adjustments stay effective (static and tiled canvases).
 
 ### Improved
 - **CICP (ITU‑T H.273)**: **`transfer_characteristics = 1` (BT.709)** and **`= 6` (SMPTE 170 BT.601‑like)** decode as **`Srgb`**, aligning phone / conformance HEIF with browser‑style unmanaged stills rather than **`Unknown`** (which skipped proper EOTF on the HDR plane).
 - **HEIF transfer refine**: **`Unknown`** CICP transfer with **colour primaries = 1 (BT.709 / sRGB chromaticities)** is promoted to **`Srgb`**, restoring contrast on **10‑bit** primaries after depth‑heuristic passes.
+- **HEIF NCLX overrides**: **Primaries 1 + H.273 transfers 1/6** narrows explicitly to **`Srgb`**‑like display codes inside **`heif_nclx_to_metadata`** (PQ / wider primaries retain strict CICP handling). Matching depth / unknown‑transfer helpers and the **no‑colour‑box** orphan path now converge on **`Srgb`** decoding assumptions for typical phone/desktop still parity.
 - **CPU HDR→SDR tonemap fallback**: PQ and display‑referred **sRGB** masters can take the **IEC 61966‑2‑1** OETF curve instead of a generic **Reinhard + gamma** stack where that matches unmanaged browser output on physically SDR displays.
 - **Diagnostics**: **`INFO`** line per decoded HEIF primary — resolution, **`transfer_function`**, profile kind (**LinearSrgb / Cicp / Icc**), **`cicp (primaries, transfer)`**, optional mastering peak guess, auxiliary gain‑map hints.
 
 ### Notes
-- Behaviour changes focus on **HEIF/HEIC** and **HDR SDR previews** when **Windows/native HDR surfaces are inactive** (`Bgra8Unorm`). Native HDR PQ / OpenEXR / Radiance paths are unchanged except where noted above.
+- Behaviour changes focus on **HEIF/HEIC**, **persistent HDR exposure split by presentation path**, and **HDR SDR previews / tone‑mapping** when **native HDR swap chains differ from conservative `SdrToneMapped`** output. PQ / OpenEXR / Radiance native paths are unchanged except where tone‑map sliders or bookkeeping were tightened above.
 
 
 ## [2.1.3] - 2026-05-24

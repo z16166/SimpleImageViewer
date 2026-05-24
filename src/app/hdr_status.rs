@@ -22,16 +22,24 @@ use crate::hdr::types::HdrColorSpace;
 
 impl ImageViewerApp {
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
+        // Treat per-index HDR caches (`hdr_image_cache` / `hdr_tiled_source_cache`) like the active
+        // float planes: `navigate_to`/`CurrentHdr*` can transiently diverge while the UI still
+        // renders HDR content (cf. stale `tile_manager` note on `tiled_canvas_matches_current_index`).
+        // Omitting caches makes `hdr_render_path_for_viewer_plan` return `None` and hides the OSD
+        // HDR line—including EV—even though sliders and tone-mapping still apply.
+        let idx = self.current_index;
         let has_hdr_tiled_source = self
             .current_hdr_tiled_image
             .as_ref()
-            .is_some_and(|current| current.source_for_index(self.current_index).is_some());
-        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+            .is_some_and(|current| current.source_for_index(idx).is_some())
+            || self.hdr_tiled_source_cache.contains_key(&idx);
+        let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&idx);
 
         let has_hdr_image = self
             .current_hdr_image
             .as_ref()
-            .is_some_and(|current| current.image_for_index(self.current_index).is_some());
+            .is_some_and(|current| current.image_for_index(idx).is_some())
+            || self.hdr_image_cache.contains_key(&idx);
 
         let complex_transition_active = self.transition_start.is_some()
             && matches!(
@@ -62,6 +70,7 @@ impl ImageViewerApp {
             &self.hdr_capabilities,
             Some(self.ultra_hdr_decode_capacity),
             monitor_label.as_deref(),
+            self.effective_hdr_tone_map_settings().exposure_ev,
         )
     }
 
@@ -78,6 +87,11 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))
             .map(|image| image.color_space)
+            .or_else(|| {
+                self.hdr_image_cache
+                    .get(&self.current_index)
+                    .map(|image| image.color_space)
+            })
     }
 }
 
@@ -188,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn tone_mapped_sdr_surface_matches_render_plan_sdr_fallback_osd() {
+    fn tone_mapped_sdr_surface_matches_render_plan_float_plane_osd() {
         assert_eq!(
             hdr_render_path_for_viewer_plan(
                 false,
@@ -199,19 +213,14 @@ mod tests {
                 false,
                 None,
             ),
-            Some(HdrRenderPath::SdrFallback)
+            Some(HdrRenderPath::FloatImagePlane)
         );
     }
 
     #[test]
-    fn unknown_monitor_capability_falls_back_to_sdr_on_hdr_target() {
-        // Defense-in-depth: when the OS-side HDR probe has not yet populated `selection`
-        // (e.g. probe failed silently because the egui main window title was localized
-        // and the legacy substring lookup for "Simple Image Viewer" missed it), the plan
-        // must NOT optimistically pick the scRGB native HDR path on what may actually be
-        // an SDR panel — that would route SDR-grade JXL content through the float plane
-        // shader and Windows scRGB compositor, which on physically SDR monitors visibly
-        // washes out shadow contrast (`bench_oriented_brg`).
+    fn unknown_monitor_capability_uses_float_plane_for_hdr_on_sdr_output() {
+        // Unknown probe still forces `SdrToneMapped`, but an HDR float buffer now routes through the
+        // WGSL path (not stale CPU bake) so sliders work; OSD must match [`RenderPlan`] backend `Hdr`.
         assert_eq!(
             hdr_render_path_for_viewer_plan(
                 false,
@@ -222,7 +231,7 @@ mod tests {
                 false,
                 None,
             ),
-            Some(HdrRenderPath::SdrFallback)
+            Some(HdrRenderPath::FloatImagePlane)
         );
     }
 
@@ -253,7 +262,7 @@ mod tests {
                 Some(HdrRenderPath::FloatTilePlane),
             ),
             (
-                "static HDR on SDR target",
+                "static HDR on Bgra SDR framebuffer (tone-mapped WGSL)",
                 false,
                 false,
                 true,
@@ -261,7 +270,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
                 Some(&monitor),
-                Some(HdrRenderPath::SdrFallback),
+                Some(HdrRenderPath::FloatImagePlane),
             ),
             (
                 "tiled HDR without render target",

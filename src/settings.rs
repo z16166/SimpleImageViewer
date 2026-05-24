@@ -160,8 +160,13 @@ pub struct Settings {
     /// On Linux X11 this is ignored; use [`Settings::hdr_native_surface_enabled_effective`].
     #[serde(default = "default_hdr_native_surface_enabled")]
     pub hdr_native_surface_enabled: bool,
+    /// EV scale for **native HDR** presentation (`Rgba16Float` / PQ / gamma‑2.2 HDR paths).
+    /// `hdr_exposure_ev` in persisted YAML aliases here for backwards compatibility.
+    #[serde(default, alias = "hdr_exposure_ev")]
+    pub hdr_exposure_ev_native: f32,
+    /// EV scale when tone‑mapping into an **SDR swap chain** (8‑bit etc.) or matching CPU previews.
     #[serde(default)]
-    pub hdr_exposure_ev: f32,
+    pub hdr_exposure_ev_sdr: f32,
     #[serde(default = "default_hdr_sdr_white_nits")]
     pub hdr_sdr_white_nits: f32,
     #[serde(default = "default_hdr_max_display_nits")]
@@ -266,7 +271,8 @@ impl Default for Settings {
             audio_device: None,
             raw_high_quality: false,
             hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
-            hdr_exposure_ev: 0.0,
+            hdr_exposure_ev_native: 0.0,
+            hdr_exposure_ev_sdr: 0.0,
             hdr_sdr_white_nits: default_hdr_sdr_white_nits(),
             hdr_max_display_nits: default_hdr_max_display_nits(),
             language: String::new(),
@@ -368,6 +374,7 @@ impl Settings {
     pub fn hdr_tone_map_settings_for_monitor(
         &self,
         monitor: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+        render_output_mode: crate::hdr::renderer::HdrRenderOutputMode,
     ) -> crate::hdr::types::HdrToneMapSettings {
         let mut max_display_nits = self
             .hdr_max_display_nits
@@ -380,8 +387,12 @@ impl Settings {
                 .min(probed_peak)
                 .max(self.hdr_sdr_white_nits);
         }
+        let exposure_ev = match render_output_mode {
+            crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped => self.hdr_exposure_ev_sdr,
+            _ => self.hdr_exposure_ev_native,
+        };
         crate::hdr::types::HdrToneMapSettings {
-            exposure_ev: self.hdr_exposure_ev,
+            exposure_ev,
             sdr_white_nits: self.hdr_sdr_white_nits,
             max_display_nits,
         }
@@ -402,7 +413,8 @@ impl Settings {
                         volume: s.volume.clamp(0.0, 1.0),
                         font_size: s.font_size.clamp(12.0, 72.0),
                         transition_ms: s.transition_ms.clamp(50, 5000),
-                        hdr_exposure_ev: s.hdr_exposure_ev.clamp(-8.0, 8.0),
+                        hdr_exposure_ev_native: s.hdr_exposure_ev_native.clamp(-8.0, 8.0),
+                        hdr_exposure_ev_sdr: s.hdr_exposure_ev_sdr.clamp(-8.0, 8.0),
                         hdr_sdr_white_nits,
                         hdr_max_display_nits,
                         ..s
@@ -459,7 +471,8 @@ mod tests {
     fn default_settings_expose_hdr_tone_map_controls() {
         let settings = Settings::default();
 
-        assert_eq!(settings.hdr_exposure_ev, 0.0);
+        assert_eq!(settings.hdr_exposure_ev_native, 0.0);
+        assert_eq!(settings.hdr_exposure_ev_sdr, 0.0);
         assert_eq!(
             settings.hdr_sdr_white_nits,
             crate::hdr::types::DEFAULT_SDR_WHITE_NITS
@@ -531,7 +544,10 @@ mod tests {
             ..Settings::default()
         };
 
-        let tone_map = settings.hdr_tone_map_settings_for_monitor(None);
+        let tone_map = settings.hdr_tone_map_settings_for_monitor(
+            None,
+            crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
+        );
 
         assert_eq!(tone_map.sdr_white_nits, 300.0);
         assert_eq!(tone_map.max_display_nits, 300.0);
@@ -554,8 +570,38 @@ mod tests {
             native_surface_encoding: Some(crate::hdr::monitor::HdrNativeSurfaceEncoding::PqHdr10),
         };
 
-        let tone_map = settings.hdr_tone_map_settings_for_monitor(Some(&monitor));
+        let tone_map = settings.hdr_tone_map_settings_for_monitor(
+            Some(&monitor),
+            crate::hdr::renderer::HdrRenderOutputMode::NativeHdrPq,
+        );
 
         assert_eq!(tone_map.max_display_nits, 450.0);
+    }
+
+    #[test]
+    fn hdr_tone_map_settings_split_exposure_by_render_output_mode() {
+        let settings = Settings {
+            hdr_exposure_ev_native: 3.0,
+            hdr_exposure_ev_sdr: -1.0,
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings
+                .hdr_tone_map_settings_for_monitor(
+                    None,
+                    crate::hdr::renderer::HdrRenderOutputMode::NativeHdrPq,
+                )
+                .exposure_ev,
+            3.0
+        );
+        assert_eq!(
+            settings
+                .hdr_tone_map_settings_for_monitor(
+                    None,
+                    crate::hdr::renderer::HdrRenderOutputMode::SdrToneMapped,
+                )
+                .exposure_ev,
+            -1.0
+        );
     }
 }

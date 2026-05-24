@@ -36,13 +36,12 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
 /// texture and dispatched through `HDR_IMAGE_PLANE_SHADER` (`encode_native_hdr` for
 /// scRGB / EDR output, or `encode_sdr` with Reinhard otherwise).
 ///
-/// Returning `false` falls through to the cached SDR fallback texture path (the same
-/// path used for ordinary 8-bit images — egui's `fs_main_*_framebuffer`), which is
-/// what we want when `RenderPlan::backend == Sdr`. Routing SDR-grade JXL content
-/// (`bench_oriented_brg`, `intensity_target=255`) through the HDR plane shader's
-/// `encode_sdr` Reinhard branch lifts shadows ~3.4× and visibly washes contrast on
-/// physically SDR displays — even when `output_mode == SdrToneMapped` is selected,
-/// because `target_format` stays locked to `Rgba16Float` from startup.
+/// Returning `false` falls through to the cached SDR fallback texture path (ordinary
+/// 8‑bit images — same as `RenderPlan::backend == Sdr` when there is **no** HDR float plane).
+/// With an HDR decode and [`HdrRenderOutputMode::SdrToneMapped`], the plan now prefers
+/// [`PlaneBackendKind::Hdr`] so WGSL `encode_sdr` stays live (exposure / peak nits); SDR‑grade
+/// JXL that decodes as display‑referred should rely on transfer metadata so Reinhard is not
+/// misapplied.
 pub(crate) fn should_route_through_hdr_plane(
     plan: &RenderPlan,
     transition: TransitionStyle,
@@ -589,23 +588,19 @@ mod tests {
     }
 
     #[test]
-    fn hdr_plane_routing_requires_hdr_backend_even_when_target_format_is_float() {
-        // Regression: even though `target_format` stays locked to `Rgba16Float` from
-        // startup (so we can switch into NativeHdr at runtime if a probe later proves
-        // the monitor supports HDR), the HDR float-image-plane shader must NOT be used
-        // when the plan resolved its backend to `Sdr`. Otherwise SDR-grade JXL content
-        // is routed through the plane shader's `encode_sdr` Reinhard branch which lifts
-        // shadows and visibly washes contrast on physically SDR displays
-        // (`bench_oriented_brg/input.jxl`).
-        let sdr_plan = static_plan(
+    fn hdr_plane_routing_uses_shader_for_sdr_tone_mapped_when_float_plane_exists() {
+        // When [`HdrRenderOutputMode::SdrToneMapped`] (SDR framebuffer or conservative probe),
+        // the HDR float buffer must still flow through WGSL tone-map (`PlaneBackendKind::Hdr`)
+        // so sliders / exposure update every frame instead of staring at stale CPU‑baked SDR textures.
+        let tone_mapped_plan = static_plan(
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
             HdrRenderOutputMode::SdrToneMapped,
         );
-        assert_eq!(sdr_plan.backend, PlaneBackendKind::Sdr);
+        assert_eq!(tone_mapped_plan.backend, PlaneBackendKind::Hdr);
         assert!(
-            !should_route_through_hdr_plane(&sdr_plan, TransitionStyle::None, false),
-            "Sdr backend must keep static draws on the cached SDR fallback texture path"
+            should_route_through_hdr_plane(&tone_mapped_plan, TransitionStyle::None, false),
+            "`SdrToneMapped` must not mask the HDR plane shader when HDR float data exists"
         );
 
         let hdr_plan = static_plan(

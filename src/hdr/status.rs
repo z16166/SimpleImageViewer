@@ -32,6 +32,7 @@ pub fn hdr_osd_tag(
     capabilities: &HdrCapabilities,
     ultra_hdr_decode_capacity: Option<f32>,
     monitor_label: Option<&str>,
+    exposure_ev: f32,
 ) -> Option<String> {
     if !is_hdr_source {
         return None;
@@ -64,7 +65,14 @@ pub fn hdr_osd_tag(
         parts.push_str(" | ");
         parts.push_str(label);
     }
+    parts.push_str(" · ");
+    parts.push_str(&format_hdr_osd_exposure_ev(exposure_ev));
     Some(parts)
+}
+
+fn format_hdr_osd_exposure_ev(ev: f32) -> String {
+    let v = if ev.is_finite() { ev } else { 0.0 };
+    format!("{v:+.1} EV")
 }
 
 fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
@@ -112,12 +120,13 @@ mod tests {
         rust_i18n::set_locale("en");
         let render = t!("hdr.render_path.float_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!(
+        let mut expected = t!(
             "hdr.osd.tag_without_color",
             render = render,
             output = output
         )
         .to_string();
+        expected.push_str(" · +0.0 EV");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -125,6 +134,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            0.0,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -135,12 +145,13 @@ mod tests {
         rust_i18n::set_locale("en");
         let render = t!("hdr.render_path.float_tile_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!(
+        let mut expected = t!(
             "hdr.osd.tag_without_color",
             render = render,
             output = output
         )
         .to_string();
+        expected.push_str(" · +0.0 EV");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -148,6 +159,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            0.0,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -159,13 +171,14 @@ mod tests {
         let color = t!("hdr.color_space.rec2020_linear").to_string();
         let render = t!("hdr.render_path.float_tile_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!(
+        let mut expected = t!(
             "hdr.osd.tag_with_color",
             color = color,
             render = render,
             output = output
         )
         .to_string();
+        expected.push_str(" · +0.0 EV");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatTilePlane,
@@ -173,6 +186,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            0.0,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -192,7 +206,7 @@ mod tests {
         )
         .to_string();
         expected.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = "5.50"));
-        expected.push_str(" | DISPLAY1");
+        expected.push_str(" | DISPLAY1 · +0.0 EV");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -200,6 +214,7 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             Some(5.5),
             Some("DISPLAY1"),
+            0.0,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
@@ -211,13 +226,14 @@ mod tests {
         let color = t!("hdr.color_space.unknown").to_string();
         let render = t!("hdr.render_path.float_plane").to_string();
         let output = t!("hdr.output.sdr_tone_mapped").to_string();
-        let expected = t!(
+        let mut expected = t!(
             "hdr.osd.tag_with_color",
             color = color,
             render = render,
             output = output
         )
         .to_string();
+        expected.push_str(" · +0.0 EV");
         let tag = hdr_osd_tag(
             true,
             HdrRenderPath::FloatImagePlane,
@@ -225,9 +241,25 @@ mod tests {
             &HdrCapabilities::sdr("native HDR output not enabled"),
             None,
             None,
+            0.0,
         );
 
         assert_eq!(tag.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn hdr_osd_tag_formats_exposure_suffix() {
+        let tag = hdr_osd_tag(
+            true,
+            HdrRenderPath::FloatImagePlane,
+            None,
+            &HdrCapabilities::sdr("native HDR output not enabled"),
+            None,
+            None,
+            3.0,
+        )
+        .expect("HDR tag Some");
+        assert!(tag.ends_with(" · +3.0 EV"));
     }
 
     #[test]
@@ -240,6 +272,7 @@ mod tests {
             &HdrCapabilities::sdr("not an HDR image"),
             None,
             None,
+            99.0,
         );
 
         assert_eq!(tag, None);
