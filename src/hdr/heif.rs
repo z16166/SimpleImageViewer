@@ -19,7 +19,7 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use crate::hdr::types::{HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
@@ -564,7 +564,7 @@ pub(crate) fn load_heif_hdr(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<crate::loader::ImageData, String> {
-    let hdr = decode_heif_hdr(path)?;
+    let hdr = decode_heif_hdr(path, hdr_target_capacity)?;
     let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
         crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
             &hdr,
@@ -580,14 +580,20 @@ pub(crate) fn load_heif_hdr(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn decode_heif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_heif_hdr(
+    path: &std::path::Path,
+    hdr_target_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-    decode_heif_hdr_bytes(&mmap[..])
+    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity)
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_heif_hdr_bytes(
+    bytes: &[u8],
+    hdr_target_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
     let mut metadata = read_heif_metadata(handle.0);
@@ -602,7 +608,118 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         .as_ref()
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
-    let hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+    let mut hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+
+    // Apply Apple HDR Gain Map if present and target display supports HDR
+    if let Some((gain_w, gain_h, gain_rgba)) = decode_heif_gain_map(handle.0, decode_opts_ptr) {
+        // Parse metadata (stops) from EXIF MakerNotes if present
+        let mut stops = 2.0_f32; // Default fallback to 2.0 stops
+        let mut parsed_stops = None;
+        if let Some(exif_buf) = get_heif_exif_block(handle.0) {
+            if let Some((stops_h, _)) = parse_apple_hdr_metadata_from_exif(&exif_buf) {
+                stops = stops_h;
+                parsed_stops = Some(stops_h);
+            }
+        }
+
+        // Linear headroom
+        let linear_headroom = 2.0_f32.powf(stops);
+
+        // Display headroom weight: w = clamp(log2(target_hdr_capacity) / stops, 0.0, 1.0)
+        let target_log2 = hdr_target_capacity.max(1.0).log2();
+        let weight = if stops > 0.0 {
+            (target_log2 / stops).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        log::info!(
+            "[HDR] Applying Apple HDR Gain Map: {}x{} pixels, stops: {:.3} (parsed from Exif: {:?}), linear_headroom: {:.3}, target_hdr_capacity: {:.3}, weight: {:.3}",
+            gain_w,
+            gain_h,
+            stops,
+            parsed_stops,
+            linear_headroom,
+            hdr_target_capacity,
+            weight
+        );
+
+        let base_pixels = &hdr.rgba_f32;
+        let mut composed_pixels = Vec::with_capacity(hdr.width as usize * hdr.height as usize * 4);
+
+        let color_space = hdr.color_space;
+        let tf = hdr.metadata.transfer_function;
+
+        for y in 0..hdr.height {
+            for x in 0..hdr.width {
+                let idx = (y as usize * hdr.width as usize + x as usize) * 4;
+                let r_code = base_pixels[idx];
+                let g_code = base_pixels[idx + 1];
+                let b_code = base_pixels[idx + 2];
+                let a = base_pixels[idx + 3];
+
+                // Linearize base pixel
+                let rgb_display_linear = crate::hdr::decode::decode_transfer_to_display_linear(
+                    [r_code, g_code, b_code],
+                    tf,
+                    crate::hdr::types::DEFAULT_SDR_WHITE_NITS,
+                );
+
+                // Convert base linear to linear sRGB
+                let rgb_linear_srgb = crate::hdr::decode::linear_primary_to_linear_srgb(
+                    rgb_display_linear,
+                    color_space,
+                    &hdr.metadata,
+                );
+
+                // Sample and linearize the gain map
+                let gain_raw = crate::hdr::gain_map::sample_gain_map_rgb(
+                    &gain_rgba,
+                    gain_w,
+                    gain_h,
+                    x,
+                    y,
+                    hdr.width,
+                    hdr.height,
+                );
+                let gain_linear = [
+                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[0]),
+                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[1]),
+                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[2]),
+                ];
+
+                // Apple HDR Gain Map rendering formula:
+                // hdr_linear = sdr_linear * (1.0 + (linear_headroom - 1.0) * gain_linear * w)
+                let composed_r = rgb_linear_srgb[0] * (1.0 + (linear_headroom - 1.0) * gain_linear[0] * weight);
+                let composed_g = rgb_linear_srgb[1] * (1.0 + (linear_headroom - 1.0) * gain_linear[1] * weight);
+                let composed_b = rgb_linear_srgb[2] * (1.0 + (linear_headroom - 1.0) * gain_linear[2] * weight);
+
+                composed_pixels.push(composed_r.max(0.0));
+                composed_pixels.push(composed_g.max(0.0));
+                composed_pixels.push(composed_b.max(0.0));
+                composed_pixels.push(a);
+            }
+        }
+
+        let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+        final_metadata.luminance = hdr.metadata.luminance;
+        final_metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: Some(hdr_target_capacity),
+            diagnostic: format!("Apple HDR Gain Map ({}x{} pixels, stops: {:.2}, weight: {:.2})", gain_w, gain_h, stops, weight),
+            capped_display_referred: false,
+        });
+
+        hdr = HdrImageBuffer {
+            width: hdr.width,
+            height: hdr.height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: final_metadata,
+            rgba_f32: Arc::new(composed_pixels),
+        };
+    }
+
     let cicp_px_tc = match &hdr.metadata.color_profile {
         HdrColorProfile::Cicp {
             color_primaries,
@@ -1537,6 +1654,233 @@ fn hdr_buffer_from_ycbcr(
 }
 
 #[cfg(feature = "heif-native")]
+const EXIF_TAG_APPLE_HDR_HEADROOM: u16 = 0x0021;
+
+#[cfg(feature = "heif-native")]
+fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
+    let sig = b"Apple iOS\0";
+    let sig_index = buf.windows(sig.len()).position(|w| w == sig)?;
+    
+    // The custom TIFF block starts 12 bytes after the start of "Apple iOS\0"
+    // (10 bytes for signature + 2 bytes for '00 01')
+    let tiff_start = sig_index + 12;
+    if tiff_start >= buf.len() {
+        return None;
+    }
+    let tiff = &buf[tiff_start..];
+    if tiff.len() < 4 {
+        return None;
+    }
+    
+    // Byte order: "MM" (Big Endian) or "II" (Little Endian)
+    let is_be = if &tiff[0..2] == b"MM" {
+        true
+    } else if &tiff[0..2] == b"II" {
+        false
+    } else {
+        return None;
+    };
+    
+    // Read the 2-byte entry count
+    let count = if is_be {
+        u16::from_be_bytes(tiff[2..4].try_into().ok()?)
+    } else {
+        u16::from_le_bytes(tiff[2..4].try_into().ok()?)
+    } as usize;
+    
+    let mut headroom = None;
+    
+    // Iterate through the IFD entries starting at offset 4 of the TIFF block
+    for i in 0..count {
+        let entry_offset = 4 + i * 12;
+        if entry_offset + 12 > tiff.len() {
+            break;
+        }
+        let entry_bytes = &tiff[entry_offset..entry_offset + 12];
+        
+        let tag = if is_be {
+            u16::from_be_bytes(entry_bytes[0..2].try_into().ok()?)
+        } else {
+            u16::from_le_bytes(entry_bytes[0..2].try_into().ok()?)
+        };
+        
+        if tag == EXIF_TAG_APPLE_HDR_HEADROOM {
+            let val_off = if is_be {
+                u32::from_be_bytes(entry_bytes[8..12].try_into().ok()?)
+            } else {
+                u32::from_le_bytes(entry_bytes[8..12].try_into().ok()?)
+            } as usize;
+            
+            if val_off + 8 <= tiff.len() {
+                let val_bytes = &tiff[val_off..val_off + 8];
+                
+                // Apple quirk: even if TIFF byte order is MM (Big Endian), 
+                // the rational values might be stored in Little Endian.
+                // We try both Big and Little Endian, and pick the one that 
+                // gives a reasonable Stops/Headroom value in range [0.1, 10.0].
+                
+                // Try Big Endian
+                let num_be = u32::from_be_bytes(val_bytes[0..4].try_into().ok()?) as f32;
+                let den_be = u32::from_be_bytes(val_bytes[4..8].try_into().ok()?) as f32;
+                let val_be = if den_be != 0.0 { Some(num_be / den_be) } else { None };
+                
+                // Try Little Endian
+                let num_le = u32::from_le_bytes(val_bytes[0..4].try_into().ok()?) as f32;
+                let den_le = u32::from_le_bytes(val_bytes[4..8].try_into().ok()?) as f32;
+                let val_le = if den_le != 0.0 { Some(num_le / den_le) } else { None };
+                
+                if let Some(v) = val_le {
+                    if (0.1..=10.0).contains(&v) {
+                        headroom = Some(v);
+                    }
+                }
+                if headroom.is_none() {
+                    if let Some(v) = val_be {
+                        if (0.1..=10.0).contains(&v) {
+                            headroom = Some(v);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    }
+    
+    if let Some(h) = headroom {
+        Some((h, h))
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn get_heif_exif_block(handle: *const libheif_sys::heif_image_handle) -> Option<Vec<u8>> {
+    unsafe {
+        let total =
+            libheif_sys::heif_image_handle_get_number_of_metadata_blocks(handle, std::ptr::null());
+        if total <= 0 {
+            return None;
+        }
+        let total = total as usize;
+        let mut ids = vec![0_u32; total];
+        let n = libheif_sys::heif_image_handle_get_list_of_metadata_block_IDs(
+            handle,
+            std::ptr::null(),
+            ids.as_mut_ptr(),
+            total as i32,
+        );
+        let n = n.max(0) as usize;
+        for &id in ids.iter().take(n) {
+            let typ = libheif_sys::heif_image_handle_get_metadata_type(handle, id);
+            if typ.is_null() {
+                continue;
+            }
+            let typ_bytes = CStr::from_ptr(typ).to_bytes();
+            if typ_bytes == b"Exif" {
+                let sz = libheif_sys::heif_image_handle_get_metadata_size(handle, id);
+                if sz > 0 {
+                    let mut buf = vec![0_u8; sz];
+                    let err = libheif_sys::heif_image_handle_get_metadata(
+                        handle,
+                        id,
+                        buf.as_mut_ptr().cast(),
+                    );
+                    if err.code == libheif_sys::heif_error_Ok {
+                        return Some(buf);
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_heif_gain_map(
+    main_handle: *const libheif_sys::heif_image_handle,
+    decode_options: *const libheif_sys::heif_decoding_options,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let evidence = list_heif_auxiliary_evidence(main_handle);
+    let apple_gain_map_item = evidence.into_iter().find(|item| {
+        item.classification == HeifAuxiliaryClassification::AppleHdrGainMap
+    });
+    
+    let apple_gain_map_item = match apple_gain_map_item {
+        Some(item) => item,
+        None => {
+            log::debug!("[HDR] No Apple HDR Gain Map auxiliary image found in evidence.");
+            return None;
+        }
+    };
+
+    let mut aux_handle_ptr = std::ptr::null_mut();
+    let status = unsafe {
+        libheif_sys::heif_image_handle_get_auxiliary_image_handle(
+            main_handle,
+            apple_gain_map_item.item_id,
+            &mut aux_handle_ptr,
+        )
+    };
+    if status.code != libheif_sys::heif_error_Ok || aux_handle_ptr.is_null() {
+        log::warn!("[HDR] Failed to get auxiliary image handle for item #{}, code: {}", apple_gain_map_item.item_id, status.code);
+        return None;
+    }
+    let aux_handle = HeifAuxiliaryImageHandle(aux_handle_ptr);
+
+    let mut image_ptr = std::ptr::null_mut();
+    let err = unsafe {
+        libheif_sys::heif_decode_image(
+            aux_handle.0,
+            &mut image_ptr,
+            libheif_sys::heif_colorspace_RGB,
+            libheif_sys::heif_chroma_interleaved_RGBA,
+            decode_options,
+        )
+    };
+    if err.code != libheif_sys::heif_error_Ok || image_ptr.is_null() {
+        log::warn!("[HDR] Failed to decode auxiliary gain map image, code: {}", err.code);
+        return None;
+    }
+    let _image_guard = RawHeifImage(image_ptr);
+
+    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image_ptr) };
+    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image_ptr) };
+    if width_i <= 0 || height_i <= 0 {
+        log::warn!("[HDR] Invalid auxiliary gain map dimensions: {}x{}", width_i, height_i);
+        return None;
+    }
+    let width = width_i as u32;
+    let height = height_i as u32;
+
+    let mut stride = 0_usize;
+    let plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image_ptr,
+            libheif_sys::heif_channel_interleaved,
+            &mut stride,
+        )
+    };
+    if plane.is_null() {
+        log::warn!("[HDR] Failed to get plane pointer for auxiliary gain map image");
+        return None;
+    }
+
+    let mut gain_rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    let row_bytes = width as usize * 4;
+    if stride < row_bytes {
+        log::warn!("[HDR] Auxiliary gain map stride {} is less than row bytes {}", stride, row_bytes);
+        return None;
+    }
+
+    for y in 0..height as usize {
+        let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
+        gain_rgba.extend_from_slice(row);
+    }
+
+    Some((width, height, gain_rgba))
+}
+
+#[cfg(feature = "heif-native")]
 struct HeifAuxiliaryImageHandle(*mut libheif_sys::heif_image_handle);
 
 #[cfg(feature = "heif-native")]
@@ -2035,4 +2379,25 @@ mod tests {
             HeifYcbcrMatrix::Bt709
         );
     }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn test_print_exif_makernote() {
+        let path = std::path::Path::new("F:\\HDR\\heif\\httpsheic.digital\\greyhounds-looking-for-a-table.heic");
+        if !path.exists() {
+            println!("Test file does not exist");
+            return;
+        }
+        let mmap = crate::mmap_util::map_file(path).unwrap();
+        let (_ctx, handle) = super::open_heif_primary_from_bytes(&mmap).unwrap();
+        let exif_buf = super::get_heif_exif_block(handle.0).unwrap();
+        
+        let res = super::parse_apple_hdr_metadata_from_exif(&exif_buf);
+        println!("Manual parser result: {:?}", res);
+        assert!(res.is_some());
+        let (headroom, _) = res.unwrap();
+        assert!((1.7..1.9).contains(&headroom), "Parsed headroom value {} is not in range 1.7..1.9", headroom);
+    }
 }
+
+

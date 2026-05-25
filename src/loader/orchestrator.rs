@@ -822,6 +822,7 @@ impl ImageLoader {
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
                 sdr_fallback_is_placeholder: false,
+                target_hdr_capacity: hdr_target_capacity,
             }
         });
 

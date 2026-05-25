@@ -386,6 +386,7 @@ pub(crate) fn load_image_file(
         result: final_result,
         preview_bundle,
         sdr_fallback_is_placeholder,
+        target_hdr_capacity: hdr_target_capacity,
     }
 }
 fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {

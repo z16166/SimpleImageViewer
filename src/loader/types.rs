@@ -343,6 +343,8 @@ pub struct LoadResult {
     /// capacity indicated native HDR output; a follow-up [`LoaderOutput::HdrSdrFallback`] may
     /// replace the texture with a tone-mapped fallback for SDR-only draw paths (e.g. Ripple).
     pub sdr_fallback_is_placeholder: bool,
+    /// The HDR capacity of the display when this load was processed, used to detect capacity mismatch.
+    pub target_hdr_capacity: f32,
 }
 
 /// Refined full-resolution SDR RGBA8 for a static HDR image that initially loaded with a
