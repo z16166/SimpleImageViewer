@@ -129,6 +129,10 @@ fn gain_map_rgb_at_row(row: &[u8], x: u32) -> [f32; 3] {
 }
 
 /// Bilinear upsample one gain-map row to primary width (encoded 0–1, not BT.709-linear yet).
+///
+/// **Keep in sync** with [`gain_map_bilinear_coords`](crate::hdr::gain_map::gain_map_bilinear_coords):
+/// the per-pixel `gx`/`gy` → `(x0, x1, y0, y1, tx, ty)` mapping must match exactly
+/// (row path hoists `y0`/`y1`/`ty` once per row). `precompute_gain_row_matches_legacy_reference` catches drift.
 fn sample_gain_map_row_nonlinear(
     gain_rgba: &[u8],
     gain_w: u32,

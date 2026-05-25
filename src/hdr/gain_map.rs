@@ -375,6 +375,10 @@ fn gain_map_channel(
 }
 
 /// Horizontal and vertical bilinear tap indices/weights for one primary pixel.
+///
+/// **Keep in sync** with the `gx`/`gy` mapping in
+/// [`sample_gain_map_row_nonlinear`](crate::hdr::heif_apple_gain_map_compose_simd::sample_gain_map_row_nonlinear)
+/// (same center-aligned formula and clamp). `precompute_gain_row_matches_legacy_reference` catches drift.
 #[inline]
 pub(crate) fn gain_map_bilinear_coords(
     x: u32,
