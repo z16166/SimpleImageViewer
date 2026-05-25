@@ -521,6 +521,7 @@ fn apply_jxl_jhgm_gain_map_if_present(
                 target_hdr_capacity: Some(target_hdr_capacity),
                 diagnostic,
                 capped_display_referred: false,
+                apple_heic_deferred: None,
             });
             *rgba_f32 = composed;
         }

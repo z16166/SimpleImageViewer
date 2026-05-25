@@ -111,6 +111,19 @@ pub struct HdrGainMapMetadata {
     /// True when RGB is **display-referred linear** in about 0–1 (e.g. libavif `avifImageApplyGainMap`).
     /// False for scene-linear / extended recovery (`append_hdr_pixel_from_sdr_and_gain`, JXL jhgm, …).
     pub capped_display_referred: bool,
+    /// Apple HEIC: encoded base + gain map kept for GPU compose (`weight` applied at draw time).
+    pub apple_heic_deferred: Option<AppleHeicGainMapGpuSource>,
+}
+
+/// Raw planes for Apple HEIC HDR gain-map compose on the GPU (see `heif_apple_gain_map_gpu`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppleHeicGainMapGpuSource {
+    pub base_rgba8: std::sync::Arc<Vec<u8>>,
+    pub gain_rgba: std::sync::Arc<Vec<u8>>,
+    pub gain_width: u32,
+    pub gain_height: u32,
+    pub headroom_span: f32,
+    pub stops: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -548,6 +561,7 @@ mod tests {
                 target_hdr_capacity: Some(4.0),
                 diagnostic: "GainMapMax=[2.000,2.000,2.000]".to_string(),
                 capped_display_referred: false,
+                apple_heic_deferred: None,
             }),
             ..HdrImageMetadata::default()
         };

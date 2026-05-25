@@ -146,6 +146,7 @@ pub(crate) fn apply_apple_gain_map_composition(
             gain_w, gain_h, headroom.stops, weight
         ),
         capped_display_referred: false,
+        apple_heic_deferred: None,
     });
 
     HdrImageBuffer {

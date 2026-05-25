@@ -438,6 +438,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                             "{diagnostic} (libavif avifImageApplyGainMap → PQ BT.709)"
                         ),
                         capped_display_referred: false,
+                        apple_heic_deferred: None,
                     });
                     return Ok(HdrImageBuffer {
                         width: image_ref.width,
@@ -549,6 +550,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
             target_hdr_capacity: Some(target_hdr_capacity),
             diagnostic,
             capped_display_referred: false,
+            apple_heic_deferred: None,
         });
         return Ok(HdrImageBuffer {
             width: image_ref.width,

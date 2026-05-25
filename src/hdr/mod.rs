@@ -25,6 +25,8 @@ pub mod heif;
 pub(crate) mod heif_apple_gain_map;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map_compose_simd;
+#[cfg(feature = "heif-native")]
+pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
 pub mod jpegxl;

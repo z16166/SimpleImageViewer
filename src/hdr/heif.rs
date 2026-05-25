@@ -635,12 +635,14 @@ pub(crate) fn decode_heif_hdr_bytes(
             if let Some((gain_w, gain_h, gain_rgba)) =
                 decode_heif_gain_map(handle.0, decode_opts_ptr)
             {
-                hdr = crate::hdr::heif_apple_gain_map::apply_apple_gain_map_composition(
+                let headroom_span = headroom.linear_headroom - 1.0;
+                hdr = crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(
                     hdr,
                     gain_w,
                     gain_h,
-                    &gain_rgba,
-                    &headroom,
+                    gain_rgba,
+                    headroom_span,
+                    headroom.stops,
                     hdr_target_capacity,
                 );
             }
@@ -1892,6 +1894,7 @@ fn inspect_heif_gain_map_auxiliaries(
         target_hdr_capacity: None,
         diagnostic,
         capped_display_referred: false,
+        apple_heic_deferred: None,
     })
 }
 
