@@ -19,7 +19,9 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use crate::hdr::types::{
+    HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings,
+};
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
@@ -677,13 +679,7 @@ pub(crate) fn decode_heif_hdr_bytes(
 
                 // Sample and linearize the gain map
                 let gain_raw = crate::hdr::gain_map::sample_gain_map_rgb(
-                    &gain_rgba,
-                    gain_w,
-                    gain_h,
-                    x,
-                    y,
-                    hdr.width,
-                    hdr.height,
+                    &gain_rgba, gain_w, gain_h, x, y, hdr.width, hdr.height,
                 );
                 let gain_linear = [
                     crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[0]),
@@ -693,9 +689,12 @@ pub(crate) fn decode_heif_hdr_bytes(
 
                 // Apple HDR Gain Map rendering formula:
                 // hdr_linear = sdr_linear * (1.0 + (linear_headroom - 1.0) * gain_linear * w)
-                let composed_r = rgb_linear_srgb[0] * (1.0 + (linear_headroom - 1.0) * gain_linear[0] * weight);
-                let composed_g = rgb_linear_srgb[1] * (1.0 + (linear_headroom - 1.0) * gain_linear[1] * weight);
-                let composed_b = rgb_linear_srgb[2] * (1.0 + (linear_headroom - 1.0) * gain_linear[2] * weight);
+                let composed_r =
+                    rgb_linear_srgb[0] * (1.0 + (linear_headroom - 1.0) * gain_linear[0] * weight);
+                let composed_g =
+                    rgb_linear_srgb[1] * (1.0 + (linear_headroom - 1.0) * gain_linear[1] * weight);
+                let composed_b =
+                    rgb_linear_srgb[2] * (1.0 + (linear_headroom - 1.0) * gain_linear[2] * weight);
 
                 composed_pixels.push(composed_r.max(0.0));
                 composed_pixels.push(composed_g.max(0.0));
@@ -709,7 +708,10 @@ pub(crate) fn decode_heif_hdr_bytes(
         final_metadata.gain_map = Some(HdrGainMapMetadata {
             source: "HEIF",
             target_hdr_capacity: Some(hdr_target_capacity),
-            diagnostic: format!("Apple HDR Gain Map ({}x{} pixels, stops: {:.2}, weight: {:.2})", gain_w, gain_h, stops, weight),
+            diagnostic: format!(
+                "Apple HDR Gain Map ({}x{} pixels, stops: {:.2}, weight: {:.2})",
+                gain_w, gain_h, stops, weight
+            ),
             capped_display_referred: false,
         });
 
@@ -1761,8 +1763,7 @@ fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
     }
     let tiff = &maker_bytes[tiff_start..];
 
-    parse_apple_embedded_with_exif(tiff)
-        .or_else(|| parse_apple_embedded_manual(tiff))
+    parse_apple_embedded_with_exif(tiff).or_else(|| parse_apple_embedded_manual(tiff))
 }
 
 /// Fallback manual parser for Apple's embedded MakerNote TIFF block.
@@ -1842,11 +1843,7 @@ fn parse_apple_embedded_manual(tiff: &[u8]) -> Option<(f32, f32)> {
         let try_rational = |bytes: &[u8], be: bool| -> Option<f32> {
             let num = read_u32(&bytes[0..4], be)? as f32;
             let den = read_u32(&bytes[4..8], be)? as f32;
-            if den != 0.0 {
-                Some(num / den)
-            } else {
-                None
-            }
+            if den != 0.0 { Some(num / den) } else { None }
         };
 
         let val = try_rational(val_bytes, false) // LE first (Apple quirk)
@@ -1914,10 +1911,10 @@ fn decode_heif_gain_map(
     decode_options: *const libheif_sys::heif_decoding_options,
 ) -> Option<(u32, u32, Vec<u8>)> {
     let evidence = list_heif_auxiliary_evidence(main_handle);
-    let apple_gain_map_item = evidence.into_iter().find(|item| {
-        item.classification == HeifAuxiliaryClassification::AppleHdrGainMap
-    });
-    
+    let apple_gain_map_item = evidence
+        .into_iter()
+        .find(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap);
+
     let apple_gain_map_item = match apple_gain_map_item {
         Some(item) => item,
         None => {
@@ -1935,7 +1932,11 @@ fn decode_heif_gain_map(
         )
     };
     if status.code != libheif_sys::heif_error_Ok || aux_handle_ptr.is_null() {
-        log::warn!("[HDR] Failed to get auxiliary image handle for item #{}, code: {}", apple_gain_map_item.item_id, status.code);
+        log::warn!(
+            "[HDR] Failed to get auxiliary image handle for item #{}, code: {}",
+            apple_gain_map_item.item_id,
+            status.code
+        );
         return None;
     }
     let aux_handle = HeifAuxiliaryImageHandle(aux_handle_ptr);
@@ -1951,7 +1952,10 @@ fn decode_heif_gain_map(
         )
     };
     if err.code != libheif_sys::heif_error_Ok || image_ptr.is_null() {
-        log::warn!("[HDR] Failed to decode auxiliary gain map image, code: {}", err.code);
+        log::warn!(
+            "[HDR] Failed to decode auxiliary gain map image, code: {}",
+            err.code
+        );
         return None;
     }
     let _image_guard = RawHeifImage(image_ptr);
@@ -1959,7 +1963,11 @@ fn decode_heif_gain_map(
     let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image_ptr) };
     let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image_ptr) };
     if width_i <= 0 || height_i <= 0 {
-        log::warn!("[HDR] Invalid auxiliary gain map dimensions: {}x{}", width_i, height_i);
+        log::warn!(
+            "[HDR] Invalid auxiliary gain map dimensions: {}x{}",
+            width_i,
+            height_i
+        );
         return None;
     }
     let width = width_i as u32;
@@ -1981,7 +1989,11 @@ fn decode_heif_gain_map(
     let mut gain_rgba = Vec::with_capacity(width as usize * height as usize * 4);
     let row_bytes = width as usize * 4;
     if stride < row_bytes {
-        log::warn!("[HDR] Auxiliary gain map stride {} is less than row bytes {}", stride, row_bytes);
+        log::warn!(
+            "[HDR] Auxiliary gain map stride {} is less than row bytes {}",
+            stride,
+            row_bytes
+        );
         return None;
     }
 
@@ -2265,9 +2277,9 @@ fn heif_sample_bit_depth(
 
 #[cfg(test)]
 mod tests {
+    use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
     #[cfg(feature = "heif-native")]
     use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
-    use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
     use crate::hdr::heif::{heif_nclx_to_metadata, is_heif_brand};
     use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
 
@@ -2497,7 +2509,9 @@ mod tests {
     #[test]
     #[ignore = "requires local Apple HDR HEIC test file"]
     fn test_print_exif_makernote() {
-        let path = std::path::Path::new("F:\\HDR\\heif\\httpsheic.digital\\greyhounds-looking-for-a-table.heic");
+        let path = std::path::Path::new(
+            "F:\\HDR\\heif\\httpsheic.digital\\greyhounds-looking-for-a-table.heic",
+        );
         if !path.exists() {
             println!("Test file does not exist");
             return;
@@ -2510,8 +2524,10 @@ mod tests {
         println!("Manual parser result: {:?}", res);
         assert!(res.is_some());
         let (headroom, _) = res.expect("parse Apple HDR metadata");
-        assert!((1.7..1.9).contains(&headroom), "Parsed headroom value {} is not in range 1.7..1.9", headroom);
+        assert!(
+            (1.7..1.9).contains(&headroom),
+            "Parsed headroom value {} is not in range 1.7..1.9",
+            headroom
+        );
     }
 }
-
-

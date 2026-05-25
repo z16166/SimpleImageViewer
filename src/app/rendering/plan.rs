@@ -247,7 +247,10 @@ mod tests {
             HdrRenderOutputMode::SdrToneMapped,
         );
         assert_eq!(plan_default.backend, PlaneBackendKind::Hdr);
-        assert_eq!(plan_default.active_plane, crate::loader::PixelPlaneKind::Hdr);
+        assert_eq!(
+            plan_default.active_plane,
+            crate::loader::PixelPlaneKind::Hdr
+        );
     }
 
     #[test]

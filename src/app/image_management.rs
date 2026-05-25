@@ -1349,8 +1349,13 @@ impl ImageViewerApp {
         // and silently return without spawning a new worker, causing a permanent hang.
         const CAPACITY_STALE_EPSILON: f32 = 0.001;
         if load_result.ultra_hdr_capacity_sensitive
-            && matches!(load_result.result, Ok(crate::loader::ImageData::Hdr { .. } | crate::loader::ImageData::HdrTiled { .. }))
-            && (load_result.target_hdr_capacity - self.ultra_hdr_decode_capacity).abs() > CAPACITY_STALE_EPSILON
+            && matches!(
+                load_result.result,
+                Ok(crate::loader::ImageData::Hdr { .. }
+                    | crate::loader::ImageData::HdrTiled { .. })
+            )
+            && (load_result.target_hdr_capacity - self.ultra_hdr_decode_capacity).abs()
+                > CAPACITY_STALE_EPSILON
         {
             log::info!(
                 "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
