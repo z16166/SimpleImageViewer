@@ -21,6 +21,8 @@ pub mod decode;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
 pub mod heif;
+#[cfg(feature = "heif-native")]
+pub(crate) mod heif_apple_gain_map;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
 pub mod jpegxl;

@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Apple HDR Gain Map**: Correctly parse the display headroom from HEIC MakerNote EXIF metadata (tags `0x0021` and `0x0030`), applying Apple's official piecewise-linear headroom formula. Previously the parser missed these values and fell back to a default, so gain-map–equipped HEIC photos now reproduce highlights at the brightness the camera intended.
+- **Apple HDR Gain Map (SDR path)**: Skip auxiliary gain-map decode and CPU composition when display headroom weight is zero (typical SDR tone-mapped output), avoiding redundant libheif work on non-HDR monitors.
 
 
 ## [2.1.4] - 2026-05-23

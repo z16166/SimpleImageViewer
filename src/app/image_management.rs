@@ -155,6 +155,22 @@ fn invalidate_tile_manager_requests_for_view_change(
     }
 }
 
+const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
+
+/// True when an HDR load result used a different Ultra HDR decode capacity than the viewer now expects.
+pub(crate) fn hdr_load_result_capacity_is_stale(
+    load_result: &LoadResult,
+    current_ultra_hdr_decode_capacity: f32,
+) -> bool {
+    load_result.ultra_hdr_capacity_sensitive
+        && matches!(
+            &load_result.result,
+            Ok(crate::loader::ImageData::Hdr { .. } | crate::loader::ImageData::HdrTiled { .. })
+        )
+        && (load_result.target_hdr_capacity - current_ultra_hdr_decode_capacity).abs()
+            > HDR_CAPACITY_STALE_EPSILON
+}
+
 enum ImageInstallPlan<'a> {
     StaticSdr {
         decoded: &'a DecodedImage,
@@ -1347,16 +1363,7 @@ impl ImageViewerApp {
         // (index, generation) is still occupied until finish_image_request() is called by
         // the caller.  Calling request_load() now would hit the dedup guard in request_load
         // and silently return without spawning a new worker, causing a permanent hang.
-        const CAPACITY_STALE_EPSILON: f32 = 0.001;
-        if load_result.ultra_hdr_capacity_sensitive
-            && matches!(
-                load_result.result,
-                Ok(crate::loader::ImageData::Hdr { .. }
-                    | crate::loader::ImageData::HdrTiled { .. })
-            )
-            && (load_result.target_hdr_capacity - self.ultra_hdr_decode_capacity).abs()
-                > CAPACITY_STALE_EPSILON
-        {
+        if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
             log::info!(
                 "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
                 idx,
@@ -1946,6 +1953,7 @@ fn should_schedule_first_batch_preload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loader::PreviewBundle;
     use std::collections::HashMap;
 
     struct DummyTiledSource {
@@ -2194,5 +2202,54 @@ mod tests {
         let tile_manager = tile_manager.expect("tile manager should remain installed");
         assert_eq!(tile_manager.generation, 10);
         assert_eq!(loader_generation, 3);
+    }
+
+    #[test]
+    fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
+        let load = LoadResult {
+            index: 0,
+            generation: 1,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr: crate::hdr::types::HdrImageBuffer {
+                    width: 1,
+                    height: 1,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                    metadata: crate::hdr::types::HdrImageMetadata::default(),
+                    rgba_f32: Arc::new(vec![0.0; 4]),
+                },
+                fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: true,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+        };
+        assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
+        assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
+    }
+
+    #[test]
+    fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
+        let load = LoadResult {
+            index: 0,
+            generation: 1,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr: crate::hdr::types::HdrImageBuffer {
+                    width: 1,
+                    height: 1,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                    metadata: crate::hdr::types::HdrImageMetadata::default(),
+                    rgba_f32: Arc::new(vec![0.0; 4]),
+                },
+                fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+        };
+        assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
     }
 }

@@ -20,7 +20,7 @@ use crate::hdr::types::{
 };
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{
-    HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings,
+    HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings,
 };
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
@@ -617,117 +617,42 @@ pub(crate) fn decode_heif_hdr_bytes(
         .unwrap_or(std::ptr::null());
     let mut hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
 
-    // Apply Apple HDR Gain Map if present and target display supports HDR
-    if let Some((gain_w, gain_h, gain_rgba)) = decode_heif_gain_map(handle.0, decode_opts_ptr) {
-        // Parse metadata from EXIF MakerNotes and compute headroom
-        let mut stops = APPLE_HDR_DEFAULT_STOPS;
-        let mut linear_headroom = 2.0_f32.powf(stops);
-        let mut parsed_maker33 = None;
-        let mut parsed_maker48 = None;
-        if let Some(exif_buf) = get_heif_exif_block(handle.0) {
-            if let Some((maker33, maker48)) = parse_apple_hdr_metadata_from_exif(&exif_buf) {
-                let (lh, s) = apple_compute_headroom(maker33, maker48);
-                linear_headroom = lh;
-                stops = s;
-                parsed_maker33 = Some(maker33);
-                parsed_maker48 = Some(maker48);
-            }
-        }
-
-        // Display headroom weight: w = clamp(log2(target_hdr_capacity) / stops, 0.0, 1.0)
-        let target_log2 = hdr_target_capacity.max(1.0).log2();
-        let weight = if stops > 0.0 {
-            (target_log2 / stops).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-
-        log::debug!(
-            "[HDR] Apple HDR Gain Map: {}x{} pixels, maker33=0x0021={:?}, maker48=0x0030={:?}, stops={:.3}, linear_headroom={:.3}, target_capacity={:.3}, weight={:.3}",
-            gain_w,
-            gain_h,
-            parsed_maker33,
-            parsed_maker48,
-            stops,
-            linear_headroom,
-            hdr_target_capacity,
-            weight
+    // Apple HDR gain map: only decode the auxiliary plane when display headroom weight > 0
+    // (SDR tone-mapped output keeps the primary plane; skip redundant libheif + CPU work).
+    if heif_has_apple_hdr_gain_map_auxiliary(handle.0) {
+        let headroom = crate::hdr::heif_apple_gain_map::resolve_apple_hdr_headroom_from_exif(
+            crate::hdr::heif_apple_gain_map::read_heif_exif_block(handle.0).as_deref(),
         );
-
-        let base_pixels = &hdr.rgba_f32;
-        let mut composed_pixels = Vec::with_capacity(hdr.width as usize * hdr.height as usize * 4);
-
-        let color_space = hdr.color_space;
-        let tf = hdr.metadata.transfer_function;
-
-        for y in 0..hdr.height {
-            for x in 0..hdr.width {
-                let idx = (y as usize * hdr.width as usize + x as usize) * 4;
-                let r_code = base_pixels[idx];
-                let g_code = base_pixels[idx + 1];
-                let b_code = base_pixels[idx + 2];
-                let a = base_pixels[idx + 3];
-
-                // Linearize base pixel
-                let rgb_display_linear = crate::hdr::decode::decode_transfer_to_display_linear(
-                    [r_code, g_code, b_code],
-                    tf,
-                    crate::hdr::types::DEFAULT_SDR_WHITE_NITS,
+        if crate::hdr::heif_apple_gain_map::should_apply_apple_heic_gain_map(
+            hdr_target_capacity,
+            &headroom,
+        ) {
+            log::debug!(
+                "[HDR] Apple HDR Gain Map: headroom={:.3}, gain={:.3}, stops={:.3}, target_capacity={:.3}",
+                headroom.hdr_headroom,
+                headroom.hdr_gain,
+                headroom.stops,
+                hdr_target_capacity,
+            );
+            if let Some((gain_w, gain_h, gain_rgba)) =
+                decode_heif_gain_map(handle.0, decode_opts_ptr)
+            {
+                hdr = crate::hdr::heif_apple_gain_map::apply_apple_gain_map_composition(
+                    hdr,
+                    gain_w,
+                    gain_h,
+                    &gain_rgba,
+                    &headroom,
+                    hdr_target_capacity,
                 );
-
-                // Convert base linear to linear sRGB
-                let rgb_linear_srgb = crate::hdr::decode::linear_primary_to_linear_srgb(
-                    rgb_display_linear,
-                    color_space,
-                    &hdr.metadata,
-                );
-
-                // Sample and linearize the gain map
-                let gain_raw = crate::hdr::gain_map::sample_gain_map_rgb(
-                    &gain_rgba, gain_w, gain_h, x, y, hdr.width, hdr.height,
-                );
-                let gain_linear = [
-                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[0]),
-                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[1]),
-                    crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[2]),
-                ];
-
-                // Apple HDR Gain Map rendering formula:
-                // hdr_linear = sdr_linear * (1.0 + (linear_headroom - 1.0) * gain_linear * w)
-                let composed_r =
-                    rgb_linear_srgb[0] * (1.0 + (linear_headroom - 1.0) * gain_linear[0] * weight);
-                let composed_g =
-                    rgb_linear_srgb[1] * (1.0 + (linear_headroom - 1.0) * gain_linear[1] * weight);
-                let composed_b =
-                    rgb_linear_srgb[2] * (1.0 + (linear_headroom - 1.0) * gain_linear[2] * weight);
-
-                composed_pixels.push(composed_r.max(0.0));
-                composed_pixels.push(composed_g.max(0.0));
-                composed_pixels.push(composed_b.max(0.0));
-                composed_pixels.push(a);
             }
+        } else {
+            log::debug!(
+                "[HDR] Apple HDR Gain Map skipped (display weight is zero at capacity={:.3}, stops={:.3})",
+                hdr_target_capacity,
+                headroom.stops,
+            );
         }
-
-        let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
-        final_metadata.luminance = hdr.metadata.luminance;
-        final_metadata.gain_map = Some(HdrGainMapMetadata {
-            source: "HEIF",
-            target_hdr_capacity: Some(hdr_target_capacity),
-            diagnostic: format!(
-                "Apple HDR Gain Map ({}x{} pixels, stops: {:.2}, weight: {:.2})",
-                gain_w, gain_h, stops, weight
-            ),
-            capped_display_referred: false,
-        });
-
-        hdr = HdrImageBuffer {
-            width: hdr.width,
-            height: hdr.height,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: HdrColorSpace::LinearSrgb,
-            metadata: final_metadata,
-            rgba_f32: Arc::new(composed_pixels),
-        };
     }
 
     let cicp_px_tc = match &hdr.metadata.color_profile {
@@ -1664,327 +1589,12 @@ fn hdr_buffer_from_ycbcr(
 }
 
 #[cfg(feature = "heif-native")]
-const EXIF_TAG_APPLE_HDR_HEADROOM: u16 = 0x0021;
-
-#[cfg(feature = "heif-native")]
-const EXIF_TAG_APPLE_HDR_GAIN: u16 = 0x0030;
-
-#[cfg(feature = "heif-native")]
-const APPLE_MAKERNOTE_SIGNATURE: &[u8] = b"Apple iOS\0";
-
-#[cfg(feature = "heif-native")]
-const APPLE_MAKERNOTE_TIFF_OFFSET: usize = 12;
-
-#[cfg(feature = "heif-native")]
-const APPLE_HDR_HEADROOM_MIN: f32 = 0.1;
-
-#[cfg(feature = "heif-native")]
-const APPLE_HDR_HEADROOM_MAX: f32 = 10.0;
-
-#[cfg(feature = "heif-native")]
-const APPLE_HDR_DEFAULT_STOPS: f32 = 2.0;
-
-/// Compute linear headroom and stops from raw Apple MakerNote values.
-///
-/// `maker33` is HDRHeadroom (tag 0x0021), `maker48` is HDRGain (tag 0x0030).
-/// Returns `(linear_headroom, stops)`.
-///
-/// The piecewise-linear constants below come from Apple's HDR headroom formula:
-/// <https://developer.apple.com/documentation/appkit/images_and_pdf/applying_apple_hdr_effect_to_your_photos>
-///
-/// Reference implementation:
-/// <https://github.com/johncf/apple-hdr-heic/blob/master/src/apple_hdr_heic/metadata.py>
-fn apple_compute_headroom(maker33: f32, maker48: f32) -> (f32, f32) {
-    // Piecewise-linear approximation mapping gain → stops.  Constants are from
-    // Apple's reference implementation; maker33 selects the regime (dim vs bright
-    // photo) and maker48 is the linear gain value used as input.
-    let stops = if maker33 < 1.0 {
-        if maker48 <= 0.01 {
-            -20.0 * maker48 + 1.8
-        } else {
-            -0.101 * maker48 + 1.601
-        }
-    } else {
-        if maker48 <= 0.01 {
-            -70.0 * maker48 + 3.0
-        } else {
-            -0.303 * maker48 + 2.303
-        }
-    };
-    let stops = stops.max(0.0);
-    (2.0_f32.powf(stops), stops)
-}
-
-/// Parse the raw HEIF Exif metadata block into an [`exif::Exif`] struct.
-/// Handles the ISOBMFF-style 4-byte TIFF offset header when present.
-#[cfg(feature = "heif-native")]
-fn parse_heif_exif_raw(buf: &[u8]) -> Option<exif::Exif> {
-    if buf.len() >= 6 {
-        if let Ok(offset_bytes) = <[u8; 4]>::try_from(&buf[0..4]) {
-            let offset = u32::from_be_bytes(offset_bytes) as usize;
-            if buf.len() >= 4 + offset {
-                if let Some(tiff_tail) = buf.get(4 + offset..) {
-                    if let Ok(e) = exif::Reader::new().read_raw(tiff_tail.to_vec()) {
-                        return Some(e);
-                    }
-                }
-            }
-        }
-    }
-    exif::Reader::new().read_raw(buf.to_vec()).ok()
-}
-
-/// Extract a float value from an [`exif::Value`], handling Rational and SRational.
-#[cfg(feature = "heif-native")]
-/// Parse Apple HDR Headroom and Gain from the MakerNote inside the raw
-/// HEIF Exif block.  Uses manual parsing of Apple's non-standard embedded
-/// TIFF layout (byte-order marker + entry count + IFD entries).
-#[cfg(feature = "heif-native")]
-fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
-    let exif = match parse_heif_exif_raw(buf) {
-        Some(e) => e,
-        None => {
-            log::debug!(
-                "[HDR] Apple MakerNote: parse_heif_exif_raw returned None (len={})",
-                buf.len()
-            );
-            return None;
-        }
-    };
-    let maker_note = match exif.get_field(exif::Tag::MakerNote, exif::In::PRIMARY) {
-        Some(m) => m,
-        None => {
-            log::debug!(
-                "[HDR] Apple MakerNote: MakerNote tag not found in Exif ({} fields present)",
-                exif.fields().count()
-            );
-            return None;
-        }
-    };
-    let maker_bytes = match &maker_note.value {
-        exif::Value::Undefined(v, _) => v.as_slice(),
-        other => {
-            log::debug!(
-                "[HDR] Apple MakerNote: MakerNote value is not Undefined, got {:?}",
-                std::mem::discriminant(other)
-            );
-            return None;
-        }
-    };
-
-    let sig_index = match maker_bytes
-        .windows(APPLE_MAKERNOTE_SIGNATURE.len())
-        .position(|w| w == APPLE_MAKERNOTE_SIGNATURE)
-    {
-        Some(i) => i,
-        None => {
-            // Dump first 64 bytes to see what we're working with
-            let preview: String = maker_bytes
-                .iter()
-                .take(64)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            log::debug!(
-                "[HDR] Apple MakerNote: 'Apple iOS\\0' not found. First 64 bytes: {}",
-                preview
-            );
-            return None;
-        }
-    };
-
-    // Embedded Apple TIFF block starts after "Apple iOS\0" (10) + version bytes (2)
-    let tiff_start = sig_index + APPLE_MAKERNOTE_TIFF_OFFSET;
-    if tiff_start >= maker_bytes.len() {
-        log::debug!(
-            "[HDR] Apple MakerNote: tiff_start={} >= len={}",
-            tiff_start,
-            maker_bytes.len()
-        );
-        return None;
-    }
-    let tiff = &maker_bytes[tiff_start..];
-
-    // Value offsets in Apple embedded IFD are relative to the MakerNote data
-    // start (the "Apple iOS\0" signature), not the TIFF block start.  Pass
-    // the TIFF offset within maker_bytes so the manual parser can adjust.
-    match parse_apple_embedded_manual(tiff, tiff_start) {
-        Some(v) => return Some(v),
-        None => {
-            log::debug!("[HDR] Apple MakerNote: manual parser failed (tiff_start={tiff_start})")
-        }
-    }
-    None
-}
-
-/// Fallback manual parser for Apple's embedded MakerNote TIFF block.
-/// Handles both standard TIFF (with 0x002A magic and IFD offset) and
-/// Apple's non-standard layout (byte-order marker followed directly by
-/// IFD entry count and entries).
-///
-/// `tiff_offset` is the byte position of `tiff` relative to the MakerNote
-/// data start (the `"Apple iOS\\0"` signature).  IFD value offsets are
-/// relative to the MakerNote data start, so we subtract `tiff_offset` to
-/// index into `tiff`.
-#[cfg(feature = "heif-native")]
-fn parse_apple_embedded_manual(tiff: &[u8], tiff_offset: usize) -> Option<(f32, f32)> {
-    if tiff.len() < 4 {
-        return None;
-    }
-
-    let is_be = match &tiff[0..2] {
-        b"MM" => true,
-        b"II" => false,
-        _ => return None,
-    };
-
-    fn read_u16(buf: &[u8], be: bool) -> Option<u16> {
-        let bytes = buf.get(0..2)?.try_into().ok()?;
-        Some(if be {
-            u16::from_be_bytes(bytes)
-        } else {
-            u16::from_le_bytes(bytes)
-        })
-    }
-
-    fn read_u32(buf: &[u8], be: bool) -> Option<u32> {
-        let bytes = buf.get(0..4)?.try_into().ok()?;
-        Some(if be {
-            u32::from_be_bytes(bytes)
-        } else {
-            u32::from_le_bytes(bytes)
-        })
-    }
-
-    // Detect standard TIFF header: if bytes 2-3 are 0x002A (magic), we have
-    // a normal TIFF with an IFD offset at bytes 4-7.
-    let magic = read_u16(&tiff[2..4], is_be)?;
-    let (entries_start, count) = if magic == 0x002A {
-        // Standard TIFF: byte-order (2) + magic (2) + IFD offset (4)
-        let ifd_offset = read_u32(&tiff[4..8], is_be)? as usize;
-        if ifd_offset + 2 > tiff.len() {
-            log::debug!(
-                "[HDR] Apple manual: standard TIFF ifd_offset={ifd_offset} out of range (len={})",
-                tiff.len()
-            );
-            return None;
-        }
-        let count = read_u16(&tiff[ifd_offset..], is_be)? as usize;
-        (ifd_offset + 2, count)
-    } else {
-        // Apple non-standard: byte-order (2) + entry count (2) + entries
-        log::debug!(
-            "[HDR] Apple manual: non-standard (magic=0x{magic:04x} != 0x002A), treating as count={magic}"
-        );
-        (4, magic as usize)
-    };
-
-    let mut headroom = None;
-    let mut gain = None;
-
-    for i in 0..count {
-        let entry_offset = entries_start + i * 12;
-        if entry_offset + 12 > tiff.len() {
-            break;
-        }
-        let entry = &tiff[entry_offset..entry_offset + 12];
-
-        let tag = read_u16(&entry[0..2], is_be)?;
-        if tag != EXIF_TAG_APPLE_HDR_HEADROOM && tag != EXIF_TAG_APPLE_HDR_GAIN {
-            continue;
-        }
-
-        let val_off = read_u32(&entry[8..12], is_be)? as usize;
-        // Value offsets are relative to MakerNote data start, not TIFF block start.
-        let adj_off = val_off.saturating_sub(tiff_offset);
-        if adj_off + 8 > tiff.len() {
-            continue;
-        }
-        let val_bytes = &tiff[adj_off..adj_off + 8];
-
-        // Attempt BE and LE rational decoding; Apple sometimes stores LE values
-        // even when the TIFF byte-order marker says BE.
-        let try_rational = |bytes: &[u8], be: bool| -> Option<f32> {
-            let num = read_u32(&bytes[0..4], be)? as f32;
-            let den = read_u32(&bytes[4..8], be)? as f32;
-            if den != 0.0 { Some(num / den) } else { None }
-        };
-
-        // Try IFD byte order first, then opposite; Apple sometimes stores
-        // individual values in the opposite byte order from the IFD marker.
-        let val = try_rational(val_bytes, is_be)
-            .filter(|v| (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v))
-            .or_else(|| {
-                try_rational(val_bytes, !is_be)
-                    .filter(|v| (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v))
-            });
-
-        match val {
-            Some(v) => {
-                log::debug!("[HDR] Apple manual: parsed value={v:.3} for tag 0x{tag:04x}");
-                if tag == EXIF_TAG_APPLE_HDR_HEADROOM {
-                    headroom = Some(v);
-                } else {
-                    gain = Some(v);
-                }
-            }
-            None => {
-                let le_num = read_u32(&val_bytes[0..4], false);
-                let le_den = read_u32(&val_bytes[4..8], false);
-                let be_num = read_u32(&val_bytes[0..4], true);
-                let be_den = read_u32(&val_bytes[4..8], true);
-                log::debug!(
-                    "[HDR] Apple manual: failed to parse rational for 0x{tag:04x}. \
-                     LE: {le_num:?}/{le_den:?}, BE: {be_num:?}/{be_den:?}"
-                );
-            }
-        }
-    }
-
-    let headroom = headroom?;
-    Some((headroom, gain.unwrap_or(headroom)))
-}
-
-#[cfg(feature = "heif-native")]
-fn get_heif_exif_block(handle: *const libheif_sys::heif_image_handle) -> Option<Vec<u8>> {
-    unsafe {
-        let total =
-            libheif_sys::heif_image_handle_get_number_of_metadata_blocks(handle, std::ptr::null());
-        if total <= 0 {
-            return None;
-        }
-        let total = total as usize;
-        let mut ids = vec![0_u32; total];
-        let n = libheif_sys::heif_image_handle_get_list_of_metadata_block_IDs(
-            handle,
-            std::ptr::null(),
-            ids.as_mut_ptr(),
-            total as i32,
-        );
-        let n = n.max(0) as usize;
-        for &id in ids.iter().take(n) {
-            let typ = libheif_sys::heif_image_handle_get_metadata_type(handle, id);
-            if typ.is_null() {
-                continue;
-            }
-            let typ_bytes = CStr::from_ptr(typ).to_bytes();
-            if typ_bytes == b"Exif" {
-                let sz = libheif_sys::heif_image_handle_get_metadata_size(handle, id);
-                if sz > 0 {
-                    let mut buf = vec![0_u8; sz];
-                    let err = libheif_sys::heif_image_handle_get_metadata(
-                        handle,
-                        id,
-                        buf.as_mut_ptr().cast(),
-                    );
-                    if err.code == libheif_sys::heif_error_Ok {
-                        return Some(buf);
-                    }
-                }
-            }
-        }
-        None
-    }
+fn heif_has_apple_hdr_gain_map_auxiliary(
+    handle: *const libheif_sys::heif_image_handle,
+) -> bool {
+    list_heif_auxiliary_evidence(handle)
+        .iter()
+        .any(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap)
 }
 
 #[cfg(feature = "heif-native")]
@@ -2584,32 +2194,6 @@ mod tests {
         assert_eq!(
             heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default(), 1, 1),
             HeifYcbcrMatrix::Bt709
-        );
-    }
-
-    #[cfg(feature = "heif-native")]
-    #[test]
-    #[ignore = "requires local Apple HDR HEIC test file"]
-    fn test_print_exif_makernote() {
-        let path = std::path::Path::new(
-            "F:\\HDR\\heif\\httpsheic.digital\\greyhounds-looking-for-a-table.heic",
-        );
-        if !path.exists() {
-            println!("Test file does not exist");
-            return;
-        }
-        let mmap = crate::mmap_util::map_file(path).expect("mmap test HEIC");
-        let (_ctx, handle) = super::open_heif_primary_from_bytes(&mmap).expect("open HEIC");
-        let exif_buf = super::get_heif_exif_block(handle.0).expect("get Exif block");
-
-        let res = super::parse_apple_hdr_metadata_from_exif(&exif_buf);
-        println!("Manual parser result: {:?}", res);
-        assert!(res.is_some());
-        let (headroom, _) = res.expect("parse Apple HDR metadata");
-        assert!(
-            (1.7..1.9).contains(&headroom),
-            "Parsed headroom value {} is not in range 1.7..1.9",
-            headroom
         );
     }
 }
