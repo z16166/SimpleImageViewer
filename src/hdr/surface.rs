@@ -73,12 +73,17 @@ pub fn preferred_native_hdr_target_format_for_settings(
 
 /// Outcome of checking the *spawn monitor* (cursor / primary) for HDR support
 /// before window creation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HdrEnvironmentProbe {
     /// The monitor where the window is expected to spawn reports active HDR
     /// signaling — keep the `Rgba16Float` swap chain so we can drive scRGB
     /// native presentation.
-    SpawnMonitorHdr { label: String, origin: &'static str },
+    SpawnMonitorHdr {
+        label: String,
+        origin: &'static str,
+        max_luminance_nits: Option<f32>,
+        max_full_frame_luminance_nits: Option<f32>,
+    },
     /// The monitor where the window is expected to spawn is SDR (HDR disabled in
     /// Windows Settings, or physically SDR panel) — force
     /// `preferred_target_format` to `None` so eframe selects an SDR
@@ -124,19 +129,22 @@ pub fn initial_monitor_selection_from_environment_probe(
     probe: &HdrEnvironmentProbe,
 ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
     match probe {
-        HdrEnvironmentProbe::SpawnMonitorHdr { label, .. } => {
-            Some(crate::hdr::monitor::HdrMonitorSelection {
-                hdr_supported: true,
-                label: label.clone(),
-                max_luminance_nits: None,
-                max_full_frame_luminance_nits: None,
-                max_hdr_capacity: None,
-                hdr_capacity_source: Some("spawn DXGI probe"),
-                native_surface_encoding: Some(
-                    crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
-                ),
-            })
-        }
+        HdrEnvironmentProbe::SpawnMonitorHdr {
+            label,
+            max_luminance_nits,
+            max_full_frame_luminance_nits,
+            ..
+        } => Some(crate::hdr::monitor::HdrMonitorSelection {
+            hdr_supported: true,
+            label: label.clone(),
+            max_luminance_nits: *max_luminance_nits,
+            max_full_frame_luminance_nits: *max_full_frame_luminance_nits,
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("spawn DXGI probe"),
+            native_surface_encoding: Some(
+                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
+            ),
+        }),
         HdrEnvironmentProbe::SpawnMonitorSdr { label, .. } => {
             Some(crate::hdr::monitor::HdrMonitorSelection {
                 hdr_supported: false,
@@ -169,6 +177,8 @@ pub fn preferred_native_hdr_target_format_for_environment(
             HdrEnvironmentProbe::SpawnMonitorHdr {
                 label: probe.label,
                 origin: probe.origin,
+                max_luminance_nits: probe.max_luminance_nits,
+                max_full_frame_luminance_nits: probe.max_full_frame_luminance_nits,
             },
         ),
         Ok(probe) => (
@@ -318,10 +328,14 @@ mod tests {
         let probe = HdrEnvironmentProbe::SpawnMonitorHdr {
             label: r"\\.\DISPLAY1".to_string(),
             origin: "saved_window_position",
+            max_luminance_nits: Some(420.0),
+            max_full_frame_luminance_nits: Some(200.0),
         };
         let sel = initial_monitor_selection_from_environment_probe(&probe).expect("seed");
         assert!(sel.hdr_supported);
         assert_eq!(sel.label, r"\\.\DISPLAY1");
+        assert_eq!(sel.max_luminance_nits, Some(420.0));
+        assert_eq!(sel.max_full_frame_luminance_nits, Some(200.0));
         assert_eq!(sel.hdr_capacity_source, Some("spawn DXGI probe"));
     }
 

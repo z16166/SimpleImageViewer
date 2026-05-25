@@ -155,6 +155,18 @@ impl HdrMonitorState {
         hdr_content_visible: bool,
     ) -> Option<&HdrMonitorSelection> {
         let signature = ctx.input(|input| HdrMonitorSignature::from_viewport(input.viewport()));
+
+        // When a spawn-time DXGI probe already seeded a valid selection (via
+        // `with_initial_selection`), record the first HWND signature without
+        // re-probing.  The runtime probe relies on the HWND rect, which the OS
+        // may not have placed yet on the first frame — `MonitorFromPoint` at a
+        // tiny default-rect centre would land on the wrong display and overwrite
+        // the correct seed.
+        if self.last_signature.is_none() && self.selection.is_some() {
+            self.last_signature = Some(signature);
+            return self.selection.as_ref();
+        }
+
         if !self.should_probe(signature, now, hdr_content_visible) {
             return self.selection.as_ref();
         }
@@ -728,6 +740,11 @@ pub struct SpawnMonitorHdrProbe {
     /// `"cursor"` — `GetCursorPos` (mouse cursor is on this monitor),
     /// `"primary"` — fell back to `MonitorFromPoint(0, 0, MONITOR_DEFAULTTOPRIMARY)`.
     pub origin: &'static str,
+    /// DXGI reported peak luminance in nits for the matched monitor, if available.
+    /// Pre-seeding this prevents a stale-capacity re-decode cycle at startup.
+    pub max_luminance_nits: Option<f32>,
+    /// DXGI reported max full-frame luminance in nits for the matched monitor.
+    pub max_full_frame_luminance_nits: Option<f32>,
 }
 
 /// Probe HDR support of the **monitor where the window is most likely to spawn**
@@ -841,6 +858,10 @@ pub fn spawn_monitor_hdr_status(
                         hdr_supported,
                         label,
                         origin,
+                        max_luminance_nits: finite_positive_luminance(desc.MaxLuminance),
+                        max_full_frame_luminance_nits: finite_positive_luminance(
+                            desc.MaxFullFrameLuminance,
+                        ),
                     });
                 }
             }

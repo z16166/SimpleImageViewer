@@ -588,13 +588,18 @@ pub(crate) fn decode_heif_hdr(
 ) -> Result<HdrImageBuffer, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity)
+    let label = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(unknown)");
+    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity, label)
 }
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn decode_heif_hdr_bytes(
     bytes: &[u8],
     hdr_target_capacity: f32,
+    source_label: &str,
 ) -> Result<HdrImageBuffer, String> {
     let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
@@ -740,8 +745,8 @@ pub(crate) fn decode_heif_hdr_bytes(
         HdrColorProfile::Icc(_) => "Icc",
         HdrColorProfile::Unknown => "Unknown",
     };
-    log::info!(
-        "[HEIF] primary {}×{} color_hint={:?} transfer={:?} profile={} cicp(primaries,transfer)={:?} mastering_max_nits={:?} gain_map_aux_seen={}",
+    log::debug!(
+        "[HEIF] {source_label}: {}×{} color_hint={:?} transfer={:?} profile={} cicp(primaries,transfer)={:?} mastering_max_nits={:?} gain_map_aux_seen={}",
         hdr.width,
         hdr.height,
         hdr.color_space,
