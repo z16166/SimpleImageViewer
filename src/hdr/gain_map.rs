@@ -270,32 +270,9 @@ pub(crate) fn sample_gain_map_rgb(
         return [0.0; 3];
     }
 
-    let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
-        .clamp(0.0, gain_width.saturating_sub(1) as f32);
-    let gy = ((y as f32 + 0.5) * gain_height as f32 / height as f32 - 0.5)
-        .clamp(0.0, gain_height.saturating_sub(1) as f32);
-    let x0 = gx.floor() as u32;
-    let y0 = gy.floor() as u32;
-    let x1 = (x0 + 1).min(gain_width - 1);
-    let y1 = (y0 + 1).min(gain_height - 1);
-    let tx = gx - x0 as f32;
-    let ty = gy - y0 as f32;
-
-    let mut out = [0.0; 3];
-    for (channel_index, channel) in out.iter_mut().enumerate() {
-        let top = lerp(
-            gain_map_channel(gain_rgba, gain_width, x0, y0, channel_index),
-            gain_map_channel(gain_rgba, gain_width, x1, y0, channel_index),
-            tx,
-        );
-        let bottom = lerp(
-            gain_map_channel(gain_rgba, gain_width, x0, y1, channel_index),
-            gain_map_channel(gain_rgba, gain_width, x1, y1, channel_index),
-            tx,
-        );
-        *channel = lerp(top, bottom, ty);
-    }
-    out
+    let (x0, x1, y0, y1, tx, ty) =
+        gain_map_bilinear_coords(x, y, width, height, gain_width, gain_height);
+    sample_gain_map_rgb_bilinear(gain_rgba, gain_width, x0, x1, y0, y1, tx, ty)
 }
 
 fn format_rgb_triplet(values: [f32; 3]) -> String {
@@ -395,6 +372,57 @@ fn gain_map_channel(
 ) -> f32 {
     let index = (y as usize * gain_width as usize + x as usize) * 4;
     f32::from(gain_rgba[index + channel_index.min(2)]) / 255.0
+}
+
+/// Horizontal and vertical bilinear tap indices/weights for one primary pixel.
+#[inline]
+pub(crate) fn gain_map_bilinear_coords(
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    gain_width: u32,
+    gain_height: u32,
+) -> (u32, u32, u32, u32, f32, f32) {
+    let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
+        .clamp(0.0, gain_width.saturating_sub(1) as f32);
+    let gy = ((y as f32 + 0.5) * gain_height as f32 / height as f32 - 0.5)
+        .clamp(0.0, gain_height.saturating_sub(1) as f32);
+    let x0 = gx.floor() as u32;
+    let y0 = gy.floor() as u32;
+    let x1 = (x0 + 1).min(gain_width - 1);
+    let y1 = (y0 + 1).min(gain_height - 1);
+    let tx = gx - x0 as f32;
+    let ty = gy - y0 as f32;
+    (x0, x1, y0, y1, tx, ty)
+}
+
+/// Bilinear sample from precomputed tap coordinates (encoded 0–1, not yet BT.709-linear).
+pub(crate) fn sample_gain_map_rgb_bilinear(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    x0: u32,
+    x1: u32,
+    y0: u32,
+    y1: u32,
+    tx: f32,
+    ty: f32,
+) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for (channel_index, channel) in out.iter_mut().enumerate() {
+        let top = lerp(
+            gain_map_channel(gain_rgba, gain_width, x0, y0, channel_index),
+            gain_map_channel(gain_rgba, gain_width, x1, y0, channel_index),
+            tx,
+        );
+        let bottom = lerp(
+            gain_map_channel(gain_rgba, gain_width, x0, y1, channel_index),
+            gain_map_channel(gain_rgba, gain_width, x1, y1, channel_index),
+            tx,
+        );
+        *channel = lerp(top, bottom, ty);
+    }
+    out
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {

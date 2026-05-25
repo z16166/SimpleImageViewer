@@ -18,12 +18,31 @@
 //!
 //! Parallelism stays at the [`ImageLoader`] job level only; this module vectorizes work **within**
 //! one decode thread (Windows/macOS/Linux, x86_64/aarch64).
+//!
+//! ## Gain-map math (must stay bit-identical to legacy)
+//!
+//! Per primary pixel the reference order is **`bt709( bilinear_sample_nonlinear(gain) )`** — bilinear
+//! interpolation on encoded gain-map texels, then BT.709 OETF⁻¹ per channel.
+//!
+//! Per-row pipeline: cached bilinear upsample on encoded gain → SIMD BT.709 linearize → SIMD compose.
+//! Same math as legacy (`bt709(bilinear(sample))`); only execution order and vectorization differ.
+//!
+//! Bilinear uses row scanline pointers plus **`x0` texel caching**: when several primary
+//! pixels share the same gain-map column (`x0`), the four corner texels are reused and only
+//! `tx`/`ty` lerps are recomputed (typical when the gain map is smaller than the primary).
+//! Do **not** skip bilinear when gain and primary dimensions match: center-aligned coords can still
+//! fall between texels for some columns due to floating-point placement.
+//!
+//! **Do not** BT.709-decode the small gain map first and bilinear-filter in linear space
+//! (`lerp(bt709(c))`); that is faster but **not equivalent** to legacy and must not ship as default.
+//!
+//! On x86_64, `load_rgb_interleaved4_sse41` / `store_rgb_interleaved4_sse41` replace scalar gather/scatter
+//! for RGB-interleaved gain rows (aarch64 already uses `vld3q_f32` / `vst3q_f32`).
 
 use crate::hdr::decode::{
     bt709_nonlinear_channel_to_linear, decode_transfer_to_display_linear,
     linear_primary_to_linear_srgb,
 };
-use crate::hdr::gain_map::sample_gain_map_rgb;
 use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 
 #[cfg(target_arch = "aarch64")]
@@ -64,16 +83,122 @@ enum ComposeFastPath {
 }
 
 pub(crate) struct GainRowLinear {
+    /// Encoded bilinear samples for one row (reused each row).
+    encoded: Vec<f32>,
     rgb: Vec<f32>,
 }
 
 impl GainRowLinear {
     fn ensure_capacity(&mut self, width: usize) {
         let needed = width * 3;
+        if self.encoded.len() < needed {
+            self.encoded.resize(needed, 0.0);
+        }
         if self.rgb.len() < needed {
             self.rgb.resize(needed, 0.0);
         }
     }
+}
+
+/// Bilinear upsample four encoded RGB taps (0–1, not BT.709-linear yet).
+#[inline]
+fn bilinear_rgb_taps(c00: [f32; 3], c10: [f32; 3], c01: [f32; 3], c11: [f32; 3], tx: f32, ty: f32) -> [f32; 3] {
+    let mut out = [0.0; 3];
+    for channel in 0..3 {
+        let top = lerp(c00[channel], c10[channel], tx);
+        let bottom = lerp(c01[channel], c11[channel], tx);
+        out[channel] = lerp(top, bottom, ty);
+    }
+    out
+}
+
+#[inline]
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Read encoded RGB from one gain-map texel (0–1).
+#[inline]
+fn gain_map_rgb_at_row(row: &[u8], x: u32) -> [f32; 3] {
+    let index = x as usize * 4;
+    [
+        f32::from(row[index]) / 255.0,
+        f32::from(row[index + 1]) / 255.0,
+        f32::from(row[index + 2]) / 255.0,
+    ]
+}
+
+/// Bilinear upsample one gain-map row to primary width (encoded 0–1, not BT.709-linear yet).
+fn sample_gain_map_row_nonlinear(
+    gain_rgba: &[u8],
+    gain_w: u32,
+    gain_h: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    out: &mut [f32],
+) {
+    if gain_w == 0 || gain_h == 0 || width == 0 || height == 0 {
+        return;
+    }
+
+    let gy = ((y as f32 + 0.5) * gain_h as f32 / height as f32 - 0.5)
+        .clamp(0.0, gain_h.saturating_sub(1) as f32);
+    let y0 = gy.floor() as u32;
+    let y1 = (y0 + 1).min(gain_h - 1);
+    let ty = gy - y0 as f32;
+    let row_stride = gain_w as usize * 4;
+    let row0 = &gain_rgba[y0 as usize * row_stride..][..row_stride];
+    let row1 = &gain_rgba[y1 as usize * row_stride..][..row_stride];
+
+    let mut cache_x0 = u32::MAX;
+    let mut c00 = [0.0; 3];
+    let mut c10 = [0.0; 3];
+    let mut c01 = [0.0; 3];
+    let mut c11 = [0.0; 3];
+
+    for x in 0..width {
+        let gx = ((x as f32 + 0.5) * gain_w as f32 / width as f32 - 0.5)
+            .clamp(0.0, gain_w.saturating_sub(1) as f32);
+        let x0 = gx.floor() as u32;
+        let tx = gx - x0 as f32;
+
+        if x0 != cache_x0 {
+            let x1 = (x0 + 1).min(gain_w - 1);
+            c00 = gain_map_rgb_at_row(row0, x0);
+            c10 = gain_map_rgb_at_row(row0, x1);
+            c01 = gain_map_rgb_at_row(row1, x0);
+            c11 = gain_map_rgb_at_row(row1, x1);
+            cache_x0 = x0;
+        }
+
+        let sampled = bilinear_rgb_taps(c00, c10, c01, c11, tx, ty);
+        let base = x as usize * 3;
+        out[base..base + 3].copy_from_slice(&sampled);
+    }
+}
+
+fn precompute_gain_row_linear(
+    gain_rgba: &[u8],
+    gain_w: u32,
+    gain_h: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    out: &mut GainRowLinear,
+) {
+    let w = width as usize;
+    out.ensure_capacity(w);
+    sample_gain_map_row_nonlinear(
+        gain_rgba,
+        gain_w,
+        gain_h,
+        y,
+        width,
+        height,
+        &mut out.encoded,
+    );
+    bt709_linearize_gain_row(&out.encoded, &mut out.rgb, width);
 }
 
 fn classify_fast_path(
@@ -123,26 +248,6 @@ fn classify_fast_path(
             ComposeFastPath::LinearDisplayP3
         }
         _ => ComposeFastPath::Scalar,
-    }
-}
-
-fn precompute_gain_row_linear(
-    gain_rgba: &[u8],
-    gain_w: u32,
-    gain_h: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    out: &mut GainRowLinear,
-) {
-    let w = width as usize;
-    out.ensure_capacity(w);
-    for x in 0..width {
-        let raw = sample_gain_map_rgb(gain_rgba, gain_w, gain_h, x, y, width, height);
-        let base = x as usize * 3;
-        out.rgb[base] = bt709_nonlinear_channel_to_linear(raw[0]);
-        out.rgb[base + 1] = bt709_nonlinear_channel_to_linear(raw[1]);
-        out.rgb[base + 2] = bt709_nonlinear_channel_to_linear(raw[2]);
     }
 }
 
@@ -312,34 +417,93 @@ unsafe fn store_rgba_pixel4_sse41(
     }
 }
 
+/// SSE4.1 `_MM_SHUFFLE(z,y,x,w)` => out[0]=a[w], out[1]=a[x], out[2]=b[y], out[3]=b[z]
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE0: i32 = 0x00;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE1: i32 = 0x55;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE2: i32 = 0xAA;
+#[cfg(target_arch = "x86_64")]
+const SHUF_SSE_ALL_LANE3: i32 = 0xFF;
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m128) {
+    unsafe {
+        let v0 = _mm_loadu_ps(src);
+        let v1 = _mm_loadu_ps(src.add(4));
+        let v2 = _mm_loadu_ps(src.add(8));
+
+        // v0=[r0,g0,b0,r1] v1=[g1,b1,r2,g2] v2=[b2,r3,g3,b3]
+        let r = _mm_blend_ps(
+            _mm_shuffle_ps(v0, v1, 0x2C), // (0,2,3,0) => [r0,r1,r2,g1]
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE1),
+            0b1000,
+        );
+        let g_partial = _mm_shuffle_ps(v0, v1, 0xC1); // (3,0,0,1) => [g0,r0,g1,g2]
+        let g = _mm_blend_ps(
+            _mm_shuffle_ps(g_partial, g_partial, 0xB8), // (2,3,2,0) => [g0,g1,g2,g1]
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE2),
+            0b1000,
+        );
+        let b_partial = _mm_shuffle_ps(v0, v1, 0x56); // (1,1,1,2) => [b0,g0,b1,b1]
+        let b_reordered = _mm_shuffle_ps(b_partial, b_partial, 0xB8); // (2,3,2,0) => [b0,b1,b1,b1]
+        let b = _mm_blend_ps(
+            _mm_blend_ps(b_reordered, _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE0), 0b0100),
+            _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE3),
+            0b1000,
+        );
+        (r, g, b)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn store_rgb_interleaved4_sse41(
+    dst: *mut f32,
+    r: __m128,
+    g: __m128,
+    b: __m128,
+) {
+    unsafe {
+        let rg_lo = _mm_unpacklo_ps(r, g);
+        let v0 = _mm_blend_ps(
+            _mm_blend_ps(rg_lo, _mm_shuffle_ps(b, b, SHUF_SSE_ALL_LANE0), 0b0100),
+            _mm_shuffle_ps(r, r, SHUF_SSE_ALL_LANE1),
+            0b1000,
+        );
+        let gb_lo = _mm_unpacklo_ps(
+            _mm_shuffle_ps(g, g, SHUF_SSE_ALL_LANE1),
+            _mm_shuffle_ps(b, b, SHUF_SSE_ALL_LANE1),
+        );
+        let v1 = _mm_blend_ps(
+            _mm_blend_ps(gb_lo, _mm_shuffle_ps(r, r, SHUF_SSE_ALL_LANE2), 0b0100),
+            _mm_shuffle_ps(g, g, SHUF_SSE_ALL_LANE2),
+            0b1000,
+        );
+        let br_lo = _mm_unpacklo_ps(
+            _mm_shuffle_ps(b, b, SHUF_SSE_ALL_LANE2),
+            _mm_shuffle_ps(r, r, SHUF_SSE_ALL_LANE3),
+        );
+        let v2 = _mm_blend_ps(
+            _mm_blend_ps(br_lo, _mm_shuffle_ps(g, g, SHUF_SSE_ALL_LANE3), 0b0100),
+            _mm_shuffle_ps(b, b, SHUF_SSE_ALL_LANE3),
+            0b1000,
+        );
+        _mm_storeu_ps(dst, v0);
+        _mm_storeu_ps(dst.add(4), v1);
+        _mm_storeu_ps(dst.add(8), v2);
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
 unsafe fn gather_gain_rgb4_sse41(
     gain_rgb: *const f32,
     pixel_offset: usize,
 ) -> (__m128, __m128, __m128) {
-    unsafe {
-        let base = pixel_offset * 3;
-        let r = _mm_set_ps(
-            *gain_rgb.add(base + 9),
-            *gain_rgb.add(base + 6),
-            *gain_rgb.add(base + 3),
-            *gain_rgb.add(base),
-        );
-        let g = _mm_set_ps(
-            *gain_rgb.add(base + 10),
-            *gain_rgb.add(base + 7),
-            *gain_rgb.add(base + 4),
-            *gain_rgb.add(base + 1),
-        );
-        let b = _mm_set_ps(
-            *gain_rgb.add(base + 11),
-            *gain_rgb.add(base + 8),
-            *gain_rgb.add(base + 5),
-            *gain_rgb.add(base + 2),
-        );
-        (r, g, b)
-    }
+    unsafe { load_rgb_interleaved4_sse41(gain_rgb.add(pixel_offset * 3)) }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -523,23 +687,111 @@ unsafe fn bt709_to_linear4_neon(v: float32x4_t) -> float32x4_t {
     vbslq_f32(low_mask, low, high)
 }
 
+fn bt709_linearize_gain_row(nonlinear: &[f32], out: &mut [f32], width: u32) {
+    debug_assert_eq!(nonlinear.len(), width as usize * 3);
+    debug_assert!(out.len() >= width as usize * 3);
+
+    let mut x = 0_u32;
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("sse4.1") {
+            unsafe {
+                bt709_linearize_gain_row_sse41(
+                    nonlinear.as_ptr(),
+                    out.as_mut_ptr(),
+                    width,
+                    &mut x,
+                );
+            }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe {
+            bt709_linearize_gain_row_neon(
+                nonlinear.as_ptr(),
+                out.as_mut_ptr(),
+                width,
+                &mut x,
+            );
+        }
+    }
+    while x < width {
+        let base = x as usize * 3;
+        out[base] = bt709_nonlinear_channel_to_linear(nonlinear[base]);
+        out[base + 1] = bt709_nonlinear_channel_to_linear(nonlinear[base + 1]);
+        out[base + 2] = bt709_nonlinear_channel_to_linear(nonlinear[base + 2]);
+        x += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn store_rgb_pixel4_interleaved_sse41(
+    dst: *mut f32,
+    pixel_offset: usize,
+    r: __m128,
+    g: __m128,
+    b: __m128,
+) {
+    unsafe {
+        store_rgb_interleaved4_sse41(dst.add(pixel_offset * 3), r, g, b);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn bt709_linearize_gain_row_sse41(
+    src: *const f32,
+    dst: *mut f32,
+    width: u32,
+    x: &mut u32,
+) {
+    unsafe {
+        while *x + SIMD_PIXELS_PER_STEP <= width {
+            let (r, g, b) = gather_gain_rgb4_sse41(src, *x as usize);
+            let lr = bt709_to_linear4_sse41(r);
+            let lg = bt709_to_linear4_sse41(g);
+            let lb = bt709_to_linear4_sse41(b);
+            store_rgb_pixel4_interleaved_sse41(dst, *x as usize, lr, lg, lb);
+            *x += SIMD_PIXELS_PER_STEP;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn bt709_linearize_gain_row_neon(
+    src: *const f32,
+    dst: *mut f32,
+    width: u32,
+    x: &mut u32,
+) {
+    unsafe {
+        while *x + SIMD_PIXELS_PER_STEP <= width {
+            let offset = *x as usize * 3;
+            let encoded = vld3q_f32(src.add(offset));
+            let linear = float32x4x3_t(
+                bt709_to_linear4_neon(encoded.0),
+                bt709_to_linear4_neon(encoded.1),
+                bt709_to_linear4_neon(encoded.2),
+            );
+            vst3q_f32(dst.add(offset), linear);
+            *x += SIMD_PIXELS_PER_STEP;
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn load_rgba_pixel4_neon(
     row: *const f32,
     pixel_offset: usize,
 ) -> (float32x4_t, float32x4_t, float32x4_t, float32x4_t) {
-    let p0 = vld1q_f32(row.add(pixel_offset));
-    let p1 = vld1q_f32(row.add(pixel_offset + 4));
-    let p2 = vld1q_f32(row.add(pixel_offset + 8));
-    let p3 = vld1q_f32(row.add(pixel_offset + 12));
-    let t0 = vtrnq_f32(p0, p1);
-    let t1 = vtrnq_f32(p2, p3);
-    let r = vcombine_f32(vget_low_f32(t0.0), vget_low_f32(t1.0));
-    let g = vcombine_f32(vget_low_f32(t0.1), vget_low_f32(t1.1));
-    let b = vcombine_f32(vget_high_f32(t0.0), vget_high_f32(t1.0));
-    let a = vcombine_f32(vget_high_f32(t0.1), vget_high_f32(t1.1));
-    (r, g, b, a)
+    unsafe {
+        let res = vld4q_f32(row.add(pixel_offset));
+        (res.0, res.1, res.2, res.3)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -552,18 +804,9 @@ unsafe fn store_rgba_pixel4_neon(
     b: float32x4_t,
     a: float32x4_t,
 ) {
-    let rg0 = vtrn1q_f32(r, g);
-    let rg1 = vtrn2q_f32(r, g);
-    let ba0 = vtrn1q_f32(b, a);
-    let ba1 = vtrn2q_f32(b, a);
-    let p0 = vcombine_f32(vget_low_f32(rg0), vget_low_f32(ba0));
-    let p1 = vcombine_f32(vget_low_f32(rg1), vget_low_f32(ba1));
-    let p2 = vcombine_f32(vget_high_f32(rg0), vget_high_f32(ba0));
-    let p3 = vcombine_f32(vget_high_f32(rg1), vget_high_f32(ba1));
-    vst1q_f32(row.add(pixel_offset), p0);
-    vst1q_f32(row.add(pixel_offset + 4), p1);
-    vst1q_f32(row.add(pixel_offset + 8), p2);
-    vst1q_f32(row.add(pixel_offset + 12), p3);
+    unsafe {
+        vst4q_f32(row.add(pixel_offset), float32x4x4_t(r, g, b, a));
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -572,29 +815,10 @@ unsafe fn gather_gain_rgb4_neon(
     gain_rgb: *const f32,
     pixel_offset: usize,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
-    let base = pixel_offset * 3;
-    let r_arr: [f32; 4] = [
-        *gain_rgb.add(base),
-        *gain_rgb.add(base + 3),
-        *gain_rgb.add(base + 6),
-        *gain_rgb.add(base + 9),
-    ];
-    let g_arr: [f32; 4] = [
-        *gain_rgb.add(base + 1),
-        *gain_rgb.add(base + 4),
-        *gain_rgb.add(base + 7),
-        *gain_rgb.add(base + 10),
-    ];
-    let b_arr: [f32; 4] = [
-        *gain_rgb.add(base + 2),
-        *gain_rgb.add(base + 5),
-        *gain_rgb.add(base + 8),
-        *gain_rgb.add(base + 11),
-    ];
-    let r = vld1q_f32(r_arr.as_ptr());
-    let g = vld1q_f32(g_arr.as_ptr());
-    let b = vld1q_f32(b_arr.as_ptr());
-    (r, g, b)
+    unsafe {
+        let res = vld3q_f32(gain_rgb.add(pixel_offset * 3));
+        (res.0, res.1, res.2)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -830,7 +1054,10 @@ pub(crate) fn compose_apple_gain_map_pixels(
 
     let path = classify_fast_path(color_space, transfer, metadata);
     let row_stride = width as usize * 4;
-    let mut gain_row = GainRowLinear { rgb: Vec::new() };
+    let mut gain_row = GainRowLinear {
+        encoded: Vec::new(),
+        rgb: Vec::new(),
+    };
 
     for (y, (row_out, row_in)) in composed_pixels
         .chunks_mut(row_stride)
@@ -864,36 +1091,159 @@ pub(crate) fn compose_apple_gain_map_pixels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hdr::gain_map::sample_gain_map_rgb;
     use crate::hdr::types::HdrImageMetadata;
 
-    fn scalar_reference_row(
-        row_in: &[f32],
-        row_out: &mut [f32],
-        width: u32,
+    fn precompute_gain_row_linear_legacy(
         gain_rgba: &[u8],
         gain_w: u32,
         gain_h: u32,
         y: u32,
+        width: u32,
         height: u32,
+        out: &mut GainRowLinear,
+    ) {
+        let w = width as usize;
+        out.ensure_capacity(w);
+        for x in 0..width {
+            let raw = sample_gain_map_rgb(gain_rgba, gain_w, gain_h, x, y, width, height);
+            let base = x as usize * 3;
+            out.rgb[base] = bt709_nonlinear_channel_to_linear(raw[0]);
+            out.rgb[base + 1] = bt709_nonlinear_channel_to_linear(raw[1]);
+            out.rgb[base + 2] = bt709_nonlinear_channel_to_linear(raw[2]);
+        }
+    }
+
+    fn compose_image_legacy_reference(
+        base_pixels: &[f32],
+        width: u32,
+        height: u32,
+        gain_rgba: &[u8],
+        gain_w: u32,
+        gain_h: u32,
         color_space: HdrColorSpace,
         transfer: HdrTransferFunction,
         metadata: &HdrImageMetadata,
         headroom_span: f32,
         weight: f32,
-    ) {
-        let mut gain_row = GainRowLinear { rgb: Vec::new() };
-        precompute_gain_row_linear(gain_rgba, gain_w, gain_h, y, width, height, &mut gain_row);
-        compose_row_scalar(
-            row_in,
-            row_out,
-            width,
-            &gain_row.rgb,
-            color_space,
-            transfer,
-            metadata,
+    ) -> Vec<f32> {
+        let mut out = vec![0.0_f32; base_pixels.len()];
+        let row_stride = width as usize * 4;
+        let mut gain_row = GainRowLinear {
+            encoded: Vec::new(),
+            rgb: Vec::new(),
+        };
+        for y in 0..height {
+            let start = y as usize * row_stride;
+            let end = start + row_stride;
+            precompute_gain_row_linear_legacy(
+                gain_rgba,
+                gain_w,
+                gain_h,
+                y,
+                width,
+                height,
+                &mut gain_row,
+            );
+            compose_row_scalar(
+                &base_pixels[start..end],
+                &mut out[start..end],
+                width,
+                &gain_row.rgb,
+                color_space,
+                transfer,
+                metadata,
+                headroom_span,
+                weight,
+            );
+        }
+        out
+    }
+
+    #[test]
+    fn precompute_gain_row_matches_legacy_reference() {
+        const W: u32 = 67;
+        const H: u32 = 19;
+        const GAIN_W: u32 = 17;
+        const GAIN_H: u32 = 11;
+        let gain_rgba: Vec<u8> = (0..GAIN_W as usize * GAIN_H as usize * 4)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        for y in 0..H {
+            let mut legacy = GainRowLinear {
+                encoded: Vec::new(),
+                rgb: Vec::new(),
+            };
+            let mut optimized = GainRowLinear {
+                encoded: Vec::new(),
+                rgb: Vec::new(),
+            };
+            precompute_gain_row_linear_legacy(
+                &gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut legacy,
+            );
+            precompute_gain_row_linear(
+                &gain_rgba,
+                GAIN_W,
+                GAIN_H,
+                y,
+                W,
+                H,
+                &mut optimized,
+            );
+            assert_eq!(
+                legacy.rgb[..W as usize * 3],
+                optimized.rgb[..W as usize * 3],
+                "row {y} mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_apple_gain_map_pixels_matches_legacy_reference() {
+        const W: u32 = 67;
+        const H: u32 = 19;
+        const GAIN_W: u32 = 17;
+        const GAIN_H: u32 = 11;
+        let pixel_count = W as usize * H as usize * 4;
+        let base_pixels: Vec<f32> = (0..pixel_count)
+            .map(|i| ((i * 17 + 3) % 997) as f32 / 997.0)
+            .collect();
+        let gain_rgba: Vec<u8> = (0..GAIN_W as usize * GAIN_H as usize * 4)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        let headroom_span = 3.0;
+        let weight = 0.75;
+        let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::DisplayP3Linear);
+
+        let legacy = compose_image_legacy_reference(
+            &base_pixels,
+            W,
+            H,
+            &gain_rgba,
+            GAIN_W,
+            GAIN_H,
+            HdrColorSpace::DisplayP3Linear,
+            HdrTransferFunction::Srgb,
+            &metadata,
             headroom_span,
             weight,
         );
+        let mut optimized = vec![0.0_f32; pixel_count];
+        compose_apple_gain_map_pixels(
+            &base_pixels,
+            &mut optimized,
+            W,
+            H,
+            &gain_rgba,
+            GAIN_W,
+            GAIN_H,
+            HdrColorSpace::DisplayP3Linear,
+            HdrTransferFunction::Srgb,
+            &metadata,
+            headroom_span,
+            weight,
+        );
+        assert_eq!(legacy, optimized);
     }
 
     #[test]
@@ -934,31 +1284,23 @@ mod tests {
         ];
 
         for (color_space, transfer, metadata) in cases {
-            let mut scalar = vec![0.0_f32; pixel_count];
-            let mut simd = vec![0.0_f32; pixel_count];
-            for y in 0..H {
-                let row_stride = W as usize * 4;
-                let start = y as usize * row_stride;
-                let end = start + row_stride;
-                scalar_reference_row(
-                    &base_pixels[start..end],
-                    &mut scalar[start..end],
-                    W,
-                    &gain_rgba,
-                    W,
-                    H,
-                    y,
-                    H,
-                    color_space,
-                    transfer,
-                    &metadata,
-                    headroom_span,
-                    weight,
-                );
-            }
+            let reference = compose_image_legacy_reference(
+                &base_pixels,
+                W,
+                H,
+                &gain_rgba,
+                W,
+                H,
+                color_space,
+                transfer,
+                &metadata,
+                headroom_span,
+                weight,
+            );
+            let mut optimized = vec![0.0_f32; pixel_count];
             compose_apple_gain_map_pixels(
                 &base_pixels,
-                &mut simd,
+                &mut optimized,
                 W,
                 H,
                 &gain_rgba,
@@ -971,8 +1313,105 @@ mod tests {
                 weight,
             );
             assert_eq!(
-                scalar, simd,
+                reference, optimized,
                 "parity failed for {color_space:?} + {transfer:?}"
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn gather_gain_rgb4_scalar_reference(
+        interleaved: &[f32],
+        pixel_offset: usize,
+    ) -> ([f32; 4], [f32; 4], [f32; 4]) {
+        let base = pixel_offset * 3;
+        let mut r = [0.0_f32; 4];
+        let mut g = [0.0_f32; 4];
+        let mut b = [0.0_f32; 4];
+        for pixel in 0..4 {
+            let src = base + pixel * 3;
+            r[pixel] = interleaved[src];
+            g[pixel] = interleaved[src + 1];
+            b[pixel] = interleaved[src + 2];
+        }
+        (r, g, b)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn planar_to_interleaved_reference(planar: &([f32; 4], [f32; 4], [f32; 4])) -> [f32; 12] {
+        let (r, g, b) = planar;
+        let mut out = [0.0_f32; 12];
+        for pixel in 0..4 {
+            out[pixel * 3] = r[pixel];
+            out[pixel * 3 + 1] = g[pixel];
+            out[pixel * 3 + 2] = b[pixel];
+        }
+        out
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn sse41_rgb_interleaved_load_store_matches_scalar_reference() {
+        use core::arch::x86_64::*;
+
+        if !std::arch::is_x86_feature_detected!("sse4.1") {
+            return;
+        }
+
+        let interleaved: Vec<f32> = (0..12 * 8)
+            .map(|i| (i as f32 * 0.125 - 3.0).sin() * 0.5 + 0.5)
+            .collect();
+
+        let pattern: [f32; 12] = [
+            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
+        ];
+        let expected_pattern = gather_gain_rgb4_scalar_reference(&pattern, 0);
+        let (pr, pg, pb) = unsafe { load_rgb_interleaved4_sse41(pattern.as_ptr()) };
+        let mut pr_lanes = [0.0_f32; 4];
+        let mut pg_lanes = [0.0_f32; 4];
+        let mut pb_lanes = [0.0_f32; 4];
+        unsafe {
+            _mm_storeu_ps(pr_lanes.as_mut_ptr(), pr);
+            _mm_storeu_ps(pg_lanes.as_mut_ptr(), pg);
+            _mm_storeu_ps(pb_lanes.as_mut_ptr(), pb);
+        }
+        assert_eq!(expected_pattern.0, pr_lanes, "pattern R");
+        assert_eq!(expected_pattern.1, pg_lanes, "pattern G");
+        assert_eq!(expected_pattern.2, pb_lanes, "pattern B");
+        let mut pattern_roundtrip = [0.0_f32; 12];
+        unsafe {
+            store_rgb_interleaved4_sse41(pattern_roundtrip.as_mut_ptr(), pr, pg, pb);
+        }
+        assert_eq!(pattern, pattern_roundtrip, "pattern roundtrip");
+
+        for block in 0..8usize {
+            let offset = block * 12;
+            let chunk = &interleaved[offset..offset + 12];
+            let expected = gather_gain_rgb4_scalar_reference(chunk, 0);
+
+            let (r, g, b) = unsafe { load_rgb_interleaved4_sse41(chunk.as_ptr()) };
+            let mut r_lanes = [0.0_f32; 4];
+            let mut g_lanes = [0.0_f32; 4];
+            let mut b_lanes = [0.0_f32; 4];
+            unsafe {
+                _mm_storeu_ps(r_lanes.as_mut_ptr(), r);
+                _mm_storeu_ps(g_lanes.as_mut_ptr(), g);
+                _mm_storeu_ps(b_lanes.as_mut_ptr(), b);
+            }
+            assert_eq!(expected.0, r_lanes, "load R mismatch at block {block}");
+            assert_eq!(expected.1, g_lanes, "load G mismatch at block {block}");
+            assert_eq!(expected.2, b_lanes, "load B mismatch at block {block}");
+
+            let mut roundtrip = [0.0_f32; 12];
+            unsafe {
+                store_rgb_interleaved4_sse41(roundtrip.as_mut_ptr(), r, g, b);
+            }
+            assert_eq!(chunk, &roundtrip, "store roundtrip mismatch at block {block}");
+
+            let reference_interleaved = planar_to_interleaved_reference(&expected);
+            assert_eq!(
+                chunk, reference_interleaved,
+                "reference interleave mismatch at block {block}"
             );
         }
     }
