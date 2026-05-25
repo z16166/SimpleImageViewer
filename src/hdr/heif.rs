@@ -615,10 +615,12 @@ pub(crate) fn decode_heif_hdr_bytes(
         // Parse metadata (stops) from EXIF MakerNotes if present
         let mut stops = 2.0_f32; // Default fallback to 2.0 stops
         let mut parsed_stops = None;
+        let mut parsed_gain = None;
         if let Some(exif_buf) = get_heif_exif_block(handle.0) {
-            if let Some((stops_h, _)) = parse_apple_hdr_metadata_from_exif(&exif_buf) {
+            if let Some((stops_h, gain_v)) = parse_apple_hdr_metadata_from_exif(&exif_buf) {
                 stops = stops_h;
                 parsed_stops = Some(stops_h);
+                parsed_gain = Some(gain_v);
             }
         }
 
@@ -634,11 +636,12 @@ pub(crate) fn decode_heif_hdr_bytes(
         };
 
         log::info!(
-            "[HDR] Applying Apple HDR Gain Map: {}x{} pixels, stops: {:.3} (parsed from Exif: {:?}), linear_headroom: {:.3}, target_hdr_capacity: {:.3}, weight: {:.3}",
+            "[HDR] Applying Apple HDR Gain Map: {}x{} pixels, stops: {:.3} (parsed from Exif: {:?}), gain: {:?}, linear_headroom: {:.3}, target_hdr_capacity: {:.3}, weight: {:.3}",
             gain_w,
             gain_h,
             stops,
             parsed_stops,
+            parsed_gain,
             linear_headroom,
             hdr_target_capacity,
             weight
@@ -1657,100 +1660,194 @@ fn hdr_buffer_from_ycbcr(
 const EXIF_TAG_APPLE_HDR_HEADROOM: u16 = 0x0021;
 
 #[cfg(feature = "heif-native")]
-fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
-    let sig = b"Apple iOS\0";
-    let sig_index = buf.windows(sig.len()).position(|w| w == sig)?;
-    
-    // The custom TIFF block starts 12 bytes after the start of "Apple iOS\0"
-    // (10 bytes for signature + 2 bytes for '00 01')
-    let tiff_start = sig_index + 12;
-    if tiff_start >= buf.len() {
-        return None;
-    }
-    let tiff = &buf[tiff_start..];
-    if tiff.len() < 4 {
-        return None;
-    }
-    
-    // Byte order: "MM" (Big Endian) or "II" (Little Endian)
-    let is_be = if &tiff[0..2] == b"MM" {
-        true
-    } else if &tiff[0..2] == b"II" {
-        false
-    } else {
-        return None;
-    };
-    
-    // Read the 2-byte entry count
-    let count = if is_be {
-        u16::from_be_bytes(tiff[2..4].try_into().ok()?)
-    } else {
-        u16::from_le_bytes(tiff[2..4].try_into().ok()?)
-    } as usize;
-    
-    let mut headroom = None;
-    
-    // Iterate through the IFD entries starting at offset 4 of the TIFF block
-    for i in 0..count {
-        let entry_offset = 4 + i * 12;
-        if entry_offset + 12 > tiff.len() {
-            break;
-        }
-        let entry_bytes = &tiff[entry_offset..entry_offset + 12];
-        
-        let tag = if is_be {
-            u16::from_be_bytes(entry_bytes[0..2].try_into().ok()?)
-        } else {
-            u16::from_le_bytes(entry_bytes[0..2].try_into().ok()?)
-        };
-        
-        if tag == EXIF_TAG_APPLE_HDR_HEADROOM {
-            let val_off = if is_be {
-                u32::from_be_bytes(entry_bytes[8..12].try_into().ok()?)
-            } else {
-                u32::from_le_bytes(entry_bytes[8..12].try_into().ok()?)
-            } as usize;
-            
-            if val_off + 8 <= tiff.len() {
-                let val_bytes = &tiff[val_off..val_off + 8];
-                
-                // Apple quirk: even if TIFF byte order is MM (Big Endian), 
-                // the rational values might be stored in Little Endian.
-                // We try both Big and Little Endian, and pick the one that 
-                // gives a reasonable Stops/Headroom value in range [0.1, 10.0].
-                
-                // Try Big Endian
-                let num_be = u32::from_be_bytes(val_bytes[0..4].try_into().ok()?) as f32;
-                let den_be = u32::from_be_bytes(val_bytes[4..8].try_into().ok()?) as f32;
-                let val_be = if den_be != 0.0 { Some(num_be / den_be) } else { None };
-                
-                // Try Little Endian
-                let num_le = u32::from_le_bytes(val_bytes[0..4].try_into().ok()?) as f32;
-                let den_le = u32::from_le_bytes(val_bytes[4..8].try_into().ok()?) as f32;
-                let val_le = if den_le != 0.0 { Some(num_le / den_le) } else { None };
-                
-                if let Some(v) = val_le {
-                    if (0.1..=10.0).contains(&v) {
-                        headroom = Some(v);
-                    }
-                }
-                if headroom.is_none() {
-                    if let Some(v) = val_be {
-                        if (0.1..=10.0).contains(&v) {
-                            headroom = Some(v);
-                        }
+const EXIF_TAG_APPLE_HDR_GAIN: u16 = 0x0030;
+
+/// Parse the raw HEIF Exif metadata block into an [`exif::Exif`] struct.
+/// Handles the ISOBMFF-style 4-byte TIFF offset header when present.
+#[cfg(feature = "heif-native")]
+fn parse_heif_exif_raw(buf: &[u8]) -> Option<exif::Exif> {
+    if buf.len() >= 6 {
+        if let Ok(offset_bytes) = <[u8; 4]>::try_from(&buf[0..4]) {
+            let offset = u32::from_be_bytes(offset_bytes) as usize;
+            if buf.len() >= 4 + offset {
+                if let Some(tiff_tail) = buf.get(4 + offset..) {
+                    if let Ok(e) = exif::Reader::new().read_raw(tiff_tail.to_vec()) {
+                        return Some(e);
                     }
                 }
             }
-            break;
         }
     }
-    
-    if let Some(h) = headroom {
-        Some((h, h))
-    } else {
-        None
+    exif::Reader::new().read_raw(buf.to_vec()).ok()
+}
+
+/// Extract a float value from an [`exif::Value`], handling Rational and SRational.
+#[cfg(feature = "heif-native")]
+fn read_exif_rational_float(value: &exif::Value) -> Option<f32> {
+    match value {
+        exif::Value::Rational(v) if !v.is_empty() => {
+            let r = v[0].to_f32();
+            r.is_finite().then_some(r)
+        }
+        exif::Value::SRational(v) if !v.is_empty() => {
+            let r = v[0].to_f32();
+            r.is_finite().then_some(r)
+        }
+        _ => None,
     }
+}
+
+/// Try parsing the Apple embedded TIFF block using the `exif` crate.
+/// Returns `None` if the embedded data is not valid standard TIFF.
+#[cfg(feature = "heif-native")]
+fn parse_apple_embedded_with_exif(tiff: &[u8]) -> Option<(f32, f32)> {
+    let exif = exif::Reader::new().read_raw(tiff.to_vec()).ok()?;
+    let mut headroom = None;
+    let mut gain = None;
+    for field in exif.fields() {
+        match field.tag.1 {
+            EXIF_TAG_APPLE_HDR_HEADROOM => {
+                headroom = read_exif_rational_float(&field.value);
+            }
+            EXIF_TAG_APPLE_HDR_GAIN => {
+                gain = read_exif_rational_float(&field.value);
+            }
+            _ => {}
+        }
+    }
+    let headroom = headroom?;
+    if !(0.1..=10.0).contains(&headroom) {
+        return None;
+    }
+    Some((headroom, gain.unwrap_or(headroom)))
+}
+
+/// Parse Apple HDR Headroom and Gain from the MakerNote inside the raw
+/// HEIF Exif block.  Uses the `kamadak-exif` crate for robust TIFF/IFD
+/// traversal; falls back to manual parsing if the embedded Apple TIFF
+/// block uses a non-standard layout.
+#[cfg(feature = "heif-native")]
+fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
+    let exif = parse_heif_exif_raw(buf)?;
+    let maker_note = exif.get_field(exif::Tag::MakerNote, exif::In::PRIMARY)?;
+    let maker_bytes = match &maker_note.value {
+        exif::Value::Undefined(v, _) => v.as_slice(),
+        _ => return None,
+    };
+
+    let sig = b"Apple iOS\0";
+    let sig_index = maker_bytes.windows(sig.len()).position(|w| w == sig)?;
+
+    // Embedded Apple TIFF block starts after "Apple iOS\0" (10) + version bytes (2)
+    let tiff_start = sig_index + 12;
+    if tiff_start >= maker_bytes.len() {
+        return None;
+    }
+    let tiff = &maker_bytes[tiff_start..];
+
+    parse_apple_embedded_with_exif(tiff)
+        .or_else(|| parse_apple_embedded_manual(tiff))
+}
+
+/// Fallback manual parser for Apple's embedded MakerNote TIFF block.
+/// Handles both standard TIFF (with 0x002A magic and IFD offset) and
+/// Apple's non-standard layout (byte-order marker followed directly by
+/// IFD entry count and entries).
+#[cfg(feature = "heif-native")]
+fn parse_apple_embedded_manual(tiff: &[u8]) -> Option<(f32, f32)> {
+    if tiff.len() < 4 {
+        return None;
+    }
+
+    let is_be = match &tiff[0..2] {
+        b"MM" => true,
+        b"II" => false,
+        _ => return None,
+    };
+
+    fn read_u16(buf: &[u8], be: bool) -> Option<u16> {
+        let bytes = buf.get(0..2)?.try_into().ok()?;
+        Some(if be {
+            u16::from_be_bytes(bytes)
+        } else {
+            u16::from_le_bytes(bytes)
+        })
+    }
+
+    fn read_u32(buf: &[u8], be: bool) -> Option<u32> {
+        let bytes = buf.get(0..4)?.try_into().ok()?;
+        Some(if be {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        })
+    }
+
+    // Detect standard TIFF header: if bytes 2-3 are 0x002A (magic), we have
+    // a normal TIFF with an IFD offset at bytes 4-7.
+    let magic = read_u16(&tiff[2..4], is_be)?;
+    let (entries_start, count) = if magic == 0x002A {
+        // Standard TIFF: byte-order (2) + magic (2) + IFD offset (4)
+        let ifd_offset = read_u32(&tiff[4..8], is_be)? as usize;
+        if ifd_offset + 2 > tiff.len() {
+            return None;
+        }
+        let count = read_u16(&tiff[ifd_offset..], is_be)? as usize;
+        (ifd_offset + 2, count)
+    } else {
+        // Apple non-standard: byte-order (2) + entry count (2) + entries
+        (4, magic as usize)
+    };
+
+    let mut headroom = None;
+    let mut gain = None;
+
+    for i in 0..count {
+        let entry_offset = entries_start + i * 12;
+        if entry_offset + 12 > tiff.len() {
+            break;
+        }
+        let entry = &tiff[entry_offset..entry_offset + 12];
+
+        let tag = read_u16(&entry[0..2], is_be)?;
+        if tag != EXIF_TAG_APPLE_HDR_HEADROOM && tag != EXIF_TAG_APPLE_HDR_GAIN {
+            continue;
+        }
+
+        // Rational value at offset (4 bytes into entry for type/count, last 4 for value/offset)
+        let val_off = read_u32(&entry[8..12], is_be)? as usize;
+        if val_off + 8 > tiff.len() {
+            continue;
+        }
+        let val_bytes = &tiff[val_off..val_off + 8];
+
+        // Attempt BE and LE rational decoding; Apple sometimes stores LE values
+        // even when the TIFF byte-order marker says BE.
+        let try_rational = |bytes: &[u8], be: bool| -> Option<f32> {
+            let num = read_u32(&bytes[0..4], be)? as f32;
+            let den = read_u32(&bytes[4..8], be)? as f32;
+            if den != 0.0 {
+                Some(num / den)
+            } else {
+                None
+            }
+        };
+
+        let val = try_rational(val_bytes, false) // LE first (Apple quirk)
+            .or_else(|| try_rational(val_bytes, true))
+            .filter(|v| (0.1..=10.0).contains(v));
+
+        if let Some(v) = val {
+            if tag == EXIF_TAG_APPLE_HDR_HEADROOM {
+                headroom = Some(v);
+            } else {
+                gain = Some(v);
+            }
+        }
+    }
+
+    let headroom = headroom?;
+    Some((headroom, gain.unwrap_or(headroom)))
 }
 
 #[cfg(feature = "heif-native")]
@@ -2382,6 +2479,7 @@ mod tests {
 
     #[cfg(feature = "heif-native")]
     #[test]
+    #[ignore = "requires local Apple HDR HEIC test file"]
     fn test_print_exif_makernote() {
         let path = std::path::Path::new("F:\\HDR\\heif\\httpsheic.digital\\greyhounds-looking-for-a-table.heic");
         if !path.exists() {
