@@ -535,11 +535,8 @@ fn apple_heic_compose_linear_srgb(primary_uv: vec2<f32>, settings: ToneMapSettin
         primary_dims_i - vec2<i32>(1),
     );
     let base = textureLoad(hdr_texture, texel, 0);
-    let encoded_rgb = vec3<f32>(
-        encoded_unorm_to_f32(base.r),
-        encoded_unorm_to_f32(base.g),
-        encoded_unorm_to_f32(base.b),
-    );
+    // Primary is uploaded as `Rgba32Float` encoded values (same buffer as CPU compose input).
+    let encoded_rgb = clamp(base.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let display_linear = decode_input_transfer(encoded_rgb, settings.input_transfer_function, settings);
     let linear_srgb = convert_input_to_linear_srgb(display_linear, settings.input_color_space);
     let gain_linear = sample_apple_gain_linear(primary_uv, settings);
@@ -640,6 +637,13 @@ impl HdrImageRenderer {
         image: &HdrImageBuffer,
     ) -> Result<(), String> {
         let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+        let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+            rgba32f_as_bytes(image.rgba_f32.as_slice()),
+            image.width,
+            image.height,
+            std::mem::size_of::<f32>() as u32 * 4,
+        )
+        .map_err(|err| format!("HDR upload: {err}"))?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane"),
             size: layout.size,
@@ -650,7 +654,6 @@ impl HdrImageRenderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let bytes = rgba32f_as_bytes(image.rgba_f32.as_slice());
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -659,10 +662,10 @@ impl HdrImageRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytes,
+            &upload_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(layout.bytes_per_row),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(layout.size.height),
             },
             layout.size,
@@ -1316,7 +1319,7 @@ impl HdrImageKey {
                 .gain_map
                 .as_ref()
                 .and_then(|gm| gm.apple_heic_deferred.as_ref())
-                .map(|d| std::sync::Arc::as_ptr(&d.base_rgba8) as usize),
+                .map(|d| std::sync::Arc::as_ptr(&d.gain_rgba) as usize),
         }
     }
 }
@@ -1348,7 +1351,6 @@ struct ImagePlaneUpload {
     gain: Option<CallbackUpload>,
 }
 
-const HDR_APPLE_BASE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 fn create_dummy_gain_texture(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
@@ -1675,6 +1677,13 @@ fn upload_callback_tile(
     tile: &crate::hdr::tiled::HdrTileBuffer,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
+        tile.width,
+        tile.height,
+        std::mem::size_of::<f32>() as u32 * 4,
+    )
+    .map_err(|err| format!("HDR tile upload: {err}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-tile-plane-callback-texture"),
         size: layout.size,
@@ -1693,10 +1702,10 @@ fn upload_callback_tile(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
+        &upload_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(layout.bytes_per_row),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(layout.size.height),
         },
         layout.size,
@@ -1712,6 +1721,13 @@ fn upload_callback_image(
     image: &HdrImageBuffer,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(image.rgba_f32.as_slice()),
+        image.width,
+        image.height,
+        std::mem::size_of::<f32>() as u32 * 4,
+    )
+    .map_err(|err| format!("HDR upload: {err}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
         size: layout.size,
@@ -1730,10 +1746,10 @@ fn upload_callback_image(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        rgba32f_as_bytes(image.rgba_f32.as_slice()),
+        &upload_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(layout.bytes_per_row),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(layout.size.height),
         },
         layout.size,
@@ -1741,6 +1757,45 @@ fn upload_callback_image(
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Ok(CallbackUpload { texture, view })
+}
+
+fn wgpu_copy_bytes_per_row(unpadded_bytes_per_row: u32) -> u32 {
+    wgpu::util::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+/// Pack tightly laid-out RGBA rows into the pitch required by [`wgpu::Queue::write_texture`].
+fn pack_rows_for_texture_copy(
+    tight: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+) -> Result<(Vec<u8>, u32), String> {
+    let unpadded_bytes_per_row = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(unpadded_bytes_per_row);
+    let expected_len = unpadded_bytes_per_row
+        .checked_mul(height)
+        .map(|len| len as usize)
+        .ok_or_else(|| format!("tight buffer length overflows for {width}x{height}"))?;
+    if tight.len() != expected_len {
+        return Err(format!(
+            "Malformed tight buffer: expected {expected_len} bytes for {width}x{height}, got {}",
+            tight.len()
+        ));
+    }
+    if bytes_per_row == unpadded_bytes_per_row {
+        return Ok((tight.to_vec(), bytes_per_row));
+    }
+
+    let mut padded = vec![0u8; (bytes_per_row * height) as usize];
+    for y in 0..height as usize {
+        let src_start = y * unpadded_bytes_per_row as usize;
+        let dst_start = y * bytes_per_row as usize;
+        padded[dst_start..dst_start + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&tight[src_start..src_start + unpadded_bytes_per_row as usize]);
+    }
+    Ok((padded, bytes_per_row))
 }
 
 fn upload_rgba8_texture(
@@ -1755,6 +1810,8 @@ fn upload_rgba8_texture(
 ) -> Result<CallbackUpload, String> {
     let layout =
         validate_rgba8_upload_layout(width, height, rgba.len(), max_texture_dimension_2d, label)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(rgba, width, height, 4)
+        .map_err(|err| format!("{label}: {err}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: layout.size,
@@ -1772,10 +1829,10 @@ fn upload_rgba8_texture(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        rgba,
+        &upload_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(layout.bytes_per_row),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(layout.size.height),
         },
         layout.size,
@@ -1791,16 +1848,7 @@ fn upload_image_plane(
 ) -> Result<ImagePlaneUpload, String> {
     #[cfg(feature = "heif-native")]
     if let Some(deferred) = apple_heic_deferred_from_metadata(&image.metadata) {
-        let base = upload_rgba8_texture(
-            device,
-            queue,
-            "simple-image-viewer-hdr-image-plane-apple-base-texture",
-            image.width,
-            image.height,
-            deferred.base_rgba8.as_slice(),
-            HDR_APPLE_BASE_TEXTURE_FORMAT,
-            device.limits().max_texture_dimension_2d,
-        )?;
+        let base = upload_callback_image(device, queue, image)?;
         let gain = upload_rgba8_texture(
             device,
             queue,
@@ -1893,10 +1941,12 @@ fn validate_rgba32f_upload_layout(
         ));
     }
 
-    let bytes_per_row = width
-        .checked_mul(4)
-        .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
-        .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(
+        width
+            .checked_mul(4)
+            .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
+            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
+    );
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
@@ -1940,9 +1990,11 @@ fn validate_rgba8_upload_layout(
         ));
     }
 
-    let bytes_per_row = width
-        .checked_mul(4)
-        .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(
+        width
+            .checked_mul(4)
+            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
+    );
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
@@ -1990,9 +2042,54 @@ mod tests {
         assert_eq!(layout.size.height, 2);
         assert_eq!(
             layout.bytes_per_row,
-            3 * 4 * std::mem::size_of::<f32>() as u32
+            wgpu::util::align_to(
+                3 * 4 * std::mem::size_of::<f32>() as u32,
+                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+            )
         );
         assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
+    }
+
+    #[test]
+    fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
+        let width = 3024;
+        let height = 4032;
+        let layout = validate_rgba8_upload_layout(
+            width,
+            height,
+            width as usize * height as usize * 4,
+            8192,
+            "HEIC base upload",
+        )
+        .expect("valid rgba8 upload layout");
+
+        assert_eq!(
+            layout.bytes_per_row,
+            wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        );
+        assert_eq!(layout.bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
+        let width = 3024;
+        let height = 2;
+        let unpadded = (width * 4) as usize;
+        let mut tight = vec![0u8; unpadded * height as usize];
+        for y in 0..height {
+            tight[y as usize * unpadded] = 100 + y as u8;
+        }
+
+        let (padded, bytes_per_row) =
+            pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
+
+        assert_eq!(
+            bytes_per_row,
+            wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        );
+        assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
+        assert_eq!(padded[0], 100);
+        assert_eq!(padded[bytes_per_row as usize], 101);
     }
 
     #[test]

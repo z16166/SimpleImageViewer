@@ -17,6 +17,8 @@
 //! GPU-side Apple HEIC gain-map compose (`textureLoad` 4-tap, BT.709 then bilinear).
 //!
 //! Wired from [`HdrGainMapMetadata::apple_heic_deferred`] in the HDR image-plane shader.
+//! The encoded primary stays in [`HdrImageBuffer::rgba_f32`] and is uploaded as
+//! `Rgba32Float`; only the gain map uses `Rgba8Unorm`.
 
 use crate::hdr::heif_apple_gain_map::apple_gain_map_display_weight;
 use crate::hdr::types::{
@@ -38,7 +40,6 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
     debug_assert_eq!(hdr.rgba_f32.len(), pixel_count);
     debug_assert_eq!(gain_rgba.len(), gain_w as usize * gain_h as usize * 4);
 
-    let base_rgba8 = Arc::new(encoded_rgba_f32_to_rgba8(&hdr.rgba_f32));
     let gain_rgba = Arc::new(gain_rgba);
     let weight = apple_gain_map_display_weight(hdr_target_capacity, stops);
 
@@ -52,7 +53,6 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
         ),
         capped_display_referred: false,
         apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
-            base_rgba8: Arc::clone(&base_rgba8),
             gain_rgba: Arc::clone(&gain_rgba),
             gain_width: gain_w,
             gain_height: gain_h,
@@ -71,26 +71,6 @@ pub(crate) fn apple_heic_deferred_from_metadata(
         .gain_map
         .as_ref()
         .and_then(|gm| gm.apple_heic_deferred.as_ref())
-}
-
-/// Quantize encoded primary `rgba_f32` to RGBA8 for `Rgba8Unorm` upload (8-bit HEIC primary).
-fn encoded_rgba_f32_to_rgba8(rgba_f32: &[f32]) -> Vec<u8> {
-    rgba_f32
-        .chunks_exact(4)
-        .flat_map(|px| {
-            [
-                f32_to_encoded_u8(px[0]),
-                f32_to_encoded_u8(px[1]),
-                f32_to_encoded_u8(px[2]),
-                f32_to_encoded_u8(px[3]),
-            ]
-        })
-        .collect()
-}
-
-#[inline]
-fn f32_to_encoded_u8(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 #[cfg(test)]
@@ -120,6 +100,7 @@ mod tests {
         let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0);
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
-        assert_eq!(deferred.base_rgba8.len(), 2 * 2 * 4);
+        assert_eq!(deferred.gain_rgba.len(), 2 * 2 * 4);
+        assert_eq!(out.rgba_f32.len(), 2 * 2 * 4);
     }
 }

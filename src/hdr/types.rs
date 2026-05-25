@@ -118,7 +118,6 @@ pub struct HdrGainMapMetadata {
 /// Raw planes for Apple HEIC HDR gain-map compose on the GPU (see `heif_apple_gain_map_gpu`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppleHeicGainMapGpuSource {
-    pub base_rgba8: std::sync::Arc<Vec<u8>>,
     pub gain_rgba: std::sync::Arc<Vec<u8>>,
     pub gain_width: u32,
     pub gain_height: u32,
