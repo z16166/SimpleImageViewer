@@ -38,11 +38,18 @@
 //!
 //! On x86_64, `load_rgb_interleaved4_sse41` / `store_rgb_interleaved4_sse41` replace scalar gather/scatter
 //! for RGB-interleaved gain rows (aarch64 already uses `vld3q_f32` / `vst3q_f32`).
+//!
+//! BT.709 / sRGB high-segment `powf` uses lazy bit-indexed LUTs in [`crate::hdr::transfer_pow_lut`]
+//! (bit-identical to `f32::powf`, no per-lane transcendental calls on the hot path).
 
 use crate::hdr::decode::{
     bt709_nonlinear_channel_to_linear, decode_transfer_to_display_linear,
     linear_primary_to_linear_srgb,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::hdr::transfer_pow_lut::{pow_bt709_high_adjusted4_sse41, pow_srgb_high_adjusted4_sse41};
+#[cfg(target_arch = "aarch64")]
+use crate::hdr::transfer_pow_lut::{pow_bt709_high_adjusted4_neon, pow_srgb_high_adjusted4_neon};
 use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 
 #[cfg(target_arch = "aarch64")]
@@ -57,13 +64,11 @@ const SRGB_LINEAR_SEGMENT_END: f32 = 0.04045;
 const SRGB_DIVISOR: f32 = 12.92;
 const SRGB_OFFSET: f32 = 0.055;
 const SRGB_SCALE: f32 = 1.055;
-const SRGB_GAMMA: f32 = 2.4;
 
 const BT709_LINEAR_SEGMENT_BREAK: f32 = 0.018 * 4.5;
 const BT709_DIVISOR: f32 = 4.5;
 const BT709_OFFSET: f32 = 0.099;
 const BT709_SCALE: f32 = 1.099;
-const BT709_GAMMA: f32 = 1.0 / 0.45;
 
 const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
     [1.2249401, -0.2249402, 0.0],
@@ -331,21 +336,6 @@ fn path_applies_display_p3_matrix(path: ComposeFastPath) -> bool {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn pow4_sse41(base: __m128, exponent: f32) -> __m128 {
-    unsafe {
-        let mut lanes = [0.0_f32; 4];
-        _mm_storeu_ps(lanes.as_mut_ptr(), base);
-        _mm_set_ps(
-            lanes[3].powf(exponent),
-            lanes[2].powf(exponent),
-            lanes[1].powf(exponent),
-            lanes[0].powf(exponent),
-        )
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
 unsafe fn srgb_to_linear4_sse41(v: __m128) -> __m128 {
     unsafe {
         let zero = _mm_setzero_ps();
@@ -358,7 +348,7 @@ unsafe fn srgb_to_linear4_sse41(v: __m128) -> __m128 {
             _mm_add_ps(clamped, _mm_set1_ps(SRGB_OFFSET)),
             _mm_set1_ps(SRGB_SCALE),
         );
-        let high = pow4_sse41(adjusted, SRGB_GAMMA);
+        let high = pow_srgb_high_adjusted4_sse41(adjusted);
         _mm_blendv_ps(high, low, low_mask)
     }
 }
@@ -377,7 +367,7 @@ unsafe fn bt709_to_linear4_sse41(v: __m128) -> __m128 {
             _mm_add_ps(clamped, _mm_set1_ps(BT709_OFFSET)),
             _mm_set1_ps(BT709_SCALE),
         );
-        let high = pow4_sse41(adjusted, BT709_GAMMA);
+        let high = pow_bt709_high_adjusted4_sse41(adjusted);
         _mm_blendv_ps(high, low, low_mask)
     }
 }
@@ -645,20 +635,6 @@ unsafe fn compose_row_sse41(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
-    let mut lanes = [0.0_f32; 4];
-    vst1q_f32(lanes.as_mut_ptr(), base);
-    let result: [f32; 4] = [
-        lanes[0].powf(exponent),
-        lanes[1].powf(exponent),
-        lanes[2].powf(exponent),
-        lanes[3].powf(exponent),
-    ];
-    vld1q_f32(result.as_ptr())
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
 unsafe fn srgb_to_linear4_neon(v: float32x4_t) -> float32x4_t {
     let zero = vdupq_n_f32(0.0);
     let one = vdupq_n_f32(1.0);
@@ -670,7 +646,7 @@ unsafe fn srgb_to_linear4_neon(v: float32x4_t) -> float32x4_t {
         vaddq_f32(clamped, vdupq_n_f32(SRGB_OFFSET)),
         vdupq_n_f32(SRGB_SCALE),
     );
-    let high = pow4_neon(adjusted, SRGB_GAMMA);
+    let high = pow_srgb_high_adjusted4_neon(adjusted);
     vbslq_f32(low_mask, low, high)
 }
 
@@ -687,7 +663,7 @@ unsafe fn bt709_to_linear4_neon(v: float32x4_t) -> float32x4_t {
         vaddq_f32(clamped, vdupq_n_f32(BT709_OFFSET)),
         vdupq_n_f32(BT709_SCALE),
     );
-    let high = pow4_neon(adjusted, BT709_GAMMA);
+    let high = pow_bt709_high_adjusted4_neon(adjusted);
     vbslq_f32(low_mask, low, high)
 }
 
