@@ -18,7 +18,9 @@
 
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+    HdrTransferFunction,
 };
+use rayon::prelude::*;
 use std::ffi::CStr;
 use std::sync::Arc;
 
@@ -45,6 +47,10 @@ const APPLE_HDR_DIM_HEADROOM_THRESHOLD: f32 = 1.0;
 
 const TIFF_MAGIC_STANDARD: u16 = 0x002A;
 const IFD_ENTRY_SIZE: usize = 12;
+
+/// Row-parallel gain-map composition only wins above ~512×512; smaller buffers stay serial
+/// to avoid rayon task overhead on previews and thumbnails.
+const APPLE_GAIN_MAP_ROW_PARALLEL_MIN_LUMA_PIXELS: u64 = 512 * 512;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AppleHdrHeadroomParams {
@@ -75,7 +81,9 @@ pub(crate) fn apple_gain_map_display_weight(hdr_target_capacity: f32, stops: f32
     (target_log2 / stops).clamp(0.0, 1.0)
 }
 
-pub(crate) fn resolve_apple_hdr_headroom_from_exif(exif_buf: Option<&[u8]>) -> AppleHdrHeadroomParams {
+pub(crate) fn resolve_apple_hdr_headroom_from_exif(
+    exif_buf: Option<&[u8]>,
+) -> AppleHdrHeadroomParams {
     let Some(buf) = exif_buf else {
         return AppleHdrHeadroomParams::default_fallback();
     };
@@ -99,6 +107,125 @@ pub(crate) fn should_apply_apple_heic_gain_map(
     apple_gain_map_display_weight(hdr_target_capacity, headroom.stops) > 0.0
 }
 
+fn compose_apple_gain_map_row(
+    row_in: &[f32],
+    row_out: &mut [f32],
+    y: u32,
+    width: u32,
+    height: u32,
+    gain_rgba: &[u8],
+    gain_w: u32,
+    gain_h: u32,
+    color_space: HdrColorSpace,
+    transfer: HdrTransferFunction,
+    metadata: &HdrImageMetadata,
+    headroom_span: f32,
+    weight: f32,
+) {
+    for x in 0..width {
+        let idx = x as usize * 4;
+        let r_code = row_in[idx];
+        let g_code = row_in[idx + 1];
+        let b_code = row_in[idx + 2];
+        let a = row_in[idx + 3];
+
+        let rgb_display_linear = crate::hdr::decode::decode_transfer_to_display_linear(
+            [r_code, g_code, b_code],
+            transfer,
+            crate::hdr::types::DEFAULT_SDR_WHITE_NITS,
+        );
+        let rgb_linear_srgb = crate::hdr::decode::linear_primary_to_linear_srgb(
+            rgb_display_linear,
+            color_space,
+            metadata,
+        );
+
+        let gain_raw = crate::hdr::gain_map::sample_gain_map_rgb(
+            gain_rgba, gain_w, gain_h, x, y, width, height,
+        );
+        let gain_linear = [
+            crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[0]),
+            crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[1]),
+            crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[2]),
+        ];
+
+        row_out[idx] =
+            (rgb_linear_srgb[0] * (1.0 + headroom_span * gain_linear[0] * weight)).max(0.0);
+        row_out[idx + 1] =
+            (rgb_linear_srgb[1] * (1.0 + headroom_span * gain_linear[1] * weight)).max(0.0);
+        row_out[idx + 2] =
+            (rgb_linear_srgb[2] * (1.0 + headroom_span * gain_linear[2] * weight)).max(0.0);
+        row_out[idx + 3] = a;
+    }
+}
+
+fn compose_apple_gain_map_pixels(
+    base_pixels: &[f32],
+    composed_pixels: &mut [f32],
+    width: u32,
+    height: u32,
+    gain_rgba: &[u8],
+    gain_w: u32,
+    gain_h: u32,
+    color_space: HdrColorSpace,
+    transfer: HdrTransferFunction,
+    metadata: &HdrImageMetadata,
+    headroom_span: f32,
+    weight: f32,
+    parallel_rows: bool,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let row_stride = width as usize * 4;
+    if parallel_rows {
+        composed_pixels
+            .par_chunks_mut(row_stride)
+            .zip(base_pixels.par_chunks(row_stride))
+            .enumerate()
+            .for_each(|(y, (row_out, row_in))| {
+                compose_apple_gain_map_row(
+                    row_in,
+                    row_out,
+                    y as u32,
+                    width,
+                    height,
+                    gain_rgba,
+                    gain_w,
+                    gain_h,
+                    color_space,
+                    transfer,
+                    metadata,
+                    headroom_span,
+                    weight,
+                );
+            });
+    } else {
+        for (y, (row_out, row_in)) in composed_pixels
+            .chunks_mut(row_stride)
+            .zip(base_pixels.chunks(row_stride))
+            .enumerate()
+        {
+            compose_apple_gain_map_row(
+                row_in,
+                row_out,
+                y as u32,
+                width,
+                height,
+                gain_rgba,
+                gain_w,
+                gain_h,
+                color_space,
+                transfer,
+                metadata,
+                headroom_span,
+                weight,
+            );
+        }
+    }
+}
+
 /// Compose Apple HDR gain map into a scene-linear sRGB [`HdrImageBuffer`].
 pub(crate) fn apply_apple_gain_map_composition(
     hdr: HdrImageBuffer,
@@ -117,45 +244,24 @@ pub(crate) fn apply_apple_gain_map_composition(
     let tf = hdr.metadata.transfer_function;
     let linear_headroom = headroom.linear_headroom;
     let headroom_span = linear_headroom - 1.0;
+    let luma_pixels = u64::from(hdr.width) * u64::from(hdr.height);
+    let parallel_rows = luma_pixels >= APPLE_GAIN_MAP_ROW_PARALLEL_MIN_LUMA_PIXELS;
 
-    for y in 0..hdr.height {
-        for x in 0..hdr.width {
-            let idx = (y as usize * hdr.width as usize + x as usize) * 4;
-            let r_code = base_pixels[idx];
-            let g_code = base_pixels[idx + 1];
-            let b_code = base_pixels[idx + 2];
-            let a = base_pixels[idx + 3];
-
-            let rgb_display_linear = crate::hdr::decode::decode_transfer_to_display_linear(
-                [r_code, g_code, b_code],
-                tf,
-                crate::hdr::types::DEFAULT_SDR_WHITE_NITS,
-            );
-            let rgb_linear_srgb = crate::hdr::decode::linear_primary_to_linear_srgb(
-                rgb_display_linear,
-                color_space,
-                &hdr.metadata,
-            );
-
-            let gain_raw = crate::hdr::gain_map::sample_gain_map_rgb(
-                gain_rgba, gain_w, gain_h, x, y, hdr.width, hdr.height,
-            );
-            let gain_linear = [
-                crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[0]),
-                crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[1]),
-                crate::hdr::decode::bt709_nonlinear_channel_to_linear(gain_raw[2]),
-            ];
-
-            // Apple HDR Gain Map: hdr_linear = sdr_linear * (1 + (headroom - 1) * gain * w)
-            composed_pixels[idx] =
-                (rgb_linear_srgb[0] * (1.0 + headroom_span * gain_linear[0] * weight)).max(0.0);
-            composed_pixels[idx + 1] =
-                (rgb_linear_srgb[1] * (1.0 + headroom_span * gain_linear[1] * weight)).max(0.0);
-            composed_pixels[idx + 2] =
-                (rgb_linear_srgb[2] * (1.0 + headroom_span * gain_linear[2] * weight)).max(0.0);
-            composed_pixels[idx + 3] = a;
-        }
-    }
+    compose_apple_gain_map_pixels(
+        base_pixels,
+        &mut composed_pixels,
+        hdr.width,
+        hdr.height,
+        gain_rgba,
+        gain_w,
+        gain_h,
+        color_space,
+        tf,
+        &hdr.metadata,
+        headroom_span,
+        weight,
+        parallel_rows,
+    );
 
     let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
     final_metadata.luminance = hdr.metadata.luminance;
@@ -325,11 +431,7 @@ pub(crate) fn parse_apple_embedded_manual(tiff: &[u8], tiff_offset: usize) -> Op
         let try_rational = |bytes: &[u8], be: bool| -> Option<f32> {
             let num = read_u32(&bytes[0..4], be)? as f32;
             let den = read_u32(&bytes[4..8], be)? as f32;
-            if den != 0.0 {
-                Some(num / den)
-            } else {
-                None
-            }
+            if den != 0.0 { Some(num / den) } else { None }
         };
 
         let val = try_rational(val_bytes, is_be)
@@ -424,5 +526,59 @@ mod tests {
         let parsed = parse_apple_embedded_manual(&maker[tiff_start..], tiff_start).expect("parse");
         assert!((parsed.0 - 1.78).abs() < 0.01);
         assert!((parsed.1 - 1.78).abs() < 0.01);
+    }
+
+    #[test]
+    fn parallel_and_serial_gain_map_composition_match() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let pixel_count = W as usize * H as usize * 4;
+        let base_pixels: Vec<f32> = (0..pixel_count)
+            .map(|i| ((i % 997) as f32 / 997.0).clamp(0.0, 1.0))
+            .collect();
+        let gain_rgba = vec![128_u8; W as usize * H as usize * 4];
+        let metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+        let headroom = AppleHdrHeadroomParams {
+            hdr_headroom: 1.78,
+            hdr_gain: 1.78,
+            stops: 2.0,
+            linear_headroom: 4.0,
+        };
+        let headroom_span = headroom.linear_headroom - 1.0;
+        let weight = apple_gain_map_display_weight(4.0, headroom.stops);
+
+        let mut serial = vec![0.0_f32; pixel_count];
+        let mut parallel = vec![0.0_f32; pixel_count];
+        compose_apple_gain_map_pixels(
+            &base_pixels,
+            &mut serial,
+            W,
+            H,
+            &gain_rgba,
+            W,
+            H,
+            HdrColorSpace::LinearSrgb,
+            metadata.transfer_function,
+            &metadata,
+            headroom_span,
+            weight,
+            false,
+        );
+        compose_apple_gain_map_pixels(
+            &base_pixels,
+            &mut parallel,
+            W,
+            H,
+            &gain_rgba,
+            W,
+            H,
+            HdrColorSpace::LinearSrgb,
+            metadata.transfer_function,
+            &metadata,
+            headroom_span,
+            weight,
+            true,
+        );
+        assert_eq!(serial, parallel);
     }
 }

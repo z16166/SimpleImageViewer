@@ -19,9 +19,7 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{
-    HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings,
-};
+use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
@@ -1589,9 +1587,7 @@ fn hdr_buffer_from_ycbcr(
 }
 
 #[cfg(feature = "heif-native")]
-fn heif_has_apple_hdr_gain_map_auxiliary(
-    handle: *const libheif_sys::heif_image_handle,
-) -> bool {
+fn heif_has_apple_hdr_gain_map_auxiliary(handle: *const libheif_sys::heif_image_handle) -> bool {
     list_heif_auxiliary_evidence(handle)
         .iter()
         .any(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap)
