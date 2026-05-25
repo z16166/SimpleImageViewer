@@ -613,7 +613,7 @@ pub(crate) fn decode_heif_hdr_bytes(
     // Apply Apple HDR Gain Map if present and target display supports HDR
     if let Some((gain_w, gain_h, gain_rgba)) = decode_heif_gain_map(handle.0, decode_opts_ptr) {
         // Parse metadata (stops) from EXIF MakerNotes if present
-        let mut stops = 2.0_f32; // Default fallback to 2.0 stops
+        let mut stops = APPLE_HDR_DEFAULT_STOPS;
         let mut parsed_stops = None;
         let mut parsed_gain = None;
         if let Some(exif_buf) = get_heif_exif_block(handle.0) {
@@ -635,7 +635,7 @@ pub(crate) fn decode_heif_hdr_bytes(
             0.0
         };
 
-        log::info!(
+        log::debug!(
             "[HDR] Applying Apple HDR Gain Map: {}x{} pixels, stops: {:.3} (parsed from Exif: {:?}), gain: {:?}, linear_headroom: {:.3}, target_hdr_capacity: {:.3}, weight: {:.3}",
             gain_w,
             gain_h,
@@ -1662,6 +1662,21 @@ const EXIF_TAG_APPLE_HDR_HEADROOM: u16 = 0x0021;
 #[cfg(feature = "heif-native")]
 const EXIF_TAG_APPLE_HDR_GAIN: u16 = 0x0030;
 
+#[cfg(feature = "heif-native")]
+const APPLE_MAKERNOTE_SIGNATURE: &[u8] = b"Apple iOS\0";
+
+#[cfg(feature = "heif-native")]
+const APPLE_MAKERNOTE_TIFF_OFFSET: usize = 12;
+
+#[cfg(feature = "heif-native")]
+const APPLE_HDR_HEADROOM_MIN: f32 = 0.1;
+
+#[cfg(feature = "heif-native")]
+const APPLE_HDR_HEADROOM_MAX: f32 = 10.0;
+
+#[cfg(feature = "heif-native")]
+const APPLE_HDR_DEFAULT_STOPS: f32 = 2.0;
+
 /// Parse the raw HEIF Exif metadata block into an [`exif::Exif`] struct.
 /// Handles the ISOBMFF-style 4-byte TIFF offset header when present.
 #[cfg(feature = "heif-native")]
@@ -1716,7 +1731,7 @@ fn parse_apple_embedded_with_exif(tiff: &[u8]) -> Option<(f32, f32)> {
         }
     }
     let headroom = headroom?;
-    if !(0.1..=10.0).contains(&headroom) {
+    if !(APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(&headroom) {
         return None;
     }
     Some((headroom, gain.unwrap_or(headroom)))
@@ -1735,11 +1750,12 @@ fn parse_apple_hdr_metadata_from_exif(buf: &[u8]) -> Option<(f32, f32)> {
         _ => return None,
     };
 
-    let sig = b"Apple iOS\0";
-    let sig_index = maker_bytes.windows(sig.len()).position(|w| w == sig)?;
+    let sig_index = maker_bytes
+        .windows(APPLE_MAKERNOTE_SIGNATURE.len())
+        .position(|w| w == APPLE_MAKERNOTE_SIGNATURE)?;
 
     // Embedded Apple TIFF block starts after "Apple iOS\0" (10) + version bytes (2)
-    let tiff_start = sig_index + 12;
+    let tiff_start = sig_index + APPLE_MAKERNOTE_TIFF_OFFSET;
     if tiff_start >= maker_bytes.len() {
         return None;
     }
@@ -1835,7 +1851,7 @@ fn parse_apple_embedded_manual(tiff: &[u8]) -> Option<(f32, f32)> {
 
         let val = try_rational(val_bytes, false) // LE first (Apple quirk)
             .or_else(|| try_rational(val_bytes, true))
-            .filter(|v| (0.1..=10.0).contains(v));
+            .filter(|v| (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v));
 
         if let Some(v) = val {
             if tag == EXIF_TAG_APPLE_HDR_HEADROOM {
@@ -2486,14 +2502,14 @@ mod tests {
             println!("Test file does not exist");
             return;
         }
-        let mmap = crate::mmap_util::map_file(path).unwrap();
-        let (_ctx, handle) = super::open_heif_primary_from_bytes(&mmap).unwrap();
-        let exif_buf = super::get_heif_exif_block(handle.0).unwrap();
-        
+        let mmap = crate::mmap_util::map_file(path).expect("mmap test HEIC");
+        let (_ctx, handle) = super::open_heif_primary_from_bytes(&mmap).expect("open HEIC");
+        let exif_buf = super::get_heif_exif_block(handle.0).expect("get Exif block");
+
         let res = super::parse_apple_hdr_metadata_from_exif(&exif_buf);
         println!("Manual parser result: {:?}", res);
         assert!(res.is_some());
-        let (headroom, _) = res.unwrap();
+        let (headroom, _) = res.expect("parse Apple HDR metadata");
         assert!((1.7..1.9).contains(&headroom), "Parsed headroom value {} is not in range 1.7..1.9", headroom);
     }
 }
