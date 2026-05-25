@@ -102,7 +102,14 @@ impl GainRowLinear {
 
 /// Bilinear upsample four encoded RGB taps (0–1, not BT.709-linear yet).
 #[inline]
-fn bilinear_rgb_taps(c00: [f32; 3], c10: [f32; 3], c01: [f32; 3], c11: [f32; 3], tx: f32, ty: f32) -> [f32; 3] {
+fn bilinear_rgb_taps(
+    c00: [f32; 3],
+    c10: [f32; 3],
+    c01: [f32; 3],
+    c11: [f32; 3],
+    tx: f32,
+    ty: f32,
+) -> [f32; 3] {
     let mut out = [0.0; 3];
     for channel in 0..3 {
         let top = lerp(c00[channel], c10[channel], tx);
@@ -454,7 +461,11 @@ unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m12
         let b_partial = _mm_shuffle_ps(v0, v1, 0x56); // (1,1,1,2) => [b0,g0,b1,b1]
         let b_reordered = _mm_shuffle_ps(b_partial, b_partial, 0xB8); // (2,3,2,0) => [b0,b1,b1,b1]
         let b = _mm_blend_ps(
-            _mm_blend_ps(b_reordered, _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE0), 0b0100),
+            _mm_blend_ps(
+                b_reordered,
+                _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE0),
+                0b0100,
+            ),
             _mm_shuffle_ps(v2, v2, SHUF_SSE_ALL_LANE3),
             0b1000,
         );
@@ -464,12 +475,7 @@ unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m12
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn store_rgb_interleaved4_sse41(
-    dst: *mut f32,
-    r: __m128,
-    g: __m128,
-    b: __m128,
-) {
+unsafe fn store_rgb_interleaved4_sse41(dst: *mut f32, r: __m128, g: __m128, b: __m128) {
     unsafe {
         let rg_lo = _mm_unpacklo_ps(r, g);
         let v0 = _mm_blend_ps(
@@ -700,24 +706,14 @@ fn bt709_linearize_gain_row(nonlinear: &[f32], out: &mut [f32], width: u32) {
     {
         if std::arch::is_x86_feature_detected!("sse4.1") {
             unsafe {
-                bt709_linearize_gain_row_sse41(
-                    nonlinear.as_ptr(),
-                    out.as_mut_ptr(),
-                    width,
-                    &mut x,
-                );
+                bt709_linearize_gain_row_sse41(nonlinear.as_ptr(), out.as_mut_ptr(), width, &mut x);
             }
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
         unsafe {
-            bt709_linearize_gain_row_neon(
-                nonlinear.as_ptr(),
-                out.as_mut_ptr(),
-                width,
-                &mut x,
-            );
+            bt709_linearize_gain_row_neon(nonlinear.as_ptr(), out.as_mut_ptr(), width, &mut x);
         }
     }
     while x < width {
@@ -745,12 +741,7 @@ unsafe fn store_rgb_pixel4_interleaved_sse41(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn bt709_linearize_gain_row_sse41(
-    src: *const f32,
-    dst: *mut f32,
-    width: u32,
-    x: &mut u32,
-) {
+unsafe fn bt709_linearize_gain_row_sse41(src: *const f32, dst: *mut f32, width: u32, x: &mut u32) {
     unsafe {
         while *x + SIMD_PIXELS_PER_STEP <= width {
             let (r, g, b) = gather_gain_rgb4_sse41(src, *x as usize);
@@ -765,12 +756,7 @@ unsafe fn bt709_linearize_gain_row_sse41(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn bt709_linearize_gain_row_neon(
-    src: *const f32,
-    dst: *mut f32,
-    width: u32,
-    x: &mut u32,
-) {
+unsafe fn bt709_linearize_gain_row_neon(src: *const f32, dst: *mut f32, width: u32, x: &mut u32) {
     unsafe {
         while *x + SIMD_PIXELS_PER_STEP <= width {
             let offset = *x as usize * 3;
@@ -1182,18 +1168,8 @@ mod tests {
                 encoded: Vec::new(),
                 rgb: Vec::new(),
             };
-            precompute_gain_row_linear_legacy(
-                &gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut legacy,
-            );
-            precompute_gain_row_linear(
-                &gain_rgba,
-                GAIN_W,
-                GAIN_H,
-                y,
-                W,
-                H,
-                &mut optimized,
-            );
+            precompute_gain_row_linear_legacy(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut legacy);
+            precompute_gain_row_linear(&gain_rgba, GAIN_W, GAIN_H, y, W, H, &mut optimized);
             assert_eq!(
                 legacy.rgb[..W as usize * 3],
                 optimized.rgb[..W as usize * 3],
@@ -1366,9 +1342,7 @@ mod tests {
             .map(|i| (i as f32 * 0.125 - 3.0).sin() * 0.5 + 0.5)
             .collect();
 
-        let pattern: [f32; 12] = [
-            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0,
-        ];
+        let pattern: [f32; 12] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0];
         let expected_pattern = gather_gain_rgb4_scalar_reference(&pattern, 0);
         let (pr, pg, pb) = unsafe { load_rgb_interleaved4_sse41(pattern.as_ptr()) };
         let mut pr_lanes = [0.0_f32; 4];
@@ -1410,7 +1384,10 @@ mod tests {
             unsafe {
                 store_rgb_interleaved4_sse41(roundtrip.as_mut_ptr(), r, g, b);
             }
-            assert_eq!(chunk, &roundtrip, "store roundtrip mismatch at block {block}");
+            assert_eq!(
+                chunk, &roundtrip,
+                "store roundtrip mismatch at block {block}"
+            );
 
             let reference_interleaved = planar_to_interleaved_reference(&expected);
             assert_eq!(
