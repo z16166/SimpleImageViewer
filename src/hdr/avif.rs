@@ -58,19 +58,12 @@ fn libavif_result_to_string(result: libavif_sys::avifResult) -> String {
     }
 }
 
-/// Decode an AVIF **image sequence** (`moov` / `avis`) into SDR RGBA8 frames + delays for the
-/// existing animated-image pipeline. `bytes` must stay alive for the whole parse (libavif keeps a
-/// pointer). Returns `Ok(None)` if the file is not a multi-frame track sequence (caller uses static HDR decode).
-///
-/// **Playback:** the shared animation UI loops forever (like typical GIF viewing). We do **not** read
-/// or apply libavif’s `repetitionCount` from the bitstream.
+/// Open an AVIF **image sequence** (`moov` / `avis`) for frame-by-frame decode.
+/// Returns `Ok(None)` when the file is not a multi-frame track sequence.
 #[cfg(feature = "avif-native")]
-pub(crate) fn try_decode_avif_image_sequence_sdr(
+fn avif_open_image_sequence_decoder(
     bytes: &[u8],
-) -> Result<Option<Vec<(std::time::Duration, u32, u32, Vec<u8>)>>, String> {
-    use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
-    use std::time::Duration;
-
+) -> Result<Option<(libavif_sys::AvifDecoderOwned, usize)>, String> {
     let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
         return Err("Failed to create libavif decoder".to_string());
     };
@@ -127,6 +120,26 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
 
     let count =
         usize::try_from(count).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
+    Ok(Some((decoder, count)))
+}
+
+/// Decode an AVIF **image sequence** into per-frame HDR buffers for [`ImageData::HdrAnimated`].
+/// `bytes` must stay alive for the whole parse (libavif keeps a pointer). Returns `Ok(None)` if
+/// the file is not a multi-frame track sequence (caller uses static HDR decode).
+///
+/// **Playback:** the shared animation UI loops forever (like typical GIF viewing). We do **not** read
+/// or apply libavif’s `repetitionCount` from the bitstream.
+#[cfg(feature = "avif-native")]
+pub(crate) fn try_decode_avif_image_sequence_hdr(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<Option<Vec<(std::time::Duration, HdrImageBuffer)>>, String> {
+    use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
+    use std::time::Duration;
+
+    let Some((decoder, count)) = avif_open_image_sequence_decoder(bytes)? else {
+        return Ok(None);
+    };
 
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
@@ -148,11 +161,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         if img_ptr.is_null() {
             return Err("libavif decoder image is null".to_string());
         }
-        let img_ref = unsafe { &*img_ptr };
-        if img_ref.width == 0 || img_ref.height == 0 {
-            return Err("libavif sequence frame has zero size".to_string());
-        }
-        let rgba = decode_avif_image_rgba8_packed(img_ptr, img_ref, &libavif_result_to_string)?;
+        let hdr = avif_image_to_hdr_buffer(img_ptr, target_hdr_capacity)?;
 
         let delay_ms = (timing.duration * 1000.0)
             .round()
@@ -162,12 +171,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         } else {
             delay_ms
         };
-        frames.push((
-            Duration::from_millis(delay_ms as u64),
-            img_ref.width,
-            img_ref.height,
-            rgba,
-        ));
+        frames.push((Duration::from_millis(delay_ms as u64), hdr));
     }
 
     Ok(Some(frames))
@@ -382,7 +386,17 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     // SAFETY: `image_ptr` is only set from `AvifImageOwned::into_raw()` after
     // `avifDecoderReadMemory` succeeds — caller-owned empty image, not `siv_avif_decoder_get_image`.
     let image = unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) };
-    let image_ref = unsafe { &*image.as_ptr() };
+    avif_image_to_hdr_buffer(image.as_ptr(), target_hdr_capacity)
+}
+
+/// Convert a decoded [`libavif_sys::avifImage`] (static read or sequence frame) into an
+/// [`HdrImageBuffer`]. Safe on decoder-owned images: YUV→RGB relaxations restore CICP snapshots.
+#[cfg(feature = "avif-native")]
+fn avif_image_to_hdr_buffer(
+    image: *mut libavif_sys::avifImage,
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
+    let image_ref = unsafe { &*image };
     if image_ref.width == 0 || image_ref.height == 0 {
         return Err("libavif decoded zero-sized image".to_string());
     }
@@ -410,7 +424,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         if let Ok(gain_metadata) = avif_gain_map_to_metadata(gain_map_ref) {
             let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
             match avif_image_tone_map_pq_rgba32f(
-                image.as_ptr(),
+                image,
                 image_ref.gainMap,
                 target_hdr_capacity,
                 &libavif_result_to_string,
@@ -480,7 +494,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     }
 
     let (rgba_u16, rgb_out_depth) =
-        decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string)?;
+        decode_avif_image_rgba_u16(image, image_ref, &libavif_result_to_string)?;
 
     let metadata = avif_yuv_to_rgb_output_metadata(&metadata, image_ref);
     let color_space = metadata.color_space_hint();
@@ -768,36 +782,6 @@ fn copy_avif_tone_mapped_rgbaf16_to_rgba32f(
         }
     }
     Ok(out)
-}
-
-#[cfg(feature = "avif-native")]
-fn decode_avif_image_rgba8_packed(
-    image: *const libavif_sys::avifImage,
-    image_ref: &libavif_sys::avifImage,
-    result_to_string: &impl Fn(libavif_sys::avifResult) -> String,
-) -> Result<Vec<u8>, String> {
-    let mut rgb = std::mem::MaybeUninit::<libavif_sys::avifRGBImage>::zeroed();
-    unsafe { libavif_sys::avifRGBImageSetDefaults(rgb.as_mut_ptr(), image) };
-    let mut rgb = unsafe { rgb.assume_init() };
-    rgb.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
-    rgb.depth = 8;
-    rgb.isFloat = 0;
-    rgb.maxThreads = 0;
-
-    let w = image_ref.width as usize;
-    let h = image_ref.height as usize;
-    let mut rgba = vec![0u8; w * h * 4];
-    rgb.pixels = rgba.as_mut_ptr();
-    rgb.rowBytes = image_ref.width * 4;
-
-    let result = unsafe { libavif_sys::avifImageYUVToRGB(image, &mut rgb) };
-    if result != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!(
-            "libavif RGB8 conversion failed: {}",
-            result_to_string(result)
-        ));
-    }
-    Ok(rgba)
 }
 
 /// Maximum channel value for libavif RGB packed in `u16` lanes (`depth` ∈ {8,10,12,16}).
@@ -1476,6 +1460,47 @@ mod tests {
         eprintln!(
             "float RGB min={mn:.4} max={mx:.4} avg={:.4}",
             sum / n.max(1) as f64
+        );
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
+        use crate::hdr::types::HdrToneMapSettings;
+        use std::path::PathBuf;
+
+        let candidates = [
+            PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\Chimera-AV1-10bit-480x270.avif"),
+            PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\alpha_video.avif"),
+            PathBuf::from(r"F:\HDR\libavif\tests\data\colors-animated-8bpc-alpha-exif-xmp.avif"),
+        ];
+        let Some(path) = candidates.into_iter().find(|p| p.is_file()) else {
+            eprintln!("skip avif animated hdr test; none of the reference samples are present");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read avif");
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+        let frames = super::try_decode_avif_image_sequence_hdr(&bytes, capacity)
+            .expect("decode avif sequence")
+            .expect("animated avif should expose a sequence");
+        assert!(
+            frames.len() > 1,
+            "{} should have multiple frames",
+            path.display()
+        );
+        for (idx, (_delay, hdr)) in frames.iter().enumerate() {
+            assert!(
+                !hdr.rgba_f32.is_empty(),
+                "{} frame {idx} should carry HDR float pixels",
+                path.display()
+            );
+            assert_eq!(hdr.width > 0 && hdr.height > 0, true);
+        }
+        eprintln!(
+            "{} -> {} HdrAnimated frames, tf={:?}",
+            path.display(),
+            frames.len(),
+            frames[0].1.metadata.transfer_function
         );
     }
 

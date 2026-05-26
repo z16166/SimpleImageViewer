@@ -18,7 +18,7 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{
-    AnimationFrame, DecodedImage, ImageData, apply_exif_orientation_to_hdr_pair,
+    DecodedImage, HdrAnimationFrame, ImageData, apply_exif_orientation_to_hdr_pair,
     apply_exif_orientation_to_image_data, hdr_gain_map_decode_capacity,
     hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
@@ -65,20 +65,29 @@ pub(crate) fn load_avif_with_target_capacity(
         let mmap =
             crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
 
-        match crate::hdr::avif::try_decode_avif_image_sequence_sdr(&mmap[..]) {
+        let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
+        match crate::hdr::avif::try_decode_avif_image_sequence_hdr(&mmap[..], decode_capacity) {
             Ok(Some(raw)) if raw.len() > 1 => {
-                let frames: Vec<AnimationFrame> = raw
+                let frames: Vec<HdrAnimationFrame> = raw
                     .into_iter()
-                    .map(|(delay, w, h, px)| AnimationFrame::new(w, h, px, delay))
-                    .collect();
+                    .map(|(delay, hdr)| {
+                        let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &hdr,
+                            hdr_target_capacity,
+                            &hdr_tone_map,
+                        )?;
+                        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                        Ok(HdrAnimationFrame::new(hdr, fallback, delay))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
                 log::info!(
-                    "[Loader] AVIF image sequence: {} frames (SDR RGBA8) — {}",
+                    "[Loader] AVIF image sequence: {} frames (HdrAnimated) — {}",
                     frames.len(),
                     path.display()
                 );
                 return Ok(apply_exif_orientation_to_image_data(
                     path.as_path(),
-                    ImageData::Animated(frames),
+                    ImageData::HdrAnimated(frames),
                 ));
             }
             Ok(_) => {}
@@ -90,7 +99,6 @@ pub(crate) fn load_avif_with_target_capacity(
             }
         }
 
-        let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
         match crate::hdr::avif::decode_avif_hdr_bytes_with_target_capacity(
             &mmap[..],
             decode_capacity,
