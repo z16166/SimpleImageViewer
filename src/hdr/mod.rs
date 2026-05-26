@@ -15,6 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod avif;
+#[cfg(feature = "avif-native")]
+pub(crate) mod avif_gain_map_deferred;
 pub mod capabilities;
 pub(crate) mod cicp;
 pub mod decode;
