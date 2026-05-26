@@ -430,6 +430,8 @@ fn avif_image_to_hdr_buffer(
                 &libavif_result_to_string,
             ) {
                 Ok(rgba_f32) => {
+                    let mut rgba_f32 = rgba_f32;
+                    avif_fill_opaque_alpha_f32_if_no_alpha_plane(&mut rgba_f32, image_ref);
                     let luminance = metadata.luminance;
                     let mut metadata = HdrImageMetadata {
                         transfer_function: HdrTransferFunction::Pq,
@@ -493,8 +495,9 @@ fn avif_image_to_hdr_buffer(
         );
     }
 
-    let (rgba_u16, rgb_out_depth) =
+    let (mut rgba_u16, rgb_out_depth) =
         decode_avif_image_rgba_u16(image, image_ref, &libavif_result_to_string)?;
+    avif_fill_opaque_alpha_u16_if_no_alpha_plane(&mut rgba_u16, rgb_out_depth, image_ref);
 
     let metadata = avif_yuv_to_rgb_output_metadata(&metadata, image_ref);
     let color_space = metadata.color_space_hint();
@@ -576,6 +579,7 @@ fn avif_image_to_hdr_buffer(
     } else {
         metadata
     };
+    avif_fill_opaque_alpha_f32_if_no_alpha_plane(&mut rgba_f32, image_ref);
     let out_color_space = final_metadata.color_space_hint();
 
     Ok(HdrImageBuffer {
@@ -791,6 +795,42 @@ fn rgb_channel_max_f(rgb_depth: u32) -> f32 {
         return u16::MAX as f32;
     }
     ((1u32 << rgb_depth).saturating_sub(1)).max(1) as f32
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_image_has_alpha_plane(image_ref: &libavif_sys::avifImage) -> bool {
+    !image_ref.alphaPlane.is_null()
+}
+
+/// libavif leaves alpha at **0** when the bitstream has no alpha plane (even with `ignoreAlpha=0`).
+/// The HDR plane WGSL treats `a <= 0` as fully transparent → black screen on opaque stills
+/// (e.g. `paris_icc_exif_xmp.avif`).
+#[cfg(feature = "avif-native")]
+fn avif_fill_opaque_alpha_u16_if_no_alpha_plane(
+    rgba_u16: &mut [u16],
+    rgb_out_depth: u32,
+    image_ref: &libavif_sys::avifImage,
+) {
+    if avif_image_has_alpha_plane(image_ref) {
+        return;
+    }
+    let alpha_max = rgb_channel_max_f(rgb_out_depth) as u16;
+    for px in rgba_u16.chunks_exact_mut(4) {
+        px[3] = alpha_max;
+    }
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_fill_opaque_alpha_f32_if_no_alpha_plane(
+    rgba_f32: &mut [f32],
+    image_ref: &libavif_sys::avifImage,
+) {
+    if avif_image_has_alpha_plane(image_ref) {
+        return;
+    }
+    for px in rgba_f32.chunks_exact_mut(4) {
+        px[3] = 1.0;
+    }
 }
 
 /// Maps container CICP to shader transfer after [`libavif_sys::avifImageYUVToRGB`].
@@ -1460,6 +1500,78 @@ mod tests {
         eprintln!(
             "float RGB min={mn:.4} max={mx:.4} avg={:.4}",
             sum / n.max(1) as f64
+        );
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
+        use crate::hdr::types::HdrToneMapSettings;
+        use crate::loader::{DecodedImage, hdr_sdr_fallback_rgba8_eager_or_placeholder};
+
+        let path = std::path::Path::new(r"F:\HDR\libavif\tests\data\paris_icc_exif_xmp.avif");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read avif");
+        let tone = HdrToneMapSettings::default();
+        let capacity = tone.target_hdr_capacity();
+        let hdr =
+            super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
+        let fallback_pixels =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback");
+        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+        eprintln!(
+            "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",
+            hdr.width,
+            hdr.height,
+            hdr.metadata.transfer_function,
+            hdr.metadata.reference,
+            hdr.color_space,
+            hdr.metadata.color_profile,
+            hdr.metadata.gain_map.is_some(),
+        );
+        let mut min_a = f32::INFINITY;
+        let mut max_a = f32::NEG_INFINITY;
+        let mut min_rgb = f32::INFINITY;
+        let mut max_rgb = f32::NEG_INFINITY;
+        let mut zero_alpha_pixels = 0_usize;
+        for px in hdr.rgba_f32.chunks_exact(4) {
+            let a = px[3];
+            min_a = min_a.min(a);
+            max_a = max_a.max(a);
+            if a <= 0.0 {
+                zero_alpha_pixels += 1;
+            }
+            for &c in &px[..3] {
+                if c.is_finite() {
+                    min_rgb = min_rgb.min(c);
+                    max_rgb = max_rgb.max(c);
+                }
+            }
+        }
+        eprintln!(
+            "float alpha min={min_a:.4} max={max_a:.4} zero_alpha_px={zero_alpha_pixels}/{}",
+            hdr.rgba_f32.len() / 4
+        );
+        eprintln!("float rgb min={min_rgb:.4} max={max_rgb:.4}");
+        let fb = fallback.rgba();
+        let fb_center = fb.len() / 8;
+        eprintln!(
+            "fallback center rgba8 = [{}, {}, {}, {}]",
+            fb[fb_center],
+            fb[fb_center + 1],
+            fb[fb_center + 2],
+            fb[fb_center + 3]
+        );
+        assert!(
+            max_rgb > 0.01,
+            "paris ICC AVIF should not decode to all-black RGB"
+        );
+        assert!(
+            max_a > 0.01,
+            "paris ICC AVIF alpha must be non-zero for HDR shader (alpha<=0 forces black)"
         );
     }
 
