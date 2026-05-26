@@ -359,6 +359,32 @@ fn load_hdr_texel(texel: vec2<i32>, texture_size: vec2<i32>) -> vec4<f32> {
     );
 }
 
+fn premultiply_hdr_rgba(rgba: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(rgba.rgb * rgba.a, rgba.a);
+}
+
+fn unpremultiply_hdr_rgba(premul: vec4<f32>) -> vec4<f32> {
+    if premul.a <= 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return vec4<f32>(premul.rgb / premul.a, premul.a);
+}
+
+// Rgba32Float is not filterable in WebGPU; emulate bilinear in shader (4 loads).
+// Premultiplied interpolation avoids RGB halos on alpha edges (animated icos4d, etc.).
+fn bilinear_load_hdr(uv: vec2<f32>, texture_size_i: vec2<i32>) -> vec4<f32> {
+    let texel_f = uv * vec2<f32>(texture_size_i) - vec2<f32>(0.5);
+    let base = vec2<i32>(i32(floor(texel_f.x)), i32(floor(texel_f.y)));
+    let frac = texel_f - vec2<f32>(base);
+    let p00 = premultiply_hdr_rgba(load_hdr_texel(base, texture_size_i));
+    let p10 = premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(base.x + 1, base.y), texture_size_i));
+    let p01 = premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(base.x, base.y + 1), texture_size_i));
+    let p11 = premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(base.x + 1, base.y + 1), texture_size_i));
+    let top = mix(p00, p10, frac.x);
+    let bot = mix(p01, p11, frac.x);
+    return unpremultiply_hdr_rgba(mix(top, bot, frac.y));
+}
+
 fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
     let texture_size_u = textureDimensions(hdr_texture);
     let texture_size = vec2<f32>(texture_size_u);
@@ -372,7 +398,7 @@ fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
     );
 
     if max(footprint.x, footprint.y) <= 1.25 {
-        return load_hdr_texel(vec2<i32>(uv * texture_size), texture_size_i);
+        return bilinear_load_hdr(uv, texture_size_i);
     }
 
     var sum = vec4<f32>(0.0);
@@ -380,10 +406,10 @@ fn sample_hdr_for_display(uv: vec2<f32>) -> vec4<f32> {
         for (var x = 0u; x < HDR_DOWNSCALE_SAMPLE_GRID; x = x + 1u) {
             let sample_uv = (vec2<f32>(f32(x), f32(y)) + vec2<f32>(0.5)) / f32(HDR_DOWNSCALE_SAMPLE_GRID);
             let offset = (sample_uv - vec2<f32>(0.5)) * footprint;
-            sum += load_hdr_texel(vec2<i32>(uv * texture_size + offset), texture_size_i);
+            sum += premultiply_hdr_rgba(load_hdr_texel(vec2<i32>(uv * texture_size + offset), texture_size_i));
         }
     }
-    return sum / f32(HDR_DOWNSCALE_SAMPLE_GRID * HDR_DOWNSCALE_SAMPLE_GRID);
+    return unpremultiply_hdr_rgba(sum / f32(HDR_DOWNSCALE_SAMPLE_GRID * HDR_DOWNSCALE_SAMPLE_GRID));
 }
 
 // IEC 61966-2-1 sRGB opto-electronic transfer function (scalar, output 0..1).
@@ -3023,9 +3049,11 @@ mod tests {
     #[test]
     fn shader_averages_hdr_texels_when_downscaling() {
         assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sample_hdr_for_display"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn bilinear_load_hdr"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("premultiply_hdr_rgba"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("HDR_DOWNSCALE_SAMPLE_GRID"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("dpdx(uv)"));
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("sum += load_hdr_texel"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("sum += premultiply_hdr_rgba"));
     }
 
     #[test]
