@@ -439,6 +439,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
                         ),
                         capped_display_referred: false,
                         apple_heic_deferred: None,
+                        jpeg_deferred: None,
                     });
                     return Ok(HdrImageBuffer {
                         width: image_ref.width,
@@ -551,6 +552,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
             diagnostic,
             capped_display_referred: false,
             apple_heic_deferred: None,
+            jpeg_deferred: None,
         });
         return Ok(HdrImageBuffer {
             width: image_ref.width,

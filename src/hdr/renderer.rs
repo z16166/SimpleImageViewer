@@ -17,11 +17,14 @@
 #[cfg(feature = "heif-native")]
 #[path = "apple_compose_gpu.rs"]
 mod apple_compose_gpu;
+#[path = "jpeg_compose_gpu.rs"]
+mod jpeg_compose_gpu;
 
 #[cfg(feature = "heif-native")]
 use super::heif_apple_gain_map::apple_gain_map_display_weight;
 #[cfg(feature = "heif-native")]
 use super::heif_apple_gain_map_gpu::apple_heic_deferred_from_metadata;
+use super::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
 use super::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
@@ -767,19 +770,24 @@ impl CallbackTrait for HdrImagePlaneCallback {
         );
 
         let image_key = HdrImageKey::from_image(&self.image);
+        let jpeg_deferred = jpeg_deferred_from_metadata(&self.image.metadata);
         #[cfg(feature = "heif-native")]
         let apple_deferred = apple_heic_deferred_from_metadata(&self.image.metadata);
         #[cfg(not(feature = "heif-native"))]
         let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
         let needs_upload = resources.uploaded_image_key != Some(image_key);
+        let needs_jpeg_compose = jpeg_deferred.is_some()
+            && (needs_upload
+                || resources.baked_jpeg_image_key != Some(image_key)
+                || resources.baked_jpeg_weight_bits != Some(target_capacity_bits));
         #[cfg(feature = "heif-native")]
-        let needs_compose = apple_deferred.is_some()
+        let needs_apple_compose = apple_deferred.is_some()
             && (needs_upload
                 || resources.baked_apple_image_key != Some(image_key)
                 || resources.baked_apple_weight_bits != Some(target_capacity_bits));
         #[cfg(not(feature = "heif-native"))]
-        let needs_compose = false;
+        let needs_apple_compose = false;
 
         if needs_upload {
             match upload_image_plane(device, queue, &self.image) {
@@ -787,9 +795,15 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     resources.uploaded_image_key = Some(image_key);
                     resources.uploaded_texture = Some(uploaded.base.texture);
                     resources.uploaded_view = Some(uploaded.base.view);
-                    #[cfg(feature = "heif-native")]
-                    {
-                        resources.uploaded_display_storage_view = uploaded.base.storage_view;
+                    resources.uploaded_display_storage_view = uploaded.base.storage_view;
+                    if let Some(sdr) = uploaded.sdr_baseline {
+                        resources.uploaded_sdr_texture = Some(sdr.texture);
+                        resources.uploaded_sdr_view = Some(sdr.view);
+                        resources.baked_jpeg_image_key = None;
+                        resources.baked_jpeg_weight_bits = None;
+                    } else {
+                        resources.uploaded_sdr_texture = None;
+                        resources.uploaded_sdr_view = None;
                     }
                     if let Some(gain) = uploaded.gain {
                         resources.uploaded_gain_texture = Some(gain.texture);
@@ -803,12 +817,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     } else {
                         resources.uploaded_gain_texture = None;
                         resources.uploaded_gain_view = None;
-                        #[cfg(feature = "heif-native")]
-                        {
-                            resources.uploaded_display_storage_view = None;
-                        }
+                        resources.uploaded_display_storage_view = None;
                         resources.baked_apple_image_key = None;
                         resources.baked_apple_weight_bits = None;
+                        resources.baked_jpeg_image_key = None;
+                        resources.baked_jpeg_weight_bits = None;
                         #[cfg(feature = "heif-native")]
                         {
                             resources.encoded_primary_source_ptr = None;
@@ -822,25 +835,61 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     resources.uploaded_view = None;
                     resources.uploaded_gain_texture = None;
                     resources.uploaded_gain_view = None;
+                    resources.uploaded_sdr_texture = None;
+                    resources.uploaded_sdr_view = None;
+                    resources.uploaded_display_storage_view = None;
                     #[cfg(feature = "heif-native")]
                     {
-                        resources.uploaded_display_storage_view = None;
                         resources.encoded_primary_source_ptr = None;
                     }
                     resources.baked_apple_image_key = None;
                     resources.baked_apple_weight_bits = None;
+                    resources.baked_jpeg_image_key = None;
+                    resources.baked_jpeg_weight_bits = None;
                     resources.bind_group = None;
                     return Vec::new();
                 }
             }
         }
 
-        #[cfg(feature = "heif-native")]
         let mut compose_command_buffers = Vec::new();
-        #[cfg(not(feature = "heif-native"))]
-        let compose_command_buffers: Vec<wgpu::CommandBuffer> = Vec::new();
+        if needs_jpeg_compose {
+            if resources.uploaded_view.is_none()
+                || resources.uploaded_sdr_view.is_none()
+                || resources.uploaded_gain_view.is_none()
+                || resources.uploaded_display_storage_view.is_none()
+            {
+                resources.bind_group = None;
+                return compose_command_buffers;
+            }
+            if let Some(deferred) = jpeg_deferred {
+                let sdr_view = resources.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
+                let gain_view = resources
+                    .uploaded_gain_view
+                    .as_ref()
+                    .expect("jpeg gain view");
+                let display_storage = resources
+                    .uploaded_display_storage_view
+                    .as_ref()
+                    .expect("jpeg display storage view");
+                compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
+                    device,
+                    queue,
+                    resources,
+                    &self.image,
+                    deferred,
+                    &self.tone_map,
+                    sdr_view,
+                    gain_view,
+                    display_storage,
+                ));
+                resources.baked_jpeg_image_key = Some(image_key);
+                resources.baked_jpeg_weight_bits = Some(target_capacity_bits);
+            }
+        }
+
         #[cfg(feature = "heif-native")]
-        if needs_compose {
+        if needs_apple_compose {
             if resources.uploaded_view.is_none()
                 || resources.uploaded_gain_view.is_none()
                 || resources.uploaded_display_storage_view.is_none()
@@ -894,9 +943,13 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let apple_gpu_composed = apple_deferred.is_some()
             && resources.baked_apple_image_key == Some(image_key)
             && resources.uploaded_view.is_some();
+        let jpeg_gpu_composed = jpeg_deferred.is_some()
+            && resources.baked_jpeg_image_key == Some(image_key)
+            && resources.uploaded_view.is_some();
+        let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
 
-        // Never display encoded primary for deferred HEIC (causes HDR zoom stains). Wait for GPU compose.
-        if apple_deferred.is_some() && !apple_gpu_composed {
+        // Never display uncomposed deferred planes (SDR baseline / encoded primary).
+        if (apple_deferred.is_some() || jpeg_deferred.is_some()) && !deferred_gpu_composed {
             resources.bind_group = None;
             return compose_command_buffers;
         }
@@ -910,11 +963,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.target_format,
             self.uv_rect,
             native_display_scale,
-            apple_gpu_composed,
+            deferred_gpu_composed,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        let gain_view = if apple_gpu_composed {
+        let gain_view = if deferred_gpu_composed {
             &resources.dummy_gain_view
         } else {
             resources
@@ -1370,8 +1423,14 @@ struct HdrCallbackResources {
     uploaded_view: Option<wgpu::TextureView>,
     uploaded_gain_texture: Option<wgpu::Texture>,
     uploaded_gain_view: Option<wgpu::TextureView>,
-    #[cfg(feature = "heif-native")]
+    uploaded_sdr_texture: Option<wgpu::Texture>,
+    uploaded_sdr_view: Option<wgpu::TextureView>,
     uploaded_display_storage_view: Option<wgpu::TextureView>,
+    jpeg_compose_bind_group_layout: wgpu::BindGroupLayout,
+    jpeg_compose_pipeline: wgpu::ComputePipeline,
+    jpeg_compose_uniform_buffer: wgpu::Buffer,
+    baked_jpeg_image_key: Option<HdrImageKey>,
+    baked_jpeg_weight_bits: Option<u32>,
     #[cfg(feature = "heif-native")]
     compose_bind_group_layout: wgpu::BindGroupLayout,
     #[cfg(feature = "heif-native")]
@@ -1392,13 +1451,13 @@ struct HdrCallbackResources {
 struct CallbackUpload {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    #[cfg(feature = "heif-native")]
     storage_view: Option<wgpu::TextureView>,
 }
 
 struct ImagePlaneUpload {
     base: CallbackUpload,
     gain: Option<CallbackUpload>,
+    sdr_baseline: Option<CallbackUpload>,
 }
 
 const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -1525,6 +1584,8 @@ fn create_callback_resources(
     #[cfg(feature = "heif-native")]
     let (compose_bind_group_layout, compose_pipeline, compose_tone_map_buffer) =
         apple_compose_gpu::create_compose_compute_resources(device);
+    let (jpeg_compose_bind_group_layout, jpeg_compose_pipeline, jpeg_compose_uniform_buffer) =
+        jpeg_compose_gpu::create_jpeg_compose_compute_resources(device);
 
     HdrCallbackResources {
         target_format,
@@ -1539,8 +1600,14 @@ fn create_callback_resources(
         uploaded_view: None,
         uploaded_gain_texture: None,
         uploaded_gain_view: None,
-        #[cfg(feature = "heif-native")]
+        uploaded_sdr_texture: None,
+        uploaded_sdr_view: None,
         uploaded_display_storage_view: None,
+        jpeg_compose_bind_group_layout,
+        jpeg_compose_pipeline,
+        jpeg_compose_uniform_buffer,
+        baked_jpeg_image_key: None,
+        baked_jpeg_weight_bits: None,
         #[cfg(feature = "heif-native")]
         compose_bind_group_layout,
         #[cfg(feature = "heif-native")]
@@ -1921,7 +1988,6 @@ fn upload_rgba8_texture(
     Ok(CallbackUpload {
         texture,
         view,
-        #[cfg(feature = "heif-native")]
         storage_view: None,
     })
 }
@@ -1931,6 +1997,35 @@ fn upload_image_plane(
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
+    if let Some(deferred) = jpeg_deferred_from_metadata(&image.metadata) {
+        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let sdr = upload_rgba8_texture(
+            device,
+            queue,
+            "simple-image-viewer-hdr-image-plane-jpeg-sdr-texture",
+            image.width,
+            image.height,
+            deferred.sdr_rgba.as_slice(),
+            HDR_APPLE_GAIN_TEXTURE_FORMAT,
+            device.limits().max_texture_dimension_2d,
+        )?;
+        let gain = upload_rgba8_texture(
+            device,
+            queue,
+            "simple-image-viewer-hdr-image-plane-jpeg-gain-texture",
+            deferred.gain_width,
+            deferred.gain_height,
+            deferred.gain_rgba.as_slice(),
+            HDR_APPLE_GAIN_TEXTURE_FORMAT,
+            device.limits().max_texture_dimension_2d,
+        )?;
+        return Ok(ImagePlaneUpload {
+            base,
+            gain: Some(gain),
+            sdr_baseline: Some(sdr),
+        });
+    }
+
     #[cfg(feature = "heif-native")]
     if let Some(deferred) = apple_heic_deferred_from_metadata(&image.metadata) {
         let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
@@ -1947,14 +2042,18 @@ fn upload_image_plane(
         return Ok(ImagePlaneUpload {
             base,
             gain: Some(gain),
+            sdr_baseline: None,
         });
     }
 
     let base = upload_callback_image(device, queue, image)?;
-    Ok(ImagePlaneUpload { base, gain: None })
+    Ok(ImagePlaneUpload {
+        base,
+        gain: None,
+        sdr_baseline: None,
+    })
 }
 
-#[cfg(feature = "heif-native")]
 fn create_empty_rgba32f_texture(
     device: &wgpu::Device,
     width: u32,
@@ -2377,6 +2476,7 @@ mod tests {
             diagnostic: String::new(),
             capped_display_referred: true,
             apple_heic_deferred: None,
+            jpeg_deferred: None,
         });
         let tone = HdrToneMapSettings {
             sdr_white_nits: 203.0,

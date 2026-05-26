@@ -104,6 +104,7 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
             headroom_span,
             stops,
         }),
+        jpeg_deferred: None,
     });
 
     HdrImageBuffer { metadata, ..hdr }

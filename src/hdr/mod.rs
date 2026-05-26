@@ -20,7 +20,6 @@ pub(crate) mod cicp;
 pub mod decode;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
-pub(crate) mod mpf;
 pub mod heif;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map;
@@ -30,9 +29,11 @@ pub(crate) mod heif_apple_gain_map_compose_simd;
 pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
+pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
 pub(crate) mod logluv_decode;
 pub mod monitor;
+pub(crate) mod mpf;
 pub(crate) mod openexr_core_backend;
 pub mod platform;
 pub mod radiance_tiled;
@@ -42,5 +43,7 @@ pub mod surface;
 pub mod tiled;
 pub mod types;
 pub mod ultra_hdr;
+pub(crate) mod ultra_hdr_compose;
+pub(crate) mod ultra_hdr_deferred;
 pub mod vulkan_metadata;
 pub mod wsi_probe;

@@ -152,6 +152,7 @@ pub(crate) fn apply_apple_gain_map_composition(
         ),
         capped_display_referred: false,
         apple_heic_deferred: None,
+        jpeg_deferred: None,
     });
 
     HdrImageBuffer {

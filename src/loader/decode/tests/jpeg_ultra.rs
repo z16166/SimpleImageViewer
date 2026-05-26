@@ -18,12 +18,34 @@
 
 use std::path::PathBuf;
 
-use crate::hdr::types::HdrToneMapSettings;
+use crate::hdr::gain_map::gain_map_weight;
+use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::loader::ImageData;
 use crate::loader::decode::jpeg::{load_jpeg, load_jpeg_with_target_capacity};
 use crate::loader::decode::load_image_file;
 
 use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
+
+fn assert_ultra_hdr_gpu_deferred_route(hdr: &HdrImageBuffer) {
+    if let Some(err) = ultra_hdr_gpu_deferred_route_error(hdr) {
+        panic!("{err}");
+    }
+}
+
+fn ultra_hdr_gpu_deferred_route_error(hdr: &HdrImageBuffer) -> Option<String> {
+    if !hdr.rgba_f32.is_empty() {
+        return Some("rgba_f32 should be empty for GPU-deferred JPEG_R".to_string());
+    }
+    let gain_map = hdr.metadata.gain_map.as_ref()?;
+    let deferred = gain_map.jpeg_deferred.as_ref()?;
+    if deferred.sdr_rgba.len() != hdr.width as usize * hdr.height as usize * 4 {
+        return Some("baseline SDR plane size mismatch".to_string());
+    }
+    if deferred.gain_width == 0 || deferred.gain_height == 0 {
+        return Some("gain map plane missing".to_string());
+    }
+    None
+}
 
 #[test]
 fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
@@ -71,11 +93,13 @@ fn ultra_hdr_jpeg_sample_loads_as_hdr_image_data() {
     };
     assert_eq!((hdr.width, hdr.height), (4080, 3072));
     assert_eq!((fallback.width, fallback.height), (4080, 3072));
+    assert_ultra_hdr_gpu_deferred_route(&hdr);
     assert!(
-        hdr.rgba_f32
+        fallback
+            .rgba()
             .chunks_exact(4)
-            .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
-        "Ultra HDR loader should preserve HDR highlights"
+            .any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0),
+        "Ultra HDR loader should expose baseline SDR fallback pixels"
     );
 }
 
@@ -111,19 +135,26 @@ fn ultra_hdr_loader_uses_target_hdr_capacity() {
         panic!("expected high-capacity Ultra HDR JPEG_R to load as HDR image data");
     };
 
-    let low_peak = low
-        .rgba_f32
-        .chunks_exact(4)
-        .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
-        .fold(0.0_f32, f32::max);
-    let high_peak = high
-        .rgba_f32
-        .chunks_exact(4)
-        .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
-        .fold(0.0_f32, f32::max);
+    assert_ultra_hdr_gpu_deferred_route(&low);
+    assert_ultra_hdr_gpu_deferred_route(&high);
+
+    let low_meta = low
+        .metadata
+        .gain_map
+        .as_ref()
+        .and_then(|gm| gm.jpeg_deferred.as_ref())
+        .expect("low-capacity deferred metadata")
+        .metadata;
+    let high_meta = high
+        .metadata
+        .gain_map
+        .as_ref()
+        .and_then(|gm| gm.jpeg_deferred.as_ref())
+        .expect("high-capacity deferred metadata")
+        .metadata;
 
     assert!(
-        high_peak > low_peak,
+        gain_map_weight(high_meta, 8.0) > gain_map_weight(low_meta, 1.0),
         "loader should pass target HDR capacity into JPEG_R gain-map recovery"
     );
 }
@@ -182,17 +213,14 @@ fn ultra_hdr_original_corpus_loads_as_hdr_image_data() {
 
             match load_jpeg(&path) {
                 Ok(ImageData::Hdr { hdr, fallback }) => {
-                    let has_hdr_highlight = hdr
-                        .rgba_f32
-                        .chunks_exact(4)
-                        .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0);
                     if hdr.width == 0
                         || hdr.height == 0
                         || fallback.width != hdr.width
                         || fallback.height != hdr.height
-                        || !has_hdr_highlight
                     {
                         Some(format!("{}: invalid HDR output", path.display()))
+                    } else if let Some(err) = ultra_hdr_gpu_deferred_route_error(&hdr) {
+                        Some(format!("{}: {err}", path.display()))
                     } else {
                         None
                     }

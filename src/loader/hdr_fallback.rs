@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 
 #[inline]
@@ -53,6 +54,9 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr_target_capacity: f32,
     tone: &HdrToneMapSettings,
 ) -> Result<Vec<u8>, String> {
+    if let Some(deferred) = jpeg_deferred_from_metadata(&hdr.metadata) {
+        return Ok(deferred.sdr_rgba.as_ref().clone());
+    }
     if hdr_display_requests_sdr_preview(hdr_target_capacity) {
         hdr_to_sdr_with_user_tone(hdr, tone)
     } else {

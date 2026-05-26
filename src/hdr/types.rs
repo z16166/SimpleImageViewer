@@ -113,6 +113,18 @@ pub struct HdrGainMapMetadata {
     pub capped_display_referred: bool,
     /// Apple HEIC: encoded base + gain map kept for GPU compose (`weight` applied at draw time).
     pub apple_heic_deferred: Option<AppleHeicGainMapGpuSource>,
+    /// Ultra HDR / ISO 21496 JPEG: baseline SDR + gain map kept for GPU compose at display time.
+    pub jpeg_deferred: Option<JpegGainMapGpuSource>,
+}
+
+/// Baseline SDR and gain-map planes for Ultra HDR JPEG GPU compose (`jpeg_compose_gpu`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JpegGainMapGpuSource {
+    pub sdr_rgba: std::sync::Arc<Vec<u8>>,
+    pub gain_rgba: std::sync::Arc<Vec<u8>>,
+    pub gain_width: u32,
+    pub gain_height: u32,
+    pub metadata: crate::hdr::gain_map::GainMapMetadata,
 }
 
 /// Raw planes for Apple HEIC HDR gain-map compose on the GPU (see `heif_apple_gain_map_gpu`).
@@ -561,6 +573,7 @@ mod tests {
                 diagnostic: "GainMapMax=[2.000,2.000,2.000]".to_string(),
                 capped_display_referred: false,
                 apple_heic_deferred: None,
+                jpeg_deferred: None,
             }),
             ..HdrImageMetadata::default()
         };

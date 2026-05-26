@@ -2074,6 +2074,7 @@ fn inspect_heif_gain_map_auxiliaries(
         diagnostic,
         capped_display_referred: false,
         apple_heic_deferred: None,
+        jpeg_deferred: None,
     })
 }
 

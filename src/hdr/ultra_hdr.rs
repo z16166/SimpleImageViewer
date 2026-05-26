@@ -27,16 +27,20 @@ use crate::hdr::gain_map::{
     iso_gain_map_metadata, luminance_hints_from_gain_map, sample_gain_map_rgb,
     validate_gain_map_metadata,
 };
-use crate::hdr::mpf::{
-    extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image,
-};
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
+use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
+use crate::hdr::mpf::{extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+#[cfg(test)]
+use crate::hdr::types::HdrPixelFormat;
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata};
+#[cfg(test)]
+use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
+use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
 
 #[cfg(test)]
 use crate::hdr::types::HdrToneMapSettings;
@@ -98,7 +102,7 @@ fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
 fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-    decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+    decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
         &bytes,
         HdrToneMapSettings::default().target_hdr_capacity(),
     )
@@ -114,6 +118,14 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
+    decode_ultra_hdr_jpeg_deferred_bytes(bytes, target_hdr_capacity)
+}
+
+#[cfg(test)]
+pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
     if !info.is_ultra_hdr {
         return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
@@ -122,36 +134,19 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     let (width, height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
     let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
-    log::debug!(
-        "[HDR] Ultra HDR JPEG_R metadata: {}",
-        gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
-    );
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-    for y in 0..height {
-        for x in 0..width {
-            let sdr_index = (y as usize * width as usize + x as usize) * 4;
-            let gain_value =
-                sample_gain_map_rgb(&gain_rgba, gain_width, gain_height, x, y, width, height);
-            append_hdr_pixel_from_sdr_and_gain(
-                &mut rgba_f32,
-                &sdr_rgba[sdr_index..sdr_index + 4],
-                gain_value,
-                metadata,
-                target_hdr_capacity,
-            );
-        }
-    }
-
-    Ok(HdrImageBuffer {
+    Ok(compose_ultra_hdr_cpu(
         width,
         height,
-        format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::LinearSrgb,
-        metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
-        rgba_f32: Arc::new(rgba_f32),
-    })
+        &sdr_rgba,
+        &gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        hdr_metadata_for_ultra_hdr_gain_map(metadata),
+        target_hdr_capacity,
+    ))
 }
 
 pub(crate) fn apply_orientation_to_hdr_buffer(
@@ -160,6 +155,13 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
 ) -> HdrImageBuffer {
     if orientation <= 1 {
         return buffer;
+    }
+
+    if jpeg_deferred_from_metadata(&buffer.metadata).is_some() {
+        return crate::hdr::jpeg_gain_map_gpu::apply_orientation_to_jpeg_deferred_hdr_buffer(
+            buffer,
+            orientation,
+        );
     }
 
     let expected_len = buffer.width as usize * buffer.height as usize * 4;
@@ -379,7 +381,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 }
 
-fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
+pub(crate) fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
     if !bytes.starts_with(&JPEG_SOI) {
         return Err("not a JPEG stream".to_string());
     }
@@ -420,7 +422,7 @@ fn hdr_capacity_ratio_from_xmp_headroom(headroom_log2: f32) -> f32 {
     2.0_f32.powf(headroom_log2.max(0.0))
 }
 
-fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
+pub(crate) fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
     let segments = primary_metadata_segments(gain_map_jpeg)?;
     for segment in segments
         .iter()
@@ -546,7 +548,7 @@ fn display_to_physical_pixel(
     }
 }
 
-fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     if let Ok(gain_map) = extract_container_gain_map_jpeg_bytes(bytes) {
         return Ok(gain_map);
     }
@@ -745,6 +747,57 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn production_decode_defers_gain_map_compose_to_gpu() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping deferred decode test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+        let path = root.join("Triad-gain-map.jpg");
+        if !path.is_file() {
+            eprintln!("skipping deferred decode test; {} missing", path.display());
+            return;
+        }
+
+        let file = std::fs::File::open(&path).expect("open gain map JPEG");
+        let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap gain map JPEG") };
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+
+        let deferred = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity)
+            .expect("deferred Ultra HDR decode");
+        assert!(
+            deferred.rgba_f32.is_empty(),
+            "production decode should defer HDR pixels"
+        );
+        let gain_map = deferred
+            .metadata
+            .gain_map
+            .as_ref()
+            .expect("gain map metadata");
+        let jpeg_deferred = gain_map
+            .jpeg_deferred
+            .as_ref()
+            .expect("jpeg deferred GPU source");
+        assert_eq!(
+            jpeg_deferred.sdr_rgba.len(),
+            deferred.width as usize * deferred.height as usize * 4
+        );
+        assert!(jpeg_deferred.gain_width > 0 && jpeg_deferred.gain_height > 0);
+
+        let (_, _, baseline_sdr) = libjpeg_turbo::decode_to_rgba(&bytes).expect("baseline SDR");
+        assert_eq!(jpeg_deferred.sdr_rgba.as_slice(), baseline_sdr.as_slice());
+
+        let composed = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, capacity)
+            .expect("CPU compose reference");
+        assert!(
+            composed
+                .rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "CPU reference should still recover HDR highlights"
+        );
     }
 
     #[test]
@@ -1318,7 +1371,7 @@ mod tests {
                     gain_map_metadata_diagnostic(meta, capacity)
                 );
             }
-            if let Ok(hdr) = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity) {
+            if let Ok(hdr) = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, capacity) {
                 let cx = hdr.width as usize / 2;
                 let cy = hdr.height as usize / 2;
                 let i = (cy * hdr.width as usize + cx) * 4;
@@ -1364,9 +1417,9 @@ mod tests {
         let file = std::fs::File::open(&path).expect("open Ultra HDR sample");
         let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap Ultra HDR sample") };
 
-        let low = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 1.0)
+        let low = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, 1.0)
             .expect("decode low-capacity Ultra HDR");
-        let high = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 8.0)
+        let high = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, 8.0)
             .expect("decode high-capacity Ultra HDR");
 
         let low_peak = low

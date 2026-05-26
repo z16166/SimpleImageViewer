@@ -165,11 +165,7 @@ fn parse_tiff_header(tiff: &[u8]) -> Option<(bool, u32)> {
     Some((big_endian, read_u32(&tiff[4..], big_endian)?))
 }
 
-fn parse_mpf_index_ifd(
-    tiff: &[u8],
-    ifd_offset: u32,
-    big_endian: bool,
-) -> Option<(u32, Vec<u8>)> {
+fn parse_mpf_index_ifd(tiff: &[u8], ifd_offset: u32, big_endian: bool) -> Option<(u32, Vec<u8>)> {
     let ifd_start = ifd_offset as usize;
     if ifd_start + 2 > tiff.len() {
         return None;
@@ -307,12 +303,15 @@ mod tests {
 
         assert!(mpf_app2_payload_has_gain_map_image(&payload));
 
-        let gain_map = extract_mpf_gain_map_jpeg_from_bytes(&bytes, &payload).expect("extract MPF gain map");
+        let gain_map =
+            extract_mpf_gain_map_jpeg_from_bytes(&bytes, &payload).expect("extract MPF gain map");
         assert!(gain_map.starts_with(&[0xFF, 0xD8]));
         assert!(gain_map.ends_with(&[0xFF, 0xD9]));
-        assert!(gain_map
-            .windows(b"hdrgm:GainMapMax".len())
-            .any(|window| window == b"hdrgm:GainMapMax"));
+        assert!(
+            gain_map
+                .windows(b"hdrgm:GainMapMax".len())
+                .any(|window| window == b"hdrgm:GainMapMax")
+        );
     }
 
     #[test]
