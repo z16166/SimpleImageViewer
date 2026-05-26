@@ -65,7 +65,7 @@ struct ToneMapSettings {
     compose_row_offset: u32,
 };
 
-@group(0) @binding(0) var<storage, read> encoded_primary: array<f32>;
+@group(0) @binding(0) var<storage, read> encoded_primary: array<vec4<f32>>;
 @group(0) @binding(1) var gain_map_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> tone_map: ToneMapSettings;
 @group(0) @binding(3) var compose_output: texture_storage_2d<rgba32float, write>;
@@ -168,67 +168,42 @@ fn convert_input_to_linear_srgb(rgb: vec3<f32>, input_color_space: u32) -> vec3<
     return rgb;
 }
 
-fn bt709_gain_channel_to_linear(c: f32) -> f32 {
-    let encoded = clamp(c, 0.0, 1.0);
-    if encoded < 0.081 {
-        return encoded / 4.5;
-    }
-    return pow((encoded + 0.099) / 1.099, 1.0 / 0.45);
-}
-
 fn bt709_gain_rgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        bt709_gain_channel_to_linear(rgb.r),
-        bt709_gain_channel_to_linear(rgb.g),
-        bt709_gain_channel_to_linear(rgb.b),
-    );
-}
-
-fn sample_apple_gain_encoded_at_primary_pixel(px: i32, py: i32, settings: ToneMapSettings) -> vec3<f32> {
-    let gain_dims_f = vec2<f32>(f32(settings.gain_width), f32(settings.gain_height));
-    let gain_dims_i = vec2<i32>(i32(settings.gain_width), i32(settings.gain_height));
-    let primary_dims_f = vec2<f32>(f32(settings.primary_width), f32(settings.primary_height));
-    let gx = clamp(
-        (f32(px) + 0.5) * gain_dims_f.x / primary_dims_f.x - 0.5,
-        0.0,
-        gain_dims_f.x - 1.0,
-    );
-    let gy = clamp(
-        (f32(py) + 0.5) * gain_dims_f.y / primary_dims_f.y - 0.5,
-        0.0,
-        gain_dims_f.y - 1.0,
-    );
-    let x0 = i32(floor(gx));
-    let y0 = i32(floor(gy));
-    let x1 = min(x0 + 1, gain_dims_i.x - 1);
-    let y1 = min(y0 + 1, gain_dims_i.y - 1);
-    let tx = gx - f32(x0);
-    let ty = gy - f32(y0);
-
-    let p00 = textureLoad(gain_map_texture, vec2<i32>(x0, y0), 0).rgb;
-    let p10 = textureLoad(gain_map_texture, vec2<i32>(x1, y0), 0).rgb;
-    let p01 = textureLoad(gain_map_texture, vec2<i32>(x0, y1), 0).rgb;
-    let p11 = textureLoad(gain_map_texture, vec2<i32>(x1, y1), 0).rgb;
-
-    let mix_x0 = mix(p00, p10, tx);
-    let mix_x1 = mix(p01, p11, tx);
-    return mix(mix_x0, mix_x1, ty);
+    let encoded = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let low = encoded / vec3<f32>(4.5);
+    let high = pow((encoded + vec3<f32>(0.099)) / vec3<f32>(1.099), vec3<f32>(1.0 / 0.45));
+    return select(high, low, encoded < vec3<f32>(0.081));
 }
 
 fn sample_apple_gain_linear_at_primary_pixel(px: i32, py: i32, settings: ToneMapSettings) -> vec3<f32> {
-    let encoded = sample_apple_gain_encoded_at_primary_pixel(px, py, settings);
+    let gain_dims_f = vec2<f32>(f32(settings.gain_width), f32(settings.gain_height));
+    let primary_dims_f = vec2<f32>(f32(settings.primary_width), f32(settings.primary_height));
+    let p_coord = vec2<f32>(f32(px), f32(py));
+    
+    let g_coord = clamp(
+        (p_coord + vec2<f32>(0.5)) * gain_dims_f / primary_dims_f - vec2<f32>(0.5),
+        vec2<f32>(0.0),
+        gain_dims_f - vec2<f32>(1.0)
+    );
+    
+    let xy0 = vec2<i32>(floor(g_coord));
+    let xy1 = min(xy0 + vec2<i32>(1), vec2<i32>(i32(settings.gain_width) - 1, i32(settings.gain_height) - 1));
+    let t = g_coord - vec2<f32>(xy0);
+
+    let p00 = textureLoad(gain_map_texture, vec2<i32>(xy0.x, xy0.y), 0).rgb;
+    let p10 = textureLoad(gain_map_texture, vec2<i32>(xy1.x, xy0.y), 0).rgb;
+    let p01 = textureLoad(gain_map_texture, vec2<i32>(xy0.x, xy1.y), 0).rgb;
+    let p11 = textureLoad(gain_map_texture, vec2<i32>(xy1.x, xy1.y), 0).rgb;
+
+    let mix_x0 = mix(p00, p10, t.x);
+    let mix_x1 = mix(p01, p11, t.x);
+    let encoded = mix(mix_x0, mix_x1, t.y);
     return bt709_gain_rgb_to_linear(encoded);
 }
 
 fn load_encoded_primary_pixel(px: i32, local_py: i32, width: u32) -> vec4<f32> {
-    let row_stride = i32(width) * 4;
-    let base = local_py * row_stride + px * 4;
-    return vec4<f32>(
-        encoded_primary[base],
-        encoded_primary[base + 1],
-        encoded_primary[base + 2],
-        encoded_primary[base + 3],
-    );
+    let idx = local_py * i32(width) + px;
+    return encoded_primary[idx];
 }
 
 fn compose_apple_at_primary_pixel(px: i32, py: i32, local_py: i32, settings: ToneMapSettings) -> vec4<f32> {
