@@ -14,6 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#[cfg(feature = "heif-native")]
+#[path = "apple_compose_gpu.rs"]
+mod apple_compose_gpu;
+
+#[cfg(feature = "heif-native")]
+use super::heif_apple_gain_map::apple_gain_map_display_weight;
+#[cfg(feature = "heif-native")]
+use super::heif_apple_gain_map_gpu::apple_heic_deferred_from_metadata;
 use super::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
@@ -173,6 +181,15 @@ struct ToneMapSettings {
     _wgsl_pad_before_uv: u32,
     uv_min: vec2<f32>,
     uv_max: vec2<f32>,
+    /// `1` when [`AppleHeicGainMapGpuSource`] planes are bound (GPU gain-map compose).
+    apple_compose: u32,
+    headroom_span: f32,
+    weight: f32,
+    gain_width: u32,
+    gain_height: u32,
+    primary_width: u32,
+    primary_height: u32,
+    _apple_pad: u32,
 };
 
 struct VertexOutput {
@@ -181,7 +198,8 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var hdr_texture: texture_2d<f32>;
-@group(0) @binding(1) var<uniform> tone_map: ToneMapSettings;
+@group(0) @binding(1) var gain_map_texture: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> tone_map: ToneMapSettings;
 
 fn reinhard_tone_map(rgb: vec3<f32>) -> vec3<f32> {
     return rgb / (vec3<f32>(1.0) + rgb);
@@ -491,6 +509,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let hdr = sample_hdr_for_display(clamped_uv);
     let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
     let source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
+    let src_a = clamp(hdr.a, 0.0, 1.0);
     var rgb: vec3<f32>;
     if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_PQ {
         rgb = encode_native_hdr_pq(source_rgb, tone_map);
@@ -501,9 +520,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         rgb = encode_sdr(source_rgb, tone_map);
     }
-    // Many OpenEXR camera plates store A=0 even when RGB is valid (no matte). Treat as opaque
-    // when there is scene signal after color conversion (e.g. openexr-images Carrots.exr).
-    let src_a = clamp(hdr.a, 0.0, 1.0);
     let has_linear_signal = max(max(abs(source_rgb.r), abs(source_rgb.g)), abs(source_rgb.b)) > 1e-6;
     let a_out = select(src_a, 1.0, src_a == 0.0 && has_linear_signal);
     return vec4<f32>(rgb, a_out * tone_map.alpha);
@@ -550,6 +566,13 @@ impl HdrImageRenderer {
         image: &HdrImageBuffer,
     ) -> Result<(), String> {
         let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+        let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+            rgba32f_as_bytes(image.rgba_f32.as_slice()),
+            image.width,
+            image.height,
+            std::mem::size_of::<f32>() as u32 * 4,
+        )
+        .map_err(|err| format!("HDR upload: {err}"))?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane"),
             size: layout.size,
@@ -560,7 +583,6 @@ impl HdrImageRenderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let bytes = rgba32f_as_bytes(image.rgba_f32.as_slice());
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -569,10 +591,10 @@ impl HdrImageRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytes,
+            &upload_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(layout.bytes_per_row),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(layout.size.height),
             },
             layout.size,
@@ -743,56 +765,177 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.image.color_space,
             &self.tone_map,
         );
-        let uniform = image_tone_map_uniform(
-            self.tone_map,
-            self.rotation_steps,
-            self.alpha,
-            self.output_mode,
-            self.target_format,
-            self.image.metadata.color_space_hint(),
-            self.image.metadata.transfer_function,
-            self.image.metadata.reference,
-            self.uv_rect,
-            native_display_scale,
-        );
-        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
         let image_key = HdrImageKey::from_image(&self.image);
-        if resources.uploaded_image_key != Some(image_key) {
-            match upload_callback_image(device, queue, &self.image, &resources.bind_group_layout) {
+        #[cfg(feature = "heif-native")]
+        let apple_deferred = apple_heic_deferred_from_metadata(&self.image.metadata);
+        #[cfg(not(feature = "heif-native"))]
+        let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
+        let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
+        let needs_upload = resources.uploaded_image_key != Some(image_key);
+        #[cfg(feature = "heif-native")]
+        let needs_compose = apple_deferred.is_some()
+            && (needs_upload
+                || resources.baked_apple_image_key != Some(image_key)
+                || resources.baked_apple_weight_bits != Some(target_capacity_bits));
+        #[cfg(not(feature = "heif-native"))]
+        let needs_compose = false;
+
+        if needs_upload {
+            match upload_image_plane(device, queue, &self.image) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = Some(image_key);
-                    resources.uploaded_texture = Some(uploaded.texture);
-                    resources.uploaded_view = Some(uploaded.view);
-                    resources.bind_group =
-                        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("simple-image-viewer-hdr-image-plane-bind-group"),
-                            layout: &resources.bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(
-                                        resources.uploaded_view.as_ref().unwrap(),
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: resources.tone_map_buffer.as_entire_binding(),
-                                },
-                            ],
-                        }));
+                    resources.uploaded_texture = Some(uploaded.base.texture);
+                    resources.uploaded_view = Some(uploaded.base.view);
+                    #[cfg(feature = "heif-native")]
+                    {
+                        resources.uploaded_display_storage_view = uploaded.base.storage_view;
+                    }
+                    if let Some(gain) = uploaded.gain {
+                        resources.uploaded_gain_texture = Some(gain.texture);
+                        resources.uploaded_gain_view = Some(gain.view);
+                        #[cfg(feature = "heif-native")]
+                        if apple_deferred.is_some() {
+                            resources.baked_apple_image_key = None;
+                            resources.baked_apple_weight_bits = None;
+                            resources.encoded_primary_source_ptr = None;
+                        }
+                    } else {
+                        resources.uploaded_gain_texture = None;
+                        resources.uploaded_gain_view = None;
+                        #[cfg(feature = "heif-native")]
+                        {
+                            resources.uploaded_display_storage_view = None;
+                        }
+                        resources.baked_apple_image_key = None;
+                        resources.baked_apple_weight_bits = None;
+                        #[cfg(feature = "heif-native")]
+                        {
+                            resources.encoded_primary_source_ptr = None;
+                        }
+                    }
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR image plane upload: {err}");
                     resources.uploaded_image_key = None;
                     resources.uploaded_texture = None;
                     resources.uploaded_view = None;
+                    resources.uploaded_gain_texture = None;
+                    resources.uploaded_gain_view = None;
+                    #[cfg(feature = "heif-native")]
+                    {
+                        resources.uploaded_display_storage_view = None;
+                        resources.encoded_primary_source_ptr = None;
+                    }
+                    resources.baked_apple_image_key = None;
+                    resources.baked_apple_weight_bits = None;
                     resources.bind_group = None;
+                    return Vec::new();
                 }
             }
         }
 
-        Vec::new()
+        #[cfg(feature = "heif-native")]
+        let mut compose_command_buffers = Vec::new();
+        #[cfg(not(feature = "heif-native"))]
+        let compose_command_buffers: Vec<wgpu::CommandBuffer> = Vec::new();
+        #[cfg(feature = "heif-native")]
+        if needs_compose {
+            if resources.uploaded_view.is_none()
+                || resources.uploaded_gain_view.is_none()
+                || resources.uploaded_display_storage_view.is_none()
+            {
+                resources.bind_group = None;
+                return compose_command_buffers;
+            }
+            if let Some(deferred) = apple_deferred {
+                let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
+                let upload_primary =
+                    needs_upload || resources.encoded_primary_source_ptr != Some(primary_ptr);
+                if let Err(err) = apple_compose_gpu::ensure_encoded_primary_buffer(
+                    device,
+                    resources,
+                    self.image.width,
+                    device.limits().max_storage_buffer_binding_size,
+                ) {
+                    log::warn!("[HDR] Apple GPU compose primary buffer allocation failed: {err}");
+                    resources.bind_group = None;
+                } else {
+                    let gain_view = resources.uploaded_gain_view.as_ref().expect("gain view");
+                    let display_storage = resources
+                        .uploaded_display_storage_view
+                        .as_ref()
+                        .expect("display storage view");
+                    let encoded_primary_buffer = resources
+                        .encoded_primary_buffer
+                        .as_ref()
+                        .expect("encoded primary buffer");
+                    compose_command_buffers.push(apple_compose_gpu::encode_compose_compute_pass(
+                        device,
+                        queue,
+                        resources,
+                        &self.image,
+                        deferred,
+                        &self.tone_map,
+                        encoded_primary_buffer,
+                        gain_view,
+                        display_storage,
+                        upload_primary,
+                    ));
+                    if upload_primary {
+                        resources.encoded_primary_source_ptr = Some(primary_ptr);
+                    }
+                    resources.baked_apple_image_key = Some(image_key);
+                    resources.baked_apple_weight_bits = Some(target_capacity_bits);
+                }
+            }
+        }
+
+        let apple_gpu_composed = apple_deferred.is_some()
+            && resources.baked_apple_image_key == Some(image_key)
+            && resources.uploaded_view.is_some();
+
+        // Never display encoded primary for deferred HEIC (causes HDR zoom stains). Wait for GPU compose.
+        if apple_deferred.is_some() && !apple_gpu_composed {
+            resources.bind_group = None;
+            return compose_command_buffers;
+        }
+
+        let uniform = image_tone_map_uniform(
+            &self.image,
+            self.tone_map,
+            self.rotation_steps,
+            self.alpha,
+            self.output_mode,
+            self.target_format,
+            self.uv_rect,
+            native_display_scale,
+            apple_gpu_composed,
+        );
+        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+
+        let gain_view = if apple_gpu_composed {
+            &resources.dummy_gain_view
+        } else {
+            resources
+                .uploaded_gain_view
+                .as_ref()
+                .unwrap_or(&resources.dummy_gain_view)
+        };
+        let hdr_view = resources.uploaded_view.as_ref();
+        if let Some(hdr_view) = hdr_view {
+            resources.bind_group = Some(create_hdr_image_plane_bind_group(
+                device,
+                &resources.bind_group_layout,
+                hdr_view,
+                gain_view,
+                &resources.tone_map_buffer,
+            ));
+        } else {
+            resources.bind_group = None;
+        }
+
+        compose_command_buffers
     }
 
     fn paint(
@@ -893,6 +1036,12 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &resources.dummy_gain_view,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
                                 resource: tone_map_buffer.as_entire_binding(),
                             },
                         ],
@@ -975,12 +1124,20 @@ struct ToneMapUniform {
     _wgsl_pad_before_uv: u32,
     uv_min: [f32; 2],
     uv_max: [f32; 2],
+    apple_compose: u32,
+    headroom_span: f32,
+    weight: f32,
+    gain_width: u32,
+    gain_height: u32,
+    primary_width: u32,
+    primary_height: u32,
+    _apple_pad: u32,
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
 unsafe impl bytemuck::Pod for ToneMapUniform {}
 
-const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 64);
+const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 96);
 
 impl ToneMapUniform {
     fn from_settings(
@@ -994,9 +1151,34 @@ impl ToneMapUniform {
         input_reference: HdrReference,
         uv_rect: egui::Rect,
         native_display_scale: f32,
+        apple: Option<(&crate::hdr::types::AppleHeicGainMapGpuSource, u32, u32, f32)>,
     ) -> Self {
         let manual_srgb = output_mode == HdrRenderOutputMode::SdrToneMapped
             && hdr_sdr_framebuffer_needs_manual_srgb_oetf(framebuffer_format);
+        let (
+            apple_compose,
+            headroom_span,
+            weight,
+            gain_width,
+            gain_height,
+            primary_width,
+            primary_height,
+        ) = if let Some((deferred, primary_w, primary_h, target_capacity)) = apple {
+            (
+                1,
+                deferred.headroom_span,
+                #[cfg(feature = "heif-native")]
+                apple_gain_map_display_weight(target_capacity, deferred.stops),
+                #[cfg(not(feature = "heif-native"))]
+                0.0_f32,
+                deferred.gain_width,
+                deferred.gain_height,
+                primary_w,
+                primary_h,
+            )
+        } else {
+            (0, 0.0, 0.0, 0, 0, 0, 0)
+        };
         Self {
             exposure_ev: settings.exposure_ev,
             sdr_white_nits: settings.sdr_white_nits,
@@ -1012,6 +1194,14 @@ impl ToneMapUniform {
             _wgsl_pad_before_uv: 0,
             uv_min: [uv_rect.min.x, uv_rect.min.y],
             uv_max: [uv_rect.max.x, uv_rect.max.y],
+            apple_compose,
+            headroom_span,
+            weight,
+            gain_width,
+            gain_height,
+            primary_width,
+            primary_height,
+            _apple_pad: 0,
         }
     }
 }
@@ -1061,32 +1251,49 @@ fn tile_tone_map_uniform(
         input_reference,
         uv_rect,
         native_display_scale,
+        None,
     )
 }
 
 fn image_tone_map_uniform(
+    image: &HdrImageBuffer,
     settings: HdrToneMapSettings,
     rotation_steps: u32,
     alpha: f32,
     output_mode: HdrRenderOutputMode,
     framebuffer_format: wgpu::TextureFormat,
-    input_color_space: HdrColorSpace,
-    input_transfer_function: HdrTransferFunction,
-    input_reference: HdrReference,
     uv_rect: egui::Rect,
     native_display_scale: f32,
+    apple_gpu_composed: bool,
 ) -> ToneMapUniform {
+    if apple_gpu_composed {
+        return ToneMapUniform::from_settings(
+            settings,
+            rotation_steps,
+            alpha,
+            output_mode,
+            framebuffer_format,
+            HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
+            uv_rect,
+            native_display_scale,
+            None,
+        );
+    }
+
     ToneMapUniform::from_settings(
         settings,
         rotation_steps,
         alpha,
         output_mode,
         framebuffer_format,
-        input_color_space,
-        input_transfer_function,
-        input_reference,
+        image.metadata.color_space_hint(),
+        image.metadata.transfer_function,
+        image.metadata.reference,
         uv_rect,
         native_display_scale,
+        None,
     )
 }
 
@@ -1097,6 +1304,7 @@ struct HdrImageKey {
     format: HdrPixelFormat,
     rgba_ptr: usize,
     rgba_len: usize,
+    apple_deferred_ptr: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1136,8 +1344,14 @@ impl HdrImageKey {
             width: image.width,
             height: image.height,
             format: image.format,
-            rgba_ptr: Arc::as_ptr(&image.rgba_f32) as usize,
+            rgba_ptr: std::sync::Arc::as_ptr(&image.rgba_f32) as usize,
             rgba_len: image.rgba_f32.len(),
+            apple_deferred_ptr: image
+                .metadata
+                .gain_map
+                .as_ref()
+                .and_then(|gm| gm.apple_heic_deferred.as_ref())
+                .map(|d| std::sync::Arc::as_ptr(&d.gain_rgba) as usize),
         }
     }
 }
@@ -1147,16 +1361,65 @@ struct HdrCallbackResources {
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     tone_map_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
+    dummy_gain_texture: wgpu::Texture,
+    dummy_gain_view: wgpu::TextureView,
     uploaded_image_key: Option<HdrImageKey>,
     tile_bindings: HdrTileBindings,
     uploaded_texture: Option<wgpu::Texture>,
     uploaded_view: Option<wgpu::TextureView>,
+    uploaded_gain_texture: Option<wgpu::Texture>,
+    uploaded_gain_view: Option<wgpu::TextureView>,
+    #[cfg(feature = "heif-native")]
+    uploaded_display_storage_view: Option<wgpu::TextureView>,
+    #[cfg(feature = "heif-native")]
+    compose_bind_group_layout: wgpu::BindGroupLayout,
+    #[cfg(feature = "heif-native")]
+    compose_pipeline: wgpu::ComputePipeline,
+    #[cfg(feature = "heif-native")]
+    compose_tone_map_buffer: wgpu::Buffer,
+    #[cfg(feature = "heif-native")]
+    encoded_primary_buffer: Option<wgpu::Buffer>,
+    #[cfg(feature = "heif-native")]
+    encoded_primary_buffer_bytes: usize,
+    #[cfg(feature = "heif-native")]
+    encoded_primary_source_ptr: Option<usize>,
+    baked_apple_image_key: Option<HdrImageKey>,
+    baked_apple_weight_bits: Option<u32>,
     bind_group: Option<wgpu::BindGroup>,
 }
 
 struct CallbackUpload {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    #[cfg(feature = "heif-native")]
+    storage_view: Option<wgpu::TextureView>,
+}
+
+struct ImagePlaneUpload {
+    base: CallbackUpload,
+    gain: Option<CallbackUpload>,
+}
+
+const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+fn create_dummy_gain_texture(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("simple-image-viewer-hdr-dummy-gain-texture"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: HDR_APPLE_GAIN_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 fn create_callback_resources(
@@ -1178,6 +1441,16 @@ fn create_callback_resources(
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
@@ -1243,19 +1516,45 @@ fn create_callback_resources(
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            None,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
+    let (dummy_gain_texture, dummy_gain_view) = create_dummy_gain_texture(device);
+
+    #[cfg(feature = "heif-native")]
+    let (compose_bind_group_layout, compose_pipeline, compose_tone_map_buffer) =
+        apple_compose_gpu::create_compose_compute_resources(device);
 
     HdrCallbackResources {
         target_format,
         bind_group_layout,
         pipeline,
         tone_map_buffer,
+        dummy_gain_texture,
+        dummy_gain_view,
         uploaded_image_key: None,
         tile_bindings: HdrTileBindings::default(),
         uploaded_texture: None,
         uploaded_view: None,
+        uploaded_gain_texture: None,
+        uploaded_gain_view: None,
+        #[cfg(feature = "heif-native")]
+        uploaded_display_storage_view: None,
+        #[cfg(feature = "heif-native")]
+        compose_bind_group_layout,
+        #[cfg(feature = "heif-native")]
+        compose_pipeline,
+        #[cfg(feature = "heif-native")]
+        compose_tone_map_buffer,
+        #[cfg(feature = "heif-native")]
+        encoded_primary_buffer: None,
+        #[cfg(feature = "heif-native")]
+        encoded_primary_buffer_bytes: 0,
+        #[cfg(feature = "heif-native")]
+        encoded_primary_source_ptr: None,
+        baked_apple_image_key: None,
+        baked_apple_weight_bits: None,
         bind_group: None,
     }
 }
@@ -1448,6 +1747,13 @@ fn upload_callback_tile(
     tile: &crate::hdr::tiled::HdrTileBuffer,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_tile_upload_layout(tile, device.limits().max_texture_dimension_2d)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
+        tile.width,
+        tile.height,
+        std::mem::size_of::<f32>() as u32 * 4,
+    )
+    .map_err(|err| format!("HDR tile upload: {err}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-tile-plane-callback-texture"),
         size: layout.size,
@@ -1466,26 +1772,37 @@ fn upload_callback_tile(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        rgba32f_as_bytes(tile.rgba_f32.as_slice()),
+        &upload_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(layout.bytes_per_row),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(layout.size.height),
         },
         layout.size,
     );
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok(CallbackUpload { texture, view })
+    Ok(CallbackUpload {
+        texture,
+        view,
+        #[cfg(feature = "heif-native")]
+        storage_view: None,
+    })
 }
 
 fn upload_callback_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
-    _bind_group_layout: &wgpu::BindGroupLayout,
 ) -> Result<CallbackUpload, String> {
     let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(image.rgba_f32.as_slice()),
+        image.width,
+        image.height,
+        std::mem::size_of::<f32>() as u32 * 4,
+    )
+    .map_err(|err| format!("HDR upload: {err}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
         size: layout.size,
@@ -1504,17 +1821,205 @@ fn upload_callback_image(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        rgba32f_as_bytes(image.rgba_f32.as_slice()),
+        &upload_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(layout.bytes_per_row),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(layout.size.height),
         },
         layout.size,
     );
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    Ok(CallbackUpload { texture, view })
+    Ok(CallbackUpload {
+        texture,
+        view,
+        #[cfg(feature = "heif-native")]
+        storage_view: None,
+    })
+}
+
+fn wgpu_copy_bytes_per_row(unpadded_bytes_per_row: u32) -> u32 {
+    wgpu::util::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+/// Pack tightly laid-out RGBA rows into the pitch required by [`wgpu::Queue::write_texture`].
+fn pack_rows_for_texture_copy(
+    tight: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+) -> Result<(Vec<u8>, u32), String> {
+    let unpadded_bytes_per_row = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(unpadded_bytes_per_row);
+    let expected_len = unpadded_bytes_per_row
+        .checked_mul(height)
+        .map(|len| len as usize)
+        .ok_or_else(|| format!("tight buffer length overflows for {width}x{height}"))?;
+    if tight.len() != expected_len {
+        return Err(format!(
+            "Malformed tight buffer: expected {expected_len} bytes for {width}x{height}, got {}",
+            tight.len()
+        ));
+    }
+    if bytes_per_row == unpadded_bytes_per_row {
+        return Ok((tight.to_vec(), bytes_per_row));
+    }
+
+    let mut padded = vec![0u8; (bytes_per_row * height) as usize];
+    for y in 0..height as usize {
+        let src_start = y * unpadded_bytes_per_row as usize;
+        let dst_start = y * bytes_per_row as usize;
+        padded[dst_start..dst_start + unpadded_bytes_per_row as usize]
+            .copy_from_slice(&tight[src_start..src_start + unpadded_bytes_per_row as usize]);
+    }
+    Ok((padded, bytes_per_row))
+}
+
+fn upload_rgba8_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    format: wgpu::TextureFormat,
+    max_texture_dimension_2d: u32,
+) -> Result<CallbackUpload, String> {
+    let layout =
+        validate_rgba8_upload_layout(width, height, rgba.len(), max_texture_dimension_2d, label)?;
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(rgba, width, height, 4)
+        .map_err(|err| format!("{label}: {err}"))?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: layout.size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &upload_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(layout.size.height),
+        },
+        layout.size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(CallbackUpload {
+        texture,
+        view,
+        #[cfg(feature = "heif-native")]
+        storage_view: None,
+    })
+}
+
+fn upload_image_plane(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &HdrImageBuffer,
+) -> Result<ImagePlaneUpload, String> {
+    #[cfg(feature = "heif-native")]
+    if let Some(deferred) = apple_heic_deferred_from_metadata(&image.metadata) {
+        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let gain = upload_rgba8_texture(
+            device,
+            queue,
+            "simple-image-viewer-hdr-image-plane-apple-gain-texture",
+            deferred.gain_width,
+            deferred.gain_height,
+            deferred.gain_rgba.as_slice(),
+            HDR_APPLE_GAIN_TEXTURE_FORMAT,
+            device.limits().max_texture_dimension_2d,
+        )?;
+        return Ok(ImagePlaneUpload {
+            base,
+            gain: Some(gain),
+        });
+    }
+
+    let base = upload_callback_image(device, queue, image)?;
+    Ok(ImagePlaneUpload { base, gain: None })
+}
+
+#[cfg(feature = "heif-native")]
+fn create_empty_rgba32f_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> Result<CallbackUpload, String> {
+    let layout = validate_rgba32f_upload_layout(
+        width,
+        height,
+        width as usize * height as usize * 4,
+        device.limits().max_texture_dimension_2d,
+        "HDR deferred display texture",
+    )?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-callback-texture"),
+        size: layout.size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: layout.format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let storage_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("simple-image-viewer-hdr-deferred-display-storage-view"),
+        format: Some(wgpu::TextureFormat::Rgba32Float),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        aspect: wgpu::TextureAspect::All,
+        usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+        ..Default::default()
+    });
+    Ok(CallbackUpload {
+        texture,
+        view,
+        storage_view: Some(storage_view),
+    })
+}
+
+fn create_hdr_image_plane_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    hdr_view: &wgpu::TextureView,
+    gain_view: &wgpu::TextureView,
+    tone_map_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("simple-image-viewer-hdr-image-plane-bind-group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(hdr_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(gain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: tone_map_buffer.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1589,10 +2094,12 @@ fn validate_rgba32f_upload_layout(
         ));
     }
 
-    let bytes_per_row = width
-        .checked_mul(4)
-        .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
-        .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?;
+    let bytes_per_row = wgpu_copy_bytes_per_row(
+        width
+            .checked_mul(4)
+            .and_then(|channels| channels.checked_mul(std::mem::size_of::<f32>() as u32))
+            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
+    );
 
     Ok(HdrUploadLayout {
         size: wgpu::Extent3d {
@@ -1602,6 +2109,54 @@ fn validate_rgba32f_upload_layout(
         },
         bytes_per_row,
         format: HDR_IMAGE_PLANE_TEXTURE_FORMAT,
+    })
+}
+
+fn validate_rgba8_upload_layout(
+    width: u32,
+    height: u32,
+    actual_len: usize,
+    max_texture_dimension_2d: u32,
+    label: &str,
+) -> Result<HdrUploadLayout, String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "{label} requires non-zero dimensions, got {width}x{height}"
+        ));
+    }
+
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(format!(
+            "{label} dimensions {width}x{height} exceed device max_texture_dimension_2d {max_texture_dimension_2d}",
+        ));
+    }
+
+    let expected_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .map(|len| len as usize)
+        .ok_or_else(|| format!("{label} dimensions overflow: {width}x{height}"))?;
+
+    if actual_len != expected_len {
+        return Err(format!(
+            "Malformed {label} buffer: expected {expected_len} bytes for {width}x{height} RGBA, got {actual_len}",
+        ));
+    }
+
+    let bytes_per_row = wgpu_copy_bytes_per_row(
+        width
+            .checked_mul(4)
+            .ok_or_else(|| format!("{label} row byte count overflows for width {width}"))?,
+    );
+
+    Ok(HdrUploadLayout {
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        bytes_per_row,
+        format: wgpu::TextureFormat::Rgba8Unorm,
     })
 }
 
@@ -1640,9 +2195,85 @@ mod tests {
         assert_eq!(layout.size.height, 2);
         assert_eq!(
             layout.bytes_per_row,
-            3 * 4 * std::mem::size_of::<f32>() as u32
+            wgpu::util::align_to(
+                3 * 4 * std::mem::size_of::<f32>() as u32,
+                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+            )
         );
         assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
+    }
+
+    #[test]
+    fn rgba8_upload_layout_aligns_row_pitch_to_wgpu_copy_requirement() {
+        let width = 3024;
+        let height = 4032;
+        let layout = validate_rgba8_upload_layout(
+            width,
+            height,
+            width as usize * height as usize * 4,
+            8192,
+            "HEIC base upload",
+        )
+        .expect("valid rgba8 upload layout");
+
+        assert_eq!(
+            layout.bytes_per_row,
+            wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        );
+        assert_eq!(layout.bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn pack_rows_for_texture_copy_inserts_row_padding_when_required() {
+        let width = 3024;
+        let height = 2;
+        let unpadded = (width * 4) as usize;
+        let mut tight = vec![0u8; unpadded * height as usize];
+        for y in 0..height {
+            tight[y as usize * unpadded] = 100 + y as u8;
+        }
+
+        let (padded, bytes_per_row) =
+            pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
+
+        assert_eq!(
+            bytes_per_row,
+            wgpu::util::align_to(width * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        );
+        assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
+        assert_eq!(padded[0], 100);
+        assert_eq!(padded[bytes_per_row as usize], 101);
+    }
+
+    #[test]
+    fn pack_rows_rgba32f_round_trip_preserves_data() {
+        // bytes_per_pixel=16 → unpadded row = width * 16 bytes.
+        // Test widths that are / are not multiples of 16 (alignment boundary).
+        for &(width, height) in &[(13, 7), (16, 4), (17, 11), (64, 64), (4033, 3)] {
+            let pixel_count = width as usize * height as usize * 4;
+            let original: Vec<f32> = (0..pixel_count)
+                .map(|i| (i as f32 * 0.12345 + 0.001).sin() * 2.0)
+                .collect();
+            let tight: &[u8] = bytemuck::cast_slice(&original);
+            assert_eq!(tight.len(), width as usize * height as usize * 16);
+
+            let (padded, bytes_per_row) =
+                pack_rows_for_texture_copy(tight, width, height, 16).expect("pack rows");
+
+            assert_eq!(bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT, 0);
+            assert!(bytes_per_row >= width * 16);
+            assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
+
+            // Simulate what `write_texture` does: extract each row's data (width * 16 bytes)
+            // from the padded buffer, skipping padding.
+            let unpadded_row = (width * 16) as usize;
+            let mut unpacked = Vec::with_capacity(tight.len());
+            for y in 0..height as usize {
+                let src_start = y * bytes_per_row as usize;
+                unpacked.extend_from_slice(&padded[src_start..src_start + unpadded_row]);
+            }
+            assert_eq!(unpacked, tight, "round-trip failed for {width}x{height}");
+        }
     }
 
     #[test]
@@ -1698,7 +2329,10 @@ mod tests {
         assert_eq!(layout.size.height, 5);
         assert_eq!(
             layout.bytes_per_row,
-            7 * 4 * std::mem::size_of::<f32>() as u32
+            wgpu::util::align_to(
+                7 * 4 * std::mem::size_of::<f32>() as u32,
+                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+            )
         );
         assert_eq!(layout.format, wgpu::TextureFormat::Rgba32Float);
     }
@@ -1731,7 +2365,7 @@ mod tests {
 
     #[test]
     fn tone_map_uniform_byte_size_matches_wgpu_shader() {
-        assert_eq!(std::mem::size_of::<ToneMapUniform>(), 64);
+        assert_eq!(std::mem::size_of::<ToneMapUniform>(), 96);
     }
 
     #[test]
@@ -1742,6 +2376,7 @@ mod tests {
             target_hdr_capacity: Some(4.0),
             diagnostic: String::new(),
             capped_display_referred: true,
+            apple_heic_deferred: None,
         });
         let tone = HdrToneMapSettings {
             sdr_white_nits: 203.0,
@@ -1799,17 +2434,29 @@ mod tests {
             max_display_nits: 1000.0,
         };
 
+        let image = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::Rec2020Linear,
+            metadata: HdrImageMetadata {
+                transfer_function: HdrTransferFunction::Linear,
+                reference: HdrReference::Unknown,
+                ..HdrImageMetadata::from_color_space(HdrColorSpace::Rec2020Linear)
+            },
+            rgba_f32: Arc::new(vec![1.0, 0.0, 0.0, 1.0]),
+        };
+
         let image_uniform = image_tone_map_uniform(
+            &image,
             settings,
             5,
             0.75,
             HdrRenderOutputMode::SdrToneMapped,
             wgpu::TextureFormat::Bgra8UnormSrgb,
-            HdrColorSpace::Rec2020Linear,
-            HdrTransferFunction::Linear,
-            HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            false,
         );
         let tile_uniform = tile_tone_map_uniform(
             settings,
@@ -2051,6 +2698,7 @@ mod tests {
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            None,
         );
 
         assert_eq!(uniform.rotation_steps, 1);
@@ -2106,6 +2754,7 @@ mod tests {
             HdrReference::DisplayReferred,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            None,
         );
 
         assert_eq!(uniform.output_mode, HdrRenderOutputMode::NativeHdr as u32);
@@ -2165,9 +2814,30 @@ mod tests {
         assert!(
             HDR_IMAGE_PLANE_SHADER.contains("if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR")
         );
-        assert!(HDR_IMAGE_PLANE_SHADER.contains("let src_a = clamp(hdr.a, 0.0, 1.0)"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("src_a = clamp(hdr.a, 0.0, 1.0)"));
         assert!(HDR_IMAGE_PLANE_SHADER.contains("a_out * tone_map.alpha"));
         assert!(!HDR_IMAGE_PLANE_SHADER.contains("encode_sdr(hdr.rgb, tone_map) * tone_map.alpha"));
+    }
+
+    #[test]
+    fn apple_heic_display_never_uses_per_fragment_compose() {
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("tone_map.apple_compose != 0u"));
+        assert!(!HDR_IMAGE_PLANE_SHADER.contains("fn sample_apple_gain_encoded_at_primary_pixel"));
+        assert!(HDR_IMAGE_PLANE_SHADER.contains("fn sample_hdr_for_display"));
+    }
+
+    #[test]
+    #[cfg(feature = "heif-native")]
+    fn apple_gain_map_gpu_compose_entry_point_exists() {
+        use super::apple_compose_gpu::APPLE_GAIN_COMPOSE_SHADER;
+
+        assert!(APPLE_GAIN_COMPOSE_SHADER.contains("fn cs_compose_apple_gain"));
+        assert!(APPLE_GAIN_COMPOSE_SHADER.contains("var<storage, read> encoded_primary"));
+        assert!(APPLE_GAIN_COMPOSE_SHADER.contains("compose_row_offset"));
+        assert!(
+            APPLE_GAIN_COMPOSE_SHADER
+                .contains("compose_apple_at_primary_pixel(px, py, local_py, tone_map)")
+        );
     }
 
     #[test]

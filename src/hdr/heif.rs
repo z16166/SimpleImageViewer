@@ -236,8 +236,9 @@ fn orientation_from_heif_exif_item_blob(buf: &[u8]) -> Option<u16> {
 }
 
 #[cfg(feature = "heif-native")]
-fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> Option<u16> {
-    let handle = primary.0;
+pub(crate) fn heif_exif_orientation_from_raw_handle(
+    handle: *const libheif_sys::heif_image_handle,
+) -> Option<u16> {
     unsafe {
         let total =
             libheif_sys::heif_image_handle_get_number_of_metadata_blocks(handle, std::ptr::null());
@@ -278,6 +279,11 @@ fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> Option<u16> 
         }
         None
     }
+}
+
+#[cfg(feature = "heif-native")]
+fn heif_exif_orientation_from_handle(primary: &HeifPrimaryGuard) -> Option<u16> {
+    heif_exif_orientation_from_raw_handle(primary.0)
 }
 
 /// Read [`exif::Tag::Orientation`] from libheif-attached `Exif` metadata items (works when pure ISOBMFF
@@ -564,7 +570,7 @@ pub(crate) fn load_heif_hdr(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<crate::loader::ImageData, String> {
-    let hdr = decode_heif_hdr(path)?;
+    let hdr = decode_heif_hdr(path, hdr_target_capacity)?;
     let fallback_pixels = if crate::loader::hdr_display_requests_sdr_preview(hdr_target_capacity) {
         crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
             &hdr,
@@ -580,14 +586,25 @@ pub(crate) fn load_heif_hdr(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn decode_heif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_heif_hdr(
+    path: &std::path::Path,
+    hdr_target_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read HEIF: {err}"))?;
-    decode_heif_hdr_bytes(&mmap[..])
+    let label = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(unknown)");
+    decode_heif_hdr_bytes(&mmap[..], hdr_target_capacity, label)
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, String> {
+pub(crate) fn decode_heif_hdr_bytes(
+    bytes: &[u8],
+    hdr_target_capacity: f32,
+    source_label: &str,
+) -> Result<HdrImageBuffer, String> {
     let (_ctx, handle) = open_heif_primary_from_bytes(bytes)?;
 
     let mut metadata = read_heif_metadata(handle.0);
@@ -602,7 +619,48 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         .as_ref()
         .map(|g| g.as_ptr())
         .unwrap_or(std::ptr::null());
-    let hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+    let mut hdr = decode_primary_heif_to_hdr(handle.0, metadata, decode_opts_ptr)?;
+
+    // Apple HDR gain map: only decode the auxiliary plane when display headroom weight > 0
+    // (SDR tone-mapped output keeps the primary plane; skip redundant libheif + CPU work).
+    if heif_has_apple_hdr_gain_map_auxiliary(handle.0) {
+        let headroom = crate::hdr::heif_apple_gain_map::resolve_apple_hdr_headroom_from_exif(
+            crate::hdr::heif_apple_gain_map::read_heif_exif_block(handle.0).as_deref(),
+        );
+        if crate::hdr::heif_apple_gain_map::should_apply_apple_heic_gain_map(
+            hdr_target_capacity,
+            &headroom,
+        ) {
+            log::debug!(
+                "[HDR] Apple HDR Gain Map: headroom={:.3}, gain={:.3}, stops={:.3}, target_capacity={:.3}",
+                headroom.hdr_headroom,
+                headroom.hdr_gain,
+                headroom.stops,
+                hdr_target_capacity,
+            );
+            if let Some((gain_w, gain_h, gain_rgba)) =
+                decode_heif_gain_map(handle.0, decode_opts_ptr)
+            {
+                let headroom_span = headroom.linear_headroom - 1.0;
+                hdr = crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(
+                    hdr,
+                    gain_w,
+                    gain_h,
+                    gain_rgba,
+                    headroom_span,
+                    headroom.stops,
+                    hdr_target_capacity,
+                );
+            }
+        } else {
+            log::debug!(
+                "[HDR] Apple HDR Gain Map skipped (display weight is zero at capacity={:.3}, stops={:.3})",
+                hdr_target_capacity,
+                headroom.stops,
+            );
+        }
+    }
+
     let cicp_px_tc = match &hdr.metadata.color_profile {
         HdrColorProfile::Cicp {
             color_primaries,
@@ -618,8 +676,8 @@ pub(crate) fn decode_heif_hdr_bytes(bytes: &[u8]) -> Result<HdrImageBuffer, Stri
         HdrColorProfile::Icc(_) => "Icc",
         HdrColorProfile::Unknown => "Unknown",
     };
-    log::info!(
-        "[HEIF] primary {}×{} color_hint={:?} transfer={:?} profile={} cicp(primaries,transfer)={:?} mastering_max_nits={:?} gain_map_aux_seen={}",
+    log::debug!(
+        "[HEIF] {source_label}: {}×{} color_hint={:?} transfer={:?} profile={} cicp(primaries,transfer)={:?} mastering_max_nits={:?} gain_map_aux_seen={}",
         hdr.width,
         hdr.height,
         hdr.color_space,
@@ -1537,6 +1595,286 @@ fn hdr_buffer_from_ycbcr(
 }
 
 #[cfg(feature = "heif-native")]
+fn heif_has_apple_hdr_gain_map_auxiliary(handle: *const libheif_sys::heif_image_handle) -> bool {
+    list_heif_auxiliary_evidence(handle)
+        .iter()
+        .any(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap)
+}
+
+#[cfg(feature = "heif-native")]
+const EXIF_ORIENTATION_NORMAL: u16 = 1;
+#[cfg(feature = "heif-native")]
+const EXIF_ORIENTATION_ROTATE_180: u16 = 3;
+#[cfg(feature = "heif-native")]
+const EXIF_ORIENTATION_ROTATE_90_CW: u16 = 6;
+#[cfg(feature = "heif-native")]
+const EXIF_ORIENTATION_ROTATE_90_CCW: u16 = 8;
+
+#[cfg(feature = "heif-native")]
+fn gain_map_stored_in_sensor_orientation(
+    gain_width: u32,
+    gain_height: u32,
+    primary_ispe_w: u32,
+    primary_ispe_h: u32,
+) -> bool {
+    primary_ispe_w != gain_width || primary_ispe_h != gain_height
+}
+
+#[cfg(feature = "heif-native")]
+fn rotate_gain_rgba_90_cw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let new_w = height;
+    let new_h = width;
+    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let src_y = height - 1 - x;
+            let src_x = y;
+            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+        }
+    }
+    (new_w, new_h, rotated)
+}
+
+#[cfg(feature = "heif-native")]
+fn rotate_gain_rgba_90_ccw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let new_w = height;
+    let new_h = width;
+    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let src_y = x;
+            let src_x = width - 1 - y;
+            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+        }
+    }
+    (new_w, new_h, rotated)
+}
+
+#[cfg(feature = "heif-native")]
+fn rotate_gain_rgba_180(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let mut rotated = vec![0u8; gain_rgba.len()];
+    for i in 0..(width as usize * height as usize) {
+        let src_idx = i * 4;
+        let dst_idx = (width as usize * height as usize - 1 - i) * 4;
+        rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+    }
+    (width, height, rotated)
+}
+
+/// Rotate an Apple HDR gain map from sensor (ispe) orientation into primary display orientation.
+#[cfg(feature = "heif-native")]
+pub(crate) fn align_apple_gain_map_to_primary_display_orientation(
+    gain_rgba: Vec<u8>,
+    gain_width: u32,
+    gain_height: u32,
+    primary_ispe_w: u32,
+    primary_ispe_h: u32,
+    primary_disp_w: u32,
+    primary_disp_h: u32,
+    orientation: Option<u16>,
+) -> (u32, u32, Vec<u8>) {
+    let ispe_swapped = primary_ispe_w == primary_disp_h && primary_ispe_h == primary_disp_w;
+    let ispe_rotated = ispe_swapped && primary_ispe_w != primary_ispe_h;
+    let gain_in_sensor = gain_map_stored_in_sensor_orientation(
+        gain_width,
+        gain_height,
+        primary_ispe_w,
+        primary_ispe_h,
+    );
+
+    let rotation = match orientation {
+        Some(EXIF_ORIENTATION_ROTATE_90_CW) => Some(RotateGainMap::Cw90),
+        Some(EXIF_ORIENTATION_ROTATE_90_CCW) => Some(RotateGainMap::Ccw90),
+        Some(EXIF_ORIENTATION_ROTATE_180) => Some(RotateGainMap::Rotate180),
+        Some(EXIF_ORIENTATION_NORMAL) | None => {
+            if ispe_rotated && gain_in_sensor {
+                Some(RotateGainMap::from_ispe_aspect(
+                    primary_ispe_w,
+                    primary_ispe_h,
+                ))
+            } else {
+                None
+            }
+        }
+        Some(_) => {
+            if ispe_rotated && gain_in_sensor {
+                Some(RotateGainMap::from_ispe_aspect(
+                    primary_ispe_w,
+                    primary_ispe_h,
+                ))
+            } else {
+                None
+            }
+        }
+    };
+
+    match rotation {
+        Some(RotateGainMap::Cw90) => rotate_gain_rgba_90_cw(gain_width, gain_height, &gain_rgba),
+        Some(RotateGainMap::Ccw90) => rotate_gain_rgba_90_ccw(gain_width, gain_height, &gain_rgba),
+        Some(RotateGainMap::Rotate180) => rotate_gain_rgba_180(gain_width, gain_height, &gain_rgba),
+        None => (gain_width, gain_height, gain_rgba),
+    }
+}
+
+#[cfg(feature = "heif-native")]
+enum RotateGainMap {
+    Cw90,
+    Ccw90,
+    Rotate180,
+}
+
+#[cfg(feature = "heif-native")]
+impl RotateGainMap {
+    fn from_ispe_aspect(primary_ispe_w: u32, primary_ispe_h: u32) -> Self {
+        if primary_ispe_w > primary_ispe_h {
+            RotateGainMap::Cw90
+        } else {
+            RotateGainMap::Ccw90
+        }
+    }
+}
+
+#[cfg(feature = "heif-native")]
+fn decode_heif_gain_map(
+    main_handle: *const libheif_sys::heif_image_handle,
+    decode_options: *const libheif_sys::heif_decoding_options,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let evidence = list_heif_auxiliary_evidence(main_handle);
+    let apple_gain_map_item = evidence
+        .into_iter()
+        .find(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap);
+
+    let apple_gain_map_item = match apple_gain_map_item {
+        Some(item) => item,
+        None => {
+            log::debug!("[HDR] No Apple HDR Gain Map auxiliary image found in evidence.");
+            return None;
+        }
+    };
+
+    let mut aux_handle_ptr = std::ptr::null_mut();
+    let status = unsafe {
+        libheif_sys::heif_image_handle_get_auxiliary_image_handle(
+            main_handle,
+            apple_gain_map_item.item_id,
+            &mut aux_handle_ptr,
+        )
+    };
+    if status.code != libheif_sys::heif_error_Ok || aux_handle_ptr.is_null() {
+        log::warn!(
+            "[HDR] Failed to get auxiliary image handle for item #{}, code: {}",
+            apple_gain_map_item.item_id,
+            status.code
+        );
+        return None;
+    }
+    let aux_handle = HeifAuxiliaryImageHandle(aux_handle_ptr);
+
+    let mut image_ptr = std::ptr::null_mut();
+    let err = unsafe {
+        libheif_sys::heif_decode_image(
+            aux_handle.0,
+            &mut image_ptr,
+            libheif_sys::heif_colorspace_RGB,
+            libheif_sys::heif_chroma_interleaved_RGBA,
+            decode_options,
+        )
+    };
+    if err.code != libheif_sys::heif_error_Ok || image_ptr.is_null() {
+        log::warn!(
+            "[HDR] Failed to decode auxiliary gain map image, code: {}",
+            err.code
+        );
+        return None;
+    }
+    let _image_guard = RawHeifImage(image_ptr);
+
+    let width_i = unsafe { libheif_sys::heif_image_get_primary_width(image_ptr) };
+    let height_i = unsafe { libheif_sys::heif_image_get_primary_height(image_ptr) };
+    if width_i <= 0 || height_i <= 0 {
+        log::warn!(
+            "[HDR] Invalid auxiliary gain map dimensions: {}x{}",
+            width_i,
+            height_i
+        );
+        return None;
+    }
+    let width = width_i as u32;
+    let height = height_i as u32;
+
+    let mut stride = 0_usize;
+    let plane = unsafe {
+        libheif_sys::heif_image_get_plane_readonly2(
+            image_ptr,
+            libheif_sys::heif_channel_interleaved,
+            &mut stride,
+        )
+    };
+    if plane.is_null() {
+        log::warn!("[HDR] Failed to get plane pointer for auxiliary gain map image");
+        return None;
+    }
+
+    let mut gain_rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    let row_bytes = width as usize * 4;
+    if stride < row_bytes {
+        log::warn!(
+            "[HDR] Auxiliary gain map stride {} is less than row bytes {}",
+            stride,
+            row_bytes
+        );
+        return None;
+    }
+
+    for y in 0..height as usize {
+        let row = unsafe { std::slice::from_raw_parts(plane.add(y * stride), row_bytes) };
+        gain_rgba.extend_from_slice(row);
+    }
+
+    // The gain map auxiliary image is stored in the sensor (ispe) orientation.
+    // The primary may have been decoded with HEIF/EXIF rotation applied (display
+    // orientation). If the primary's display dimensions are swapped relative to
+    // its stored ispe dimensions, apply the same rotation to the gain map so both
+    // are in the same orientation for composition.
+    let primary_ispe_w =
+        unsafe { libheif_sys::heif_image_handle_get_ispe_width(main_handle) } as u32;
+    let primary_ispe_h =
+        unsafe { libheif_sys::heif_image_handle_get_ispe_height(main_handle) } as u32;
+    let primary_disp_w = unsafe { libheif_sys::heif_image_handle_get_width(main_handle) } as u32;
+    let primary_disp_h = unsafe { libheif_sys::heif_image_handle_get_height(main_handle) } as u32;
+
+    let orientation = heif_exif_orientation_from_raw_handle(main_handle);
+    let (out_w, out_h, out_rgba) = align_apple_gain_map_to_primary_display_orientation(
+        gain_rgba,
+        width,
+        height,
+        primary_ispe_w,
+        primary_ispe_h,
+        primary_disp_w,
+        primary_disp_h,
+        orientation,
+    );
+    if (out_w, out_h) != (width, height) {
+        log::debug!(
+            "[HDR] Gain map rotated to display orientation: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
+            width,
+            height,
+            out_w,
+            out_h,
+            primary_ispe_w,
+            primary_ispe_h,
+            primary_disp_w,
+            primary_disp_h,
+        );
+    }
+    Some((out_w, out_h, out_rgba))
+}
+
+#[cfg(feature = "heif-native")]
 struct HeifAuxiliaryImageHandle(*mut libheif_sys::heif_image_handle);
 
 #[cfg(feature = "heif-native")]
@@ -1735,6 +2073,7 @@ fn inspect_heif_gain_map_auxiliaries(
         target_hdr_capacity: None,
         diagnostic,
         capped_display_referred: false,
+        apple_heic_deferred: None,
     })
 }
 
@@ -1808,11 +2147,17 @@ fn heif_sample_bit_depth(
 
 #[cfg(test)]
 mod tests {
+    use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
     #[cfg(feature = "heif-native")]
     use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
-    use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
     use crate::hdr::heif::{heif_nclx_to_metadata, is_heif_brand};
     use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
+
+    #[cfg(feature = "heif-native")]
+    use super::{
+        EXIF_ORIENTATION_NORMAL, EXIF_ORIENTATION_ROTATE_90_CCW, EXIF_ORIENTATION_ROTATE_90_CW,
+        EXIF_ORIENTATION_ROTATE_180,
+    };
 
     #[test]
     fn heif_nclx_bt709_family_primaries_1_prefers_srgb_for_browser_still_parity() {
@@ -2034,5 +2379,190 @@ mod tests {
             heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default(), 1, 1),
             HeifYcbcrMatrix::Bt709
         );
+    }
+
+    #[cfg(feature = "heif-native")]
+    fn gradient_gain_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend_from_slice(&[x as u8, y as u8, 0, 255]);
+            }
+        }
+        rgba
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain,
+            width,
+            height,
+            4032,
+            3024,
+            3024,
+            4032,
+            Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        );
+        assert_eq!((out_w, out_h), (height, width));
+        let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
+            let idx = (y as usize * w as usize + x as usize) * 4;
+            [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+        };
+        // dst(0,0) = src(H-1-0, 0) = src(2,0) → R=0, G=2
+        assert_eq!(pixel(&out, out_w, 0, 0), [0, 2, 0, 255]);
+        // dst(0,1) = src(2,1) → R=1, G=2
+        assert_eq!(pixel(&out, out_w, 0, 1), [1, 2, 0, 255]);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display_ccw() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain,
+            width,
+            height,
+            4032,
+            3024,
+            3024,
+            4032,
+            Some(EXIF_ORIENTATION_ROTATE_90_CCW),
+        );
+        assert_eq!((out_w, out_h), (height, width));
+        let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
+            let idx = (y as usize * w as usize + x as usize) * 4;
+            [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+        };
+        // dst(0,0) = src(0, W-1-0) = src(0,3) → R=3, G=0
+        assert_eq!(pixel(&out, out_w, 0, 0), [3, 0, 0, 255]);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_rotates_180() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain,
+            width,
+            height,
+            4032,
+            3024,
+            4032,
+            3024,
+            Some(EXIF_ORIENTATION_ROTATE_180),
+        );
+        assert_eq!((out_w, out_h), (width, height));
+        let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
+            let idx = (y as usize * w as usize + x as usize) * 4;
+            [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+        };
+        // dst(0,0) = src(W*H - 1 - 0) = src(2,3) → R=3, G=2
+        assert_eq!(pixel(&out, out_w, 0, 0), [3, 2, 0, 255]);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_skips_rotation_when_orientations_match() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain.clone(),
+            width,
+            height,
+            width,
+            height,
+            width,
+            height,
+            None,
+        );
+        assert_eq!((out_w, out_h), (width, height));
+        assert_eq!(out, gain);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_falls_back_to_ispe_heuristic_when_exif_normal() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain,
+            width,
+            height,
+            4032,
+            3024,
+            3024,
+            4032,
+            Some(EXIF_ORIENTATION_NORMAL),
+        );
+        assert_eq!((out_w, out_h), (height, width));
+        let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
+            let idx = (y as usize * w as usize + x as usize) * 4;
+            [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+        };
+        assert_eq!(pixel(&out, out_w, 0, 0), [0, 2, 0, 255]);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_heuristic_skips_when_gain_matches_ispe_dimensions() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4032_u32;
+        let height = 3024_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain.clone(),
+            width,
+            height,
+            width,
+            height,
+            3024,
+            4032,
+            None,
+        );
+        assert_eq!((out_w, out_h), (width, height));
+        assert_eq!(out, gain);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_exif_rotates_even_when_gain_matches_ispe_dimensions() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, _) = align_apple_gain_map_to_primary_display_orientation(
+            gain,
+            width,
+            height,
+            width,
+            height,
+            height,
+            width,
+            Some(EXIF_ORIENTATION_ROTATE_90_CW),
+        );
+        assert_eq!((out_w, out_h), (height, width));
     }
 }

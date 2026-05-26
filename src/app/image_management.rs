@@ -155,6 +155,22 @@ fn invalidate_tile_manager_requests_for_view_change(
     }
 }
 
+const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
+
+/// True when an HDR load result used a different Ultra HDR decode capacity than the viewer now expects.
+pub(crate) fn hdr_load_result_capacity_is_stale(
+    load_result: &LoadResult,
+    current_ultra_hdr_decode_capacity: f32,
+) -> bool {
+    load_result.ultra_hdr_capacity_sensitive
+        && matches!(
+            &load_result.result,
+            Ok(crate::loader::ImageData::Hdr { .. } | crate::loader::ImageData::HdrTiled { .. })
+        )
+        && (load_result.target_hdr_capacity - current_ultra_hdr_decode_capacity).abs()
+            > HDR_CAPACITY_STALE_EPSILON
+}
+
 enum ImageInstallPlan<'a> {
     StaticSdr {
         decoded: &'a DecodedImage,
@@ -304,10 +320,20 @@ impl ImageViewerApp {
             &self.hdr_sdr_fallback_indices,
             &self.ultra_hdr_capacity_sensitive_indices,
         );
-        if crate::app::capacity_refresh_should_cancel_loads(&refresh) {
-            self.loader.cancel_all();
-        }
+
+        // Always cancel in-flight loads when capacity changes.  The original guard
+        // only cancelled when there were cached HDR images to invalidate, but during
+        // early startup the caches are empty while workers are already running with the
+        // *old* capacity snapshot.  Those stale workers must be evicted so that the
+        // re-scheduled preloads below use the updated capacity.
+        self.loader.cancel_all();
+
         if refresh.indices_to_invalidate.is_empty() {
+            // No cached HDR images to evict, but we still need to reschedule preloads
+            // so they pick up the new capacity (e.g. monitor probe completed mid-load).
+            if !self.image_files.is_empty() {
+                self.schedule_preloads(true);
+            }
             ctx.request_repaint();
             return;
         }
@@ -1159,8 +1185,19 @@ impl ImageViewerApp {
                         break;
                     }
 
-                    self.handle_image_load_result(load_result, ctx);
                     self.loader.finish_image_request(idx, generation);
+                    if let Some((requeue_idx, requeue_gen, requeue_path)) =
+                        self.handle_image_load_result(load_result, ctx)
+                    {
+                        // The slot was just freed by finish_image_request above; it is now safe to
+                        // re-queue.  The loader holds the current (correct) HDR capacity.
+                        self.loader.request_load(
+                            requeue_idx,
+                            requeue_gen,
+                            requeue_path,
+                            self.settings.raw_high_quality,
+                        );
+                    }
                     uploads_this_frame += 1;
 
                     if should_request_repaint_for_asset_update(
@@ -1304,14 +1341,40 @@ impl ImageViewerApp {
         }
     }
 
+    /// Returns `Some((idx, generation, path))` when the result was stale (wrong HDR capacity) and
+    /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
+    /// slot.  Calling `loader.request_load` before `finish_image_request` would silently drop the
+    /// re-queue because the slot appears occupied.
     pub(crate) fn handle_image_load_result(
         &mut self,
         load_result: LoadResult,
         ctx: &egui::Context,
-    ) {
+    ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
         let generation = load_result.generation;
         let preview_bundle = load_result.preview_bundle.clone();
+
+        // Stale-capacity guard: if a capacity-sensitive HDR result arrived with a different
+        // HDR capacity than the one currently active (e.g. the display monitor was detected
+        // after the worker thread read the capacity snapshot), discard this result and ask the
+        // caller to re-queue a fresh load once it has released the loading-map slot.
+        //
+        // NOTE: do NOT call loader.request_load() here — the loading-map slot for this
+        // (index, generation) is still occupied until finish_image_request() is called by
+        // the caller.  Calling request_load() now would hit the dedup guard in request_load
+        // and silently return without spawning a new worker, causing a permanent hang.
+        if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
+            log::info!(
+                "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
+                idx,
+                load_result.target_hdr_capacity,
+                self.ultra_hdr_decode_capacity
+            );
+            if !self.image_files.is_empty() && idx < self.image_files.len() {
+                return Some((idx, generation, self.image_files[idx].clone()));
+            }
+            return None;
+        }
 
         match ImageInstallPlan::from_load_result(&load_result) {
             ImageInstallPlan::StaticSdr { decoded } => {
@@ -1356,6 +1419,7 @@ impl ImageViewerApp {
                 self.install_image_error(idx, error);
             }
         }
+        None
     }
 
     fn upload_static_sdr_texture(
@@ -1889,6 +1953,7 @@ fn should_schedule_first_batch_preload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loader::PreviewBundle;
     use std::collections::HashMap;
 
     struct DummyTiledSource {
@@ -2137,5 +2202,54 @@ mod tests {
         let tile_manager = tile_manager.expect("tile manager should remain installed");
         assert_eq!(tile_manager.generation, 10);
         assert_eq!(loader_generation, 3);
+    }
+
+    #[test]
+    fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
+        let load = LoadResult {
+            index: 0,
+            generation: 1,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr: crate::hdr::types::HdrImageBuffer {
+                    width: 1,
+                    height: 1,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                    metadata: crate::hdr::types::HdrImageMetadata::default(),
+                    rgba_f32: Arc::new(vec![0.0; 4]),
+                },
+                fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: true,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+        };
+        assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
+        assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
+    }
+
+    #[test]
+    fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
+        let load = LoadResult {
+            index: 0,
+            generation: 1,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr: crate::hdr::types::HdrImageBuffer {
+                    width: 1,
+                    height: 1,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                    metadata: crate::hdr::types::HdrImageMetadata::default(),
+                    rgba_f32: Arc::new(vec![0.0; 4]),
+                },
+                fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+        };
+        assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
     }
 }

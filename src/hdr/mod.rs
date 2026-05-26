@@ -21,6 +21,12 @@ pub mod decode;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
 pub mod heif;
+#[cfg(feature = "heif-native")]
+pub(crate) mod heif_apple_gain_map;
+#[cfg(all(feature = "heif-native", test))]
+pub(crate) mod heif_apple_gain_map_compose_simd;
+#[cfg(feature = "heif-native")]
+pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
 pub mod jpegxl;

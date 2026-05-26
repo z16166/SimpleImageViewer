@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.1.5] - 2026-05-25
+
+### Added
+- **Apple HDR photos (HEIC)**: Compatible iPhone and other HEIC shots that include Apple's HDR gain map can show extra highlight detail when you view them on an HDR-capable display and raise HDR headroom in settings.
+
+### Fixed
+- **Apple HDR brightness**: The viewer now reads the camera's intended highlight headroom from file metadata instead of a generic default, so bright areas in gain-map–equipped HEIC photos look closer to what you saw on the phone.
+- **Apple HDR (portrait photos)**: Fixed uneven bright patches and ghosting on many vertically shot HEIC HDR images when gain-map enhancement is active.
+- **Apple HDR on SDR displays**: On a normal (non-HDR) screen, the viewer skips gain-map processing when it would not change the picture, which saves time and memory.
+
+### Improved
+- **Apple HDR performance**: Large HEIC HDR photos open faster, and HDR slider adjustments apply more responsively.
+
+
 ## [2.1.4] - 2026-05-23
 
 ### Added

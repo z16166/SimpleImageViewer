@@ -63,8 +63,7 @@ fn native_hdr_backends_are_wired_past_initial_stubs() {
     let avif = fs::read_to_string(hdr_dir.join("avif.rs")).expect("read avif backend");
     let heif = fs::read_to_string(hdr_dir.join("heif.rs")).expect("read heif backend");
     let jxl = fs::read_to_string(hdr_dir.join("jpegxl.rs")).expect("read jpegxl backend");
-    let loader =
-        fs::read_to_string(repo_root().join("src").join("loader.rs")).expect("read loader");
+    let loader = read_loader_source();
     let raw = fs::read_to_string(repo_root().join("src").join("raw_processor.rs"))
         .expect("read raw processor");
 
@@ -111,8 +110,7 @@ fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     let avif = fs::read_to_string(hdr_dir.join("avif.rs")).expect("read avif backend");
     let heif = fs::read_to_string(hdr_dir.join("heif.rs")).expect("read heif backend");
     let jxl = fs::read_to_string(hdr_dir.join("jpegxl.rs")).expect("read jpegxl backend");
-    let loader =
-        fs::read_to_string(repo_root().join("src").join("loader.rs")).expect("read loader");
+    let loader = read_loader_source();
 
     assert!(gain_map.contains("parse_iso_gain_map_metadata"));
     assert!(gain_map.contains("append_hdr_pixel_from_sdr_and_gain"));
@@ -129,4 +127,16 @@ fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     assert!(heif.contains("tmap"));
     assert!(loader.contains("load_avif_with_target_capacity"));
     assert!(loader.contains("load_jxl_with_target_capacity"));
+}
+
+fn read_loader_source() -> String {
+    let loader_dir = repo_root().join("src").join("loader");
+    let mut out = String::new();
+    for entry in walkdir::WalkDir::new(loader_dir) {
+        let entry = entry.unwrap();
+        if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs") {
+            out.push_str(&fs::read_to_string(entry.path()).unwrap());
+        }
+    }
+    out
 }
