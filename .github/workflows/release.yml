@@ -104,7 +104,7 @@ jobs:
                   "use_cross": False,
               },
               {
-                  "os": "macos-latest",
+                  "os": "macos-26",
                   "target": "aarch64-apple-darwin",
                   "vcpkg_cache_suffix": "na",
                   "binary_name": "SimpleImageViewer",
@@ -112,7 +112,7 @@ jobs:
                   "use_cross": False,
               },
               {
-                  "os": "macos-latest",
+                  "os": "macos-26-intel",
                   "target": "x86_64-apple-darwin",
                   "vcpkg_cache_suffix": "na",
                   "binary_name": "SimpleImageViewer",
@@ -149,7 +149,7 @@ jobs:
         include: ${{ fromJSON(needs.matrix-prep.outputs.include_json) }}
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'arm64-linux-v8a' || (matrix.target == 'x86_64-unknown-linux-gnu' && 'x64-linux' || 'na') }}
-      VCPKG_HOST_TRIPLET: ${{ contains(matrix.os, 'windows') && 'x64-windows' || (contains(matrix.os, 'macos') && 'x64-osx' || 'x64-linux') }}
+      VCPKG_HOST_TRIPLET: ${{ contains(matrix.os, 'windows') && 'x64-windows' || (contains(matrix.os, 'macos') && (matrix.target == 'aarch64-apple-darwin' && 'arm64-osx' || 'x64-osx') || 'x64-linux') }}
       # Ubuntu host: system pkg-config. macOS: Homebrew on PATH. Windows: unset here; see Install pkg-config step.
       PKG_CONFIG: ${{ contains(matrix.os, 'ubuntu') && '/usr/bin/pkg-config' || (contains(matrix.os, 'macos') && 'pkg-config' || '') }}
       # Hosted macOS/Windows images may set VCPKG_FORCE_SYSTEM_BINARIES; vcpkg then refuses to
@@ -292,14 +292,21 @@ jobs:
           </configuration>
           EOF
 
-      - name: macOS vcpkg binary sources (no Mono / GPR NuGet)
+      - name: Install Mono and NuGet for vcpkg (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          # vcpkg runs NuGet.exe under Mono on macOS; GitHub-hosted runners do not provide Mono
-          # and vcpkg cannot bootstrap it ("Could not fetch mono"). Skip GitHub Packages binary
-          # cache here; persist dependencies via the vcpkg_installed Actions cache instead.
-          echo "VCPKG_BINARY_SOURCES=clear" >> "$GITHUB_ENV"
+          set -euo pipefail
+          # vcpkg GPR binary caching runs NuGet.exe under Mono on macOS (same pattern as AlmaLinux CI).
+          brew install mono
+          mono --version
+          mkdir -p "${{ github.workspace }}/.nuget-tools"
+          NUGET_EXE="${{ github.workspace }}/.nuget-tools/nuget.exe"
+          if [[ ! -f "${NUGET_EXE}" ]]; then
+            curl -fsSL -o "${NUGET_EXE}" "https://dist.nuget.org/win-x86-commandline/v7.3.1/nuget.exe"
+          fi
+          SOURCE="https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          mono "${NUGET_EXE}" setApiKey "${{ secrets.GITHUB_TOKEN }}" -Source "${SOURCE}" || true
 
       - name: Install pkg-config (Windows)
         if: runner.os == 'Windows'
