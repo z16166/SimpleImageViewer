@@ -134,6 +134,7 @@ pub(crate) fn apply_apple_gain_map_composition(
         &hdr.metadata,
         headroom_span,
         weight,
+        false,
     );
 
     let mut final_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
@@ -429,6 +430,7 @@ mod tests {
             &metadata,
             headroom_span,
             weight,
+            false,
         );
         assert_eq!(out[3], 0.25);
         assert_eq!(out[pixel_count - 1], 0.75);

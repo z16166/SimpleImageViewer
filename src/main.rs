@@ -827,12 +827,19 @@ fn main() -> eframe::Result {
         // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
         // the device will be created safely with that lower limit.
         let hw_max_texture = adapter.limits().max_texture_dimension_2d;
+        let adapter_limits = adapter.limits();
         log::info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
+        log::info!(
+            "GPU max_storage_buffer_binding_size: {}",
+            adapter_limits.max_storage_buffer_binding_size
+        );
 
         eframe::wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
             required_limits: eframe::wgpu::Limits {
                 max_texture_dimension_2d: hw_max_texture,
+                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                max_buffer_size: adapter_limits.max_buffer_size,
                 ..base_limits
             },
             ..Default::default()

@@ -1692,7 +1692,71 @@ fn decode_heif_gain_map(
         gain_rgba.extend_from_slice(row);
     }
 
-    Some((width, height, gain_rgba))
+    // The gain map auxiliary image is stored in the sensor (ispe) orientation.
+    // The primary may have been decoded with HEIF/EXIF rotation applied (display
+    // orientation). If the primary's display dimensions are swapped relative to
+    // its stored ispe dimensions, apply the same rotation to the gain map so both
+    // are in the same orientation for composition.
+    let primary_ispe_w =
+        unsafe { libheif_sys::heif_image_handle_get_ispe_width(main_handle) } as u32;
+    let primary_ispe_h =
+        unsafe { libheif_sys::heif_image_handle_get_ispe_height(main_handle) } as u32;
+    let primary_disp_w = unsafe { libheif_sys::heif_image_handle_get_width(main_handle) } as u32;
+    let primary_disp_h = unsafe { libheif_sys::heif_image_handle_get_height(main_handle) } as u32;
+
+    // Only apply rotation when display dimensions are swapped vs stored (90°/270° transform).
+    let ispe_swapped = primary_ispe_w == primary_disp_h && primary_ispe_h == primary_disp_w;
+    let ispe_rotated = ispe_swapped && primary_ispe_w != primary_ispe_h;
+
+    if ispe_rotated && (primary_ispe_w != width || primary_ispe_h != height) {
+        // The primary was rotated from sensor (ispe) → display orientation.
+        // The gain map (in sensor orientation) must be rotated the same way.
+        // For Apple HEIC: sensor is landscape (ispe_w > ispe_h), display is portrait
+        // (disp_w < disp_h) → rotate 90° CW: new(x,y) = old(h-1-y, x)
+        let new_w = height;
+        let new_h = width;
+        let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
+        if primary_ispe_w > primary_ispe_h {
+            // Landscape sensor → portrait display: 90° CW
+            // dst[y][x] = src[H-1-x][y]
+            for y in 0..new_h {
+                for x in 0..new_w {
+                    let src_y = height - 1 - x;
+                    let src_x = y;
+                    let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+                    let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+                    rotated[dst_idx..dst_idx + 4]
+                        .copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+                }
+            }
+            log::debug!(
+                "[HDR] Gain map rotated 90° CW: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
+                width, height, new_w, new_h,
+                primary_ispe_w, primary_ispe_h, primary_disp_w, primary_disp_h,
+            );
+        } else {
+            // Portrait sensor → landscape display: 90° CCW
+            // dst[y][x] = src[x][W-1-y]
+            for y in 0..new_h {
+                for x in 0..new_w {
+                    let src_y = x;
+                    let src_x = width - 1 - y;
+                    let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+                    let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+                    rotated[dst_idx..dst_idx + 4]
+                        .copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+                }
+            }
+            log::debug!(
+                "[HDR] Gain map rotated 90° CCW: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
+                width, height, new_w, new_h,
+                primary_ispe_w, primary_ispe_h, primary_disp_w, primary_disp_h,
+            );
+        }
+        Some((new_w, new_h, rotated))
+    } else {
+        Some((width, height, gain_rgba))
+    }
 }
 
 #[cfg(feature = "heif-native")]

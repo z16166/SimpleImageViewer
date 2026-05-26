@@ -16,8 +16,7 @@
 
 //! SIMD/NEON row composition for Apple HEIC HDR gain maps.
 //!
-//! Parallelism stays at the [`ImageLoader`] job level only; this module vectorizes work **within**
-//! one decode thread (Windows/macOS/Linux, x86_64/aarch64).
+//! Parallelism: rows compose in parallel via rayon; within each row, x86_64/aarch64 SIMD applies.
 //!
 //! ## Gain-map math (must stay bit-identical to legacy)
 //!
@@ -44,6 +43,7 @@ use crate::hdr::decode::{
     linear_primary_to_linear_srgb,
 };
 use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
+use rayon::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -1037,45 +1037,50 @@ pub(crate) fn compose_apple_gain_map_pixels(
     metadata: &HdrImageMetadata,
     headroom_span: f32,
     weight: f32,
+    force_scalar: bool,
 ) {
     if width == 0 || height == 0 {
         return;
     }
 
-    let path = classify_fast_path(color_space, transfer, metadata);
-    let row_stride = width as usize * 4;
-    let mut gain_row = GainRowLinear {
-        encoded: Vec::new(),
-        rgb: Vec::new(),
+    let path = if force_scalar {
+        ComposeFastPath::Scalar
+    } else {
+        classify_fast_path(color_space, transfer, metadata)
     };
+    let row_stride = width as usize * 4;
 
-    for (y, (row_out, row_in)) in composed_pixels
-        .chunks_mut(row_stride)
-        .zip(base_pixels.chunks(row_stride))
+    composed_pixels
+        .par_chunks_mut(row_stride)
+        .zip(base_pixels.par_chunks(row_stride))
         .enumerate()
-    {
-        precompute_gain_row_linear(
-            gain_rgba,
-            gain_w,
-            gain_h,
-            y as u32,
-            width,
-            height,
-            &mut gain_row,
-        );
-        compose_row(
-            row_in,
-            row_out,
-            width,
-            &gain_row.rgb,
-            path,
-            color_space,
-            transfer,
-            metadata,
-            headroom_span,
-            weight,
-        );
-    }
+        .for_each(|(y, (row_out, row_in))| {
+            let mut gain_row = GainRowLinear {
+                encoded: Vec::new(),
+                rgb: Vec::new(),
+            };
+            precompute_gain_row_linear(
+                gain_rgba,
+                gain_w,
+                gain_h,
+                y as u32,
+                width,
+                height,
+                &mut gain_row,
+            );
+            compose_row(
+                row_in,
+                row_out,
+                width,
+                &gain_row.rgb,
+                path,
+                color_space,
+                transfer,
+                metadata,
+                headroom_span,
+                weight,
+            );
+        });
 }
 
 #[cfg(test)]
@@ -1222,6 +1227,7 @@ mod tests {
             &metadata,
             headroom_span,
             weight,
+            false,
         );
         assert_eq!(legacy, optimized);
     }
@@ -1291,6 +1297,7 @@ mod tests {
                 &metadata,
                 headroom_span,
                 weight,
+                false,
             );
             assert_eq!(
                 reference, optimized,
