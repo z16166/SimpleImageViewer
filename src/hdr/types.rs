@@ -113,11 +113,11 @@ pub struct HdrGainMapMetadata {
     pub capped_display_referred: bool,
     /// Apple HEIC: encoded base + gain map kept for GPU compose (`weight` applied at draw time).
     pub apple_heic_deferred: Option<AppleHeicGainMapGpuSource>,
-    /// Ultra HDR / ISO 21496 JPEG: baseline SDR + gain map kept for GPU compose at display time.
+    /// ISO 21496 gain map (Ultra HDR JPEG, JPEG XL jhgm): baseline SDR + gain map for GPU compose.
     pub jpeg_deferred: Option<JpegGainMapGpuSource>,
 }
 
-/// Baseline SDR and gain-map planes for Ultra HDR JPEG GPU compose (`jpeg_compose_gpu`).
+/// Baseline SDR and gain-map planes for ISO 21496 GPU compose (`jpeg_compose_gpu`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct JpegGainMapGpuSource {
     pub sdr_rgba: std::sync::Arc<Vec<u8>>,

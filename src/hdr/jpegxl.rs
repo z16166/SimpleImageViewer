@@ -346,7 +346,7 @@ fn jxl_sdr_grade_fallback_rgba8(
 }
 
 #[cfg(feature = "jpegxl")]
-fn srgb_unit_to_u8(value: f32) -> u8 {
+pub(crate) fn srgb_unit_to_u8(value: f32) -> u8 {
     if !value.is_finite() {
         return 0;
     }
@@ -473,7 +473,7 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
 }
 
 #[cfg(feature = "jpegxl")]
-fn apply_jxl_jhgm_gain_map_if_present(
+fn apply_jxl_jhgm_gain_map_cpu_if_present(
     jhgm_box: Option<&[u8]>,
     target_hdr_capacity: f32,
     rgba_f32: &mut Vec<f32>,
@@ -484,19 +484,38 @@ fn apply_jxl_jhgm_gain_map_if_present(
     let Some(jhgm_box) = jhgm_box else {
         return;
     };
+    match crate::hdr::jxl_gain_map_deferred::jxl_jhgm_primary_is_precomposed_hdr(jhgm_box) {
+        Ok(true) => {
+            log::debug!(
+                "[HDR] JPEG XL jhgm: primary codestream is precomposed HDR base; skipping forward gain-map compose"
+            );
+            return;
+        }
+        Ok(false) => {}
+        Err(err) => {
+            log::warn!("[HDR] JPEG XL jhgm metadata: {err}");
+            return;
+        }
+    }
     let expected_len = width as usize * height as usize * 4;
+    let color_space = metadata.color_space_hint();
     match decode_jxl_gain_map(jhgm_box, target_hdr_capacity, rgba_f32, width, height) {
         Ok((gain_metadata, gain_width, gain_height, gain_rgba)) => {
             let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
+            let sdr_baseline = crate::hdr::jxl_gain_map_deferred::jxl_rgba_f32_to_iso_sdr_baseline(
+                rgba_f32,
+                color_space,
+                metadata,
+            );
             let mut composed = Vec::with_capacity(expected_len);
             for y in 0..height {
                 for x in 0..width {
                     let index = (y as usize * width as usize + x as usize) * 4;
                     let sdr_rgba = [
-                        (linear_to_srgb_u8(rgba_f32[index])),
-                        (linear_to_srgb_u8(rgba_f32[index + 1])),
-                        (linear_to_srgb_u8(rgba_f32[index + 2])),
-                        (rgba_f32[index + 3] * 255.0).round().clamp(0.0, 255.0) as u8,
+                        sdr_baseline[index],
+                        sdr_baseline[index + 1],
+                        sdr_baseline[index + 2],
+                        sdr_baseline[index + 3],
                     ];
                     let gain_value = sample_gain_map_rgb(
                         &gain_rgba,
@@ -721,7 +740,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                     let mut animation = Vec::with_capacity(captured_frames.len());
                     for (mut buf, ticks) in captured_frames {
                         let mut frame_metadata = meta_base.clone();
-                        apply_jxl_jhgm_gain_map_if_present(
+                        apply_jxl_jhgm_gain_map_cpu_if_present(
                             jhgm_box.as_deref(),
                             decode_target_hdr_capacity,
                             &mut buf,
@@ -800,7 +819,39 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         metadata.luminance.mastering_max_nits = Some(100.0);
                     }
                 }
-                apply_jxl_jhgm_gain_map_if_present(
+                let color_space = metadata.color_space_hint();
+                if let Some(deferred_hdr) =
+                    match crate::hdr::jxl_gain_map_deferred::apply_jxl_jhgm_gain_map_gpu_deferred_if_present(
+                        jhgm_box.as_deref(),
+                        decode_target_hdr_capacity,
+                        &rgba,
+                        info.xsize,
+                        info.ysize,
+                        color_space,
+                        &metadata,
+                    ) {
+                        Ok(deferred) => deferred,
+                        Err(err) => {
+                            log::warn!(
+                                "[HDR] JPEG XL jhgm GPU deferred setup failed: {err}; using CPU compose"
+                            );
+                            None
+                        }
+                    }
+                {
+                    let fallback_pixels =
+                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &deferred_hdr,
+                            display_hdr_target_capacity,
+                            &tone_map,
+                        )?;
+                    let fallback = DecodedImage::new(deferred_hdr.width, deferred_hdr.height, fallback_pixels);
+                    return Ok(ImageData::Hdr {
+                        hdr: deferred_hdr,
+                        fallback,
+                    });
+                }
+                apply_jxl_jhgm_gain_map_cpu_if_present(
                     jhgm_box.as_deref(),
                     decode_target_hdr_capacity,
                     &mut rgba,
@@ -1161,7 +1212,7 @@ fn capture_jxl_box(
 }
 
 #[cfg(feature = "jpegxl")]
-fn decode_jxl_gain_map(
+pub(crate) fn decode_jxl_gain_map(
     jhgm_box: &[u8],
     target_hdr_capacity: f32,
     _base_rgba_f32: &[f32],

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Ultra HDR JPEG deferred GPU planes (baseline SDR + gain map, compose at display time).
+//! ISO 21496 / Ultra HDR deferred GPU planes (baseline SDR + gain map, compose at display time).
 
 use std::sync::Arc;
 
@@ -26,7 +26,8 @@ use crate::hdr::types::{
     HdrReference, HdrTransferFunction, JpegGainMapGpuSource,
 };
 
-pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
+pub(crate) fn attach_iso_gain_map_gpu_deferred(
+    source: &'static str,
     width: u32,
     height: u32,
     sdr_rgba: Vec<u8>,
@@ -44,10 +45,10 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
     image_metadata.reference = HdrReference::SdrGainMapBase;
     image_metadata.luminance = luminance_hints_from_gain_map(metadata);
     image_metadata.gain_map = Some(HdrGainMapMetadata {
-        source: "JPEG_R",
+        source,
         target_hdr_capacity: Some(hdr_target_capacity),
         diagnostic: format!(
-            "Ultra HDR JPEG GPU deferred ({}x{} gain {}x{} weight: {:.3}): {}",
+            "{source} GPU deferred ({}x{} gain {}x{} weight: {:.3}): {}",
             width,
             height,
             gain_width,
@@ -74,6 +75,29 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
         metadata: image_metadata,
         rgba_f32: Arc::new(Vec::new()),
     }
+}
+
+pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
+    width: u32,
+    height: u32,
+    sdr_rgba: Vec<u8>,
+    gain_width: u32,
+    gain_height: u32,
+    gain_rgba: Vec<u8>,
+    metadata: GainMapMetadata,
+    hdr_target_capacity: f32,
+) -> HdrImageBuffer {
+    attach_iso_gain_map_gpu_deferred(
+        "JPEG_R",
+        width,
+        height,
+        sdr_rgba,
+        gain_width,
+        gain_height,
+        gain_rgba,
+        metadata,
+        hdr_target_capacity,
+    )
 }
 
 pub(crate) fn apply_orientation_to_jpeg_deferred_hdr_buffer(

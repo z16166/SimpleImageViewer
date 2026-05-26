@@ -95,6 +95,13 @@ pub(crate) fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMeta
     fraction.into_gain_map_metadata()
 }
 
+/// Primary codestream already stores the high-headroom rendition (Adobe `*_base_hdr.jxl` layout:
+/// ISO `base_hdr_headroom` ≫ `alternate_hdr_headroom`). Forward SDR→HDR compose would treat those
+/// floats as an SDR baseline and recover HDR again.
+pub(crate) fn iso_gain_map_primary_is_precomposed_hdr(metadata: GainMapMetadata) -> bool {
+    metadata.hdr_capacity_min > metadata.hdr_capacity_max * 1.001
+}
+
 pub(crate) fn validate_gain_map_metadata(
     metadata: GainMapMetadata,
 ) -> Result<GainMapMetadata, String> {
@@ -481,7 +488,8 @@ impl<'a> ByteReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_gain_map_pixel, luminance_hints_from_gain_map, parse_iso_gain_map_metadata,
+        GainMapMetadata, compose_gain_map_pixel, iso_gain_map_primary_is_precomposed_hdr,
+        luminance_hints_from_gain_map, parse_iso_gain_map_metadata,
     };
     use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
@@ -510,6 +518,19 @@ mod tests {
         assert_eq!(metadata.gamma, [1.0; 3]);
         assert_eq!(metadata.hdr_capacity_min, 1.0);
         assert_eq!(metadata.hdr_capacity_max, 4.0);
+    }
+
+    #[test]
+    fn iso_gain_map_primary_is_precomposed_hdr_when_base_headroom_exceeds_alternate() {
+        let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
+        assert!(!iso_gain_map_primary_is_precomposed_hdr(metadata));
+
+        let inverted = GainMapMetadata {
+            hdr_capacity_min: 16.0,
+            hdr_capacity_max: 1.0,
+            ..metadata
+        };
+        assert!(iso_gain_map_primary_is_precomposed_hdr(inverted));
     }
 
     #[test]
