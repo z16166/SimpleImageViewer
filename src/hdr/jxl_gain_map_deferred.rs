@@ -16,11 +16,31 @@
 
 //! JPEG XL `jhgm` box: defer ISO gain-map compose to the shared GPU path.
 
+use std::sync::Arc;
+
 use crate::hdr::decode::{linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8};
-use crate::hdr::gain_map::{iso_gain_map_primary_is_precomposed_hdr, parse_iso_gain_map_metadata};
+use crate::hdr::gain_map::{
+    append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
+    iso_gain_map_primary_is_precomposed_hdr, parse_iso_gain_map_metadata, sample_gain_map_rgb,
+};
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
 use crate::hdr::jpegxl::{decode_jxl_gain_map, read_jxl_gain_map_bundle, srgb_unit_to_u8};
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrTransferFunction};
+use crate::hdr::types::{
+    HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
+    HdrTransferFunction,
+};
+
+/// Result of applying a JPEG XL `jhgm` box to one decoded primary frame.
+pub(crate) enum JxlJhgmFrameOutcome {
+    /// No `jhgm` box, malformed metadata, or CPU compose failure — caller builds HDR normally.
+    Unprocessed,
+    /// Primary codestream is already the HDR base rendition (Adobe `*_base_hdr.jxl`).
+    PrecomposedHdr(HdrImageBuffer),
+    /// ISO gain-map planes deferred to the shared GPU compose path.
+    GpuDeferred(HdrImageBuffer),
+    /// Forward gain map composed on the CPU.
+    CpuComposed(HdrImageBuffer),
+}
 
 /// When ISO headroom indicates the primary codestream is already the HDR base rendition.
 pub(crate) fn jxl_jhgm_primary_is_precomposed_hdr(jhgm_box: &[u8]) -> Result<bool, String> {
@@ -115,6 +135,139 @@ pub(crate) fn apply_jxl_jhgm_gain_map_gpu_deferred_if_present(
         gain_metadata,
         target_hdr_capacity,
     )))
+}
+
+fn jxl_hdr_buffer_from_rgba(
+    rgba: Vec<f32>,
+    width: u32,
+    height: u32,
+    metadata: HdrImageMetadata,
+) -> HdrImageBuffer {
+    HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: metadata.color_space_hint(),
+        metadata,
+        rgba_f32: Arc::new(rgba),
+    }
+}
+
+fn apply_jxl_jhgm_cpu_compose(
+    jhgm_box: &[u8],
+    target_hdr_capacity: f32,
+    rgba_f32: &[f32],
+    width: u32,
+    height: u32,
+    metadata: &HdrImageMetadata,
+) -> Result<HdrImageBuffer, String> {
+    let expected_len = width as usize * height as usize * 4;
+    let color_space = metadata.color_space_hint();
+    let (gain_metadata, gain_width, gain_height, gain_rgba) =
+        decode_jxl_gain_map(jhgm_box, target_hdr_capacity, rgba_f32, width, height)?;
+    let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
+    let sdr_baseline = jxl_rgba_f32_to_iso_sdr_baseline(rgba_f32, color_space, metadata);
+    let mut composed = Vec::with_capacity(expected_len);
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y as usize * width as usize + x as usize) * 4;
+            let sdr_rgba = [
+                sdr_baseline[index],
+                sdr_baseline[index + 1],
+                sdr_baseline[index + 2],
+                sdr_baseline[index + 3],
+            ];
+            let gain_value =
+                sample_gain_map_rgb(&gain_rgba, gain_width, gain_height, x, y, width, height);
+            append_hdr_pixel_from_sdr_and_gain(
+                &mut composed,
+                &sdr_rgba,
+                gain_value,
+                gain_metadata,
+                target_hdr_capacity,
+            );
+        }
+    }
+    let mut frame_metadata = metadata.clone();
+    frame_metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "JPEG XL",
+        target_hdr_capacity: Some(target_hdr_capacity),
+        diagnostic,
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        jpeg_deferred: None,
+    });
+    Ok(jxl_hdr_buffer_from_rgba(
+        composed,
+        width,
+        height,
+        frame_metadata,
+    ))
+}
+
+/// Shared static/animation path: GPU deferred, precomposed skip, or CPU ISO compose.
+pub(crate) fn finish_jxl_jhgm_frame(
+    jhgm_box: Option<&[u8]>,
+    target_hdr_capacity: f32,
+    rgba: &[f32],
+    width: u32,
+    height: u32,
+    metadata: &HdrImageMetadata,
+) -> JxlJhgmFrameOutcome {
+    let Some(jhgm_box) = jhgm_box else {
+        return JxlJhgmFrameOutcome::Unprocessed;
+    };
+
+    match jxl_jhgm_primary_is_precomposed_hdr(jhgm_box) {
+        Ok(true) => {
+            log::debug!(
+                "[HDR] JPEG XL jhgm: primary codestream is precomposed HDR base; skipping forward gain-map compose"
+            );
+            return JxlJhgmFrameOutcome::PrecomposedHdr(jxl_hdr_buffer_from_rgba(
+                rgba.to_vec(),
+                width,
+                height,
+                metadata.clone(),
+            ));
+        }
+        Ok(false) => {}
+        Err(err) => {
+            log::warn!("[HDR] JPEG XL jhgm metadata: {err}");
+            return JxlJhgmFrameOutcome::Unprocessed;
+        }
+    }
+
+    let color_space = metadata.color_space_hint();
+    match apply_jxl_jhgm_gain_map_gpu_deferred_if_present(
+        Some(jhgm_box),
+        target_hdr_capacity,
+        &rgba,
+        width,
+        height,
+        color_space,
+        &metadata,
+    ) {
+        Ok(Some(deferred)) => return JxlJhgmFrameOutcome::GpuDeferred(deferred),
+        Ok(None) => {}
+        Err(err) => {
+            log::warn!("[HDR] JPEG XL jhgm GPU deferred setup failed: {err}; using CPU compose");
+        }
+    }
+
+    match apply_jxl_jhgm_cpu_compose(
+        jhgm_box,
+        target_hdr_capacity,
+        &rgba,
+        width,
+        height,
+        &metadata,
+    ) {
+        Ok(hdr) => JxlJhgmFrameOutcome::CpuComposed(hdr),
+        Err(err) => {
+            log::warn!("[HDR] JPEG XL jhgm gain-map fallback: {err}");
+            JxlJhgmFrameOutcome::Unprocessed
+        }
+    }
 }
 
 #[cfg(test)]

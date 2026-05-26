@@ -165,7 +165,9 @@ pub(crate) fn hdr_load_result_capacity_is_stale(
     load_result.ultra_hdr_capacity_sensitive
         && matches!(
             &load_result.result,
-            Ok(crate::loader::ImageData::Hdr { .. } | crate::loader::ImageData::HdrTiled { .. })
+            Ok(crate::loader::ImageData::Hdr { .. }
+                | crate::loader::ImageData::HdrTiled { .. }
+                | crate::loader::ImageData::HdrAnimated(_))
         )
         && (load_result.target_hdr_capacity - current_ultra_hdr_decode_capacity).abs()
             > HDR_CAPACITY_STALE_EPSILON
@@ -189,6 +191,10 @@ enum ImageInstallPlan<'a> {
     },
     Animated {
         frames: &'a [crate::loader::AnimationFrame],
+    },
+    HdrAnimated {
+        frames: &'a [crate::loader::HdrAnimationFrame],
+        ultra_hdr_capacity_sensitive: bool,
     },
     Error {
         error: &'a String,
@@ -252,6 +258,10 @@ impl<'a> ImageInstallPlan<'a> {
             }
             LoadedRenderShape::Animated => match image_data {
                 ImageData::Animated(frames) => Self::Animated { frames },
+                ImageData::HdrAnimated(frames) => Self::HdrAnimated {
+                    frames,
+                    ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
+                },
                 _ => unreachable!("animated render shape is only emitted by animated image data"),
             },
         }
@@ -605,9 +615,18 @@ impl ImageViewerApp {
 
         // Try to pull from predictive cache if available
         if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
+            if let Some(hdr_frames) = &cached_anim.hdr_frames {
+                if let Some(hdr) = hdr_frames.first() {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        self.current_index,
+                        Arc::clone(hdr),
+                    ));
+                }
+            }
             self.animation = Some(AnimationPlayback {
                 image_index: cached_anim.image_index,
                 textures: cached_anim.textures.clone(),
+                hdr_frames: cached_anim.hdr_frames.clone(),
                 delays: cached_anim.delays.clone(),
                 current_frame: 0,
                 frame_start: Instant::now(),
@@ -1105,15 +1124,23 @@ impl ImageViewerApp {
                 let playback = AnimationPlayback {
                     image_index: idx,
                     textures: std::mem::take(&mut pending.textures),
+                    hdr_frames: pending.hdr_frames.clone(),
                     delays: std::mem::take(&mut pending.delays),
                     current_frame: 0,
                     frame_start: Instant::now(),
                 };
 
                 if idx == self.current_index {
+                    if let Some(hdr_frames) = &playback.hdr_frames {
+                        if let Some(hdr) = hdr_frames.first() {
+                            self.current_hdr_image =
+                                Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
+                        }
+                    }
                     self.animation = Some(AnimationPlayback {
                         image_index: playback.image_index,
                         textures: playback.textures.clone(),
+                        hdr_frames: playback.hdr_frames.clone(),
                         delays: playback.delays.clone(),
                         current_frame: 0,
                         frame_start: Instant::now(),
@@ -1415,6 +1442,12 @@ impl ImageViewerApp {
             ImageInstallPlan::Animated { frames } => {
                 self.install_animated_image(idx, frames, ctx);
             }
+            ImageInstallPlan::HdrAnimated {
+                frames,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_hdr_animated_image(idx, frames, ultra_hdr_capacity_sensitive, ctx);
+            }
             ImageInstallPlan::Error { error } => {
                 self.install_image_error(idx, error);
             }
@@ -1594,7 +1627,76 @@ impl ImageViewerApp {
         if is_in_range {
             self.pending_anim_frames = Some(PendingAnimUpload {
                 image_index: idx,
+                hdr_frames: None,
                 frames: frames.to_vec(),
+                textures: Vec::new(),
+                delays: Vec::new(),
+                next_frame: 0,
+            });
+            ctx.request_repaint();
+        }
+    }
+
+    fn install_hdr_animated_image(
+        &mut self,
+        idx: usize,
+        frames: &[crate::loader::HdrAnimationFrame],
+        ultra_hdr_capacity_sensitive: bool,
+        ctx: &egui::Context,
+    ) {
+        self.remove_hdr_image_index(idx);
+        let hdr_frames: Vec<Arc<crate::hdr::types::HdrImageBuffer>> = frames
+            .iter()
+            .map(|frame| Arc::new(frame.hdr.clone()))
+            .collect();
+        self.hdr_sdr_fallback_indices.insert(idx);
+        if ultra_hdr_capacity_sensitive {
+            self.ultra_hdr_capacity_sensitive_indices.insert(idx);
+        }
+
+        if let Some(first) = frames.first() {
+            self.upload_static_sdr_texture(
+                idx,
+                &first.fallback,
+                format!("img_hdr_anim_fallback_{idx}"),
+                ctx,
+            );
+            if idx == self.current_index {
+                self.current_image_res = Some((first.width(), first.height()));
+                self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                    idx,
+                    Arc::clone(&hdr_frames[0]),
+                ));
+                self.tile_manager = None;
+                self.clear_current_animation_for_index(idx);
+            }
+        }
+
+        let sdr_frames: Vec<crate::loader::AnimationFrame> = frames
+            .iter()
+            .map(|frame| {
+                crate::loader::AnimationFrame::new(
+                    frame.width(),
+                    frame.height(),
+                    frame.fallback.rgba().to_vec(),
+                    frame.delay,
+                )
+            })
+            .collect();
+
+        let cur = self.current_index;
+        let n = self.image_files.len();
+        let is_in_range = n > 0
+            && (idx == cur
+                || idx == (cur + 1) % n
+                || (cur > 0 && idx == cur - 1)
+                || (cur == 0 && idx == n - 1));
+
+        if is_in_range {
+            self.pending_anim_frames = Some(PendingAnimUpload {
+                image_index: idx,
+                hdr_frames: Some(hdr_frames),
+                frames: sdr_frames,
                 textures: Vec::new(),
                 delays: Vec::new(),
                 next_frame: 0,

@@ -18,7 +18,7 @@ use crate::hdr::types::HdrToneMapSettings;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::types::{AnimationFrame, DecodedImage, ImageData, TiledImageSource};
+use super::types::{AnimationFrame, DecodedImage, HdrAnimationFrame, ImageData, TiledImageSource};
 
 /// Linear luminance ratio (peak / SDR white) used when **decoding** ISO gain maps (JPEG_R,
 /// AVIF, JXL). Probed monitor headroom can exceed [`HdrToneMapSettings::max_display_nits`];
@@ -106,6 +106,21 @@ pub(crate) fn apply_exif_orientation_to_image_data(path: &Path, data: ImageData)
                 })
                 .collect();
             ImageData::Animated(out)
+        }
+        ImageData::HdrAnimated(frames) => {
+            let o = crate::metadata_utils::get_exif_orientation(path);
+            if o <= 1 || frames.is_empty() {
+                return ImageData::HdrAnimated(frames);
+            }
+            let out = frames
+                .into_iter()
+                .map(|frame| {
+                    let (hdr, fallback) =
+                        apply_exif_orientation_to_hdr_pair(path, frame.hdr, frame.fallback);
+                    HdrAnimationFrame::new(hdr, fallback, frame.delay)
+                })
+                .collect();
+            ImageData::HdrAnimated(out)
         }
         other => other,
     }

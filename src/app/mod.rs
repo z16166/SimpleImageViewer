@@ -146,6 +146,8 @@ pub(crate) struct AnimationPlayback {
     image_index: usize,
     /// Pre-uploaded GPU textures for each frame.
     textures: Vec<egui::TextureHandle>,
+    /// Per-frame HDR buffers when the animation uses the HDR / gain-map plane path.
+    hdr_frames: Option<Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>>,
     /// Per-frame display duration.
     delays: Vec<Duration>,
     /// Currently displayed frame index.
@@ -519,6 +521,7 @@ pub struct ImageViewerApp {
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
 pub(crate) struct PendingAnimUpload {
     image_index: usize,
+    hdr_frames: Option<Vec<std::sync::Arc<crate::hdr::types::HdrImageBuffer>>>,
     frames: Vec<crate::loader::AnimationFrame>,
     textures: Vec<egui::TextureHandle>,
     delays: Vec<std::time::Duration>,

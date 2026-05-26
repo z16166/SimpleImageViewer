@@ -130,6 +130,36 @@ pub struct AnimationFrame {
     pub delay: std::time::Duration,
 }
 
+/// One HDR animation frame: float/HDR-deferred plane plus an SDR fallback texture.
+#[derive(Clone)]
+pub struct HdrAnimationFrame {
+    pub hdr: crate::hdr::types::HdrImageBuffer,
+    pub fallback: DecodedImage,
+    pub delay: std::time::Duration,
+}
+
+impl HdrAnimationFrame {
+    pub fn new(
+        hdr: crate::hdr::types::HdrImageBuffer,
+        fallback: DecodedImage,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self {
+            hdr,
+            fallback,
+            delay,
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.hdr.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.hdr.height
+    }
+}
+
 impl std::fmt::Debug for AnimationFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnimationFrame")
@@ -180,6 +210,8 @@ pub enum ImageData {
     /// Virtualized image source — tiles are decoded on-demand from disk or other sources.
     Tiled(Arc<dyn TiledImageSource>),
     Animated(Vec<AnimationFrame>),
+    /// Animated JPEG XL (or similar) with per-frame HDR / ISO gain-map GPU compose.
+    HdrAnimated(Vec<HdrAnimationFrame>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -194,6 +226,7 @@ impl ImageData {
         match self {
             Self::Static(image) => Some(image),
             Self::Hdr { fallback, .. } => Some(fallback),
+            Self::HdrAnimated(frames) => frames.first().map(|frame| &frame.fallback),
             _ => None,
         }
     }
@@ -201,6 +234,13 @@ impl ImageData {
     pub fn static_hdr(&self) -> Option<&crate::hdr::types::HdrImageBuffer> {
         match self {
             Self::Hdr { hdr, .. } => Some(hdr),
+            _ => None,
+        }
+    }
+
+    pub fn hdr_animated_frames(&self) -> Option<&[HdrAnimationFrame]> {
+        match self {
+            Self::HdrAnimated(frames) => Some(frames.as_slice()),
             _ => None,
         }
     }
@@ -224,14 +264,24 @@ impl ImageData {
         match self {
             Self::Static(_) | Self::Hdr { .. } => RenderShape::Static,
             Self::Tiled(_) | Self::HdrTiled { .. } => RenderShape::Tiled,
-            Self::Animated(_) => RenderShape::Animated,
+            Self::Animated(_) | Self::HdrAnimated(_) => RenderShape::Animated,
         }
     }
 
     pub fn has_plane(&self, plane_kind: PixelPlaneKind) -> bool {
         match plane_kind {
-            PixelPlaneKind::Sdr => self.static_sdr().is_some() || self.tiled_sdr_source().is_some(),
-            PixelPlaneKind::Hdr => self.static_hdr().is_some() || self.tiled_hdr_source().is_some(),
+            PixelPlaneKind::Sdr => {
+                self.static_sdr().is_some()
+                    || self.tiled_sdr_source().is_some()
+                    || self
+                        .hdr_animated_frames()
+                        .is_some_and(|frames| frames.first().is_some())
+            }
+            PixelPlaneKind::Hdr => {
+                self.static_hdr().is_some()
+                    || self.tiled_hdr_source().is_some()
+                    || self.hdr_animated_frames().is_some()
+            }
         }
     }
 }

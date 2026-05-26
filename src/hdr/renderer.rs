@@ -510,21 +510,48 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let sampled_uv = tone_map.uv_min + rotated_uv * (tone_map.uv_max - tone_map.uv_min);
     let clamped_uv = clamp(sampled_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
     let hdr = sample_hdr_for_display(clamped_uv);
-    let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
-    let source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
     let src_a = clamp(hdr.a, 0.0, 1.0);
+    let display_referred_srgb = tone_map.input_transfer_function == INPUT_TRANSFER_SRGB &&
+        tone_map.input_reference != INPUT_REFERENCE_SCENE_LINEAR;
+    let decoded_rgb = decode_input_transfer(hdr.rgb, tone_map.input_transfer_function, tone_map);
+    var source_rgb = convert_input_to_linear_srgb(decoded_rgb, tone_map.input_color_space);
+    if (src_a <= 0.0) {
+        source_rgb = vec3<f32>(0.0);
+    }
+    var source_rgb_exposed = source_rgb;
+    if (display_referred_srgb) {
+        let exposure_scale = exp2(tone_map.exposure_ev);
+        source_rgb_exposed = sanitize_hdr_rgb(source_rgb * exposure_scale);
+        if (src_a <= 0.0) {
+            source_rgb_exposed = vec3<f32>(0.0);
+        }
+    }
     var rgb: vec3<f32>;
     if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_PQ {
-        rgb = encode_native_hdr_pq(source_rgb, tone_map);
+        if (display_referred_srgb) {
+            rgb = display_linear_to_pq(source_rgb_exposed * tone_map.native_display_scale, tone_map);
+        } else {
+            rgb = encode_native_hdr_pq(source_rgb, tone_map);
+        }
     } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR_GAMMA22 {
-        rgb = encode_native_hdr_gamma22(source_rgb, tone_map);
+        if (display_referred_srgb) {
+            let display_scale =
+                tone_map.sdr_white_nits / max(tone_map.max_display_nits, tone_map.sdr_white_nits);
+            let peak_linear = source_rgb_exposed * display_scale;
+            rgb = gamma22_from_linear_rgb(clamp(peak_linear, vec3<f32>(0.0), vec3<f32>(1.0)));
+        } else {
+            rgb = encode_native_hdr_gamma22(source_rgb, tone_map);
+        }
     } else if tone_map.output_mode == OUTPUT_MODE_NATIVE_HDR {
-        rgb = encode_native_hdr(source_rgb, tone_map);
+        if (display_referred_srgb) {
+            rgb = source_rgb_exposed * tone_map.native_display_scale;
+        } else {
+            rgb = encode_native_hdr(source_rgb, tone_map);
+        }
     } else {
         rgb = encode_sdr(source_rgb, tone_map);
     }
-    let has_linear_signal = max(max(abs(source_rgb.r), abs(source_rgb.g)), abs(source_rgb.b)) > 1e-6;
-    let a_out = select(src_a, 1.0, src_a == 0.0 && has_linear_signal);
+    let a_out = src_a;
     return vec4<f32>(rgb, a_out * tone_map.alpha);
 }
 "#;

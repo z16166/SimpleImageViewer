@@ -367,6 +367,46 @@ pub(crate) fn load_image_file(
                 Ok(ImageData::Animated(frames))
             }
         }
+        Ok(ImageData::HdrAnimated(frames)) => {
+            if let Some(first) = frames.first() {
+                let width = first.width();
+                let height = first.height();
+                let max_side = width.max(height);
+                let limit = crate::tile_cache::get_max_texture_side();
+
+                let total_bytes: usize = frames
+                    .iter()
+                    .map(|f| f.fallback.rgba().len() + f.hdr.rgba_f32.len() * 4)
+                    .sum();
+                let mb = total_bytes as f64 / (BYTES_PER_MB as f64);
+
+                if max_side > limit {
+                    log::warn!(
+                        "[{}] HDR animated image ({}x{}) exceeds GPU limits. Using first-frame SDR fallback.",
+                        file_name,
+                        width,
+                        height
+                    );
+                    Ok(make_image_data(DecodedImage::new(
+                        width,
+                        height,
+                        first.fallback.rgba().to_vec(),
+                    )))
+                } else {
+                    log::info!(
+                        "[{}] Decoded {}x{} ({} HDR frames, {:.1} MB) - HDR Animated Mode",
+                        file_name,
+                        width,
+                        height,
+                        frames.len(),
+                        mb
+                    );
+                    Ok(ImageData::HdrAnimated(frames))
+                }
+            } else {
+                Ok(ImageData::HdrAnimated(frames))
+            }
+        }
         Err(e) => {
             log::error!("[{}] Failed to load: {}", file_name, e);
             Err(e)
@@ -376,8 +416,10 @@ pub(crate) fn load_image_file(
     let preview_bundle =
         PreviewBundle::from_planes(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
 
-    let sdr_fallback_is_placeholder = matches!(&final_result, Ok(ImageData::Hdr { .. }))
-        && !hdr_display_requests_sdr_preview(hdr_target_capacity);
+    let sdr_fallback_is_placeholder = matches!(
+        &final_result,
+        Ok(ImageData::Hdr { .. } | ImageData::HdrAnimated(_))
+    ) && !hdr_display_requests_sdr_preview(hdr_target_capacity);
 
     LoadResult {
         index,
@@ -403,7 +445,7 @@ fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String
         || is_raw)
         && matches!(
             result,
-            Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. })
+            Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_))
         )
 }
 
