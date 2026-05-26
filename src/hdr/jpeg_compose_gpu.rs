@@ -47,6 +47,9 @@ struct JpegGainMapComposeSettings {
     tile_width: u32,
     tile_height: u32,
     orientation: u32,
+    _pad4: u32,
+    _pad5: u32,
+    _pad6: u32,
 };
 
 @group(0) @binding(0) var sdr_texture: texture_2d<f32>;
@@ -209,9 +212,12 @@ struct JpegGainMapComposeUniform {
     tile_width: u32,
     tile_height: u32,
     orientation: u32,
+    _pad4: u32,
+    _pad5: u32,
+    _pad6: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 116);
+const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 128);
 
 pub(super) fn create_jpeg_compose_compute_resources(
     device: &wgpu::Device,
@@ -313,6 +319,9 @@ pub(super) fn create_jpeg_compose_compute_resources(
             tile_width: 0,
             tile_height: 0,
             orientation: 0,
+            _pad4: 0,
+            _pad5: 0,
+            _pad6: 0,
         }),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -346,6 +355,9 @@ fn compose_uniform_fields(
         tile_width: 0,
         tile_height: 0,
         orientation: 0,
+        _pad4: 0,
+        _pad5: 0,
+        _pad6: 0,
     }
 }
 
@@ -524,6 +536,6 @@ mod tests {
 
     #[test]
     fn compose_uniform_struct_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<JpegGainMapComposeUniform>(), 116);
+        assert_eq!(std::mem::size_of::<JpegGainMapComposeUniform>(), 128);
     }
 }
