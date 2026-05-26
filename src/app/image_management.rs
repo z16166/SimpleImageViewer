@@ -413,6 +413,20 @@ impl ImageViewerApp {
         }
     }
 
+    /// First HDR still for `index` from static cache, completed animation cache, or in-flight
+    /// deferred animation uploads.
+    pub(crate) fn first_cached_hdr_still_for_index(
+        &self,
+        index: usize,
+    ) -> Option<Arc<crate::hdr::types::HdrImageBuffer>> {
+        first_cached_hdr_still_for_index(
+            &self.hdr_image_cache,
+            &self.animation_cache,
+            self.pending_anim_frames.as_ref(),
+            index,
+        )
+    }
+
     fn handle_texture_cache_eviction(&mut self, evicted_idx: usize) {
         self.animation_cache.remove(&evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
@@ -570,9 +584,7 @@ impl ImageViewerApp {
         );
         self.current_index = target_index;
         self.current_hdr_image = self
-            .hdr_image_cache
-            .get(&self.current_index)
-            .cloned()
+            .first_cached_hdr_still_for_index(self.current_index)
             .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
         self.current_hdr_tiled_image = self
             .hdr_tiled_source_cache
@@ -1649,6 +1661,12 @@ impl ImageViewerApp {
             .iter()
             .map(|frame| Arc::new(frame.hdr.clone()))
             .collect();
+        if let Some(first_hdr) = hdr_frames.first() {
+            // Preload / first navigation reads `hdr_image_cache` before deferred anim uploads
+            // finish populating `animation_cache`. Without this, HDR displays fall back to the
+            // black SDR placeholder until `pending_anim_frames` completes (dark → bright flash).
+            self.hdr_image_cache.insert(idx, Arc::clone(first_hdr));
+        }
         self.hdr_sdr_fallback_indices.insert(idx);
         if ultra_hdr_capacity_sensitive {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
@@ -2052,6 +2070,32 @@ fn should_schedule_first_batch_preload(
     is_first_batch && count > 0 && !scan_done
 }
 
+fn first_cached_hdr_still_for_index(
+    hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    animation_cache: &HashMap<usize, AnimationPlayback>,
+    pending_anim_frames: Option<&PendingAnimUpload>,
+    index: usize,
+) -> Option<Arc<crate::hdr::types::HdrImageBuffer>> {
+    if let Some(image) = hdr_image_cache.get(&index) {
+        return Some(Arc::clone(image));
+    }
+    if let Some(anim) = animation_cache.get(&index) {
+        if let Some(frame) = anim.hdr_frames.as_ref().and_then(|frames| frames.first()) {
+            return Some(Arc::clone(frame));
+        }
+    }
+    pending_anim_frames.and_then(|pending| {
+        if pending.image_index != index {
+            return None;
+        }
+        pending
+            .hdr_frames
+            .as_ref()
+            .and_then(|frames| frames.first())
+            .cloned()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2083,6 +2127,73 @@ mod tests {
         fn full_pixels(&self) -> Option<Arc<Vec<u8>>> {
             None
         }
+    }
+
+    #[test]
+    fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
+        use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let mk = |tag: u8| {
+            Arc::new(HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space: HdrColorSpace::LinearSrgb,
+                metadata: HdrImageMetadata::default(),
+                rgba_f32: Arc::new(vec![tag as f32, 0.0, 0.0, 1.0]),
+            })
+        };
+
+        let static_hdr = mk(1);
+        let anim_hdr = mk(2);
+        let pending_hdr = mk(3);
+
+        let mut hdr_image_cache = HashMap::new();
+        hdr_image_cache.insert(0, Arc::clone(&static_hdr));
+        assert_eq!(
+            first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), None, 0)
+                .map(|b| b.rgba_f32[0]),
+            Some(1.0)
+        );
+
+        hdr_image_cache.clear();
+        let mut animation_cache = HashMap::new();
+        animation_cache.insert(
+            1,
+            AnimationPlayback {
+                image_index: 1,
+                textures: Vec::new(),
+                hdr_frames: Some(vec![Arc::clone(&anim_hdr)]),
+                delays: Vec::new(),
+                current_frame: 0,
+                frame_start: Instant::now(),
+            },
+        );
+        assert_eq!(
+            first_cached_hdr_still_for_index(&hdr_image_cache, &animation_cache, None, 1)
+                .map(|b| b.rgba_f32[0]),
+            Some(2.0)
+        );
+
+        let pending = PendingAnimUpload {
+            image_index: 2,
+            hdr_frames: Some(vec![Arc::clone(&pending_hdr)]),
+            frames: Vec::new(),
+            textures: Vec::new(),
+            delays: Vec::new(),
+            next_frame: 0,
+        };
+        assert_eq!(
+            first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), Some(&pending), 2)
+                .map(|b| b.rgba_f32[0]),
+            Some(3.0)
+        );
+        assert!(
+            first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), Some(&pending), 9)
+                .is_none()
+        );
     }
 
     #[test]
