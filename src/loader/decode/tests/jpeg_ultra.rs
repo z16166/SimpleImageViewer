@@ -19,7 +19,10 @@
 use std::path::PathBuf;
 
 use crate::hdr::gain_map::gain_map_weight;
+use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
+use crate::hdr::ultra_hdr::display_to_physical_pixel;
+use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
 use crate::loader::ImageData;
 use crate::loader::decode::jpeg::{load_jpeg, load_jpeg_with_target_capacity};
 use crate::loader::decode::load_image_file;
@@ -268,9 +271,66 @@ fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
         .expect("extract Ultra HDR tile");
     assert_eq!((tile.width, tile.height), (64, 64));
     assert!(
-        tile.rgba_f32
+        tile.rgba_f32.is_empty(),
+        "Ultra HDR tiled source should defer compose to GPU"
+    );
+    let deferred = jpeg_deferred_from_metadata(&tile.metadata).expect("jpeg deferred metadata");
+    let ctx = tile.jpeg_deferred_tile.expect("jpeg deferred tile context");
+    let composed = compose_ultra_hdr_tile_region_cpu(
+        tile.width,
+        tile.height,
+        ctx.origin_x,
+        ctx.origin_y,
+        ctx.physical_width,
+        ctx.physical_height,
+        ctx.orientation,
+        deferred.sdr_rgba.as_slice(),
+        deferred.gain_rgba.as_slice(),
+        deferred.gain_width,
+        deferred.gain_height,
+        deferred.metadata,
+        8.0,
+        display_to_physical_pixel,
+    );
+    assert!(
+        composed
             .chunks_exact(4)
             .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
         "Ultra HDR tiled source should preserve HDR highlights"
+    );
+}
+
+#[test]
+fn generated_8k_gcontainer_routes_to_hdr_tiled_when_present() {
+    let path = std::env::var_os("SIV_GENERATED_ULTRA_HDR_8K")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"f:\hdr\ultra_hdr_8192.jpg"));
+    if !path.is_file() {
+        eprintln!(
+            "skipping generated 8K GContainer test; set SIV_GENERATED_ULTRA_HDR_8K or create {}",
+            path.display()
+        );
+        return;
+    }
+
+    let bytes = std::fs::read(&path).expect("read generated Ultra HDR JPEG");
+    let info = crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(&bytes).expect("inspect");
+    assert!(
+        info.is_ultra_hdr,
+        "generated sample must pass inspect_ultra_hdr_jpeg_bytes"
+    );
+
+    let image_data = load_jpeg(&path).expect("load generated 8K Ultra HDR JPEG");
+    let ImageData::HdrTiled { hdr, fallback } = image_data else {
+        panic!("generated 8K Ultra HDR JPEG should route to ImageData::HdrTiled for HDR swapchain");
+    };
+    assert!(fallback.is_hdr_sdr_fallback());
+    assert!(hdr.width() >= 8192, "expected upscaled long edge >= 8192");
+    let tile = hdr
+        .extract_tile_rgba32f_arc(0, 0, 64, 64)
+        .expect("extract deferred tile");
+    assert!(
+        jpeg_deferred_from_metadata(&tile.metadata).is_some(),
+        "tiled Ultra HDR JPEG_R should expose jpeg_deferred metadata"
     );
 }

@@ -1122,7 +1122,119 @@ impl CallbackTrait for HdrTilePlaneCallback {
         );
 
         let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
-        if !resources.tile_bindings.contains(tile_key) {
+        let jpeg_deferred = jpeg_deferred_from_metadata(&self.tile.metadata);
+        let tile_ctx = self.tile.jpeg_deferred_tile;
+        let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
+
+        if let (Some(deferred), Some(ctx)) = (jpeg_deferred, tile_ctx) {
+            let upload_key = JpegTiledUploadKey {
+                sdr_ptr: std::sync::Arc::as_ptr(&deferred.sdr_rgba) as usize,
+                gain_ptr: std::sync::Arc::as_ptr(&deferred.gain_rgba) as usize,
+            };
+            if resources.jpeg_tiled_upload_key != Some(upload_key) {
+                match upload_jpeg_tiled_source_textures(
+                    device,
+                    queue,
+                    deferred,
+                    ctx.physical_width,
+                    ctx.physical_height,
+                    device.limits().max_texture_dimension_2d,
+                ) {
+                    Ok((sdr, gain)) => {
+                        resources.jpeg_tiled_upload_key = Some(upload_key);
+                        resources.jpeg_tiled_sdr_texture = Some(sdr.texture);
+                        resources.jpeg_tiled_sdr_view = Some(sdr.view);
+                        resources.jpeg_tiled_gain_texture = Some(gain.texture);
+                        resources.jpeg_tiled_gain_view = Some(gain.view);
+                    }
+                    Err(err) => {
+                        log::warn!("[HDR] Skipping JPEG tiled source upload: {err}");
+                        resources.tile_bindings.remove(tile_key);
+                        return Vec::new();
+                    }
+                }
+            }
+
+            let needs_compose = resources
+                .tile_bindings
+                .binding(tile_key)
+                .and_then(|binding| binding.baked_jpeg_weight_bits)
+                != Some(target_capacity_bits);
+
+            if needs_compose {
+                let Some(sdr_view) = resources.jpeg_tiled_sdr_view.as_ref() else {
+                    return Vec::new();
+                };
+                let Some(gain_view) = resources.jpeg_tiled_gain_view.as_ref() else {
+                    return Vec::new();
+                };
+                match create_empty_rgba32f_texture(device, self.tile.width, self.tile.height) {
+                    Ok(uploaded) => {
+                        let Some(display_storage) = uploaded.storage_view.as_ref() else {
+                            return Vec::new();
+                        };
+                        let compose_command = jpeg_compose_gpu::encode_tile_compose_compute_pass(
+                            device,
+                            queue,
+                            resources,
+                            deferred,
+                            &ctx,
+                            self.tile.width,
+                            self.tile.height,
+                            &self.tone_map,
+                            sdr_view,
+                            gain_view,
+                            display_storage,
+                        );
+                        resources.uploaded_image_key = None;
+                        let tone_map_buffer =
+                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
+                                contents: bytemuck::bytes_of(&uniform),
+                                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                            });
+                        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+                            layout: &resources.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&uploaded.view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &resources.dummy_gain_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: tone_map_buffer.as_entire_binding(),
+                                },
+                            ],
+                        });
+                        resources.tile_bindings.insert(
+                            tile_key,
+                            uploaded.texture,
+                            uploaded.view,
+                            tone_map_buffer,
+                            bind_group,
+                            Some(target_capacity_bits),
+                        );
+                        return vec![compose_command];
+                    }
+                    Err(err) => {
+                        log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");
+                        resources.tile_bindings.remove(tile_key);
+                        return Vec::new();
+                    }
+                }
+            }
+
+            if !resources.tile_bindings.contains(tile_key) {
+                return Vec::new();
+            }
+        } else if !resources.tile_bindings.contains(tile_key) {
             match upload_callback_tile(device, queue, &self.tile) {
                 Ok(uploaded) => {
                     resources.uploaded_image_key = None;
@@ -1158,6 +1270,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         uploaded.view,
                         tone_map_buffer,
                         bind_group,
+                        None,
                     );
                 }
                 Err(err) => {
@@ -1462,6 +1575,12 @@ impl HdrImageKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct JpegTiledUploadKey {
+    sdr_ptr: usize,
+    gain_ptr: usize,
+}
+
 struct HdrCallbackResources {
     target_format: wgpu::TextureFormat,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -1481,7 +1600,13 @@ struct HdrCallbackResources {
     uploaded_display_storage_view: Option<wgpu::TextureView>,
     jpeg_compose_bind_group_layout: wgpu::BindGroupLayout,
     jpeg_compose_pipeline: wgpu::ComputePipeline,
+    jpeg_compose_tile_pipeline: wgpu::ComputePipeline,
     jpeg_compose_uniform_buffer: wgpu::Buffer,
+    jpeg_tiled_upload_key: Option<JpegTiledUploadKey>,
+    jpeg_tiled_sdr_texture: Option<wgpu::Texture>,
+    jpeg_tiled_sdr_view: Option<wgpu::TextureView>,
+    jpeg_tiled_gain_texture: Option<wgpu::Texture>,
+    jpeg_tiled_gain_view: Option<wgpu::TextureView>,
     baked_jpeg_image_key: Option<HdrImageKey>,
     baked_jpeg_weight_bits: Option<u32>,
     #[cfg(feature = "heif-native")]
@@ -1637,8 +1762,12 @@ fn create_callback_resources(
     #[cfg(feature = "heif-native")]
     let (compose_bind_group_layout, compose_pipeline, compose_tone_map_buffer) =
         apple_compose_gpu::create_compose_compute_resources(device);
-    let (jpeg_compose_bind_group_layout, jpeg_compose_pipeline, jpeg_compose_uniform_buffer) =
-        jpeg_compose_gpu::create_jpeg_compose_compute_resources(device);
+    let (
+        jpeg_compose_bind_group_layout,
+        jpeg_compose_pipeline,
+        jpeg_compose_tile_pipeline,
+        jpeg_compose_uniform_buffer,
+    ) = jpeg_compose_gpu::create_jpeg_compose_compute_resources(device);
 
     HdrCallbackResources {
         target_format,
@@ -1658,7 +1787,13 @@ fn create_callback_resources(
         uploaded_display_storage_view: None,
         jpeg_compose_bind_group_layout,
         jpeg_compose_pipeline,
+        jpeg_compose_tile_pipeline,
         jpeg_compose_uniform_buffer,
+        jpeg_tiled_upload_key: None,
+        jpeg_tiled_sdr_texture: None,
+        jpeg_tiled_sdr_view: None,
+        jpeg_tiled_gain_texture: None,
+        jpeg_tiled_gain_view: None,
         baked_jpeg_image_key: None,
         baked_jpeg_weight_bits: None,
         #[cfg(feature = "heif-native")]
@@ -1730,6 +1865,7 @@ impl HdrTileBindings {
         view: wgpu::TextureView,
         tone_map_buffer: wgpu::Buffer,
         bind_group: wgpu::BindGroup,
+        baked_jpeg_weight_bits: Option<u32>,
     ) {
         self.protect_recent(key);
         self.insert_binding(
@@ -1740,6 +1876,7 @@ impl HdrTileBindings {
                 tone_map_buffer: Some(tone_map_buffer),
                 bind_group: Some(bind_group),
                 estimated_bytes: 0,
+                baked_jpeg_weight_bits,
             },
         );
     }
@@ -1818,6 +1955,7 @@ impl HdrTileBindings {
                 tone_map_buffer: None,
                 bind_group: None,
                 estimated_bytes: 0,
+                baked_jpeg_weight_bits: None,
             },
         );
     }
@@ -1843,6 +1981,10 @@ impl HdrTileBindings {
             .and_then(|entry| entry.bind_group.as_ref())
     }
 
+    fn binding(&self, key: HdrTileKey) -> Option<&HdrTileBinding> {
+        self.entries.get(&key)
+    }
+
     fn binding_mut(&mut self, key: HdrTileKey) -> Option<&mut HdrTileBinding> {
         self.entries.get_mut(&key)
     }
@@ -1854,10 +1996,46 @@ struct HdrTileBinding {
     tone_map_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     estimated_bytes: usize,
+    baked_jpeg_weight_bits: Option<u32>,
 }
 
 fn hdr_tile_key_bytes(key: HdrTileKey) -> usize {
-    key.rgba_len * std::mem::size_of::<f32>()
+    if key.rgba_len > 0 {
+        key.rgba_len * std::mem::size_of::<f32>()
+    } else {
+        key.width as usize * key.height as usize * 4 * std::mem::size_of::<f32>()
+    }
+}
+
+fn upload_jpeg_tiled_source_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    deferred: &crate::hdr::types::JpegGainMapGpuSource,
+    physical_width: u32,
+    physical_height: u32,
+    max_texture_dimension_2d: u32,
+) -> Result<(CallbackUpload, CallbackUpload), String> {
+    let sdr = upload_rgba8_texture(
+        device,
+        queue,
+        "simple-image-viewer-hdr-tile-jpeg-sdr-texture",
+        physical_width,
+        physical_height,
+        deferred.sdr_rgba.as_slice(),
+        HDR_APPLE_GAIN_TEXTURE_FORMAT,
+        max_texture_dimension_2d,
+    )?;
+    let gain = upload_rgba8_texture(
+        device,
+        queue,
+        "simple-image-viewer-hdr-tile-jpeg-gain-texture",
+        deferred.gain_width,
+        deferred.gain_height,
+        deferred.gain_rgba.as_slice(),
+        HDR_APPLE_GAIN_TEXTURE_FORMAT,
+        max_texture_dimension_2d,
+    )?;
+    Ok((sdr, gain))
 }
 
 #[allow(dead_code)]

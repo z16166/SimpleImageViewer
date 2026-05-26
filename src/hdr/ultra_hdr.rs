@@ -29,17 +29,21 @@ use crate::hdr::gain_map::{
 };
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
-use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
+use crate::hdr::jpeg_gain_map_gpu::{
+    attach_jpeg_deferred_tile_metadata, jpeg_deferred_from_metadata,
+};
 use crate::hdr::mpf::{extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-#[cfg(test)]
-use crate::hdr::types::HdrPixelFormat;
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata};
+use crate::hdr::types::{
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, JpegDeferredTileContext,
+};
 #[cfg(test)]
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
+#[cfg(test)]
+use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
 use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
 
 #[cfg(test)]
@@ -294,7 +298,55 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
-        crate::hdr::tiled::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
+        let (preview_width, preview_height) =
+            crate::hdr::tiled::preview_dimensions(self.width, self.height, max_w, max_h);
+        if preview_width == 0 || preview_height == 0 {
+            return Err("HDR tiled preview dimensions must be non-zero".to_string());
+        }
+
+        let mut rgba_f32 = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+        for preview_y in 0..preview_height {
+            let display_y =
+                crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, self.height);
+            for preview_x in 0..preview_width {
+                let display_x =
+                    crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, self.width);
+                let (physical_x, physical_y) = display_to_physical_pixel(
+                    display_x,
+                    display_y,
+                    self.physical_width,
+                    self.physical_height,
+                    self.orientation,
+                );
+                let sdr_index =
+                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
+                let gain_value = sample_gain_map_rgb(
+                    &self.gain_rgba,
+                    self.gain_width,
+                    self.gain_height,
+                    physical_x,
+                    physical_y,
+                    self.physical_width,
+                    self.physical_height,
+                );
+                append_hdr_pixel_from_sdr_and_gain(
+                    &mut rgba_f32,
+                    &self.sdr_rgba[sdr_index..sdr_index + 4],
+                    gain_value,
+                    self.metadata,
+                    self.target_hdr_capacity,
+                );
+            }
+        }
+
+        Ok(HdrImageBuffer {
+            width: preview_width,
+            height: preview_height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: self.metadata(),
+            rgba_f32: Arc::new(rgba_f32),
+        })
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
@@ -334,45 +386,29 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-        for dy in 0..height {
-            for dx in 0..width {
-                let display_x = x + dx;
-                let display_y = y + dy;
-                let (physical_x, physical_y) = display_to_physical_pixel(
-                    display_x,
-                    display_y,
-                    self.physical_width,
-                    self.physical_height,
-                    self.orientation,
-                );
-                let sdr_index =
-                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
-                let gain_value = sample_gain_map_rgb(
-                    &self.gain_rgba,
-                    self.gain_width,
-                    self.gain_height,
-                    physical_x,
-                    physical_y,
-                    self.physical_width,
-                    self.physical_height,
-                );
-                append_hdr_pixel_from_sdr_and_gain(
-                    &mut rgba_f32,
-                    &self.sdr_rgba[sdr_index..sdr_index + 4],
-                    gain_value,
-                    self.metadata,
-                    self.target_hdr_capacity,
-                );
-            }
-        }
-
-        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
+        let metadata = attach_jpeg_deferred_tile_metadata(
+            "JPEG_R",
+            Arc::clone(&self.sdr_rgba),
+            Arc::clone(&self.gain_rgba),
+            self.gain_width,
+            self.gain_height,
+            self.metadata,
+            self.target_hdr_capacity,
+            self.physical_width,
+            self.physical_height,
+        );
+        let tile = Arc::new(HdrTileBuffer::new_jpeg_deferred_tile(
             width,
             height,
             HdrColorSpace::LinearSrgb,
-            hdr_metadata_for_ultra_hdr_gain_map(self.metadata),
-            Arc::new(rgba_f32),
+            metadata,
+            JpegDeferredTileContext {
+                origin_x: x,
+                origin_y: y,
+                physical_width: self.physical_width,
+                physical_height: self.physical_height,
+                orientation: self.orientation,
+            },
         ));
 
         self.tile_cache.lock().insert(key, Arc::clone(&tile));
@@ -523,7 +559,7 @@ fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) 
     }
 }
 
-fn display_to_physical_pixel(
+pub(crate) fn display_to_physical_pixel(
     display_x: u32,
     display_y: u32,
     physical_width: u32,
@@ -988,21 +1024,47 @@ mod tests {
         }
 
         let low = UltraHdrTiledImageSource::open_with_target_capacity(path.clone(), 1, 1.0)
-            .expect("open low-capacity Ultra HDR tiled source")
-            .extract_tile_rgba32f_arc(0, 0, 64, 64)
-            .expect("extract low-capacity tile");
+            .expect("open low-capacity Ultra HDR tiled source");
         let high = UltraHdrTiledImageSource::open_with_target_capacity(path, 1, 8.0)
-            .expect("open high-capacity Ultra HDR tiled source")
-            .extract_tile_rgba32f_arc(0, 0, 64, 64)
-            .expect("extract high-capacity tile");
+            .expect("open high-capacity Ultra HDR tiled source");
+        let low_rgba = compose_ultra_hdr_tile_region_cpu(
+            64,
+            64,
+            0,
+            0,
+            low.physical_width,
+            low.physical_height,
+            low.orientation,
+            low.sdr_rgba.as_slice(),
+            low.gain_rgba.as_slice(),
+            low.gain_width,
+            low.gain_height,
+            low.metadata,
+            low.target_hdr_capacity,
+            display_to_physical_pixel,
+        );
+        let high_rgba = compose_ultra_hdr_tile_region_cpu(
+            64,
+            64,
+            0,
+            0,
+            high.physical_width,
+            high.physical_height,
+            high.orientation,
+            high.sdr_rgba.as_slice(),
+            high.gain_rgba.as_slice(),
+            high.gain_width,
+            high.gain_height,
+            high.metadata,
+            high.target_hdr_capacity,
+            display_to_physical_pixel,
+        );
 
-        let low_peak = low
-            .rgba_f32
+        let low_peak = low_rgba
             .chunks_exact(4)
             .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
             .fold(0.0_f32, f32::max);
-        let high_peak = high
-            .rgba_f32
+        let high_peak = high_rgba
             .chunks_exact(4)
             .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
             .fold(0.0_f32, f32::max);

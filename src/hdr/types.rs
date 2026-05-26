@@ -127,6 +127,16 @@ pub struct JpegGainMapGpuSource {
     pub metadata: crate::hdr::gain_map::GainMapMetadata,
 }
 
+/// Display-space tile origin and orientation for deferred JPEG gain-map GPU compose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JpegDeferredTileContext {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub orientation: u16,
+}
+
 /// Raw planes for Apple HEIC HDR gain-map compose on the GPU (see `heif_apple_gain_map_gpu`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppleHeicGainMapGpuSource {

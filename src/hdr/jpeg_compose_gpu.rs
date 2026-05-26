@@ -18,7 +18,9 @@
 
 use super::HdrCallbackResources;
 use crate::hdr::gain_map::gain_map_weight;
-use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings, JpegGainMapGpuSource};
+use crate::hdr::types::{
+    HdrImageBuffer, HdrToneMapSettings, JpegDeferredTileContext, JpegGainMapGpuSource,
+};
 use wgpu::util::DeviceExt;
 
 const COMPOSE_WORKGROUP_SIZE: u32 = 16;
@@ -40,6 +42,11 @@ struct JpegGainMapComposeSettings {
     gain_height: u32,
     primary_width: u32,
     primary_height: u32,
+    tile_origin_x: u32,
+    tile_origin_y: u32,
+    tile_width: u32,
+    tile_height: u32,
+    orientation: u32,
 };
 
 @group(0) @binding(0) var sdr_texture: texture_2d<f32>;
@@ -109,6 +116,47 @@ fn compose_at_primary_pixel(px: i32, py: i32) -> vec4<f32> {
     return vec4<f32>(rgb, sdr.a);
 }
 
+fn display_to_physical_pixel(
+    display_x: u32,
+    display_y: u32,
+    physical_width: u32,
+    physical_height: u32,
+    orientation: u32,
+) -> vec2<i32> {
+    switch orientation {
+        case 2u: {
+            return vec2<i32>(i32(physical_width - 1u - display_x), i32(display_y));
+        }
+        case 3u: {
+            return vec2<i32>(
+                i32(physical_width - 1u - display_x),
+                i32(physical_height - 1u - display_y),
+            );
+        }
+        case 4u: {
+            return vec2<i32>(i32(display_x), i32(physical_height - 1u - display_y));
+        }
+        case 5u: {
+            return vec2<i32>(i32(display_y), i32(display_x));
+        }
+        case 6u: {
+            return vec2<i32>(i32(display_y), i32(physical_height - 1u - display_x));
+        }
+        case 7u: {
+            return vec2<i32>(
+                i32(physical_width - 1u - display_y),
+                i32(physical_height - 1u - display_x),
+            );
+        }
+        case 8u: {
+            return vec2<i32>(i32(physical_width - 1u - display_y), i32(display_x));
+        }
+        default: {
+            return vec2<i32>(i32(display_x), i32(display_y));
+        }
+    }
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn cs_compose_jpeg_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= settings.primary_width || gid.y >= settings.primary_height {
@@ -118,6 +166,24 @@ fn cs_compose_jpeg_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
     let py = i32(gid.y);
     let out = compose_at_primary_pixel(px, py);
     textureStore(compose_output, vec2<i32>(px, py), out);
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn cs_compose_jpeg_gain_tile(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= settings.tile_width || gid.y >= settings.tile_height {
+        return;
+    }
+    let display_x = settings.tile_origin_x + gid.x;
+    let display_y = settings.tile_origin_y + gid.y;
+    let physical = display_to_physical_pixel(
+        display_x,
+        display_y,
+        settings.primary_width,
+        settings.primary_height,
+        settings.orientation,
+    );
+    let out = compose_at_primary_pixel(physical.x, physical.y);
+    textureStore(compose_output, vec2<i32>(i32(gid.x), i32(gid.y)), out);
 }
 "#;
 
@@ -138,13 +204,23 @@ struct JpegGainMapComposeUniform {
     gain_height: u32,
     primary_width: u32,
     primary_height: u32,
+    tile_origin_x: u32,
+    tile_origin_y: u32,
+    tile_width: u32,
+    tile_height: u32,
+    orientation: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 96);
+const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 116);
 
 pub(super) fn create_jpeg_compose_compute_resources(
     device: &wgpu::Device,
-) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::Buffer) {
+) -> (
+    wgpu::BindGroupLayout,
+    wgpu::ComputePipeline,
+    wgpu::ComputePipeline,
+    wgpu::Buffer,
+) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-shader"),
         source: wgpu::ShaderSource::Wgsl(JPEG_GAIN_COMPOSE_SHADER.into()),
@@ -207,6 +283,14 @@ pub(super) fn create_jpeg_compose_compute_resources(
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     });
+    let tile_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("simple-image-viewer-hdr-jpeg-compose-tile-pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs_compose_jpeg_gain_tile"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),
         contents: bytemuck::bytes_of(&JpegGainMapComposeUniform {
@@ -224,15 +308,21 @@ pub(super) fn create_jpeg_compose_compute_resources(
             gain_height: 0,
             primary_width: 0,
             primary_height: 0,
+            tile_origin_x: 0,
+            tile_origin_y: 0,
+            tile_width: 0,
+            tile_height: 0,
+            orientation: 0,
         }),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    (bind_group_layout, pipeline, uniform_buffer)
+    (bind_group_layout, pipeline, tile_pipeline, uniform_buffer)
 }
 
-fn compose_uniform(
+fn compose_uniform_fields(
     deferred: &JpegGainMapGpuSource,
-    image: &HdrImageBuffer,
+    primary_width: u32,
+    primary_height: u32,
     target_hdr_capacity: f32,
 ) -> JpegGainMapComposeUniform {
     let metadata = deferred.metadata;
@@ -249,9 +339,43 @@ fn compose_uniform(
         gain_weight: gain_map_weight(metadata, target_hdr_capacity),
         gain_width: deferred.gain_width,
         gain_height: deferred.gain_height,
-        primary_width: image.width,
-        primary_height: image.height,
+        primary_width,
+        primary_height,
+        tile_origin_x: 0,
+        tile_origin_y: 0,
+        tile_width: 0,
+        tile_height: 0,
+        orientation: 0,
     }
+}
+
+fn compose_uniform(
+    deferred: &JpegGainMapGpuSource,
+    image: &HdrImageBuffer,
+    target_hdr_capacity: f32,
+) -> JpegGainMapComposeUniform {
+    compose_uniform_fields(deferred, image.width, image.height, target_hdr_capacity)
+}
+
+fn compose_tile_uniform(
+    deferred: &JpegGainMapGpuSource,
+    tile_ctx: &JpegDeferredTileContext,
+    tile_width: u32,
+    tile_height: u32,
+    target_hdr_capacity: f32,
+) -> JpegGainMapComposeUniform {
+    let mut uniform = compose_uniform_fields(
+        deferred,
+        tile_ctx.physical_width,
+        tile_ctx.physical_height,
+        target_hdr_capacity,
+    );
+    uniform.tile_origin_x = tile_ctx.origin_x;
+    uniform.tile_origin_y = tile_ctx.origin_y;
+    uniform.tile_width = tile_width;
+    uniform.tile_height = tile_height;
+    uniform.orientation = tile_ctx.orientation as u32;
+    uniform
 }
 
 pub(super) fn encode_compose_compute_pass(
@@ -314,6 +438,74 @@ pub(super) fn encode_compose_compute_pass(
     encoder.finish()
 }
 
+pub(super) fn encode_tile_compose_compute_pass(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    resources: &HdrCallbackResources,
+    deferred: &JpegGainMapGpuSource,
+    tile_ctx: &JpegDeferredTileContext,
+    tile_width: u32,
+    tile_height: u32,
+    tone_map: &HdrToneMapSettings,
+    sdr_view: &wgpu::TextureView,
+    gain_view: &wgpu::TextureView,
+    display_storage_view: &wgpu::TextureView,
+) -> wgpu::CommandBuffer {
+    let uniform = compose_tile_uniform(
+        deferred,
+        tile_ctx,
+        tile_width,
+        tile_height,
+        tone_map.target_hdr_capacity(),
+    );
+    queue.write_buffer(
+        &resources.jpeg_compose_uniform_buffer,
+        0,
+        bytemuck::bytes_of(&uniform),
+    );
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("simple-image-viewer-hdr-jpeg-compose-tile-bind-group"),
+        layout: &resources.jpeg_compose_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(sdr_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(gain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: resources.jpeg_compose_uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(display_storage_view),
+            },
+        ],
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("simple-image-viewer-hdr-jpeg-compose-tile-encoder"),
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("simple-image-viewer-hdr-jpeg-compose-tile-pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&resources.jpeg_compose_tile_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(
+            tile_width.div_ceil(COMPOSE_WORKGROUP_SIZE),
+            tile_height.div_ceil(COMPOSE_WORKGROUP_SIZE),
+            1,
+        );
+    }
+    encoder.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +515,8 @@ mod tests {
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn recover_hdr_channel"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn sample_gain_map_rgb"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn cs_compose_jpeg_gain"));
+        assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn cs_compose_jpeg_gain_tile"));
+        assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn display_to_physical_pixel"));
         assert!(JPEG_GAIN_COMPOSE_SHADER.contains("fn srgb_to_linear"));
         assert!(!JPEG_GAIN_COMPOSE_SHADER.contains("srgb_u8_to_linear"));
         assert!(!JPEG_GAIN_COMPOSE_SHADER.contains("/ 255.0"));
@@ -330,6 +524,6 @@ mod tests {
 
     #[test]
     fn compose_uniform_struct_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<JpegGainMapComposeUniform>(), 96);
+        assert_eq!(std::mem::size_of::<JpegGainMapComposeUniform>(), 116);
     }
 }

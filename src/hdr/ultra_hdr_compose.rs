@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! CPU reference compose for Ultra HDR JPEG (tests and tiled fallback).
+//! CPU reference compose for Ultra HDR JPEG (tests and tiled preview).
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ use crate::hdr::gain_map::{
 };
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
-#[allow(dead_code)] // tests via `decode_ultra_hdr_jpeg_bytes_with_cpu_compose`; future tiled GPU path
+#[allow(dead_code)] // tests and tiled preview reference path
 pub(crate) fn compose_ultra_hdr_cpu(
     width: u32,
     height: u32,
@@ -59,4 +59,56 @@ pub(crate) fn compose_ultra_hdr_cpu(
         metadata: image_metadata,
         rgba_f32: Arc::new(rgba_f32),
     }
+}
+
+#[allow(dead_code)] // loader/ultra_hdr tests and tiled preview reference path
+pub(crate) fn compose_ultra_hdr_tile_region_cpu(
+    tile_width: u32,
+    tile_height: u32,
+    origin_x: u32,
+    origin_y: u32,
+    physical_width: u32,
+    physical_height: u32,
+    orientation: u16,
+    sdr_rgba: &[u8],
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    metadata: GainMapMetadata,
+    target_hdr_capacity: f32,
+    display_to_physical: impl Fn(u32, u32, u32, u32, u16) -> (u32, u32),
+) -> Vec<f32> {
+    let mut rgba_f32 = Vec::with_capacity(tile_width as usize * tile_height as usize * 4);
+    for dy in 0..tile_height {
+        for dx in 0..tile_width {
+            let display_x = origin_x + dx;
+            let display_y = origin_y + dy;
+            let (physical_x, physical_y) = display_to_physical(
+                display_x,
+                display_y,
+                physical_width,
+                physical_height,
+                orientation,
+            );
+            let sdr_index =
+                (physical_y as usize * physical_width as usize + physical_x as usize) * 4;
+            let gain_value = sample_gain_map_rgb(
+                gain_rgba,
+                gain_width,
+                gain_height,
+                physical_x,
+                physical_y,
+                physical_width,
+                physical_height,
+            );
+            append_hdr_pixel_from_sdr_and_gain(
+                &mut rgba_f32,
+                &sdr_rgba[sdr_index..sdr_index + 4],
+                gain_value,
+                metadata,
+                target_hdr_capacity,
+            );
+        }
+    }
+    rgba_f32
 }

@@ -145,3 +145,44 @@ pub(crate) fn jpeg_deferred_from_metadata(
         .as_ref()
         .and_then(|gain_map| gain_map.jpeg_deferred.as_ref())
 }
+
+pub(crate) fn attach_jpeg_deferred_tile_metadata(
+    source: &'static str,
+    sdr_rgba: Arc<Vec<u8>>,
+    gain_rgba: Arc<Vec<u8>>,
+    gain_width: u32,
+    gain_height: u32,
+    metadata: GainMapMetadata,
+    hdr_target_capacity: f32,
+    physical_width: u32,
+    physical_height: u32,
+) -> HdrImageMetadata {
+    let weight = gain_map_weight(metadata, hdr_target_capacity);
+    let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    image_metadata.transfer_function = HdrTransferFunction::Srgb;
+    image_metadata.reference = HdrReference::SdrGainMapBase;
+    image_metadata.luminance = luminance_hints_from_gain_map(metadata);
+    image_metadata.gain_map = Some(HdrGainMapMetadata {
+        source,
+        target_hdr_capacity: Some(hdr_target_capacity),
+        diagnostic: format!(
+            "{source} GPU deferred tiled ({}x{} gain {}x{} weight: {:.3}): {}",
+            physical_width,
+            physical_height,
+            gain_width,
+            gain_height,
+            weight,
+            gain_map_metadata_diagnostic(metadata, hdr_target_capacity)
+        ),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        jpeg_deferred: Some(JpegGainMapGpuSource {
+            sdr_rgba,
+            gain_rgba,
+            gain_width,
+            gain_height,
+            metadata,
+        }),
+    });
+    image_metadata
+}

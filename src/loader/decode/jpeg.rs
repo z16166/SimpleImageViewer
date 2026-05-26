@@ -57,7 +57,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
         let tiled_limit =
             crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
         let max_side = hdr.width.max(hdr.height);
-        if pixel_count >= tiled_limit || max_side > crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
+        if pixel_count >= tiled_limit || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
             let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
             if orientation > 1 {
                 let oriented =
