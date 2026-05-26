@@ -20,6 +20,7 @@ pub(crate) mod cicp;
 pub mod decode;
 pub mod exr_tiled;
 pub(crate) mod gain_map;
+pub(crate) mod mpf;
 pub mod heif;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map;

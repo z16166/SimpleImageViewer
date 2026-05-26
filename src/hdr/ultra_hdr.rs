@@ -27,6 +27,9 @@ use crate::hdr::gain_map::{
     iso_gain_map_metadata, luminance_hints_from_gain_map, sample_gain_map_rgb,
     validate_gain_map_metadata,
 };
+use crate::hdr::mpf::{
+    extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image,
+};
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
 use crate::hdr::tiled::{
@@ -74,6 +77,7 @@ pub(crate) struct UltraHdrJpegInfo {
     pub(crate) is_ultra_hdr: bool,
     pub(crate) primary_xmp_has_gain_map: bool,
     pub(crate) gain_map_item_count: usize,
+    pub(crate) mpf_has_gain_map: bool,
 }
 
 #[cfg(test)]
@@ -382,26 +386,30 @@ fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String
 
     let mut primary_xmp_has_gain_map = false;
     let mut gain_map_item_count = 0;
+    let mut mpf_has_gain_map = false;
 
-    for segment in primary_metadata_segments(bytes)? {
-        if segment.marker != JPEG_APP1 {
-            continue;
+    let segments = primary_metadata_segments(bytes)?;
+    for segment in segments.iter() {
+        if segment.marker == JPEG_APP1 {
+            let text = String::from_utf8_lossy(segment.payload);
+            if text.contains(HDR_GAIN_MAP_NAMESPACE) && text.contains(HDR_GAIN_MAP_VERSION) {
+                primary_xmp_has_gain_map = true;
+            }
+            gain_map_item_count += text.matches("Item:Semantic=\"GainMap\"").count();
+            gain_map_item_count += text.matches("Item:Semantic='GainMap'").count();
+            gain_map_item_count += text.matches("Semantic=\"GainMap\"").count();
+            gain_map_item_count += text.matches("Semantic='GainMap'").count();
         }
-
-        let text = String::from_utf8_lossy(segment.payload);
-        if text.contains(HDR_GAIN_MAP_NAMESPACE) && text.contains(HDR_GAIN_MAP_VERSION) {
-            primary_xmp_has_gain_map = true;
+        if segment.marker == JPEG_APP2 && mpf_app2_payload_has_gain_map_image(segment.payload) {
+            mpf_has_gain_map = true;
         }
-        gain_map_item_count += text.matches("Item:Semantic=\"GainMap\"").count();
-        gain_map_item_count += text.matches("Item:Semantic='GainMap'").count();
-        gain_map_item_count += text.matches("Semantic=\"GainMap\"").count();
-        gain_map_item_count += text.matches("Semantic='GainMap'").count();
     }
 
     Ok(UltraHdrJpegInfo {
-        is_ultra_hdr: primary_xmp_has_gain_map && gain_map_item_count > 0,
+        is_ultra_hdr: primary_xmp_has_gain_map && (gain_map_item_count > 0 || mpf_has_gain_map),
         primary_xmp_has_gain_map,
         gain_map_item_count,
+        mpf_has_gain_map,
     })
 }
 
@@ -539,6 +547,22 @@ fn display_to_physical_pixel(
 }
 
 fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if let Ok(gain_map) = extract_container_gain_map_jpeg_bytes(bytes) {
+        return Ok(gain_map);
+    }
+
+    let mpf_payload = primary_metadata_segments(bytes)?
+        .into_iter()
+        .find(|segment| {
+            segment.marker == JPEG_APP2 && mpf_app2_payload_has_gain_map_image(segment.payload)
+        })
+        .ok_or_else(|| "Ultra HDR gain map location metadata not found".to_string())?
+        .payload;
+
+    extract_mpf_gain_map_jpeg_from_bytes(bytes, mpf_payload)
+}
+
+fn extract_container_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let length = primary_metadata_segments(bytes)?
         .iter()
         .filter(|segment| segment.marker == JPEG_APP1)
@@ -669,6 +693,89 @@ mod tests {
             .fold(root.to_path_buf(), |path, segment| path.join(segment))
     }
 
+    fn gain_map_samples_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_GAIN_MAP_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\GainMap")))
+            .filter(|path| path.is_dir())
+    }
+
+    #[test]
+    fn gain_map_corpus_mpf_jpegs_are_detected_as_ultra_hdr() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping gain map corpus test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+
+        let samples = [
+            "7007688-Edit-2_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC0538-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC0656-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC0796-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC2306-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC3827-Panorama-final_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC4743-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC4752_1000x667_100_3x2_benz12GainMap.jpg",
+            "DSC5182-2-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC5447-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "Triad-gain-map.jpg",
+        ];
+
+        for name in samples {
+            let path = root.join(name);
+            if !path.is_file() {
+                eprintln!("skipping gain map sample {}; file missing", path.display());
+                continue;
+            }
+
+            let info = inspect_ultra_hdr_jpeg(&path).expect("inspect gain map JPEG");
+            assert!(
+                info.is_ultra_hdr,
+                "{} should be detected as Ultra HDR",
+                path.display()
+            );
+            assert!(
+                info.primary_xmp_has_gain_map,
+                "{} should advertise hdrgm metadata",
+                path.display()
+            );
+            assert!(
+                info.gain_map_item_count >= 1 || info.mpf_has_gain_map,
+                "{} should locate a gain map via GContainer or MPF",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn gain_map_corpus_decodes_to_hdr_float_buffer() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping gain map corpus test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+
+        for name in [
+            "DSC2306-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "Triad-gain-map.jpg",
+        ] {
+            let path = root.join(name);
+            if !path.is_file() {
+                eprintln!("skipping gain map decode test; {} missing", path.display());
+                continue;
+            }
+
+            let hdr = decode_ultra_hdr_jpeg(&path).expect("decode gain map JPEG");
+            assert_eq!(hdr.format, crate::hdr::types::HdrPixelFormat::Rgba32Float);
+            assert!(
+                hdr.rgba_f32
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+                "{} should recover highlights above SDR white",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn ultra_hdr_original_samples_are_detected_as_jpeg_r() {
         let Some(root) = ultra_hdr_samples_root() else {
@@ -718,6 +825,7 @@ mod tests {
         assert!(!info.is_ultra_hdr);
         assert!(!info.primary_xmp_has_gain_map);
         assert_eq!(info.gain_map_item_count, 0);
+        assert!(!info.mpf_has_gain_map);
     }
 
     #[test]
