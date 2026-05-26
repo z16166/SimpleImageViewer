@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::hdr::decode::{linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8};
 use crate::hdr::gain_map::{
     append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    iso_gain_map_primary_is_precomposed_hdr, parse_iso_gain_map_metadata, sample_gain_map_rgb,
+    iso_gain_map_skips_forward_compose, parse_iso_gain_map_metadata, sample_gain_map_rgb,
 };
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_gpu_deferred;
 use crate::hdr::jpegxl::{decode_jxl_gain_map, read_jxl_gain_map_bundle, srgb_unit_to_u8};
@@ -46,7 +46,7 @@ pub(crate) enum JxlJhgmFrameOutcome {
 pub(crate) fn jxl_jhgm_primary_is_precomposed_hdr(jhgm_box: &[u8]) -> Result<bool, String> {
     let bundle = read_jxl_gain_map_bundle(jhgm_box)?;
     let metadata = parse_iso_gain_map_metadata(bundle.metadata)?;
-    Ok(iso_gain_map_primary_is_precomposed_hdr(metadata))
+    Ok(iso_gain_map_skips_forward_compose(metadata))
 }
 
 /// Quantize libjxl primary floats into ISO gain-map baseline sRGB u8 samples.

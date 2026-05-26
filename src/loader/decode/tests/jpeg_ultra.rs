@@ -50,6 +50,54 @@ fn ultra_hdr_gpu_deferred_route_error(hdr: &HdrImageBuffer) -> Option<String> {
     None
 }
 
+fn assert_ultra_hdr_hdr_base_route(hdr: &HdrImageBuffer) {
+    assert!(
+        !hdr.rgba_f32.is_empty(),
+        "HDR base JPEG_R should expose eager linear primary"
+    );
+    assert!(
+        jpeg_deferred_from_metadata(&hdr.metadata).is_none(),
+        "HDR base JPEG_R must not use jpeg_deferred GPU compose"
+    );
+    assert!(
+        hdr.metadata.gain_map.is_some(),
+        "HDR base JPEG_R should retain gain-map diagnostic metadata"
+    );
+}
+
+#[test]
+fn gain_map_corpora_samples_load_as_static_hdr() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/gain_map_samples");
+    for name in [
+        "sample_iso_backward.jpg",
+        "sample_base_rendition_is_hdr.jpg",
+    ] {
+        let path = dir.join(name);
+        if !path.is_file() {
+            eprintln!("skip: {} missing", path.display());
+            continue;
+        }
+        let info = crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(
+            &std::fs::read(&path).expect("read sample"),
+        )
+        .expect("inspect gain map sample");
+        assert!(
+            info.is_ultra_hdr,
+            "{name} must remain a GContainer Ultra HDR JPEG"
+        );
+
+        let image_data = load_jpeg(&path).unwrap_or_else(|err| {
+            panic!("load {name} as Ultra HDR JPEG_R: {err}");
+        });
+        let ImageData::Hdr { hdr, fallback } = image_data else {
+            panic!("{name} should load as ImageData::Hdr, not baseline SDR");
+        };
+        assert_eq!((hdr.width, hdr.height), (4080, 3072));
+        assert_eq!((fallback.width, fallback.height), (4080, 3072));
+        assert_ultra_hdr_hdr_base_route(&hdr);
+    }
+}
+
 #[test]
 fn paris_exif_orientation_5_jpeg_loads_transposed_dimensions() {
     let path =

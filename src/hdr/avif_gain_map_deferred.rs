@@ -201,6 +201,7 @@ mod tests {
             offset_hdr: [1.0 / 64.0; 3],
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 4.0,
+            backward_direction: false,
         };
         let sdr_rgba = vec![128_u8, 64, 32, 255, 200, 100, 50, 255];
         let gain_rgba = vec![128_u8, 128, 128, 255, 64, 64, 64, 255];

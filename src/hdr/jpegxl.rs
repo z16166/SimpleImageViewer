@@ -2195,7 +2195,7 @@ mod tests {
                 panic!("icos4d must stay on HdrAnimated so EV adjustment works on HDR displays");
             }
             other => panic!(
-                "expected ImageData::Animated, got {:?}",
+                "expected ImageData::HdrAnimated, got {:?}",
                 std::mem::discriminant(&other)
             ),
         }
@@ -2212,16 +2212,26 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read conformance jxl");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let got = super::decode_jxl_bytes_to_image_data(
+
+        // Under SDR target capacity, it should decode to standard SDR Animated
+        let got_sdr = super::decode_jxl_bytes_to_image_data(&bytes, 1.0, 1.0, tone)
+            .expect("decoded animation_newtons_cradle SDR");
+        assert!(
+            matches!(got_sdr, crate::loader::ImageData::Animated(_)),
+            "newtons_cradle should decode to SDR Animated on SDR target capacity"
+        );
+
+        // Under HDR target capacity, it should decode to HdrAnimated
+        let got_hdr = super::decode_jxl_bytes_to_image_data(
             &bytes,
             tone.target_hdr_capacity(),
             tone.target_hdr_capacity(),
             tone,
         )
-        .expect("decoded animation_newtons_cradle");
+        .expect("decoded animation_newtons_cradle HDR");
         assert!(
-            matches!(got, crate::loader::ImageData::Animated(_)),
-            "newtons_cradle is SDR-grade animation"
+            matches!(got_hdr, crate::loader::ImageData::HdrAnimated(_)),
+            "newtons_cradle should decode to HdrAnimated on HDR target capacity"
         );
     }
 
@@ -2234,16 +2244,26 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read conformance jxl");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let got = super::decode_jxl_bytes_to_image_data(
+
+        // Under SDR target capacity, it should decode to standard SDR Animated
+        let got_sdr = super::decode_jxl_bytes_to_image_data(&bytes, 1.0, 1.0, tone)
+            .expect("decoded animation_spline SDR");
+        assert!(
+            matches!(got_sdr, crate::loader::ImageData::Animated(_)),
+            "animation_spline should decode to SDR Animated on SDR target capacity"
+        );
+
+        // Under HDR target capacity, it should decode to HdrAnimated
+        let got_hdr = super::decode_jxl_bytes_to_image_data(
             &bytes,
             tone.target_hdr_capacity(),
             tone.target_hdr_capacity(),
             tone,
         )
-        .expect("decoded animation_spline");
+        .expect("decoded animation_spline HDR");
         assert!(
-            matches!(got, crate::loader::ImageData::Animated(_)),
-            "animation_spline is SDR-grade animation"
+            matches!(got_hdr, crate::loader::ImageData::HdrAnimated(_)),
+            "animation_spline should decode to HdrAnimated on HDR target capacity"
         );
     }
 

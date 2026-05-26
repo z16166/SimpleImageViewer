@@ -17,7 +17,10 @@
 //! Ultra HDR JPEG decode without eager CPU gain-map composition.
 
 use crate::hdr::gain_map::gain_map_metadata_diagnostic;
-use crate::hdr::jpeg_gain_map_gpu::attach_jpeg_gain_map_gpu_deferred;
+use crate::hdr::gain_map::iso_gain_map_skips_forward_compose;
+use crate::hdr::jpeg_gain_map_gpu::{
+    attach_iso_gain_map_hdr_base_from_primary_rgba8, attach_jpeg_gain_map_gpu_deferred,
+};
 use crate::hdr::types::HdrImageBuffer;
 use crate::hdr::ultra_hdr::{
     extract_gain_map_jpeg_bytes, gain_map_metadata, inspect_ultra_hdr_jpeg_bytes,
@@ -39,6 +42,17 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
         "[HDR] Ultra HDR JPEG_R deferred metadata: {}",
         gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
     );
+
+    if iso_gain_map_skips_forward_compose(metadata) {
+        log::debug!(
+            "[HDR] Ultra HDR JPEG_R HDR base (backward/precomposed); skipping forward compose: {}",
+            gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
+        );
+        return Ok(attach_iso_gain_map_hdr_base_from_primary_rgba8(
+            "JPEG_R", width, height, sdr_rgba, metadata,
+        ));
+    }
+
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
     Ok(attach_jpeg_gain_map_gpu_deferred(

@@ -1108,23 +1108,29 @@ impl CallbackTrait for HdrTilePlaneCallback {
             self.tile.color_space,
             &self.tone_map,
         );
-        let uniform = tile_tone_map_uniform(
+        let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
+        let jpeg_deferred = jpeg_deferred_from_metadata(&self.tile.metadata);
+        let tile_ctx = self.tile.jpeg_deferred_tile;
+        let jpeg_deferred_tile = jpeg_deferred.is_some() && tile_ctx.is_some();
+        let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
+        let binding_baked = resources
+            .tile_bindings
+            .binding(tile_key)
+            .and_then(|binding| binding.baked_jpeg_weight_bits);
+        let needs_compose = jpeg_deferred_tile && binding_baked != Some(target_capacity_bits);
+        let jpeg_gpu_composed =
+            jpeg_deferred_tile && (needs_compose || binding_baked == Some(target_capacity_bits));
+        let uniform = hdr_tile_tone_map_uniform(
             self.tone_map,
             self.rotation_steps,
             self.alpha,
             self.output_mode,
             self.target_format,
-            self.tile.metadata.color_space_hint(),
-            self.tile.metadata.transfer_function,
-            self.tile.metadata.reference,
+            &self.tile,
             self.uv_rect,
             native_display_scale,
+            jpeg_gpu_composed,
         );
-
-        let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
-        let jpeg_deferred = jpeg_deferred_from_metadata(&self.tile.metadata);
-        let tile_ctx = self.tile.jpeg_deferred_tile;
-        let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
 
         if let (Some(deferred), Some(ctx)) = (jpeg_deferred, tile_ctx) {
             let upload_key = JpegTiledUploadKey {
@@ -1281,6 +1287,20 @@ impl CallbackTrait for HdrTilePlaneCallback {
         }
         if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
             if let Some(buffer) = binding.tone_map_buffer.as_ref() {
+                let binding_baked = binding.baked_jpeg_weight_bits;
+                let jpeg_gpu_composed =
+                    jpeg_deferred_tile && binding_baked == Some(target_capacity_bits);
+                let uniform = hdr_tile_tone_map_uniform(
+                    self.tone_map,
+                    self.rotation_steps,
+                    self.alpha,
+                    self.output_mode,
+                    self.target_format,
+                    &self.tile,
+                    self.uv_rect,
+                    native_display_scale,
+                    jpeg_gpu_composed,
+                );
                 queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
             }
         }
@@ -1445,6 +1465,46 @@ fn libavif_tone_map_native_display_scale(
         return 1.0;
     }
     tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits)
+}
+
+fn hdr_tile_tone_map_uniform(
+    settings: HdrToneMapSettings,
+    rotation_steps: u32,
+    alpha: f32,
+    output_mode: HdrRenderOutputMode,
+    framebuffer_format: wgpu::TextureFormat,
+    tile: &crate::hdr::tiled::HdrTileBuffer,
+    uv_rect: egui::Rect,
+    native_display_scale: f32,
+    jpeg_gpu_composed: bool,
+) -> ToneMapUniform {
+    if jpeg_gpu_composed {
+        return tile_tone_map_uniform(
+            settings,
+            rotation_steps,
+            alpha,
+            output_mode,
+            framebuffer_format,
+            HdrColorSpace::LinearSrgb,
+            HdrTransferFunction::Linear,
+            HdrReference::Unknown,
+            uv_rect,
+            native_display_scale,
+        );
+    }
+
+    tile_tone_map_uniform(
+        settings,
+        rotation_steps,
+        alpha,
+        output_mode,
+        framebuffer_format,
+        tile.metadata.color_space_hint(),
+        tile.metadata.transfer_function,
+        tile.metadata.reference,
+        uv_rect,
+        native_display_scale,
+    )
 }
 
 fn tile_tone_map_uniform(

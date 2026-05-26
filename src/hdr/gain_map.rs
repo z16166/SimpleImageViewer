@@ -29,6 +29,8 @@ pub(crate) struct GainMapMetadata {
     pub(crate) offset_hdr: [f32; 3],
     pub(crate) hdr_capacity_min: f32,
     pub(crate) hdr_capacity_max: f32,
+    /// ISO `ISO_BACKWARD_DIRECTION_FLAG` or Adobe `hdrgm:BaseRenditionIsHDR=True`: primary stores HDR base.
+    pub(crate) backward_direction: bool,
 }
 
 pub(crate) fn iso_gain_map_metadata(payload: &[u8]) -> Option<Result<GainMapMetadata, String>> {
@@ -47,9 +49,6 @@ pub(crate) fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMeta
     }
     let _writer_version = reader.read_u16()?;
     let flags = reader.read_u8()?;
-    if flags & ISO_BACKWARD_DIRECTION_FLAG != 0 {
-        return Err("ISO 21496-1 HDR base gain maps are not supported yet".to_string());
-    }
 
     let channel_count = if flags & ISO_MULTI_CHANNEL_FLAG != 0 {
         3
@@ -92,7 +91,12 @@ pub(crate) fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMeta
         }
     }
 
-    fraction.into_gain_map_metadata()
+    fraction.into_gain_map_metadata(flags)
+}
+
+/// Skip forward SDR→HDR compose; display the primary codestream as the HDR base rendition.
+pub(crate) fn iso_gain_map_skips_forward_compose(metadata: GainMapMetadata) -> bool {
+    metadata.backward_direction || iso_gain_map_primary_is_precomposed_hdr(metadata)
 }
 
 /// Primary codestream already stores the high-headroom rendition (Adobe `*_base_hdr.jxl` layout:
@@ -256,7 +260,11 @@ pub(crate) fn luminance_hints_from_gain_map(
 ) -> crate::hdr::types::HdrLuminanceMetadata {
     use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrLuminanceMetadata};
 
-    let peak_ratio = metadata.hdr_capacity_max.max(f32::MIN_POSITIVE);
+    let peak_ratio = if metadata.backward_direction {
+        metadata.hdr_capacity_min.max(f32::MIN_POSITIVE)
+    } else {
+        metadata.hdr_capacity_max.max(f32::MIN_POSITIVE)
+    };
     let peak_nits = peak_ratio * DEFAULT_SDR_WHITE_NITS;
     HdrLuminanceMetadata {
         mastering_max_nits: Some(peak_nits),
@@ -319,8 +327,19 @@ impl Default for IsoGainMapFraction {
     }
 }
 
+pub(crate) fn primary_srgb_rgba8_to_linear_rgba_f32(rgba: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_u8_to_linear_f32(chunk[0]));
+        out.push(srgb_u8_to_linear_f32(chunk[1]));
+        out.push(srgb_u8_to_linear_f32(chunk[2]));
+        out.push(f32::from(chunk[3]) / 255.0);
+    }
+    out
+}
+
 impl IsoGainMapFraction {
-    pub(crate) fn into_gain_map_metadata(self) -> Result<GainMapMetadata, String> {
+    pub(crate) fn into_gain_map_metadata(self, flags: u8) -> Result<GainMapMetadata, String> {
         let mut gain_map_min = [0.0; 3];
         let mut gain_map_max = [0.0; 3];
         let mut gamma = [1.0; 3];
@@ -343,6 +362,7 @@ impl IsoGainMapFraction {
             offset_hdr,
             hdr_capacity_min: 2.0_f32.powf(unsigned_fraction(self.base_hdr_headroom)?),
             hdr_capacity_max: 2.0_f32.powf(unsigned_fraction(self.alternate_hdr_headroom)?),
+            backward_direction: flags & ISO_BACKWARD_DIRECTION_FLAG != 0,
         })
     }
 }
@@ -489,7 +509,8 @@ impl<'a> ByteReader<'a> {
 mod tests {
     use super::{
         GainMapMetadata, compose_gain_map_pixel, iso_gain_map_primary_is_precomposed_hdr,
-        luminance_hints_from_gain_map, parse_iso_gain_map_metadata,
+        iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
+        parse_iso_gain_map_metadata,
     };
     use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
@@ -510,9 +531,19 @@ mod tests {
     }
 
     #[test]
+    fn iso_gain_map_metadata_parses_backward_direction() {
+        let mut blob = minimal_iso_metadata();
+        blob[4] = 0b0000_1100; // backward + common denominator
+        let metadata = parse_iso_gain_map_metadata(&blob).expect("parse");
+        assert!(metadata.backward_direction);
+        assert!(iso_gain_map_skips_forward_compose(metadata));
+    }
+
+    #[test]
     fn iso_gain_map_metadata_expands_single_channel_values() {
         let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
 
+        assert!(!metadata.backward_direction);
         assert_eq!(metadata.gain_map_min, [0.0; 3]);
         assert_eq!(metadata.gain_map_max, [2.0; 3]);
         assert_eq!(metadata.gamma, [1.0; 3]);

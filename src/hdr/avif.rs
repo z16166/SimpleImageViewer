@@ -20,7 +20,7 @@ use crate::hdr::avif_gain_map_deferred::{
 };
 #[cfg(feature = "avif-native")]
 use crate::hdr::gain_map::{
-    GainMapMetadata, IsoGainMapFraction, iso_gain_map_primary_is_precomposed_hdr,
+    GainMapMetadata, IsoGainMapFraction, iso_gain_map_skips_forward_compose,
 };
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata, HdrReference, HdrTransferFunction};
 #[cfg(feature = "avif-native")]
@@ -445,9 +445,9 @@ fn avif_image_to_hdr_buffer(
     if let Some((gain_metadata, gain_width, gain_height, gain_rgba)) =
         decode_avif_gain_map(image_ref, &libavif_result_to_string)
     {
-        if iso_gain_map_primary_is_precomposed_hdr(gain_metadata) {
+        if iso_gain_map_skips_forward_compose(gain_metadata) {
             log::debug!(
-                "[HDR] AVIF gain map: primary is precomposed HDR base (inverted HDRCapacity); skipping forward compose"
+                "[HDR] AVIF gain map: primary is HDR base (backward or inverted HDRCapacity); skipping forward compose"
             );
         } else {
             let sdr_rgba = avif_build_iso_sdr_baseline_rgba8(
@@ -1036,7 +1036,7 @@ pub(crate) fn avif_gain_map_to_metadata(
     }
     fraction.base_hdr_headroom = unsigned(gain_map.baseHdrHeadroom);
     fraction.alternate_hdr_headroom = unsigned(gain_map.alternateHdrHeadroom);
-    fraction.into_gain_map_metadata()
+    fraction.into_gain_map_metadata(0)
 }
 
 #[cfg(feature = "avif-native")]

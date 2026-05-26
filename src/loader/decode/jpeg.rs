@@ -49,48 +49,69 @@ pub(crate) fn load_jpeg_with_target_capacity(
     // Some reference JPEGs (e.g. libavif `paris_exif_orientation_5.jpg`) store a raster that already
     // looks like a normal landscape before correction; the tag still requests transpose, so the
     // result can differ from viewers that ignore the tag or use heuristics.
-    if let Ok(hdr) = crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+    match crate::hdr::ultra_hdr::decode_ultra_hdr_jpeg_bytes_with_target_capacity(
         &mmap,
         decode_capacity,
     ) {
-        let pixel_count = hdr.width as u64 * hdr.height as u64;
-        let tiled_limit =
-            crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
-        let max_side = hdr.width.max(hdr.height);
-        if pixel_count >= tiled_limit || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE {
-            let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
-            if orientation > 1 {
-                let oriented =
-                    crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
-                w = oriented.0;
-                h = oriented.1;
-                pixels = oriented.2;
+        Ok(hdr) => {
+            let pixel_count = hdr.width as u64 * hdr.height as u64;
+            let tiled_limit =
+                crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+            let max_side = hdr.width.max(hdr.height);
+            let use_tiled_deferred = hdr.rgba_f32.is_empty()
+                && crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata(&hdr.metadata)
+                    .is_some()
+                && (pixel_count >= tiled_limit
+                    || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
+            if use_tiled_deferred {
+                let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;
+                if orientation > 1 {
+                    let oriented =
+                        crate::libtiff_loader::apply_orientation_buffer(pixels, w, h, orientation);
+                    w = oriented.0;
+                    h = oriented.1;
+                    pixels = oriented.2;
+                }
+                if let Ok(hdr_source) =
+                    crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
+                        path.clone(),
+                        orientation,
+                        decode_capacity,
+                    )
+                {
+                    let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
+                        w,
+                        h,
+                        Arc::new(pixels),
+                        true,
+                    ));
+                    return Ok(ImageData::HdrTiled {
+                        hdr: Arc::new(hdr_source),
+                        fallback,
+                    });
+                }
             }
-            if let Ok(hdr_source) =
-                crate::hdr::ultra_hdr::UltraHdrTiledImageSource::open_with_target_capacity(
-                    path.clone(),
-                    orientation,
-                    decode_capacity,
-                )
+
+            let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
+            let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                &hdr,
+                hdr_target_capacity,
+                &hdr_tone_map,
+            )?;
+            let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+            return Ok(make_hdr_image_data(hdr, fallback));
+        }
+        Err(err) => {
+            if crate::hdr::ultra_hdr::inspect_ultra_hdr_jpeg_bytes(&mmap)
+                .ok()
+                .is_some_and(|info| info.is_ultra_hdr)
             {
-                let fallback = Arc::new(MemoryImageSource::new_with_hdr_sdr_fallback(
-                    w,
-                    h,
-                    Arc::new(pixels),
-                    true,
-                ));
-                return Ok(ImageData::HdrTiled {
-                    hdr: Arc::new(hdr_source),
-                    fallback,
-                });
+                log::warn!(
+                    "[Loader] Ultra HDR JPEG decode failed for {}: {err}; falling back to baseline SDR (no HDR OSD)",
+                    path.display()
+                );
             }
         }
-
-        let hdr = crate::hdr::ultra_hdr::apply_orientation_to_hdr_buffer(hdr, orientation);
-        let fallback_pixels =
-            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
-        return Ok(make_hdr_image_data(hdr, fallback));
     }
 
     let (mut w, mut h, mut pixels) = libjpeg_turbo::decode_to_rgba(&mmap)?;

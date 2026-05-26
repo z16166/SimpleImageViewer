@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::hdr::gain_map::{
     GainMapMetadata, gain_map_metadata_diagnostic, gain_map_weight, luminance_hints_from_gain_map,
+    primary_srgb_rgba8_to_linear_rgba_f32,
 };
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
@@ -74,6 +75,41 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
         color_space: HdrColorSpace::LinearSrgb,
         metadata: image_metadata,
         rgba_f32: Arc::new(Vec::new()),
+    }
+}
+
+/// Primary JPEG stores the HDR base rendition (ISO backward / `BaseRenditionIsHDR`); skip forward compose.
+pub(crate) fn attach_iso_gain_map_hdr_base_from_primary_rgba8(
+    source: &'static str,
+    width: u32,
+    height: u32,
+    primary_rgba: Vec<u8>,
+    metadata: GainMapMetadata,
+) -> HdrImageBuffer {
+    let rgba_f32 = primary_srgb_rgba8_to_linear_rgba_f32(&primary_rgba);
+    let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    image_metadata.transfer_function = HdrTransferFunction::Linear;
+    image_metadata.reference = HdrReference::Unknown;
+    image_metadata.luminance = luminance_hints_from_gain_map(metadata);
+    image_metadata.gain_map = Some(HdrGainMapMetadata {
+        source,
+        target_hdr_capacity: None,
+        diagnostic: format!(
+            "{source} HDR base (skipping forward compose): {}",
+            gain_map_metadata_diagnostic(metadata, metadata.hdr_capacity_min)
+        ),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        jpeg_deferred: None,
+    });
+
+    HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        metadata: image_metadata,
+        rgba_f32: Arc::new(rgba_f32),
     }
 }
 

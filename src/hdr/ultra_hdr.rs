@@ -24,11 +24,13 @@ use std::cell::Cell;
 
 use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    iso_gain_map_metadata, luminance_hints_from_gain_map, sample_gain_map_rgb,
-    validate_gain_map_metadata,
+    iso_gain_map_metadata, iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
+    sample_gain_map_rgb, validate_gain_map_metadata,
 };
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
+#[cfg(test)]
+use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
 use crate::hdr::jpeg_gain_map_gpu::{
     attach_jpeg_deferred_tile_metadata, jpeg_deferred_from_metadata,
 };
@@ -47,7 +49,7 @@ use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
 use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
 
 #[cfg(test)]
-use crate::hdr::types::HdrToneMapSettings;
+use crate::hdr::types::{HdrToneMapSettings, HdrTransferFunction};
 
 #[cfg(test)]
 use std::path::Path;
@@ -138,6 +140,13 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
     let (width, height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
     let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
+
+    if iso_gain_map_skips_forward_compose(metadata) {
+        return Ok(attach_iso_gain_map_hdr_base_from_primary_rgba8(
+            "JPEG_R", width, height, sdr_rgba, metadata,
+        ));
+    }
+
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
     Ok(compose_ultra_hdr_cpu(
@@ -244,6 +253,11 @@ impl UltraHdrTiledImageSource {
 
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(&bytes)?;
         let metadata = gain_map_metadata(&gain_map_jpeg)?;
+        if iso_gain_map_skips_forward_compose(metadata) {
+            return Err(
+                "Ultra HDR tiled deferred path requires forward gain-map direction".to_string(),
+            );
+        }
         log::debug!(
             "[HDR] {}: Ultra HDR JPEG_R metadata: {}",
             path.display(),
@@ -478,9 +492,28 @@ pub(crate) fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata,
             continue;
         }
         if attribute_bool(&text, "hdrgm:BaseRenditionIsHDR").unwrap_or(false) {
-            return Err(
-                "Ultra HDR gain map BaseRenditionIsHDR=True is not supported yet".to_string(),
+            let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")
+                .ok_or_else(|| "Ultra HDR gain map metadata missing GainMapMax".to_string())?;
+            let max_gain_map_max = gain_map_max
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let hdr_capacity_min = hdr_capacity_ratio_from_xmp_headroom(
+                attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
             );
+            let hdr_capacity_max = attribute_f32(&text, "hdrgm:HDRCapacityMax")
+                .map(hdr_capacity_ratio_from_xmp_headroom)
+                .unwrap_or_else(|| hdr_capacity_ratio_from_xmp_headroom(max_gain_map_max));
+            return validate_gain_map_metadata(GainMapMetadata {
+                gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
+                gain_map_max,
+                gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
+                offset_sdr: attribute_rgb_f32(&text, "hdrgm:OffsetSDR").unwrap_or([1.0 / 64.0; 3]),
+                offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
+                hdr_capacity_min,
+                hdr_capacity_max,
+                backward_direction: true,
+            });
         }
         let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")
             .ok_or_else(|| "Ultra HDR gain map metadata missing GainMapMax".to_string())?;
@@ -502,6 +535,7 @@ pub(crate) fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata,
             offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
             hdr_capacity_min,
             hdr_capacity_max,
+            backward_direction: false,
         });
     }
 
@@ -1156,6 +1190,7 @@ mod tests {
             offset_hdr: [0.04, 0.05, 0.06],
             hdr_capacity_min: 1.25,
             hdr_capacity_max: 4.5,
+            backward_direction: false,
         };
 
         let diagnostic = gain_map_metadata_diagnostic(metadata, 3.0);
@@ -1170,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn gain_map_metadata_rejects_hdr_base_rendition() {
+    fn gain_map_metadata_sets_backward_for_hdr_base_rendition() {
         let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
             r#"
             <rdf:Description
@@ -1181,13 +1216,65 @@ mod tests {
         "#,
         );
 
-        let err =
-            gain_map_metadata(&gain_map_jpeg).expect_err("HDR base gain maps are unsupported");
+        let metadata =
+            gain_map_metadata(&gain_map_jpeg).expect("HDR base gain map metadata should parse");
 
-        assert!(
-            err.contains("BaseRenditionIsHDR"),
-            "unexpected error message: {err}"
+        assert!(metadata.backward_direction);
+    }
+
+    #[test]
+    fn gain_map_metadata_parses_iso_backward_direction() {
+        let mut iso = Vec::new();
+        write_iso_common_denominator_metadata(
+            &mut iso,
+            10,
+            20,
+            0,
+            &[(0, 30, 10, 0, 0), (1, 31, 11, 1, 1), (2, 32, 12, 2, 2)],
         );
+        iso[4] = 0b0000_1100; // backward + common denominator
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp_and_app2_iso(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="1.0"/>
+        "#,
+            &iso,
+        );
+
+        let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse ISO backward metadata");
+        assert!(metadata.backward_direction);
+    }
+
+    #[test]
+    fn attach_iso_hdr_base_skips_jpeg_deferred() {
+        let mut iso = Vec::new();
+        write_iso_common_denominator_metadata(
+            &mut iso,
+            10,
+            20,
+            0,
+            &[(0, 30, 10, 0, 0), (1, 31, 11, 1, 1), (2, 32, 12, 2, 2)],
+        );
+        iso[4] = 0b0000_1100;
+        let metadata = gain_map_metadata(&minimal_jpeg_with_app1_xmp_and_app2_iso(
+            r#"<rdf:Description xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" hdrgm:Version="1.0"/>"#,
+            &iso,
+        ))
+        .expect("parse ISO backward metadata");
+
+        let hdr = attach_iso_gain_map_hdr_base_from_primary_rgba8(
+            "JPEG_R",
+            1,
+            1,
+            vec![255, 128, 64, 255],
+            metadata,
+        );
+
+        assert_eq!(hdr.rgba_f32.len(), 4);
+        assert!(jpeg_deferred_from_metadata(&hdr.metadata).is_none());
+        assert_eq!(hdr.metadata.transfer_function, HdrTransferFunction::Linear);
     }
 
     #[test]
@@ -1277,6 +1364,7 @@ mod tests {
             offset_hdr: [0.10; 3],
             hdr_capacity_min: 0.0,
             hdr_capacity_max: 2.0,
+            backward_direction: false,
         };
 
         let recovered = recover_hdr_channel_from_sdr_and_gain(255, 0.25, metadata, 0, 2.0);
@@ -1338,6 +1426,7 @@ mod tests {
             // Ratios 2^0 .. 2^2 so log₂ headroom interpolates like libavif `avifGetGainMapWeight`.
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 4.0,
+            backward_direction: false,
         };
 
         assert_eq!(gain_map_weight(metadata, 0.5), 0.0);
@@ -1355,6 +1444,7 @@ mod tests {
             offset_hdr: [0.0; 3],
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 4.0,
+            backward_direction: false,
         };
         let sdr = [255, 255, 255, 255];
 
@@ -1381,6 +1471,7 @@ mod tests {
             offset_hdr: [0.0; 3],
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 8.0,
+            backward_direction: false,
         };
         let mut rgba = Vec::new();
 
