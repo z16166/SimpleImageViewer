@@ -17,11 +17,13 @@
 //! Apple HEIC HDR gain-map GPU path.
 //!
 //! Decode attaches deferred planes via [`attach_apple_heic_gpu_deferred`] (encoded primary + gain map
-//! only). The HDR renderer runs **`cs_compose_apple_gain`** once at upload (1:1 compute): primary
-//! pixels are read from a **storage buffer** (same `rgba_f32` bytes as CPU SIMD), gain map from a
-//! texture, output copied to the display texture. Never show encoded primary for deferred HEIC.
+//! only). The HDR renderer runs **`cs_compose_apple_gain`** at upload via
+//! [`crate::hdr::renderer::apple_compose_gpu`]: primary rows are uploaded in strips that fit
+//! `max_storage_buffer_binding_size`, gain map is sampled from a texture, output is written
+//! directly to the display texture. Never show encoded primary for deferred HEIC.
 
 use crate::hdr::heif_apple_gain_map::apple_gain_map_display_weight;
+#[cfg(test)]
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
 use crate::hdr::types::{
     AppleHeicGainMapGpuSource, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
@@ -41,7 +43,8 @@ pub(crate) fn apple_heic_compose_effective_color_space(
     }
 }
 
-/// Compose deferred Apple HEIC planes to scene-linear sRGB (same math as decode-time CPU path).
+/// CPU reference compose for unit tests (production uses GPU strip compose in `apple_compose_gpu`).
+#[cfg(test)]
 pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
     image: &HdrImageBuffer,
     hdr_target_capacity: f32,
@@ -215,16 +218,19 @@ mod tests {
         );
 
         // New deferred path
-        let deferred = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity);
-        let new_composed =
-            compose_apple_heic_deferred_to_scene_linear(&deferred, target_capacity).expect("composed");
+        let deferred =
+            attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity);
+        let new_composed = compose_apple_heic_deferred_to_scene_linear(&deferred, target_capacity)
+            .expect("composed");
 
         assert_eq!(old_composed.rgba_f32.len(), new_composed.len());
-        for (i, (a, b)) in old_composed.rgba_f32.iter().zip(new_composed.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-6,
-                "pixel {i}: old={a} new={b}"
-            );
+        for (i, (a, b)) in old_composed
+            .rgba_f32
+            .iter()
+            .zip(new_composed.iter())
+            .enumerate()
+        {
+            assert!((a - b).abs() < 1e-6, "pixel {i}: old={a} new={b}");
         }
     }
 
@@ -242,7 +248,12 @@ mod tests {
     }
 
     /// Exact replica of WGSL `decode_input_transfer` (used inside the compose shader).
-    fn wgsl_decode_input_transfer(r: f32, g: f32, b: f32, input_transfer_function: u32) -> [f32; 3] {
+    fn wgsl_decode_input_transfer(
+        r: f32,
+        g: f32,
+        b: f32,
+        input_transfer_function: u32,
+    ) -> [f32; 3] {
         match input_transfer_function {
             1 => {
                 // INPUT_TRANSFER_SRGB
@@ -399,18 +410,10 @@ mod tests {
                 let b = primary_pixels[idx + 2];
                 let a = primary_pixels[idx + 3];
 
-                let [dr, dg, db] =
-                    wgsl_decode_input_transfer(r, g, b, input_transfer_function);
-                let [lr, lg, lb] =
-                    wgsl_convert_input_to_linear_srgb(dr, dg, db, input_color_space);
+                let [dr, dg, db] = wgsl_decode_input_transfer(r, g, b, input_transfer_function);
+                let [lr, lg, lb] = wgsl_convert_input_to_linear_srgb(dr, dg, db, input_color_space);
                 let [gr, gg, gb] = wgsl_sample_gain_encoded(
-                    gain_rgba,
-                    gain_w,
-                    gain_h,
-                    primary_w,
-                    primary_h,
-                    px,
-                    py,
+                    gain_rgba, gain_w, gain_h, primary_w, primary_h, px, py,
                 );
                 let glr = wgsl_bt709_gain_channel_to_linear(gr);
                 let glg = wgsl_bt709_gain_channel_to_linear(gg);
@@ -556,10 +559,7 @@ mod tests {
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-5,
-                "pixel {i}: cpu={a:.8} gpu={b:.8}"
-            );
+            assert!((a - b).abs() < 1e-5, "pixel {i}: cpu={a:.8} gpu={b:.8}");
         }
     }
 
@@ -619,10 +619,7 @@ mod tests {
 
         assert_eq!(cpu_out.len(), gpu_out.len());
         for (i, (a, b)) in cpu_out.iter().zip(gpu_out.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-5,
-                "pixel {i}: cpu={a:.8} gpu={b:.8}"
-            );
+            assert!((a - b).abs() < 1e-5, "pixel {i}: cpu={a:.8} gpu={b:.8}");
         }
     }
 }

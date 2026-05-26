@@ -16,11 +16,14 @@
 
 //! Apple HEIC HDR gain-map MakerNote parsing and primary-plane composition.
 
+#[cfg(test)]
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
+#[cfg(test)]
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
 };
 use std::ffi::CStr;
+#[cfg(test)]
 use std::sync::Arc;
 
 const EXIF_TAG_APPLE_HDR_HEADROOM: u16 = 0x0021;
@@ -102,7 +105,8 @@ pub(crate) fn should_apply_apple_heic_gain_map(
     apple_gain_map_display_weight(hdr_target_capacity, headroom.stops) > 0.0
 }
 
-/// Compose Apple HDR gain map into a scene-linear sRGB [`HdrImageBuffer`].
+/// CPU reference compose for unit tests (production uses GPU strip compose in `apple_compose_gpu`).
+#[cfg(test)]
 pub(crate) fn apply_apple_gain_map_composition(
     hdr: HdrImageBuffer,
     gain_w: u32,

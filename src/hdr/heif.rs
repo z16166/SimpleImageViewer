@@ -1596,6 +1596,65 @@ fn heif_has_apple_hdr_gain_map_auxiliary(handle: *const libheif_sys::heif_image_
 }
 
 #[cfg(feature = "heif-native")]
+fn rotate_gain_rgba_90_cw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let new_w = height;
+    let new_h = width;
+    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let src_y = height - 1 - x;
+            let src_x = y;
+            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+        }
+    }
+    (new_w, new_h, rotated)
+}
+
+#[cfg(feature = "heif-native")]
+fn rotate_gain_rgba_90_ccw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+    let new_w = height;
+    let new_h = width;
+    let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let src_y = x;
+            let src_x = width - 1 - y;
+            let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
+            let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
+            rotated[dst_idx..dst_idx + 4].copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
+        }
+    }
+    (new_w, new_h, rotated)
+}
+
+/// Rotate an Apple HDR gain map from sensor (ispe) orientation into primary display orientation.
+#[cfg(feature = "heif-native")]
+pub(crate) fn align_apple_gain_map_to_primary_display_orientation(
+    gain_rgba: Vec<u8>,
+    gain_width: u32,
+    gain_height: u32,
+    primary_ispe_w: u32,
+    primary_ispe_h: u32,
+    primary_disp_w: u32,
+    primary_disp_h: u32,
+) -> (u32, u32, Vec<u8>) {
+    let ispe_swapped = primary_ispe_w == primary_disp_h && primary_ispe_h == primary_disp_w;
+    let ispe_rotated = ispe_swapped && primary_ispe_w != primary_ispe_h;
+
+    if ispe_rotated && (primary_ispe_w != gain_width || primary_ispe_h != gain_height) {
+        if primary_ispe_w > primary_ispe_h {
+            rotate_gain_rgba_90_cw(gain_width, gain_height, &gain_rgba)
+        } else {
+            rotate_gain_rgba_90_ccw(gain_width, gain_height, &gain_rgba)
+        }
+    } else {
+        (gain_width, gain_height, gain_rgba)
+    }
+}
+
+#[cfg(feature = "heif-native")]
 fn decode_heif_gain_map(
     main_handle: *const libheif_sys::heif_image_handle,
     decode_options: *const libheif_sys::heif_decoding_options,
@@ -1704,59 +1763,29 @@ fn decode_heif_gain_map(
     let primary_disp_w = unsafe { libheif_sys::heif_image_handle_get_width(main_handle) } as u32;
     let primary_disp_h = unsafe { libheif_sys::heif_image_handle_get_height(main_handle) } as u32;
 
-    // Only apply rotation when display dimensions are swapped vs stored (90°/270° transform).
-    let ispe_swapped = primary_ispe_w == primary_disp_h && primary_ispe_h == primary_disp_w;
-    let ispe_rotated = ispe_swapped && primary_ispe_w != primary_ispe_h;
-
-    if ispe_rotated && (primary_ispe_w != width || primary_ispe_h != height) {
-        // The primary was rotated from sensor (ispe) → display orientation.
-        // The gain map (in sensor orientation) must be rotated the same way.
-        // For Apple HEIC: sensor is landscape (ispe_w > ispe_h), display is portrait
-        // (disp_w < disp_h) → rotate 90° CW: new(x,y) = old(h-1-y, x)
-        let new_w = height;
-        let new_h = width;
-        let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
-        if primary_ispe_w > primary_ispe_h {
-            // Landscape sensor → portrait display: 90° CW
-            // dst[y][x] = src[H-1-x][y]
-            for y in 0..new_h {
-                for x in 0..new_w {
-                    let src_y = height - 1 - x;
-                    let src_x = y;
-                    let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
-                    let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
-                    rotated[dst_idx..dst_idx + 4]
-                        .copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
-                }
-            }
-            log::debug!(
-                "[HDR] Gain map rotated 90° CW: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
-                width, height, new_w, new_h,
-                primary_ispe_w, primary_ispe_h, primary_disp_w, primary_disp_h,
-            );
-        } else {
-            // Portrait sensor → landscape display: 90° CCW
-            // dst[y][x] = src[x][W-1-y]
-            for y in 0..new_h {
-                for x in 0..new_w {
-                    let src_y = x;
-                    let src_x = width - 1 - y;
-                    let src_idx = (src_y as usize * width as usize + src_x as usize) * 4;
-                    let dst_idx = (y as usize * new_w as usize + x as usize) * 4;
-                    rotated[dst_idx..dst_idx + 4]
-                        .copy_from_slice(&gain_rgba[src_idx..src_idx + 4]);
-                }
-            }
-            log::debug!(
-                "[HDR] Gain map rotated 90° CCW: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
-                width, height, new_w, new_h,
-                primary_ispe_w, primary_ispe_h, primary_disp_w, primary_disp_h,
-            );
-        }
-        Some((new_w, new_h, rotated))
-    } else {
-        Some((width, height, gain_rgba))
+    let (out_w, out_h, out_rgba) = align_apple_gain_map_to_primary_display_orientation(
+        gain_rgba,
+        width,
+        height,
+        primary_ispe_w,
+        primary_ispe_h,
+        primary_disp_w,
+        primary_disp_h,
+    );
+    if (out_w, out_h) != (width, height) {
+        log::debug!(
+            "[HDR] Gain map rotated to display orientation: {}×{} → {}×{} (primary ispe {}×{} → display {}×{})",
+            width,
+            height,
+            out_w,
+            out_h,
+            primary_ispe_w,
+            primary_ispe_h,
+            primary_disp_w,
+            primary_disp_h,
+        );
     }
+    Some((out_w, out_h, out_rgba))
 }
 
 #[cfg(feature = "heif-native")]
@@ -2258,5 +2287,59 @@ mod tests {
             heif_ycbcr_matrix_from_nclx(&HdrImageMetadata::default(), 1, 1),
             HeifYcbcrMatrix::Bt709
         );
+    }
+
+    #[cfg(feature = "heif-native")]
+    fn gradient_gain_rgba(width: u32, height: u32) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend_from_slice(&[x as u8, y as u8, 0, 255]);
+            }
+        }
+        rgba
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_rotates_landscape_sensor_to_portrait_display() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain, width, height, 4032, 3024, 3024, 4032,
+        );
+        assert_eq!((out_w, out_h), (height, width));
+        let pixel = |buf: &[u8], w: u32, x: u32, y: u32| {
+            let idx = (y as usize * w as usize + x as usize) * 4;
+            [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+        };
+        // dst(0,0) = src(H-1-0, 0) = src(2,0) → R=0, G=2
+        assert_eq!(pixel(&out, out_w, 0, 0), [0, 2, 0, 255]);
+        // dst(0,1) = src(2,1) → R=1, G=2
+        assert_eq!(pixel(&out, out_w, 0, 1), [1, 2, 0, 255]);
+    }
+
+    #[cfg(feature = "heif-native")]
+    #[test]
+    fn align_apple_gain_map_skips_rotation_when_orientations_match() {
+        use super::align_apple_gain_map_to_primary_display_orientation;
+
+        let width = 4_u32;
+        let height = 3_u32;
+        let gain = gradient_gain_rgba(width, height);
+        let (out_w, out_h, out) = align_apple_gain_map_to_primary_display_orientation(
+            gain.clone(),
+            width,
+            height,
+            width,
+            height,
+            width,
+            height,
+        );
+        assert_eq!((out_w, out_h), (width, height));
+        assert_eq!(out, gain);
     }
 }
