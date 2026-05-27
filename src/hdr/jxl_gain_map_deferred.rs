@@ -62,11 +62,6 @@ pub(crate) enum JxlJhgmFrameOutcome {
     CpuComposed(HdrImageBuffer),
 }
 
-/// When ISO headroom indicates the primary codestream is already the HDR base rendition.
-pub(crate) fn jxl_jhgm_primary_is_precomposed_hdr(jhgm_box: &[u8]) -> Result<bool, String> {
-    Ok(parse_jxl_jhgm_box(jhgm_box)?.skips_forward_compose)
-}
-
 /// Quantize libjxl primary floats into ISO gain-map baseline sRGB u8 samples.
 pub(crate) fn jxl_rgba_f32_to_iso_sdr_baseline(
     rgba_f32: &[f32],
@@ -149,35 +144,6 @@ fn apply_jxl_jhgm_gain_map_gpu_deferred(
         gain_metadata,
         target_hdr_capacity,
     )
-}
-
-/// When a `jhgm` box is present, build GPU-deferred planes instead of CPU-composing `rgba_f32`.
-pub(crate) fn apply_jxl_jhgm_gain_map_gpu_deferred_if_present(
-    jhgm_box: Option<&[u8]>,
-    target_hdr_capacity: f32,
-    base_rgba_f32: &[f32],
-    width: u32,
-    height: u32,
-    color_space: HdrColorSpace,
-    metadata: &HdrImageMetadata,
-) -> Result<Option<HdrImageBuffer>, String> {
-    let Some(jhgm_box) = jhgm_box else {
-        return Ok(None);
-    };
-    let parsed = parse_jxl_jhgm_box(jhgm_box)?;
-    match apply_jxl_jhgm_gain_map_gpu_deferred(
-        &parsed,
-        target_hdr_capacity,
-        base_rgba_f32,
-        width,
-        height,
-        color_space,
-        metadata,
-    ) {
-        Ok(deferred) => Ok(Some(deferred)),
-        Err(err) if err.contains("precomposed HDR base") => Ok(None),
-        Err(err) => Err(err),
-    }
 }
 
 fn jxl_hdr_buffer_from_rgba(
@@ -339,20 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn jxl_gpu_deferred_without_jhgm_box_returns_none() {
+    fn jxl_gpu_deferred_without_jhgm_box_returns_unprocessed() {
         let rgba = vec![1.0_f32, 0.5, 0.25, 1.0];
         let meta = HdrImageMetadata::default();
-        let out = apply_jxl_jhgm_gain_map_gpu_deferred_if_present(
-            None,
-            4.0,
-            &rgba,
-            1,
-            1,
-            HdrColorSpace::LinearSrgb,
-            &meta,
-        )
-        .expect("query");
-        assert!(out.is_none());
+        let out = finish_jxl_jhgm_frame(None, 4.0, &rgba, 1, 1, &meta);
+        assert!(matches!(out, JxlJhgmFrameOutcome::Unprocessed));
     }
 
     #[test]

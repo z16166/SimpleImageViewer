@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #[cfg(feature = "jpegxl")]
-use crate::hdr::gain_map::{GainMapMetadata, parse_iso_gain_map_metadata};
+use crate::hdr::gain_map::GainMapMetadata;
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
@@ -1258,19 +1258,6 @@ pub(crate) fn decode_jxl_gain_map_from_bundle(
         .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
         .collect();
     Ok((metadata, gain_map.width, gain_map.height, gain_rgba))
-}
-
-#[cfg(feature = "jpegxl")]
-pub(crate) fn decode_jxl_gain_map(
-    jhgm_box: &[u8],
-    target_hdr_capacity: f32,
-    _base_rgba_f32: &[f32],
-    _base_width: u32,
-    _base_height: u32,
-) -> Result<(GainMapMetadata, u32, u32, Vec<u8>), String> {
-    let bundle = read_jxl_gain_map_bundle(jhgm_box)?;
-    let metadata = parse_iso_gain_map_metadata(bundle.metadata)?;
-    decode_jxl_gain_map_from_bundle(&bundle, metadata, target_hdr_capacity)
 }
 
 #[cfg(feature = "jpegxl")]
