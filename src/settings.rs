@@ -194,6 +194,13 @@ pub struct Settings {
     pub window_outer_position: Option<[i32; 2]>,
     #[serde(default)]
     pub window_inner_size: Option<[u32; 2]>,
+    /// Last non-maximized outer top-left. Kept when closing maximized so the
+    /// next session can recreate at restore size/position before maximizing.
+    #[serde(default)]
+    pub window_restore_outer_position: Option<[i32; 2]>,
+    /// Last non-maximized client size. Same role as [`Self::window_restore_outer_position`].
+    #[serde(default)]
+    pub window_restore_inner_size: Option<[u32; 2]>,
     #[serde(default)]
     pub window_maximized: bool,
 }
@@ -281,8 +288,56 @@ impl Default for Settings {
             log_level: default_log_level(),
             window_outer_position: None,
             window_inner_size: None,
+            window_restore_outer_position: None,
+            window_restore_inner_size: None,
             window_maximized: false,
         }
+    }
+}
+
+impl Settings {
+    /// Windows reports small negative outer positions (e.g. `[-7,-7]`) while
+    /// maximized; these are not valid restore coordinates.
+    pub fn is_maximized_position_artifact([x, y]: [i32; 2]) -> bool {
+        x <= 0 && y <= 0
+    }
+
+    fn valid_outer_position(pos: [i32; 2]) -> Option<[i32; 2]> {
+        (!Self::is_maximized_position_artifact(pos)).then_some(pos)
+    }
+
+    /// Outer top-left used when spawning the native window.
+    pub fn startup_outer_position(&self) -> Option<[f32; 2]> {
+        let pos = if self.window_maximized {
+            self.window_restore_outer_position.or_else(|| {
+                self.window_outer_position
+                    .and_then(Self::valid_outer_position)
+            })
+        } else {
+            self.window_outer_position
+        }?;
+        Some([pos[0] as f32, pos[1] as f32])
+    }
+
+    /// Client size used when spawning the native window.
+    pub fn startup_inner_size(&self) -> [f32; 2] {
+        if self.window_maximized {
+            self.window_restore_inner_size
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([1280.0, 800.0])
+        } else {
+            self.window_inner_size
+                .map(|[w, h]| [w as f32, h as f32])
+                .unwrap_or([1280.0, 800.0])
+        }
+    }
+
+    /// Monitor hint for spawn-time HDR probing (prefers restore placement).
+    pub fn window_spawn_top_left_for_hdr(&self) -> Option<[i32; 2]> {
+        self.window_restore_outer_position.or_else(|| {
+            self.window_outer_position
+                .and_then(Self::valid_outer_position)
+        })
     }
 }
 

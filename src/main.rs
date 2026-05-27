@@ -776,14 +776,8 @@ fn main() -> eframe::Result {
 
     let fullscreen = settings.fullscreen;
 
-    let saved_inner_size = settings
-        .window_inner_size
-        .map(|[w, h]| [w as f32, h as f32])
-        .unwrap_or([1280.0, 800.0]);
-    let saved_outer_position = settings
-        .window_outer_position
-        .map(|[x, y]| [x as f32, y as f32]);
-    let saved_maximized = settings.window_maximized;
+    let saved_inner_size = settings.startup_inner_size();
+    let saved_outer_position = settings.startup_outer_position();
 
     let app_icon = load_icon();
     startup_log_phase(&mut prev, startup_t0, "load_icon");
@@ -794,7 +788,8 @@ fn main() -> eframe::Result {
         .with_min_inner_size([400.0, 300.0])
         .with_decorations(true)
         .with_fullscreen(fullscreen)
-        .with_maximized(saved_maximized)
+        // Maximize is applied from the app after the hidden window is created.
+        .with_maximized(false)
         .with_icon(app_icon);
     if let Some(pos) = saved_outer_position {
         viewport = viewport.with_position(pos);
@@ -866,7 +861,7 @@ fn main() -> eframe::Result {
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
             settings.hdr_native_surface_enabled_effective(),
-            settings.window_outer_position,
+            settings.window_spawn_top_left_for_hdr(),
         );
     log::info!(
         "[startup] hdr spawn-monitor / native surface preset: {} ms",
@@ -964,9 +959,12 @@ fn main() -> eframe::Result {
         startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
     }
 
+    let first_frame_show_maximized = settings.window_maximized && !fullscreen;
+
     let native_options = eframe::NativeOptions {
         viewport,
         centered: center_window_on_open,
+        first_frame_show_maximized,
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),

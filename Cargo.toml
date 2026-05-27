@@ -137,6 +137,7 @@ cc = "1.2.60"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 
 [patch.crates-io]
+eframe = { path = "patched-crates/eframe" }
 egui-wgpu = { path = "patched-crates/egui-wgpu" }
 wgpu-hal = { path = "patched-crates/wgpu-hal" }
 alsa-sys = { path = "patched-crates/alsa-sys" }

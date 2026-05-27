@@ -314,7 +314,7 @@ impl ImageViewerApp {
             last_switch_time: Instant::now(),
             slideshow_paused: false,
             audio: AudioPlayer::new(),
-            show_settings: true,
+            show_settings: settings.last_image_dir.is_none(),
             images_ever_loaded: false,
             status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
             error_message: None,
@@ -368,7 +368,7 @@ impl ImageViewerApp {
             music_seek_timeout: None,
             music_hud_last_activity: Instant::now(),
             cached_audio_devices: Vec::new(),
-            last_show_settings: true,
+            last_show_settings: settings.last_image_dir.is_none(),
             music_hud_drag_offset: Vec2::ZERO,
             settings,
         };
@@ -418,4 +418,5 @@ impl ImageViewerApp {
     pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
     }
+
 }

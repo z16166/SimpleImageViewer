@@ -414,7 +414,6 @@ pub struct ImageViewerApp {
 
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
-
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
@@ -618,9 +617,13 @@ impl eframe::App for ImageViewerApp {
         // remembering which monitor we closed on is what lets the user keep
         // testing HDR by simply reopening the app.
         if let Some(placement) = self.cached_window_placement {
-            self.settings.window_outer_position = Some(placement.outer_position);
-            self.settings.window_inner_size = Some(placement.inner_size);
             self.settings.window_maximized = placement.maximized;
+            if !placement.maximized {
+                self.settings.window_outer_position = Some(placement.outer_position);
+                self.settings.window_inner_size = Some(placement.inner_size);
+                self.settings.window_restore_outer_position = Some(placement.outer_position);
+                self.settings.window_restore_inner_size = Some(placement.inner_size);
+            }
         }
         // Shut down the async saver thread first: dropping the sender closes the
         // channel, causing the saver's `recv()` loop to exit after finishing any
