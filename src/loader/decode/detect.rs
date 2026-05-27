@@ -29,20 +29,37 @@ use super::raster::{load_gif, load_png, load_static, load_webp};
 
 const DETECTION_BUFFER_SIZE: usize = 16;
 
+/// Read the major brand from an ISO BMFF `ftyp` box at the start of `bytes` (offset 4).
+pub(crate) fn bmff_ftyp_brand(bytes: &[u8]) -> Option<[u8; 4]> {
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let mut brand = [0u8; 4];
+        brand.copy_from_slice(&bytes[8..12]);
+        Some(brand)
+    } else {
+        None
+    }
+}
+
 /// BMFF brands that denote motion/video containers, not still images (e.g. iPhone Live Photo `.MOV` mislabeled as `.JPG`).
-fn is_motion_video_bmff_brand(brand: &[u8]) -> bool {
+pub(crate) fn is_motion_video_bmff_brand(brand: &[u8; 4]) -> bool {
     matches!(
         brand,
         b"qt  " | b"mov " | b"m4v " | b"3gp " | b"3g2 " | b"mp41" | b"mp42" | b"avc1" | b"iso2"
     )
 }
 
-fn motion_video_bmff_error(brand: &[u8]) -> String {
+pub(crate) fn motion_video_bmff_error(brand: &[u8; 4]) -> String {
     let brand_label = std::str::from_utf8(brand).unwrap_or("????");
     format!(
         "ISO BMFF container (ftyp {brand_label:?}) is a video/Live Photo motion component, not a still image; \
          open the paired photo file or export a JPEG/HEIC still"
     )
+}
+
+/// Primary extension-first decode already ruled out recovery (single mmap pass).
+pub(crate) fn primary_decode_failure_is_final(primary_err: &str) -> bool {
+    primary_err.contains("Live Photo motion component")
+        || primary_err.contains("video/Live Photo motion")
 }
 
 fn load_bmff_ftyp_container(
@@ -51,8 +68,11 @@ fn load_bmff_ftyp_container(
     hdr_tone_map: HdrToneMapSettings,
     brand: &[u8],
 ) -> Result<ImageData, String> {
-    if is_motion_video_bmff_brand(brand) {
-        return Err(motion_video_bmff_error(brand));
+    if brand.len() == 4 {
+        let brand_arr: [u8; 4] = brand.try_into().expect("brand length checked");
+        if is_motion_video_bmff_brand(&brand_arr) {
+            return Err(motion_video_bmff_error(&brand_arr));
+        }
     }
 
     let brand_label = std::str::from_utf8(brand).unwrap_or("????");
@@ -106,6 +126,10 @@ pub(crate) fn recover_via_platform_and_content_detection(
     high_quality: bool,
     primary_err: String,
 ) -> Result<ImageData, String> {
+    if primary_decode_failure_is_final(&primary_err) {
+        return Err(primary_err);
+    }
+
     #[cfg(target_os = "windows")]
     if let Ok(image) = crate::wic::load_via_wic(path, high_quality, None) {
         log::info!(
