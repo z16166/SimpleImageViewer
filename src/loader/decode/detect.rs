@@ -29,6 +29,153 @@ use super::raster::{load_gif, load_png, load_static, load_webp};
 
 const DETECTION_BUFFER_SIZE: usize = 16;
 
+/// BMFF brands that denote motion/video containers, not still images (e.g. iPhone Live Photo `.MOV` mislabeled as `.JPG`).
+fn is_motion_video_bmff_brand(brand: &[u8]) -> bool {
+    matches!(
+        brand,
+        b"qt  " | b"mov " | b"m4v " | b"3gp " | b"3g2 " | b"mp41" | b"mp42" | b"avc1" | b"iso2"
+    )
+}
+
+fn motion_video_bmff_error(brand: &[u8]) -> String {
+    let brand_label = std::str::from_utf8(brand).unwrap_or("????");
+    format!(
+        "ISO BMFF container (ftyp {brand_label:?}) is a video/Live Photo motion component, not a still image; \
+         open the paired photo file or export a JPEG/HEIC still"
+    )
+}
+
+fn load_bmff_ftyp_container(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    brand: &[u8],
+) -> Result<ImageData, String> {
+    if is_motion_video_bmff_brand(brand) {
+        return Err(motion_video_bmff_error(brand));
+    }
+
+    let brand_label = std::str::from_utf8(brand).unwrap_or("????");
+    log::info!(
+        "[Loader] {} has ISO BMFF ftyp brand {brand_label:?}; trying container still-image decoders",
+        path.display()
+    );
+
+    #[cfg(target_os = "windows")]
+    if let Ok(image) = crate::wic::load_via_wic_stream_sniff(path.as_path(), true, None) {
+        return Ok(crate::loader::apply_exif_orientation_to_image_data(
+            path.as_path(),
+            image,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Ok(image) = crate::macos_image_io::load_via_image_io(path.as_path(), true, None) {
+        return Ok(crate::loader::apply_exif_orientation_to_image_data(
+            path.as_path(),
+            image,
+        ));
+    }
+
+    let _ = (hdr_target_capacity, hdr_tone_map);
+    Err(format!(
+        "ISO BMFF container (ftyp {brand_label:?}) is not a decodable still image; \
+         the file may be a Live Photo motion/video component with a wrong extension"
+    ))
+}
+
+pub(crate) fn read_detection_header(
+    path: &PathBuf,
+) -> Result<([u8; DETECTION_BUFFER_SIZE], usize), String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut header = [0u8; DETECTION_BUFFER_SIZE];
+    let n = file.read(&mut header).map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("empty file".to_string());
+    }
+    Ok((header, n))
+}
+
+/// After extension-first decode fails: platform decoder (WIC/ImageIO), then magic-byte routing.
+pub(crate) fn recover_via_platform_and_content_detection(
+    path: &PathBuf,
+    file_name: &str,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    high_quality: bool,
+    primary_err: String,
+) -> Result<ImageData, String> {
+    #[cfg(target_os = "windows")]
+    if let Ok(image) = crate::wic::load_via_wic(path, high_quality, None) {
+        log::info!(
+            "[{}] Recovered via WIC after extension-first decode failed",
+            file_name
+        );
+        return Ok(crate::loader::apply_exif_orientation_to_image_data(
+            path.as_path(),
+            image,
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(image) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
+        log::info!(
+            "[{}] Recovered via ImageIO after extension-first decode failed",
+            file_name
+        );
+        return Ok(crate::loader::apply_exif_orientation_to_image_data(
+            path.as_path(),
+            image,
+        ));
+    }
+
+    match load_via_content_detection(path, hdr_target_capacity, hdr_tone_map) {
+        Ok(image) => {
+            log::info!(
+                "[{}] Recovered via content-based detection after extension-first decode failed",
+                file_name
+            );
+            Ok(image)
+        }
+        Err(detection_err)
+            if detection_err.contains("ISO BMFF")
+                || detection_err.contains("Live Photo")
+                || detection_err.contains("detection_failed") =>
+        {
+            Err(detection_err)
+        }
+        Err(_) => Err(primary_err),
+    }
+}
+
+/// Run the extension-matched loader first; only mislabeled or mismatched files pay sniffing cost.
+pub(crate) fn load_primary_with_detection_fallback(
+    path: &PathBuf,
+    file_name: &str,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+    high_quality: bool,
+    primary: impl FnOnce() -> Result<ImageData, String>,
+) -> Result<ImageData, String> {
+    match primary() {
+        Ok(image) => Ok(image),
+        Err(primary_err) => {
+            log::debug!(
+                "[{}] Extension-first decode failed ({primary_err}); trying recovery loaders",
+                file_name
+            );
+            recover_via_platform_and_content_detection(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                primary_err,
+            )
+        }
+    }
+}
+
 pub(crate) fn load_by_image_format(
     format: image::ImageFormat,
     path: &PathBuf,
@@ -72,12 +219,7 @@ pub(crate) fn load_via_content_detection(
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-
-    // Use constant for buffer size
-    let mut header = [0u8; DETECTION_BUFFER_SIZE];
-    let n = file.read(&mut header).unwrap_or(0);
+    let (header, n) = read_detection_header(path)?;
 
     // 1. Try standard image-rs detection
     if let Ok(guessed) = image::guess_format(&header[..n]) {
@@ -88,17 +230,99 @@ pub(crate) fn load_via_content_detection(
         return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
     }
 
-    // 2. Manual HEIC detection (since image-rs 0.25 doesn't natively guess it)
-    // HEIF/HEIC signature: "ftyp" (at offset 4) followed by various brands.
+    // 2. Manual BMFF detection (image-rs 0.25 does not guess HEIF/AVIF/QuickTime).
     if n >= 12 && &header[4..8] == b"ftyp" {
-        let sub = &header[8..12];
-        if crate::hdr::avif::is_avif_brand(sub) {
+        let brand = &header[8..12];
+        if crate::hdr::avif::is_avif_brand(brand) {
             return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
         }
-        if crate::hdr::heif::is_heif_brand(sub) {
+        if crate::hdr::heif::is_heif_brand(brand) {
             return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map);
         }
+        return load_bmff_ftyp_container(path, hdr_target_capacity, hdr_tone_map, brand);
     }
 
     Err(rust_i18n::t!("error.detection_failed").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_via_content_detection;
+
+    fn is_jpeg_magic(header: &[u8]) -> bool {
+        header.len() >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF
+    }
+
+    fn is_png_magic(header: &[u8]) -> bool {
+        header.len() >= 8 && header.starts_with(b"\x89PNG\r\n\x1a\n")
+    }
+
+    fn is_webp_magic(header: &[u8]) -> bool {
+        header.len() >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WEBP"
+    }
+
+    #[test]
+    fn magic_helpers_detect_common_mislabeled_heif_containers() {
+        assert!(is_jpeg_magic(&[0xFF, 0xD8, 0xFF, 0xE0]));
+        assert!(is_png_magic(b"\x89PNG\r\n\x1a\n"));
+        assert!(is_webp_magic(b"RIFFxxxxWEBP"));
+        assert!(!is_jpeg_magic(&[0x00, 0x00, 0x00, 0x18]));
+    }
+
+    fn libheif_container_rejected(err: &str) -> bool {
+        let lower = err.to_ascii_lowercase();
+        lower.contains("ftyp") || lower.contains("does not start with")
+    }
+
+    #[test]
+    fn motion_video_bmff_brand_includes_quicktime() {
+        assert!(super::is_motion_video_bmff_brand(b"qt  "));
+        assert!(!super::is_motion_video_bmff_brand(b"heic"));
+    }
+
+    #[test]
+    fn libheif_container_rejected_matches_ftyp_errors() {
+        assert!(libheif_container_rejected(
+            "Failed to read HEIF from memory: Invalid input: No 'ftyp' box"
+        ));
+        assert!(!libheif_container_rejected("decoder plugin not found"));
+    }
+
+    #[test]
+    fn optional_mislabeled_quicktime_jpg_rejects_without_wic_decode() {
+        let Some(path) = std::env::var_os("SIV_QT_JPG_SAMPLE").map(std::path::PathBuf::from) else {
+            eprintln!("skip; set SIV_QT_JPG_SAMPLE");
+            return;
+        };
+        let result = load_via_content_detection(
+            &path,
+            crate::hdr::types::HdrToneMapSettings::default().target_hdr_capacity(),
+            crate::hdr::types::HdrToneMapSettings::default(),
+        );
+        match result {
+            Ok(image) => {
+                let (w, h) = match image {
+                    crate::loader::ImageData::Static(ref img) => (img.width, img.height),
+                    crate::loader::ImageData::Tiled(ref src) => (src.width(), src.height()),
+                    other => panic!(
+                        "unexpected image variant for QT sample: {:?}",
+                        std::mem::discriminant(&other)
+                    ),
+                };
+                assert!(
+                    w <= 8192 && h <= 8192,
+                    "QT mislabeled JPG decoded to {w}x{h}"
+                );
+            }
+            Err(err) => {
+                assert!(
+                    err.contains("ISO BMFF")
+                        || err.contains("Live Photo")
+                        || err.contains("video")
+                        || err.contains("motion component"),
+                    "unexpected error for QT sample: {err}"
+                );
+            }
+        }
+    }
 }

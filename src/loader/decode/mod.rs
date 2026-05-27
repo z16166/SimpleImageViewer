@@ -39,7 +39,7 @@ use super::{
 use super::{extract_exif_thumbnail, hdr_display_requests_sdr_preview};
 
 use assemble::{make_hdr_image_data, make_image_data};
-use detect::load_via_content_detection;
+use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection};
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_with_target_capacity;
 use modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity};
@@ -74,7 +74,14 @@ pub(crate) fn load_image_file(
         };
 
         if ext == "exr" {
-            return load_hdr(path, hdr_target_capacity, hdr_tone_map);
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || load_hdr(path, hdr_target_capacity, hdr_tone_map),
+            );
         }
 
         if crate::hdr::decode::is_hdr_candidate_ext(&ext) {
@@ -110,26 +117,57 @@ pub(crate) fn load_image_file(
         }
 
         if ext == "jpg" || ext == "jpeg" {
-            return load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
-        }
-        if ext == "tif" || ext == "tiff" {
-            return crate::libtiff_loader::load_via_libtiff(
+            return load_primary_with_detection_fallback(
                 path,
+                file_name,
                 hdr_target_capacity,
                 hdr_tone_map,
+                high_quality,
+                || load_jpeg_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+            );
+        }
+        if ext == "tif" || ext == "tiff" {
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || crate::libtiff_loader::load_via_libtiff(path, hdr_target_capacity, hdr_tone_map),
             );
         }
 
         if ext == "avif" || ext == "avifs" {
-            return load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || load_avif_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+            );
         }
 
         if ext == "jxl" {
-            return load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map);
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || load_jxl_with_target_capacity(path, hdr_target_capacity, hdr_tone_map),
+            );
         }
 
         if ext == "heif" || ext == "heic" || ext == "hif" {
-            return load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map);
+            return load_primary_with_detection_fallback(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                || load_heif_hdr_aware(path, hdr_target_capacity, hdr_tone_map),
+            );
         }
 
         if is_system_native && !is_maybe_animated(&ext) {
@@ -149,29 +187,17 @@ pub(crate) fn load_image_file(
             "webp" => load_webp(path, hdr_target_capacity, hdr_tone_map),
             _ => load_static(path, hdr_target_capacity, hdr_tone_map),
         };
-        if result.is_err() {
-            #[cfg(target_os = "windows")]
-            if let Ok(img) = crate::wic::load_via_wic(path, high_quality, None) {
-                return Ok(img);
-            }
-            #[cfg(target_os = "macos")]
-            if let Ok(img) = crate::macos_image_io::load_via_image_io(path, high_quality, None) {
-                return Ok(img);
-            }
-
-            // Last resort: Detect format by content (magic bytes)
-            if let Ok(retry_img) =
-                load_via_content_detection(path, hdr_target_capacity, hdr_tone_map)
-            {
-                log::info!(
-                    "[{}] Successfully recovered via content-based detection",
-                    file_name
-                );
-                return Ok(retry_img);
-            }
+        match result {
+            Ok(image) => Ok(image),
+            Err(primary_err) => recover_via_platform_and_content_detection(
+                path,
+                file_name,
+                hdr_target_capacity,
+                hdr_tone_map,
+                high_quality,
+                primary_err,
+            ),
         }
-
-        result
     })();
 
     let mut preview: Option<DecodedImage> = None;

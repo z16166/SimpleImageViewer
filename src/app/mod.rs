@@ -377,6 +377,8 @@ pub struct ImageViewerApp {
     pub(crate) current_hdr_tiled_preview: Option<CurrentHdrImage>,
     pub(crate) hdr_tiled_preview_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
+    /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
+    pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,

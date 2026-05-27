@@ -306,6 +306,7 @@ impl ImageViewerApp {
             current_hdr_tiled_preview: None,
             hdr_tiled_preview_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
+            deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,
             pan_offset: Vec2::ZERO,

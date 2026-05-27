@@ -382,6 +382,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.clear();
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
+        self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
         self.current_hdr_tiled_image = None;
@@ -393,6 +394,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
+        self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
             .current_hdr_image
@@ -674,6 +676,16 @@ impl ImageViewerApp {
                 prefetch_gen,
                 self.generation
             );
+        } else if self.has_loaded_asset(self.current_index) {
+            // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
+            self.prefetch_prev_generation = None;
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                self.current_image_res = Some((hdr.width, hdr.height));
+            } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
+                self.current_image_res = Some((decoded.width, decoded.height));
+            }
         } else {
             // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
             // so handle_preview_update doesn't erroneously accept stale old-gen results.
@@ -846,7 +858,16 @@ impl ImageViewerApp {
 
             // After the guaranteed first image, enforce the byte budget.
             // Sizes come from the scanner thread; unknown (0) skips the byte gate.
-            if count > 0 && file_size > 0 && new_bytes.saturating_add(file_size) > budget {
+            // Compressed on-disk size understates decoded RGBA footprint (HEIC/JPEG often 10–20×).
+            let decode_budget_bytes = if file_size > 0 {
+                file_size.saturating_mul(12)
+            } else {
+                0
+            };
+            if count > 0
+                && decode_budget_bytes > 0
+                && new_bytes.saturating_add(decode_budget_bytes) > budget
+            {
                 break;
             }
 
@@ -857,7 +878,7 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
             );
             count += 1;
-            new_bytes += file_size;
+            new_bytes += decode_budget_bytes.max(file_size);
         }
     }
 
@@ -867,7 +888,7 @@ impl ImageViewerApp {
             self.hdr_image_cache.contains_key(&index),
             self.hdr_tiled_source_cache.contains_key(&index),
             self.animation_cache.contains_key(&index),
-        )
+        ) || self.deferred_sdr_uploads.contains_key(&index)
     }
 
     // ------------------------------------------------------------------
@@ -1109,6 +1130,8 @@ impl ImageViewerApp {
 
     /// Process results from the background ImageLoader.
     pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
+        self.flush_deferred_sdr_upload_for_current(ctx);
+
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
         if let Some(ref mut pending) = self.pending_anim_frames {
@@ -1492,6 +1515,41 @@ impl ImageViewerApp {
         }
     }
 
+    fn queue_or_upload_static_sdr_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        texture_name: String,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index {
+            self.upload_static_sdr_texture(idx, decoded, texture_name, ctx);
+        } else {
+            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+        }
+    }
+
+    fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
+        if !self.deferred_sdr_uploads.contains_key(&self.current_index) {
+            return;
+        }
+        if self.texture_cache.contains(self.current_index) {
+            self.deferred_sdr_uploads.remove(&self.current_index);
+            return;
+        }
+        let Some(decoded) = self.deferred_sdr_uploads.remove(&self.current_index) else {
+            return;
+        };
+        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+        let texture_name = if is_hdr_fallback {
+            format!("img_hdr_fallback_{}", self.current_index)
+        } else {
+            format!("img_{}", self.current_index)
+        };
+        self.upload_static_sdr_texture(self.current_index, &decoded, texture_name, ctx);
+        self.current_image_res = Some((decoded.width, decoded.height));
+    }
+
     fn clear_current_animation_for_index(&mut self, idx: usize) {
         if self
             .animation
@@ -1509,7 +1567,7 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         self.remove_hdr_image_index(idx);
-        self.upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
+        self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
             self.current_image_res = Some((decoded.width, decoded.height));
             self.tile_manager = None;
@@ -1532,7 +1590,12 @@ impl ImageViewerApp {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        self.upload_static_sdr_texture(idx, fallback, format!("img_hdr_fallback_{idx}"), ctx);
+        self.queue_or_upload_static_sdr_texture(
+            idx,
+            fallback,
+            format!("img_hdr_fallback_{idx}"),
+            ctx,
+        );
 
         if idx == self.current_index {
             self.current_image_res = Some((hdr.width, hdr.height));
@@ -1552,7 +1615,7 @@ impl ImageViewerApp {
             return;
         }
         self.hdr_sdr_fallback_indices.insert(idx);
-        self.upload_static_sdr_texture(
+        self.queue_or_upload_static_sdr_texture(
             idx,
             &update.fallback,
             format!("img_hdr_fallback_{idx}"),
@@ -1621,7 +1684,7 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(idx);
         if let Some(first) = frames.first() {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
-            self.upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
+            self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
             if idx == self.current_index {
                 self.current_image_res = Some((first.width, first.height));
                 self.tile_manager = None;
@@ -1673,7 +1736,7 @@ impl ImageViewerApp {
         }
 
         if let Some(first) = frames.first() {
-            self.upload_static_sdr_texture(
+            self.queue_or_upload_static_sdr_texture(
                 idx,
                 &first.fallback,
                 format!("img_hdr_anim_fallback_{idx}"),

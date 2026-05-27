@@ -42,6 +42,12 @@ pub(crate) fn load_jpeg_with_target_capacity(
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Err(format!(
+            "not a JPEG bitstream (header {:02x?}); file extension may not match container",
+            &mmap[..mmap.len().min(4)]
+        ));
+    }
     // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
     // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
     let orientation = crate::metadata_utils::get_exif_orientation(path);
