@@ -2110,6 +2110,9 @@ mod tests {
                 ImageData::HdrTiled { .. } => {
                     panic!("{name}: expected ImageData::Hdr, got HdrTiled");
                 }
+                ImageData::HdrAnimated(_) => {
+                    panic!("{name}: expected ImageData::Hdr, got HdrAnimated");
+                }
             }
         }
     }

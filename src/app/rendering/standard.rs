@@ -84,6 +84,14 @@ impl ImageViewerApp {
                     anim.current_frame = (anim.current_frame + 1) % anim.textures.len();
                     anim.frame_start = Instant::now();
                 }
+                if let Some(hdr_frames) = &anim.hdr_frames {
+                    if let Some(hdr) = hdr_frames.get(anim.current_frame) {
+                        self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                            anim.image_index,
+                            Arc::clone(hdr),
+                        ));
+                    }
+                }
                 let remaining =
                     anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed());
                 ui.ctx().request_repaint_after(remaining);

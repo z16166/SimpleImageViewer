@@ -15,6 +15,10 @@ siv_settings.yaml
 .idea/
 *.iml
 
+# Python
+__pycache__/
+*.py[cod]
+
 # OS files
 .DS_Store
 Thumbs.db

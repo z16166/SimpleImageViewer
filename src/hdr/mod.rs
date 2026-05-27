@@ -15,6 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 pub mod avif;
+#[cfg(feature = "avif-native")]
+pub(crate) mod avif_gain_map_deferred;
 pub mod capabilities;
 pub(crate) mod cicp;
 pub mod decode;
@@ -29,9 +31,13 @@ pub(crate) mod heif_apple_gain_map_compose_simd;
 pub(crate) mod heif_apple_gain_map_gpu;
 #[cfg(feature = "jpegxl")]
 pub(crate) mod icc_primaries_lcms;
+pub(crate) mod jpeg_gain_map_gpu;
 pub mod jpegxl;
+#[cfg(feature = "jpegxl")]
+pub(crate) mod jxl_gain_map_deferred;
 pub(crate) mod logluv_decode;
 pub mod monitor;
+pub(crate) mod mpf;
 pub(crate) mod openexr_core_backend;
 pub mod platform;
 pub mod radiance_tiled;
@@ -41,5 +47,7 @@ pub mod surface;
 pub mod tiled;
 pub mod types;
 pub mod ultra_hdr;
+pub(crate) mod ultra_hdr_compose;
+pub(crate) mod ultra_hdr_deferred;
 pub mod vulkan_metadata;
 pub mod wsi_probe;

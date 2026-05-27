@@ -113,6 +113,35 @@ pub struct HdrGainMapMetadata {
     pub capped_display_referred: bool,
     /// Apple HEIC: encoded base + gain map kept for GPU compose (`weight` applied at draw time).
     pub apple_heic_deferred: Option<AppleHeicGainMapGpuSource>,
+    /// ISO 21496 gain map (Ultra HDR JPEG, AVIF, JPEG XL jhgm): baseline SDR + gain map for GPU compose.
+    pub iso_deferred: Option<IsoGainMapGpuSource>,
+}
+
+impl HdrGainMapMetadata {
+    /// True when scene-linear [`HdrImageBuffer::rgba_f32`] must not be shown until GPU compose runs.
+    pub(crate) fn gpu_compose_pending(&self) -> bool {
+        self.iso_deferred.is_some() || self.apple_heic_deferred.is_some()
+    }
+}
+
+/// Baseline SDR and gain-map planes for ISO 21496 GPU compose (`jpeg_compose_gpu`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IsoGainMapGpuSource {
+    pub sdr_rgba: std::sync::Arc<Vec<u8>>,
+    pub gain_rgba: std::sync::Arc<Vec<u8>>,
+    pub gain_width: u32,
+    pub gain_height: u32,
+    pub metadata: crate::hdr::gain_map::GainMapMetadata,
+}
+
+/// Display-space tile origin and orientation for deferred ISO gain-map GPU compose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IsoDeferredTileContext {
+    pub origin_x: u32,
+    pub origin_y: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub orientation: u16,
 }
 
 /// Raw planes for Apple HEIC HDR gain-map compose on the GPU (see `heif_apple_gain_map_gpu`).
@@ -326,6 +355,9 @@ pub struct HdrImageBuffer {
     pub format: HdrPixelFormat,
     pub color_space: HdrColorSpace,
     pub metadata: HdrImageMetadata,
+    /// Scene-linear display pixels when composed; empty when [`HdrGainMapMetadata::iso_deferred`]
+    /// is set; encoded primary (not display-ready) when [`HdrGainMapMetadata::apple_heic_deferred`]
+    /// is set until GPU compose completes.
     pub rgba_f32: std::sync::Arc<Vec<f32>>,
 }
 
@@ -561,6 +593,7 @@ mod tests {
                 diagnostic: "GainMapMax=[2.000,2.000,2.000]".to_string(),
                 capped_display_referred: false,
                 apple_heic_deferred: None,
+                iso_deferred: None,
             }),
             ..HdrImageMetadata::default()
         };

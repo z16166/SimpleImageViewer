@@ -24,19 +24,32 @@ use std::cell::Cell;
 
 use crate::hdr::gain_map::{
     GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    iso_gain_map_metadata, luminance_hints_from_gain_map, sample_gain_map_rgb,
-    validate_gain_map_metadata,
+    iso_gain_map_metadata, iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
+    sample_gain_map_rgb, validate_gain_map_metadata,
 };
 #[cfg(test)]
 use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gain};
+#[cfg(test)]
+use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
+use crate::hdr::jpeg_gain_map_gpu::{
+    attach_iso_deferred_tile_metadata, iso_deferred_from_metadata,
+};
+use crate::hdr::mpf::{extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image};
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+use crate::hdr::types::{
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
+};
+#[cfg(test)]
+use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
+#[cfg(test)]
+use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
+use crate::hdr::ultra_hdr_deferred::decode_ultra_hdr_jpeg_deferred_bytes;
 
 #[cfg(test)]
-use crate::hdr::types::HdrToneMapSettings;
+use crate::hdr::types::{HdrToneMapSettings, HdrTransferFunction};
 
 #[cfg(test)]
 use std::path::Path;
@@ -74,6 +87,7 @@ pub(crate) struct UltraHdrJpegInfo {
     pub(crate) is_ultra_hdr: bool,
     pub(crate) primary_xmp_has_gain_map: bool,
     pub(crate) gain_map_item_count: usize,
+    pub(crate) mpf_has_gain_map: bool,
 }
 
 #[cfg(test)]
@@ -94,7 +108,7 @@ fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
 fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
-    decode_ultra_hdr_jpeg_bytes_with_target_capacity(
+    decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
         &bytes,
         HdrToneMapSettings::default().target_hdr_capacity(),
     )
@@ -110,6 +124,14 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     bytes: &[u8],
     target_hdr_capacity: f32,
 ) -> Result<HdrImageBuffer, String> {
+    decode_ultra_hdr_jpeg_deferred_bytes(bytes, target_hdr_capacity)
+}
+
+#[cfg(test)]
+pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
     let info = inspect_ultra_hdr_jpeg_bytes(bytes)?;
     if !info.is_ultra_hdr {
         return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());
@@ -118,36 +140,26 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_target_capacity(
     let (width, height, sdr_rgba) = libjpeg_turbo::decode_to_rgba(bytes)?;
     let gain_map_jpeg = extract_gain_map_jpeg_bytes(bytes)?;
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
-    log::debug!(
-        "[HDR] Ultra HDR JPEG_R metadata: {}",
-        gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
-    );
-    let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-    for y in 0..height {
-        for x in 0..width {
-            let sdr_index = (y as usize * width as usize + x as usize) * 4;
-            let gain_value =
-                sample_gain_map_rgb(&gain_rgba, gain_width, gain_height, x, y, width, height);
-            append_hdr_pixel_from_sdr_and_gain(
-                &mut rgba_f32,
-                &sdr_rgba[sdr_index..sdr_index + 4],
-                gain_value,
-                metadata,
-                target_hdr_capacity,
-            );
-        }
+    if iso_gain_map_skips_forward_compose(metadata) {
+        return attach_iso_gain_map_hdr_base_from_primary_rgba8(
+            "JPEG_R", width, height, sdr_rgba, metadata,
+        );
     }
 
-    Ok(HdrImageBuffer {
+    let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
+
+    Ok(compose_ultra_hdr_cpu(
         width,
         height,
-        format: HdrPixelFormat::Rgba32Float,
-        color_space: HdrColorSpace::LinearSrgb,
-        metadata: hdr_metadata_for_ultra_hdr_gain_map(metadata),
-        rgba_f32: Arc::new(rgba_f32),
-    })
+        &sdr_rgba,
+        &gain_rgba,
+        gain_width,
+        gain_height,
+        metadata,
+        hdr_metadata_for_ultra_hdr_gain_map(metadata),
+        target_hdr_capacity,
+    ))
 }
 
 pub(crate) fn apply_orientation_to_hdr_buffer(
@@ -156,6 +168,13 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
 ) -> HdrImageBuffer {
     if orientation <= 1 {
         return buffer;
+    }
+
+    if iso_deferred_from_metadata(&buffer.metadata).is_some() {
+        return crate::hdr::jpeg_gain_map_gpu::apply_orientation_to_iso_deferred_hdr_buffer(
+            buffer,
+            orientation,
+        );
     }
 
     let expected_len = buffer.width as usize * buffer.height as usize * 4;
@@ -234,6 +253,11 @@ impl UltraHdrTiledImageSource {
 
         let gain_map_jpeg = extract_gain_map_jpeg_bytes(&bytes)?;
         let metadata = gain_map_metadata(&gain_map_jpeg)?;
+        if iso_gain_map_skips_forward_compose(metadata) {
+            return Err(
+                "Ultra HDR tiled deferred path requires forward gain-map direction".to_string(),
+            );
+        }
         log::debug!(
             "[HDR] {}: Ultra HDR JPEG_R metadata: {}",
             path.display(),
@@ -288,7 +312,55 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 
     fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<HdrImageBuffer, String> {
-        crate::hdr::tiled::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
+        let (preview_width, preview_height) =
+            crate::hdr::tiled::preview_dimensions(self.width, self.height, max_w, max_h);
+        if preview_width == 0 || preview_height == 0 {
+            return Err("HDR tiled preview dimensions must be non-zero".to_string());
+        }
+
+        let mut rgba_f32 = Vec::with_capacity(preview_width as usize * preview_height as usize * 4);
+        for preview_y in 0..preview_height {
+            let display_y =
+                crate::hdr::tiled::preview_sample_coord(preview_y, preview_height, self.height);
+            for preview_x in 0..preview_width {
+                let display_x =
+                    crate::hdr::tiled::preview_sample_coord(preview_x, preview_width, self.width);
+                let (physical_x, physical_y) = display_to_physical_pixel(
+                    display_x,
+                    display_y,
+                    self.physical_width,
+                    self.physical_height,
+                    self.orientation,
+                );
+                let sdr_index =
+                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
+                let gain_value = sample_gain_map_rgb(
+                    &self.gain_rgba,
+                    self.gain_width,
+                    self.gain_height,
+                    physical_x,
+                    physical_y,
+                    self.physical_width,
+                    self.physical_height,
+                );
+                append_hdr_pixel_from_sdr_and_gain(
+                    &mut rgba_f32,
+                    &self.sdr_rgba[sdr_index..sdr_index + 4],
+                    gain_value,
+                    self.metadata,
+                    self.target_hdr_capacity,
+                );
+            }
+        }
+
+        Ok(HdrImageBuffer {
+            width: preview_width,
+            height: preview_height,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: self.metadata(),
+            rgba_f32: Arc::new(rgba_f32),
+        })
     }
 
     fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
@@ -328,45 +400,29 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
-        for dy in 0..height {
-            for dx in 0..width {
-                let display_x = x + dx;
-                let display_y = y + dy;
-                let (physical_x, physical_y) = display_to_physical_pixel(
-                    display_x,
-                    display_y,
-                    self.physical_width,
-                    self.physical_height,
-                    self.orientation,
-                );
-                let sdr_index =
-                    (physical_y as usize * self.physical_width as usize + physical_x as usize) * 4;
-                let gain_value = sample_gain_map_rgb(
-                    &self.gain_rgba,
-                    self.gain_width,
-                    self.gain_height,
-                    physical_x,
-                    physical_y,
-                    self.physical_width,
-                    self.physical_height,
-                );
-                append_hdr_pixel_from_sdr_and_gain(
-                    &mut rgba_f32,
-                    &self.sdr_rgba[sdr_index..sdr_index + 4],
-                    gain_value,
-                    self.metadata,
-                    self.target_hdr_capacity,
-                );
-            }
-        }
-
-        let tile = Arc::new(HdrTileBuffer::new_with_metadata(
+        let metadata = attach_iso_deferred_tile_metadata(
+            "JPEG_R",
+            Arc::clone(&self.sdr_rgba),
+            Arc::clone(&self.gain_rgba),
+            self.gain_width,
+            self.gain_height,
+            self.metadata,
+            self.target_hdr_capacity,
+            self.physical_width,
+            self.physical_height,
+        );
+        let tile = Arc::new(HdrTileBuffer::new_iso_deferred_tile(
             width,
             height,
             HdrColorSpace::LinearSrgb,
-            hdr_metadata_for_ultra_hdr_gain_map(self.metadata),
-            Arc::new(rgba_f32),
+            metadata,
+            IsoDeferredTileContext {
+                origin_x: x,
+                origin_y: y,
+                physical_width: self.physical_width,
+                physical_height: self.physical_height,
+                orientation: self.orientation,
+            },
         ));
 
         self.tile_cache.lock().insert(key, Arc::clone(&tile));
@@ -375,33 +431,37 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
     }
 }
 
-fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
+pub(crate) fn inspect_ultra_hdr_jpeg_bytes(bytes: &[u8]) -> Result<UltraHdrJpegInfo, String> {
     if !bytes.starts_with(&JPEG_SOI) {
         return Err("not a JPEG stream".to_string());
     }
 
     let mut primary_xmp_has_gain_map = false;
     let mut gain_map_item_count = 0;
+    let mut mpf_has_gain_map = false;
 
-    for segment in primary_metadata_segments(bytes)? {
-        if segment.marker != JPEG_APP1 {
-            continue;
+    let segments = primary_metadata_segments(bytes)?;
+    for segment in segments.iter() {
+        if segment.marker == JPEG_APP1 {
+            let text = String::from_utf8_lossy(segment.payload);
+            if text.contains(HDR_GAIN_MAP_NAMESPACE) && text.contains(HDR_GAIN_MAP_VERSION) {
+                primary_xmp_has_gain_map = true;
+            }
+            gain_map_item_count += text.matches("Item:Semantic=\"GainMap\"").count();
+            gain_map_item_count += text.matches("Item:Semantic='GainMap'").count();
+            gain_map_item_count += text.matches("Semantic=\"GainMap\"").count();
+            gain_map_item_count += text.matches("Semantic='GainMap'").count();
         }
-
-        let text = String::from_utf8_lossy(segment.payload);
-        if text.contains(HDR_GAIN_MAP_NAMESPACE) && text.contains(HDR_GAIN_MAP_VERSION) {
-            primary_xmp_has_gain_map = true;
+        if segment.marker == JPEG_APP2 && mpf_app2_payload_has_gain_map_image(segment.payload) {
+            mpf_has_gain_map = true;
         }
-        gain_map_item_count += text.matches("Item:Semantic=\"GainMap\"").count();
-        gain_map_item_count += text.matches("Item:Semantic='GainMap'").count();
-        gain_map_item_count += text.matches("Semantic=\"GainMap\"").count();
-        gain_map_item_count += text.matches("Semantic='GainMap'").count();
     }
 
     Ok(UltraHdrJpegInfo {
-        is_ultra_hdr: primary_xmp_has_gain_map && gain_map_item_count > 0,
+        is_ultra_hdr: primary_xmp_has_gain_map && (gain_map_item_count > 0 || mpf_has_gain_map),
         primary_xmp_has_gain_map,
         gain_map_item_count,
+        mpf_has_gain_map,
     })
 }
 
@@ -412,7 +472,7 @@ fn hdr_capacity_ratio_from_xmp_headroom(headroom_log2: f32) -> f32 {
     2.0_f32.powf(headroom_log2.max(0.0))
 }
 
-fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
+pub(crate) fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
     let segments = primary_metadata_segments(gain_map_jpeg)?;
     for segment in segments
         .iter()
@@ -432,9 +492,28 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
             continue;
         }
         if attribute_bool(&text, "hdrgm:BaseRenditionIsHDR").unwrap_or(false) {
-            return Err(
-                "Ultra HDR gain map BaseRenditionIsHDR=True is not supported yet".to_string(),
+            let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")
+                .ok_or_else(|| "Ultra HDR gain map metadata missing GainMapMax".to_string())?;
+            let max_gain_map_max = gain_map_max
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let hdr_capacity_min = hdr_capacity_ratio_from_xmp_headroom(
+                attribute_f32(&text, "hdrgm:HDRCapacityMin").unwrap_or(0.0),
             );
+            let hdr_capacity_max = attribute_f32(&text, "hdrgm:HDRCapacityMax")
+                .map(hdr_capacity_ratio_from_xmp_headroom)
+                .unwrap_or_else(|| hdr_capacity_ratio_from_xmp_headroom(max_gain_map_max));
+            return validate_gain_map_metadata(GainMapMetadata {
+                gain_map_min: attribute_rgb_f32(&text, "hdrgm:GainMapMin").unwrap_or([0.0; 3]),
+                gain_map_max,
+                gamma: attribute_rgb_f32(&text, "hdrgm:Gamma").unwrap_or([1.0; 3]),
+                offset_sdr: attribute_rgb_f32(&text, "hdrgm:OffsetSDR").unwrap_or([1.0 / 64.0; 3]),
+                offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
+                hdr_capacity_min,
+                hdr_capacity_max,
+                backward_direction: true,
+            });
         }
         let gain_map_max = attribute_rgb_f32(&text, "hdrgm:GainMapMax")
             .ok_or_else(|| "Ultra HDR gain map metadata missing GainMapMax".to_string())?;
@@ -456,6 +535,7 @@ fn gain_map_metadata(gain_map_jpeg: &[u8]) -> Result<GainMapMetadata, String> {
             offset_hdr: attribute_rgb_f32(&text, "hdrgm:OffsetHDR").unwrap_or([1.0 / 64.0; 3]),
             hdr_capacity_min,
             hdr_capacity_max,
+            backward_direction: false,
         });
     }
 
@@ -513,7 +593,7 @@ fn oriented_dimensions(width: u32, height: u32, orientation: u16) -> (u32, u32) 
     }
 }
 
-fn display_to_physical_pixel(
+pub(crate) fn display_to_physical_pixel(
     display_x: u32,
     display_y: u32,
     physical_width: u32,
@@ -538,7 +618,23 @@ fn display_to_physical_pixel(
     }
 }
 
-fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn extract_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if let Ok(gain_map) = extract_container_gain_map_jpeg_bytes(bytes) {
+        return Ok(gain_map);
+    }
+
+    let mpf_payload = primary_metadata_segments(bytes)?
+        .into_iter()
+        .find(|segment| {
+            segment.marker == JPEG_APP2 && mpf_app2_payload_has_gain_map_image(segment.payload)
+        })
+        .ok_or_else(|| "Ultra HDR gain map location metadata not found".to_string())?
+        .payload;
+
+    extract_mpf_gain_map_jpeg_from_bytes(bytes, mpf_payload)
+}
+
+fn extract_container_gain_map_jpeg_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let length = primary_metadata_segments(bytes)?
         .iter()
         .filter(|segment| segment.marker == JPEG_APP1)
@@ -669,6 +765,140 @@ mod tests {
             .fold(root.to_path_buf(), |path, segment| path.join(segment))
     }
 
+    fn gain_map_samples_root() -> Option<PathBuf> {
+        std::env::var_os("SIV_GAIN_MAP_SAMPLES_DIR")
+            .map(PathBuf::from)
+            .or_else(|| Some(PathBuf::from(r"F:\HDR\GainMap")))
+            .filter(|path| path.is_dir())
+    }
+
+    #[test]
+    fn gain_map_corpus_mpf_jpegs_are_detected_as_ultra_hdr() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping gain map corpus test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+
+        let samples = [
+            "7007688-Edit-2_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC0538-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC0656-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC0796-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC2306-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC3827-Panorama-final_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC4743-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "DSC4752_1000x667_100_3x2_benz12GainMap.jpg",
+            "DSC5182-2-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "DSC5447-Edit_1000x667_100_3x2_benz10GainMap.jpg",
+            "Triad-gain-map.jpg",
+        ];
+
+        for name in samples {
+            let path = root.join(name);
+            if !path.is_file() {
+                eprintln!("skipping gain map sample {}; file missing", path.display());
+                continue;
+            }
+
+            let info = inspect_ultra_hdr_jpeg(&path).expect("inspect gain map JPEG");
+            assert!(
+                info.is_ultra_hdr,
+                "{} should be detected as Ultra HDR",
+                path.display()
+            );
+            assert!(
+                info.primary_xmp_has_gain_map,
+                "{} should advertise hdrgm metadata",
+                path.display()
+            );
+            assert!(
+                info.gain_map_item_count >= 1 || info.mpf_has_gain_map,
+                "{} should locate a gain map via GContainer or MPF",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn production_decode_defers_gain_map_compose_to_gpu() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping deferred decode test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+        let path = root.join("Triad-gain-map.jpg");
+        if !path.is_file() {
+            eprintln!("skipping deferred decode test; {} missing", path.display());
+            return;
+        }
+
+        let file = std::fs::File::open(&path).expect("open gain map JPEG");
+        let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap gain map JPEG") };
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+
+        let deferred = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity)
+            .expect("deferred Ultra HDR decode");
+        assert!(
+            deferred.rgba_f32.is_empty(),
+            "production decode should defer HDR pixels"
+        );
+        let gain_map = deferred
+            .metadata
+            .gain_map
+            .as_ref()
+            .expect("gain map metadata");
+        let iso_deferred = gain_map
+            .iso_deferred
+            .as_ref()
+            .expect("jpeg deferred GPU source");
+        assert_eq!(
+            iso_deferred.sdr_rgba.len(),
+            deferred.width as usize * deferred.height as usize * 4
+        );
+        assert!(iso_deferred.gain_width > 0 && iso_deferred.gain_height > 0);
+
+        let (_, _, baseline_sdr) = libjpeg_turbo::decode_to_rgba(&bytes).expect("baseline SDR");
+        assert_eq!(iso_deferred.sdr_rgba.as_slice(), baseline_sdr.as_slice());
+
+        let composed = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, capacity)
+            .expect("CPU compose reference");
+        assert!(
+            composed
+                .rgba_f32
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+            "CPU reference should still recover HDR highlights"
+        );
+    }
+
+    #[test]
+    fn gain_map_corpus_decodes_to_hdr_float_buffer() {
+        let Some(root) = gain_map_samples_root() else {
+            eprintln!("skipping gain map corpus test; set SIV_GAIN_MAP_SAMPLES_DIR");
+            return;
+        };
+
+        for name in [
+            "DSC2306-Edit_1000x667_100_3x2__benz8GainMap.jpg",
+            "Triad-gain-map.jpg",
+        ] {
+            let path = root.join(name);
+            if !path.is_file() {
+                eprintln!("skipping gain map decode test; {} missing", path.display());
+                continue;
+            }
+
+            let hdr = decode_ultra_hdr_jpeg(&path).expect("decode gain map JPEG");
+            assert_eq!(hdr.format, crate::hdr::types::HdrPixelFormat::Rgba32Float);
+            assert!(
+                hdr.rgba_f32
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[0] > 1.0 || pixel[1] > 1.0 || pixel[2] > 1.0),
+                "{} should recover highlights above SDR white",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn ultra_hdr_original_samples_are_detected_as_jpeg_r() {
         let Some(root) = ultra_hdr_samples_root() else {
@@ -718,6 +948,7 @@ mod tests {
         assert!(!info.is_ultra_hdr);
         assert!(!info.primary_xmp_has_gain_map);
         assert_eq!(info.gain_map_item_count, 0);
+        assert!(!info.mpf_has_gain_map);
     }
 
     #[test]
@@ -827,21 +1058,47 @@ mod tests {
         }
 
         let low = UltraHdrTiledImageSource::open_with_target_capacity(path.clone(), 1, 1.0)
-            .expect("open low-capacity Ultra HDR tiled source")
-            .extract_tile_rgba32f_arc(0, 0, 64, 64)
-            .expect("extract low-capacity tile");
+            .expect("open low-capacity Ultra HDR tiled source");
         let high = UltraHdrTiledImageSource::open_with_target_capacity(path, 1, 8.0)
-            .expect("open high-capacity Ultra HDR tiled source")
-            .extract_tile_rgba32f_arc(0, 0, 64, 64)
-            .expect("extract high-capacity tile");
+            .expect("open high-capacity Ultra HDR tiled source");
+        let low_rgba = compose_ultra_hdr_tile_region_cpu(
+            64,
+            64,
+            0,
+            0,
+            low.physical_width,
+            low.physical_height,
+            low.orientation,
+            low.sdr_rgba.as_slice(),
+            low.gain_rgba.as_slice(),
+            low.gain_width,
+            low.gain_height,
+            low.metadata,
+            low.target_hdr_capacity,
+            display_to_physical_pixel,
+        );
+        let high_rgba = compose_ultra_hdr_tile_region_cpu(
+            64,
+            64,
+            0,
+            0,
+            high.physical_width,
+            high.physical_height,
+            high.orientation,
+            high.sdr_rgba.as_slice(),
+            high.gain_rgba.as_slice(),
+            high.gain_width,
+            high.gain_height,
+            high.metadata,
+            high.target_hdr_capacity,
+            display_to_physical_pixel,
+        );
 
-        let low_peak = low
-            .rgba_f32
+        let low_peak = low_rgba
             .chunks_exact(4)
             .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
             .fold(0.0_f32, f32::max);
-        let high_peak = high
-            .rgba_f32
+        let high_peak = high_rgba
             .chunks_exact(4)
             .map(|pixel| pixel[0].max(pixel[1]).max(pixel[2]))
             .fold(0.0_f32, f32::max);
@@ -933,6 +1190,7 @@ mod tests {
             offset_hdr: [0.04, 0.05, 0.06],
             hdr_capacity_min: 1.25,
             hdr_capacity_max: 4.5,
+            backward_direction: false,
         };
 
         let diagnostic = gain_map_metadata_diagnostic(metadata, 3.0);
@@ -947,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn gain_map_metadata_rejects_hdr_base_rendition() {
+    fn gain_map_metadata_sets_backward_for_hdr_base_rendition() {
         let gain_map_jpeg = minimal_jpeg_with_app1_xmp(
             r#"
             <rdf:Description
@@ -958,13 +1216,66 @@ mod tests {
         "#,
         );
 
-        let err =
-            gain_map_metadata(&gain_map_jpeg).expect_err("HDR base gain maps are unsupported");
+        let metadata =
+            gain_map_metadata(&gain_map_jpeg).expect("HDR base gain map metadata should parse");
 
-        assert!(
-            err.contains("BaseRenditionIsHDR"),
-            "unexpected error message: {err}"
+        assert!(metadata.backward_direction);
+    }
+
+    #[test]
+    fn gain_map_metadata_parses_iso_backward_direction() {
+        let mut iso = Vec::new();
+        write_iso_common_denominator_metadata(
+            &mut iso,
+            10,
+            20,
+            0,
+            &[(0, 30, 10, 0, 0), (1, 31, 11, 1, 1), (2, 32, 12, 2, 2)],
         );
+        iso[4] = 0b0000_1100; // backward + common denominator
+        let gain_map_jpeg = minimal_jpeg_with_app1_xmp_and_app2_iso(
+            r#"
+            <rdf:Description
+              xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"
+              hdrgm:Version="1.0"
+              hdrgm:GainMapMax="1.0"/>
+        "#,
+            &iso,
+        );
+
+        let metadata = gain_map_metadata(&gain_map_jpeg).expect("parse ISO backward metadata");
+        assert!(metadata.backward_direction);
+    }
+
+    #[test]
+    fn attach_iso_hdr_base_skips_iso_deferred() {
+        let mut iso = Vec::new();
+        write_iso_common_denominator_metadata(
+            &mut iso,
+            10,
+            20,
+            0,
+            &[(0, 30, 10, 0, 0), (1, 31, 11, 1, 1), (2, 32, 12, 2, 2)],
+        );
+        iso[4] = 0b0000_1100;
+        let metadata = gain_map_metadata(&minimal_jpeg_with_app1_xmp_and_app2_iso(
+            r#"<rdf:Description xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" hdrgm:Version="1.0"/>"#,
+            &iso,
+        ))
+        .expect("parse ISO backward metadata");
+
+        let hdr = attach_iso_gain_map_hdr_base_from_primary_rgba8(
+            "JPEG_R",
+            1,
+            1,
+            vec![255, 128, 64, 255],
+            metadata,
+        )
+        .expect("attach hdr base");
+
+        assert_eq!(hdr.rgba_f32.len(), 4);
+        assert!(iso_deferred_from_metadata(&hdr.metadata).is_none());
+        assert_eq!(hdr.metadata.transfer_function, HdrTransferFunction::Linear);
     }
 
     #[test]
@@ -1054,6 +1365,7 @@ mod tests {
             offset_hdr: [0.10; 3],
             hdr_capacity_min: 0.0,
             hdr_capacity_max: 2.0,
+            backward_direction: false,
         };
 
         let recovered = recover_hdr_channel_from_sdr_and_gain(255, 0.25, metadata, 0, 2.0);
@@ -1115,6 +1427,7 @@ mod tests {
             // Ratios 2^0 .. 2^2 so log₂ headroom interpolates like libavif `avifGetGainMapWeight`.
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 4.0,
+            backward_direction: false,
         };
 
         assert_eq!(gain_map_weight(metadata, 0.5), 0.0);
@@ -1132,6 +1445,7 @@ mod tests {
             offset_hdr: [0.0; 3],
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 4.0,
+            backward_direction: false,
         };
         let sdr = [255, 255, 255, 255];
 
@@ -1158,6 +1472,7 @@ mod tests {
             offset_hdr: [0.0; 3],
             hdr_capacity_min: 1.0,
             hdr_capacity_max: 8.0,
+            backward_direction: false,
         };
         let mut rgba = Vec::new();
 
@@ -1210,7 +1525,7 @@ mod tests {
                     gain_map_metadata_diagnostic(meta, capacity)
                 );
             }
-            if let Ok(hdr) = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, capacity) {
+            if let Ok(hdr) = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, capacity) {
                 let cx = hdr.width as usize / 2;
                 let cy = hdr.height as usize / 2;
                 let i = (cy * hdr.width as usize + cx) * 4;
@@ -1256,9 +1571,9 @@ mod tests {
         let file = std::fs::File::open(&path).expect("open Ultra HDR sample");
         let bytes = unsafe { memmap2::Mmap::map(&file).expect("mmap Ultra HDR sample") };
 
-        let low = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 1.0)
+        let low = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, 1.0)
             .expect("decode low-capacity Ultra HDR");
-        let high = decode_ultra_hdr_jpeg_bytes_with_target_capacity(&bytes, 8.0)
+        let high = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, 8.0)
             .expect("decode high-capacity Ultra HDR");
 
         let low_peak = low

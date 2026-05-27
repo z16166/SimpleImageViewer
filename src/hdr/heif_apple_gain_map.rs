@@ -32,6 +32,8 @@ const APPLE_MAKERNOTE_SIGNATURE: &[u8] = b"Apple iOS\0";
 const APPLE_MAKERNOTE_TIFF_OFFSET: usize = 12;
 const APPLE_HDR_HEADROOM_MIN: f32 = 0.1;
 const APPLE_HDR_HEADROOM_MAX: f32 = 10.0;
+/// Apple reference allows HDR gain above headroom span in extreme lighting.
+const APPLE_HDR_GAIN_MAX: f32 = 15.0;
 const APPLE_HDR_DEFAULT_STOPS: f32 = 2.0;
 
 // Piecewise-linear coefficients from Apple's reference implementation:
@@ -152,6 +154,7 @@ pub(crate) fn apply_apple_gain_map_composition(
         ),
         capped_display_referred: false,
         apple_heic_deferred: None,
+        iso_deferred: None,
     });
 
     HdrImageBuffer {
@@ -314,10 +317,21 @@ pub(crate) fn parse_apple_embedded_manual(tiff: &[u8], tiff_offset: usize) -> Op
         };
 
         let val = try_rational(val_bytes, is_be)
-            .filter(|v| (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v))
+            .filter(|v| {
+                if tag == EXIF_TAG_APPLE_HDR_GAIN {
+                    (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_GAIN_MAX).contains(v)
+                } else {
+                    (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v)
+                }
+            })
             .or_else(|| {
-                try_rational(val_bytes, !is_be)
-                    .filter(|v| (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v))
+                try_rational(val_bytes, !is_be).filter(|v| {
+                    if tag == EXIF_TAG_APPLE_HDR_GAIN {
+                        (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_GAIN_MAX).contains(v)
+                    } else {
+                        (APPLE_HDR_HEADROOM_MIN..=APPLE_HDR_HEADROOM_MAX).contains(v)
+                    }
+                })
             });
 
         if let Some(v) = val {

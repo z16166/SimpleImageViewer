@@ -3,6 +3,27 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.2.0] - 2026-05-25
+
+### Added
+- **Ultra HDR JPEG (gain map)**: Compatible phone and camera JPEGs with an ISO gain map can use **GPU-accelerated HDR compose** on HDR-capable displays, including **MPF-embedded** gain maps that were previously missed.
+- **Large Ultra HDR JPEGs**: Very large tiled Ultra HDR photos can compose gain maps on the **GPU tile path**, so 8K-class images stay responsive when you adjust HDR headroom.
+- **AVIF HDR gain map**: AVIF stills and animations with ISO gain maps route through the same **GPU-deferred compose** path as JPEG and HEIC, with animated AVIF sequences presented on the HDR float plane.
+- **JPEG XL HDR gain map**: JPEG XL files carrying an ISO **`jhgm`** box defer gain-map compose to the GPU; precomposed Adobe **`base_hdr`** primaries display directly without a redundant forward compose pass.
+
+### Fixed
+- **Ultra HDR JPEG variants**: **ISO backward-compatible** and **BaseRenditionIsHDR** payloads decode and compose correctly instead of mis-reading the primary as SDR baseline.
+- **AVIF without alpha**: Stills missing an alpha plane no longer show incorrect transparency after HDR decode.
+- **AVIF colour (unspecified CICP)**: Unspecified colour metadata no longer blocks sensible HDR gain-map handling on typical phone and browser-style AVIFs.
+- **HDR animations**: The first frame after opening an animated HDR asset now uses the **float HDR plane** immediately; exposure adjustments apply without waiting for a second navigation step.
+- **HDR upscaling**: Bilinear sampling on the HDR plane reduces jagged edges when zoomed or upscaled.
+- **JPEG XL Adobe HDR base**: Precomposed **`base_hdr`** JPEG XL masters no longer look incorrectly dim relative to their embedded HDR primary.
+- **Tiled HDR tone mapping**: Large tiled HDR canvases tone-map consistently when the GPU compose path is active.
+
+### Improved
+- **Gain-map performance and memory**: Opening and scrubbing HDR headroom on gain-map JPEG, AVIF, HEIC, and JXL assets avoids redundant CPU compose and large buffer copies where the GPU deferred path applies; SDR fallback paths reuse shared buffers instead of cloning full frames.
+
+
 ## [2.1.5] - 2026-05-25
 
 ### Added

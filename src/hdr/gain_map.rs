@@ -29,6 +29,8 @@ pub(crate) struct GainMapMetadata {
     pub(crate) offset_hdr: [f32; 3],
     pub(crate) hdr_capacity_min: f32,
     pub(crate) hdr_capacity_max: f32,
+    /// ISO `ISO_BACKWARD_DIRECTION_FLAG` or Adobe `hdrgm:BaseRenditionIsHDR=True`: primary stores HDR base.
+    pub(crate) backward_direction: bool,
 }
 
 pub(crate) fn iso_gain_map_metadata(payload: &[u8]) -> Option<Result<GainMapMetadata, String>> {
@@ -47,9 +49,6 @@ pub(crate) fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMeta
     }
     let _writer_version = reader.read_u16()?;
     let flags = reader.read_u8()?;
-    if flags & ISO_BACKWARD_DIRECTION_FLAG != 0 {
-        return Err("ISO 21496-1 HDR base gain maps are not supported yet".to_string());
-    }
 
     let channel_count = if flags & ISO_MULTI_CHANNEL_FLAG != 0 {
         3
@@ -92,7 +91,19 @@ pub(crate) fn parse_iso_gain_map_metadata(metadata: &[u8]) -> Result<GainMapMeta
         }
     }
 
-    fraction.into_gain_map_metadata()
+    fraction.into_gain_map_metadata(flags)
+}
+
+/// Skip forward SDR→HDR compose; display the primary codestream as the HDR base rendition.
+pub(crate) fn iso_gain_map_skips_forward_compose(metadata: GainMapMetadata) -> bool {
+    metadata.backward_direction || iso_gain_map_primary_is_precomposed_hdr(metadata)
+}
+
+/// Primary codestream already stores the high-headroom rendition (Adobe `*_base_hdr.jxl` layout:
+/// ISO `base_hdr_headroom` ≫ `alternate_hdr_headroom`). Forward SDR→HDR compose would treat those
+/// floats as an SDR baseline and recover HDR again.
+pub(crate) fn iso_gain_map_primary_is_precomposed_hdr(metadata: GainMapMetadata) -> bool {
+    metadata.hdr_capacity_min > metadata.hdr_capacity_max * 1.001
 }
 
 pub(crate) fn validate_gain_map_metadata(
@@ -249,7 +260,11 @@ pub(crate) fn luminance_hints_from_gain_map(
 ) -> crate::hdr::types::HdrLuminanceMetadata {
     use crate::hdr::types::{DEFAULT_SDR_WHITE_NITS, HdrLuminanceMetadata};
 
-    let peak_ratio = metadata.hdr_capacity_max.max(f32::MIN_POSITIVE);
+    let peak_ratio = if metadata.backward_direction {
+        metadata.hdr_capacity_min.max(f32::MIN_POSITIVE)
+    } else {
+        metadata.hdr_capacity_max.max(f32::MIN_POSITIVE)
+    };
     let peak_nits = peak_ratio * DEFAULT_SDR_WHITE_NITS;
     HdrLuminanceMetadata {
         mastering_max_nits: Some(peak_nits),
@@ -267,6 +282,9 @@ pub(crate) fn sample_gain_map_rgb(
     height: u32,
 ) -> [f32; 3] {
     if gain_width == 0 || gain_height == 0 || width == 0 || height == 0 {
+        return [0.0; 3];
+    }
+    if validate_gain_map_rgba_len(gain_rgba, gain_width, gain_height).is_err() {
         return [0.0; 3];
     }
 
@@ -312,8 +330,19 @@ impl Default for IsoGainMapFraction {
     }
 }
 
+pub(crate) fn primary_srgb_rgba8_to_linear_rgba_f32(rgba: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_u8_to_linear_f32(chunk[0]));
+        out.push(srgb_u8_to_linear_f32(chunk[1]));
+        out.push(srgb_u8_to_linear_f32(chunk[2]));
+        out.push(f32::from(chunk[3]) / 255.0);
+    }
+    out
+}
+
 impl IsoGainMapFraction {
-    pub(crate) fn into_gain_map_metadata(self) -> Result<GainMapMetadata, String> {
+    pub(crate) fn into_gain_map_metadata(self, flags: u8) -> Result<GainMapMetadata, String> {
         let mut gain_map_min = [0.0; 3];
         let mut gain_map_max = [0.0; 3];
         let mut gamma = [1.0; 3];
@@ -336,6 +365,7 @@ impl IsoGainMapFraction {
             offset_hdr,
             hdr_capacity_min: 2.0_f32.powf(unsigned_fraction(self.base_hdr_headroom)?),
             hdr_capacity_max: 2.0_f32.powf(unsigned_fraction(self.alternate_hdr_headroom)?),
+            backward_direction: flags & ISO_BACKWARD_DIRECTION_FLAG != 0,
         })
     }
 }
@@ -363,6 +393,66 @@ fn srgb_u8_to_linear_f32(value: u8) -> f32 {
     }
 }
 
+pub(crate) fn gain_map_rgba_byte_len(gain_width: u32, gain_height: u32) -> Option<usize> {
+    gain_width
+        .checked_mul(gain_height)?
+        .checked_mul(4)
+        .map(|n| n as usize)
+}
+
+pub(crate) fn validate_gain_map_rgba_len(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+) -> Result<(), String> {
+    if gain_width == 0 || gain_height == 0 {
+        return Err(format!(
+            "gain map dimensions must be non-zero: {gain_width}x{gain_height}"
+        ));
+    }
+    let expected = gain_map_rgba_byte_len(gain_width, gain_height)
+        .ok_or_else(|| format!("gain map dimensions overflow: {gain_width}x{gain_height}"))?;
+    if gain_rgba.len() != expected {
+        return Err(format!(
+            "gain map RGBA length mismatch: got {}, expected {} for {}x{}",
+            gain_rgba.len(),
+            expected,
+            gain_width,
+            gain_height
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_iso_deferred_planes(
+    width: u32,
+    height: u32,
+    sdr_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    gain_rgba: &[u8],
+) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "primary dimensions must be non-zero: {width}x{height}"
+        ));
+    }
+    let primary_expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| format!("primary dimension overflow: {width}x{height}"))?;
+    if sdr_rgba.len() != primary_expected {
+        return Err(format!(
+            "SDR baseline RGBA length mismatch: got {}, expected {} for {}x{}",
+            sdr_rgba.len(),
+            primary_expected,
+            width,
+            height
+        ));
+    }
+    validate_gain_map_rgba_len(gain_rgba, gain_width, gain_height)
+}
+
 fn gain_map_channel(
     gain_rgba: &[u8],
     gain_width: u32,
@@ -370,8 +460,12 @@ fn gain_map_channel(
     y: u32,
     channel_index: usize,
 ) -> f32 {
-    let index = (y as usize * gain_width as usize + x as usize) * 4;
-    f32::from(gain_rgba[index + channel_index.min(2)]) / 255.0
+    let ch = channel_index.min(2);
+    let index = (y as usize * gain_width as usize + x as usize) * 4 + ch;
+    if index >= gain_rgba.len() {
+        return 0.0;
+    }
+    f32::from(gain_rgba[index]) / 255.0
 }
 
 /// Horizontal and vertical bilinear tap indices/weights for one primary pixel.
@@ -481,7 +575,9 @@ impl<'a> ByteReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_gain_map_pixel, luminance_hints_from_gain_map, parse_iso_gain_map_metadata,
+        GainMapMetadata, compose_gain_map_pixel, iso_gain_map_primary_is_precomposed_hdr,
+        iso_gain_map_skips_forward_compose, luminance_hints_from_gain_map,
+        parse_iso_gain_map_metadata,
     };
     use crate::hdr::types::DEFAULT_SDR_WHITE_NITS;
 
@@ -502,14 +598,37 @@ mod tests {
     }
 
     #[test]
+    fn iso_gain_map_metadata_parses_backward_direction() {
+        let mut blob = minimal_iso_metadata();
+        blob[4] = 0b0000_1100; // backward + common denominator
+        let metadata = parse_iso_gain_map_metadata(&blob).expect("parse");
+        assert!(metadata.backward_direction);
+        assert!(iso_gain_map_skips_forward_compose(metadata));
+    }
+
+    #[test]
     fn iso_gain_map_metadata_expands_single_channel_values() {
         let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
 
+        assert!(!metadata.backward_direction);
         assert_eq!(metadata.gain_map_min, [0.0; 3]);
         assert_eq!(metadata.gain_map_max, [2.0; 3]);
         assert_eq!(metadata.gamma, [1.0; 3]);
         assert_eq!(metadata.hdr_capacity_min, 1.0);
         assert_eq!(metadata.hdr_capacity_max, 4.0);
+    }
+
+    #[test]
+    fn iso_gain_map_primary_is_precomposed_hdr_when_base_headroom_exceeds_alternate() {
+        let metadata = parse_iso_gain_map_metadata(&minimal_iso_metadata()).expect("parse");
+        assert!(!iso_gain_map_primary_is_precomposed_hdr(metadata));
+
+        let inverted = GainMapMetadata {
+            hdr_capacity_min: 16.0,
+            hdr_capacity_max: 1.0,
+            ..metadata
+        };
+        assert!(iso_gain_map_primary_is_precomposed_hdr(inverted));
     }
 
     #[test]

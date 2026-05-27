@@ -15,19 +15,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #[cfg(feature = "avif-native")]
-use crate::hdr::decode::{
-    decode_transfer_to_display_linear, linear_primary_to_linear_srgb, linear_srgb_linear_to_srgb_u8,
+use crate::hdr::avif_gain_map_deferred::{
+    attach_avif_gain_map_gpu_deferred, avif_build_iso_sdr_baseline_rgba8,
 };
 #[cfg(feature = "avif-native")]
 use crate::hdr::gain_map::{
-    GainMapMetadata, IsoGainMapFraction, append_hdr_pixel_from_sdr_and_gain,
-    gain_map_metadata_diagnostic, sample_gain_map_rgb,
-};
-#[cfg(feature = "avif-native")]
-use crate::hdr::types::{
-    DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat,
+    GainMapMetadata, IsoGainMapFraction, iso_gain_map_skips_forward_compose,
 };
 use crate::hdr::types::{HdrColorProfile, HdrImageMetadata, HdrReference, HdrTransferFunction};
+#[cfg(feature = "avif-native")]
+use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 #[cfg(feature = "avif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "avif-native")]
@@ -60,19 +57,12 @@ fn libavif_result_to_string(result: libavif_sys::avifResult) -> String {
     }
 }
 
-/// Decode an AVIF **image sequence** (`moov` / `avis`) into SDR RGBA8 frames + delays for the
-/// existing animated-image pipeline. `bytes` must stay alive for the whole parse (libavif keeps a
-/// pointer). Returns `Ok(None)` if the file is not a multi-frame track sequence (caller uses static HDR decode).
-///
-/// **Playback:** the shared animation UI loops forever (like typical GIF viewing). We do **not** read
-/// or apply libavif’s `repetitionCount` from the bitstream.
+/// Open an AVIF **image sequence** (`moov` / `avis`) for frame-by-frame decode.
+/// Returns `Ok(None)` when the file is not a multi-frame track sequence.
 #[cfg(feature = "avif-native")]
-pub(crate) fn try_decode_avif_image_sequence_sdr(
+fn avif_open_image_sequence_decoder(
     bytes: &[u8],
-) -> Result<Option<Vec<(std::time::Duration, u32, u32, Vec<u8>)>>, String> {
-    use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
-    use std::time::Duration;
-
+) -> Result<Option<(libavif_sys::AvifDecoderOwned, usize)>, String> {
     let Some(decoder) = libavif_sys::AvifDecoderOwned::new() else {
         return Err("Failed to create libavif decoder".to_string());
     };
@@ -129,6 +119,26 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
 
     let count =
         usize::try_from(count).map_err(|_| "libavif imageCount does not fit usize".to_string())?;
+    Ok(Some((decoder, count)))
+}
+
+/// Decode an AVIF **image sequence** into per-frame HDR buffers for [`ImageData::HdrAnimated`].
+/// `bytes` must stay alive for the whole parse (libavif keeps a pointer). Returns `Ok(None)` if
+/// the file is not a multi-frame track sequence (caller uses static HDR decode).
+///
+/// **Playback:** the shared animation UI loops forever (like typical GIF viewing). We do **not** read
+/// or apply libavif’s `repetitionCount` from the bitstream.
+#[cfg(feature = "avif-native")]
+pub(crate) fn try_decode_avif_image_sequence_hdr(
+    bytes: &[u8],
+    target_hdr_capacity: f32,
+) -> Result<Option<Vec<(std::time::Duration, HdrImageBuffer)>>, String> {
+    use crate::constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS};
+    use std::time::Duration;
+
+    let Some((decoder, count)) = avif_open_image_sequence_decoder(bytes)? else {
+        return Ok(None);
+    };
 
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
@@ -150,11 +160,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         if img_ptr.is_null() {
             return Err("libavif decoder image is null".to_string());
         }
-        let img_ref = unsafe { &*img_ptr };
-        if img_ref.width == 0 || img_ref.height == 0 {
-            return Err("libavif sequence frame has zero size".to_string());
-        }
-        let rgba = decode_avif_image_rgba8_packed(img_ptr, img_ref, &libavif_result_to_string)?;
+        let hdr = avif_image_to_hdr_buffer(img_ptr, target_hdr_capacity)?;
 
         let delay_ms = (timing.duration * 1000.0)
             .round()
@@ -164,12 +170,7 @@ pub(crate) fn try_decode_avif_image_sequence_sdr(
         } else {
             delay_ms
         };
-        frames.push((
-            Duration::from_millis(delay_ms as u64),
-            img_ref.width,
-            img_ref.height,
-            rgba,
-        ));
+        frames.push((Duration::from_millis(delay_ms as u64), hdr));
     }
 
     Ok(Some(frames))
@@ -384,7 +385,17 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     // SAFETY: `image_ptr` is only set from `AvifImageOwned::into_raw()` after
     // `avifDecoderReadMemory` succeeds — caller-owned empty image, not `siv_avif_decoder_get_image`.
     let image = unsafe { libavif_sys::AvifImageOwned::from_owned_raw_non_null(image_ptr) };
-    let image_ref = unsafe { &*image.as_ptr() };
+    avif_image_to_hdr_buffer(image.as_ptr(), target_hdr_capacity)
+}
+
+/// Convert a decoded [`libavif_sys::avifImage`] (static read or sequence frame) into an
+/// [`HdrImageBuffer`]. Safe on decoder-owned images: YUV→RGB relaxations restore CICP snapshots.
+#[cfg(feature = "avif-native")]
+fn avif_image_to_hdr_buffer(
+    image: *mut libavif_sys::avifImage,
+    target_hdr_capacity: f32,
+) -> Result<HdrImageBuffer, String> {
+    let image_ref = unsafe { &*image };
     if image_ref.width == 0 || image_ref.height == 0 {
         return Err("libavif decoded zero-sized image".to_string());
     }
@@ -399,64 +410,6 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         image_ref.yuvRange == libavif_sys::AVIF_RANGE_FULL,
     )
     .with_clli(image_ref.clli.maxCLL, image_ref.clli.maxPALL);
-
-    // Prefer AOMedia **libavif** `avifImageApplyGainMap` (`gainmap.c`): same YUV→RGB + tone map
-    // path as the public API. `hdrHeadroom` is **log₂( HDR white / SDR white )** per `avif.h`.
-    //
-    // Output transfer is **PQ (SMPTE 2084)**, NOT linear: libavif's `avifToGammaLinear` is
-    // `AVIF_CLAMP(x, 0, 1)`, which destroys HDR highlights (mid-gray after gain → ≥1 → clipped to
-    // white). PQ encodes libavif's "extended SDR linear" (1.0 = 203 nits) into [0,1] without
-    // clipping, and our WGSL `pq_to_display_linear` decodes back to "1.0 = SDR white" linear.
-    if !image_ref.gainMap.is_null() {
-        let gain_map_ref = unsafe { &*image_ref.gainMap };
-        if let Ok(gain_metadata) = avif_gain_map_to_metadata(gain_map_ref) {
-            let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
-            match avif_image_tone_map_pq_rgba32f(
-                image.as_ptr(),
-                image_ref.gainMap,
-                target_hdr_capacity,
-                &libavif_result_to_string,
-            ) {
-                Ok(rgba_f32) => {
-                    let luminance = metadata.luminance;
-                    let mut metadata = HdrImageMetadata {
-                        transfer_function: HdrTransferFunction::Pq,
-                        reference: HdrReference::DisplayReferred,
-                        color_profile: HdrColorProfile::Cicp {
-                            color_primaries: 1,           // BT.709 (sRGB primaries)
-                            transfer_characteristics: 16, // PQ
-                            matrix_coefficients: 0,
-                            full_range: true,
-                        },
-                        luminance,
-                        gain_map: None,
-                    };
-                    metadata.gain_map = Some(HdrGainMapMetadata {
-                        source: "AVIF",
-                        target_hdr_capacity: Some(target_hdr_capacity),
-                        diagnostic: format!(
-                            "{diagnostic} (libavif avifImageApplyGainMap → PQ BT.709)"
-                        ),
-                        capped_display_referred: false,
-                        apple_heic_deferred: None,
-                    });
-                    return Ok(HdrImageBuffer {
-                        width: image_ref.width,
-                        height: image_ref.height,
-                        format: HdrPixelFormat::Rgba32Float,
-                        color_space: HdrColorSpace::LinearSrgb,
-                        metadata,
-                        rgba_f32: Arc::new(rgba_f32),
-                    });
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[HDR] libavif avifImageApplyGainMap failed: {err}; using software gain-map path"
-                    );
-                }
-            }
-        }
-    }
 
     // **BT.2020 matrix 10** (constant luminance): libavif’s `reformat.c` has **no** dedicated
     // YUV→RGB matrix for CL — it uses an **explicit fallback to BT.2020 NCL (9)** for conversion,
@@ -480,86 +433,43 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
         );
     }
 
-    let (rgba_u16, rgb_out_depth) =
-        decode_avif_image_rgba_u16(image.as_ptr(), image_ref, &libavif_result_to_string)?;
+    let (mut rgba_u16, rgb_out_depth) =
+        decode_avif_image_rgba_u16(image, image_ref, &libavif_result_to_string)?;
+    avif_fill_opaque_alpha_u16_if_no_alpha_plane(&mut rgba_u16, rgb_out_depth, image_ref);
 
     let metadata = avif_yuv_to_rgb_output_metadata(&metadata, image_ref);
     let color_space = metadata.color_space_hint();
 
-    // Software fallback (e.g. ICC + gain map: `avifImageApplyGainMap` returns NOT_IMPLEMENTED).
+    // ISO gain map: defer compose to GPU (SDR baseline + gain planes + `jpeg_compose_gpu`).
     // Base RGB from `avifImageYUVToRGB` uses the image CICP transfer before ISO gain-map recovery.
     if let Some((gain_metadata, gain_width, gain_height, gain_rgba)) =
         decode_avif_gain_map(image_ref, &libavif_result_to_string)
     {
-        let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
-        let mut rgba_f32 =
-            Vec::with_capacity(image_ref.width as usize * image_ref.height as usize * 4);
-        // We requested `rgb.depth = 16` from libavif, so values are always in [0, 65535] regardless
-        // of source AVIF bit depth. Using `image_ref.depth` here is the bug that made an 8-bit AVIF
-        // ~257x too bright (`paris_icc_exif_xmp.avif`, observed ~8 EV over reference).
-        let scale = rgb_channel_max_f(rgb_out_depth);
-        let sdr_white = DEFAULT_SDR_WHITE_NITS;
-        for y in 0..image_ref.height {
-            for x in 0..image_ref.width {
-                let index = (y as usize * image_ref.width as usize + x as usize) * 4;
-                let r = rgba_u16[index] as f32 / scale;
-                let g = rgba_u16[index + 1] as f32 / scale;
-                let b = rgba_u16[index + 2] as f32 / scale;
-                let rgb_display_linear = decode_transfer_to_display_linear(
-                    [r, g, b],
-                    metadata.transfer_function,
-                    sdr_white,
-                );
-                let rgb_linear_srgb =
-                    linear_primary_to_linear_srgb(rgb_display_linear, color_space, &metadata);
-                let sdr_rgba = [
-                    linear_srgb_linear_to_srgb_u8(rgb_linear_srgb[0]),
-                    linear_srgb_linear_to_srgb_u8(rgb_linear_srgb[1]),
-                    linear_srgb_linear_to_srgb_u8(rgb_linear_srgb[2]),
-                    (rgba_u16[index + 3] as f32 / scale * 255.0_f32)
-                        .round()
-                        .clamp(0.0, 255.0) as u8,
-                ];
-                let gain_value = sample_gain_map_rgb(
-                    &gain_rgba,
-                    gain_width,
-                    gain_height,
-                    x,
-                    y,
-                    image_ref.width,
-                    image_ref.height,
-                );
-                append_hdr_pixel_from_sdr_and_gain(
-                    &mut rgba_f32,
-                    &sdr_rgba,
-                    gain_value,
-                    gain_metadata,
-                    target_hdr_capacity,
-                );
-            }
+        if iso_gain_map_skips_forward_compose(gain_metadata) {
+            log::debug!(
+                "[HDR] AVIF gain map: primary is HDR base (backward or inverted HDRCapacity); skipping forward compose"
+            );
+        } else {
+            let sdr_rgba = avif_build_iso_sdr_baseline_rgba8(
+                &rgba_u16,
+                rgb_out_depth,
+                image_ref.width,
+                image_ref.height,
+                &metadata,
+                color_space,
+            );
+            return Ok(attach_avif_gain_map_gpu_deferred(
+                image_ref.width,
+                image_ref.height,
+                sdr_rgba,
+                gain_width,
+                gain_height,
+                gain_rgba,
+                gain_metadata,
+                metadata.luminance,
+                target_hdr_capacity,
+            )?);
         }
-        // `append_hdr_pixel_from_sdr_and_gain` produces **linear sRGB** floats (same model as Ultra HDR JPEG).
-        // The AVIF container still carries PQ + BT.2020 CICP for the coded base; if we keep that on
-        // `metadata`, the HDR plane WGSL runs PQ EOTF on pixels that are already linear → blown highlights
-        // on NativeHdr displays. Override to linear sRGB like `decode_ultra_hdr_jpeg_bytes_with_target_capacity`.
-        let luminance = metadata.luminance;
-        let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
-        metadata.luminance = luminance;
-        metadata.gain_map = Some(HdrGainMapMetadata {
-            source: "AVIF",
-            target_hdr_capacity: Some(target_hdr_capacity),
-            diagnostic,
-            capped_display_referred: false,
-            apple_heic_deferred: None,
-        });
-        return Ok(HdrImageBuffer {
-            width: image_ref.width,
-            height: image_ref.height,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: HdrColorSpace::LinearSrgb,
-            metadata,
-            rgba_f32: Arc::new(rgba_f32),
-        });
     }
 
     // Normalize using the **output** `avifRGBImage.depth` libavif used (8/10/12/16), not the
@@ -607,6 +517,7 @@ pub(crate) fn decode_avif_hdr_bytes_with_target_capacity(
     } else {
         metadata
     };
+    avif_fill_opaque_alpha_f32_if_no_alpha_plane(&mut rgba_f32, image_ref);
     let out_color_space = final_metadata.color_space_hint();
 
     Ok(HdrImageBuffer {
@@ -693,158 +604,6 @@ fn apply_icc_to_srgb_via_lcms(_rgba: &mut [f32], source_icc: &[u8]) -> bool {
     false
 }
 
-/// IEEE 754 binary16 → `f32` (libavif float RGB is half precision).
-#[cfg(feature = "avif-native")]
-#[inline]
-fn f16_bits_to_f32(bits: u16) -> f32 {
-    let s = ((bits as u32) & 0x8000) << 16;
-    let mut e = ((bits >> 10) & 0x1f) as i32;
-    let mut m = (bits & 0x3ff) as u32;
-    if e == 0 {
-        if m == 0 {
-            return f32::from_bits(s);
-        }
-        e = 1;
-        while (m & 0x400) == 0 {
-            m <<= 1;
-            e -= 1;
-        }
-        m &= 0x3ff;
-    } else if e == 31 {
-        return f32::from_bits(s | 0x7f80_0000 | (m << 13));
-    }
-    let exp = ((e + 127 - 15) as u32) << 23;
-    f32::from_bits(s | exp | (m << 13))
-}
-
-#[cfg(feature = "avif-native")]
-fn libavif_diag_cstring(diag: &libavif_sys::avifDiagnostics) -> String {
-    unsafe { CStr::from_ptr(diag.error.as_ptr()) }
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Frees libavif-allocated `avifRGBImage` pixel storage on drop.
-#[cfg(feature = "avif-native")]
-struct AvifRgbImageAllocatedPixels(libavif_sys::avifRGBImage);
-
-#[cfg(feature = "avif-native")]
-impl Drop for AvifRgbImageAllocatedPixels {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.0.pixels.is_null() {
-                libavif_sys::avifRGBImageFreePixels(&mut self.0);
-            }
-        }
-    }
-}
-
-/// Tone-mapped **PQ BT.709** RGBA, same as `avifImageApplyGainMap` but with the PQ output transfer
-/// instead of LINEAR. Critical: libavif's `LINEAR` `linearToGamma` is `AVIF_CLAMP(x, 0, 1)` which
-/// drops HDR highlights to white. PQ losslessly encodes libavif's "extended SDR" linear range
-/// (1.0 = SDR white = 203 nits) into [0,1]. `target_hdr_capacity` is peak luminance / SDR white
-/// (linear ratio); libavif expects **log₂** of that ratio.
-#[cfg(feature = "avif-native")]
-fn avif_image_tone_map_pq_rgba32f(
-    base_image: *const libavif_sys::avifImage,
-    gain_map: *mut libavif_sys::avifGainMap,
-    target_hdr_capacity: f32,
-    result_to_string: &impl Fn(libavif_sys::avifResult) -> String,
-) -> Result<Vec<f32>, String> {
-    let mut tone_mapped = AvifRgbImageAllocatedPixels(unsafe { std::mem::zeroed() });
-    tone_mapped.0.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
-    tone_mapped.0.depth = 16;
-    tone_mapped.0.isFloat = 1;
-    tone_mapped.0.maxThreads = 0;
-
-    let hdr_headroom = target_hdr_capacity.max(1.0).log2();
-    let mut diag: libavif_sys::avifDiagnostics = unsafe { std::mem::zeroed() };
-
-    let result = unsafe {
-        libavif_sys::avifImageApplyGainMap(
-            base_image,
-            gain_map,
-            hdr_headroom,
-            libavif_sys::AVIF_COLOR_PRIMARIES_BT709,
-            libavif_sys::AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084,
-            &mut tone_mapped.0,
-            std::ptr::null_mut(),
-            &mut diag,
-        )
-    };
-
-    if result != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!(
-            "{} — {}",
-            result_to_string(result),
-            libavif_diag_cstring(&diag)
-        ));
-    }
-
-    copy_avif_tone_mapped_rgbaf16_to_rgba32f(&tone_mapped.0)
-}
-
-#[cfg(feature = "avif-native")]
-fn copy_avif_tone_mapped_rgbaf16_to_rgba32f(
-    rgb: &libavif_sys::avifRGBImage,
-) -> Result<Vec<f32>, String> {
-    if rgb.isFloat == 0 || rgb.depth != 16 || rgb.format != libavif_sys::AVIF_RGB_FORMAT_RGBA {
-        return Err(format!(
-            "unexpected libavif tone-mapped RGB (isFloat={} depth={} format={})",
-            rgb.isFloat, rgb.depth, rgb.format
-        ));
-    }
-    let w = rgb.width as usize;
-    let h = rgb.height as usize;
-    if w == 0 || h == 0 || rgb.pixels.is_null() {
-        return Err("libavif tone-mapped image has no pixels".to_string());
-    }
-    let row_bytes = rgb.rowBytes as usize;
-    let mut out = Vec::with_capacity(w * h * 4);
-    for y in 0..h {
-        let row = unsafe { std::slice::from_raw_parts(rgb.pixels.add(y * row_bytes), w * 8) };
-        for x in 0..w {
-            let i = x * 8;
-            let r = f16_bits_to_f32(u16::from_le_bytes([row[i], row[i + 1]]));
-            let g = f16_bits_to_f32(u16::from_le_bytes([row[i + 2], row[i + 3]]));
-            let b = f16_bits_to_f32(u16::from_le_bytes([row[i + 4], row[i + 5]]));
-            let a = f16_bits_to_f32(u16::from_le_bytes([row[i + 6], row[i + 7]]));
-            out.extend_from_slice(&[r, g, b, a]);
-        }
-    }
-    Ok(out)
-}
-
-#[cfg(feature = "avif-native")]
-fn decode_avif_image_rgba8_packed(
-    image: *const libavif_sys::avifImage,
-    image_ref: &libavif_sys::avifImage,
-    result_to_string: &impl Fn(libavif_sys::avifResult) -> String,
-) -> Result<Vec<u8>, String> {
-    let mut rgb = std::mem::MaybeUninit::<libavif_sys::avifRGBImage>::zeroed();
-    unsafe { libavif_sys::avifRGBImageSetDefaults(rgb.as_mut_ptr(), image) };
-    let mut rgb = unsafe { rgb.assume_init() };
-    rgb.format = libavif_sys::AVIF_RGB_FORMAT_RGBA;
-    rgb.depth = 8;
-    rgb.isFloat = 0;
-    rgb.maxThreads = 0;
-
-    let w = image_ref.width as usize;
-    let h = image_ref.height as usize;
-    let mut rgba = vec![0u8; w * h * 4];
-    rgb.pixels = rgba.as_mut_ptr();
-    rgb.rowBytes = image_ref.width * 4;
-
-    let result = unsafe { libavif_sys::avifImageYUVToRGB(image, &mut rgb) };
-    if result != libavif_sys::AVIF_RESULT_OK {
-        return Err(format!(
-            "libavif RGB8 conversion failed: {}",
-            result_to_string(result)
-        ));
-    }
-    Ok(rgba)
-}
-
 /// Maximum channel value for libavif RGB packed in `u16` lanes (`depth` ∈ {8,10,12,16}).
 #[cfg(feature = "avif-native")]
 fn rgb_channel_max_f(rgb_depth: u32) -> f32 {
@@ -852,6 +611,42 @@ fn rgb_channel_max_f(rgb_depth: u32) -> f32 {
         return u16::MAX as f32;
     }
     ((1u32 << rgb_depth).saturating_sub(1)).max(1) as f32
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_image_has_alpha_plane(image_ref: &libavif_sys::avifImage) -> bool {
+    !image_ref.alphaPlane.is_null()
+}
+
+/// libavif leaves alpha at **0** when the bitstream has no alpha plane (even with `ignoreAlpha=0`).
+/// The HDR plane WGSL treats `a <= 0` as fully transparent → black screen on opaque stills
+/// (e.g. `paris_icc_exif_xmp.avif`).
+#[cfg(feature = "avif-native")]
+fn avif_fill_opaque_alpha_u16_if_no_alpha_plane(
+    rgba_u16: &mut [u16],
+    rgb_out_depth: u32,
+    image_ref: &libavif_sys::avifImage,
+) {
+    if avif_image_has_alpha_plane(image_ref) {
+        return;
+    }
+    let alpha_max = rgb_channel_max_f(rgb_out_depth) as u16;
+    for px in rgba_u16.chunks_exact_mut(4) {
+        px[3] = alpha_max;
+    }
+}
+
+#[cfg(feature = "avif-native")]
+fn avif_fill_opaque_alpha_f32_if_no_alpha_plane(
+    rgba_f32: &mut [f32],
+    image_ref: &libavif_sys::avifImage,
+) {
+    if avif_image_has_alpha_plane(image_ref) {
+        return;
+    }
+    for px in rgba_f32.chunks_exact_mut(4) {
+        px[3] = 1.0;
+    }
 }
 
 /// Maps container CICP to shader transfer after [`libavif_sys::avifImageYUVToRGB`].
@@ -866,7 +661,13 @@ fn avif_yuv_to_rgb_output_metadata(
     if image_ref.gainMap.is_null()
         && matches!(
             metadata.transfer_function,
-            HdrTransferFunction::Pq | HdrTransferFunction::Hlg
+            HdrTransferFunction::Pq
+                | HdrTransferFunction::Hlg
+                // H.273 **unspecified** (code 2) is common in Microsoft / conformance AVIF
+                // (e.g. `Mexico_YUV444.avif`). libavif's YUV→RGB output is display-gamma RGB like
+                // PNG export — not scene-linear. Without this, WGSL leaves transfer `Unknown` and
+                // treats encoded codes as linear → washed "white mist" vs Windows Photos.
+                | HdrTransferFunction::Unknown
         )
     {
         log::debug!(
@@ -1235,7 +1036,7 @@ pub(crate) fn avif_gain_map_to_metadata(
     }
     fraction.base_hdr_headroom = unsigned(gain_map.baseHdrHeadroom);
     fraction.alternate_hdr_headroom = unsigned(gain_map.alternateHdrHeadroom);
-    fraction.into_gain_map_metadata()
+    fraction.into_gain_map_metadata(0)
 }
 
 #[cfg(feature = "avif-native")]
@@ -1406,6 +1207,242 @@ mod tests {
         assert_eq!(adjusted.transfer_function, HdrTransferFunction::Srgb);
         assert_eq!(adjusted.reference, HdrReference::Unknown);
         assert_eq!(adjusted.color_profile, HdrColorProfile::LinearSrgb);
+    }
+
+    #[test]
+    fn avif_yuv_to_rgb_metadata_overrides_unspecified_cicp_without_gain_map() {
+        use crate::hdr::types::{HdrColorProfile, HdrTransferFunction};
+
+        let cicp = avif_cicp_to_metadata(2, 2, 2, true);
+        assert_eq!(cicp.transfer_function, HdrTransferFunction::Unknown);
+
+        let image = libavif_sys::avifImage {
+            gainMap: std::ptr::null_mut(),
+            transferCharacteristics: 2,
+            colorPrimaries: 2,
+            matrixCoefficients: 2,
+            ..unsafe { std::mem::zeroed() }
+        };
+        let adjusted = super::avif_yuv_to_rgb_output_metadata(&cicp, &image);
+        assert_eq!(adjusted.transfer_function, HdrTransferFunction::Srgb);
+        assert_eq!(adjusted.color_profile, HdrColorProfile::LinearSrgb);
+        assert_eq!(adjusted.color_space_hint(), HdrColorSpace::LinearSrgb);
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn avif_software_gain_map_decode_defers_compose_to_gpu() {
+        use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
+        use crate::hdr::types::HdrToneMapSettings;
+        use std::path::PathBuf;
+
+        let candidates = [
+            std::env::var_os("SIV_AVIF_GAIN_MAP_SAMPLE").map(PathBuf::from),
+            Some(PathBuf::from(
+                r"F:\HDR\libavif\tests\data\seine_sdr_gainmap_srgb.avif",
+            )),
+            Some(PathBuf::from(
+                r"F:\HDR\libavif\tests\data\seine_sdr_gainmap_srgb_icc.avif",
+            )),
+            Some(PathBuf::from(
+                r"F:\HDR\av1-avif\testFiles\Netflix\avif\hdr_cosmos07296_cicp9-16-9_yuv444_full_qp40.avif",
+            )),
+        ];
+        let Some(path) = candidates.into_iter().flatten().find(|p| p.is_file()) else {
+            eprintln!(
+                "skip avif deferred test; set SIV_AVIF_GAIN_MAP_SAMPLE to an AVIF with ISO gain map"
+            );
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read avif sample");
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+        let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
+            .expect("decode avif");
+        if iso_deferred_from_metadata(&hdr.metadata).is_some() {
+            assert!(
+                hdr.rgba_f32.is_empty(),
+                "{} should defer ISO gain-map compose to GPU",
+                path.display()
+            );
+            assert_eq!(
+                hdr.metadata.gain_map.as_ref().map(|gm| gm.source),
+                Some("AVIF")
+            );
+        } else if !hdr.rgba_f32.is_empty() {
+            eprintln!(
+                "{} decoded as eager float HDR (precomposed gain-map base or non-gain-map sample)",
+                path.display()
+            );
+        } else {
+            panic!(
+                "{} decoded to empty HDR buffer without GPU-deferred planes",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn decode_mexico_yuv444_avif_metadata_when_sample_present() {
+        use crate::hdr::types::HdrToneMapSettings;
+        let path = std::path::Path::new(r"F:\HDR\av1-avif\testFiles\Microsoft\Mexico_YUV444.avif");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read avif");
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+        let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
+            .expect("decode mexico avif");
+        assert_eq!(
+            hdr.metadata.transfer_function,
+            HdrTransferFunction::Srgb,
+            "unspecified CICP YUV→RGB must use sRGB shader decode"
+        );
+        assert_eq!(hdr.color_space, HdrColorSpace::LinearSrgb);
+        eprintln!(
+            "Mexico: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={}",
+            hdr.width,
+            hdr.height,
+            hdr.metadata.transfer_function,
+            hdr.metadata.reference,
+            hdr.color_space,
+            hdr.metadata.color_profile,
+            hdr.metadata.gain_map.is_some(),
+        );
+        let mut mn = f32::INFINITY;
+        let mut mx = f32::NEG_INFINITY;
+        let mut sum = 0.0_f64;
+        let mut n = 0_usize;
+        for px in hdr.rgba_f32.chunks_exact(4) {
+            for &c in &px[..3] {
+                if c.is_finite() {
+                    mn = mn.min(c);
+                    mx = mx.max(c);
+                    sum += c as f64;
+                    n += 1;
+                }
+            }
+        }
+        eprintln!(
+            "float RGB min={mn:.4} max={mx:.4} avg={:.4}",
+            sum / n.max(1) as f64
+        );
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
+        use crate::hdr::types::HdrToneMapSettings;
+        use crate::loader::{DecodedImage, hdr_sdr_fallback_rgba8_eager_or_placeholder};
+
+        let path = std::path::Path::new(r"F:\HDR\libavif\tests\data\paris_icc_exif_xmp.avif");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read avif");
+        let tone = HdrToneMapSettings::default();
+        let capacity = tone.target_hdr_capacity();
+        let hdr =
+            super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
+        let fallback_pixels =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback");
+        let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+        eprintln!(
+            "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",
+            hdr.width,
+            hdr.height,
+            hdr.metadata.transfer_function,
+            hdr.metadata.reference,
+            hdr.color_space,
+            hdr.metadata.color_profile,
+            hdr.metadata.gain_map.is_some(),
+        );
+        let mut min_a = f32::INFINITY;
+        let mut max_a = f32::NEG_INFINITY;
+        let mut min_rgb = f32::INFINITY;
+        let mut max_rgb = f32::NEG_INFINITY;
+        let mut zero_alpha_pixels = 0_usize;
+        for px in hdr.rgba_f32.chunks_exact(4) {
+            let a = px[3];
+            min_a = min_a.min(a);
+            max_a = max_a.max(a);
+            if a <= 0.0 {
+                zero_alpha_pixels += 1;
+            }
+            for &c in &px[..3] {
+                if c.is_finite() {
+                    min_rgb = min_rgb.min(c);
+                    max_rgb = max_rgb.max(c);
+                }
+            }
+        }
+        eprintln!(
+            "float alpha min={min_a:.4} max={max_a:.4} zero_alpha_px={zero_alpha_pixels}/{}",
+            hdr.rgba_f32.len() / 4
+        );
+        eprintln!("float rgb min={min_rgb:.4} max={max_rgb:.4}");
+        let fb = fallback.rgba();
+        let fb_center = fb.len() / 8;
+        eprintln!(
+            "fallback center rgba8 = [{}, {}, {}, {}]",
+            fb[fb_center],
+            fb[fb_center + 1],
+            fb[fb_center + 2],
+            fb[fb_center + 3]
+        );
+        assert!(
+            max_rgb > 0.01,
+            "paris ICC AVIF should not decode to all-black RGB"
+        );
+        assert!(
+            max_a > 0.01,
+            "paris ICC AVIF alpha must be non-zero for HDR shader (alpha<=0 forces black)"
+        );
+    }
+
+    #[cfg(feature = "avif-native")]
+    #[test]
+    fn avif_animated_sequence_decodes_as_hdr_frames_when_sample_present() {
+        use crate::hdr::types::HdrToneMapSettings;
+        use std::path::PathBuf;
+
+        let candidates = [
+            PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\Chimera-AV1-10bit-480x270.avif"),
+            PathBuf::from(r"F:\HDR\av1-avif\testFiles\Netflix\avis\alpha_video.avif"),
+            PathBuf::from(r"F:\HDR\libavif\tests\data\colors-animated-8bpc-alpha-exif-xmp.avif"),
+        ];
+        let Some(path) = candidates.into_iter().find(|p| p.is_file()) else {
+            eprintln!("skip avif animated hdr test; none of the reference samples are present");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read avif");
+        let capacity = HdrToneMapSettings::default().target_hdr_capacity();
+        let frames = super::try_decode_avif_image_sequence_hdr(&bytes, capacity)
+            .expect("decode avif sequence")
+            .expect("animated avif should expose a sequence");
+        assert!(
+            frames.len() > 1,
+            "{} should have multiple frames",
+            path.display()
+        );
+        for (idx, (_delay, hdr)) in frames.iter().enumerate() {
+            use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
+            let deferred = iso_deferred_from_metadata(&hdr.metadata).is_some();
+            assert!(
+                deferred || !hdr.rgba_f32.is_empty(),
+                "{} frame {idx} should carry HDR float pixels or GPU-deferred gain-map planes",
+                path.display()
+            );
+            assert_eq!(hdr.width > 0 && hdr.height > 0, true);
+        }
+        eprintln!(
+            "{} -> {} HdrAnimated frames, tf={:?}",
+            path.display(),
+            frames.len(),
+            frames[0].1.metadata.transfer_function
+        );
     }
 
     /// Local probe: `cargo test probe_netflix_cosmos -- --ignored --nocapture`

@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 
 #[inline]
@@ -52,10 +54,107 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
     tone: &HdrToneMapSettings,
-) -> Result<Vec<u8>, String> {
+) -> Result<Arc<Vec<u8>>, String> {
+    if let Some(gain_map) = hdr.metadata.gain_map.as_ref() {
+        if let Some(iso) = gain_map.iso_deferred.as_ref() {
+            // Share deferred baseline planes; avoid cloning multi‑MP RGBA on cold fallback paths.
+            return Ok(Arc::clone(&iso.sdr_rgba));
+        }
+        if gain_map.apple_heic_deferred.is_some() {
+            // rgba_f32 holds encoded primary for GPU compose, not display-ready scene-linear HDR.
+            return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
+                hdr.width, hdr.height,
+            )?));
+        }
+    }
     if hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        hdr_to_sdr_with_user_tone(hdr, tone)
+        Ok(Arc::new(hdr_to_sdr_with_user_tone(hdr, tone)?))
     } else {
-        cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)
+        Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
+            hdr.width, hdr.height,
+        )?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::hdr::types::{
+        AppleHeicGainMapGpuSource, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
+        HdrPixelFormat, IsoGainMapGpuSource,
+    };
+
+    #[test]
+    fn sdr_fallback_uses_iso_deferred_baseline_not_rgba_f32() {
+        let iso_sdr = vec![128_u8, 64, 32, 255];
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "JPEG_R",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        let out =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
+                .expect("fallback");
+        assert_eq!(out.as_slice(), iso_sdr);
+    }
+
+    #[test]
+    fn sdr_fallback_never_tone_maps_apple_deferred_encoded_primary() {
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "HEIF",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: Some(AppleHeicGainMapGpuSource {
+                gain_rgba: Arc::new(vec![128; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                headroom_span: 1.0,
+                stops: 2.0,
+            }),
+            iso_deferred: None,
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::DisplayP3Linear,
+            metadata,
+            rgba_f32: Arc::new(vec![10.0, 0.0, 0.0, 1.0]),
+        };
+        let out =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 0.5, &HdrToneMapSettings::default())
+                .expect("fallback");
+        assert_eq!(out.as_slice(), [0, 0, 0, 255]);
     }
 }

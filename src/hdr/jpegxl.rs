@@ -15,17 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #[cfg(feature = "jpegxl")]
-use crate::hdr::gain_map::{
-    GainMapMetadata, append_hdr_pixel_from_sdr_and_gain, gain_map_metadata_diagnostic,
-    parse_iso_gain_map_metadata, sample_gain_map_rgb,
-};
+use crate::hdr::gain_map::GainMapMetadata;
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "jpegxl")]
-use crate::hdr::types::{
-    HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings,
-};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "jpegxl")]
 use crate::{
     constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS},
@@ -346,7 +341,7 @@ fn jxl_sdr_grade_fallback_rgba8(
 }
 
 #[cfg(feature = "jpegxl")]
-fn srgb_unit_to_u8(value: f32) -> u8 {
+pub(crate) fn srgb_unit_to_u8(value: f32) -> u8 {
     if !value.is_finite() {
         return 0;
     }
@@ -473,62 +468,167 @@ fn apply_cmyk_to_srgb_via_lcms(rgba: &mut [f32], k: &[f32], source_icc: &[u8]) -
 }
 
 #[cfg(feature = "jpegxl")]
-fn apply_jxl_jhgm_gain_map_if_present(
-    jhgm_box: Option<&[u8]>,
-    target_hdr_capacity: f32,
-    rgba_f32: &mut Vec<f32>,
+fn jxl_build_hdr_fallback(
+    hdr: &HdrImageBuffer,
+    display_hdr_target_capacity: f32,
+    tone_map: &HdrToneMapSettings,
+) -> Result<DecodedImage, String> {
+    let color_space = hdr.color_space;
+    let sdr_grade_fallback =
+        jxl_sdr_grade_fallback_rgba8(hdr.rgba_f32.as_ref(), color_space, &hdr.metadata);
+    let fallback_pixels = match sdr_grade_fallback {
+        Some(px) => px,
+        None => {
+            if crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity) {
+                crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
+                    hdr,
+                    tone_map.exposure_ev,
+                    tone_map,
+                )?
+            } else {
+                crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
+            }
+        }
+    };
+    Ok(DecodedImage::new(hdr.width, hdr.height, fallback_pixels))
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_finish_static_frame(
+    rgba: Vec<f32>,
+    metadata: HdrImageMetadata,
     width: u32,
     height: u32,
-    metadata: &mut HdrImageMetadata,
-) {
-    let Some(jhgm_box) = jhgm_box else {
-        return;
-    };
-    let expected_len = width as usize * height as usize * 4;
-    match decode_jxl_gain_map(jhgm_box, target_hdr_capacity, rgba_f32, width, height) {
-        Ok((gain_metadata, gain_width, gain_height, gain_rgba)) => {
-            let diagnostic = gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity);
-            let mut composed = Vec::with_capacity(expected_len);
-            for y in 0..height {
-                for x in 0..width {
-                    let index = (y as usize * width as usize + x as usize) * 4;
-                    let sdr_rgba = [
-                        (linear_to_srgb_u8(rgba_f32[index])),
-                        (linear_to_srgb_u8(rgba_f32[index + 1])),
-                        (linear_to_srgb_u8(rgba_f32[index + 2])),
-                        (rgba_f32[index + 3] * 255.0).round().clamp(0.0, 255.0) as u8,
-                    ];
-                    let gain_value = sample_gain_map_rgb(
-                        &gain_rgba,
-                        gain_width,
-                        gain_height,
-                        x,
-                        y,
-                        width,
-                        height,
-                    );
-                    append_hdr_pixel_from_sdr_and_gain(
-                        &mut composed,
-                        &sdr_rgba,
-                        gain_value,
-                        gain_metadata,
-                        target_hdr_capacity,
-                    );
-                }
+    jhgm_box: Option<&[u8]>,
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
+    tone_map: &HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+
+    let hdr = match finish_jxl_jhgm_frame(
+        jhgm_box,
+        decode_target_hdr_capacity,
+        &rgba,
+        width,
+        height,
+        &metadata,
+    ) {
+        JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
+        | JxlJhgmFrameOutcome::GpuDeferred(hdr)
+        | JxlJhgmFrameOutcome::CpuComposed(hdr) => hdr,
+        JxlJhgmFrameOutcome::Unprocessed => {
+            let color_space = metadata.color_space_hint();
+            HdrImageBuffer {
+                width,
+                height,
+                format: HdrPixelFormat::Rgba32Float,
+                color_space,
+                metadata,
+                rgba_f32: Arc::new(rgba),
             }
-            metadata.gain_map = Some(HdrGainMapMetadata {
-                source: "JPEG XL",
-                target_hdr_capacity: Some(target_hdr_capacity),
-                diagnostic,
-                capped_display_referred: false,
-                apple_heic_deferred: None,
-            });
-            *rgba_f32 = composed;
         }
-        Err(err) => {
-            log::warn!("[HDR] JPEG XL jhgm gain-map fallback: {err}");
+    };
+    let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+    Ok(ImageData::Hdr { hdr, fallback })
+}
+
+/// SDR-grade JXL float buffers hold **display-referred sRGB codes** (0–1), not scene-linear.
+/// Tag [`HdrReference::DisplayReferred`] so the HDR plane applies EV like unmanaged sRGB stills.
+#[cfg(feature = "jpegxl")]
+fn jxl_tag_display_referred_when_sdr_grade(metadata: &mut HdrImageMetadata) {
+    let peak = metadata.luminance.mastering_max_nits.unwrap_or(0.0);
+    if !peak.is_finite() || peak <= 0.0 || peak > 255.0 {
+        return;
+    }
+    match metadata.transfer_function {
+        HdrTransferFunction::Srgb
+        | HdrTransferFunction::Gamma
+        | HdrTransferFunction::Bt709
+        | HdrTransferFunction::Unknown => {
+            metadata.reference = HdrReference::DisplayReferred;
+        }
+        HdrTransferFunction::Linear | HdrTransferFunction::Pq | HdrTransferFunction::Hlg => {}
+    }
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_sanitize_straight_alpha(rgba: &mut [f32]) {
+    for px in rgba.chunks_exact_mut(4) {
+        if px[3] <= 0.0 {
+            px[0] = 0.0;
+            px[1] = 0.0;
+            px[2] = 0.0;
         }
     }
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_animation_frames_need_hdr_plane(
+    captured_frames: &[(Vec<f32>, u32)],
+    metadata: &HdrImageMetadata,
+) -> bool {
+    let color_space = metadata.color_space_hint();
+    captured_frames
+        .iter()
+        .any(|(buf, _)| jxl_sdr_grade_fallback_rgba8(buf, color_space, metadata).is_none())
+}
+
+#[cfg(feature = "jpegxl")]
+fn jxl_build_hdr_animated_image_data(
+    captured_frames: Vec<(Vec<f32>, u32)>,
+    info: &libjxl_sys::JxlBasicInfo,
+    meta_base: HdrImageMetadata,
+    jhgm_box: Option<&[u8]>,
+    decode_target_hdr_capacity: f32,
+    display_hdr_target_capacity: f32,
+    tone_map: &HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    use crate::hdr::jxl_gain_map_deferred::{JxlJhgmFrameOutcome, finish_jxl_jhgm_frame};
+    use crate::loader::HdrAnimationFrame;
+
+    let require_jhgm_processing = jhgm_box.is_some();
+    let mut frames = Vec::with_capacity(captured_frames.len());
+    for (rgba, ticks) in captured_frames {
+        let frame_metadata = meta_base.clone();
+        let hdr = match finish_jxl_jhgm_frame(
+            jhgm_box,
+            decode_target_hdr_capacity,
+            &rgba,
+            info.xsize,
+            info.ysize,
+            &frame_metadata,
+        ) {
+            JxlJhgmFrameOutcome::PrecomposedHdr(hdr)
+            | JxlJhgmFrameOutcome::GpuDeferred(hdr)
+            | JxlJhgmFrameOutcome::CpuComposed(hdr) => hdr,
+            JxlJhgmFrameOutcome::Unprocessed => {
+                if require_jhgm_processing {
+                    return Err(
+                        "JPEG XL animated jhgm frame could not be processed (metadata or compose failure)"
+                            .to_string(),
+                    );
+                }
+                let color_space = frame_metadata.color_space_hint();
+                HdrImageBuffer {
+                    width: info.xsize,
+                    height: info.ysize,
+                    format: HdrPixelFormat::Rgba32Float,
+                    color_space,
+                    metadata: frame_metadata,
+                    rgba_f32: Arc::new(rgba),
+                }
+            }
+        };
+        let fallback = jxl_build_hdr_fallback(&hdr, display_hdr_target_capacity, tone_map)?;
+        let delay_ms = jxl_frame_ticks_to_delay_ms(info, ticks);
+        frames.push(HdrAnimationFrame::new(
+            hdr,
+            fallback,
+            Duration::from_millis(delay_ms),
+        ));
+    }
+    Ok(ImageData::HdrAnimated(frames))
 }
 
 #[cfg(feature = "jpegxl")]
@@ -562,7 +662,7 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
         crate::hdr::types::HdrToneMapSettings::default(),
     )? {
         ImageData::Hdr { hdr, .. } => Ok(hdr),
-        ImageData::Animated(_) => Err(
+        ImageData::HdrAnimated(_) | ImageData::Animated(_) => Err(
             "JPEG XL has multiple animation frames; use the image loader or decode_jxl_bytes_to_image_data"
                 .to_string(),
         ),
@@ -573,8 +673,9 @@ pub(crate) fn decode_jxl_hdr_bytes_with_target_capacity(
 }
 
 /// Decode a full JPEG XL file into [`ImageData`]. Multi-frame animations become
-/// [`ImageData::Animated`] (SDR RGBA8 per frame); a single displayed frame stays
-/// [`ImageData::Hdr`] with float pixels and an SDR fallback.
+/// [`ImageData::Animated`] or [`ImageData::HdrAnimated`] when frames need the HDR plane
+/// (ISO `jhgm` gain map and/or scene-referred float with peak above SDR grade);
+/// a single displayed frame stays [`ImageData::Hdr`] with float pixels and an SDR fallback.
 #[cfg(feature = "jpegxl")]
 pub(crate) fn decode_jxl_bytes_to_image_data(
     bytes: &[u8],
@@ -716,18 +817,27 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                 }
 
                 if captured_frames.len() > 1 {
-                    let meta_base = metadata.clone();
-                    let mut animation = Vec::with_capacity(captured_frames.len());
-                    for (mut buf, ticks) in captured_frames {
-                        let mut frame_metadata = meta_base.clone();
-                        apply_jxl_jhgm_gain_map_if_present(
+                    let mut meta_base = metadata.clone();
+                    jxl_tag_display_referred_when_sdr_grade(&mut meta_base);
+                    let use_hdr_animated = jhgm_box.is_some()
+                        || jxl_animation_frames_need_hdr_plane(&captured_frames, &meta_base)
+                        || !crate::loader::hdr_display_requests_sdr_preview(
+                            display_hdr_target_capacity,
+                        );
+                    if use_hdr_animated {
+                        return jxl_build_hdr_animated_image_data(
+                            captured_frames,
+                            &info,
+                            meta_base,
                             jhgm_box.as_deref(),
                             decode_target_hdr_capacity,
-                            &mut buf,
-                            info.xsize,
-                            info.ysize,
-                            &mut frame_metadata,
+                            display_hdr_target_capacity,
+                            &tone_map,
                         );
+                    }
+                    let mut animation = Vec::with_capacity(captured_frames.len());
+                    for (buf, ticks) in captured_frames {
+                        let frame_metadata = meta_base.clone();
                         let color_space = frame_metadata.color_space_hint();
                         let pixels = if let Some(px) =
                             jxl_sdr_grade_fallback_rgba8(&buf, color_space, &frame_metadata)
@@ -799,43 +909,18 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         metadata.luminance.mastering_max_nits = Some(100.0);
                     }
                 }
-                apply_jxl_jhgm_gain_map_if_present(
-                    jhgm_box.as_deref(),
-                    decode_target_hdr_capacity,
-                    &mut rgba,
+                jxl_sanitize_straight_alpha(&mut rgba);
+                jxl_tag_display_referred_when_sdr_grade(&mut metadata);
+                return jxl_finish_static_frame(
+                    rgba,
+                    metadata,
                     info.xsize,
                     info.ysize,
-                    &mut metadata,
+                    jhgm_box.as_deref(),
+                    decode_target_hdr_capacity,
+                    display_hdr_target_capacity,
+                    &tone_map,
                 );
-                let color_space = metadata.color_space_hint();
-                let sdr_grade_fallback =
-                    jxl_sdr_grade_fallback_rgba8(&rgba, color_space, &metadata);
-                let hdr = HdrImageBuffer {
-                    width: info.xsize,
-                    height: info.ysize,
-                    format: HdrPixelFormat::Rgba32Float,
-                    color_space,
-                    metadata,
-                    rgba_f32: Arc::new(rgba),
-                };
-                let fallback_pixels = match sdr_grade_fallback {
-                    Some(px) => px,
-                    None => {
-                        if crate::loader::hdr_display_requests_sdr_preview(
-                            display_hdr_target_capacity,
-                        ) {
-                            crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                                &hdr,
-                                tone_map.exposure_ev,
-                                &tone_map,
-                            )?
-                        } else {
-                            crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
-                        }
-                    }
-                };
-                let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
-                return Ok(ImageData::Hdr { hdr, fallback });
             }
             libjxl_sys::JXL_DEC_ERROR => {
                 return Err(
@@ -1108,6 +1193,7 @@ If this is a libjxl conformance path ending in `*_5` on Windows, Git may have ma
                         expected_len
                     ));
                 }
+                jxl_sanitize_straight_alpha(&mut rgba_f32);
                 captured_frames.push((rgba_f32.clone(), pending_duration_ticks));
                 // Animations emit multiple FULL_IMAGE events; keep calling ProcessInput until SUCCESS.
                 continue;
@@ -1160,15 +1246,11 @@ fn capture_jxl_box(
 }
 
 #[cfg(feature = "jpegxl")]
-fn decode_jxl_gain_map(
-    jhgm_box: &[u8],
+pub(crate) fn decode_jxl_gain_map_from_bundle(
+    bundle: &JxlGainMapBundleRef<'_>,
+    metadata: GainMapMetadata,
     target_hdr_capacity: f32,
-    _base_rgba_f32: &[f32],
-    _base_width: u32,
-    _base_height: u32,
 ) -> Result<(GainMapMetadata, u32, u32, Vec<u8>), String> {
-    let bundle = read_jxl_gain_map_bundle(jhgm_box)?;
-    let metadata = parse_iso_gain_map_metadata(bundle.metadata)?;
     let gain_map = decode_jxl_hdr_bytes_with_target_capacity(bundle.gain_map, target_hdr_capacity)?;
     let gain_rgba = gain_map
         .rgba_f32
@@ -1777,6 +1859,7 @@ fn read_jxl_metadata(
         let color = unsafe { color_data.assume_init() };
         let mut out = hdr_metadata_from_jxl_float_decode(&color);
         out.luminance = saved_luminance;
+        jxl_tag_display_referred_when_sdr_grade(&mut out);
         return out;
     }
 
@@ -1790,10 +1873,12 @@ fn read_jxl_metadata(
         if let Some((p, t, m, fr)) = icc_scan_cicp_tag(&icc) {
             let mut out = hdr_metadata_from_h273_cicp_for_jxl_float_buffer(p, t, m, fr);
             out.luminance = saved_luminance;
+            jxl_tag_display_referred_when_sdr_grade(&mut out);
             return out;
         }
         if let Some(mut out) = hdr_metadata_from_icc_rgb_xyz_primaries_for_jxl_float(&icc) {
             out.luminance = saved_luminance;
+            jxl_tag_display_referred_when_sdr_grade(&mut out);
             return out;
         }
         let trc = icc_trc_kind(&icc).unwrap_or(HdrTransferFunction::Srgb);
@@ -1802,6 +1887,7 @@ fn read_jxl_metadata(
         metadata.reference = HdrReference::Unknown;
         metadata.luminance = saved_luminance;
         crate::hdr::types::log_unrecognized_embedded_icc_after_decode(&metadata);
+        jxl_tag_display_referred_when_sdr_grade(&mut metadata);
         return metadata;
     }
 
@@ -1820,10 +1906,12 @@ fn read_jxl_metadata(
         let o = unsafe { color_orig.assume_init() };
         let mut out = hdr_metadata_from_jxl_float_decode(&o);
         out.luminance = saved_luminance;
+        jxl_tag_display_referred_when_sdr_grade(&mut out);
         return out;
     }
 
     metadata.luminance = saved_luminance;
+    jxl_tag_display_referred_when_sdr_grade(&mut metadata);
     metadata
 }
 
@@ -1966,6 +2054,26 @@ mod tests {
 
     #[cfg(feature = "jpegxl")]
     #[test]
+    fn jxl_sdr_grade_srgb_tags_display_referred() {
+        let mut meta = HdrImageMetadata::default();
+        meta.transfer_function = HdrTransferFunction::Srgb;
+        meta.luminance.mastering_max_nits = Some(255.0);
+        super::jxl_tag_display_referred_when_sdr_grade(&mut meta);
+        assert_eq!(meta.reference, HdrReference::DisplayReferred);
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn jxl_sdr_grade_linear_does_not_tag_display_referred() {
+        let mut meta = HdrImageMetadata::default();
+        meta.transfer_function = HdrTransferFunction::Linear;
+        meta.luminance.mastering_max_nits = Some(255.0);
+        super::jxl_tag_display_referred_when_sdr_grade(&mut meta);
+        assert_ne!(meta.reference, HdrReference::DisplayReferred);
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
     fn jxl_sdr_grade_fallback_skipped_for_high_peak_hdr() {
         let rgba = vec![1.0_f32, 1.0, 1.0, 1.0];
         let mut meta = HdrImageMetadata::default();
@@ -1979,6 +2087,83 @@ mod tests {
 
     #[cfg(feature = "jpegxl")]
     #[test]
+    fn probe_conformance_animation_metadata_when_present() {
+        for rel in [
+            r"F:\HDR\conformance\testcases\animation_icos4d\input.jxl",
+            r"F:\HDR\conformance\testcases\animation_newtons_cradle\input.jxl",
+            r"F:\HDR\conformance\testcases\animation_spline\input.jxl",
+        ] {
+            let path = std::path::Path::new(rel);
+            if !path.is_file() {
+                eprintln!("skip {}", path.display());
+                continue;
+            }
+            let bytes = std::fs::read(path).expect("read jxl");
+            let tone = crate::hdr::types::HdrToneMapSettings::default();
+            let got = super::decode_jxl_bytes_to_image_data(
+                &bytes,
+                tone.target_hdr_capacity(),
+                tone.target_hdr_capacity(),
+                tone,
+            )
+            .expect("decode");
+            match got {
+                crate::loader::ImageData::HdrAnimated(frames) => {
+                    let h = &frames[0].hdr;
+                    eprintln!(
+                        "{} -> HdrAnimated frames={} transfer={:?} peak={:?}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        frames.len(),
+                        h.metadata.transfer_function,
+                        h.metadata.luminance.mastering_max_nits,
+                    );
+                }
+                crate::loader::ImageData::Animated(frames) => {
+                    eprintln!(
+                        "{} -> Animated frames={} (SDR path)",
+                        path.file_name().unwrap().to_string_lossy(),
+                        frames.len()
+                    );
+                }
+                _ => eprintln!("{} -> other variant", path.display()),
+            }
+        }
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn conformance_animation_icos4d_sdr_grade_has_no_rgb_on_fully_transparent_pixels() {
+        let path = std::path::Path::new(r"F:\HDR\conformance\testcases\animation_icos4d\input.jxl");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read conformance jxl");
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+        let got = super::decode_jxl_bytes_to_image_data(
+            &bytes,
+            tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
+            tone,
+        )
+        .expect("decode icos4d");
+        let crate::loader::ImageData::HdrAnimated(frames) = got else {
+            panic!("icos4d should decode as HdrAnimated on HDR display target capacity");
+        };
+        let frame = &frames[0];
+        let mut leaked = 0_u32;
+        for px in frame.hdr.rgba_f32.chunks_exact(4) {
+            if px[3] <= 0.0 && (px[0].to_bits() | px[1].to_bits() | px[2].to_bits()) != 0 {
+                leaked += 1;
+            }
+        }
+        assert_eq!(
+            leaked, 0,
+            "fully transparent HDR float pixels must not carry RGB (alpha fringe)"
+        );
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
     fn conformance_animation_icos4d_input_jxl_decodes_when_sample_present() {
         let path = std::path::Path::new(r"F:\HDR\conformance\testcases\animation_icos4d\input.jxl");
         if !path.is_file() {
@@ -1986,33 +2171,96 @@ mod tests {
         }
         let bytes = std::fs::read(path).expect("read conformance jxl");
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let got = crate::loader::apply_exif_orientation_to_image_data(
-            path,
-            super::decode_jxl_bytes_to_image_data(
-                &bytes,
-                tone.target_hdr_capacity(),
-                tone.target_hdr_capacity(),
-                tone,
-            )
-            .expect("decoded animation_icos4d"),
-        );
+        let got = super::decode_jxl_bytes_to_image_data(
+            &bytes,
+            tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
+            tone,
+        )
+        .expect("decoded animation_icos4d");
         match got {
-            crate::loader::ImageData::Animated(frames) => {
-                assert!(
-                    frames.len() > 1,
-                    "expected animation, got {} frames",
-                    frames.len()
+            crate::loader::ImageData::HdrAnimated(frames) => {
+                assert!(frames.len() > 1, "expected multi-frame HDR animation");
+                assert_eq!(
+                    frames[0].hdr.metadata.reference,
+                    HdrReference::DisplayReferred,
+                    "SDR-grade sRGB JXL animation should be display-referred for EV tone mapping"
                 );
             }
-            crate::loader::ImageData::Static(_) => {
-                panic!("expected ImageData::Animated, got Static")
+            crate::loader::ImageData::Animated(_) => {
+                panic!("icos4d must stay on HdrAnimated so EV adjustment works on HDR displays");
             }
-            crate::loader::ImageData::Tiled(_) => panic!("expected ImageData::Animated, got Tiled"),
-            crate::loader::ImageData::Hdr { .. } => panic!("expected ImageData::Animated, got Hdr"),
-            crate::loader::ImageData::HdrTiled { .. } => {
-                panic!("expected ImageData::Animated, got HdrTiled");
-            }
+            other => panic!(
+                "expected ImageData::HdrAnimated, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn conformance_animation_newtons_cradle_input_jxl_decodes_when_sample_present() {
+        let path = std::path::Path::new(
+            r"F:\HDR\conformance\testcases\animation_newtons_cradle\input.jxl",
+        );
+        if !path.is_file() {
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read conformance jxl");
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+
+        // Under SDR target capacity, it should decode to standard SDR Animated
+        let got_sdr = super::decode_jxl_bytes_to_image_data(&bytes, 1.0, 1.0, tone)
+            .expect("decoded animation_newtons_cradle SDR");
+        assert!(
+            matches!(got_sdr, crate::loader::ImageData::Animated(_)),
+            "newtons_cradle should decode to SDR Animated on SDR target capacity"
+        );
+
+        // Under HDR target capacity, it should decode to HdrAnimated
+        let got_hdr = super::decode_jxl_bytes_to_image_data(
+            &bytes,
+            tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
+            tone,
+        )
+        .expect("decoded animation_newtons_cradle HDR");
+        assert!(
+            matches!(got_hdr, crate::loader::ImageData::HdrAnimated(_)),
+            "newtons_cradle should decode to HdrAnimated on HDR target capacity"
+        );
+    }
+
+    #[cfg(feature = "jpegxl")]
+    #[test]
+    fn conformance_animation_spline_input_jxl_decodes_when_sample_present() {
+        let path = std::path::Path::new(r"F:\HDR\conformance\testcases\animation_spline\input.jxl");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = std::fs::read(path).expect("read conformance jxl");
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+
+        // Under SDR target capacity, it should decode to standard SDR Animated
+        let got_sdr = super::decode_jxl_bytes_to_image_data(&bytes, 1.0, 1.0, tone)
+            .expect("decoded animation_spline SDR");
+        assert!(
+            matches!(got_sdr, crate::loader::ImageData::Animated(_)),
+            "animation_spline should decode to SDR Animated on SDR target capacity"
+        );
+
+        // Under HDR target capacity, it should decode to HdrAnimated
+        let got_hdr = super::decode_jxl_bytes_to_image_data(
+            &bytes,
+            tone.target_hdr_capacity(),
+            tone.target_hdr_capacity(),
+            tone,
+        )
+        .expect("decoded animation_spline HDR");
+        assert!(
+            matches!(got_hdr, crate::loader::ImageData::HdrAnimated(_)),
+            "animation_spline should decode to HdrAnimated on HDR target capacity"
+        );
     }
 
     #[cfg(feature = "jpegxl")]
