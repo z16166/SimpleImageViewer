@@ -434,6 +434,27 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(evicted_idx);
     }
 
+    /// Circular index distance used for preload tile / CPU cache retention.
+    const PREFETCH_WINDOW_DISTANCE: usize = 2;
+
+    fn evict_distant_prefetch_caches(&mut self) {
+        let len = self.image_files.len();
+        let within_window = |idx: usize| prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE);
+
+        self.prefetched_tiles.retain(|&idx, _| within_window(idx));
+        self.deferred_sdr_uploads.retain(|&idx, _| within_window(idx));
+
+        let distant_hdr: Vec<usize> = self
+            .hdr_image_cache
+            .keys()
+            .copied()
+            .filter(|&idx| !within_window(idx))
+            .collect();
+        for idx in distant_hdr {
+            self.remove_hdr_image_index(idx);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Directory loading
     // ------------------------------------------------------------------
@@ -703,19 +724,8 @@ impl ImageViewerApp {
             );
         }
 
-        // Housekeeping: evict stale prefetched TileManagers to prevent memory leaks
-        let len = self.image_files.len();
-        self.prefetched_tiles.retain(|&idx, _| {
-            if len == 0 {
-                return false;
-            }
-            let dist_forward = (idx + len - self.current_index % len) % len;
-            let dist_backward = (self.current_index + len - idx % len) % len;
-            let circular_distance = dist_forward.min(dist_backward);
-
-            // Keep tiles only within distance 2
-            circular_distance <= 2
-        });
+        // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
+        self.evict_distant_prefetch_caches();
 
         self.schedule_preloads(true);
         // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
@@ -2125,6 +2135,24 @@ fn current_image_has_loaded_asset(
     has_sdr_texture || has_static_hdr || has_hdr_tiled_source || has_animation
 }
 
+fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {
+    if image_count == 0 {
+        return usize::MAX;
+    }
+    let dist_forward = (candidate + image_count - current_index % image_count) % image_count;
+    let dist_backward = (current_index + image_count - candidate % image_count) % image_count;
+    dist_forward.min(dist_backward)
+}
+
+fn prefetch_window_contains(
+    current_index: usize,
+    image_count: usize,
+    candidate: usize,
+    max_distance: usize,
+) -> bool {
+    prefetch_circular_distance(current_index, image_count, candidate) <= max_distance
+}
+
 fn should_schedule_first_batch_preload(
     is_first_batch: bool,
     count: usize,
@@ -2164,6 +2192,15 @@ mod tests {
     use super::*;
     use crate::loader::PreviewBundle;
     use std::collections::HashMap;
+
+    #[test]
+    fn prefetch_window_distance_matches_circular_neighbors() {
+        assert!(prefetch_window_contains(0, 100, 0, 2));
+        assert!(prefetch_window_contains(0, 100, 2, 2));
+        assert!(!prefetch_window_contains(0, 100, 3, 2));
+        assert!(prefetch_window_contains(50, 100, 48, 2));
+        assert!(!prefetch_window_contains(50, 100, 47, 2));
+    }
 
     struct DummyTiledSource {
         width: u32,

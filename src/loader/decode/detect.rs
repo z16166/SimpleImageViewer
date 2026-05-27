@@ -48,18 +48,20 @@ pub(crate) fn is_motion_video_bmff_brand(brand: &[u8; 4]) -> bool {
     )
 }
 
+/// Stable marker for errors that must not trigger recovery re-opens (see `primary_decode_failure_is_final`).
+pub(crate) const MOTION_VIDEO_BMFF_ERROR_TAG: &str = "MOTION_VIDEO_BMFF";
+
 pub(crate) fn motion_video_bmff_error(brand: &[u8; 4]) -> String {
     let brand_label = std::str::from_utf8(brand).unwrap_or("????");
     format!(
-        "ISO BMFF container (ftyp {brand_label:?}) is a video/Live Photo motion component, not a still image; \
+        "[{MOTION_VIDEO_BMFF_ERROR_TAG}] ISO BMFF container (ftyp {brand_label:?}) is a video/Live Photo motion component, not a still image; \
          open the paired photo file or export a JPEG/HEIC still"
     )
 }
 
 /// Primary extension-first decode already ruled out recovery (single mmap pass).
 pub(crate) fn primary_decode_failure_is_final(primary_err: &str) -> bool {
-    primary_err.contains("Live Photo motion component")
-        || primary_err.contains("video/Live Photo motion")
+    primary_err.contains(MOTION_VIDEO_BMFF_ERROR_TAG)
 }
 
 fn load_bmff_ftyp_container(
@@ -299,6 +301,15 @@ mod tests {
     }
 
     #[test]
+    fn primary_decode_failure_is_final_uses_stable_tag() {
+        let err = super::motion_video_bmff_error(b"qt  ");
+        assert!(super::primary_decode_failure_is_final(&err));
+        assert!(!super::primary_decode_failure_is_final(
+            "ISO BMFF container is not a decodable still image"
+        ));
+    }
+
+    #[test]
     fn motion_video_bmff_brand_includes_quicktime() {
         assert!(super::is_motion_video_bmff_brand(b"qt  "));
         assert!(!super::is_motion_video_bmff_brand(b"heic"));
@@ -340,10 +351,9 @@ mod tests {
             }
             Err(err) => {
                 assert!(
-                    err.contains("ISO BMFF")
-                        || err.contains("Live Photo")
-                        || err.contains("video")
-                        || err.contains("motion component"),
+                    err.contains(super::MOTION_VIDEO_BMFF_ERROR_TAG)
+                        || err.contains("ISO BMFF")
+                        || err.contains("Live Photo"),
                     "unexpected error for QT sample: {err}"
                 );
             }

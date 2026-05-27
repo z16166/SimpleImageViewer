@@ -160,7 +160,7 @@ mod tests {
             Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),
         };
         assert!(
-            err.contains("Live Photo motion component"),
+            err.contains(crate::loader::decode::detect::MOTION_VIDEO_BMFF_ERROR_TAG),
             "unexpected error: {err}"
         );
         assert!(crate::loader::decode::detect::primary_decode_failure_is_final(&err));
