@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use crate::hdr::gain_map::gain_map_weight;
-use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
+use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 use crate::hdr::ultra_hdr::display_to_physical_pixel;
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu;
@@ -40,7 +40,7 @@ fn ultra_hdr_gpu_deferred_route_error(hdr: &HdrImageBuffer) -> Option<String> {
         return Some("rgba_f32 should be empty for GPU-deferred JPEG_R".to_string());
     }
     let gain_map = hdr.metadata.gain_map.as_ref()?;
-    let deferred = gain_map.jpeg_deferred.as_ref()?;
+    let deferred = gain_map.iso_deferred.as_ref()?;
     if deferred.sdr_rgba.len() != hdr.width as usize * hdr.height as usize * 4 {
         return Some("baseline SDR plane size mismatch".to_string());
     }
@@ -56,8 +56,8 @@ fn assert_ultra_hdr_hdr_base_route(hdr: &HdrImageBuffer) {
         "HDR base JPEG_R should expose eager linear primary"
     );
     assert!(
-        jpeg_deferred_from_metadata(&hdr.metadata).is_none(),
-        "HDR base JPEG_R must not use jpeg_deferred GPU compose"
+        iso_deferred_from_metadata(&hdr.metadata).is_none(),
+        "HDR base JPEG_R must not use iso_deferred GPU compose"
     );
     assert!(
         hdr.metadata.gain_map.is_some(),
@@ -193,14 +193,14 @@ fn ultra_hdr_loader_uses_target_hdr_capacity() {
         .metadata
         .gain_map
         .as_ref()
-        .and_then(|gm| gm.jpeg_deferred.as_ref())
+        .and_then(|gm| gm.iso_deferred.as_ref())
         .expect("low-capacity deferred metadata")
         .metadata;
     let high_meta = high
         .metadata
         .gain_map
         .as_ref()
-        .and_then(|gm| gm.jpeg_deferred.as_ref())
+        .and_then(|gm| gm.iso_deferred.as_ref())
         .expect("high-capacity deferred metadata")
         .metadata;
 
@@ -322,8 +322,8 @@ fn ultra_hdr_threshold_sized_jpeg_routes_to_file_backed_hdr_tiles() {
         tile.rgba_f32.is_empty(),
         "Ultra HDR tiled source should defer compose to GPU"
     );
-    let deferred = jpeg_deferred_from_metadata(&tile.metadata).expect("jpeg deferred metadata");
-    let ctx = tile.jpeg_deferred_tile.expect("jpeg deferred tile context");
+    let deferred = iso_deferred_from_metadata(&tile.metadata).expect("iso deferred metadata");
+    let ctx = tile.iso_deferred_tile.expect("iso deferred tile context");
     let composed = compose_ultra_hdr_tile_region_cpu(
         tile.width,
         tile.height,
@@ -378,7 +378,7 @@ fn generated_8k_gcontainer_routes_to_hdr_tiled_when_present() {
         .extract_tile_rgba32f_arc(0, 0, 64, 64)
         .expect("extract deferred tile");
     assert!(
-        jpeg_deferred_from_metadata(&tile.metadata).is_some(),
-        "tiled Ultra HDR JPEG_R should expose jpeg_deferred metadata"
+        iso_deferred_from_metadata(&tile.metadata).is_some(),
+        "tiled Ultra HDR JPEG_R should expose iso_deferred metadata"
     );
 }

@@ -284,6 +284,9 @@ pub(crate) fn sample_gain_map_rgb(
     if gain_width == 0 || gain_height == 0 || width == 0 || height == 0 {
         return [0.0; 3];
     }
+    if validate_gain_map_rgba_len(gain_rgba, gain_width, gain_height).is_err() {
+        return [0.0; 3];
+    }
 
     let (x0, x1, y0, y1, tx, ty) =
         gain_map_bilinear_coords(x, y, width, height, gain_width, gain_height);
@@ -390,6 +393,66 @@ fn srgb_u8_to_linear_f32(value: u8) -> f32 {
     }
 }
 
+pub(crate) fn gain_map_rgba_byte_len(gain_width: u32, gain_height: u32) -> Option<usize> {
+    gain_width
+        .checked_mul(gain_height)?
+        .checked_mul(4)
+        .map(|n| n as usize)
+}
+
+pub(crate) fn validate_gain_map_rgba_len(
+    gain_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+) -> Result<(), String> {
+    if gain_width == 0 || gain_height == 0 {
+        return Err(format!(
+            "gain map dimensions must be non-zero: {gain_width}x{gain_height}"
+        ));
+    }
+    let expected = gain_map_rgba_byte_len(gain_width, gain_height)
+        .ok_or_else(|| format!("gain map dimensions overflow: {gain_width}x{gain_height}"))?;
+    if gain_rgba.len() != expected {
+        return Err(format!(
+            "gain map RGBA length mismatch: got {}, expected {} for {}x{}",
+            gain_rgba.len(),
+            expected,
+            gain_width,
+            gain_height
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_iso_deferred_planes(
+    width: u32,
+    height: u32,
+    sdr_rgba: &[u8],
+    gain_width: u32,
+    gain_height: u32,
+    gain_rgba: &[u8],
+) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "primary dimensions must be non-zero: {width}x{height}"
+        ));
+    }
+    let primary_expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| format!("primary dimension overflow: {width}x{height}"))?;
+    if sdr_rgba.len() != primary_expected {
+        return Err(format!(
+            "SDR baseline RGBA length mismatch: got {}, expected {} for {}x{}",
+            sdr_rgba.len(),
+            primary_expected,
+            width,
+            height
+        ));
+    }
+    validate_gain_map_rgba_len(gain_rgba, gain_width, gain_height)
+}
+
 fn gain_map_channel(
     gain_rgba: &[u8],
     gain_width: u32,
@@ -397,8 +460,12 @@ fn gain_map_channel(
     y: u32,
     channel_index: usize,
 ) -> f32 {
-    let index = (y as usize * gain_width as usize + x as usize) * 4;
-    f32::from(gain_rgba[index + channel_index.min(2)]) / 255.0
+    let ch = channel_index.min(2);
+    let index = (y as usize * gain_width as usize + x as usize) * 4 + ch;
+    if index >= gain_rgba.len() {
+        return 0.0;
+    }
+    f32::from(gain_rgba[index]) / 255.0
 }
 
 /// Horizontal and vertical bilinear tap indices/weights for one primary pixel.

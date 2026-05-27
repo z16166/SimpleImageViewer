@@ -59,7 +59,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
                 crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
             let max_side = hdr.width.max(hdr.height);
             let use_tiled_deferred = hdr.rgba_f32.is_empty()
-                && crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata(&hdr.metadata)
+                && crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata(&hdr.metadata)
                     .is_some()
                 && (pixel_count >= tiled_limit
                     || max_side >= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE);
@@ -98,7 +98,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
                 hdr_target_capacity,
                 &hdr_tone_map,
             )?;
-            let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+            let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
             return Ok(make_hdr_image_data(hdr, fallback));
         }
         Err(err) => {

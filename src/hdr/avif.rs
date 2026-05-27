@@ -468,7 +468,7 @@ fn avif_image_to_hdr_buffer(
                 gain_metadata,
                 metadata.luminance,
                 target_hdr_capacity,
-            ));
+            )?);
         }
     }
 
@@ -1232,7 +1232,7 @@ mod tests {
     #[cfg(feature = "avif-native")]
     #[test]
     fn avif_software_gain_map_decode_defers_compose_to_gpu() {
-        use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
+        use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
         use crate::hdr::types::HdrToneMapSettings;
         use std::path::PathBuf;
 
@@ -1258,7 +1258,7 @@ mod tests {
         let capacity = HdrToneMapSettings::default().target_hdr_capacity();
         let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
             .expect("decode avif");
-        if jpeg_deferred_from_metadata(&hdr.metadata).is_some() {
+        if iso_deferred_from_metadata(&hdr.metadata).is_some() {
             assert!(
                 hdr.rgba_f32.is_empty(),
                 "{} should defer ISO gain-map compose to GPU",
@@ -1348,7 +1348,7 @@ mod tests {
             super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
         let fallback_pixels =
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback");
-        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+        let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
         eprintln!(
             "paris: {}x{} tf={:?} ref={:?} cs={:?} profile={:?} gain={:?}",
             hdr.width,
@@ -1428,8 +1428,8 @@ mod tests {
             path.display()
         );
         for (idx, (_delay, hdr)) in frames.iter().enumerate() {
-            use crate::hdr::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
-            let deferred = jpeg_deferred_from_metadata(&hdr.metadata).is_some();
+            use crate::hdr::jpeg_gain_map_gpu::iso_deferred_from_metadata;
+            let deferred = iso_deferred_from_metadata(&hdr.metadata).is_some();
             assert!(
                 deferred || !hdr.rgba_f32.is_empty(),
                 "{} frame {idx} should carry HDR float pixels or GPU-deferred gain-map planes",

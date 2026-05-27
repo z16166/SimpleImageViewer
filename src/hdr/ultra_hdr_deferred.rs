@@ -48,14 +48,14 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
             "[HDR] Ultra HDR JPEG_R HDR base (backward/precomposed); skipping forward compose: {}",
             gain_map_metadata_diagnostic(metadata, target_hdr_capacity)
         );
-        return Ok(attach_iso_gain_map_hdr_base_from_primary_rgba8(
+        return attach_iso_gain_map_hdr_base_from_primary_rgba8(
             "JPEG_R", width, height, sdr_rgba, metadata,
-        ));
+        );
     }
 
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
 
-    Ok(attach_jpeg_gain_map_gpu_deferred(
+    attach_jpeg_gain_map_gpu_deferred(
         width,
         height,
         sdr_rgba,
@@ -64,5 +64,5 @@ pub(crate) fn decode_ultra_hdr_jpeg_deferred_bytes(
         gain_rgba,
         metadata,
         target_hdr_capacity,
-    ))
+    )
 }

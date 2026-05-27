@@ -22,6 +22,7 @@
 //! `max_storage_buffer_binding_size`, gain map is sampled from a texture, output is written
 //! directly to the display texture. Never show encoded primary for deferred HEIC.
 
+use crate::hdr::gain_map::validate_gain_map_rgba_len;
 use crate::hdr::heif_apple_gain_map::apple_gain_map_display_weight;
 #[cfg(test)]
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
@@ -29,6 +30,24 @@ use crate::hdr::types::{
     AppleHeicGainMapGpuSource, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
 };
 use std::sync::Arc;
+
+pub(crate) fn validate_apple_deferred_planes(
+    hdr: &HdrImageBuffer,
+    gain_w: u32,
+    gain_h: u32,
+    gain_rgba: &[u8],
+) -> Result<(), String> {
+    let pixel_count = hdr.width as usize * hdr.height as usize * 4;
+    if hdr.rgba_f32.len() != pixel_count {
+        return Err(format!(
+            "Apple deferred primary rgba_f32 length mismatch: got {}, expected {pixel_count} for {}x{}",
+            hdr.rgba_f32.len(),
+            hdr.width,
+            hdr.height
+        ));
+    }
+    validate_gain_map_rgba_len(gain_rgba, gain_w, gain_h)
+}
 
 /// Color space pushed into the Apple GPU compose uniform — must match CPU
 /// [`linear_primary_to_linear_srgb`](crate::hdr::decode::linear_primary_to_linear_srgb) inputs.
@@ -80,10 +99,8 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
     headroom_span: f32,
     stops: f32,
     hdr_target_capacity: f32,
-) -> HdrImageBuffer {
-    let pixel_count = hdr.width as usize * hdr.height as usize * 4;
-    debug_assert_eq!(hdr.rgba_f32.len(), pixel_count);
-    debug_assert_eq!(gain_rgba.len(), gain_w as usize * gain_h as usize * 4);
+) -> Result<HdrImageBuffer, String> {
+    validate_apple_deferred_planes(&hdr, gain_w, gain_h, &gain_rgba)?;
 
     let gain_rgba = Arc::new(gain_rgba);
     let weight = apple_gain_map_display_weight(hdr_target_capacity, stops);
@@ -104,10 +121,10 @@ pub(crate) fn attach_apple_heic_gpu_deferred(
             headroom_span,
             stops,
         }),
-        jpeg_deferred: None,
+        iso_deferred: None,
     });
 
-    HdrImageBuffer { metadata, ..hdr }
+    Ok(HdrImageBuffer { metadata, ..hdr })
 }
 
 pub(crate) fn apple_heic_deferred_from_metadata(
@@ -122,7 +139,9 @@ pub(crate) fn apple_heic_deferred_from_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrPixelFormat, HdrTransferFunction};
+    use crate::hdr::types::{
+        DEFAULT_SDR_WHITE_NITS, HdrColorSpace, HdrPixelFormat, HdrTransferFunction,
+    };
 
     #[test]
     fn attach_deferred_populates_gain_map_metadata() {
@@ -143,7 +162,7 @@ mod tests {
             ]),
         };
         let gain = vec![128u8; 2 * 2 * 4];
-        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0);
+        let out = attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, 1.0, 2.0, 4.0).expect("attach");
         let deferred = apple_heic_deferred_from_metadata(&out.metadata).expect("deferred");
         assert_eq!(deferred.gain_width, 2);
     }
@@ -220,7 +239,8 @@ mod tests {
 
         // New deferred path
         let deferred =
-            attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity);
+            attach_apple_heic_gpu_deferred(hdr, 2, 2, gain, headroom_span, stops, target_capacity)
+                .expect("attach");
         let new_composed = compose_apple_heic_deferred_to_scene_linear(&deferred, target_capacity)
             .expect("composed");
 
@@ -288,7 +308,7 @@ mod tests {
                 let c1 = 3424.0 / 4096.0;
                 let c2 = 2413.0 / 128.0;
                 let c3 = 2392.0 / 128.0;
-                let sdr_white = 80.0_f32; // DEFAULT_SDR_WHITE_NITS used in GPU compose uniform
+                let sdr_white = DEFAULT_SDR_WHITE_NITS;
                 let f = |c: f32| -> f32 {
                     let c = c.clamp(0.0, 1.0);
                     let code = c.powf(1.0 / m2);

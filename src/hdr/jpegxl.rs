@@ -1246,6 +1246,21 @@ fn capture_jxl_box(
 }
 
 #[cfg(feature = "jpegxl")]
+pub(crate) fn decode_jxl_gain_map_from_bundle(
+    bundle: &JxlGainMapBundleRef<'_>,
+    metadata: GainMapMetadata,
+    target_hdr_capacity: f32,
+) -> Result<(GainMapMetadata, u32, u32, Vec<u8>), String> {
+    let gain_map = decode_jxl_hdr_bytes_with_target_capacity(bundle.gain_map, target_hdr_capacity)?;
+    let gain_rgba = gain_map
+        .rgba_f32
+        .iter()
+        .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    Ok((metadata, gain_map.width, gain_map.height, gain_rgba))
+}
+
+#[cfg(feature = "jpegxl")]
 pub(crate) fn decode_jxl_gain_map(
     jhgm_box: &[u8],
     target_hdr_capacity: f32,
@@ -1255,13 +1270,7 @@ pub(crate) fn decode_jxl_gain_map(
 ) -> Result<(GainMapMetadata, u32, u32, Vec<u8>), String> {
     let bundle = read_jxl_gain_map_bundle(jhgm_box)?;
     let metadata = parse_iso_gain_map_metadata(bundle.metadata)?;
-    let gain_map = decode_jxl_hdr_bytes_with_target_capacity(bundle.gain_map, target_hdr_capacity)?;
-    let gain_rgba = gain_map
-        .rgba_f32
-        .iter()
-        .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
-        .collect();
-    Ok((metadata, gain_map.width, gain_map.height, gain_rgba))
+    decode_jxl_gain_map_from_bundle(&bundle, metadata, target_hdr_capacity)
 }
 
 #[cfg(feature = "jpegxl")]

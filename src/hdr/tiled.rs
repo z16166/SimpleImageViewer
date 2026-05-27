@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use rayon::prelude::*;
 
 use super::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, JpegDeferredTileContext,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
 };
 
 const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
@@ -42,8 +42,8 @@ pub struct HdrTileBuffer {
     pub color_space: HdrColorSpace,
     pub metadata: HdrImageMetadata,
     pub rgba_f32: Arc<Vec<f32>>,
-    /// Set when [`metadata`](Self::metadata) carries `jpeg_deferred` and pixels are composed on GPU.
-    pub jpeg_deferred_tile: Option<JpegDeferredTileContext>,
+    /// Set when [`metadata`](Self::metadata) carries `iso_deferred` and pixels are composed on GPU.
+    pub iso_deferred_tile: Option<IsoDeferredTileContext>,
 }
 
 impl HdrTileBuffer {
@@ -77,16 +77,16 @@ impl HdrTileBuffer {
             color_space,
             metadata,
             rgba_f32,
-            jpeg_deferred_tile: None,
+            iso_deferred_tile: None,
         }
     }
 
-    pub(crate) fn new_jpeg_deferred_tile(
+    pub(crate) fn new_iso_deferred_tile(
         width: u32,
         height: u32,
         color_space: HdrColorSpace,
         metadata: HdrImageMetadata,
-        jpeg_deferred_tile: JpegDeferredTileContext,
+        iso_deferred_tile: IsoDeferredTileContext,
     ) -> Self {
         Self {
             cache_id: NEXT_HDR_TILE_CACHE_ID.fetch_add(1, Ordering::Relaxed),
@@ -95,7 +95,7 @@ impl HdrTileBuffer {
             color_space,
             metadata,
             rgba_f32: Arc::new(Vec::new()),
-            jpeg_deferred_tile: Some(jpeg_deferred_tile),
+            iso_deferred_tile: Some(iso_deferred_tile),
         }
     }
 }

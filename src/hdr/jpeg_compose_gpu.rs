@@ -19,7 +19,7 @@
 use super::HdrCallbackResources;
 use crate::hdr::gain_map::gain_map_weight;
 use crate::hdr::types::{
-    HdrImageBuffer, HdrToneMapSettings, JpegDeferredTileContext, JpegGainMapGpuSource,
+    HdrImageBuffer, HdrToneMapSettings, IsoDeferredTileContext, IsoGainMapGpuSource,
 };
 use wgpu::util::DeviceExt;
 
@@ -40,8 +40,8 @@ struct JpegGainMapComposeSettings {
     gain_weight: f32,
     gain_width: u32,
     gain_height: u32,
-    primary_width: u32,
-    primary_height: u32,
+    physical_width: u32,
+    physical_height: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
     tile_width: u32,
@@ -66,7 +66,7 @@ fn srgb_to_linear(channel: f32) -> f32 {
 
 fn sample_gain_map_rgb(px: i32, py: i32) -> vec3<f32> {
     let gain_dims_f = vec2<f32>(f32(settings.gain_width), f32(settings.gain_height));
-    let primary_dims_f = vec2<f32>(f32(settings.primary_width), f32(settings.primary_height));
+    let primary_dims_f = vec2<f32>(f32(settings.physical_width), f32(settings.physical_height));
     let p_coord = vec2<f32>(f32(px), f32(py));
     let g_coord = clamp(
         (p_coord + vec2<f32>(0.5)) * gain_dims_f / primary_dims_f - vec2<f32>(0.5),
@@ -162,7 +162,7 @@ fn display_to_physical_pixel(
 
 @compute @workgroup_size(16, 16, 1)
 fn cs_compose_jpeg_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= settings.primary_width || gid.y >= settings.primary_height {
+    if gid.x >= settings.physical_width || gid.y >= settings.physical_height {
         return;
     }
     let px = i32(gid.x);
@@ -181,8 +181,8 @@ fn cs_compose_jpeg_gain_tile(@builtin(global_invocation_id) gid: vec3<u32>) {
     let physical = display_to_physical_pixel(
         display_x,
         display_y,
-        settings.primary_width,
-        settings.primary_height,
+        settings.physical_width,
+        settings.physical_height,
         settings.orientation,
     );
     let out = compose_at_primary_pixel(physical.x, physical.y);
@@ -205,8 +205,8 @@ struct JpegGainMapComposeUniform {
     gain_weight: f32,
     gain_width: u32,
     gain_height: u32,
-    primary_width: u32,
-    primary_height: u32,
+    physical_width: u32,
+    physical_height: u32,
     tile_origin_x: u32,
     tile_origin_y: u32,
     tile_width: u32,
@@ -218,6 +218,11 @@ struct JpegGainMapComposeUniform {
 }
 
 const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 128);
+
+// Both encode_* paths write `resources.jpeg_compose_uniform_buffer` immediately before
+// recording their compute pass. This is safe without a second buffer: static full-frame
+// compose and tiled compose are mutually exclusive at the ImageData/callback level, and
+// egui-wgpu invokes paint-callback `prepare` sequentially (see CallbackTrait docs).
 
 pub(super) fn create_jpeg_compose_compute_resources(
     device: &wgpu::Device,
@@ -312,8 +317,8 @@ pub(super) fn create_jpeg_compose_compute_resources(
             gain_weight: 0.0,
             gain_width: 0,
             gain_height: 0,
-            primary_width: 0,
-            primary_height: 0,
+            physical_width: 0,
+            physical_height: 0,
             tile_origin_x: 0,
             tile_origin_y: 0,
             tile_width: 0,
@@ -329,9 +334,9 @@ pub(super) fn create_jpeg_compose_compute_resources(
 }
 
 fn compose_uniform_fields(
-    deferred: &JpegGainMapGpuSource,
-    primary_width: u32,
-    primary_height: u32,
+    deferred: &IsoGainMapGpuSource,
+    physical_width: u32,
+    physical_height: u32,
     target_hdr_capacity: f32,
 ) -> JpegGainMapComposeUniform {
     let metadata = deferred.metadata;
@@ -348,8 +353,8 @@ fn compose_uniform_fields(
         gain_weight: gain_map_weight(metadata, target_hdr_capacity),
         gain_width: deferred.gain_width,
         gain_height: deferred.gain_height,
-        primary_width,
-        primary_height,
+        physical_width,
+        physical_height,
         tile_origin_x: 0,
         tile_origin_y: 0,
         tile_width: 0,
@@ -362,7 +367,7 @@ fn compose_uniform_fields(
 }
 
 fn compose_uniform(
-    deferred: &JpegGainMapGpuSource,
+    deferred: &IsoGainMapGpuSource,
     image: &HdrImageBuffer,
     target_hdr_capacity: f32,
 ) -> JpegGainMapComposeUniform {
@@ -370,8 +375,8 @@ fn compose_uniform(
 }
 
 fn compose_tile_uniform(
-    deferred: &JpegGainMapGpuSource,
-    tile_ctx: &JpegDeferredTileContext,
+    deferred: &IsoGainMapGpuSource,
+    tile_ctx: &IsoDeferredTileContext,
     tile_width: u32,
     tile_height: u32,
     target_hdr_capacity: f32,
@@ -395,7 +400,7 @@ pub(super) fn encode_compose_compute_pass(
     queue: &wgpu::Queue,
     resources: &HdrCallbackResources,
     image: &HdrImageBuffer,
-    deferred: &JpegGainMapGpuSource,
+    deferred: &IsoGainMapGpuSource,
     tone_map: &HdrToneMapSettings,
     sdr_view: &wgpu::TextureView,
     gain_view: &wgpu::TextureView,
@@ -454,8 +459,8 @@ pub(super) fn encode_tile_compose_compute_pass(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     resources: &HdrCallbackResources,
-    deferred: &JpegGainMapGpuSource,
-    tile_ctx: &JpegDeferredTileContext,
+    deferred: &IsoGainMapGpuSource,
+    tile_ctx: &IsoDeferredTileContext,
     tile_width: u32,
     tile_height: u32,
     tone_map: &HdrToneMapSettings,

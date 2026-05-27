@@ -76,7 +76,8 @@ pub(crate) fn load_avif_with_target_capacity(
                             hdr_target_capacity,
                             &hdr_tone_map,
                         )?;
-                        let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                        let fallback =
+                            DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
                         Ok(HdrAnimationFrame::new(hdr, fallback, delay))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -109,7 +110,7 @@ pub(crate) fn load_avif_with_target_capacity(
                     hdr_target_capacity,
                     &hdr_tone_map,
                 )?;
-                let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
                 let (hdr, fallback) =
                     apply_exif_orientation_to_hdr_pair(path.as_path(), hdr, fallback);
                 Ok(make_hdr_image_data(hdr, fallback))

@@ -214,7 +214,7 @@ pub(crate) fn load_raw(
                     hdr_target_capacity,
                     &hdr_tone_map,
                 )?;
-                let fallback = DecodedImage::new(hdr.width, hdr.height, fallback_pixels);
+                let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
                 return Ok(make_hdr_image_data(hdr, fallback));
             }
         } else {

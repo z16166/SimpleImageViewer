@@ -32,7 +32,7 @@ use crate::hdr::gain_map::{gain_map_weight, recover_hdr_channel_from_sdr_and_gai
 #[cfg(test)]
 use crate::hdr::jpeg_gain_map_gpu::attach_iso_gain_map_hdr_base_from_primary_rgba8;
 use crate::hdr::jpeg_gain_map_gpu::{
-    attach_jpeg_deferred_tile_metadata, jpeg_deferred_from_metadata,
+    attach_iso_deferred_tile_metadata, iso_deferred_from_metadata,
 };
 use crate::hdr::mpf::{extract_mpf_gain_map_jpeg_from_bytes, mpf_app2_payload_has_gain_map_image};
 use crate::hdr::tiled::{
@@ -40,7 +40,7 @@ use crate::hdr::tiled::{
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
 use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, JpegDeferredTileContext,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
 };
 #[cfg(test)]
 use crate::hdr::ultra_hdr_compose::compose_ultra_hdr_cpu;
@@ -142,9 +142,9 @@ pub(crate) fn decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
     let metadata = gain_map_metadata(&gain_map_jpeg)?;
 
     if iso_gain_map_skips_forward_compose(metadata) {
-        return Ok(attach_iso_gain_map_hdr_base_from_primary_rgba8(
+        return attach_iso_gain_map_hdr_base_from_primary_rgba8(
             "JPEG_R", width, height, sdr_rgba, metadata,
-        ));
+        );
     }
 
     let (gain_width, gain_height, gain_rgba) = libjpeg_turbo::decode_to_rgba(&gain_map_jpeg)?;
@@ -170,8 +170,8 @@ pub(crate) fn apply_orientation_to_hdr_buffer(
         return buffer;
     }
 
-    if jpeg_deferred_from_metadata(&buffer.metadata).is_some() {
-        return crate::hdr::jpeg_gain_map_gpu::apply_orientation_to_jpeg_deferred_hdr_buffer(
+    if iso_deferred_from_metadata(&buffer.metadata).is_some() {
+        return crate::hdr::jpeg_gain_map_gpu::apply_orientation_to_iso_deferred_hdr_buffer(
             buffer,
             orientation,
         );
@@ -400,7 +400,7 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             }
         }
 
-        let metadata = attach_jpeg_deferred_tile_metadata(
+        let metadata = attach_iso_deferred_tile_metadata(
             "JPEG_R",
             Arc::clone(&self.sdr_rgba),
             Arc::clone(&self.gain_rgba),
@@ -411,12 +411,12 @@ impl HdrTiledSource for UltraHdrTiledImageSource {
             self.physical_width,
             self.physical_height,
         );
-        let tile = Arc::new(HdrTileBuffer::new_jpeg_deferred_tile(
+        let tile = Arc::new(HdrTileBuffer::new_iso_deferred_tile(
             width,
             height,
             HdrColorSpace::LinearSrgb,
             metadata,
-            JpegDeferredTileContext {
+            IsoDeferredTileContext {
                 origin_x: x,
                 origin_y: y,
                 physical_width: self.physical_width,
@@ -846,18 +846,18 @@ mod tests {
             .gain_map
             .as_ref()
             .expect("gain map metadata");
-        let jpeg_deferred = gain_map
-            .jpeg_deferred
+        let iso_deferred = gain_map
+            .iso_deferred
             .as_ref()
             .expect("jpeg deferred GPU source");
         assert_eq!(
-            jpeg_deferred.sdr_rgba.len(),
+            iso_deferred.sdr_rgba.len(),
             deferred.width as usize * deferred.height as usize * 4
         );
-        assert!(jpeg_deferred.gain_width > 0 && jpeg_deferred.gain_height > 0);
+        assert!(iso_deferred.gain_width > 0 && iso_deferred.gain_height > 0);
 
         let (_, _, baseline_sdr) = libjpeg_turbo::decode_to_rgba(&bytes).expect("baseline SDR");
-        assert_eq!(jpeg_deferred.sdr_rgba.as_slice(), baseline_sdr.as_slice());
+        assert_eq!(iso_deferred.sdr_rgba.as_slice(), baseline_sdr.as_slice());
 
         let composed = decode_ultra_hdr_jpeg_bytes_with_cpu_compose(&bytes, capacity)
             .expect("CPU compose reference");
@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_iso_hdr_base_skips_jpeg_deferred() {
+    fn attach_iso_hdr_base_skips_iso_deferred() {
         let mut iso = Vec::new();
         write_iso_common_denominator_metadata(
             &mut iso,
@@ -1270,10 +1270,11 @@ mod tests {
             1,
             vec![255, 128, 64, 255],
             metadata,
-        );
+        )
+        .expect("attach hdr base");
 
         assert_eq!(hdr.rgba_f32.len(), 4);
-        assert!(jpeg_deferred_from_metadata(&hdr.metadata).is_none());
+        assert!(iso_deferred_from_metadata(&hdr.metadata).is_none());
         assert_eq!(hdr.metadata.transfer_function, HdrTransferFunction::Linear);
     }
 

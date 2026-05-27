@@ -20,11 +20,11 @@ use std::sync::Arc;
 
 use crate::hdr::gain_map::{
     GainMapMetadata, gain_map_metadata_diagnostic, gain_map_weight, luminance_hints_from_gain_map,
-    primary_srgb_rgba8_to_linear_rgba_f32,
+    primary_srgb_rgba8_to_linear_rgba_f32, validate_iso_deferred_planes,
 };
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrTransferFunction, JpegGainMapGpuSource,
+    HdrReference, HdrTransferFunction, IsoGainMapGpuSource,
 };
 
 pub(crate) fn attach_iso_gain_map_gpu_deferred(
@@ -37,7 +37,21 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
     gain_rgba: Vec<u8>,
     metadata: GainMapMetadata,
     hdr_target_capacity: f32,
-) -> HdrImageBuffer {
+) -> Result<HdrImageBuffer, String> {
+    validate_iso_deferred_planes(
+        width,
+        height,
+        &sdr_rgba,
+        gain_width,
+        gain_height,
+        &gain_rgba,
+    )?;
+    if metadata.backward_direction {
+        return Err(format!(
+            "{source} ISO gain map has backward direction; use HDR primary path instead of deferred forward compose"
+        ));
+    }
+
     let sdr_rgba = Arc::new(sdr_rgba);
     let gain_rgba = Arc::new(gain_rgba);
     let weight = gain_map_weight(metadata, hdr_target_capacity);
@@ -59,7 +73,7 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
         ),
         capped_display_referred: false,
         apple_heic_deferred: None,
-        jpeg_deferred: Some(JpegGainMapGpuSource {
+        iso_deferred: Some(IsoGainMapGpuSource {
             sdr_rgba: Arc::clone(&sdr_rgba),
             gain_rgba: Arc::clone(&gain_rgba),
             gain_width,
@@ -68,14 +82,14 @@ pub(crate) fn attach_iso_gain_map_gpu_deferred(
         }),
     });
 
-    HdrImageBuffer {
+    Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
         metadata: image_metadata,
         rgba_f32: Arc::new(Vec::new()),
-    }
+    })
 }
 
 /// Primary JPEG stores the HDR base rendition (ISO backward / `BaseRenditionIsHDR`); skip forward compose.
@@ -85,7 +99,21 @@ pub(crate) fn attach_iso_gain_map_hdr_base_from_primary_rgba8(
     height: u32,
     primary_rgba: Vec<u8>,
     metadata: GainMapMetadata,
-) -> HdrImageBuffer {
+) -> Result<HdrImageBuffer, String> {
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or_else(|| format!("primary dimension overflow: {width}x{height}"))?;
+    if primary_rgba.len() != expected_len {
+        return Err(format!(
+            "HDR base primary RGBA length mismatch: got {}, expected {} for {}x{}",
+            primary_rgba.len(),
+            expected_len,
+            width,
+            height
+        ));
+    }
+
     let rgba_f32 = primary_srgb_rgba8_to_linear_rgba_f32(&primary_rgba);
     let mut image_metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
     image_metadata.transfer_function = HdrTransferFunction::Linear;
@@ -100,17 +128,17 @@ pub(crate) fn attach_iso_gain_map_hdr_base_from_primary_rgba8(
         ),
         capped_display_referred: false,
         apple_heic_deferred: None,
-        jpeg_deferred: None,
+        iso_deferred: None,
     });
 
-    HdrImageBuffer {
+    Ok(HdrImageBuffer {
         width,
         height,
         format: HdrPixelFormat::Rgba32Float,
         color_space: HdrColorSpace::LinearSrgb,
         metadata: image_metadata,
         rgba_f32: Arc::new(rgba_f32),
-    }
+    })
 }
 
 pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
@@ -122,7 +150,7 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
     gain_rgba: Vec<u8>,
     metadata: GainMapMetadata,
     hdr_target_capacity: f32,
-) -> HdrImageBuffer {
+) -> Result<HdrImageBuffer, String> {
     attach_iso_gain_map_gpu_deferred(
         "JPEG_R",
         width,
@@ -136,7 +164,16 @@ pub(crate) fn attach_jpeg_gain_map_gpu_deferred(
     )
 }
 
-pub(crate) fn apply_orientation_to_jpeg_deferred_hdr_buffer(
+fn steal_arc_vec(slot: &mut Arc<Vec<u8>>) -> Vec<u8> {
+    if Arc::strong_count(slot) == 1 {
+        let taken = std::mem::replace(slot, Arc::new(Vec::new()));
+        Arc::try_unwrap(taken).expect("sole Arc owner")
+    } else {
+        slot.as_ref().clone()
+    }
+}
+
+pub(crate) fn apply_orientation_to_iso_deferred_hdr_buffer(
     mut buffer: HdrImageBuffer,
     orientation: u16,
 ) -> HdrImageBuffer {
@@ -147,18 +184,20 @@ pub(crate) fn apply_orientation_to_jpeg_deferred_hdr_buffer(
     let Some(gain_map) = buffer.metadata.gain_map.as_mut() else {
         return buffer;
     };
-    let Some(deferred) = gain_map.jpeg_deferred.as_mut() else {
+    let Some(deferred) = gain_map.iso_deferred.as_mut() else {
         return buffer;
     };
 
+    let sdr_vec = steal_arc_vec(&mut deferred.sdr_rgba);
     let (out_w, out_h, sdr) = crate::libtiff_loader::apply_orientation_buffer(
-        Arc::try_unwrap(Arc::clone(&deferred.sdr_rgba)).unwrap_or_else(|arc| (*arc).clone()),
+        sdr_vec,
         buffer.width,
         buffer.height,
         orientation,
     );
+    let gain_vec = steal_arc_vec(&mut deferred.gain_rgba);
     let (gain_w, gain_h, gain) = crate::libtiff_loader::apply_orientation_buffer(
-        Arc::try_unwrap(Arc::clone(&deferred.gain_rgba)).unwrap_or_else(|arc| (*arc).clone()),
+        gain_vec,
         deferred.gain_width,
         deferred.gain_height,
         orientation,
@@ -173,16 +212,16 @@ pub(crate) fn apply_orientation_to_jpeg_deferred_hdr_buffer(
     buffer
 }
 
-pub(crate) fn jpeg_deferred_from_metadata(
+pub(crate) fn iso_deferred_from_metadata(
     metadata: &HdrImageMetadata,
-) -> Option<&JpegGainMapGpuSource> {
+) -> Option<&IsoGainMapGpuSource> {
     metadata
         .gain_map
         .as_ref()
-        .and_then(|gain_map| gain_map.jpeg_deferred.as_ref())
+        .and_then(|gain_map| gain_map.iso_deferred.as_ref())
 }
 
-pub(crate) fn attach_jpeg_deferred_tile_metadata(
+pub(crate) fn attach_iso_deferred_tile_metadata(
     source: &'static str,
     sdr_rgba: Arc<Vec<u8>>,
     gain_rgba: Arc<Vec<u8>>,
@@ -212,7 +251,7 @@ pub(crate) fn attach_jpeg_deferred_tile_metadata(
         ),
         capped_display_referred: false,
         apple_heic_deferred: None,
-        jpeg_deferred: Some(JpegGainMapGpuSource {
+        iso_deferred: Some(IsoGainMapGpuSource {
             sdr_rgba,
             gain_rgba,
             gain_width,

@@ -24,7 +24,7 @@ mod jpeg_compose_gpu;
 use super::heif_apple_gain_map::apple_gain_map_display_weight;
 #[cfg(feature = "heif-native")]
 use super::heif_apple_gain_map_gpu::apple_heic_deferred_from_metadata;
-use super::jpeg_gain_map_gpu::jpeg_deferred_from_metadata;
+use super::jpeg_gain_map_gpu::iso_deferred_from_metadata;
 use super::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
@@ -33,6 +33,7 @@ use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
 };
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -823,14 +824,14 @@ impl CallbackTrait for HdrImagePlaneCallback {
         );
 
         let image_key = HdrImageKey::from_image(&self.image);
-        let jpeg_deferred = jpeg_deferred_from_metadata(&self.image.metadata);
+        let iso_deferred = iso_deferred_from_metadata(&self.image.metadata);
         #[cfg(feature = "heif-native")]
         let apple_deferred = apple_heic_deferred_from_metadata(&self.image.metadata);
         #[cfg(not(feature = "heif-native"))]
         let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
         let needs_upload = resources.uploaded_image_key != Some(image_key);
-        let needs_jpeg_compose = jpeg_deferred.is_some()
+        let needs_jpeg_compose = iso_deferred.is_some()
             && (needs_upload
                 || resources.baked_jpeg_image_key != Some(image_key)
                 || resources.baked_jpeg_weight_bits != Some(target_capacity_bits));
@@ -915,7 +916,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 resources.bind_group = None;
                 return compose_command_buffers;
             }
-            if let Some(deferred) = jpeg_deferred {
+            if let Some(deferred) = iso_deferred {
                 let sdr_view = resources.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
                 let gain_view = resources
                     .uploaded_gain_view
@@ -996,13 +997,13 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let apple_gpu_composed = apple_deferred.is_some()
             && resources.baked_apple_image_key == Some(image_key)
             && resources.uploaded_view.is_some();
-        let jpeg_gpu_composed = jpeg_deferred.is_some()
+        let jpeg_gpu_composed = iso_deferred.is_some()
             && resources.baked_jpeg_image_key == Some(image_key)
             && resources.uploaded_view.is_some();
         let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
 
         // Never display uncomposed deferred planes (SDR baseline / encoded primary).
-        if (apple_deferred.is_some() || jpeg_deferred.is_some()) && !deferred_gpu_composed {
+        if (apple_deferred.is_some() || iso_deferred.is_some()) && !deferred_gpu_composed {
             resources.bind_group = None;
             return compose_command_buffers;
         }
@@ -1109,17 +1110,17 @@ impl CallbackTrait for HdrTilePlaneCallback {
             &self.tone_map,
         );
         let tile_key = HdrTileKey::from_tile_with_uv(&self.tile, self.uv_rect);
-        let jpeg_deferred = jpeg_deferred_from_metadata(&self.tile.metadata);
-        let tile_ctx = self.tile.jpeg_deferred_tile;
-        let jpeg_deferred_tile = jpeg_deferred.is_some() && tile_ctx.is_some();
+        let iso_deferred = iso_deferred_from_metadata(&self.tile.metadata);
+        let tile_ctx = self.tile.iso_deferred_tile;
+        let iso_deferred_tile = iso_deferred.is_some() && tile_ctx.is_some();
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
         let binding_baked = resources
             .tile_bindings
             .binding(tile_key)
             .and_then(|binding| binding.baked_jpeg_weight_bits);
-        let needs_compose = jpeg_deferred_tile && binding_baked != Some(target_capacity_bits);
+        let needs_compose = iso_deferred_tile && binding_baked != Some(target_capacity_bits);
         let jpeg_gpu_composed =
-            jpeg_deferred_tile && (needs_compose || binding_baked == Some(target_capacity_bits));
+            iso_deferred_tile && (needs_compose || binding_baked == Some(target_capacity_bits));
         let uniform = hdr_tile_tone_map_uniform(
             self.tone_map,
             self.rotation_steps,
@@ -1132,7 +1133,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             jpeg_gpu_composed,
         );
 
-        if let (Some(deferred), Some(ctx)) = (jpeg_deferred, tile_ctx) {
+        if let (Some(deferred), Some(ctx)) = (iso_deferred, tile_ctx) {
             let upload_key = JpegTiledUploadKey {
                 sdr_ptr: std::sync::Arc::as_ptr(&deferred.sdr_rgba) as usize,
                 gain_ptr: std::sync::Arc::as_ptr(&deferred.gain_rgba) as usize,
@@ -1174,6 +1175,42 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 let Some(gain_view) = resources.jpeg_tiled_gain_view.as_ref() else {
                     return Vec::new();
                 };
+
+                let reused_compose =
+                    resources
+                        .tile_bindings
+                        .binding(tile_key)
+                        .and_then(|binding| {
+                            iso_deferred_tile_compose_views_reusable(
+                                binding,
+                                self.tile.width,
+                                self.tile.height,
+                            )
+                        });
+
+                if let Some((_hdr_view, display_storage)) = reused_compose {
+                    let compose_command = jpeg_compose_gpu::encode_tile_compose_compute_pass(
+                        device,
+                        queue,
+                        resources,
+                        deferred,
+                        &ctx,
+                        self.tile.width,
+                        self.tile.height,
+                        &self.tone_map,
+                        sdr_view,
+                        gain_view,
+                        &display_storage,
+                    );
+                    if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                        if let Some(buffer) = binding.tone_map_buffer.as_ref() {
+                            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+                        }
+                    }
+                    return vec![compose_command];
+                }
+
                 match create_empty_rgba32f_texture(device, self.tile.width, self.tile.height) {
                     Ok(uploaded) => {
                         let Some(display_storage) = uploaded.storage_view.as_ref() else {
@@ -1223,6 +1260,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             tile_key,
                             uploaded.texture,
                             uploaded.view,
+                            uploaded.storage_view,
                             tone_map_buffer,
                             bind_group,
                             Some(target_capacity_bits),
@@ -1274,6 +1312,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         tile_key,
                         uploaded.texture,
                         uploaded.view,
+                        None,
                         tone_map_buffer,
                         bind_group,
                         None,
@@ -1289,7 +1328,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
             if let Some(buffer) = binding.tone_map_buffer.as_ref() {
                 let binding_baked = binding.baked_jpeg_weight_bits;
                 let jpeg_gpu_composed =
-                    jpeg_deferred_tile && binding_baked == Some(target_capacity_bits);
+                    iso_deferred_tile && binding_baked == Some(target_capacity_bits);
                 let uniform = hdr_tile_tone_map_uniform(
                     self.tone_map,
                     self.rotation_steps,
@@ -1661,6 +1700,15 @@ struct HdrCallbackResources {
     jpeg_compose_bind_group_layout: wgpu::BindGroupLayout,
     jpeg_compose_pipeline: wgpu::ComputePipeline,
     jpeg_compose_tile_pipeline: wgpu::ComputePipeline,
+    /// Single ISO gain-map compose uniform for this viewport's [`HdrCallbackResources`].
+    ///
+    /// Shared by [`jpeg_compose_gpu::encode_compose_compute_pass`] (static deferred JPEG via
+    /// [`HdrImagePlaneCallback`]) and [`jpeg_compose_gpu::encode_tile_compose_compute_pass`]
+    /// (tiled Ultra HDR via [`HdrTilePlaneCallback`]). No mutex is needed:
+    /// - routing never registers both callbacks for the same image;
+    /// - egui runs all `prepare` hooks sequentially on one thread;
+    /// - at most one tile issues a compose command buffer per frame in normal pan/zoom
+    ///   (rebake is rare; other visible tiles reuse cached bindings).
     jpeg_compose_uniform_buffer: wgpu::Buffer,
     jpeg_tiled_upload_key: Option<JpegTiledUploadKey>,
     jpeg_tiled_sdr_texture: Option<wgpu::Texture>,
@@ -1923,6 +1971,7 @@ impl HdrTileBindings {
         key: HdrTileKey,
         texture: wgpu::Texture,
         view: wgpu::TextureView,
+        compose_storage_view: Option<wgpu::TextureView>,
         tone_map_buffer: wgpu::Buffer,
         bind_group: wgpu::BindGroup,
         baked_jpeg_weight_bits: Option<u32>,
@@ -1933,6 +1982,7 @@ impl HdrTileBindings {
             HdrTileBinding {
                 _texture: Some(texture),
                 _view: Some(view),
+                compose_storage_view,
                 tone_map_buffer: Some(tone_map_buffer),
                 bind_group: Some(bind_group),
                 estimated_bytes: 0,
@@ -2012,6 +2062,7 @@ impl HdrTileBindings {
             HdrTileBinding {
                 _texture: None,
                 _view: None,
+                compose_storage_view: None,
                 tone_map_buffer: None,
                 bind_group: None,
                 estimated_bytes: 0,
@@ -2053,10 +2104,25 @@ impl HdrTileBindings {
 struct HdrTileBinding {
     _texture: Option<wgpu::Texture>,
     _view: Option<wgpu::TextureView>,
+    /// Storage view for ISO deferred tile GPU compose; reused across rebakes at the same tile size.
+    compose_storage_view: Option<wgpu::TextureView>,
     tone_map_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     estimated_bytes: usize,
     baked_jpeg_weight_bits: Option<u32>,
+}
+
+fn iso_deferred_tile_compose_views_reusable(
+    binding: &HdrTileBinding,
+    width: u32,
+    height: u32,
+) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+    let hdr_view = binding._view.as_ref()?;
+    let storage_view = binding.compose_storage_view.as_ref()?;
+    if binding._texture.is_none() || width == 0 || height == 0 {
+        return None;
+    }
+    Some((hdr_view.clone(), storage_view.clone()))
 }
 
 fn hdr_tile_key_bytes(key: HdrTileKey) -> usize {
@@ -2070,7 +2136,7 @@ fn hdr_tile_key_bytes(key: HdrTileKey) -> usize {
 fn upload_jpeg_tiled_source_textures(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    deferred: &crate::hdr::types::JpegGainMapGpuSource,
+    deferred: &crate::hdr::types::IsoGainMapGpuSource,
     physical_width: u32,
     physical_height: u32,
     max_texture_dimension_2d: u32,
@@ -2202,12 +2268,12 @@ fn wgpu_copy_bytes_per_row(unpadded_bytes_per_row: u32) -> u32 {
 }
 
 /// Pack tightly laid-out RGBA rows into the pitch required by [`wgpu::Queue::write_texture`].
-fn pack_rows_for_texture_copy(
-    tight: &[u8],
+fn pack_rows_for_texture_copy<'a>(
+    tight: &'a [u8],
     width: u32,
     height: u32,
     bytes_per_pixel: u32,
-) -> Result<(Vec<u8>, u32), String> {
+) -> Result<(Cow<'a, [u8]>, u32), String> {
     let unpadded_bytes_per_row = width
         .checked_mul(bytes_per_pixel)
         .ok_or_else(|| format!("row byte count overflows for width {width}"))?;
@@ -2223,7 +2289,7 @@ fn pack_rows_for_texture_copy(
         ));
     }
     if bytes_per_row == unpadded_bytes_per_row {
-        return Ok((tight.to_vec(), bytes_per_row));
+        return Ok((Cow::Borrowed(tight), bytes_per_row));
     }
 
     let mut padded = vec![0u8; (bytes_per_row * height) as usize];
@@ -2233,7 +2299,7 @@ fn pack_rows_for_texture_copy(
         padded[dst_start..dst_start + unpadded_bytes_per_row as usize]
             .copy_from_slice(&tight[src_start..src_start + unpadded_bytes_per_row as usize]);
     }
-    Ok((padded, bytes_per_row))
+    Ok((Cow::Owned(padded), bytes_per_row))
 }
 
 fn upload_rgba8_texture(
@@ -2288,7 +2354,7 @@ fn upload_image_plane(
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
-    if let Some(deferred) = jpeg_deferred_from_metadata(&image.metadata) {
+    if let Some(deferred) = iso_deferred_from_metadata(&image.metadata) {
         let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
         let sdr = upload_rgba8_texture(
             device,
@@ -2428,6 +2494,18 @@ fn validate_upload_layout(
             "HDR upload currently supports only Rgba32Float buffers, got {:?}",
             image.format
         ));
+    }
+
+    if image
+        .metadata
+        .gain_map
+        .as_ref()
+        .is_some_and(|gain_map| gain_map.gpu_compose_pending())
+    {
+        return Err(
+            "HDR upload rejected: gain-map GPU compose is pending; rgba_f32 is not display-ready"
+                .to_string(),
+        );
     }
 
     validate_rgba32f_upload_layout(
@@ -2633,6 +2711,19 @@ mod tests {
         assert_eq!(padded.len(), bytes_per_row as usize * height as usize);
         assert_eq!(padded[0], 100);
         assert_eq!(padded[bytes_per_row as usize], 101);
+        assert!(matches!(padded, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn pack_rows_for_texture_copy_borrows_when_already_aligned() {
+        let width = 64;
+        let height = 2;
+        let tight = vec![0u8; width as usize * height as usize * 4];
+        let (packed, bytes_per_row) =
+            pack_rows_for_texture_copy(&tight, width, height, 4).expect("pack rows");
+        assert_eq!(bytes_per_row, width * 4);
+        assert!(matches!(packed, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(packed.as_ptr(), tight.as_ptr()));
     }
 
     #[test]
@@ -2767,7 +2858,7 @@ mod tests {
             diagnostic: String::new(),
             capped_display_referred: true,
             apple_heic_deferred: None,
-            jpeg_deferred: None,
+            iso_deferred: None,
         });
         let tone = HdrToneMapSettings {
             sdr_white_nits: 203.0,

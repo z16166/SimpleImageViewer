@@ -67,7 +67,13 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred(
     gain_metadata: GainMapMetadata,
     container_luminance: HdrLuminanceMetadata,
     target_hdr_capacity: f32,
-) -> HdrImageBuffer {
+) -> Result<HdrImageBuffer, String> {
+    if gain_metadata.backward_direction {
+        return Err(
+            "AVIF ISO gain map has backward direction; deferred forward compose is invalid"
+                .to_string(),
+        );
+    }
     log::debug!(
         "[HDR] AVIF ISO gain map GPU deferred metadata: {}",
         gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity)
@@ -82,9 +88,9 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred(
         gain_rgba,
         gain_metadata,
         target_hdr_capacity,
-    );
+    )?;
     merge_avif_container_luminance(&mut buffer, container_luminance);
-    buffer
+    Ok(buffer)
 }
 
 fn merge_avif_container_luminance(buffer: &mut HdrImageBuffer, container: HdrLuminanceMetadata) {
@@ -157,7 +163,7 @@ mod tests {
             diagnostic: gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity),
             capped_display_referred: false,
             apple_heic_deferred: None,
-            jpeg_deferred: None,
+            iso_deferred: None,
         });
         HdrImageBuffer {
             width,
@@ -216,16 +222,17 @@ mod tests {
             gain_metadata,
             HdrLuminanceMetadata::default(),
             capacity,
-        );
+        )
+        .expect("attach");
         assert!(deferred.rgba_f32.is_empty());
-        let jpeg_deferred = deferred
+        let iso_deferred = deferred
             .metadata
             .gain_map
             .as_ref()
-            .and_then(|gm| gm.jpeg_deferred.as_ref())
-            .expect("jpeg deferred");
-        assert_eq!(jpeg_deferred.sdr_rgba.as_slice(), sdr_rgba.as_slice());
-        assert_eq!(jpeg_deferred.gain_rgba.as_slice(), gain_rgba.as_slice());
+            .and_then(|gm| gm.iso_deferred.as_ref())
+            .expect("iso deferred");
+        assert_eq!(iso_deferred.sdr_rgba.as_slice(), sdr_rgba.as_slice());
+        assert_eq!(iso_deferred.gain_rgba.as_slice(), gain_rgba.as_slice());
 
         let cpu = avif_compose_gain_map_cpu_reference(
             1,
@@ -240,5 +247,32 @@ mod tests {
         );
         assert_eq!(cpu.rgba_f32.len(), 8);
         assert!(cpu.rgba_f32[0].is_finite());
+    }
+
+    #[test]
+    fn avif_deferred_rejects_backward_direction() {
+        let gain_metadata = GainMapMetadata {
+            gain_map_min: [0.0; 3],
+            gain_map_max: [1.0; 3],
+            gamma: [1.0; 3],
+            offset_sdr: [1.0 / 64.0; 3],
+            offset_hdr: [1.0 / 64.0; 3],
+            hdr_capacity_min: 1.0,
+            hdr_capacity_max: 4.0,
+            backward_direction: true,
+        };
+        let err = attach_avif_gain_map_gpu_deferred(
+            1,
+            1,
+            vec![128; 4],
+            1,
+            1,
+            vec![128; 4],
+            gain_metadata,
+            HdrLuminanceMetadata::default(),
+            4.0,
+        )
+        .expect_err("backward");
+        assert!(err.contains("backward"));
     }
 }
