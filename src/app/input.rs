@@ -539,7 +539,7 @@ impl ImageViewerApp {
                     .unwrap_or(crate::update::core::GITHUB_RELEASES_PAGE);
                 if let Err(err) = webbrowser::open(url) {
                     self.status_message =
-                        rust_i18n::t!("update.check_failed", err = err.to_string()).to_string();
+                        rust_i18n::t!("update.open_page_failed", err = err.to_string()).to_string();
                 }
             }
             ModalAction::IgnoreUpdateVersion => {

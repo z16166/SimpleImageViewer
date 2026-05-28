@@ -15,11 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{ImageViewerApp, ScaleMode, TransitionStyle};
-use crate::settings::UpdateProxyType;
 use crate::ui::utils::{
     middle_truncate, path_display_box, setup_fonts, setup_visuals, styled_button,
     styled_button_widget,
 };
+use crate::update::core::ProxyType;
 use eframe::Frame;
 use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
 use rust_i18n::t;
@@ -288,7 +288,7 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             egui::ComboBox::from_id_salt("update_proxy_type")
                 .selected_text(app.settings.updates.proxy.proxy_type.label())
                 .show_ui(ui, |ui| {
-                    for proxy_type in UpdateProxyType::ALL {
+                    for proxy_type in ProxyType::ALL {
                         ui.selectable_value(
                             &mut app.settings.updates.proxy.proxy_type,
                             proxy_type,

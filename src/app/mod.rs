@@ -454,6 +454,7 @@ pub struct ImageViewerApp {
     pub(crate) update_checking: bool,
     pub(crate) update_install_rx: Option<Receiver<crate::update::install::UpdateInstallMessage>>,
     pub(crate) update_installing: bool,
+    pub(crate) pending_update_restart: bool,
     pub(crate) pending_update: Option<crate::update::core::UpdateCandidate>,
 
     // Current image resolution (used by wallpaper dialog and OSD)
@@ -634,7 +635,7 @@ impl ImageViewerApp {
                     self.update_installing = false;
                     self.status_message = rust_i18n::t!("update.ready_to_restart").to_string();
                     self.update_install_rx = None;
-                    std::process::exit(0);
+                    self.pending_update_restart = true;
                 }
                 crate::update::install::UpdateInstallMessage::Failed(err) => {
                     self.update_installing = false;
@@ -953,6 +954,12 @@ impl eframe::App for ImageViewerApp {
             self.last_minimized = false;
             self.osd.invalidate(); // Invalidate HUD cache to force total redraw
             ctx.request_repaint();
+        }
+
+        if self.pending_update_restart {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint_after(Duration::from_millis(50));
+            return;
         }
 
         self.start_update_check(false);

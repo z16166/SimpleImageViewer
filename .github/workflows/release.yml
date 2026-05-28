@@ -465,6 +465,10 @@ jobs:
           $archiveName = "SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           $binarySrc = "target/${{ matrix.target }}/ci/${{ matrix.binary_name }}"
           $updaterSrc = "target/${{ matrix.target }}/ci/update.exe"
+          if (-not (Test-Path $updaterSrc)) {
+            Write-Error "update.exe not found at $updaterSrc"
+            exit 1
+          }
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp $updaterSrc staging/update.exe
@@ -690,6 +694,10 @@ jobs:
           $archiveName = "SimpleImageViewer-win7-x64.zip"
           $binarySrc = "target/win7_build/x86_64-pc-windows-msvc/ci/SimpleImageViewer.exe"
           $updaterSrc = "target/x86_64-pc-windows-msvc/ci/update.exe"
+          if (-not (Test-Path $updaterSrc)) {
+            Write-Error "update.exe not found at $updaterSrc"
+            exit 1
+          }
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp $updaterSrc staging/update.exe

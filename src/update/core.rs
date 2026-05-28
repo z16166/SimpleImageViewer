@@ -37,11 +37,30 @@ pub enum CpuArch {
     Aarch64,
 }
 
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProxyType {
     Http,
     Socks5,
+    Socks5h,
+}
+
+impl ProxyType {
+    pub const ALL: [Self; 3] = [Self::Http, Self::Socks5, Self::Socks5h];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Http => "HTTP",
+            Self::Socks5 => "SOCKS5 (local DNS)",
+            Self::Socks5h => "SOCKS5h (proxy DNS)",
+        }
+    }
+}
+
+impl Default for ProxyType {
+    fn default() -> Self {
+        Self::Http
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +134,7 @@ pub fn proxy_url(config: &ProxyConfig) -> Option<String> {
     let scheme = match config.proxy_type {
         ProxyType::Http => "http",
         ProxyType::Socks5 => "socks5",
+        ProxyType::Socks5h => "socks5h",
     };
     Some(format!(
         "{}://{}:{}",
@@ -211,6 +231,10 @@ pub fn candidate_from_release(
 }
 
 pub fn is_safe_archive_path(path: &str) -> bool {
+    // Callers normalize `\` to `/` first, then we only allow plain path components.
+    // This rejects absolute paths, prefixes, `.` and `..` traversal. Windows device
+    // names such as `CON` are not accepted as special cases here because release
+    // archives are expected to contain only app-owned filenames checked later.
     let p = Path::new(path);
     !p.is_absolute()
         && p.components()
@@ -246,6 +270,20 @@ mod tests {
         assert_eq!(
             proxy_url(&config),
             Some("socks5://127.0.0.1:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn proxy_url_supports_socks5h_remote_dns() {
+        let config = ProxyConfig {
+            enabled: true,
+            proxy_type: ProxyType::Socks5h,
+            host: "127.0.0.1".to_string(),
+            port: 1080,
+        };
+        assert_eq!(
+            proxy_url(&config),
+            Some("socks5h://127.0.0.1:1080".to_string())
         );
     }
 

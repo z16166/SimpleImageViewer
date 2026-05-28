@@ -66,11 +66,11 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .show(ui, |ui| {
-                    ui.label(if candidate.release_notes.trim().is_empty() {
-                        candidate.release_page_url.as_str()
+                    if candidate.release_notes.trim().is_empty() {
+                        ui.label(candidate.release_page_url.as_str());
                     } else {
-                        candidate.release_notes.as_str()
-                    });
+                        render_release_notes(ui, candidate.release_notes.as_str(), palette);
+                    }
                 });
             ui.add_space(12.0);
             if !cfg!(target_os = "windows") {
@@ -119,4 +119,37 @@ fn format_bytes(bytes: u64) -> String {
         return "-".to_string();
     }
     format!("{:.1} MiB", bytes as f64 / MIB)
+}
+
+fn render_release_notes(ui: &mut egui::Ui, notes: &str, palette: &ThemePalette) {
+    for line in notes.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+        let heading = trimmed.trim_start_matches('#').trim();
+        if trimmed.starts_with('#') && !heading.is_empty() {
+            ui.label(RichText::new(clean_inline_markdown(heading)).strong());
+            continue;
+        }
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "));
+        if let Some(item) = bullet {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("•").color(palette.text_muted));
+                ui.label(clean_inline_markdown(item));
+            });
+            continue;
+        }
+        ui.label(clean_inline_markdown(trimmed));
+    }
+}
+
+fn clean_inline_markdown(text: &str) -> String {
+    text.replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+        .replace("\\r", "")
 }

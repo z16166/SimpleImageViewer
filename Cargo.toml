@@ -87,7 +87,6 @@ semver = "1.0.28"
 sha2 = "0.11.0"
 zip = "8.6.0"
 webbrowser = "1.2.1"
-tempfile = "3.27.0"
 
 [features]
 # OpenEXR + AVIF/HEIF/JPEG XL native HDR paths are on by default so CI and release
@@ -125,6 +124,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -83,38 +83,11 @@ define_transition_styles!(
     Curtain  => "transition.curtain"
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpdateProxyType {
-    Http,
-    Socks5,
-}
-
-impl UpdateProxyType {
-    pub const ALL: [Self; 2] = [Self::Http, Self::Socks5];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Http => "HTTP",
-            Self::Socks5 => "SOCKS5",
-        }
-    }
-}
-
-impl From<UpdateProxyType> for ProxyType {
-    fn from(value: UpdateProxyType) -> Self {
-        match value {
-            UpdateProxyType::Http => ProxyType::Http,
-            UpdateProxyType::Socks5 => ProxyType::Socks5,
-        }
-    }
-}
-
 impl UpdateProxySettings {
     pub fn to_proxy_config(&self) -> ProxyConfig {
         ProxyConfig {
             enabled: self.enabled,
-            proxy_type: self.proxy_type.into(),
+            proxy_type: self.proxy_type,
             host: self.host.clone(),
             port: self.port,
         }
@@ -126,7 +99,7 @@ pub struct UpdateProxySettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub proxy_type: UpdateProxyType,
+    pub proxy_type: ProxyType,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
@@ -331,17 +304,11 @@ impl Default for ScaleMode {
     }
 }
 
-impl Default for UpdateProxyType {
-    fn default() -> Self {
-        Self::Http
-    }
-}
-
 impl Default for UpdateProxySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            proxy_type: UpdateProxyType::Http,
+            proxy_type: ProxyType::Http,
             host: String::new(),
             port: 0,
         }
@@ -776,7 +743,7 @@ mod tests {
         assert!(!settings.updates.proxy.enabled);
         assert_eq!(
             settings.updates.proxy.proxy_type,
-            super::UpdateProxyType::Http
+            crate::update::core::ProxyType::Http
         );
     }
 

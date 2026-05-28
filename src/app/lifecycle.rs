@@ -345,6 +345,7 @@ impl ImageViewerApp {
             update_checking: false,
             update_install_rx: None,
             update_installing: false,
+            pending_update_restart: false,
             pending_update: None,
             current_image_res: None,
             prev_texture: None,

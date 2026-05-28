@@ -1,7 +1,29 @@
-// Simple Image Viewer updater helper.
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
 // This helper intentionally avoids egui/wgpu and uses only std plus Win32 APIs.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+#[cfg(target_os = "windows")]
+const MAIN_PROCESS_WAIT_TIMEOUT_MS: u32 = 30_000;
+#[cfg(target_os = "windows")]
+const MAX_RENAME_RETRIES: u32 = 40;
+#[cfg(target_os = "windows")]
+const RETRY_SLEEP_MS: u64 = 250;
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
@@ -92,24 +114,45 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
 
 #[cfg(target_os = "windows")]
 fn wait_for_process_exit(pid: u32, log: &std::path::Path) {
-    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
 
     unsafe {
-        match OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+        match OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) {
             Ok(handle) => {
-                let result = WaitForSingleObject(handle, 30_000);
-                let _ = CloseHandle(handle);
-                if result.0 != 0 {
+                let handle = ScopedHandle(handle);
+                let result = WaitForSingleObject(handle.0, MAIN_PROCESS_WAIT_TIMEOUT_MS);
+                if result == WAIT_TIMEOUT {
                     log_line(
                         log,
-                        "main process wait timed out; continuing with retry loop",
+                        "main process wait timed out; terminating main process before replacement",
                     );
+                    if TerminateProcess(handle.0, 0).is_ok() {
+                        let _ = WaitForSingleObject(handle.0, 5_000);
+                        log_line(log, "main process termination requested");
+                    } else {
+                        log_line(
+                            log,
+                            "failed to terminate main process; continuing with retry loop",
+                        );
+                    }
+                } else if result != WAIT_OBJECT_0 {
+                    log_line(log, "main process wait failed; continuing with retry loop");
                 }
             }
             Err(_) => log_line(log, "main process already exited or could not be opened"),
+        }
+    }
+
+    struct ScopedHandle(HANDLE);
+
+    impl Drop for ScopedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
         }
     }
 }
@@ -121,7 +164,7 @@ fn retry(
     label: &str,
 ) -> Result<(), String> {
     let mut last_err = String::new();
-    for attempt in 1..=80 {
+    for attempt in 1..=MAX_RENAME_RETRIES {
         match op() {
             Ok(()) => return Ok(()),
             Err(err) => {
@@ -130,7 +173,7 @@ fn retry(
                     log,
                     &format!("{label} attempt {attempt} failed: {last_err}"),
                 );
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                std::thread::sleep(std::time::Duration::from_millis(RETRY_SLEEP_MS));
             }
         }
     }
@@ -160,7 +203,11 @@ fn log_line(path: &std::path::Path, message: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let line = format!("{:?} {message}\n", std::time::SystemTime::now());
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{ts}] {message}\n");
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
