@@ -418,5 +418,4 @@ impl ImageViewerApp {
     pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
     }
-
 }

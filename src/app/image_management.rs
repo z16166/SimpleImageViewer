@@ -439,10 +439,13 @@ impl ImageViewerApp {
 
     fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
-        let within_window = |idx: usize| prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE);
+        let within_window = |idx: usize| {
+            prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE)
+        };
 
         self.prefetched_tiles.retain(|&idx, _| within_window(idx));
-        self.deferred_sdr_uploads.retain(|&idx, _| within_window(idx));
+        self.deferred_sdr_uploads
+            .retain(|&idx, _| within_window(idx));
 
         let distant_hdr: Vec<usize> = self
             .hdr_image_cache
