@@ -80,6 +80,7 @@ impl ImageViewerApp {
 
         let original_index = self.current_index;
         let path_to_delete = self.image_files[original_index].clone();
+        self.invalidate_random_slideshow_order();
 
         // Final sanity check: make sure file still exists
         if !path_to_delete.exists() {

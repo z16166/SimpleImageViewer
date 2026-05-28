@@ -596,6 +596,24 @@ pub fn load_via_wic(
     high_quality: bool,
     orientation_override: Option<u16>,
 ) -> std::result::Result<crate::loader::ImageData, String> {
+    load_via_wic_inner(path, high_quality, orientation_override, false)
+}
+
+/// Decode by sniffing the bitstream (ISO BMFF / QuickTime / mislabeled extensions), not the path suffix.
+pub fn load_via_wic_stream_sniff(
+    path: &std::path::Path,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+) -> std::result::Result<crate::loader::ImageData, String> {
+    load_via_wic_inner(path, high_quality, orientation_override, true)
+}
+
+fn load_via_wic_inner(
+    path: &std::path::Path,
+    high_quality: bool,
+    orientation_override: Option<u16>,
+    prefer_stream_sniff: bool,
+) -> std::result::Result<crate::loader::ImageData, String> {
     unsafe {
         let _com = ComGuard::new().map_err(|e| format!("COM Init failed: {:?}", e))?;
 
@@ -617,41 +635,95 @@ pub fn load_via_wic(
         let mut stream_out: Option<IWICStream> = None;
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 
-        // --- Fast Path: Generic direct instantiation via registry CLSID (No sniffing) ---
-        let clsid_opt = if let Ok(reg) = get_registry().read() {
-            reg.formats
-                .iter()
-                .find(|f| f.extension == ext)
-                .and_then(|f| f.wic_clsid)
-        } else {
-            None
-        };
-
-        if let Some(clsid_bytes) = clsid_opt {
-            let mut clsid = GUID::default();
-            std::ptr::copy_nonoverlapping(
-                clsid_bytes.as_ptr(),
-                &mut clsid as *mut GUID as *mut u8,
-                16,
-            );
-
-            let specific_decoder: Result<IWICBitmapDecoder> =
-                CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
-            if let Ok(sd) = specific_decoder {
-                if let Ok(stream) = factory.CreateStream() {
-                    // --- Mmap Path ---
-                    let file = std::fs::File::open(path)
-                        .map_err(|e| format!("File open failed: {:?}", e))?;
-                    if let Ok(mmap) = memmap2::Mmap::map(&file) {
+        if prefer_stream_sniff {
+            match std::fs::File::open(path) {
+                Ok(file) => match memmap2::Mmap::map(&file) {
+                    Ok(mmap) => {
                         let m_arc = std::sync::Arc::new(mmap);
-                        if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                            if sd
-                                .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
-                                .is_ok()
-                            {
-                                decoder_res = Ok(sd);
-                                stream_out = Some(stream);
-                                mmap_out = Some(m_arc);
+                        match factory.CreateStream() {
+                            Ok(stream) => {
+                                if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
+                                    decoder_res = factory.CreateDecoderFromStream(
+                                        &stream,
+                                        std::ptr::null(),
+                                        WICDecodeMetadataCacheOnDemand,
+                                    );
+                                    if decoder_res.is_ok() {
+                                        stream_out = Some(stream);
+                                        mmap_out = Some(m_arc);
+                                    } else {
+                                        log::debug!(
+                                            "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
+                                            path
+                                        );
+                                    }
+                                } else {
+                                    log::debug!(
+                                        "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                        path
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
+                                    path,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("[WIC] stream_sniff mmap failed for {:?}: {:?}", path, e);
+                    }
+                },
+                Err(e) => {
+                    log::debug!(
+                        "[WIC] stream_sniff file open failed for {:?}: {:?}",
+                        path,
+                        e
+                    );
+                }
+            }
+        }
+
+        // --- Fast Path: Generic direct instantiation via registry CLSID (No sniffing) ---
+        if !prefer_stream_sniff {
+            let clsid_opt = if let Ok(reg) = get_registry().read() {
+                reg.formats
+                    .iter()
+                    .find(|f| f.extension == ext)
+                    .and_then(|f| f.wic_clsid)
+            } else {
+                None
+            };
+
+            if let Some(clsid_bytes) = clsid_opt {
+                let mut clsid = GUID::default();
+                std::ptr::copy_nonoverlapping(
+                    clsid_bytes.as_ptr(),
+                    &mut clsid as *mut GUID as *mut u8,
+                    16,
+                );
+
+                let specific_decoder: Result<IWICBitmapDecoder> =
+                    CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER);
+                if let Ok(sd) = specific_decoder {
+                    if let Ok(stream) = factory.CreateStream() {
+                        // --- Mmap Path ---
+                        let file = std::fs::File::open(path)
+                            .map_err(|e| format!("File open failed: {:?}", e))?;
+                        if let Ok(mmap) = memmap2::Mmap::map(&file) {
+                            let m_arc = std::sync::Arc::new(mmap);
+                            if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
+                                if sd
+                                    .Initialize(&stream, WICDecodeMetadataCacheOnDemand)
+                                    .is_ok()
+                                {
+                                    decoder_res = Ok(sd);
+                                    stream_out = Some(stream);
+                                    mmap_out = Some(m_arc);
+                                }
                             }
                         }
                     }

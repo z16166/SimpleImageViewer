@@ -1131,8 +1131,6 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.34.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fea3080bfd001aee2223dcb2228d9de7d31f41d7cfb99e8cd70df3ae8083a42f"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -4534,7 +4532,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "simple-image-viewer"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "bytemuck",
  "cc",

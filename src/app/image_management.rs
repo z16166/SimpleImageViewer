@@ -125,6 +125,20 @@ fn should_request_repaint_for_asset_update(
     }
 }
 
+fn image_file_size_pairs_with_missing_sizes_as_zero(
+    image_files: Vec<PathBuf>,
+    file_byte_len_by_index: Vec<u64>,
+) -> Vec<(PathBuf, u64)> {
+    image_files
+        .into_iter()
+        .zip(
+            file_byte_len_by_index
+                .into_iter()
+                .chain(std::iter::repeat(0)),
+        )
+        .collect()
+}
+
 fn build_tiled_manager_with_best_preview(
     index: usize,
     generation: u64,
@@ -269,6 +283,68 @@ impl<'a> ImageInstallPlan<'a> {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn invalidate_random_slideshow_order(&mut self) {
+        self.random_slideshow_order_ready = false;
+    }
+
+    fn shuffle_current_image_list_preserving_pairs(&mut self) {
+        let mut combined = image_file_size_pairs_with_missing_sizes_as_zero(
+            std::mem::take(&mut self.image_files),
+            std::mem::take(&mut self.file_byte_len_by_index),
+        );
+        combined.shuffle(&mut rand::thread_rng());
+        let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+        self.image_files = paths;
+        self.file_byte_len_by_index = sizes;
+    }
+
+    fn clear_index_keyed_state_after_list_reorder(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+        self.texture_cache.clear_all();
+        self.clear_hdr_image_state();
+        self.prefetched_tiles.clear();
+        self.animation = None;
+        self.animation_cache.clear();
+        self.pending_anim_frames = None;
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.prev_texture = None;
+        self.transition_start = None;
+        self.prefetch_prev_generation = None;
+        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+            cache.clear();
+        }
+    }
+
+    pub(crate) fn shuffle_slideshow_order_to_first(&mut self) {
+        if self.image_files.is_empty() {
+            self.random_slideshow_order_ready = false;
+            return;
+        }
+
+        self.shuffle_current_image_list_preserving_pairs();
+        self.clear_index_keyed_state_after_list_reorder();
+
+        self.current_index = 0;
+        self.current_rotation = 0;
+        self.zoom_factor = 1.0;
+        self.pan_offset = Vec2::ZERO;
+        self.error_message = None;
+        self.is_font_error = false;
+        self.random_slideshow_order_ready = true;
+        self.last_switch_time = Instant::now();
+
+        self.loader.request_load(
+            self.current_index,
+            self.generation,
+            self.image_files[self.current_index].clone(),
+            self.settings.raw_high_quality,
+        );
+        self.schedule_preloads(true);
+    }
+
     /// True when the active tile pyramid belongs to the image at [`Self::current_index`].
     ///
     /// If [`Self::tile_manager`] is `Some` but its [`TileManager::image_index`] does not
@@ -382,6 +458,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.clear();
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
+        self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
         self.current_hdr_tiled_image = None;
@@ -393,6 +470,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
+        self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
             .current_hdr_image
@@ -432,6 +510,30 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(evicted_idx);
     }
 
+    /// Circular index distance used for preload tile / CPU cache retention.
+    const PREFETCH_WINDOW_DISTANCE: usize = 2;
+
+    fn evict_distant_prefetch_caches(&mut self) {
+        let len = self.image_files.len();
+        let within_window = |idx: usize| {
+            prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE)
+        };
+
+        self.prefetched_tiles.retain(|&idx, _| within_window(idx));
+        self.deferred_sdr_uploads
+            .retain(|&idx, _| within_window(idx));
+
+        let distant_hdr: Vec<usize> = self
+            .hdr_image_cache
+            .keys()
+            .copied()
+            .filter(|&idx| !within_window(idx))
+            .collect();
+        for idx in distant_hdr {
+            self.remove_hdr_image_index(idx);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Directory loading
     // ------------------------------------------------------------------
@@ -449,6 +551,7 @@ impl ImageViewerApp {
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
         self.settings.last_image_dir = Some(dir.clone());
+        self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
         self.current_index = 0;
@@ -674,6 +777,16 @@ impl ImageViewerApp {
                 prefetch_gen,
                 self.generation
             );
+        } else if self.has_loaded_asset(self.current_index) {
+            // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
+            self.prefetch_prev_generation = None;
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                self.current_image_res = Some((hdr.width, hdr.height));
+            } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
+                self.current_image_res = Some((decoded.width, decoded.height));
+            }
         } else {
             // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
             // so handle_preview_update doesn't erroneously accept stale old-gen results.
@@ -691,19 +804,8 @@ impl ImageViewerApp {
             );
         }
 
-        // Housekeeping: evict stale prefetched TileManagers to prevent memory leaks
-        let len = self.image_files.len();
-        self.prefetched_tiles.retain(|&idx, _| {
-            if len == 0 {
-                return false;
-            }
-            let dist_forward = (idx + len - self.current_index % len) % len;
-            let dist_backward = (self.current_index + len - idx % len) % len;
-            let circular_distance = dist_forward.min(dist_backward);
-
-            // Keep tiles only within distance 2
-            circular_distance <= 2
-        });
+        // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
+        self.evict_distant_prefetch_caches();
 
         self.schedule_preloads(true);
         // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
@@ -846,7 +948,16 @@ impl ImageViewerApp {
 
             // After the guaranteed first image, enforce the byte budget.
             // Sizes come from the scanner thread; unknown (0) skips the byte gate.
-            if count > 0 && file_size > 0 && new_bytes.saturating_add(file_size) > budget {
+            // Compressed on-disk size understates decoded RGBA footprint (HEIC/JPEG often 10–20×).
+            let decode_budget_bytes = if file_size > 0 {
+                file_size.saturating_mul(12)
+            } else {
+                0
+            };
+            if count > 0
+                && decode_budget_bytes > 0
+                && new_bytes.saturating_add(decode_budget_bytes) > budget
+            {
                 break;
             }
 
@@ -857,7 +968,7 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
             );
             count += 1;
-            new_bytes += file_size;
+            new_bytes += decode_budget_bytes.max(file_size);
         }
     }
 
@@ -867,7 +978,7 @@ impl ImageViewerApp {
             self.hdr_image_cache.contains_key(&index),
             self.hdr_tiled_source_cache.contains_key(&index),
             self.animation_cache.contains_key(&index),
-        )
+        ) || self.deferred_sdr_uploads.contains_key(&index)
     }
 
     // ------------------------------------------------------------------
@@ -1007,23 +1118,10 @@ impl ImageViewerApp {
                                 self.image_files = paths;
                                 self.file_byte_len_by_index = sizes;
 
-                                // CRITICAL: Global sort finished - all previous index-based caches
-                                // and pending loads are now potentially stale/incorrect.
-                                // We must bump generation and clear index-keyed state.
-                                self.generation = self.generation.wrapping_add(1);
-                                self.loader.set_generation(self.generation);
-
-                                // Clear all state that depends on stable indices
-                                self.texture_cache.clear_all();
-                                self.clear_hdr_image_state();
-                                self.prefetched_tiles.clear();
-                                self.animation = None;
-                                self.animation_cache.clear();
-                                self.pending_anim_frames = None;
-                                self.tile_manager = None;
-                                if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                    cache.clear();
-                                }
+                                // CRITICAL: Global sort finished; all index-keyed caches and
+                                // pending loads may now point at the wrong file.
+                                self.clear_index_keyed_state_after_list_reorder();
+                                self.invalidate_random_slideshow_order();
 
                                 // Indices and cache entries were just invalidated by the global sort;
                                 // reset view state so pan/zoom/rotation cannot refer to stale layout.
@@ -1109,6 +1207,8 @@ impl ImageViewerApp {
 
     /// Process results from the background ImageLoader.
     pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
+        self.flush_deferred_sdr_upload_for_current(ctx);
+
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
         if let Some(ref mut pending) = self.pending_anim_frames {
@@ -1490,6 +1590,43 @@ impl ImageViewerApp {
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
+        // Preload may have queued pixels for this index; GPU upload makes them redundant.
+        self.deferred_sdr_uploads.remove(&idx);
+    }
+
+    fn queue_or_upload_static_sdr_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        texture_name: String,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index {
+            self.upload_static_sdr_texture(idx, decoded, texture_name, ctx);
+        } else {
+            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+        }
+    }
+
+    fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
+        if !self.deferred_sdr_uploads.contains_key(&self.current_index) {
+            return;
+        }
+        if self.texture_cache.contains(self.current_index) {
+            self.deferred_sdr_uploads.remove(&self.current_index);
+            return;
+        }
+        let Some(decoded) = self.deferred_sdr_uploads.remove(&self.current_index) else {
+            return;
+        };
+        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+        let texture_name = if is_hdr_fallback {
+            format!("img_hdr_fallback_{}", self.current_index)
+        } else {
+            format!("img_{}", self.current_index)
+        };
+        self.upload_static_sdr_texture(self.current_index, &decoded, texture_name, ctx);
+        self.current_image_res = Some((decoded.width, decoded.height));
     }
 
     fn clear_current_animation_for_index(&mut self, idx: usize) {
@@ -1509,7 +1646,7 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         self.remove_hdr_image_index(idx);
-        self.upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
+        self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
             self.current_image_res = Some((decoded.width, decoded.height));
             self.tile_manager = None;
@@ -1532,7 +1669,12 @@ impl ImageViewerApp {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        self.upload_static_sdr_texture(idx, fallback, format!("img_hdr_fallback_{idx}"), ctx);
+        self.queue_or_upload_static_sdr_texture(
+            idx,
+            fallback,
+            format!("img_hdr_fallback_{idx}"),
+            ctx,
+        );
 
         if idx == self.current_index {
             self.current_image_res = Some((hdr.width, hdr.height));
@@ -1552,7 +1694,7 @@ impl ImageViewerApp {
             return;
         }
         self.hdr_sdr_fallback_indices.insert(idx);
-        self.upload_static_sdr_texture(
+        self.queue_or_upload_static_sdr_texture(
             idx,
             &update.fallback,
             format!("img_hdr_fallback_{idx}"),
@@ -1621,7 +1763,7 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(idx);
         if let Some(first) = frames.first() {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
-            self.upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
+            self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
             if idx == self.current_index {
                 self.current_image_res = Some((first.width, first.height));
                 self.tile_manager = None;
@@ -1673,7 +1815,7 @@ impl ImageViewerApp {
         }
 
         if let Some(first) = frames.first() {
-            self.upload_static_sdr_texture(
+            self.queue_or_upload_static_sdr_texture(
                 idx,
                 &first.fallback,
                 format!("img_hdr_anim_fallback_{idx}"),
@@ -2062,6 +2204,24 @@ fn current_image_has_loaded_asset(
     has_sdr_texture || has_static_hdr || has_hdr_tiled_source || has_animation
 }
 
+fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {
+    if image_count == 0 {
+        return usize::MAX;
+    }
+    let dist_forward = (candidate + image_count - current_index % image_count) % image_count;
+    let dist_backward = (current_index + image_count - candidate % image_count) % image_count;
+    dist_forward.min(dist_backward)
+}
+
+fn prefetch_window_contains(
+    current_index: usize,
+    image_count: usize,
+    candidate: usize,
+    max_distance: usize,
+) -> bool {
+    prefetch_circular_distance(current_index, image_count, candidate) <= max_distance
+}
+
 fn should_schedule_first_batch_preload(
     is_first_batch: bool,
     count: usize,
@@ -2101,6 +2261,15 @@ mod tests {
     use super::*;
     use crate::loader::PreviewBundle;
     use std::collections::HashMap;
+
+    #[test]
+    fn prefetch_window_distance_matches_circular_neighbors() {
+        assert!(prefetch_window_contains(0, 100, 0, 2));
+        assert!(prefetch_window_contains(0, 100, 2, 2));
+        assert!(!prefetch_window_contains(0, 100, 3, 2));
+        assert!(prefetch_window_contains(50, 100, 48, 2));
+        assert!(!prefetch_window_contains(50, 100, 47, 2));
+    }
 
     struct DummyTiledSource {
         width: u32,
@@ -2324,6 +2493,26 @@ mod tests {
         assert!(should_schedule_first_batch_preload(true, 3, false));
         assert!(!should_schedule_first_batch_preload(false, 3, false));
         assert!(!should_schedule_first_batch_preload(true, 0, false));
+    }
+
+    #[test]
+    fn image_file_size_pairs_keep_known_sizes_and_fill_missing_sizes() {
+        let paths = vec![
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+            PathBuf::from("c.jpg"),
+        ];
+
+        let pairs = image_file_size_pairs_with_missing_sizes_as_zero(paths, vec![10, 20]);
+
+        assert_eq!(
+            pairs,
+            vec![
+                (PathBuf::from("a.jpg"), 10),
+                (PathBuf::from("b.jpg"), 20),
+                (PathBuf::from("c.jpg"), 0),
+            ]
+        );
     }
 
     #[test]

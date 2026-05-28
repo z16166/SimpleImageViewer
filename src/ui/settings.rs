@@ -144,9 +144,21 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             );
             ui.add_space(12.0);
             ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
+            ui.add_space(12.0);
+            if ui
+                .checkbox(
+                    &mut app.settings.random_slideshow_order,
+                    t!("label.random_slideshow_order"),
+                )
+                .changed()
+            {
+                app.invalidate_random_slideshow_order();
+                app.queue_save();
+            }
         });
     }
     if old_auto_switch != app.settings.auto_switch {
+        app.invalidate_random_slideshow_order();
         app.queue_save();
     }
 }

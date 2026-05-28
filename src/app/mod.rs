@@ -270,6 +270,8 @@ pub(crate) enum LightweightFileOpJob {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedWindowPlacement {
     pub outer_position: [i32; 2],
+    /// Screen-space center of [`Self::outer_position`] / outer rect (for maximized sessions).
+    pub outer_center: [i32; 2],
     pub inner_size: [u32; 2],
     pub maximized: bool,
 }
@@ -339,6 +341,9 @@ pub struct ImageViewerApp {
     /// `on_exit` so the next session can place the window onto the same
     /// monitor (and re-pick `Rgba16Float` vs `Bgra8Unorm` accordingly).
     pub(crate) cached_window_placement: Option<CachedWindowPlacement>,
+    /// Last non-maximized placement observed this session (valid outer top-left).
+    /// Used when closing maximized so the next spawn targets the same monitor.
+    pub(crate) cached_restore_placement: Option<CachedWindowPlacement>,
     /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
     /// swap-chain target format whenever the active monitor's HDR capability
     /// changes. The same mailbox is registered with `WgpuConfiguration`, so
@@ -377,6 +382,8 @@ pub struct ImageViewerApp {
     pub(crate) current_hdr_tiled_preview: Option<CurrentHdrImage>,
     pub(crate) hdr_tiled_preview_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
+    /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
+    pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
     /// Animated image playback state (None for static images).
     pub(crate) animation: Option<AnimationPlayback>,
@@ -390,6 +397,7 @@ pub struct ImageViewerApp {
     // Auto-switch timer
     pub(crate) last_switch_time: Instant,
     pub(crate) slideshow_paused: bool,
+    pub(crate) random_slideshow_order_ready: bool,
 
     // Audio
     pub(crate) audio: AudioPlayer,
@@ -412,7 +420,6 @@ pub struct ImageViewerApp {
 
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
-
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.
@@ -616,9 +623,35 @@ impl eframe::App for ImageViewerApp {
         // remembering which monitor we closed on is what lets the user keep
         // testing HDR by simply reopening the app.
         if let Some(placement) = self.cached_window_placement {
+            self.settings.window_maximized = placement.maximized;
             self.settings.window_outer_position = Some(placement.outer_position);
             self.settings.window_inner_size = Some(placement.inner_size);
-            self.settings.window_maximized = placement.maximized;
+            self.settings.window_maximized_screen_center = Some(placement.outer_center);
+            if placement.maximized {
+                self.settings.window_maximized_inner_size = Some(placement.inner_size);
+                let restore_inner = self
+                    .cached_restore_placement
+                    .map(|p| p.inner_size)
+                    .or(self.settings.window_restore_inner_size)
+                    .unwrap_or(placement.inner_size);
+                if let Some(restore) = self.cached_restore_placement {
+                    self.settings.window_restore_outer_position = Some(restore.outer_position);
+                    self.settings.window_restore_inner_size = Some(restore.inner_size);
+                } else if let Some(pos) = Settings::valid_outer_position(placement.outer_position) {
+                    self.settings.window_restore_outer_position = Some(pos);
+                    self.settings.window_restore_inner_size = Some(restore_inner);
+                } else if let Some(top_left) = Settings::restore_outer_top_left_for_screen_center(
+                    placement.outer_center,
+                    restore_inner,
+                ) {
+                    self.settings.window_restore_outer_position = Some(top_left);
+                    self.settings.window_restore_inner_size = Some(restore_inner);
+                }
+            } else {
+                self.settings.window_restore_outer_position = Some(placement.outer_position);
+                self.settings.window_restore_inner_size = Some(placement.inner_size);
+                self.settings.window_maximized_inner_size = None;
+            }
         }
         // Shut down the async saver thread first: dropping the sender closes the
         // channel, causing the saver's `recv()` loop to exit after finishing any
@@ -665,11 +698,13 @@ impl eframe::App for ImageViewerApp {
             let viewport = i.viewport();
             let outer_rect = viewport.outer_rect?;
             let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+            let center = outer_rect.center();
             Some(CachedWindowPlacement {
                 outer_position: [
                     outer_rect.min.x.round() as i32,
                     outer_rect.min.y.round() as i32,
                 ],
+                outer_center: [center.x.round() as i32, center.y.round() as i32],
                 inner_size: [
                     inner_size.x.round().max(1.0) as u32,
                     inner_size.y.round().max(1.0) as u32,
@@ -677,6 +712,11 @@ impl eframe::App for ImageViewerApp {
                 maximized: viewport.maximized.unwrap_or(false),
             })
         }) {
+            if !placement.maximized
+                && Settings::valid_outer_position(placement.outer_position).is_some()
+            {
+                self.cached_restore_placement = Some(placement);
+            }
             // Diagnostic: log the FIRST time we observe a placement, then
             // only on subsequent changes at debug level. If the first-time
             // log never appears, `viewport.outer_rect` is `None` on this

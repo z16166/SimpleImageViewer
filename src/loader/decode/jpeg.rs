@@ -42,6 +42,17 @@ pub(crate) fn load_jpeg_with_target_capacity(
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        if let Some(brand) = super::detect::bmff_ftyp_brand(&mmap) {
+            if super::detect::is_motion_video_bmff_brand(&brand) {
+                return Err(super::detect::motion_video_bmff_error(&brand));
+            }
+        }
+        return Err(format!(
+            "not a JPEG bitstream (header {:02x?}); file extension may not match container",
+            &mmap[..mmap.len().min(4)]
+        ));
+    }
     // Sole orientation pass for all JPEG decodes (baseline SDR, **JPEG_R / Ultra HDR**). Do not
     // combine with [`apply_exif_orientation_to_image_data`] — that would double-rotate.
     let orientation = crate::metadata_utils::get_exif_orientation(path);
@@ -125,4 +136,30 @@ pub(crate) fn load_jpeg_with_target_capacity(
     }
 
     Ok(make_image_data(DecodedImage::new(w, h, pixels)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_jpeg_with_target_capacity;
+    use crate::hdr::types::HdrToneMapSettings;
+    use std::path::PathBuf;
+
+    #[test]
+    fn mislabeled_quicktime_jpg_errors_on_first_mmap_pass() {
+        let Some(path) = std::env::var_os("SIV_QT_JPG_SAMPLE").map(PathBuf::from) else {
+            eprintln!("skip; set SIV_QT_JPG_SAMPLE");
+            return;
+        };
+        let settings = HdrToneMapSettings::default();
+        let err =
+            match load_jpeg_with_target_capacity(&path, settings.target_hdr_capacity(), settings) {
+                Err(err) => err,
+                Ok(_) => panic!("expected QuickTime mislabeled JPG to fail"),
+            };
+        assert!(
+            err.contains(crate::loader::decode::detect::MOTION_VIDEO_BMFF_ERROR_TAG),
+            "unexpected error: {err}"
+        );
+        assert!(crate::loader::decode::detect::primary_decode_failure_is_final(&err));
+    }
 }

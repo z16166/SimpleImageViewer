@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 
 
+## [2.2.1] - 2026-05-28
+
+### Added
+- **Random slideshow order**: Turn on **Random order** in Slideshow settings to shuffle your folder during auto-advance. With loop enabled, each pass through the album uses a fresh shuffle so repeat viewings stay varied.
+
+### Fixed
+- **Maximized window on launch**: Reopening the app while maximized no longer flashes or briefly redraws the image at the wrong size—the window appears at full size right away.
+- **Window position after maximize**: Closing while maximized remembers your normal (restored) window size and position correctly, instead of odd off-screen coordinates on the next launch.
+- **Multi-monitor startup (windowed)**: If you closed on a secondary display at normal size, the app no longer briefly pops up on your primary monitor before settling on the display where you left it.
+- **Multi-monitor startup (white client area)**: When reopening at normal size, the window background now shows the themed viewer color right away instead of flashing solid white before your last image appears.
+- **Multi-monitor startup (maximized)**: If you closed while maximized on a secondary display, the next launch maximizes there again instead of jumping to the primary monitor.
+- **Mislabeled iPhone / Live Photo files**: Exports or copies that use the wrong extension (for example a Live Photo motion clip saved as `.jpg`) now show a clear message pointing you to the paired still photo, instead of failing silently or wasting time on recovery attempts.
+- **Mislabeled still images**: When a file’s extension does not match what is inside but it is still a viewable photo, the viewer is more likely to open it anyway—helpful for some iPhone and camera imports with incorrect filenames.
+
+### Improved
+- **Preloading and memory**: Background preloading uses memory more wisely—nearby images stay ready for quick browsing, while images far from the current one are released sooner. Compressed photos (HEIC, JPEG, and similar) count more realistically toward preload limits, so large folders feel smoother with less RAM pressure.
+- **Faster jumps to preloaded images**: Switching to a nearby image you already preloaded reuses decoded data instead of loading again from scratch.
+- **Cleaner return visits**: If you have **Resume viewing** enabled, the settings panel stays tucked away on launch so you land on your last folder and image with less clutter.
+
+
 ## [2.2.0] - 2026-05-25
 
 ### Added
