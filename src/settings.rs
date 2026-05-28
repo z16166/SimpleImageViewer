@@ -302,10 +302,10 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Windows reports small negative outer positions (e.g. `[-7,-7]`) while
-    /// maximized; these are not valid restore coordinates.
+    /// Windows reports negative outer positions (e.g. `[-7,-7]`, `[-8,-8]`) while
+    /// maximized; these are not valid restore coordinates. `(0, 0)` is valid.
     pub fn is_maximized_position_artifact([x, y]: [i32; 2]) -> bool {
-        x <= 0 && y <= 0
+        x < 0 && y < 0
     }
 
     fn valid_outer_position(pos: [i32; 2]) -> Option<[i32; 2]> {
@@ -602,6 +602,26 @@ mod tests {
         };
 
         assert_eq!(settings.startup_inner_size(), [3840.0, 2089.0]);
+    }
+
+    #[test]
+    fn maximized_position_artifact_rejects_negative_pairs_only() {
+        assert!(!Settings::is_maximized_position_artifact([0, 0]));
+        assert!(!Settings::is_maximized_position_artifact([320, 140]));
+        assert!(Settings::is_maximized_position_artifact([-7, -7]));
+        assert!(Settings::is_maximized_position_artifact([-8, -8]));
+    }
+
+    #[test]
+    fn valid_outer_position_keeps_origin_but_not_maximized_artifact() {
+        let settings = Settings {
+            window_maximized: true,
+            window_restore_outer_position: None,
+            window_outer_position: Some([0, 0]),
+            ..Settings::default()
+        };
+
+        assert_eq!(settings.startup_outer_position(), Some([0.0, 0.0]));
     }
 
     #[test]

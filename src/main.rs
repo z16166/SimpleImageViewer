@@ -959,6 +959,8 @@ fn main() -> eframe::Result {
         startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
     }
 
+    // Fullscreen uses borderless native fullscreen, not WS_SHOWMAXIMIZED; the patched
+    // eframe first-frame show path only applies to maximized windowed restore.
     let first_frame_show_maximized = settings.window_maximized && !fullscreen;
 
     let native_options = eframe::NativeOptions {

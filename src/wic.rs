@@ -636,22 +636,57 @@ fn load_via_wic_inner(
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 
         if prefer_stream_sniff {
-            if let Ok(file) = std::fs::File::open(path) {
-                if let Ok(mmap) = memmap2::Mmap::map(&file) {
-                    let m_arc = std::sync::Arc::new(mmap);
-                    if let Ok(stream) = factory.CreateStream() {
-                        if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                            decoder_res = factory.CreateDecoderFromStream(
-                                &stream,
-                                std::ptr::null(),
-                                WICDecodeMetadataCacheOnDemand,
-                            );
-                            if decoder_res.is_ok() {
-                                stream_out = Some(stream);
-                                mmap_out = Some(m_arc);
+            match std::fs::File::open(path) {
+                Ok(file) => match memmap2::Mmap::map(&file) {
+                    Ok(mmap) => {
+                        let m_arc = std::sync::Arc::new(mmap);
+                        match factory.CreateStream() {
+                            Ok(stream) => {
+                                if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
+                                    decoder_res = factory.CreateDecoderFromStream(
+                                        &stream,
+                                        std::ptr::null(),
+                                        WICDecodeMetadataCacheOnDemand,
+                                    );
+                                    if decoder_res.is_ok() {
+                                        stream_out = Some(stream);
+                                        mmap_out = Some(m_arc);
+                                    } else {
+                                        log::debug!(
+                                            "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
+                                            path
+                                        );
+                                    }
+                                } else {
+                                    log::debug!(
+                                        "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                        path
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
+                                    path,
+                                    e
+                                );
                             }
                         }
                     }
+                    Err(e) => {
+                        log::debug!(
+                            "[WIC] stream_sniff mmap failed for {:?}: {:?}",
+                            path,
+                            e
+                        );
+                    }
+                },
+                Err(e) => {
+                    log::debug!(
+                        "[WIC] stream_sniff file open failed for {:?}: {:?}",
+                        path,
+                        e
+                    );
                 }
             }
         }

@@ -1526,6 +1526,8 @@ impl ImageViewerApp {
         ) {
             self.handle_texture_cache_eviction(evicted_idx);
         }
+        // Preload may have queued pixels for this index; GPU upload makes them redundant.
+        self.deferred_sdr_uploads.remove(&idx);
     }
 
     fn queue_or_upload_static_sdr_texture(

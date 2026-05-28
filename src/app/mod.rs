@@ -618,13 +618,11 @@ impl eframe::App for ImageViewerApp {
         // testing HDR by simply reopening the app.
         if let Some(placement) = self.cached_window_placement {
             self.settings.window_maximized = placement.maximized;
+            self.settings.window_outer_position = Some(placement.outer_position);
+            self.settings.window_inner_size = Some(placement.inner_size);
             if placement.maximized {
-                self.settings.window_outer_position = Some(placement.outer_position);
-                self.settings.window_inner_size = Some(placement.inner_size);
                 self.settings.window_maximized_inner_size = Some(placement.inner_size);
             } else {
-                self.settings.window_outer_position = Some(placement.outer_position);
-                self.settings.window_inner_size = Some(placement.inner_size);
                 self.settings.window_restore_outer_position = Some(placement.outer_position);
                 self.settings.window_restore_inner_size = Some(placement.inner_size);
                 self.settings.window_maximized_inner_size = None;
