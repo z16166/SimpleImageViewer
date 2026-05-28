@@ -201,6 +201,11 @@ pub struct Settings {
     /// Last non-maximized client size. Same role as [`Self::window_restore_outer_position`].
     #[serde(default)]
     pub window_restore_inner_size: Option<[u32; 2]>,
+    /// Last observed client size while maximized. Used only to size the hidden
+    /// first frame so maximized startup does not redraw the image at a new size
+    /// immediately after the window becomes visible.
+    #[serde(default)]
+    pub window_maximized_inner_size: Option<[u32; 2]>,
     #[serde(default)]
     pub window_maximized: bool,
 }
@@ -290,6 +295,7 @@ impl Default for Settings {
             window_inner_size: None,
             window_restore_outer_position: None,
             window_restore_inner_size: None,
+            window_maximized_inner_size: None,
             window_maximized: false,
         }
     }
@@ -322,7 +328,9 @@ impl Settings {
     /// Client size used when spawning the native window.
     pub fn startup_inner_size(&self) -> [f32; 2] {
         if self.window_maximized {
-            self.window_restore_inner_size
+            self.window_maximized_inner_size
+                .or(self.window_inner_size)
+                .or(self.window_restore_inner_size)
                 .map(|[w, h]| [w as f32, h as f32])
                 .unwrap_or([1280.0, 800.0])
         } else {
@@ -581,6 +589,19 @@ mod tests {
         );
         #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn maximized_startup_inner_size_prefers_last_maximized_client_size() {
+        let settings = Settings {
+            window_maximized: true,
+            window_inner_size: Some([2000, 1200]),
+            window_restore_inner_size: Some([1280, 800]),
+            window_maximized_inner_size: Some([3840, 2089]),
+            ..Settings::default()
+        };
+
+        assert_eq!(settings.startup_inner_size(), [3840.0, 2089.0]);
     }
 
     #[test]
