@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::theme::AppTheme;
+use crate::update::core::{ProxyConfig, ProxyType};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -81,6 +82,70 @@ define_transition_styles!(
     Ripple   => "transition.ripple",
     Curtain  => "transition.curtain"
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateProxyType {
+    Http,
+    Socks5,
+}
+
+impl UpdateProxyType {
+    pub const ALL: [Self; 2] = [Self::Http, Self::Socks5];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Http => "HTTP",
+            Self::Socks5 => "SOCKS5",
+        }
+    }
+}
+
+impl From<UpdateProxyType> for ProxyType {
+    fn from(value: UpdateProxyType) -> Self {
+        match value {
+            UpdateProxyType::Http => ProxyType::Http,
+            UpdateProxyType::Socks5 => ProxyType::Socks5,
+        }
+    }
+}
+
+impl UpdateProxySettings {
+    pub fn to_proxy_config(&self) -> ProxyConfig {
+        ProxyConfig {
+            enabled: self.enabled,
+            proxy_type: self.proxy_type.into(),
+            host: self.host.clone(),
+            port: self.port,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProxySettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub proxy_type: UpdateProxyType,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_check_date_utc: Option<String>,
+    #[serde(default)]
+    pub ignored_version: Option<String>,
+    #[serde(default)]
+    pub last_successful_update_version: Option<String>,
+    #[serde(default)]
+    pub proxy: UpdateProxySettings,
+}
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -188,6 +253,10 @@ pub struct Settings {
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
+    // Updates
+    #[serde(default)]
+    pub updates: UpdateSettings,
+
     // Window placement (persisted so the app reopens on the same monitor it
     // last closed on — important on multi-monitor systems where the user has
     // mixed HDR + SDR displays and wants to control which one HDR rendering
@@ -262,6 +331,35 @@ impl Default for ScaleMode {
     }
 }
 
+impl Default for UpdateProxyType {
+    fn default() -> Self {
+        Self::Http
+    }
+}
+
+impl Default for UpdateProxySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            proxy_type: UpdateProxyType::Http,
+            host: String::new(),
+            port: 0,
+        }
+    }
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            last_check_date_utc: None,
+            ignored_version: None,
+            last_successful_update_version: None,
+            proxy: UpdateProxySettings::default(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -299,6 +397,7 @@ impl Default for Settings {
             theme: AppTheme::Dark,
             enable_log_file: true,
             log_level: default_log_level(),
+            updates: UpdateSettings::default(),
             window_outer_position: None,
             window_inner_size: None,
             window_restore_outer_position: None,
@@ -667,6 +766,18 @@ mod tests {
         );
         #[cfg(not(target_os = "linux"))]
         assert!(settings.hdr_native_surface_enabled);
+    }
+
+    #[test]
+    fn missing_update_settings_enable_daily_checks_by_default() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert!(settings.updates.enabled);
+        assert!(!settings.updates.proxy.enabled);
+        assert_eq!(
+            settings.updates.proxy.proxy_type,
+            super::UpdateProxyType::Http
+        );
     }
 
     #[test]

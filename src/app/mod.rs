@@ -449,6 +449,13 @@ pub struct ImageViewerApp {
     pub(crate) scan_rx: Option<Receiver<scanner::ScanMessage>>,
     pub(crate) scan_cancel: Option<Arc<AtomicBool>>,
 
+    // Update checking
+    pub(crate) update_check_rx: Option<Receiver<crate::update::state::UpdateCheckMessage>>,
+    pub(crate) update_checking: bool,
+    pub(crate) update_install_rx: Option<Receiver<crate::update::install::UpdateInstallMessage>>,
+    pub(crate) update_installing: bool,
+    pub(crate) pending_update: Option<crate::update::core::UpdateCandidate>,
+
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
 
@@ -536,6 +543,109 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn start_update_check(&mut self, force: bool) {
+        if self.update_checking || !self.settings.updates.enabled {
+            return;
+        }
+        let today = crate::update::state::today_utc_string();
+        if !force
+            && !crate::update::core::should_check_today(
+                self.settings.updates.last_check_date_utc.as_deref(),
+                &today,
+            )
+        {
+            return;
+        }
+        self.settings.updates.last_check_date_utc = Some(today);
+        self.queue_save();
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        self.update_check_rx = Some(rx);
+        self.update_checking = true;
+        crate::update::state::spawn_update_check(self.settings.updates.clone(), tx);
+    }
+
+    pub(crate) fn process_update_messages(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.update_check_rx.as_ref().cloned() else {
+            return;
+        };
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                crate::update::state::UpdateCheckMessage::Checking => {
+                    self.status_message = rust_i18n::t!("update.checking").to_string();
+                }
+                crate::update::state::UpdateCheckMessage::UpToDate => {
+                    self.update_checking = false;
+                    self.status_message = rust_i18n::t!("update.no_update").to_string();
+                    self.update_check_rx = None;
+                }
+                crate::update::state::UpdateCheckMessage::Available(candidate) => {
+                    self.update_checking = false;
+                    self.pending_update = Some(candidate.clone());
+                    self.modal_generation = self.modal_generation.wrapping_add(1);
+                    self.active_modal = Some(ActiveModal::Update(
+                        crate::ui::dialogs::update::State::new(candidate),
+                    ));
+                    self.update_check_rx = None;
+                    ctx.request_repaint();
+                }
+                crate::update::state::UpdateCheckMessage::Failed(err) => {
+                    self.update_checking = false;
+                    self.status_message =
+                        rust_i18n::t!("update.check_failed", err = err).to_string();
+                    self.update_check_rx = None;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn start_pending_update(&mut self) {
+        let Some(candidate) = self.pending_update.clone() else {
+            return;
+        };
+        if self.update_installing {
+            return;
+        }
+        if !cfg!(target_os = "windows") {
+            self.status_message = rust_i18n::t!("update.unsupported_platform").to_string();
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        self.update_install_rx = Some(rx);
+        self.update_installing = true;
+        self.status_message = rust_i18n::t!("update.downloading", percent = 0).to_string();
+        crate::update::install::spawn_windows_update_install(
+            candidate,
+            self.settings.updates.clone(),
+            tx,
+        );
+    }
+
+    pub(crate) fn process_update_install_messages(&mut self) {
+        let Some(rx) = self.update_install_rx.as_ref().cloned() else {
+            return;
+        };
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                crate::update::install::UpdateInstallMessage::Downloading(percent) => {
+                    self.status_message =
+                        rust_i18n::t!("update.downloading", percent = percent).to_string();
+                }
+                crate::update::install::UpdateInstallMessage::ReadyToRestart => {
+                    self.update_installing = false;
+                    self.status_message = rust_i18n::t!("update.ready_to_restart").to_string();
+                    self.update_install_rx = None;
+                    std::process::exit(0);
+                }
+                crate::update::install::UpdateInstallMessage::Failed(err) => {
+                    self.update_installing = false;
+                    self.status_message =
+                        rust_i18n::t!("update.download_failed", err = err).to_string();
+                    self.update_install_rx = None;
+                }
+            }
+        }
+    }
+
     pub(crate) fn effective_hdr_monitor_selection(
         &self,
     ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
@@ -830,6 +940,8 @@ impl eframe::App for ImageViewerApp {
 
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
+            self.process_update_messages(ctx);
+            self.process_update_install_messages();
 
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -842,6 +954,10 @@ impl eframe::App for ImageViewerApp {
             self.osd.invalidate(); // Invalidate HUD cache to force total redraw
             ctx.request_repaint();
         }
+
+        self.start_update_check(false);
+        self.process_update_messages(ctx);
+        self.process_update_install_messages();
 
         // Pull the live swap-chain target format every frame so all downstream
         // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,

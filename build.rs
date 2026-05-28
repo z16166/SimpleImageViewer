@@ -173,7 +173,7 @@ fn main() {
     // Compile C++ WASAPI helper and Windows resources
     #[cfg(target_os = "windows")]
     {
-        embed_resources(&icon_ico);
+        embed_resources(&icon_ico, &out_dir);
 
         let mut b = cc::Build::new();
         b.cpp(true);
@@ -322,7 +322,47 @@ fn png_to_ico(
 }
 
 #[cfg(target_os = "windows")]
-fn embed_resources(ico_path: &std::path::Path) {
+fn embed_resources(ico_path: &std::path::Path, out_dir: &std::path::Path) {
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env == "msvc" {
+        let main = build_version_resource(
+            ico_path,
+            "Simple Image Viewer",
+            "Simple Image Viewer",
+            "SimpleImageViewer.exe",
+        );
+        compile_msvc_resource_for_bin(&main, out_dir, "SimpleImageViewer");
+
+        let updater = build_version_resource(
+            ico_path,
+            "Simple Image Viewer",
+            "Simple Image Viewer Updater",
+            "update.exe",
+        );
+        compile_msvc_resource_for_bin(&updater, out_dir, "update");
+        return;
+    }
+
+    // GNU targets do not support scoped `.res` link arguments via winresource's helper.
+    // Keep the existing package-level behavior for non-MSV C toolchains.
+    let res = build_version_resource(
+        ico_path,
+        "Simple Image Viewer",
+        "Simple Image Viewer",
+        "SimpleImageViewer.exe",
+    );
+    if let Err(e) = res.compile() {
+        eprintln!("build.rs: winresource error: {e}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn build_version_resource(
+    ico_path: &std::path::Path,
+    product_name: &str,
+    file_description: &str,
+    file_name: &str,
+) -> winresource::WindowsResource {
     let mut res = winresource::WindowsResource::new();
 
     if ico_path.is_file() {
@@ -373,10 +413,10 @@ fn embed_resources(ico_path: &std::path::Path) {
     res.set_version_info(winresource::VersionInfo::FILEVERSION, version_u64);
     res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, version_u64);
 
-    res.set("ProductName", "Simple Image Viewer");
-    res.set("FileDescription", "Simple Image Viewer");
-    res.set("InternalName", "SimpleImageViewer.exe");
-    res.set("OriginalFilename", "SimpleImageViewer.exe");
+    res.set("ProductName", product_name);
+    res.set("FileDescription", file_description);
+    res.set("InternalName", file_name);
+    res.set("OriginalFilename", file_name);
 
     // Set String Versions (visible in Windows properties)
     res.set("FileVersion", &display_version);
@@ -385,7 +425,122 @@ fn embed_resources(ico_path: &std::path::Path) {
     res.set("LegalCopyright", "\u{a9} 2026");
     res.set("Comments", "https://github.com/z16166/SimpleImageViewer/");
 
-    if let Err(e) = res.compile() {
-        eprintln!("build.rs: winresource error: {e}");
+    res
+}
+
+#[cfg(target_os = "windows")]
+fn compile_msvc_resource_for_bin(
+    resource: &winresource::WindowsResource,
+    out_dir: &std::path::Path,
+    bin_name: &str,
+) {
+    let resource_dir = out_dir.join("pe-version-resources").join(bin_name);
+    std::fs::create_dir_all(&resource_dir)
+        .unwrap_or_else(|e| panic!("build.rs: failed to create {}: {e}", resource_dir.display()));
+    let rc_path = resource_dir.join("version.rc");
+    let res_path = resource_dir.join("version.res");
+    resource
+        .write_resource_file(&rc_path)
+        .unwrap_or_else(|e| panic!("build.rs: failed to write {}: {e}", rc_path.display()));
+
+    let rc_exe = find_windows_resource_compiler();
+    let mut command = std::process::Command::new(&rc_exe);
+    command
+        .arg(format!(
+            "/I{}",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap()
+        ))
+        .arg(format!("/fo{}", res_path.display()))
+        .arg(&rc_path);
+
+    let output = command.output().unwrap_or_else(|e| {
+        panic!(
+            "build.rs: failed to run Windows resource compiler {}: {e}",
+            rc_exe.display()
+        )
+    });
+    println!(
+        "RC Output ({bin_name}):\n{}\n------",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    println!(
+        "RC Error ({bin_name}):\n{}\n------",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        panic!(
+            "build.rs: failed to compile PE version resource for {bin_name} with {}",
+            rc_exe.display()
+        );
     }
+
+    println!("cargo:rustc-link-arg-bin={bin_name}={}", res_path.display());
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_resource_compiler() -> std::path::PathBuf {
+    if let Some(rc_path) = std::env::var_os("RC_PATH").map(std::path::PathBuf::from) {
+        return rc_path;
+    }
+    if cfg!(unix) {
+        return std::path::PathBuf::from("llvm-rc");
+    }
+    if let Ok(output) = std::process::Command::new("where").arg("rc.exe").output()
+        && output.status.success()
+        && let Some(first) = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+    {
+        return std::path::PathBuf::from(first);
+    }
+    let output = std::process::Command::new("reg")
+        .arg("query")
+        .arg(r"HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots")
+        .arg("/reg:32")
+        .output()
+        .unwrap_or_else(|e| panic!("build.rs: failed to query Windows SDK registry keys: {e}"));
+    if !output.status.success() {
+        panic!(
+            "build.rs: querying Windows SDK registry keys failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut kits = Vec::new();
+    for line in stdout.lines().rev() {
+        if !line.trim().starts_with("KitsRoot") {
+            continue;
+        }
+        let Some(pos) = line.find("REG_SZ") else {
+            continue;
+        };
+        let kit = line[pos + 6..].trim();
+        if kit.is_empty() {
+            continue;
+        }
+        let root = std::path::PathBuf::from(kit);
+        let legacy_rc = if cfg!(target_arch = "x86_64") {
+            root.join(r"bin\x64\rc.exe")
+        } else {
+            root.join(r"bin\x86\rc.exe")
+        };
+        if legacy_rc.is_file() {
+            kits.push(legacy_rc);
+        }
+        if let Ok(entries) = root.join("bin").read_dir() {
+            for entry in entries.flatten() {
+                let rc = if cfg!(target_arch = "x86_64") {
+                    entry.path().join(r"x64\rc.exe")
+                } else {
+                    entry.path().join(r"x86\rc.exe")
+                };
+                if rc.is_file() {
+                    kits.push(rc);
+                }
+            }
+        }
+    }
+    kits.pop()
+        .unwrap_or_else(|| panic!("build.rs: could not find rc.exe in the Windows SDK"))
 }

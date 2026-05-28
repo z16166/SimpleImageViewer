@@ -17,6 +17,7 @@ section.font: "Font & Appearance"
 section.system_windows: "System Integration (Windows)"
 section.language: "Language"
 section.theme: "Theme"
+section.updates: "Updates"
 
 # Buttons
 btn.pick: "📁 Pick"
@@ -30,6 +31,11 @@ btn.pick_file: "🎵 File"
 btn.set_wallpaper: " Set Wallpaper "
 btn.select_all: "✔ Select All"
 btn.deselect_all: "✘ Deselect All"
+btn.check_now: "Check now"
+btn.update_now: "Update now"
+btn.later: "Later"
+btn.ignore_version: "Ignore this version"
+btn.open_release_page: "Open release page"
 
 # Labels / Checkboxes
 label.recursive_scan: "Recursive scan"
@@ -56,6 +62,11 @@ label.font_load_error: "Could not load the selected font; reverted to the previo
 label.system_default: "System Default"
 label.volume: "🔊 Volume"
 label.z_toggle_hint: "Press Z to toggle scale mode"
+label.update_check: "Check for updates"
+label.update_proxy: "Use proxy"
+label.update_proxy_type: "Proxy type:"
+label.update_proxy_host: "Host/IP:"
+label.update_proxy_port: "Port:"
 
 # HDR
 hdr.status.no_source: "HDR: no HDR source image"
@@ -198,6 +209,22 @@ xmp.no_data: "⚠ No XMP data found in this image."
 xmp.copy_text: "📋 Copy XMP Text"
 xmp.copy_xml: "📄 Copy XMP XML"
 xmp.loading: "⏳ Loading XMP..."
+
+# Updates
+update.dialog_title: "New version available"
+update.current_version: "Current version: %{version}"
+update.latest_version: "Latest version: %{version}"
+update.release_date: "Released: %{date}"
+update.asset_size: "Download size: %{size}"
+update.changelog: "What's new"
+update.checking: "Checking for updates…"
+update.no_update: "You are already using the latest version."
+update.check_failed: "Update check failed: %{err}"
+update.download_failed: "Update download failed: %{err}"
+update.downloading: "Downloading update… %{percent}%"
+update.ready_to_restart: "The update is ready. The app will restart to finish installing."
+update.proxy_hint: "Proxy applies only to update checks and downloads."
+update.unsupported_platform: "Automatic installation is currently available for Windows portable builds only. You can open the release page to download manually."
 
 # Windows system integration
 win.register_hint: "Register this app in Windows \"Open With\" menu for image files."

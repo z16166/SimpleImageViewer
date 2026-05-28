@@ -14,16 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod confirm;
-pub mod exif;
-pub mod goto;
-pub mod modal_state;
-pub mod movable_modal;
-pub mod update;
-pub mod wallpaper;
-pub mod xmp;
-
-#[cfg(target_os = "windows")]
-pub mod file_assoc;
-
-pub(crate) use movable_modal::MovableModal;
+pub mod core;
+pub mod install;
+pub mod net;
+pub mod state;

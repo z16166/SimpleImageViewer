@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{ImageViewerApp, ScaleMode, TransitionStyle};
+use crate::settings::UpdateProxyType;
 use crate::ui::utils::{
     middle_truncate, path_display_box, setup_fonts, setup_visuals, styled_button,
     styled_button_widget,
@@ -258,6 +259,55 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         app.refresh_ultra_hdr_decode_capacity(ui.ctx());
         app.queue_save();
         ui.ctx().request_repaint();
+    }
+}
+
+fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.label(
+        RichText::new(t!("section.updates"))
+            .color(app.cached_palette.accent2)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    let before = app.settings.updates.clone();
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut app.settings.updates.enabled, t!("label.update_check"));
+        if styled_button(ui, t!("btn.check_now"), &app.cached_palette).clicked() {
+            app.start_update_check(true);
+        }
+    });
+    ui.checkbox(
+        &mut app.settings.updates.proxy.enabled,
+        t!("label.update_proxy"),
+    )
+    .on_hover_text(t!("update.proxy_hint"));
+    if app.settings.updates.proxy.enabled {
+        ui.horizontal(|ui| {
+            ui.label(t!("label.update_proxy_type"));
+            egui::ComboBox::from_id_salt("update_proxy_type")
+                .selected_text(app.settings.updates.proxy.proxy_type.label())
+                .show_ui(ui, |ui| {
+                    for proxy_type in UpdateProxyType::ALL {
+                        ui.selectable_value(
+                            &mut app.settings.updates.proxy.proxy_type,
+                            proxy_type,
+                            proxy_type.label(),
+                        );
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label(t!("label.update_proxy_host"));
+            ui.text_edit_singleline(&mut app.settings.updates.proxy.host);
+        });
+        ui.horizontal(|ui| {
+            ui.label(t!("label.update_proxy_port"));
+            ui.add(egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535));
+        });
+    }
+    if app.settings.updates != before {
+        app.queue_save();
     }
 }
 
@@ -537,6 +587,8 @@ fn draw_settings_left_col(
 
         ui.add_space(8.0);
         draw_slideshow_section(app, ui);
+        ui.add_space(8.0);
+        draw_updates_section(app, ui);
     });
 }
 

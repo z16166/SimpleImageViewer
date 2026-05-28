@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+- **Update notifications**: The app can check GitHub Releases in the background and tell you when a newer version is available, with release notes shown before you decide what to do.
+- **Windows portable auto-update**: Windows portable builds can download, verify, and install updates with a small helper program, while macOS and Linux users are guided to the release page for manual download.
+- **Update proxy settings**: Update checks and downloads can use HTTP or SOCKS5 proxy settings when your network requires them.
+
 
 ## [2.2.1] - 2026-05-28
 

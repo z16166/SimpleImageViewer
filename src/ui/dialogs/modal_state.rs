@@ -62,6 +62,12 @@ pub enum ModalAction {
     /// Apply the selected file associations (Windows only).
     #[cfg(target_os = "windows")]
     ApplyFileAssoc(Vec<String>),
+    /// Begin downloading and installing the pending update.
+    StartUpdate,
+    /// Open the GitHub release page for the pending update.
+    OpenUpdateReleasePage,
+    /// Suppress this exact version until a newer release appears.
+    IgnoreUpdateVersion,
 }
 
 /// The single active modal dialog. Only one can be open at a time.
@@ -86,4 +92,6 @@ pub enum ActiveModal {
     /// File association manager (Windows only).  State is private to [`file_assoc`].
     #[cfg(target_os = "windows")]
     FileAssoc(crate::ui::dialogs::file_assoc::State),
+    /// Update notification and confirmation dialog. State is private to [`update`].
+    Update(crate::ui::dialogs::update::State),
 }

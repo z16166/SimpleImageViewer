@@ -29,6 +29,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
   - **Flexible Modes**: Print the entire image or just the currently zoomed-in "Visible Area" with precise cropping.
 - **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
+- **Update checks** — checks GitHub Releases in the background at most once per day. Windows portable builds can install verified updates automatically; macOS and Linux builds notify you and open the download page.
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
@@ -106,6 +107,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |
 | **Language** | Manually switch between English, Simplified Chinese, and Traditional Chinese |
 | **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
+| **Updates** | Enable/disable update checks, run a manual check, and configure HTTP/SOCKS5 proxy settings for release checks and downloads |
 
 
 ---
