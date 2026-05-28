@@ -51,6 +51,7 @@ vcpkg-manifest-install.log
 *.msi
 *.exe
 docs/**
+docs
 AGENTS.md
 !src/
 !libraries/
