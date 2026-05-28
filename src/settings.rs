@@ -112,6 +112,8 @@ pub struct Settings {
     pub auto_switch_interval: f32,
     #[serde(default = "default_true")]
     pub loop_playback: bool,
+    #[serde(default)]
+    pub random_slideshow_order: bool,
 
     // Scale / view
     #[serde(default)]
@@ -264,6 +266,7 @@ impl Default for Settings {
             auto_switch: false,
             auto_switch_interval: default_interval(),
             loop_playback: true,
+            random_slideshow_order: false,
             scale_mode: ScaleMode::FitToWindow,
             transition_style: default_transition_style(),
             transition_ms: default_transition_ms(),

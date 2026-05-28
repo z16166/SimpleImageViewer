@@ -674,11 +674,7 @@ fn load_via_wic_inner(
                         }
                     }
                     Err(e) => {
-                        log::debug!(
-                            "[WIC] stream_sniff mmap failed for {:?}: {:?}",
-                            path,
-                            e
-                        );
+                        log::debug!("[WIC] stream_sniff mmap failed for {:?}: {:?}", path, e);
                     }
                 },
                 Err(e) => {

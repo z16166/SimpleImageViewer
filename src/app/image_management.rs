@@ -125,6 +125,20 @@ fn should_request_repaint_for_asset_update(
     }
 }
 
+fn image_file_size_pairs_with_missing_sizes_as_zero(
+    image_files: Vec<PathBuf>,
+    file_byte_len_by_index: Vec<u64>,
+) -> Vec<(PathBuf, u64)> {
+    image_files
+        .into_iter()
+        .zip(
+            file_byte_len_by_index
+                .into_iter()
+                .chain(std::iter::repeat(0)),
+        )
+        .collect()
+}
+
 fn build_tiled_manager_with_best_preview(
     index: usize,
     generation: u64,
@@ -269,6 +283,68 @@ impl<'a> ImageInstallPlan<'a> {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn invalidate_random_slideshow_order(&mut self) {
+        self.random_slideshow_order_ready = false;
+    }
+
+    fn shuffle_current_image_list_preserving_pairs(&mut self) {
+        let mut combined = image_file_size_pairs_with_missing_sizes_as_zero(
+            std::mem::take(&mut self.image_files),
+            std::mem::take(&mut self.file_byte_len_by_index),
+        );
+        combined.shuffle(&mut rand::thread_rng());
+        let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+        self.image_files = paths;
+        self.file_byte_len_by_index = sizes;
+    }
+
+    fn clear_index_keyed_state_after_list_reorder(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+        self.texture_cache.clear_all();
+        self.clear_hdr_image_state();
+        self.prefetched_tiles.clear();
+        self.animation = None;
+        self.animation_cache.clear();
+        self.pending_anim_frames = None;
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.prev_texture = None;
+        self.transition_start = None;
+        self.prefetch_prev_generation = None;
+        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
+            cache.clear();
+        }
+    }
+
+    pub(crate) fn shuffle_slideshow_order_to_first(&mut self) {
+        if self.image_files.is_empty() {
+            self.random_slideshow_order_ready = false;
+            return;
+        }
+
+        self.shuffle_current_image_list_preserving_pairs();
+        self.clear_index_keyed_state_after_list_reorder();
+
+        self.current_index = 0;
+        self.current_rotation = 0;
+        self.zoom_factor = 1.0;
+        self.pan_offset = Vec2::ZERO;
+        self.error_message = None;
+        self.is_font_error = false;
+        self.random_slideshow_order_ready = true;
+        self.last_switch_time = Instant::now();
+
+        self.loader.request_load(
+            self.current_index,
+            self.generation,
+            self.image_files[self.current_index].clone(),
+            self.settings.raw_high_quality,
+        );
+        self.schedule_preloads(true);
+    }
+
     /// True when the active tile pyramid belongs to the image at [`Self::current_index`].
     ///
     /// If [`Self::tile_manager`] is `Some` but its [`TileManager::image_index`] does not
@@ -475,6 +551,7 @@ impl ImageViewerApp {
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
         self.settings.last_image_dir = Some(dir.clone());
+        self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
         self.current_index = 0;
@@ -1041,23 +1118,10 @@ impl ImageViewerApp {
                                 self.image_files = paths;
                                 self.file_byte_len_by_index = sizes;
 
-                                // CRITICAL: Global sort finished - all previous index-based caches
-                                // and pending loads are now potentially stale/incorrect.
-                                // We must bump generation and clear index-keyed state.
-                                self.generation = self.generation.wrapping_add(1);
-                                self.loader.set_generation(self.generation);
-
-                                // Clear all state that depends on stable indices
-                                self.texture_cache.clear_all();
-                                self.clear_hdr_image_state();
-                                self.prefetched_tiles.clear();
-                                self.animation = None;
-                                self.animation_cache.clear();
-                                self.pending_anim_frames = None;
-                                self.tile_manager = None;
-                                if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                    cache.clear();
-                                }
+                                // CRITICAL: Global sort finished; all index-keyed caches and
+                                // pending loads may now point at the wrong file.
+                                self.clear_index_keyed_state_after_list_reorder();
+                                self.invalidate_random_slideshow_order();
 
                                 // Indices and cache entries were just invalidated by the global sort;
                                 // reset view state so pan/zoom/rotation cannot refer to stale layout.
@@ -2429,6 +2493,26 @@ mod tests {
         assert!(should_schedule_first_batch_preload(true, 3, false));
         assert!(!should_schedule_first_batch_preload(false, 3, false));
         assert!(!should_schedule_first_batch_preload(true, 0, false));
+    }
+
+    #[test]
+    fn image_file_size_pairs_keep_known_sizes_and_fill_missing_sizes() {
+        let paths = vec![
+            PathBuf::from("a.jpg"),
+            PathBuf::from("b.jpg"),
+            PathBuf::from("c.jpg"),
+        ];
+
+        let pairs = image_file_size_pairs_with_missing_sizes_as_zero(paths, vec![10, 20]);
+
+        assert_eq!(
+            pairs,
+            vec![
+                (PathBuf::from("a.jpg"), 10),
+                (PathBuf::from("b.jpg"), 20),
+                (PathBuf::from("c.jpg"), 0),
+            ]
+        );
     }
 
     #[test]

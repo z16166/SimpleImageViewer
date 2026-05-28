@@ -392,6 +392,7 @@ pub struct ImageViewerApp {
     // Auto-switch timer
     pub(crate) last_switch_time: Instant,
     pub(crate) slideshow_paused: bool,
+    pub(crate) random_slideshow_order_ready: bool,
 
     // Audio
     pub(crate) audio: AudioPlayer,

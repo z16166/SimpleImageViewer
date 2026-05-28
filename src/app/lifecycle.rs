@@ -313,6 +313,7 @@ impl ImageViewerApp {
             zoom_factor: 1.0,
             last_switch_time: Instant::now(),
             slideshow_paused: false,
+            random_slideshow_order_ready: false,
             audio: AudioPlayer::new(),
             show_settings: settings.last_image_dir.is_none(),
             images_ever_loaded: false,

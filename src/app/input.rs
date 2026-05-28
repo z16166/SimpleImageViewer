@@ -7,6 +7,40 @@ use eframe::egui::{self, Context, Event, Key, MouseWheelUnit, Vec2};
 use rust_i18n::t;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoSwitchStep {
+    Stop,
+    NavigateTo(usize),
+    ShuffleToFirst,
+}
+
+pub(crate) fn auto_switch_step(
+    image_count: usize,
+    current_index: usize,
+    loop_playback: bool,
+    random_order: bool,
+    random_order_ready: bool,
+) -> AutoSwitchStep {
+    if image_count == 0 {
+        return AutoSwitchStep::Stop;
+    }
+    if random_order && !random_order_ready {
+        return AutoSwitchStep::ShuffleToFirst;
+    }
+
+    let last = image_count - 1;
+    if current_index >= last {
+        if !loop_playback {
+            return AutoSwitchStep::Stop;
+        }
+        if random_order {
+            return AutoSwitchStep::ShuffleToFirst;
+        }
+    }
+
+    AutoSwitchStep::NavigateTo((current_index + 1) % image_count)
+}
+
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard(&mut self, ctx: &Context) {
         // High-level layer detection
@@ -351,14 +385,24 @@ impl ImageViewerApp {
         if !self.settings.auto_switch || self.slideshow_paused || self.image_files.is_empty() {
             return;
         }
+        if self.settings.random_slideshow_order && self.scanning {
+            return;
+        }
         let interval = Duration::from_secs_f32(self.settings.auto_switch_interval);
         if self.last_switch_time.elapsed() >= interval {
-            let last = self.image_files.len() - 1;
-            if !self.settings.loop_playback && self.current_index >= last {
-                // Loop disabled: stop auto-switch at the last image
-                return;
+            match auto_switch_step(
+                self.image_files.len(),
+                self.current_index,
+                self.settings.loop_playback,
+                self.settings.random_slideshow_order,
+                self.random_slideshow_order_ready,
+            ) {
+                AutoSwitchStep::Stop => {
+                    // Loop disabled: stop auto-switch at the last image.
+                }
+                AutoSwitchStep::NavigateTo(idx) => self.navigate_to(idx),
+                AutoSwitchStep::ShuffleToFirst => self.shuffle_slideshow_order_to_first(),
             }
-            self.navigate_next();
         }
     }
 
@@ -804,3 +848,40 @@ const HOTKEY_MAP: &[HotkeyBinding] = &[
         action: AppAction::ZoomOut,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{AutoSwitchStep, auto_switch_step};
+
+    #[test]
+    fn auto_switch_uses_existing_order_when_random_is_disabled() {
+        assert_eq!(
+            auto_switch_step(5, 1, true, false, false),
+            AutoSwitchStep::NavigateTo(2)
+        );
+    }
+
+    #[test]
+    fn random_auto_switch_starts_by_shuffling_to_first_image() {
+        assert_eq!(
+            auto_switch_step(5, 1, true, true, false),
+            AutoSwitchStep::ShuffleToFirst
+        );
+    }
+
+    #[test]
+    fn random_auto_switch_reshuffles_before_next_loop() {
+        assert_eq!(
+            auto_switch_step(5, 4, true, true, true),
+            AutoSwitchStep::ShuffleToFirst
+        );
+    }
+
+    #[test]
+    fn random_auto_switch_stops_at_end_when_loop_is_disabled() {
+        assert_eq!(
+            auto_switch_step(5, 4, false, true, true),
+            AutoSwitchStep::Stop
+        );
+    }
+}
