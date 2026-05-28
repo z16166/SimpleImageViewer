@@ -210,6 +210,11 @@ pub struct Settings {
     pub window_maximized_inner_size: Option<[u32; 2]>,
     #[serde(default)]
     pub window_maximized: bool,
+    /// Screen-space center of the window when last closed maximized. Used to
+    /// recreate on the same monitor when Windows reports a maximized-position
+    /// artifact (e.g. `[-7,-7]`) instead of a restorable outer top-left.
+    #[serde(default)]
+    pub window_maximized_screen_center: Option<[i32; 2]>,
 }
 
 fn default_interval() -> f32 {
@@ -300,6 +305,7 @@ impl Default for Settings {
             window_restore_inner_size: None,
             window_maximized_inner_size: None,
             window_maximized: false,
+            window_maximized_screen_center: None,
         }
     }
 }
@@ -311,20 +317,41 @@ impl Settings {
         x < 0 && y < 0
     }
 
-    fn valid_outer_position(pos: [i32; 2]) -> Option<[i32; 2]> {
+    pub(crate) fn valid_outer_position(pos: [i32; 2]) -> Option<[i32; 2]> {
         (!Self::is_maximized_position_artifact(pos)).then_some(pos)
+    }
+
+    /// Map a maximized window's screen center to a restore outer top-left on
+    /// the monitor that contains the center (clamped to the work area).
+    pub fn restore_outer_top_left_for_screen_center(
+        center: [i32; 2],
+        inner_size: [u32; 2],
+    ) -> Option<[i32; 2]> {
+        restore_outer_top_left_for_screen_center_impl(center, inner_size)
     }
 
     /// Outer top-left used when spawning the native window.
     pub fn startup_outer_position(&self) -> Option<[f32; 2]> {
-        let pos = if self.window_maximized {
-            self.window_restore_outer_position.or_else(|| {
-                self.window_outer_position
-                    .and_then(Self::valid_outer_position)
-            })
-        } else {
-            self.window_outer_position
-        }?;
+        if self.window_maximized {
+            if let Some(pos) = self.window_restore_outer_position {
+                return Some([pos[0] as f32, pos[1] as f32]);
+            }
+            let restore_inner = self
+                .window_restore_inner_size
+                .or(self.window_inner_size)
+                .unwrap_or([1280, 800]);
+            if let Some(center) = self.window_maximized_screen_center
+                && let Some(top_left) =
+                    Self::restore_outer_top_left_for_screen_center(center, restore_inner)
+            {
+                return Some([top_left[0] as f32, top_left[1] as f32]);
+            }
+            return self
+                .window_outer_position
+                .and_then(Self::valid_outer_position)
+                .map(|[x, y]| [x as f32, y as f32]);
+        }
+        let pos = self.window_outer_position?;
         Some([pos[0] as f32, pos[1] as f32])
     }
 
@@ -345,11 +372,59 @@ impl Settings {
 
     /// Monitor hint for spawn-time HDR probing (prefers restore placement).
     pub fn window_spawn_top_left_for_hdr(&self) -> Option<[i32; 2]> {
-        self.window_restore_outer_position.or_else(|| {
-            self.window_outer_position
-                .and_then(Self::valid_outer_position)
-        })
+        self.startup_outer_position()
+            .map(|[x, y]| [x.round() as i32, y.round() as i32])
     }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_outer_top_left_for_screen_center_impl(
+    center: [i32; 2],
+    inner_size: [u32; 2],
+) -> Option<[i32; 2]> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+
+    unsafe {
+        let monitor = MonitorFromPoint(
+            POINT {
+                x: center[0],
+                y: center[1],
+            },
+            MONITOR_DEFAULTTONEAREST,
+        );
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let work = info.rcWork;
+        let w = inner_size[0] as i32;
+        let h = inner_size[1] as i32;
+        let mut x = center[0] - w / 2;
+        let mut y = center[1] - h / 2;
+        x = x.clamp(work.left, work.right.saturating_sub(w));
+        y = y.clamp(work.top, work.bottom.saturating_sub(h));
+        Some([x, y])
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_outer_top_left_for_screen_center_impl(
+    center: [i32; 2],
+    inner_size: [u32; 2],
+) -> Option<[i32; 2]> {
+    Some([
+        center[0] - inner_size[0] as i32 / 2,
+        center[1] - inner_size[1] as i32 / 2,
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +688,26 @@ mod tests {
         assert!(!Settings::is_maximized_position_artifact([320, 140]));
         assert!(Settings::is_maximized_position_artifact([-7, -7]));
         assert!(Settings::is_maximized_position_artifact([-8, -8]));
+    }
+
+    #[test]
+    fn maximized_startup_outer_position_prefers_saved_restore() {
+        let settings = Settings {
+            window_maximized: true,
+            window_restore_outer_position: Some([1920, 100]),
+            window_maximized_screen_center: Some([9999, 9999]),
+            ..Settings::default()
+        };
+
+        assert_eq!(settings.startup_outer_position(), Some([1920.0, 100.0]));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn restore_outer_top_left_for_screen_center_offsets_by_half_inner_size() {
+        let top_left = Settings::restore_outer_top_left_for_screen_center([2000, 1000], [800, 600])
+            .expect("restore top-left");
+        assert_eq!(top_left, [1600, 700]);
     }
 
     #[test]

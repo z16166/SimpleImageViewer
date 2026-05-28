@@ -156,7 +156,8 @@ impl<'app> GlowWinitApp<'app> {
             native_options,
             window_settings,
         )
-        .with_visible(false); // Start hidden until we render the first frame to fix white flash on startup (https://github.com/emilk/egui/pull/3631)
+        // Always create hidden; see wgpu `create_window` and `reveal_window_after_position_applied`.
+        .with_visible(false);
 
         let mut glutin_window_context = unsafe {
             GlutinWindowContext::new(egui_ctx, winit_window_builder, native_options, event_loop)?
@@ -187,6 +188,30 @@ impl<'app> GlowWinitApp<'app> {
             native_options.shader_version,
             native_options.dithering,
         )?;
+
+        if !native_options.first_frame_show_maximized {
+            let viewport = &glutin_window_context.viewports[&ViewportId::ROOT];
+            let window = viewport.window.as_ref().unwrap();
+            let gl_surface = viewport.gl_surface.as_ref().unwrap();
+            let current_gl_context = glutin_window_context
+                .current_gl_context
+                .as_ref()
+                .expect("root GL context must be current after initialize_window");
+            let pixels_per_point = egui_winit::pixels_per_point(egui_ctx, window);
+            epi_integration::begin_pass_for_startup_clear(
+                egui_ctx,
+                &viewport.info,
+                pixels_per_point,
+            );
+            let clear_color =
+                epi_integration::default_clear_color(&egui_ctx.global_style().visuals);
+            let screen_size: [u32; 2] = window.inner_size().into();
+            painter.clear(screen_size, clear_color);
+            gl_surface
+                .swap_buffers(current_gl_context)
+                .map_err(|err| egui_glow::PainterError::from(err.to_string()))?;
+            epi_integration::reveal_window_after_position_applied(window, native_options);
+        }
 
         Ok((glutin_window_context, painter))
     }

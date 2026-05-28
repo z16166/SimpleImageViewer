@@ -420,8 +420,10 @@ pub struct NativeOptions {
     /// Defaults to true.
     pub dithering: bool,
 
-    /// When true, reveal the hidden native window on the first rendered frame
-    /// using the platform's maximized show path.
+    /// When true, keep the native window hidden until the first rendered frame,
+    /// then reveal via the platform's maximized show path. When false, the window
+    /// stays hidden until the GPU surface is cleared to the themed background,
+    /// then is shown on the correct monitor before the first UI frame.
     pub first_frame_show_maximized: bool,
 
     /// Android application for `winit`'s event loop.

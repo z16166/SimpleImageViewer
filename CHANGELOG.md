@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Maximized window on launch**: Reopening the app while maximized no longer flashes or briefly redraws the image at the wrong size—the window appears at full size right away.
 - **Window position after maximize**: Closing while maximized remembers your normal (restored) window size and position correctly, instead of odd off-screen coordinates on the next launch.
+- **Multi-monitor startup (windowed)**: If you closed on a secondary display at normal size, the app no longer briefly pops up on your primary monitor before settling on the display where you left it.
+- **Multi-monitor startup (white client area)**: When reopening at normal size, the window background now shows the themed viewer color right away instead of flashing solid white before your last image appears.
+- **Multi-monitor startup (maximized)**: If you closed while maximized on a secondary display, the next launch maximizes there again instead of jumping to the primary monitor.
 - **Mislabeled iPhone / Live Photo files**: Exports or copies that use the wrong extension (for example a Live Photo motion clip saved as `.jpg`) now show a clear message pointing you to the paired still photo, instead of failing silently or wasting time on recovery attempts.
 - **Mislabeled still images**: When a file’s extension does not match what is inside but it is still a viewable photo, the viewer is more likely to open it anyway—helpful for some iPhone and camera imports with incorrect filenames.
 

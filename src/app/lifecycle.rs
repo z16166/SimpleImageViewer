@@ -287,6 +287,7 @@ impl ImageViewerApp {
                 initial_hdr_monitor_selection,
             ),
             cached_window_placement: None,
+            cached_restore_placement: None,
             requested_target_format,
             active_target_format,
             requested_rgb10a2_pq_encode,

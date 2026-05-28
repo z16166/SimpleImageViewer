@@ -99,6 +99,40 @@ pub fn apply_window_settings(
     }
 }
 
+/// Same background as the default [`epi::App::clear_color`]; used before the app exists.
+pub fn default_clear_color(visuals: &egui::Visuals) -> [f32; 4] {
+    let _ = visuals;
+    egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+}
+
+/// Apply system theme so startup clear matches the default eframe panel background.
+pub fn begin_pass_for_startup_clear(
+    egui_ctx: &egui::Context,
+    viewport_info: &egui::ViewportInfo,
+    pixels_per_point: f32,
+) {
+    egui_ctx.input_mut(|i| {
+        i.pixels_per_point = pixels_per_point;
+    });
+    let mut raw_input = egui::RawInput::default();
+    raw_input
+        .viewports
+        .insert(ViewportId::ROOT, viewport_info.clone());
+    egui_ctx.options_mut(|opt| opt.begin_pass(&raw_input));
+}
+
+/// Non-maximized restore: reveal only after [`egui_winit::apply_viewport_builder_to_window`]
+/// has applied the correct physical position. Creating the native window visible can flash
+/// on the wrong monitor until that second placement step runs (common on multi-display Windows).
+pub fn reveal_window_after_position_applied(
+    window: &winit::window::Window,
+    native_options: &epi::NativeOptions,
+) {
+    if !native_options.first_frame_show_maximized {
+        window.set_visible(true);
+    }
+}
+
 #[cfg(not(target_os = "ios"))]
 fn largest_monitor_point_size(egui_zoom_factor: f32, event_loop: &ActiveEventLoop) -> egui::Vec2 {
     profiling::function_scope!();
@@ -353,14 +387,18 @@ impl EpiIntegration {
         self.frame.info.cpu_usage = Some(seconds);
     }
 
+    /// True on the first paint when the native window was created visible (non-maximized restore).
+    pub fn first_frame_starts_visible(&self) -> bool {
+        self.is_first_frame && !self.first_frame_show_maximized
+    }
+
     pub fn post_rendering(&mut self, window: &winit::window::Window) {
         profiling::function_scope!();
         if std::mem::take(&mut self.is_first_frame) {
-            // We keep hidden until we've painted something. See https://github.com/emilk/egui/pull/2279
+            // Maximized restore: hidden until first paint, then one-shot SW_SHOWMAXIMIZED.
+            // Non-maximized restore: window was created visible; no deferred reveal.
             if self.first_frame_show_maximized {
                 show_window_maximized(window);
-            } else {
-                window.set_visible(true);
             }
         }
     }

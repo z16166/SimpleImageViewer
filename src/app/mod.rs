@@ -270,6 +270,8 @@ pub(crate) enum LightweightFileOpJob {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CachedWindowPlacement {
     pub outer_position: [i32; 2],
+    /// Screen-space center of [`Self::outer_position`] / outer rect (for maximized sessions).
+    pub outer_center: [i32; 2],
     pub inner_size: [u32; 2],
     pub maximized: bool,
 }
@@ -339,6 +341,9 @@ pub struct ImageViewerApp {
     /// `on_exit` so the next session can place the window onto the same
     /// monitor (and re-pick `Rgba16Float` vs `Bgra8Unorm` accordingly).
     pub(crate) cached_window_placement: Option<CachedWindowPlacement>,
+    /// Last non-maximized placement observed this session (valid outer top-left).
+    /// Used when closing maximized so the next spawn targets the same monitor.
+    pub(crate) cached_restore_placement: Option<CachedWindowPlacement>,
     /// Mailbox used to ask the (patched) egui-wgpu Painter to hot-swap the
     /// swap-chain target format whenever the active monitor's HDR capability
     /// changes. The same mailbox is registered with `WgpuConfiguration`, so
@@ -621,8 +626,27 @@ impl eframe::App for ImageViewerApp {
             self.settings.window_maximized = placement.maximized;
             self.settings.window_outer_position = Some(placement.outer_position);
             self.settings.window_inner_size = Some(placement.inner_size);
+            self.settings.window_maximized_screen_center = Some(placement.outer_center);
             if placement.maximized {
                 self.settings.window_maximized_inner_size = Some(placement.inner_size);
+                let restore_inner = self
+                    .cached_restore_placement
+                    .map(|p| p.inner_size)
+                    .or(self.settings.window_restore_inner_size)
+                    .unwrap_or(placement.inner_size);
+                if let Some(restore) = self.cached_restore_placement {
+                    self.settings.window_restore_outer_position = Some(restore.outer_position);
+                    self.settings.window_restore_inner_size = Some(restore.inner_size);
+                } else if let Some(pos) = Settings::valid_outer_position(placement.outer_position) {
+                    self.settings.window_restore_outer_position = Some(pos);
+                    self.settings.window_restore_inner_size = Some(restore_inner);
+                } else if let Some(top_left) = Settings::restore_outer_top_left_for_screen_center(
+                    placement.outer_center,
+                    restore_inner,
+                ) {
+                    self.settings.window_restore_outer_position = Some(top_left);
+                    self.settings.window_restore_inner_size = Some(restore_inner);
+                }
             } else {
                 self.settings.window_restore_outer_position = Some(placement.outer_position);
                 self.settings.window_restore_inner_size = Some(placement.inner_size);
@@ -674,11 +698,13 @@ impl eframe::App for ImageViewerApp {
             let viewport = i.viewport();
             let outer_rect = viewport.outer_rect?;
             let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+            let center = outer_rect.center();
             Some(CachedWindowPlacement {
                 outer_position: [
                     outer_rect.min.x.round() as i32,
                     outer_rect.min.y.round() as i32,
                 ],
+                outer_center: [center.x.round() as i32, center.y.round() as i32],
                 inner_size: [
                     inner_size.x.round().max(1.0) as u32,
                     inner_size.y.round().max(1.0) as u32,
@@ -686,6 +712,11 @@ impl eframe::App for ImageViewerApp {
                 maximized: viewport.maximized.unwrap_or(false),
             })
         }) {
+            if !placement.maximized
+                && Settings::valid_outer_position(placement.outer_position).is_some()
+            {
+                self.cached_restore_placement = Some(placement);
+            }
             // Diagnostic: log the FIRST time we observe a placement, then
             // only on subsequent changes at debug level. If the first-time
             // log never appears, `viewport.outer_rect` is `None` on this

@@ -233,6 +233,29 @@ impl<'app> WgpuWinitApp<'app> {
             pollster::block_on(painter.set_window(ViewportId::ROOT, Some(Arc::clone(&window))))?;
         }
 
+        if !self.native_options.first_frame_show_maximized {
+            let pixels_per_point = egui_winit::pixels_per_point(&egui_ctx, &window);
+            epi_integration::begin_pass_for_startup_clear(
+                &egui_ctx,
+                &viewport_info,
+                pixels_per_point,
+            );
+            let clear_color =
+                epi_integration::default_clear_color(&egui_ctx.global_style().visuals);
+            let _ = painter.paint_and_update_textures(
+                ViewportId::ROOT,
+                pixels_per_point,
+                clear_color,
+                &[],
+                &egui::TexturesDelta::default(),
+                vec![],
+            );
+            epi_integration::reveal_window_after_position_applied(
+                &window,
+                &self.native_options,
+            );
+        }
+
         let wgpu_render_state = painter.render_state();
 
         let integration = EpiIntegration::new(
@@ -584,13 +607,17 @@ impl WgpuWinitRunning<'_> {
         let mut frame_timer = crate::stopwatch::Stopwatch::new();
         frame_timer.start();
 
-        let (viewport_ui_cb, raw_input, is_visible) = {
+        let (viewport_ui_cb, raw_input, is_visible, clear_before_update) = {
             profiling::scope!("Prepare");
             let mut shared_lock = shared.borrow_mut();
 
             let SharedState {
-                viewports, painter, ..
+                viewports,
+                painter,
+                ..
             } = &mut *shared_lock;
+
+            let has_many_viewports = viewports.len() > 1;
 
             if viewport_id != ViewportId::ROOT {
                 let Some(viewport) = viewports.get(&viewport_id) else {
@@ -650,8 +677,41 @@ impl WgpuWinitRunning<'_> {
 
             painter.handle_screenshots(&mut raw_input.events);
 
-            (viewport_ui_cb, raw_input, is_visible)
+            let clear_before_update =
+                is_visible && !has_many_viewports && integration.first_frame_starts_visible();
+
+            (viewport_ui_cb, raw_input, is_visible, clear_before_update)
         };
+
+        if clear_before_update {
+            integration
+                .egui_ctx
+                .options_mut(|opt| opt.begin_pass(&raw_input));
+            let clear_color = app.clear_color(&integration.egui_ctx.global_style().visuals);
+            let pixels_per_point = {
+                let shared_lock = shared.borrow();
+                let Some(window) = shared_lock
+                    .viewports
+                    .get(&viewport_id)
+                    .and_then(|vp| vp.window.as_ref())
+                else {
+                    return Ok(EventResult::Wait);
+                };
+                egui_winit::pixels_per_point(&integration.egui_ctx, window)
+            };
+            let vsync_secs = {
+                let mut shared_lock = shared.borrow_mut();
+                shared_lock.painter.paint_and_update_textures(
+                    viewport_id,
+                    pixels_per_point,
+                    clear_color,
+                    &[],
+                    &egui::TexturesDelta::default(),
+                    vec![],
+                )
+            };
+            let _ = vsync_secs;
+        }
 
         // ------------------------------------------------------------
 
@@ -1001,7 +1061,9 @@ fn create_window(
         native_options,
         window_settings,
     )
-    .with_visible(false); // Start hidden until we render the first frame to fix white flash on startup (https://github.com/emilk/egui/pull/3631)
+    // Always create hidden. Non-maximized restore: clear GPU surface then reveal in
+    // `init_run_state` after `set_window`. Maximized restore: first paint + SW_SHOWMAXIMIZED.
+    .with_visible(false);
 
     let window = egui_winit::create_window(egui_ctx, event_loop, &viewport_builder)?;
     epi_integration::apply_window_settings(&window, window_settings);
