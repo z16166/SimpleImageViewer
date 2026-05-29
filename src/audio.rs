@@ -496,6 +496,95 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn next_file_consumes_remaining_injected_entries() {
+        let dir = make_temp_dir("m3u-next-file");
+        let a = dir.join("a.ape");
+        let b = dir.join("b.ape");
+        fs::write(&a, b"fake").expect("write a");
+        fs::write(&b, b"fake").expect("write b");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![dir.join("list.m3u")];
+        st.injected_playlist.push_back(a.clone());
+        st.injected_playlist.push_back(b.clone());
+
+        assert_eq!(st.take_next_playable_path(), Some((a.clone(), true)));
+        st.current_file_path = Some(a.clone());
+        st.current_from_injected = true;
+        assert_eq!(st.take_next_playable_path(), Some((b.clone(), true)));
+        assert!(st.injected_playlist.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_file_rewinds_injected_history() {
+        let dir = make_temp_dir("m3u-prev-file");
+        let a = dir.join("a.ape");
+        let b = dir.join("b.ape");
+        let c = dir.join("c.ape");
+        fs::write(&a, b"fake").expect("write a");
+        fs::write(&b, b"fake").expect("write b");
+        fs::write(&c, b"fake").expect("write c");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.injected_playlist.push_back(c.clone());
+        st.injected_history = vec![a.clone()];
+        st.current_file_path = Some(b.clone());
+        st.current_from_injected = true;
+
+        assert!(st.rewind_injected_one_step());
+        assert_eq!(st.injected_playlist.pop_front(), Some(a));
+        assert_eq!(st.injected_playlist.pop_front(), Some(b));
+        assert_eq!(st.injected_playlist.pop_front(), Some(c));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_file_can_exit_injected_chain_to_base_playlist() {
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        let f1 = PathBuf::from("f1.flac");
+        let f2 = PathBuf::from("f2.flac");
+        let f3 = PathBuf::from("f3.flac");
+        let a1 = PathBuf::from("a1.ape");
+        let a2 = PathBuf::from("a2.ape");
+
+        st.base_playlist = vec![f1.clone(), f2.clone(), f3.clone()];
+        st.current_track_idx = 0;
+        st.current_file_path = Some(a2.clone());
+        st.current_from_injected = true;
+        st.injected_history = vec![a1.clone()];
+
+        // First prev inside injected chain should rewind to a1 and queue current a2.
+        assert!(st.rewind_injected_one_step());
+        assert_eq!(st.injected_history.len(), 0);
+        assert_eq!(st.injected_playlist.pop_front(), Some(a1.clone()));
+        assert_eq!(st.injected_playlist.pop_front(), Some(a2.clone()));
+        // Simulate playback of a1 after rewind: do not record forward history.
+        st.suppress_injected_history_once = true;
+        st.current_file_path = Some(a1);
+        st.current_from_injected = true;
+
+        // No more injected history => fallback to base prev behavior should not get trapped in injected.
+        assert!(!st.rewind_injected_one_step());
+        if st.current_track_idx > 1 {
+            st.current_track_idx -= 2;
+        } else {
+            st.current_track_idx = st.base_playlist.len().saturating_sub(1);
+        }
+        st.injected_playlist.clear();
+        st.injected_history.clear();
+        st.suppress_injected_history_once = false;
+        st.current_from_injected = false;
+
+        assert_eq!(st.current_track_idx, 2);
+        assert!(!st.current_from_injected);
+        assert!(st.injected_playlist.is_empty());
+        assert!(st.injected_history.is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1389,8 +1478,11 @@ struct AudioSlots {
 struct AudioLoopState {
     base_playlist: Vec<PathBuf>,
     injected_playlist: VecDeque<PathBuf>,
+    injected_history: Vec<PathBuf>,
+    suppress_injected_history_once: bool,
     current_track_idx: usize,
     current_file_path: Option<PathBuf>,
+    current_from_injected: bool,
     stopped: bool,
     paused: bool,
     current_volume: f32,
@@ -1448,8 +1540,11 @@ impl AudioLoopState {
         Self {
             base_playlist: Vec::new(),
             injected_playlist: VecDeque::new(),
+            injected_history: Vec::new(),
+            suppress_injected_history_once: false,
             current_track_idx: 0,
             current_file_path: None,
+            current_from_injected: false,
             stopped: true,
             paused: false,
             current_volume: 1.0,
@@ -1543,7 +1638,10 @@ impl AudioLoopState {
         self.stopped = true;
         self.base_playlist.clear();
         self.injected_playlist.clear();
+        self.injected_history.clear();
+        self.suppress_injected_history_once = false;
         self.current_file_path = None;
+        self.current_from_injected = false;
         self.backend_player = None;
         self.backend_sink = None;
         self.sink_base_pos = Duration::ZERO;
@@ -1581,6 +1679,7 @@ impl AudioLoopState {
             let path =
                 self.base_playlist[self.current_track_idx % self.base_playlist.len()].clone();
             self.current_file_path = Some(path.clone());
+            self.current_from_injected = false;
             if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
                 if self.ensure_backend(slots) {
                     let resumed = if let Some(p) = self.backend_player.as_mut() {
@@ -1694,23 +1793,32 @@ impl AudioLoopState {
         if let Some(ref p) = self.backend_player {
             p.clear();
         }
-        if !self.injected_playlist.is_empty() {
-            self.injected_playlist.clear();
-        }
+        // Keep injected queue/history so `NextFile` can advance within expanded m3u tracks.
         self.cue_sheet = None;
         set_cue_track(&slots.cue_track_slot, None);
         slots.tracks_flag.store(false, Ordering::Relaxed);
     }
 
     fn handle_prev_file(&mut self, slots: &AudioSlots) {
-        if !self.injected_playlist.is_empty() {
-            self.injected_playlist.clear();
+        if self.rewind_injected_one_step() {
+            self.suppress_injected_history_once = true;
+            if let Some(ref p) = self.backend_player {
+                p.clear();
+            }
+            self.cue_sheet = None;
+            set_cue_track(&slots.cue_track_slot, None);
+            slots.tracks_flag.store(false, Ordering::Relaxed);
+            return;
         }
         if self.current_track_idx > 1 {
             self.current_track_idx -= 2;
         } else {
             self.current_track_idx = self.base_playlist.len().saturating_sub(1);
         }
+        self.injected_playlist.clear();
+        self.injected_history.clear();
+        self.suppress_injected_history_once = false;
+        self.current_from_injected = false;
         if let Some(ref p) = self.backend_player {
             p.clear();
         }
@@ -1840,8 +1948,11 @@ impl AudioLoopState {
     ) {
         self.base_playlist = new_list;
         self.injected_playlist.clear();
+        self.injected_history.clear();
+        self.suppress_injected_history_once = false;
         self.current_track_idx = start_idx.unwrap_or(0);
         self.current_file_path = None;
+        self.current_from_injected = false;
         self.pending_start_track_idx = start_track_idx;
         self.stopped = false;
         self.paused = initial_paused;
@@ -1870,9 +1981,24 @@ impl AudioLoopState {
     /// Load the next file from the playlist into the sink. Returns false if
     /// the caller should `continue` (backend not yet ready).
     fn feed_next_file(&mut self, slots: &AudioSlots) -> bool {
-        let Some(path) = self.take_next_playable_path() else {
+        let previous = self.current_file_path.clone();
+        let Some((path, from_injected)) = self.take_next_playable_path() else {
             return true;
         };
+        if from_injected {
+            if self.suppress_injected_history_once {
+                self.suppress_injected_history_once = false;
+            } else if self.current_from_injected {
+                if let Some(prev) = previous {
+                    self.injected_history.push(prev);
+                }
+            } else {
+                self.injected_history.clear();
+            }
+        } else {
+            self.injected_history.clear();
+            self.suppress_injected_history_once = false;
+        }
         let filename = match path.file_name() {
             Some(n) => n.to_string_lossy().to_string(),
             None => return true,
@@ -1886,6 +2012,7 @@ impl AudioLoopState {
         set_current_track(&slots.track_slot, Some(filename));
         set_current_path(&slots.path_slot, Some(path.clone()));
         self.current_file_path = Some(path.clone());
+        self.current_from_injected = from_injected;
         let total_dur = source
             .total_duration()
             .map(|d| d.as_millis() as u64)
@@ -1954,9 +2081,9 @@ impl AudioLoopState {
         true
     }
 
-    fn take_next_playable_path(&mut self) -> Option<PathBuf> {
+    fn take_next_playable_path(&mut self) -> Option<(PathBuf, bool)> {
         if !self.injected_playlist.is_empty() {
-            return self.injected_playlist.pop_front();
+            return self.injected_playlist.pop_front().map(|path| (path, true));
         }
         if self.base_playlist.is_empty() {
             return None;
@@ -1976,11 +2103,27 @@ impl AudioLoopState {
                     continue;
                 }
                 self.injected_playlist = expanded.into();
-                return self.injected_playlist.pop_front();
+                self.injected_history.clear();
+                self.suppress_injected_history_once = false;
+                return self.injected_playlist.pop_front().map(|next| (next, true));
             }
-            return Some(path);
+            return Some((path, false));
         }
         None
+    }
+
+    fn rewind_injected_one_step(&mut self) -> bool {
+        if !self.current_from_injected {
+            return false;
+        }
+        let Some(previous) = self.injected_history.pop() else {
+            return false;
+        };
+        if let Some(current) = self.current_file_path.clone() {
+            self.injected_playlist.push_front(current);
+        }
+        self.injected_playlist.push_front(previous);
+        true
     }
 
     fn update_metadata_for_new_file(&self, slots: &AudioSlots, path: &Path) {
