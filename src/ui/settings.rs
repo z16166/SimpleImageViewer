@@ -282,12 +282,20 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.add_space(2.0);
 
     let before = app.settings.updates.clone();
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut app.settings.updates.enabled, t!("label.update_check"));
-        if styled_button(ui, t!("btn.check_now"), &app.cached_palette).clicked() {
-            app.start_update_check(true);
-        }
-    });
+    {
+        let row_h =
+            ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), row_h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.checkbox(&mut app.settings.updates.enabled, t!("label.update_check"));
+                if styled_button(ui, t!("btn.check_now"), &app.cached_palette).clicked() {
+                    app.start_update_check(true);
+                }
+            },
+        );
+    }
     ui.checkbox(
         &mut app.settings.updates.proxy.enabled,
         t!("label.update_proxy"),
@@ -639,72 +647,88 @@ fn draw_viewing_main_column(
         );
         ui.add_space(2.0);
 
-        ui.horizontal(|ui| {
-            ui.label(t!("label.style"));
-            let old_style = app.settings.transition_style;
-            egui::ComboBox::from_id_salt("transition_style")
-                .selected_text(app.settings.transition_style.label())
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::None,
-                        TransitionStyle::None.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Fade,
-                        TransitionStyle::Fade.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::ZoomFade,
-                        TransitionStyle::ZoomFade.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Slide,
-                        TransitionStyle::Slide.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Push,
-                        TransitionStyle::Push.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::PageFlip,
-                        TransitionStyle::PageFlip.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Ripple,
-                        TransitionStyle::Ripple.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Curtain,
-                        TransitionStyle::Curtain.label(),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.transition_style,
-                        TransitionStyle::Random,
-                        TransitionStyle::Random.label(),
-                    );
-                });
-            if old_style != app.settings.transition_style {
-                app.queue_save();
-            }
-        });
+        {
+            let row_h =
+                ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y;
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(t!("label.style"));
+                    let old_style = app.settings.transition_style;
+                    egui::ComboBox::from_id_salt("transition_style")
+                        .selected_text(app.settings.transition_style.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::None,
+                                TransitionStyle::None.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Fade,
+                                TransitionStyle::Fade.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::ZoomFade,
+                                TransitionStyle::ZoomFade.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Slide,
+                                TransitionStyle::Slide.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Push,
+                                TransitionStyle::Push.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::PageFlip,
+                                TransitionStyle::PageFlip.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Ripple,
+                                TransitionStyle::Ripple.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Curtain,
+                                TransitionStyle::Curtain.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.transition_style,
+                                TransitionStyle::Random,
+                                TransitionStyle::Random.label(),
+                            );
+                        });
+                    if old_style != app.settings.transition_style {
+                        app.queue_save();
+                    }
+                },
+            );
+        }
 
         if app.settings.transition_style != TransitionStyle::None {
-            ui.horizontal(|ui| {
-                ui.label(t!("label.duration"));
-                let old_ms = app.settings.transition_ms;
-                ui.add(egui::Slider::new(&mut app.settings.transition_ms, 50..=2000).suffix("ms"));
-                if old_ms != app.settings.transition_ms {
-                    app.queue_save();
-                }
-            });
+            let row_h =
+                ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y;
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(t!("label.duration"));
+                    let old_ms = app.settings.transition_ms;
+                    ui.add(
+                        egui::Slider::new(&mut app.settings.transition_ms, 50..=2000).suffix("ms"),
+                    );
+                    if old_ms != app.settings.transition_ms {
+                        app.queue_save();
+                    }
+                },
+            );
         }
     });
 }
@@ -1016,72 +1040,94 @@ fn draw_music_tab(
             }
 
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(t!("music.output_device")).color(app.cached_palette.text_muted),
-                );
-                if ui
-                    .button("⟲")
-                    .on_hover_text(t!("music.refresh_devices"))
-                    .clicked()
-                {
-                    app.refresh_audio_devices();
-                }
-
-                let current_dev = app
-                    .settings
-                    .audio_device
-                    .clone()
-                    .unwrap_or_else(|| t!("music.default_device").to_string());
-
-                // .width(remaining) + .truncate() lets egui clip the selected text with
-                // a trailing "…" when the device name is too long for the available space,
-                // without ever expanding the settings window horizontally.
-                egui::ComboBox::from_id_salt("audio_device_select")
-                    .selected_text(&current_dev)
-                    .width(ui.available_width())
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        let default_label = t!("music.default_device").to_string();
+            {
+                let row_h = ui.text_style_height(&egui::TextStyle::Body)
+                    + 2.0 * ui.spacing().button_padding.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            RichText::new(t!("music.output_device"))
+                                .color(app.cached_palette.text_muted),
+                        );
                         if ui
-                            .selectable_label(app.settings.audio_device.is_none(), &default_label)
+                            .button("⟲")
+                            .on_hover_text(t!("music.refresh_devices"))
                             .clicked()
                         {
-                            app.settings.audio_device = None;
-                            app.audio.set_device(None);
-                            app.queue_save();
-                            app.music_hud_last_activity = Instant::now();
+                            app.refresh_audio_devices();
                         }
-                        for dev in &app.cached_audio_devices {
-                            let is_selected = app.settings.audio_device.as_ref() == Some(dev);
-                            let short_name = middle_truncate(dev, 40);
-                            if ui.selectable_label(is_selected, short_name).clicked() {
-                                app.settings.audio_device = Some(dev.clone());
-                                app.audio.set_device(Some(dev.clone()));
-                                app.queue_save();
-                                app.music_hud_last_activity = Instant::now();
-                            }
-                        }
-                    });
-            });
+
+                        let current_dev = app
+                            .settings
+                            .audio_device
+                            .clone()
+                            .unwrap_or_else(|| t!("music.default_device").to_string());
+
+                        // .width(remaining) + .truncate() lets egui clip the selected text with
+                        // a trailing "…" when the device name is too long for the available
+                        // space, without ever expanding the settings window horizontally.
+                        egui::ComboBox::from_id_salt("audio_device_select")
+                            .selected_text(&current_dev)
+                            .width(ui.available_width())
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                let default_label = t!("music.default_device").to_string();
+                                if ui
+                                    .selectable_label(
+                                        app.settings.audio_device.is_none(),
+                                        &default_label,
+                                    )
+                                    .clicked()
+                                {
+                                    app.settings.audio_device = None;
+                                    app.audio.set_device(None);
+                                    app.queue_save();
+                                    app.music_hud_last_activity = Instant::now();
+                                }
+                                for dev in &app.cached_audio_devices {
+                                    let is_selected =
+                                        app.settings.audio_device.as_ref() == Some(dev);
+                                    let short_name = middle_truncate(dev, 40);
+                                    if ui.selectable_label(is_selected, short_name).clicked() {
+                                        app.settings.audio_device = Some(dev.clone());
+                                        app.audio.set_device(Some(dev.clone()));
+                                        app.queue_save();
+                                        app.music_hud_last_activity = Instant::now();
+                                    }
+                                }
+                            });
+                    },
+                );
+            }
 
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(t!("label.volume")).color(app.cached_palette.text_muted));
-                let old_vol = app.settings.volume;
-
-                let resp = ui.add(
-                    egui::Slider::new(&mut app.settings.volume, 0.0..=1.0)
-                        .show_value(true)
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+            {
+                let row_h = ui.text_style_height(&egui::TextStyle::Body)
+                    + 2.0 * ui.spacing().button_padding.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            RichText::new(t!("label.volume")).color(app.cached_palette.text_muted),
+                        );
+                        let old_vol = app.settings.volume;
+                        let resp = ui.add(
+                            egui::Slider::new(&mut app.settings.volume, 0.0..=1.0)
+                                .show_value(true)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                        );
+                        if (old_vol - app.settings.volume).abs() > 0.001 {
+                            app.audio.set_volume(app.settings.volume);
+                        }
+                        if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                            app.queue_save();
+                        }
+                    },
                 );
-                if (old_vol - app.settings.volume).abs() > 0.001 {
-                    app.audio.set_volume(app.settings.volume);
-                }
-                if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                    app.queue_save();
-                }
-            });
+            }
             if let Some(err) = app.audio.take_error() {
                 ui.label(
                     RichText::new(t!("music.audio_error", err = err))
