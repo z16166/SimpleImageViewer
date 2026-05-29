@@ -23,7 +23,7 @@ use std::time::Duration;
 const UPDATE_HTTP_TIMEOUT_SECS: u64 = 30;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 5;
 const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 3;
-const READ_CHUNK_SIZE: usize = 64 * 1024;
+const READ_CHUNK_SIZE: usize = 1024 * 1024;
 
 pub const MAX_UPDATE_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_SHA256SUMS_DOWNLOAD_BYTES: u64 = 1024 * 1024;
@@ -85,11 +85,12 @@ pub fn download_bytes_with_progress(
         .map_err(|err| err.to_string())?;
     let content_len = response.content_length();
     if content_len.is_some_and(|len| len > max_bytes) {
-        return Err(format!(
-            "download is too large ({} bytes, limit {} bytes)",
-            content_len.unwrap_or_default(),
-            max_bytes
-        ));
+        return Err(rust_i18n::t!(
+            "update.err_download_too_large",
+            size = content_len.unwrap_or_default(),
+            limit = max_bytes
+        )
+        .to_string());
     }
 
     read_with_idle_timeout(
@@ -172,7 +173,11 @@ fn collect_download_chunks(
             Ok(Ok(ReadChunk::Data(chunk))) => {
                 bytes.extend_from_slice(&chunk);
                 if bytes.len() as u64 > max_bytes {
-                    return Err(format!("download exceeded {} bytes", max_bytes));
+                    return Err(rust_i18n::t!(
+                        "update.err_download_exceeded_limit",
+                        limit = max_bytes
+                    )
+                    .to_string());
                 }
                 on_progress(bytes.len() as u64, content_len);
             }

@@ -232,6 +232,8 @@ update.unsupported_platform: "Automatic installation is currently available for 
 update.err_missing_sums: "This release is missing SHA256SUMS.txt."
 update.err_checksum_missing: "SHA256SUMS.txt does not list %{asset}."
 update.err_download_stalled: "The download stalled with no data received for several seconds."
+update.err_download_too_large: "The download is too large (%{size} bytes, limit %{limit} bytes)."
+update.err_download_exceeded_limit: "The download exceeded the %{limit} byte limit."
 update.err_checksum_mismatch: "The downloaded update did not match SHA256SUMS.txt."
 update.err_current_exe_parent: "Could not locate the application folder."
 update.err_missing_exe: "The update package is missing %{exe}."
