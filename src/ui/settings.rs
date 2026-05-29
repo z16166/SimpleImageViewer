@@ -297,9 +297,15 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     )
     .on_hover_text(t!("update.proxy_hint"));
     if app.settings.updates.proxy.enabled {
+        // ComboBox button height = font_height + 2 * button_padding.y.
+        // TextEdit and DragValue must match this so all rows are the same height,
+        // which also ensures labels are vertically centered at the same baseline.
+        let bp = ui.spacing().button_padding;
+        let control_height = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
+
         egui::Grid::new("update_proxy_grid")
             .num_columns(2)
-            .min_row_height(ui.spacing().interact_size.y)
+            .min_row_height(control_height)
             .spacing([8.0, 10.0])
             .show(ui, |ui| {
                 ui.label(t!("label.update_proxy_type"));
@@ -320,15 +326,21 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 ui.end_row();
 
                 ui.label(t!("label.update_proxy_host"));
-                ui.add_sized(
-                    [UPDATE_PROXY_CONTROL_WIDTH, 0.0],
-                    egui::TextEdit::singleline(&mut app.settings.updates.proxy.host),
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.settings.updates.proxy.host)
+                        .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
+                        .margin(egui::Margin {
+                            left: 4,
+                            right: 4,
+                            top: bp.y as i8,
+                            bottom: bp.y as i8,
+                        }),
                 );
                 ui.end_row();
 
                 ui.label(t!("label.update_proxy_port"));
                 ui.add_sized(
-                    [UPDATE_PROXY_PORT_WIDTH, 0.0],
+                    [UPDATE_PROXY_PORT_WIDTH, control_height],
                     egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
                 );
                 ui.end_row();
