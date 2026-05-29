@@ -94,7 +94,7 @@ jpegxl = ["dep:libjxl-sys"]
 hdr-modern-formats = ["avif-native", "heif-native", "jpegxl"]
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi"] }
+winapi = { version = "0.3", features = ["winuser", "shellapi", "wingdi", "libloaderapi", "fileapi", "winbase"] }
 winreg = "0.11"
 windows = { version = "0.58", features = [
     "Win32_Foundation",

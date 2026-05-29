@@ -43,6 +43,8 @@ pub struct State {
     pub(crate) tag: ConfirmTag,
     /// If false, only the confirm button is shown (useful for info/success alerts).
     show_cancel: bool,
+    /// Preferred dialog height; longer messages need more vertical space.
+    dialog_height: f32,
 }
 
 /// Identifies the operation being confirmed so the dispatch layer knows what
@@ -57,6 +59,8 @@ pub enum ConfirmTag {
     /// User is removing file associations.
     #[cfg(target_os = "windows")]
     RemoveFileAssoc,
+    /// User confirmed recycle-bin delete for a remote/network file.
+    RemoteRecycleDelete,
     /// Just a message, no action needed on confirm.
     #[allow(dead_code)]
     InfoOnly,
@@ -72,6 +76,20 @@ impl State {
             cancel_label: t!("btn.cancel").to_string(),
             tag: ConfirmTag::EnableRecursiveScan,
             show_cancel: true,
+            dialog_height: 160.0,
+        }
+    }
+
+    /// Build state for recycle-bin delete on a remote/network file.
+    pub fn remote_recycle_delete(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            confirm_label: t!("btn.delete_anyway").to_string(),
+            cancel_label: t!("btn.cancel").to_string(),
+            tag: ConfirmTag::RemoteRecycleDelete,
+            show_cancel: true,
+            dialog_height: 220.0,
         }
     }
 
@@ -85,6 +103,7 @@ impl State {
             cancel_label: t!("btn.cancel").to_string(),
             tag: ConfirmTag::RemoveFileAssoc,
             show_cancel: true,
+            dialog_height: 160.0,
         }
     }
 
@@ -98,6 +117,7 @@ impl State {
             cancel_label: String::new(),
             tag: ConfirmTag::InfoOnly,
             show_cancel: false,
+            dialog_height: 160.0,
         }
     }
 }
@@ -114,11 +134,10 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
     let mut result = ModalResult::Pending;
 
     const WIDTH: f32 = 400.0;
-    const HEIGHT: f32 = 160.0;
 
     MovableModal::new("confirm_dialog", state.title.clone())
         .resizable(false)
-        .default_size([WIDTH, HEIGHT])
+        .default_size([WIDTH, state.dialog_height])
         .show(ctx, palette, |ui| {
             // Warning icon + message
             ui.horizontal_wrapped(|ui| {

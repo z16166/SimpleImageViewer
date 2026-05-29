@@ -303,7 +303,7 @@ impl ImageViewerApp {
                 const STEP_EV: f32 = 0.5;
                 self.adjust_hdr_exposure_by_ev(-STEP_EV, ctx);
             }
-            AppAction::Delete => self.delete_current_image(false),
+            AppAction::Delete => self.request_delete_current_image(false),
             AppAction::PermanentDelete => self.delete_current_image(true),
             AppAction::Print => self.print_image(ctx, crate::print::PrintMode::FullImage),
             AppAction::ToggleGoto => {
@@ -513,6 +513,9 @@ impl ImageViewerApp {
                 }
                 ConfirmTag::InfoOnly => {
                     // Do nothing, the modal is already dismissed.
+                }
+                ConfirmTag::RemoteRecycleDelete => {
+                    self.delete_current_image(false);
                 }
             },
             #[cfg(target_os = "windows")]
