@@ -107,6 +107,20 @@ struct DelayedFallbackJob {
     hdr_tone_map: HdrToneMapSettings,
 }
 
+fn should_spawn_load_task(
+    loading: &mut HashMap<usize, u64>,
+    index: usize,
+    generation: u64,
+) -> bool {
+    match loading.get(&index).copied() {
+        Some(existing) if generation <= existing => false,
+        _ => {
+            loading.insert(index, generation);
+            true
+        }
+    }
+}
+
 pub struct ImageLoader {
     tx: Sender<LoaderOutput>,
     pub rx: Receiver<LoaderOutput>,
@@ -664,13 +678,9 @@ impl ImageLoader {
     ) {
         {
             let mut loading = self.loading.lock().unwrap();
-            if let Some(&existing) = loading.get(&index) {
-                if generation > existing {
-                    loading.insert(index, generation);
-                }
+            if !should_spawn_load_task(&mut loading, index, generation) {
                 return;
             }
-            loading.insert(index, generation);
         }
 
         let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1219,4 +1229,30 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_spawn_load_task;
+    use std::collections::HashMap;
+
+    #[test]
+    fn should_spawn_load_task_only_for_newer_generation() {
+        let mut loading = HashMap::new();
+
+        assert!(should_spawn_load_task(&mut loading, 7, 1));
+        assert_eq!(loading.get(&7), Some(&1));
+
+        // Same generation should not schedule duplicate load task.
+        assert!(!should_spawn_load_task(&mut loading, 7, 1));
+        assert_eq!(loading.get(&7), Some(&1));
+
+        // Newer generation must schedule a fresh task, otherwise UI can stall on loading.
+        assert!(should_spawn_load_task(&mut loading, 7, 2));
+        assert_eq!(loading.get(&7), Some(&2));
+
+        // Older generation should be ignored.
+        assert!(!should_spawn_load_task(&mut loading, 7, 1));
+        assert_eq!(loading.get(&7), Some(&2));
+    }
 }

@@ -14,7 +14,7 @@ use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn has_startup_target(
     initial_image: Option<&PathBuf>,
@@ -163,6 +163,41 @@ fn current_hdr_tiled_preview_matches_index(
     index: usize,
 ) -> bool {
     current.is_some_and(|current| current.image_for_index(index).is_some())
+}
+
+fn should_reset_transition_when_source_texture_missing(
+    transition_style: TransitionStyle,
+    has_source_texture: bool,
+) -> bool {
+    transition_style == TransitionStyle::None || !has_source_texture
+}
+
+fn transition_preroll_duration(transition_ms: u32) -> Duration {
+    if transition_ms == 0 {
+        return Duration::ZERO;
+    }
+    // Avoid the first-frame "stationary old frame" flash by starting animation
+    // slightly in-progress.
+    let max_ms = (transition_ms as u64).saturating_sub(1);
+    Duration::from_millis(16_u64.min(max_ms))
+}
+
+fn can_start_pending_transition(
+    target: Option<usize>,
+    current_index: usize,
+    has_texture: bool,
+) -> bool {
+    target == Some(current_index) && has_texture
+}
+
+fn should_start_transition_immediately(target_has_texture: bool, has_source_texture: bool) -> bool {
+    target_has_texture && has_source_texture
+}
+
+fn select_transition_source_texture(
+    current_source_texture: Option<egui::TextureHandle>,
+) -> Option<egui::TextureHandle> {
+    current_source_texture
 }
 
 fn invalidate_tile_manager_requests_for_view_change(
@@ -664,8 +699,10 @@ impl ImageViewerApp {
             return;
         }
 
-        // Setup transition if enabled
+        // Setup transition if enabled. We defer transition start until the target
+        // texture is actually ready to draw, avoiding black/stale-frame flashes.
         if self.settings.transition_style != TransitionStyle::None {
+            let now = Instant::now();
             if self.settings.transition_style == TransitionStyle::Random {
                 // Pick a random style from the pool using rand for uniform distribution
                 let pool = TransitionStyle::RANDOM_POOL;
@@ -676,15 +713,44 @@ impl ImageViewerApp {
                 self.active_transition = self.settings.transition_style;
             }
 
-            if let Some(tex) = self.texture_cache.get(self.current_index) {
-                self.prev_texture = Some(tex.clone());
-                self.transition_start = Some(Instant::now());
-                // Handle wrap-around logic for direction
-                self.is_next = target_index > self.current_index
-                    || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+            let source_tex = self.texture_cache.get(self.current_index).cloned();
+            // Always overwrite transition source. If current index has no texture
+            // (e.g. decode failed and only error text is shown), keeping an older
+            // prev_texture can make unrelated stale pixels flash during next navigation.
+            self.prev_texture = select_transition_source_texture(source_tex);
+            // Handle wrap-around logic for direction
+            self.is_next = target_index > self.current_index
+                || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+            self.transition_start = None;
+            let source_has_texture = self.prev_texture.is_some();
+            let target_has_texture = self.texture_cache.contains(target_index);
+            if should_start_transition_immediately(target_has_texture, source_has_texture) {
+                self.transition_start =
+                    Some(now - transition_preroll_duration(self.settings.transition_ms));
+                self.pending_transition_target = None;
+            } else {
+                self.pending_transition_target = Some(target_index);
+            }
+
+            if should_reset_transition_when_source_texture_missing(
+                self.settings.transition_style,
+                self.prev_texture.is_some(),
+            ) {
+                // No texture available for the source frame: avoid reusing stale
+                // transition state from previous navigation.
+                self.prev_texture = None;
+                self.pending_transition_target = None;
             }
         } else {
             self.active_transition = TransitionStyle::None;
+            self.pending_transition_target = None;
+            if should_reset_transition_when_source_texture_missing(
+                self.settings.transition_style,
+                true,
+            ) {
+                self.prev_texture = None;
+                self.transition_start = None;
+            }
         }
 
         preserve_current_tile_manager_for_navigation(
@@ -1424,6 +1490,19 @@ impl ImageViewerApp {
                 ctx.request_repaint();
                 break;
             }
+        }
+
+        // Start any deferred transition exactly when the target texture is ready.
+        // This runs AFTER processing loader outputs so we don't render one static
+        // frame in between "texture became ready" and "transition started".
+        if can_start_pending_transition(
+            self.pending_transition_target,
+            self.current_index,
+            self.texture_cache.contains(self.current_index),
+        ) {
+            self.transition_start =
+                Some(Instant::now() - transition_preroll_duration(self.settings.transition_ms));
+            self.pending_transition_target = None;
         }
     }
 
@@ -2527,6 +2606,33 @@ mod tests {
         assert!(has_startup_target(None, true, Some(&resumed)));
         assert!(!has_startup_target(None, false, Some(&resumed)));
         assert!(!has_startup_target(None, true, None));
+    }
+
+    #[test]
+    fn transition_preroll_starts_one_frame_in_progress() {
+        assert_eq!(transition_preroll_duration(0), Duration::ZERO);
+        assert_eq!(transition_preroll_duration(5), Duration::from_millis(4));
+        assert_eq!(transition_preroll_duration(16), Duration::from_millis(15));
+        assert_eq!(transition_preroll_duration(800), Duration::from_millis(16));
+    }
+
+    #[test]
+    fn pending_transition_starts_only_when_target_texture_is_ready() {
+        assert!(!can_start_pending_transition(Some(7), 6, true));
+        assert!(!can_start_pending_transition(Some(7), 7, false));
+        assert!(can_start_pending_transition(Some(7), 7, true));
+    }
+
+    #[test]
+    fn transition_can_start_immediately_when_target_is_already_cached() {
+        assert!(should_start_transition_immediately(true, true));
+        assert!(!should_start_transition_immediately(false, true));
+        assert!(!should_start_transition_immediately(true, false));
+    }
+
+    #[test]
+    fn transition_source_texture_selection_clears_when_current_missing() {
+        assert!(select_transition_source_texture(None).is_none());
     }
 
     #[test]

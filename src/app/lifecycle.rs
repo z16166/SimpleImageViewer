@@ -345,6 +345,7 @@ impl ImageViewerApp {
             current_image_res: None,
             prev_texture: None,
             transition_start: None,
+            pending_transition_target: None,
             is_next: true,
             active_transition: settings.transition_style,
             osd: crate::ui::osd::OsdRenderer::new(),

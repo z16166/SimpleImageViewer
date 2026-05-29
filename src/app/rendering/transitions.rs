@@ -76,7 +76,9 @@ impl ImageViewerApp {
                         // We store a normalised offset in [0,1] and the caller multiplies by width.
                         // NOTE: offset.x is stored as (-1..1) normalised; multiply by screen width in caller.
                         p.offset = Vec2::new(dir * (1.0 - ease_out), 0.0); // normalised
-                        p.prev_alpha = 1.0 - t;
+                        // Slide-over semantics: keep the old image stable underneath
+                        // while the new image moves in above it.
+                        p.prev_alpha = 1.0;
                     }
                     TransitionStyle::Push => {
                         let dir = if self.is_next { 1.0 } else { -1.0 };
