@@ -277,37 +277,12 @@ pub fn apply(path: PathBuf, mode_str: &str, target: &WallpaperTarget) {
 }
 
 #[cfg(target_os = "windows")]
-struct ComGuard;
-
-#[cfg(target_os = "windows")]
-impl ComGuard {
-    fn init_mta() -> Result<Self, String> {
-        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
-        unsafe {
-            CoInitializeEx(None, COINIT_MULTITHREADED)
-                .ok()
-                .map_err(|e| format!("CoInitializeEx failed: {e}"))?;
-        }
-        Ok(Self)
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        unsafe {
-            windows::Win32::System::Com::CoUninitialize();
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 pub fn probe_windows_wallpaper_targets() -> (Vec<MonitorOption>, bool) {
     use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
     use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
     use windows::core::PWSTR;
 
-    let _com = match ComGuard::init_mta() {
+    let _com = match crate::wic::ComGuard::new_mta() {
         Ok(guard) => guard,
         Err(_) => return (Vec::new(), false),
     };
@@ -420,7 +395,8 @@ fn apply_windows_per_monitor(
     let abs_path = std::fs::canonicalize(&path).unwrap_or(path);
     let path_str = abs_path.to_string_lossy().to_string();
 
-    let _com = ComGuard::init_mta()?;
+    let _com =
+        crate::wic::ComGuard::new_mta().map_err(|e| format!("CoInitializeEx failed: {e}"))?;
 
     unsafe {
         let desktop: IDesktopWallpaper = CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)

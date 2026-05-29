@@ -53,6 +53,10 @@ impl ComGuard {
         }
         Ok(Self)
     }
+
+    pub fn new_mta() -> windows::core::Result<Self> {
+        Self::new()
+    }
 }
 
 impl Drop for ComGuard {
