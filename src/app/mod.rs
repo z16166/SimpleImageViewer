@@ -58,30 +58,27 @@ pub(crate) enum SettingsTab {
     Viewing,
     Music,
     Appearance,
-    Updates,
     System,
     About,
 }
 
 impl SettingsTab {
     #[cfg(target_os = "windows")]
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Library,
-        Self::Viewing,
-        Self::Music,
-        Self::Appearance,
-        Self::Updates,
-        Self::System,
-        Self::About,
-    ];
-
-    #[cfg(not(target_os = "windows"))]
     pub(crate) const ALL: [Self; 6] = [
         Self::Library,
         Self::Viewing,
         Self::Music,
         Self::Appearance,
-        Self::Updates,
+        Self::System,
+        Self::About,
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Library,
+        Self::Viewing,
+        Self::Music,
+        Self::Appearance,
         Self::About,
     ];
 
@@ -91,7 +88,6 @@ impl SettingsTab {
             Self::Viewing => "settings_tab.viewing",
             Self::Music => "settings_tab.music",
             Self::Appearance => "settings_tab.appearance",
-            Self::Updates => "settings_tab.updates",
             Self::System => "settings_tab.system",
             Self::About => "settings_tab.about",
         }
@@ -360,14 +356,6 @@ impl CurrentHdrTiledImage {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum UpdateFeedbackLevel {
-    #[default]
-    Info,
-    Warning,
-    Error,
-}
-
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -505,17 +493,6 @@ pub struct ImageViewerApp {
     pub(crate) scan_rx: Option<Receiver<scanner::ScanMessage>>,
     pub(crate) scan_cancel: Option<Arc<AtomicBool>>,
 
-    // Update checking
-    pub(crate) update_check_rx: Option<Receiver<crate::update::state::UpdateCheckMessage>>,
-    pub(crate) update_checking: bool,
-    pub(crate) update_feedback: String,
-    pub(crate) update_feedback_level: UpdateFeedbackLevel,
-    pub(crate) update_feedback_is_proxy_validation: bool,
-    pub(crate) update_install_rx: Option<Receiver<crate::update::install::UpdateInstallMessage>>,
-    pub(crate) update_installing: bool,
-    pub(crate) pending_update_restart: bool,
-    pub(crate) pending_update: Option<crate::update::core::UpdateCandidate>,
-
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
 
@@ -603,184 +580,6 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
-    fn clear_update_feedback(&mut self) {
-        self.update_feedback.clear();
-        self.update_feedback_level = UpdateFeedbackLevel::Info;
-        self.update_feedback_is_proxy_validation = false;
-    }
-
-    fn set_update_feedback(&mut self, message: String, level: UpdateFeedbackLevel) {
-        self.update_feedback = message.clone();
-        self.update_feedback_level = level;
-        self.update_feedback_is_proxy_validation = false;
-        self.status_message = message;
-    }
-
-    fn set_proxy_validation_feedback(&mut self, message: String) {
-        self.update_feedback = message.clone();
-        self.update_feedback_level = UpdateFeedbackLevel::Warning;
-        self.update_feedback_is_proxy_validation = true;
-        self.status_message = message;
-    }
-
-    pub(crate) fn sync_proxy_validation_feedback(&mut self) {
-        if !self.update_feedback_is_proxy_validation {
-            return;
-        }
-        let proxy = self.settings.updates.proxy.to_proxy_config();
-        if crate::update::core::validate_proxy_config(&proxy).is_ok() {
-            self.clear_update_feedback();
-        }
-    }
-
-    pub(crate) fn start_update_check(&mut self, force: bool) {
-        if self.update_checking {
-            return;
-        }
-        if !force && !self.settings.updates.enabled {
-            return;
-        }
-        let proxy = self.settings.updates.proxy.to_proxy_config();
-        if crate::update::core::validate_proxy_config(&proxy).is_err() {
-            self.set_proxy_validation_feedback(
-                rust_i18n::t!("update.proxy_incomplete").to_string(),
-            );
-            return;
-        }
-        let today = crate::update::state::today_utc_string();
-        if !force
-            && !crate::update::core::should_check_today(
-                self.settings.updates.last_check_date_utc.as_deref(),
-                &today,
-            )
-        {
-            return;
-        }
-        self.settings.updates.last_check_date_utc = Some(today);
-        self.queue_save();
-        let (tx, rx) = crossbeam_channel::bounded(8);
-        self.update_check_rx = Some(rx);
-        self.update_checking = true;
-        self.set_update_feedback(
-            rust_i18n::t!("update.checking").to_string(),
-            UpdateFeedbackLevel::Info,
-        );
-        crate::update::state::spawn_update_check(
-            self.settings.updates.clone(),
-            self.settings.language.clone(),
-            tx,
-        );
-    }
-
-    pub(crate) fn process_update_messages(&mut self, ctx: &egui::Context) {
-        let Some(rx) = self.update_check_rx.as_ref().cloned() else {
-            return;
-        };
-        while let Ok(message) = rx.try_recv() {
-            match message {
-                crate::update::state::UpdateCheckMessage::Checking => {
-                    self.set_update_feedback(
-                        rust_i18n::t!("update.checking").to_string(),
-                        UpdateFeedbackLevel::Info,
-                    );
-                }
-                crate::update::state::UpdateCheckMessage::UpToDate => {
-                    self.update_checking = false;
-                    self.set_update_feedback(
-                        rust_i18n::t!("update.no_update").to_string(),
-                        UpdateFeedbackLevel::Info,
-                    );
-                    self.update_check_rx = None;
-                }
-                crate::update::state::UpdateCheckMessage::Available(candidate) => {
-                    self.update_checking = false;
-                    self.pending_update = Some(candidate.clone());
-                    self.modal_generation = self.modal_generation.wrapping_add(1);
-                    self.active_modal = Some(ActiveModal::Update(
-                        crate::ui::dialogs::update::State::new(candidate),
-                    ));
-                    self.update_check_rx = None;
-                    ctx.request_repaint();
-                }
-                crate::update::state::UpdateCheckMessage::Failed(err) => {
-                    self.update_checking = false;
-                    self.set_update_feedback(
-                        rust_i18n::t!("update.check_failed", err = err).to_string(),
-                        UpdateFeedbackLevel::Error,
-                    );
-                    self.update_check_rx = None;
-                }
-            }
-        }
-    }
-
-    pub(crate) fn start_pending_update(&mut self) {
-        let Some(candidate) = self.pending_update.clone() else {
-            return;
-        };
-        if self.update_installing {
-            return;
-        }
-        if !cfg!(target_os = "windows") {
-            self.set_update_feedback(
-                rust_i18n::t!("update.unsupported_platform").to_string(),
-                UpdateFeedbackLevel::Warning,
-            );
-            return;
-        }
-        let proxy = self.settings.updates.proxy.to_proxy_config();
-        if crate::update::core::validate_proxy_config(&proxy).is_err() {
-            self.set_proxy_validation_feedback(
-                rust_i18n::t!("update.proxy_incomplete").to_string(),
-            );
-            return;
-        }
-        let (tx, rx) = crossbeam_channel::bounded(16);
-        self.update_install_rx = Some(rx);
-        self.update_installing = true;
-        self.set_update_feedback(
-            rust_i18n::t!("update.downloading", percent = 0).to_string(),
-            UpdateFeedbackLevel::Info,
-        );
-        let locale = if self.settings.language.is_empty() {
-            crate::settings::detect_system_language()
-        } else {
-            self.settings.language.clone()
-        };
-        crate::update::install::spawn_windows_update_install(
-            candidate,
-            self.settings.updates.clone(),
-            locale,
-            tx,
-        );
-    }
-
-    pub(crate) fn process_update_install_messages(&mut self) {
-        let Some(rx) = self.update_install_rx.as_ref().cloned() else {
-            return;
-        };
-        while let Ok(message) = rx.try_recv() {
-            match message {
-                crate::update::install::UpdateInstallMessage::Downloading(percent) => {
-                    self.status_message =
-                        rust_i18n::t!("update.downloading", percent = percent).to_string();
-                }
-                crate::update::install::UpdateInstallMessage::ReadyToRestart => {
-                    self.update_installing = false;
-                    self.status_message = rust_i18n::t!("update.ready_to_restart").to_string();
-                    self.update_install_rx = None;
-                    self.pending_update_restart = true;
-                }
-                crate::update::install::UpdateInstallMessage::Failed(err) => {
-                    self.update_installing = false;
-                    self.status_message =
-                        rust_i18n::t!("update.download_failed", err = err).to_string();
-                    self.update_install_rx = None;
-                }
-            }
-        }
-    }
-
     pub(crate) fn effective_hdr_monitor_selection(
         &self,
     ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
@@ -1075,8 +874,6 @@ impl eframe::App for ImageViewerApp {
 
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
-            self.process_update_messages(ctx);
-            self.process_update_install_messages();
 
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -1089,16 +886,6 @@ impl eframe::App for ImageViewerApp {
             self.osd.invalidate(); // Invalidate HUD cache to force total redraw
             ctx.request_repaint();
         }
-
-        if self.pending_update_restart {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            ctx.request_repaint_after(Duration::from_millis(50));
-            return;
-        }
-
-        self.start_update_check(false);
-        self.process_update_messages(ctx);
-        self.process_update_install_messages();
 
         // Pull the live swap-chain target format every frame so all downstream
         // consumers (`HdrImageRenderer`, `effective_render_output_mode`, OSD,

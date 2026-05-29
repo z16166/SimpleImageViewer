@@ -19,7 +19,6 @@ pub mod exif;
 pub mod goto;
 pub mod modal_state;
 pub mod movable_modal;
-pub mod update;
 pub mod wallpaper;
 pub mod xmp;
 

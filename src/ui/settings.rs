@@ -19,7 +19,6 @@ use crate::ui::utils::{
     middle_truncate, path_display_box, setup_fonts, setup_visuals, styled_button,
     styled_button_widget,
 };
-use crate::update::core::{GITHUB_RELEASES_PAGE, ProxyType};
 use eframe::Frame;
 use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
 use rust_i18n::t;
@@ -33,7 +32,6 @@ const TRANSITIONS_FORM_CONTROL_WIDTH: f32 = 220.0;
 const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 65.0;
 const APPEARANCE_FORM_CONTROL_WIDTH: f32 = 320.0;
 const APPEARANCE_SLIDER_VALUE_WIDTH: f32 = 70.0;
-const UPDATE_PROXY_CONTROL_WIDTH: f32 = 300.0;
 const MUSIC_FORM_CONTROL_WIDTH: f32 = 280.0;
 const MUSIC_SLIDER_VALUE_WIDTH: f32 = 60.0;
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
@@ -277,133 +275,6 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     }
 }
 
-fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    ui.label(
-        RichText::new(t!("section.updates"))
-            .color(app.cached_palette.accent2)
-            .strong(),
-    );
-    ui.add_space(2.0);
-
-    let before = app.settings.updates.clone();
-    ui.scope(|ui| {
-        let bp = ui.spacing().button_padding;
-        let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
-        ui.style_mut().spacing.interact_size.y = control_h;
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut app.settings.updates.enabled, t!("label.update_check"));
-            if styled_button(ui, t!("btn.check_now"), &app.cached_palette).clicked() {
-                app.start_update_check(true);
-            }
-        });
-    });
-    ui.checkbox(
-        &mut app.settings.updates.proxy.enabled,
-        t!("label.update_proxy"),
-    )
-    .on_hover_text(t!("update.proxy_hint"));
-    if app.settings.updates.proxy.enabled {
-        // All three controls must be the same visual height for row spacing to look
-        // uniform. ComboBox and TextEdit both yield (font_height + 2*button_padding.y).
-        // DragValue uses interact_size.y for its height, so we override that value
-        // inside a scope to bring DragValue in line with the other two.
-        // The scope prevents the override from leaking to the rest of the UI.
-        ui.scope(|ui| {
-            let bp = ui.spacing().button_padding;
-            let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
-            ui.style_mut().spacing.interact_size.y = control_h;
-
-            egui::Grid::new("update_proxy_grid")
-                .num_columns(2)
-                .spacing([8.0, 10.0])
-                .show(ui, |ui| {
-                    ui.label(t!("label.update_proxy_type"));
-                    egui::ComboBox::from_id_salt("update_proxy_type")
-                        .selected_text(
-                            t!(app.settings.updates.proxy.proxy_type.label_key()).to_string(),
-                        )
-                        .width(UPDATE_PROXY_CONTROL_WIDTH)
-                        .show_ui(ui, |ui| {
-                            for proxy_type in ProxyType::ALL {
-                                ui.selectable_value(
-                                    &mut app.settings.updates.proxy.proxy_type,
-                                    proxy_type,
-                                    t!(proxy_type.label_key()).to_string(),
-                                );
-                            }
-                        });
-                    ui.end_row();
-
-                    ui.label(t!("label.update_proxy_host"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut app.settings.updates.proxy.host)
-                            .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
-                            .margin(egui::Margin {
-                                left: 4,
-                                right: 4,
-                                top: bp.y as i8,
-                                bottom: bp.y as i8,
-                            }),
-                    );
-                    ui.end_row();
-
-                    ui.label(t!("label.update_proxy_port"));
-                    ui.add(
-                        egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
-                    );
-                    ui.end_row();
-                });
-        });
-    }
-
-    ui.add_space(6.0);
-    ui.scope(|ui| {
-        let bp = ui.spacing().button_padding;
-        let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
-        ui.style_mut().spacing.interact_size.y = control_h;
-
-        egui::Grid::new("update_github_token_grid")
-            .num_columns(2)
-            .spacing([8.0, 6.0])
-            .show(ui, |ui| {
-                grid_label(ui, t!("label.update_github_token"));
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.settings.updates.github_token)
-                        .password(true)
-                        .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
-                        .hint_text(t!("label.update_github_token_hint"))
-                        .margin(egui::Margin {
-                            left: 4,
-                            right: 4,
-                            top: bp.y as i8,
-                            bottom: bp.y as i8,
-                        }),
-                )
-                .on_hover_text(t!("update.github_token_hint"));
-                ui.end_row();
-            });
-    });
-
-    app.sync_proxy_validation_feedback();
-    if app.update_checking {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(RichText::new(t!("update.checking")).color(app.cached_palette.text_muted));
-        });
-    } else if !app.update_feedback.is_empty() {
-        let color = match app.update_feedback_level {
-            crate::app::UpdateFeedbackLevel::Info => app.cached_palette.text_muted,
-            crate::app::UpdateFeedbackLevel::Warning => Color32::from_rgb(255, 180, 60),
-            crate::app::UpdateFeedbackLevel::Error => Color32::from_rgb(255, 100, 100),
-        };
-        ui.label(RichText::new(&app.update_feedback).color(color));
-    }
-
-    if app.settings.updates != before {
-        app.queue_save();
-    }
-}
-
 fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
         for tab in SettingsTab::ALL {
@@ -467,7 +338,6 @@ fn draw_active_settings_tab(
             music_enabled_changed,
         ),
         SettingsTab::Appearance => draw_appearance_tab(app, ui, ctx),
-        SettingsTab::Updates => draw_updates_tab(app, ui),
         #[cfg(target_os = "windows")]
         SettingsTab::System => draw_system_tab(app, ui),
         #[cfg(not(target_os = "windows"))]
@@ -1336,12 +1206,6 @@ fn draw_appearance_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Contex
     });
 }
 
-fn draw_updates_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    ui.vertical(|ui| {
-        draw_updates_section(app, ui);
-    });
-}
-
 fn draw_about_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
@@ -1360,7 +1224,10 @@ fn draw_about_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.label(RichText::new(t!("about.copyright")).color(app.cached_palette.text_muted));
         ui.add_space(4.0);
-        ui.hyperlink_to(GITHUB_RELEASES_PAGE, GITHUB_RELEASES_PAGE);
+        ui.hyperlink_to(
+            "https://github.com/z16166/SimpleImageViewer/releases",
+            "https://github.com/z16166/SimpleImageViewer/releases",
+        );
     });
 }
 

@@ -1,5 +1,4 @@
-use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
-use crate::app::{ImageViewerApp, UpdateFeedbackLevel};
+use crate::app::{CACHE_SIZE, HardwareTier, ImageViewerApp, compute_preload_budgets};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -38,13 +37,6 @@ impl ImageViewerApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
-        let mut settings = settings;
-        if let Some(updated_version) = crate::update::install::consume_success_marker() {
-            settings.updates.last_successful_update_version = Some(updated_version);
-            let _ = settings.save();
-        }
-        crate::update::install::cleanup_old_backups();
-
         let mut theme_cache = SystemThemeCache::default();
         let cached_palette = settings.theme.resolve(&mut theme_cache);
 
@@ -343,15 +335,6 @@ impl ImageViewerApp {
             scanning_music: false,
             music_scan_cancel: None,
             music_scan_path: None,
-            update_check_rx: None,
-            update_checking: false,
-            update_feedback: String::new(),
-            update_feedback_level: UpdateFeedbackLevel::Info,
-            update_feedback_is_proxy_validation: false,
-            update_install_rx: None,
-            update_installing: false,
-            pending_update_restart: false,
-            pending_update: None,
             current_image_res: None,
             prev_texture: None,
             transition_start: None,

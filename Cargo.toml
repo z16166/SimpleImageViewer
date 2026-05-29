@@ -11,11 +11,6 @@ default-run = "SimpleImageViewer"
 name = "SimpleImageViewer"
 path = "src/main.rs"
 
-[[bin]]
-name = "update"
-path = "src/bin/update.rs"
-required-features = ["updater-helper"]
-
 [dependencies]
 rand = "0.8"
 eframe = { version = "0.34", default-features = false, features = [
@@ -82,11 +77,6 @@ libjxl-sys = { path = "libraries/libjxl-sys", optional = true }
 bytemuck = "1.25.0"
 half = { version = "2.6", default-features = false }
 miniz_oxide = "0.8.9"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "socks", "rustls"] }
-semver = "1.0.28"
-sha2 = "0.11.0"
-zip = "8.6.0"
-webbrowser = "1.2.1"
 
 [features]
 # OpenEXR + AVIF/HEIF/JPEG XL native HDR paths are on by default so CI and release
@@ -96,8 +86,6 @@ default = ["openexr-core", "hdr-modern-formats"]
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 # Diagnostic tools for tiled rendering (green borders and OSD stats)
 tile-debug = []
-# Small Windows-only helper used by portable OTA updates.
-updater-helper = []
 # Official OpenEXRCore C backend for EXR decoding.
 openexr-core = []
 avif-native = ["dep:libavif-sys"]

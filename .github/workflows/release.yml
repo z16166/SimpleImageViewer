@@ -426,13 +426,6 @@ jobs:
           fi
           cargo build --profile ci --target ${{ matrix.target }}
 
-      - name: Build Updater Helper (Windows)
-        if: "runner.os == 'Windows' && !matrix.use_cross"
-        shell: bash
-        run: |
-          export RUSTFLAGS="-C target-feature=+crt-static"
-          cargo build --profile ci --target ${{ matrix.target }} --bin update --features updater-helper
-
       - name: Run SIMD Parity Tests (Native)
         if: "!matrix.use_cross && matrix.target != 'aarch64-pc-windows-msvc'"
         run: cargo test --profile ci --target ${{ matrix.target }} simd_swizzle
@@ -464,14 +457,8 @@ jobs:
         run: |
           $archiveName = "SimpleImageViewer-${{ matrix.target }}${{ matrix.archive_ext }}"
           $binarySrc = "target/${{ matrix.target }}/ci/${{ matrix.binary_name }}"
-          $updaterSrc = "target/${{ matrix.target }}/ci/update.exe"
-          if (-not (Test-Path $updaterSrc)) {
-            Write-Error "update.exe not found at $updaterSrc"
-            exit 1
-          }
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
-          cp $updaterSrc staging/update.exe
           cp assets/screenshot.jpg staging/assets/
           Compress-Archive -Path staging/* -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -681,26 +668,13 @@ jobs:
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
           thunk --os win7 --arch x64 -- --profile ci --features legacy_win7
 
-      - name: Build updater helper
-        shell: pwsh
-        run: |
-          $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          cargo build --profile ci --target x86_64-pc-windows-msvc --bin update --features updater-helper
-
-
       - name: Package Artifacts
         shell: pwsh
         run: |
           $archiveName = "SimpleImageViewer-win7-x64.zip"
           $binarySrc = "target/win7_build/x86_64-pc-windows-msvc/ci/SimpleImageViewer.exe"
-          $updaterSrc = "target/x86_64-pc-windows-msvc/ci/update.exe"
-          if (-not (Test-Path $updaterSrc)) {
-            Write-Error "update.exe not found at $updaterSrc"
-            exit 1
-          }
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
-          cp $updaterSrc staging/update.exe
           cp assets/screenshot.jpg staging/assets/
           cp "$env:SystemRoot\System32\d3dcompiler_47.dll" staging/
           # 仅针对 Win7 额外增加 ANGLE 核心 DLL 探测 (从 Chrome 中提取)
@@ -783,14 +757,6 @@ jobs:
             | sed 's#  ./#  #' > SHA256SUMS.txt
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS.txt
-
-      - name: Include localized changelog assets
-        shell: bash
-        run: |
-          shopt -s nullglob
-          for changelog in CHANGELOG.*.md; do
-            cp "$changelog" release-artifacts/
-          done
 
       - name: Create or Update Release
         env:

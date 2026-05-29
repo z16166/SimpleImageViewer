@@ -464,9 +464,6 @@ impl ImageViewerApp {
             Some(ActiveModal::FileAssoc(state)) => {
                 crate::ui::dialogs::file_assoc::show(state, ctx, &self.cached_palette)
             }
-            Some(ActiveModal::Update(state)) => {
-                crate::ui::dialogs::update::show(state, ctx, &self.cached_palette)
-            }
         };
 
         match result {
@@ -531,26 +528,6 @@ impl ImageViewerApp {
                         t!("win.assoc_done_msg"),
                     ),
                 ));
-            }
-            ModalAction::StartUpdate => {
-                self.start_pending_update();
-            }
-            ModalAction::OpenUpdateReleasePage => {
-                let url = self
-                    .pending_update
-                    .as_ref()
-                    .map(|candidate| candidate.release_page_url.as_str())
-                    .unwrap_or(crate::update::core::GITHUB_RELEASES_PAGE);
-                if let Err(err) = webbrowser::open(url) {
-                    self.status_message =
-                        rust_i18n::t!("update.open_page_failed", err = err.to_string()).to_string();
-                }
-            }
-            ModalAction::IgnoreUpdateVersion => {
-                if let Some(candidate) = &self.pending_update {
-                    self.settings.updates.ignored_version = Some(candidate.version.clone());
-                    self.queue_save();
-                }
             }
         }
     }

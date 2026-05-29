@@ -332,14 +332,6 @@ fn embed_resources(ico_path: &std::path::Path, out_dir: &std::path::Path) {
             "SimpleImageViewer.exe",
         );
         compile_msvc_resource_for_bin(&main, out_dir, "SimpleImageViewer");
-
-        let updater = build_version_resource(
-            ico_path,
-            "Simple Image Viewer",
-            "Simple Image Viewer Updater",
-            "update.exe",
-        );
-        compile_msvc_resource_for_bin(&updater, out_dir, "update");
         return;
     }
 

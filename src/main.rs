@@ -49,7 +49,6 @@ mod simd_swizzle;
 pub mod theme;
 mod tile_cache;
 mod ui;
-mod update;
 #[cfg(target_os = "windows")]
 mod wic;
 
