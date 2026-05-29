@@ -16,6 +16,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+fn has_startup_target(
+    initial_image: Option<&PathBuf>,
+    resume_last_image: bool,
+    last_viewed_image: Option<&PathBuf>,
+) -> bool {
+    initial_image.is_some() || (resume_last_image && last_viewed_image.is_some())
+}
+
 fn preserve_current_tile_manager_for_navigation(
     current_index: usize,
     target_index: usize,
@@ -1067,6 +1075,11 @@ impl ImageViewerApp {
 
         let mut done = false;
         let mut first_batch_preload_pending = false;
+        let startup_target_pending = has_startup_target(
+            self.initial_image.as_ref(),
+            self.settings.resume_last_image,
+            self.settings.last_viewed_image.as_ref(),
+        );
 
         // Drain all available messages this frame (non-blocking)
         loop {
@@ -1157,6 +1170,7 @@ impl ImageViewerApp {
             first_batch_preload_pending,
             self.image_files.len(),
             done,
+            startup_target_pending,
         ) {
             self.schedule_preloads(true);
         }
@@ -2226,8 +2240,9 @@ fn should_schedule_first_batch_preload(
     is_first_batch: bool,
     count: usize,
     scan_done: bool,
+    startup_target_pending: bool,
 ) -> bool {
-    is_first_batch && count > 0 && !scan_done
+    is_first_batch && count > 0 && !scan_done && !startup_target_pending
 }
 
 fn first_cached_hdr_still_for_index(
@@ -2489,10 +2504,26 @@ mod tests {
 
     #[test]
     fn first_batch_preload_waits_when_scan_done_is_already_available() {
-        assert!(!should_schedule_first_batch_preload(true, 3, true));
-        assert!(should_schedule_first_batch_preload(true, 3, false));
-        assert!(!should_schedule_first_batch_preload(false, 3, false));
-        assert!(!should_schedule_first_batch_preload(true, 0, false));
+        assert!(!should_schedule_first_batch_preload(true, 3, true, false));
+        assert!(should_schedule_first_batch_preload(true, 3, false, false));
+        assert!(!should_schedule_first_batch_preload(false, 3, false, false));
+        assert!(!should_schedule_first_batch_preload(true, 0, false, false));
+    }
+
+    #[test]
+    fn first_batch_preload_waits_for_startup_target() {
+        assert!(!should_schedule_first_batch_preload(true, 3, false, true));
+    }
+
+    #[test]
+    fn startup_target_detects_explicit_image_or_resume_image() {
+        let explicit = PathBuf::from("explicit.jpg");
+        let resumed = PathBuf::from("resumed.jpg");
+
+        assert!(has_startup_target(Some(&explicit), false, None));
+        assert!(has_startup_target(None, true, Some(&resumed)));
+        assert!(!has_startup_target(None, false, Some(&resumed)));
+        assert!(!has_startup_target(None, true, None));
     }
 
     #[test]
