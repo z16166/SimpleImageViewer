@@ -27,6 +27,7 @@ const READ_CHUNK_SIZE: usize = 1024 * 1024;
 
 pub const MAX_UPDATE_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_SHA256SUMS_DOWNLOAD_BYTES: u64 = 1024 * 1024;
+pub const MAX_CHANGELOG_DOWNLOAD_BYTES: u64 = 1024 * 1024;
 
 fn apply_proxy(
     builder: reqwest::blocking::ClientBuilder,

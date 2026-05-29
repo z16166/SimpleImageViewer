@@ -31,7 +31,11 @@ settings_tab.about: "About"
 # About
 about.version: "Version %{version}"
 about.copyright: "Copyright © 2024-2026 Simple Image Viewer Contributors"
-about.website: "Project website"
+
+# Library
+library.image_count: "Images: %{count}"
+library.scan_idle: "Scan complete"
+library.scan_no_directory: "Choose a folder to start browsing."
 
 # Buttons
 btn.pick: "📁 Pick"

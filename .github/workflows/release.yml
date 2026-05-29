@@ -784,6 +784,14 @@ jobs:
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS.txt
 
+      - name: Include localized changelog assets
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for changelog in CHANGELOG.*.md; do
+            cp "$changelog" release-artifacts/
+          done
+
       - name: Create or Update Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

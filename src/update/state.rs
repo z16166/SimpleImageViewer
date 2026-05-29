@@ -18,6 +18,7 @@ use super::core::{
     CpuArch, PlatformKind, UpdateCandidate, candidate_from_release, current_version,
 };
 use crate::settings::UpdateSettings;
+use crate::update::net::MAX_CHANGELOG_DOWNLOAD_BYTES;
 
 const MAX_UPDATE_CHECK_ATTEMPTS: usize = 3;
 
@@ -74,6 +75,7 @@ pub fn cpu_arch() -> CpuArch {
 
 pub fn spawn_update_check(
     settings: UpdateSettings,
+    locale: String,
     tx: crossbeam_channel::Sender<UpdateCheckMessage>,
 ) {
     let _ = tx.send(UpdateCheckMessage::Checking);
@@ -94,7 +96,12 @@ pub fn spawn_update_check(
                     platform_kind(),
                     cpu_arch(),
                     cfg!(feature = "legacy_win7"),
+                    &locale,
                 )
+            })
+            .map(|candidate| {
+                candidate
+                    .map(|candidate| populate_localized_release_notes(candidate, proxy.as_ref()))
             })
             .map_err(UpdateCheckMessage::Failed);
 
@@ -115,6 +122,37 @@ pub fn spawn_update_check(
             "failed to start update check thread: {err}"
         )));
     }
+}
+
+fn populate_localized_release_notes(
+    mut candidate: UpdateCandidate,
+    proxy: Option<&crate::update::core::ProxyConfig>,
+) -> UpdateCandidate {
+    let Some(url) = candidate.localized_changelog_url.as_deref() else {
+        return candidate;
+    };
+    match crate::update::net::download_bytes_with_progress(
+        url,
+        proxy,
+        MAX_CHANGELOG_DOWNLOAD_BYTES,
+        |_, _| {},
+    ) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(notes) if !notes.trim().is_empty() => {
+                candidate.release_notes = notes;
+            }
+            Ok(_) => {
+                log::warn!("localized changelog asset was empty: {url}");
+            }
+            Err(err) => {
+                log::warn!("localized changelog asset was not UTF-8: {url}: {err}");
+            }
+        },
+        Err(err) => {
+            log::warn!("failed to download localized changelog asset {url}: {err}");
+        }
+    }
+    candidate
 }
 
 fn fetch_latest_release_with_retry(

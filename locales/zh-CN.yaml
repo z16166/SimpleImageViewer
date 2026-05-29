@@ -31,7 +31,11 @@ settings_tab.about: "关于"
 # About
 about.version: "版本 %{version}"
 about.copyright: "版权所有 © 2024-2026 Simple Image Viewer Contributors"
-about.website: "项目网站"
+
+# Library
+library.image_count: "图片数量：%{count}"
+library.scan_idle: "扫描完成"
+library.scan_no_directory: "请选择文件夹开始浏览。"
 
 # Buttons
 btn.pick: "📁 选择"

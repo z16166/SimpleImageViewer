@@ -27,6 +27,13 @@ use std::time::Instant;
 
 const ABOUT_ICON_SIZE: f32 = 96.0;
 const ABOUT_ICON_BYTES: &[u8] = include_bytes!("../../assets/icon.png");
+const HDR_SLIDER_TRACK_WIDTH: f32 = 110.0;
+const HDR_SLIDER_VALUE_WIDTH: f32 = 90.0;
+const APPEARANCE_FORM_CONTROL_WIDTH: f32 = 320.0;
+const APPEARANCE_SLIDER_VALUE_WIDTH: f32 = 70.0;
+const APPEARANCE_SLIDER_TRACK_WIDTH: f32 = 258.0;
+const UPDATE_PROXY_CONTROL_WIDTH: f32 = 300.0;
+const UPDATE_PROXY_PORT_WIDTH: f32 = 80.0;
 
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
@@ -195,43 +202,56 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         app.settings.hdr_max_display_nits,
     );
 
-    ui.horizontal(|ui| {
-        let exposure_slot = if is_tone_mapped_sdr_output {
-            &mut app.settings.hdr_exposure_ev_sdr
-        } else {
-            &mut app.settings.hdr_exposure_ev_native
-        };
-        let hint = if is_tone_mapped_sdr_output {
-            t!("hdr.exposure_hint_when_sdr_mapped_output")
-        } else {
-            t!("hdr.exposure_hint_when_native_hdr_output")
-        };
-        ui.label(t!("hdr.exposure_ev"));
-        ui.add(
-            egui::Slider::new(exposure_slot, -8.0..=8.0)
-                .step_by(0.1)
-                .suffix(" EV"),
-        )
-        .on_hover_text(hint);
-    });
-    ui.horizontal(|ui| {
-        ui.label(t!("hdr.sdr_white_nits"));
-        ui.add(
-            egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
-                .step_by(1.0)
-                .suffix(" nits"),
-        )
-        .on_hover_text(t!("hdr.sdr_white_hint"));
-    });
-    ui.horizontal(|ui| {
-        ui.label(t!("hdr.max_display_nits"));
-        ui.add(
-            egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
-                .logarithmic(true)
-                .suffix(" nits"),
-        )
-        .on_hover_text(t!("hdr.max_display_hint"));
-    });
+    let exposure_slot = if is_tone_mapped_sdr_output {
+        &mut app.settings.hdr_exposure_ev_sdr
+    } else {
+        &mut app.settings.hdr_exposure_ev_native
+    };
+    let hint = if is_tone_mapped_sdr_output {
+        t!("hdr.exposure_hint_when_sdr_mapped_output")
+    } else {
+        t!("hdr.exposure_hint_when_native_hdr_output")
+    };
+    egui::Grid::new("hdr_settings_grid")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            grid_label(ui, t!("hdr.exposure_ev"));
+            add_fixed_slider(
+                ui,
+                HDR_SLIDER_TRACK_WIDTH,
+                HDR_SLIDER_VALUE_WIDTH,
+                egui::Slider::new(exposure_slot, -8.0..=8.0)
+                    .step_by(0.1)
+                    .suffix(" EV"),
+            )
+            .on_hover_text(hint);
+            ui.end_row();
+
+            grid_label(ui, t!("hdr.sdr_white_nits"));
+            add_fixed_slider(
+                ui,
+                HDR_SLIDER_TRACK_WIDTH,
+                HDR_SLIDER_VALUE_WIDTH,
+                egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
+                    .step_by(1.0)
+                    .suffix(" nits"),
+            )
+            .on_hover_text(t!("hdr.sdr_white_hint"));
+            ui.end_row();
+
+            grid_label(ui, t!("hdr.max_display_nits"));
+            add_fixed_slider(
+                ui,
+                HDR_SLIDER_TRACK_WIDTH,
+                HDR_SLIDER_VALUE_WIDTH,
+                egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
+                    .logarithmic(true)
+                    .suffix(" nits"),
+            )
+            .on_hover_text(t!("hdr.max_display_hint"));
+            ui.end_row();
+        });
 
     if old
         != (
@@ -277,28 +297,41 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     )
     .on_hover_text(t!("update.proxy_hint"));
     if app.settings.updates.proxy.enabled {
-        ui.horizontal(|ui| {
-            ui.label(t!("label.update_proxy_type"));
-            egui::ComboBox::from_id_salt("update_proxy_type")
-                .selected_text(t!(app.settings.updates.proxy.proxy_type.label_key()).to_string())
-                .show_ui(ui, |ui| {
-                    for proxy_type in ProxyType::ALL {
-                        ui.selectable_value(
-                            &mut app.settings.updates.proxy.proxy_type,
-                            proxy_type,
-                            t!(proxy_type.label_key()).to_string(),
-                        );
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label(t!("label.update_proxy_host"));
-            ui.text_edit_singleline(&mut app.settings.updates.proxy.host);
-        });
-        ui.horizontal(|ui| {
-            ui.label(t!("label.update_proxy_port"));
-            ui.add(egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535));
-        });
+        egui::Grid::new("update_proxy_grid")
+            .num_columns(2)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                grid_label(ui, t!("label.update_proxy_type"));
+                egui::ComboBox::from_id_salt("update_proxy_type")
+                    .selected_text(
+                        t!(app.settings.updates.proxy.proxy_type.label_key()).to_string(),
+                    )
+                    .width(UPDATE_PROXY_CONTROL_WIDTH)
+                    .show_ui(ui, |ui| {
+                        for proxy_type in ProxyType::ALL {
+                            ui.selectable_value(
+                                &mut app.settings.updates.proxy.proxy_type,
+                                proxy_type,
+                                t!(proxy_type.label_key()).to_string(),
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                grid_label(ui, t!("label.update_proxy_host"));
+                ui.add_sized(
+                    [UPDATE_PROXY_CONTROL_WIDTH, 0.0],
+                    egui::TextEdit::singleline(&mut app.settings.updates.proxy.host),
+                );
+                ui.end_row();
+
+                grid_label(ui, t!("label.update_proxy_port"));
+                ui.add_sized(
+                    [UPDATE_PROXY_PORT_WIDTH, 0.0],
+                    egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
+                );
+                ui.end_row();
+            });
     }
     if app.settings.updates != before {
         app.queue_save();
@@ -321,6 +354,30 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         }
     });
     ui.add_space(4.0);
+}
+
+fn add_fixed_slider(
+    ui: &mut egui::Ui,
+    track_width: f32,
+    value_width: f32,
+    slider: egui::Slider<'_>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = track_width;
+        ui.spacing_mut().interact_size.x = value_width;
+        ui.add(slider)
+    })
+    .inner
+}
+
+fn grid_label(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(0.0, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(text);
+        },
+    );
 }
 
 fn draw_active_settings_tab(
@@ -373,18 +430,11 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         .last_image_dir
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
-    let dir_short = app
-        .settings
-        .last_image_dir
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| dir_full.clone().unwrap_or_default());
     let dir_empty = app.settings.last_image_dir.is_none();
     let dir_label = if dir_empty {
         t!("label.no_dir").to_string()
     } else {
-        dir_short
+        dir_full.clone().unwrap_or_default()
     };
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -409,6 +459,26 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
     });
 
     ui.add_space(4.0);
+    ui.label(t!(
+        "library.image_count",
+        count = app.image_files.len().to_string()
+    ));
+
+    let scan_status = if app.scanning {
+        app.status_message.clone()
+    } else if app.settings.last_image_dir.is_some() {
+        t!("library.scan_idle").to_string()
+    } else {
+        t!("library.scan_no_directory").to_string()
+    };
+    ui.horizontal(|ui| {
+        if app.scanning {
+            ui.spinner();
+        }
+        ui.label(RichText::new(scan_status).color(app.cached_palette.text_muted));
+    });
+
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
         let old_recursive = app.settings.recursive;
         ui.checkbox(
@@ -430,19 +500,17 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             }
             app.queue_save();
         }
-
-        ui.add_space(12.0);
-
-        if ui
-            .checkbox(
-                &mut app.settings.preload,
-                t!("label.enable_preload").to_string(),
-            )
-            .changed()
-        {
-            app.queue_save();
-        }
     });
+
+    if ui
+        .checkbox(
+            &mut app.settings.preload,
+            t!("label.enable_preload").to_string(),
+        )
+        .changed()
+    {
+        app.queue_save();
+    }
 
     if ui
         .checkbox(
@@ -530,28 +598,24 @@ fn draw_viewing_main_column(
         ui.label(RichText::new(t!("label.z_toggle_hint")).color(app.cached_palette.text_muted));
 
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut app.settings.show_osd, t!("label.show_osd"))
-                .changed()
-            {
-                app.queue_save();
-            }
+        if ui
+            .checkbox(&mut app.settings.show_osd, t!("label.show_osd"))
+            .changed()
+        {
+            app.queue_save();
+        }
 
-            ui.add_space(12.0);
-
-            if ui
-                .checkbox(
-                    &mut app.settings.raw_high_quality,
-                    t!("label.raw_high_quality"),
-                )
-                .on_hover_text(t!("hint.raw_high_quality"))
-                .changed()
-            {
-                app.reload_current();
-                app.queue_save();
-            }
-        });
+        if ui
+            .checkbox(
+                &mut app.settings.raw_high_quality,
+                t!("label.raw_high_quality"),
+            )
+            .on_hover_text(t!("hint.raw_high_quality"))
+            .changed()
+        {
+            app.reload_current();
+            app.queue_save();
+        }
 
         // ── Transitions ──────────────────────────────────────────
         ui.add_space(8.0);
@@ -1025,132 +1089,140 @@ fn draw_appearance_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Contex
         );
         ui.add_space(2.0);
 
-        ui.horizontal(|ui| {
-            ui.label(t!("label.interface_size"));
-            let mut current_size = app.temp_font_size.unwrap_or(app.settings.font_size);
-            let resp = ui.add(egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0));
-
-            if resp.dragged() {
-                app.temp_font_size = Some(current_size);
-            } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                app.settings.font_size = current_size;
-                app.temp_font_size = None;
-                setup_visuals(ctx, &app.settings, &app.cached_palette);
-                app.queue_save();
-            }
-        });
-
-        ui.push_id("font_selection_area", |ui| {
-            ui.horizontal(|ui| {
-                ui.label(t!("label.interface_font"));
-                let old_family = app.settings.font_family.clone();
-                egui::ComboBox::from_id_salt("font_family")
-                    .selected_text(if app.settings.font_family == "System Default" {
-                        t!("label.system_default").to_string()
-                    } else {
-                        app.settings.font_family.clone()
-                    })
-                    .show_ui(ui, |ui| {
-                        for family in &app.font_families {
-                            let label = if family == "System Default" {
-                                t!("label.system_default").to_string()
-                            } else {
-                                family.clone()
-                            };
-                            ui.selectable_value(
-                                &mut app.settings.font_family,
-                                family.clone(),
-                                label,
-                            );
-                        }
-                    });
-                if old_family != app.settings.font_family {
-                    app.is_font_error = false;
-                    if !setup_fonts(ctx, &app.settings) {
-                        app.settings.font_family = old_family;
-                        app.is_font_error = true;
-                    } else {
-                        app.queue_save();
-                    }
-                }
-            });
-            if app.is_font_error {
-                ui.label(
-                    RichText::new(t!("label.font_load_error"))
-                        .color(Color32::from_rgb(255, 100, 100)),
+        egui::Grid::new("appearance_settings_grid")
+            .num_columns(2)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                grid_label(ui, t!("label.interface_size"));
+                let mut current_size = app.temp_font_size.unwrap_or(app.settings.font_size);
+                let resp = add_fixed_slider(
+                    ui,
+                    APPEARANCE_SLIDER_TRACK_WIDTH,
+                    APPEARANCE_SLIDER_VALUE_WIDTH,
+                    egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0),
                 );
-            }
-        });
 
-        ui.horizontal(|ui| {
-            ui.label(t!("section.language"));
-            let old_lang = app.settings.language.clone();
-            egui::ComboBox::from_id_salt("language_select")
-                .selected_text(match app.settings.language.as_str() {
-                    "en" => t!("lang.en").to_string(),
-                    "zh-CN" => t!("lang.zh_cn").to_string(),
-                    "zh-TW" => t!("lang.zh_tw").to_string(),
-                    "zh-HK" => t!("lang.zh_hk").to_string(),
-                    _ => app.settings.language.clone(),
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut app.settings.language,
-                        "en".to_string(),
-                        t!("lang.en"),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.language,
-                        "zh-CN".to_string(),
-                        t!("lang.zh_cn"),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.language,
-                        "zh-TW".to_string(),
-                        t!("lang.zh_tw"),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.language,
-                        "zh-HK".to_string(),
-                        t!("lang.zh_hk"),
-                    );
-                });
-            if old_lang != app.settings.language {
-                rust_i18n::set_locale(&app.settings.language);
-                app.queue_save();
-            }
-        });
+                if resp.dragged() {
+                    app.temp_font_size = Some(current_size);
+                } else if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+                    app.settings.font_size = current_size;
+                    app.temp_font_size = None;
+                    setup_visuals(ctx, &app.settings, &app.cached_palette);
+                    app.queue_save();
+                }
+                ui.end_row();
 
-        ui.horizontal(|ui| {
-            ui.label(t!("section.theme"));
-            let old_theme = app.settings.theme;
-            egui::ComboBox::from_id_salt("app_theme_select")
-                .selected_text(match app.settings.theme {
-                    crate::app::AppTheme::Dark => t!("theme.dark").to_string(),
-                    crate::app::AppTheme::Light => t!("theme.light").to_string(),
-                    crate::app::AppTheme::System => t!("theme.system").to_string(),
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut app.settings.theme,
-                        crate::app::AppTheme::Dark,
-                        t!("theme.dark"),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.theme,
-                        crate::app::AppTheme::Light,
-                        t!("theme.light"),
-                    );
-                    ui.selectable_value(
-                        &mut app.settings.theme,
-                        crate::app::AppTheme::System,
-                        t!("theme.system"),
-                    );
+                grid_label(ui, t!("label.interface_font"));
+                ui.push_id("font_selection_area", |ui| {
+                    let old_family = app.settings.font_family.clone();
+                    egui::ComboBox::from_id_salt("font_family")
+                        .selected_text(if app.settings.font_family == "System Default" {
+                            t!("label.system_default").to_string()
+                        } else {
+                            app.settings.font_family.clone()
+                        })
+                        .width(APPEARANCE_FORM_CONTROL_WIDTH)
+                        .show_ui(ui, |ui| {
+                            for family in &app.font_families {
+                                let label = if family == "System Default" {
+                                    t!("label.system_default").to_string()
+                                } else {
+                                    family.clone()
+                                };
+                                ui.selectable_value(
+                                    &mut app.settings.font_family,
+                                    family.clone(),
+                                    label,
+                                );
+                            }
+                        });
+                    if old_family != app.settings.font_family {
+                        app.is_font_error = false;
+                        if !setup_fonts(ctx, &app.settings) {
+                            app.settings.font_family = old_family;
+                            app.is_font_error = true;
+                        } else {
+                            app.queue_save();
+                        }
+                    }
                 });
-            if old_theme != app.settings.theme {
-                app.queue_save();
-            }
-        });
+                ui.end_row();
+
+                grid_label(ui, t!("section.language"));
+                let old_lang = app.settings.language.clone();
+                egui::ComboBox::from_id_salt("language_select")
+                    .selected_text(match app.settings.language.as_str() {
+                        "en" => t!("lang.en").to_string(),
+                        "zh-CN" => t!("lang.zh_cn").to_string(),
+                        "zh-TW" => t!("lang.zh_tw").to_string(),
+                        "zh-HK" => t!("lang.zh_hk").to_string(),
+                        _ => app.settings.language.clone(),
+                    })
+                    .width(APPEARANCE_FORM_CONTROL_WIDTH)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.settings.language,
+                            "en".to_string(),
+                            t!("lang.en"),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.language,
+                            "zh-CN".to_string(),
+                            t!("lang.zh_cn"),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.language,
+                            "zh-TW".to_string(),
+                            t!("lang.zh_tw"),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.language,
+                            "zh-HK".to_string(),
+                            t!("lang.zh_hk"),
+                        );
+                    });
+                if old_lang != app.settings.language {
+                    rust_i18n::set_locale(&app.settings.language);
+                    app.queue_save();
+                }
+                ui.end_row();
+
+                grid_label(ui, t!("section.theme"));
+                let old_theme = app.settings.theme;
+                egui::ComboBox::from_id_salt("app_theme_select")
+                    .selected_text(match app.settings.theme {
+                        crate::app::AppTheme::Dark => t!("theme.dark").to_string(),
+                        crate::app::AppTheme::Light => t!("theme.light").to_string(),
+                        crate::app::AppTheme::System => t!("theme.system").to_string(),
+                    })
+                    .width(APPEARANCE_FORM_CONTROL_WIDTH)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.settings.theme,
+                            crate::app::AppTheme::Dark,
+                            t!("theme.dark"),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.theme,
+                            crate::app::AppTheme::Light,
+                            t!("theme.light"),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.theme,
+                            crate::app::AppTheme::System,
+                            t!("theme.system"),
+                        );
+                    });
+                if old_theme != app.settings.theme {
+                    app.queue_save();
+                }
+                ui.end_row();
+            });
+        if app.is_font_error {
+            ui.label(
+                RichText::new(t!("label.font_load_error")).color(Color32::from_rgb(255, 100, 100)),
+            );
+        }
     });
 }
 
@@ -1178,7 +1250,7 @@ fn draw_about_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.label(RichText::new(t!("about.copyright")).color(app.cached_palette.text_muted));
         ui.add_space(4.0);
-        ui.hyperlink_to(t!("about.website").to_string(), GITHUB_RELEASES_PAGE);
+        ui.hyperlink_to(GITHUB_RELEASES_PAGE, GITHUB_RELEASES_PAGE);
     });
 }
 

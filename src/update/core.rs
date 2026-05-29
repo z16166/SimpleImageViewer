@@ -20,6 +20,8 @@ pub const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/z16166/SimpleImageViewer/releases/latest";
 pub const GITHUB_RELEASES_PAGE: &str = "https://github.com/z16166/SimpleImageViewer/releases";
 pub const SHA256SUMS_ASSET: &str = "SHA256SUMS.txt";
+pub const CHANGELOG_ASSET_PREFIX: &str = "CHANGELOG.";
+pub const CHANGELOG_ASSET_SUFFIX: &str = ".md";
 pub const UPDATE_USER_AGENT: &str = "SimpleImageViewer-update-checker";
 
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
@@ -100,6 +102,7 @@ pub struct UpdateCandidate {
     pub version: String,
     pub release_page_url: String,
     pub release_notes: String,
+    pub localized_changelog_url: Option<String>,
     pub published_at: String,
     pub asset_name: String,
     pub asset_url: String,
@@ -187,6 +190,43 @@ pub fn checksum_for_asset(text: &str, asset_name: &str) -> Option<String> {
         .find_map(|(file, hash)| (file == asset_name).then_some(hash))
 }
 
+pub fn changelog_asset_names_for_locale(locale: &str) -> Vec<String> {
+    let normalized = locale.trim();
+    let mut locales = Vec::new();
+    if !normalized.is_empty() {
+        locales.push(normalized.to_string());
+        let lower = normalized.to_ascii_lowercase();
+        match lower.as_str() {
+            "zh-cn" | "zh-hans" | "zh-sg" => locales.push("zh-CN".to_string()),
+            "zh-tw" | "zh-hant" => locales.push("zh-TW".to_string()),
+            "zh-hk" | "zh-mo" => locales.push("zh-HK".to_string()),
+            _ if lower.starts_with("zh") => locales.push("zh-CN".to_string()),
+            _ => {}
+        }
+    }
+    locales.push("en".to_string());
+    locales.dedup();
+    locales
+        .into_iter()
+        .map(|locale| format!("{CHANGELOG_ASSET_PREFIX}{locale}{CHANGELOG_ASSET_SUFFIX}"))
+        .collect()
+}
+
+pub fn localized_changelog_url_for_release(
+    release: &GithubRelease,
+    locale: &str,
+) -> Option<String> {
+    changelog_asset_names_for_locale(locale)
+        .into_iter()
+        .find_map(|name| {
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name == name)
+                .map(|asset| asset.browser_download_url.clone())
+        })
+}
+
 pub fn candidate_from_release(
     release: &GithubRelease,
     current_version: &str,
@@ -194,6 +234,7 @@ pub fn candidate_from_release(
     platform: PlatformKind,
     arch: CpuArch,
     legacy_win7: bool,
+    locale: &str,
 ) -> Option<UpdateCandidate> {
     if release.draft || release.prerelease {
         return None;
@@ -222,6 +263,7 @@ pub fn candidate_from_release(
         version,
         release_page_url: release.html_url.clone(),
         release_notes: release.body.clone(),
+        localized_changelog_url: localized_changelog_url_for_release(release, locale),
         published_at: release.published_at.clone(),
         asset_name: asset.name.clone(),
         asset_url: asset.browser_download_url.clone(),
@@ -351,6 +393,7 @@ mod tests {
             PlatformKind::Windows,
             CpuArch::X86_64,
             false,
+            "en",
         )
         .expect("new release candidate");
 
@@ -389,8 +432,74 @@ mod tests {
                 PlatformKind::Windows,
                 CpuArch::X86_64,
                 false,
+                "en",
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn changelog_asset_names_prefer_locale_then_english() {
+        assert_eq!(
+            changelog_asset_names_for_locale("zh-CN"),
+            vec![
+                "CHANGELOG.zh-CN.md".to_string(),
+                "CHANGELOG.en.md".to_string()
+            ]
+        );
+        assert_eq!(
+            changelog_asset_names_for_locale("zh-Hans"),
+            vec![
+                "CHANGELOG.zh-Hans.md".to_string(),
+                "CHANGELOG.zh-CN.md".to_string(),
+                "CHANGELOG.en.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn github_release_candidate_selects_localized_changelog_asset() {
+        let release = GithubRelease {
+            tag_name: "v2.2.2".to_string(),
+            html_url: String::new(),
+            body: "Release body fallback".to_string(),
+            published_at: String::new(),
+            draft: false,
+            prerelease: false,
+            assets: vec![
+                GithubAsset {
+                    name: "SimpleImageViewer-x86_64-pc-windows-msvc.zip".to_string(),
+                    browser_download_url: "https://example.invalid/win.zip".to_string(),
+                    size: 123,
+                },
+                GithubAsset {
+                    name: "CHANGELOG.en.md".to_string(),
+                    browser_download_url: "https://example.invalid/CHANGELOG.en.md".to_string(),
+                    size: 456,
+                },
+                GithubAsset {
+                    name: "CHANGELOG.zh-CN.md".to_string(),
+                    browser_download_url: "https://example.invalid/CHANGELOG.zh-CN.md".to_string(),
+                    size: 456,
+                },
+            ],
+        };
+
+        let candidate = candidate_from_release(
+            &release,
+            "2.2.1",
+            None,
+            PlatformKind::Windows,
+            CpuArch::X86_64,
+            false,
+            "zh-CN",
+        )
+        .expect("new release candidate");
+
+        assert_eq!(
+            candidate.localized_changelog_url,
+            Some("https://example.invalid/CHANGELOG.zh-CN.md".to_string())
+        );
+        assert_eq!(candidate.release_notes, "Release body fallback");
     }
 }

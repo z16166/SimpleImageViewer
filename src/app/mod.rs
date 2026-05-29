@@ -610,7 +610,11 @@ impl ImageViewerApp {
         let (tx, rx) = crossbeam_channel::bounded(8);
         self.update_check_rx = Some(rx);
         self.update_checking = true;
-        crate::update::state::spawn_update_check(self.settings.updates.clone(), tx);
+        crate::update::state::spawn_update_check(
+            self.settings.updates.clone(),
+            self.settings.language.clone(),
+            tx,
+        );
     }
 
     pub(crate) fn process_update_messages(&mut self, ctx: &egui::Context) {
