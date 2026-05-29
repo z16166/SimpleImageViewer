@@ -55,11 +55,14 @@ impl ImageViewerApp {
                     }
 
                     if let Some(pos) = self.context_menu_pos {
-                        let area_resp = egui::Area::new(egui::Id::new("__custom_canvas_ctx_menu"))
+                        let menu_id = egui::Id::new(format!(
+                            "__custom_canvas_ctx_menu_{}",
+                            self.settings.language
+                        ));
+                        let area_resp = egui::Area::new(menu_id)
                             .kind(egui::UiKind::Menu)
                             .order(egui::Order::Foreground)
                             .fixed_pos(pos)
-                            .default_width(ctx.global_style().spacing.menu_width)
                             .sense(Sense::hover())
                             .show(&ctx, |ui| {
                                 egui::Frame::menu(ui.style()).show(ui, |ui| {

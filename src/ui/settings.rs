@@ -1163,6 +1163,9 @@ fn draw_appearance_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Contex
                     });
                 if old_lang != app.settings.language {
                     rust_i18n::set_locale(&app.settings.language);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                        t!("app.title").to_string(),
+                    ));
                     app.queue_save();
                 }
                 ui.end_row();
