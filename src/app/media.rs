@@ -51,7 +51,7 @@ impl ImageViewerApp {
     pub(crate) fn open_music_file_dialog(&mut self, frame: &eframe::Frame) {
         let dialog = crate::app::rfd_parent::file_dialog_for_main_window(frame).add_filter(
             "Music files",
-            &["mp3", "flac", "ogg", "wav", "aac", "m4a", "ape"],
+            &["mp3", "flac", "ogg", "wav", "aac", "m4a", "ape", "m3u"],
         );
         if let Some(path) = dialog.pick_file() {
             self.settings.music_path = Some(path.clone());

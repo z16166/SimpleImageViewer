@@ -20,6 +20,7 @@ use crate::constants::{
 };
 use crate::scanner::is_offline;
 use crossbeam_channel::Sender;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -348,7 +349,7 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
             .map(|e| {
                 matches!(
                     e.to_lowercase().as_str(),
-                    "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape"
+                    "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape" | "m3u"
                 )
             })
             .unwrap_or(false)
@@ -381,6 +382,120 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
         files.sort();
     }
     files
+}
+
+fn is_supported_audio_or_playlist(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_lowercase().as_str(),
+                "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape" | "m3u"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_m3u_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("m3u"))
+        .unwrap_or(false)
+}
+
+fn normalize_playlist_candidate(m3u_parent: &Path, raw_entry: &str) -> Option<PathBuf> {
+    let line = raw_entry.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let candidate = PathBuf::from(line);
+    let resolved = if candidate.is_absolute() {
+        candidate
+    } else {
+        m3u_parent.join(candidate)
+    };
+    let canonical = resolved.canonicalize().unwrap_or(resolved);
+    if canonical.is_file() && is_supported_audio_or_playlist(&canonical) {
+        Some(canonical)
+    } else {
+        None
+    }
+}
+
+fn parse_m3u_entries(m3u_path: &Path) -> Vec<PathBuf> {
+    let content = match read_text_file_with_fallback(m3u_path) {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let parent = m3u_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut items = Vec::new();
+    for line in content.lines() {
+        if let Some(path) = normalize_playlist_candidate(parent, line) {
+            items.push(path);
+        }
+    }
+    items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("siv-{name}-{nonce}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn collect_music_files_accepts_m3u_extension() {
+        let dir = make_temp_dir("m3u-collect");
+        let m3u = dir.join("list.m3u");
+        let mp3 = dir.join("song.mp3");
+        let txt = dir.join("note.txt");
+        fs::write(&m3u, b"song.mp3\n").expect("write m3u");
+        fs::write(&mp3, b"fake").expect("write mp3");
+        fs::write(&txt, b"ignore").expect("write txt");
+
+        let files = collect_music_files(&dir, None);
+        assert!(files.iter().any(|p| p == &m3u));
+        assert!(files.iter().any(|p| p == &mp3));
+        assert!(!files.iter().any(|p| p == &txt));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_m3u_expands_relative_and_absolute_paths() {
+        let dir = make_temp_dir("m3u-parse");
+        let rel = dir.join("rel.mp3");
+        let abs = dir.join("abs.flac");
+        let missing = dir.join("missing.mp3");
+        fs::write(&rel, b"fake").expect("write rel");
+        fs::write(&abs, b"fake").expect("write abs");
+        let m3u = dir.join("playlist.m3u");
+        let content = format!(
+            "#EXTM3U\n#EXTINF:1,track\n{}\n{}\n{}\n",
+            rel.file_name().unwrap().to_string_lossy(),
+            abs.to_string_lossy(),
+            missing.file_name().unwrap().to_string_lossy()
+        );
+        fs::write(&m3u, content).expect("write playlist");
+
+        let entries = parse_m3u_entries(&m3u);
+        let rel_norm = rel.canonicalize().expect("canonical rel");
+        let abs_norm = abs.canonicalize().expect("canonical abs");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|p| p == &rel_norm));
+        assert!(entries.iter().any(|p| p == &abs_norm));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1272,8 +1387,10 @@ struct AudioSlots {
 // ---------------------------------------------------------------------------
 
 struct AudioLoopState {
-    playlist: Vec<PathBuf>,
+    base_playlist: Vec<PathBuf>,
+    injected_playlist: VecDeque<PathBuf>,
     current_track_idx: usize,
+    current_file_path: Option<PathBuf>,
     stopped: bool,
     paused: bool,
     current_volume: f32,
@@ -1329,8 +1446,10 @@ impl AudioLoopState {
 
     fn new(shutdown_flag: Arc<AtomicBool>) -> Self {
         Self {
-            playlist: Vec::new(),
+            base_playlist: Vec::new(),
+            injected_playlist: VecDeque::new(),
             current_track_idx: 0,
+            current_file_path: None,
             stopped: true,
             paused: false,
             current_volume: 1.0,
@@ -1422,7 +1541,9 @@ impl AudioLoopState {
 
     fn handle_stop(&mut self, slots: &AudioSlots) {
         self.stopped = true;
-        self.playlist.clear();
+        self.base_playlist.clear();
+        self.injected_playlist.clear();
+        self.current_file_path = None;
         self.backend_player = None;
         self.backend_sink = None;
         self.sink_base_pos = Duration::ZERO;
@@ -1449,7 +1570,7 @@ impl AudioLoopState {
                 self.total_paused += pa.elapsed();
             }
         }
-        if self.stopped && !self.playlist.is_empty() {
+        if self.stopped && !self.base_playlist.is_empty() {
             self.stopped = false;
             let resume_pos = self.last_hw_pos.saturating_add(self.last_seek_offset);
             self.backend_player = None;
@@ -1457,7 +1578,9 @@ impl AudioLoopState {
             if self.current_track_idx > 0 {
                 self.current_track_idx -= 1;
             }
-            let path = self.playlist[self.current_track_idx % self.playlist.len()].clone();
+            let path =
+                self.base_playlist[self.current_track_idx % self.base_playlist.len()].clone();
+            self.current_file_path = Some(path.clone());
             if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
                 if self.ensure_backend(slots) {
                     let resumed = if let Some(p) = self.backend_player.as_mut() {
@@ -1489,11 +1612,9 @@ impl AudioLoopState {
     }
 
     fn handle_seek(&mut self, pos: Duration, slots: &AudioSlots) {
-        if self.playlist.is_empty() {
+        let Some(path) = self.current_file_path.clone() else {
             return;
-        }
-        let path_idx = self.current_track_idx.saturating_sub(1) % self.playlist.len();
-        let path = self.playlist[path_idx].clone();
+        };
         if let Some(source) = open_source(&path, pos, &self.shutdown_flag) {
             if self.ensure_backend(slots) {
                 let seek_ok = if let Some(p) = self.backend_player.as_mut() {
@@ -1536,11 +1657,10 @@ impl AudioLoopState {
         self.backend_sink = None;
         self.backend_player = None;
         self.sink_base_pos = Duration::ZERO;
-        if self.playlist.is_empty() || self.stopped {
+        if self.current_file_path.is_none() || self.stopped {
             return;
         }
-        let path_idx = self.current_track_idx.saturating_sub(1) % self.playlist.len();
-        let path = self.playlist[path_idx].clone();
+        let path = self.current_file_path.clone().unwrap_or_default();
         if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
             if self.ensure_backend(slots) {
                 let switched = if let Some(p) = self.backend_player.as_mut() {
@@ -1574,16 +1694,22 @@ impl AudioLoopState {
         if let Some(ref p) = self.backend_player {
             p.clear();
         }
+        if !self.injected_playlist.is_empty() {
+            self.injected_playlist.clear();
+        }
         self.cue_sheet = None;
         set_cue_track(&slots.cue_track_slot, None);
         slots.tracks_flag.store(false, Ordering::Relaxed);
     }
 
     fn handle_prev_file(&mut self, slots: &AudioSlots) {
+        if !self.injected_playlist.is_empty() {
+            self.injected_playlist.clear();
+        }
         if self.current_track_idx > 1 {
             self.current_track_idx -= 2;
         } else {
-            self.current_track_idx = self.playlist.len().saturating_sub(1);
+            self.current_track_idx = self.base_playlist.len().saturating_sub(1);
         }
         if let Some(ref p) = self.backend_player {
             p.clear();
@@ -1612,8 +1738,8 @@ impl AudioLoopState {
             return;
         }
         let next_t = cue.tracks[current_idx + 1].clone();
-        let path = match self.playlist.get(self.current_track_idx.saturating_sub(1)) {
-            Some(p) => p.clone(),
+        let path = match self.current_file_path.clone() {
+            Some(p) => p,
             None => return,
         };
         if let Some(source) = open_source(&path, next_t.start, &self.shutdown_flag) {
@@ -1668,8 +1794,8 @@ impl AudioLoopState {
             current_idx - 1
         };
         let target_t = cue.tracks[target_idx].clone();
-        let path = match self.playlist.get(self.current_track_idx.saturating_sub(1)) {
-            Some(p) => p.clone(),
+        let path = match self.current_file_path.clone() {
+            Some(p) => p,
             None => return,
         };
         if let Some(source) = open_source(&path, target_t.start, &self.shutdown_flag) {
@@ -1712,8 +1838,10 @@ impl AudioLoopState {
         initial_paused: bool,
         slots: &AudioSlots,
     ) {
-        self.playlist = new_list;
+        self.base_playlist = new_list;
+        self.injected_playlist.clear();
         self.current_track_idx = start_idx.unwrap_or(0);
+        self.current_file_path = None;
         self.pending_start_track_idx = start_track_idx;
         self.stopped = false;
         self.paused = initial_paused;
@@ -1742,11 +1870,9 @@ impl AudioLoopState {
     /// Load the next file from the playlist into the sink. Returns false if
     /// the caller should `continue` (backend not yet ready).
     fn feed_next_file(&mut self, slots: &AudioSlots) -> bool {
-        if self.current_track_idx >= self.playlist.len() {
-            self.current_track_idx = 0;
-            log::info!("[AUDIO] Playlist finished, wrapping around to start.");
-        }
-        let path = self.playlist[self.current_track_idx].clone();
+        let Some(path) = self.take_next_playable_path() else {
+            return true;
+        };
         let filename = match path.file_name() {
             Some(n) => n.to_string_lossy().to_string(),
             None => return true,
@@ -1759,6 +1885,7 @@ impl AudioLoopState {
         // Update UI immediately before any device operations.
         set_current_track(&slots.track_slot, Some(filename));
         set_current_path(&slots.path_slot, Some(path.clone()));
+        self.current_file_path = Some(path.clone());
         let total_dur = source
             .total_duration()
             .map(|d| d.as_millis() as u64)
@@ -1778,7 +1905,6 @@ impl AudioLoopState {
         let fed = if let Some(p) = self.backend_player.as_mut() {
             p.append(source);
             self.sink_base_pos = p.get_pos();
-            self.current_track_idx += 1;
             self.last_seek_offset = Duration::ZERO;
             self.last_hw_pos = Duration::ZERO;
             true
@@ -1828,6 +1954,35 @@ impl AudioLoopState {
         true
     }
 
+    fn take_next_playable_path(&mut self) -> Option<PathBuf> {
+        if !self.injected_playlist.is_empty() {
+            return self.injected_playlist.pop_front();
+        }
+        if self.base_playlist.is_empty() {
+            return None;
+        }
+        let max_scan = self.base_playlist.len().max(1);
+        for _ in 0..max_scan {
+            if self.current_track_idx >= self.base_playlist.len() {
+                self.current_track_idx = 0;
+                log::info!("[AUDIO] Playlist finished, wrapping around to start.");
+            }
+            let path = self.base_playlist[self.current_track_idx].clone();
+            self.current_track_idx += 1;
+            if is_m3u_path(&path) {
+                let expanded = parse_m3u_entries(&path);
+                if expanded.is_empty() {
+                    log::warn!("[AUDIO] m3u has no playable entries: {:?}", path);
+                    continue;
+                }
+                self.injected_playlist = expanded.into();
+                return self.injected_playlist.pop_front();
+            }
+            return Some(path);
+        }
+        None
+    }
+
     fn update_metadata_for_new_file(&self, slots: &AudioSlots, path: &Path) {
         if let Some(ref cue) = self.cue_sheet {
             let initial_idx = self.pending_start_track_idx.unwrap_or(0);
@@ -1855,8 +2010,10 @@ impl AudioLoopState {
         if !self.ensure_backend(slots) {
             return;
         }
-        let path_idx = self.current_track_idx.saturating_sub(1) % self.playlist.len();
-        let path = self.playlist[path_idx].clone();
+        let path = match self.current_file_path.clone() {
+            Some(p) => p,
+            None => return,
+        };
         let resume_pos = self.last_hw_pos.saturating_add(self.last_seek_offset);
         if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
             let recovered = if let Some(p) = self.backend_player.as_mut() {
@@ -2040,7 +2197,7 @@ fn run_audio_loop(
         }
 
         // FEED: load the next file when the sink runs empty
-        if !st.stopped && !st.playlist.is_empty() {
+        if !st.stopped && (!st.base_playlist.is_empty() || !st.injected_playlist.is_empty()) {
             let player_empty = st.backend_player.as_ref().map_or(false, |p| p.empty());
             let player_exists = st.backend_player.is_some();
 
