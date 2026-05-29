@@ -70,14 +70,15 @@ fn install_windows_update(
         .ok_or_else(|| rust_i18n::t!("update.err_missing_sums").to_string())?;
 
     let _ = tx.send(UpdateInstallMessage::Downloading(0));
+    let progress_tx = tx.clone();
     let archive = crate::update::net::download_bytes_with_progress(
         &candidate.asset_url,
         proxy.as_ref(),
         MAX_UPDATE_DOWNLOAD_BYTES,
-        |received, total| {
+        move |received, total| {
             if let Some(total) = total.filter(|total| *total > 0) {
                 let percent = ((received.saturating_mul(70) / total).min(70)) as u8;
-                let _ = tx.send(UpdateInstallMessage::Downloading(percent));
+                let _ = progress_tx.send(UpdateInstallMessage::Downloading(percent));
             }
         },
     )?;
