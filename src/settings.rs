@@ -118,6 +118,9 @@ pub struct UpdateSettings {
     pub last_successful_update_version: Option<String>,
     #[serde(default)]
     pub proxy: UpdateProxySettings,
+    /// Optional GitHub PAT for authenticated API requests (stored in local settings).
+    #[serde(default)]
+    pub github_token: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +326,7 @@ impl Default for UpdateSettings {
             ignored_version: None,
             last_successful_update_version: None,
             proxy: UpdateProxySettings::default(),
+            github_token: String::new(),
         }
     }
 }

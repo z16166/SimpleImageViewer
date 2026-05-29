@@ -85,8 +85,12 @@ pub fn spawn_update_check(
         .spawn(move || {
             let proxy = settings.proxy.to_proxy_config();
             let proxy = proxy.enabled.then_some(proxy);
+            let github_token = settings.github_token.clone();
             let result = fetch_latest_release_with_retry(|| {
-                crate::update::net::fetch_latest_release(proxy.as_ref())
+                crate::update::net::fetch_latest_release(
+                    proxy.as_ref(),
+                    Some(github_token.as_str()),
+                )
             })
             .map(|release| {
                 candidate_from_release(
@@ -156,13 +160,19 @@ fn populate_localized_release_notes(
 }
 
 fn fetch_latest_release_with_retry(
-    mut fetch: impl FnMut() -> Result<crate::update::core::GithubRelease, String>,
+    mut fetch: impl FnMut() -> Result<
+        crate::update::core::GithubRelease,
+        crate::update::net::UpdateFetchError,
+    >,
 ) -> Result<crate::update::core::GithubRelease, String> {
     let mut last_err = String::new();
     for attempt in 1..=MAX_UPDATE_CHECK_ATTEMPTS {
         match fetch() {
             Ok(release) => return Ok(release),
-            Err(err) => {
+            Err(crate::update::net::UpdateFetchError::RateLimited) => {
+                return Err(crate::update::net::UpdateFetchError::RateLimited.user_message());
+            }
+            Err(crate::update::net::UpdateFetchError::Other(err)) => {
                 last_err = err;
                 if attempt < MAX_UPDATE_CHECK_ATTEMPTS {
                     std::thread::sleep(std::time::Duration::from_millis(300 * attempt as u64));
@@ -191,7 +201,9 @@ mod tests {
         let release = fetch_latest_release_with_retry(|| {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst);
             if attempt < 2 {
-                Err("temporary network failure".to_string())
+                Err(crate::update::net::UpdateFetchError::Other(
+                    "temporary network failure".to_string(),
+                ))
             } else {
                 Ok(GithubRelease {
                     tag_name: "v2.2.2".to_string(),
@@ -215,11 +227,26 @@ mod tests {
         let attempts = AtomicUsize::new(0);
         let err = fetch_latest_release_with_retry(|| {
             attempts.fetch_add(1, Ordering::SeqCst);
-            Err("still failing".to_string())
+            Err(crate::update::net::UpdateFetchError::Other(
+                "still failing".to_string(),
+            ))
         })
         .unwrap_err();
 
         assert_eq!(err, "still failing");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn update_check_does_not_retry_rate_limited_responses() {
+        let attempts = AtomicUsize::new(0);
+        let err = fetch_latest_release_with_retry(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err(crate::update::net::UpdateFetchError::RateLimited)
+        })
+        .unwrap_err();
+
+        assert_eq!(err, rust_i18n::t!("update.err_rate_limited").to_string());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

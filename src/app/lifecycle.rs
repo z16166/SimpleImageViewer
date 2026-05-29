@@ -1,5 +1,5 @@
-use crate::app::ImageViewerApp;
 use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
+use crate::app::{ImageViewerApp, UpdateFeedbackLevel};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -345,6 +345,9 @@ impl ImageViewerApp {
             music_scan_path: None,
             update_check_rx: None,
             update_checking: false,
+            update_feedback: String::new(),
+            update_feedback_level: UpdateFeedbackLevel::Info,
+            update_feedback_is_proxy_validation: false,
             update_install_rx: None,
             update_installing: false,
             pending_update_restart: false,

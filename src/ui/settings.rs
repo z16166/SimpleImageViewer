@@ -355,6 +355,50 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 });
         });
     }
+
+    ui.add_space(6.0);
+    ui.scope(|ui| {
+        let bp = ui.spacing().button_padding;
+        let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
+        ui.style_mut().spacing.interact_size.y = control_h;
+
+        egui::Grid::new("update_github_token_grid")
+            .num_columns(2)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                grid_label(ui, t!("label.update_github_token"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.settings.updates.github_token)
+                        .password(true)
+                        .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
+                        .hint_text(t!("label.update_github_token_hint"))
+                        .margin(egui::Margin {
+                            left: 4,
+                            right: 4,
+                            top: bp.y as i8,
+                            bottom: bp.y as i8,
+                        }),
+                )
+                .on_hover_text(t!("update.github_token_hint"));
+                ui.end_row();
+            });
+    });
+
+    app.sync_proxy_validation_feedback();
+    if app.update_checking {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new(t!("update.checking")).color(app.cached_palette.text_muted));
+        });
+    } else if !app.update_feedback.is_empty() {
+        let color = match app.update_feedback_level {
+            crate::app::UpdateFeedbackLevel::Info => app.cached_palette.text_muted,
+            crate::app::UpdateFeedbackLevel::Warning => Color32::from_rgb(255, 180, 60),
+            crate::app::UpdateFeedbackLevel::Error => Color32::from_rgb(255, 100, 100),
+        };
+        ui.label(RichText::new(&app.update_feedback).color(color));
+    }
+
     if app.settings.updates != before {
         app.queue_save();
     }
@@ -788,18 +832,11 @@ fn draw_music_tab(
                 .music_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned());
-            let music_short = app
-                .settings
-                .music_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| music_full.clone().unwrap_or_default());
             let music_empty = app.settings.music_path.is_none();
             let music_label = if music_empty {
                 t!("label.no_music").to_string()
             } else {
-                music_short
+                music_full.clone().unwrap_or_default()
             };
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

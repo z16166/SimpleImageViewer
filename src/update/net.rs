@@ -14,11 +14,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::core::{GITHUB_LATEST_RELEASE_API, GithubRelease, ProxyConfig, UPDATE_USER_AGENT};
+use super::core::{
+    GITHUB_LATEST_RELEASE_API, GithubRelease, ProxyConfig, UPDATE_USER_AGENT,
+    github_token_for_request,
+};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::io::Read;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateFetchError {
+    RateLimited,
+    Other(String),
+}
+
+impl UpdateFetchError {
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::RateLimited => rust_i18n::t!("update.err_rate_limited").to_string(),
+            Self::Other(message) => message.clone(),
+        }
+    }
+}
 
 const UPDATE_HTTP_TIMEOUT_SECS: u64 = 30;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -62,14 +80,28 @@ fn download_client(proxy: Option<&ProxyConfig>) -> Result<reqwest::blocking::Cli
     .map_err(|err| err.to_string())
 }
 
-pub fn fetch_latest_release(proxy: Option<&ProxyConfig>) -> Result<GithubRelease, String> {
-    let response = api_client(proxy)?
-        .get(GITHUB_LATEST_RELEASE_API)
+pub fn fetch_latest_release(
+    proxy: Option<&ProxyConfig>,
+    github_token: Option<&str>,
+) -> Result<GithubRelease, UpdateFetchError> {
+    let mut request = api_client(proxy)
+        .map_err(UpdateFetchError::Other)?
+        .get(GITHUB_LATEST_RELEASE_API);
+    if let Some(token) = github_token.and_then(github_token_for_request) {
+        request = request.bearer_auth(token);
+    }
+    let response = request
         .send()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| UpdateFetchError::Other(err.to_string()))?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(UpdateFetchError::RateLimited);
+    }
+    let response = response
         .error_for_status()
-        .map_err(|err| err.to_string())?;
-    response.json().map_err(|err| err.to_string())
+        .map_err(|err| UpdateFetchError::Other(err.to_string()))?;
+    response
+        .json()
+        .map_err(|err| UpdateFetchError::Other(err.to_string()))
 }
 
 pub fn download_bytes_with_progress(

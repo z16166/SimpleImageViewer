@@ -24,6 +24,15 @@ pub const CHANGELOG_ASSET_PREFIX: &str = "CHANGELOG.";
 pub const CHANGELOG_ASSET_SUFFIX: &str = ".md";
 pub const UPDATE_USER_AGENT: &str = "SimpleImageViewer-update-checker";
 
+pub fn github_token_for_request(token: &str) -> Option<&str> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 #[derive(Clone, Copy)]
 pub enum PlatformKind {
@@ -130,8 +139,19 @@ pub fn should_check_today(last_check_date_utc: Option<&str>, today_utc: &str) ->
     last_check_date_utc != Some(today_utc)
 }
 
+/// Returns `Some(())` when proxy is disabled or fully configured.
+pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    if config.host.trim().is_empty() || config.port == 0 {
+        return Err(());
+    }
+    Ok(())
+}
+
 pub fn proxy_url(config: &ProxyConfig) -> Option<String> {
-    if !config.enabled || config.host.trim().is_empty() || config.port == 0 {
+    if validate_proxy_config(config).is_err() {
         return None;
     }
     let scheme = match config.proxy_type {
@@ -302,6 +322,13 @@ mod tests {
     }
 
     #[test]
+    fn github_token_for_request_ignores_blank_values() {
+        assert_eq!(github_token_for_request(""), None);
+        assert_eq!(github_token_for_request("   "), None);
+        assert_eq!(github_token_for_request("ghp_test"), Some("ghp_test"));
+    }
+
+    #[test]
     fn proxy_url_builds_from_split_fields() {
         let config = ProxyConfig {
             enabled: true,
@@ -312,6 +339,46 @@ mod tests {
         assert_eq!(
             proxy_url(&config),
             Some("socks5://127.0.0.1:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_proxy_config_rejects_incomplete_settings() {
+        assert!(
+            validate_proxy_config(&ProxyConfig {
+                enabled: false,
+                proxy_type: ProxyType::Http,
+                host: String::new(),
+                port: 0,
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_proxy_config(&ProxyConfig {
+                enabled: true,
+                proxy_type: ProxyType::Http,
+                host: String::new(),
+                port: 0,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_proxy_config(&ProxyConfig {
+                enabled: true,
+                proxy_type: ProxyType::Http,
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_proxy_config(&ProxyConfig {
+                enabled: true,
+                proxy_type: ProxyType::Http,
+                host: String::new(),
+                port: 1080,
+            })
+            .is_err()
         );
     }
 

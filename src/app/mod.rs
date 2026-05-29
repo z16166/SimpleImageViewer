@@ -360,6 +360,14 @@ impl CurrentHdrTiledImage {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum UpdateFeedbackLevel {
+    #[default]
+    Info,
+    Warning,
+    Error,
+}
+
 pub struct ImageViewerApp {
     // Core state
     pub(crate) settings: Settings,
@@ -500,6 +508,9 @@ pub struct ImageViewerApp {
     // Update checking
     pub(crate) update_check_rx: Option<Receiver<crate::update::state::UpdateCheckMessage>>,
     pub(crate) update_checking: bool,
+    pub(crate) update_feedback: String,
+    pub(crate) update_feedback_level: UpdateFeedbackLevel,
+    pub(crate) update_feedback_is_proxy_validation: bool,
     pub(crate) update_install_rx: Option<Receiver<crate::update::install::UpdateInstallMessage>>,
     pub(crate) update_installing: bool,
     pub(crate) pending_update_restart: bool,
@@ -592,8 +603,48 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
+    fn clear_update_feedback(&mut self) {
+        self.update_feedback.clear();
+        self.update_feedback_level = UpdateFeedbackLevel::Info;
+        self.update_feedback_is_proxy_validation = false;
+    }
+
+    fn set_update_feedback(&mut self, message: String, level: UpdateFeedbackLevel) {
+        self.update_feedback = message.clone();
+        self.update_feedback_level = level;
+        self.update_feedback_is_proxy_validation = false;
+        self.status_message = message;
+    }
+
+    fn set_proxy_validation_feedback(&mut self, message: String) {
+        self.update_feedback = message.clone();
+        self.update_feedback_level = UpdateFeedbackLevel::Warning;
+        self.update_feedback_is_proxy_validation = true;
+        self.status_message = message;
+    }
+
+    pub(crate) fn sync_proxy_validation_feedback(&mut self) {
+        if !self.update_feedback_is_proxy_validation {
+            return;
+        }
+        let proxy = self.settings.updates.proxy.to_proxy_config();
+        if crate::update::core::validate_proxy_config(&proxy).is_ok() {
+            self.clear_update_feedback();
+        }
+    }
+
     pub(crate) fn start_update_check(&mut self, force: bool) {
-        if self.update_checking || !self.settings.updates.enabled {
+        if self.update_checking {
+            return;
+        }
+        if !force && !self.settings.updates.enabled {
+            return;
+        }
+        let proxy = self.settings.updates.proxy.to_proxy_config();
+        if crate::update::core::validate_proxy_config(&proxy).is_err() {
+            self.set_proxy_validation_feedback(
+                rust_i18n::t!("update.proxy_incomplete").to_string(),
+            );
             return;
         }
         let today = crate::update::state::today_utc_string();
@@ -610,6 +661,10 @@ impl ImageViewerApp {
         let (tx, rx) = crossbeam_channel::bounded(8);
         self.update_check_rx = Some(rx);
         self.update_checking = true;
+        self.set_update_feedback(
+            rust_i18n::t!("update.checking").to_string(),
+            UpdateFeedbackLevel::Info,
+        );
         crate::update::state::spawn_update_check(
             self.settings.updates.clone(),
             self.settings.language.clone(),
@@ -624,11 +679,17 @@ impl ImageViewerApp {
         while let Ok(message) = rx.try_recv() {
             match message {
                 crate::update::state::UpdateCheckMessage::Checking => {
-                    self.status_message = rust_i18n::t!("update.checking").to_string();
+                    self.set_update_feedback(
+                        rust_i18n::t!("update.checking").to_string(),
+                        UpdateFeedbackLevel::Info,
+                    );
                 }
                 crate::update::state::UpdateCheckMessage::UpToDate => {
                     self.update_checking = false;
-                    self.status_message = rust_i18n::t!("update.no_update").to_string();
+                    self.set_update_feedback(
+                        rust_i18n::t!("update.no_update").to_string(),
+                        UpdateFeedbackLevel::Info,
+                    );
                     self.update_check_rx = None;
                 }
                 crate::update::state::UpdateCheckMessage::Available(candidate) => {
@@ -643,8 +704,10 @@ impl ImageViewerApp {
                 }
                 crate::update::state::UpdateCheckMessage::Failed(err) => {
                     self.update_checking = false;
-                    self.status_message =
-                        rust_i18n::t!("update.check_failed", err = err).to_string();
+                    self.set_update_feedback(
+                        rust_i18n::t!("update.check_failed", err = err).to_string(),
+                        UpdateFeedbackLevel::Error,
+                    );
                     self.update_check_rx = None;
                 }
             }
@@ -659,13 +722,26 @@ impl ImageViewerApp {
             return;
         }
         if !cfg!(target_os = "windows") {
-            self.status_message = rust_i18n::t!("update.unsupported_platform").to_string();
+            self.set_update_feedback(
+                rust_i18n::t!("update.unsupported_platform").to_string(),
+                UpdateFeedbackLevel::Warning,
+            );
+            return;
+        }
+        let proxy = self.settings.updates.proxy.to_proxy_config();
+        if crate::update::core::validate_proxy_config(&proxy).is_err() {
+            self.set_proxy_validation_feedback(
+                rust_i18n::t!("update.proxy_incomplete").to_string(),
+            );
             return;
         }
         let (tx, rx) = crossbeam_channel::bounded(16);
         self.update_install_rx = Some(rx);
         self.update_installing = true;
-        self.status_message = rust_i18n::t!("update.downloading", percent = 0).to_string();
+        self.set_update_feedback(
+            rust_i18n::t!("update.downloading", percent = 0).to_string(),
+            UpdateFeedbackLevel::Info,
+        );
         let locale = if self.settings.language.is_empty() {
             crate::settings::detect_system_language()
         } else {
