@@ -286,13 +286,13 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(t!("label.update_proxy_type"));
             egui::ComboBox::from_id_salt("update_proxy_type")
-                .selected_text(app.settings.updates.proxy.proxy_type.label())
+                .selected_text(t!(app.settings.updates.proxy.proxy_type.label_key()).to_string())
                 .show_ui(ui, |ui| {
                     for proxy_type in ProxyType::ALL {
                         ui.selectable_value(
                             &mut app.settings.updates.proxy.proxy_type,
                             proxy_type,
-                            proxy_type.label(),
+                            t!(proxy_type.label_key()).to_string(),
                         );
                     }
                 });

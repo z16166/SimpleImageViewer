@@ -19,6 +19,8 @@ use super::core::{
 };
 use crate::settings::UpdateSettings;
 
+const MAX_UPDATE_CHECK_ATTEMPTS: usize = 3;
+
 #[derive(Clone, Debug)]
 pub enum UpdateCheckMessage {
     Checking,
@@ -81,18 +83,20 @@ pub fn spawn_update_check(
         .spawn(move || {
             let proxy = settings.proxy.to_proxy_config();
             let proxy = proxy.enabled.then_some(proxy);
-            let result = crate::update::net::fetch_latest_release(proxy.as_ref())
-                .map(|release| {
-                    candidate_from_release(
-                        &release,
-                        current_version(),
-                        settings.ignored_version.as_deref(),
-                        platform_kind(),
-                        cpu_arch(),
-                        cfg!(feature = "legacy_win7"),
-                    )
-                })
-                .map_err(UpdateCheckMessage::Failed);
+            let result = fetch_latest_release_with_retry(|| {
+                crate::update::net::fetch_latest_release(proxy.as_ref())
+            })
+            .map(|release| {
+                candidate_from_release(
+                    &release,
+                    current_version(),
+                    settings.ignored_version.as_deref(),
+                    platform_kind(),
+                    cpu_arch(),
+                    cfg!(feature = "legacy_win7"),
+                )
+            })
+            .map_err(UpdateCheckMessage::Failed);
 
             match result {
                 Ok(Some(candidate)) => {
@@ -113,13 +117,71 @@ pub fn spawn_update_check(
     }
 }
 
+fn fetch_latest_release_with_retry(
+    mut fetch: impl FnMut() -> Result<crate::update::core::GithubRelease, String>,
+) -> Result<crate::update::core::GithubRelease, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=MAX_UPDATE_CHECK_ATTEMPTS {
+        match fetch() {
+            Ok(release) => return Ok(release),
+            Err(err) => {
+                last_err = err;
+                if attempt < MAX_UPDATE_CHECK_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(300 * attempt as u64));
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::iso_date_from_unix_days;
+    use super::{fetch_latest_release_with_retry, iso_date_from_unix_days};
+    use crate::update::core::GithubRelease;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn unix_days_convert_to_iso_utc_date() {
         assert_eq!(iso_date_from_unix_days(0), "1970-01-01");
         assert_eq!(iso_date_from_unix_days(20_602), "2026-05-29");
+    }
+
+    #[test]
+    fn update_check_retries_transient_failures() {
+        let attempts = AtomicUsize::new(0);
+        let release = fetch_latest_release_with_retry(|| {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt < 2 {
+                Err("temporary network failure".to_string())
+            } else {
+                Ok(GithubRelease {
+                    tag_name: "v2.2.2".to_string(),
+                    html_url: String::new(),
+                    body: String::new(),
+                    published_at: String::new(),
+                    draft: false,
+                    prerelease: false,
+                    assets: Vec::new(),
+                })
+            }
+        })
+        .expect("third attempt succeeds");
+
+        assert_eq!(release.tag_name, "v2.2.2");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn update_check_stops_after_retry_limit() {
+        let attempts = AtomicUsize::new(0);
+        let err = fetch_latest_release_with_retry(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Err("still failing".to_string())
+        })
+        .unwrap_err();
+
+        assert_eq!(err, "still failing");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }

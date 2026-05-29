@@ -48,11 +48,11 @@ pub enum ProxyType {
 impl ProxyType {
     pub const ALL: [Self; 3] = [Self::Http, Self::Socks5, Self::Socks5h];
 
-    pub fn label(self) -> &'static str {
+    pub fn label_key(self) -> &'static str {
         match self {
-            Self::Http => "HTTP",
-            Self::Socks5 => "SOCKS5 (local DNS)",
-            Self::Socks5h => "SOCKS5h (proxy DNS)",
+            Self::Http => "update.proxy_type_http",
+            Self::Socks5 => "update.proxy_type_socks5_local_dns",
+            Self::Socks5h => "update.proxy_type_socks5h_proxy_dns",
         }
     }
 }
