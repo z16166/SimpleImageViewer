@@ -119,7 +119,7 @@ pub const SETTINGS_WINDOW_DEFAULT_POS: [f32; 2] = [12.0, 12.0];
 /// Minimum width for the settings window.
 pub const SETTINGS_WINDOW_MIN_WIDTH: f32 = 550.0;
 /// Default width for the settings window.
-pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 640.0;
+pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 580.0;
 /// Maximum width for the settings window.
 pub const SETTINGS_WINDOW_MAX_WIDTH: f32 = 800.0;
 

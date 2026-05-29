@@ -19,6 +19,20 @@ section.language: "Language"
 section.theme: "Theme"
 section.updates: "Updates"
 
+# Settings tabs
+settings_tab.library: "Library"
+settings_tab.viewing: "Viewing"
+settings_tab.music: "Music"
+settings_tab.appearance: "Appearance"
+settings_tab.updates: "Updates"
+settings_tab.system: "System"
+settings_tab.about: "About"
+
+# About
+about.version: "Version %{version}"
+about.copyright: "Copyright © 2024-2026 Simple Image Viewer Contributors"
+about.website: "Project website"
+
 # Buttons
 btn.pick: "📁 Pick"
 btn.refresh: "🔄 Refresh"

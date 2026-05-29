@@ -14,16 +14,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{ImageViewerApp, ScaleMode, TransitionStyle};
+use crate::app::{ImageViewerApp, ScaleMode, SettingsTab, TransitionStyle};
 use crate::ui::utils::{
     middle_truncate, path_display_box, setup_fonts, setup_visuals, styled_button,
     styled_button_widget,
 };
-use crate::update::core::ProxyType;
+use crate::update::core::{GITHUB_RELEASES_PAGE, ProxyType};
 use eframe::Frame;
 use eframe::egui::{self, Color32, Context, Pos2, RichText, Vec2};
 use rust_i18n::t;
 use std::time::Instant;
+
+const ABOUT_ICON_SIZE: f32 = 96.0;
+const ABOUT_ICON_BYTES: &[u8] = include_bytes!("../../assets/icon.png");
 
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
@@ -63,33 +66,23 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
         .show(ctx, |ui| {
             ui.visuals_mut().override_text_color = Some(app.cached_palette.text_normal);
 
-            ui.heading(
-                RichText::new(format!(
-                    "{} v{}",
-                    t!("app.title"),
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .color(app.cached_palette.accent2)
-                .size(16.0),
-            );
-            ui.add_space(4.0);
+            draw_settings_tabs(app, ui);
             ui.separator();
-            ui.add_space(4.0);
-
-            ui.columns(2, |cols| {
-                draw_settings_left_col(app, &mut cols[0], &mut open_dir, &mut fullscreen_changed);
-                draw_settings_right_col(
-                    app,
-                    &mut cols[1],
-                    ctx,
-                    &mut open_music_file,
-                    &mut open_music_dir,
-                    &mut music_enabled_changed,
-                );
-            });
-
-            #[cfg(target_os = "windows")]
-            draw_windows_section(app, ui);
+            egui::ScrollArea::vertical()
+                .id_salt("settings_tab_content")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    draw_active_settings_tab(
+                        app,
+                        ui,
+                        ctx,
+                        &mut open_dir,
+                        &mut fullscreen_changed,
+                        &mut open_music_file,
+                        &mut open_music_dir,
+                        &mut music_enabled_changed,
+                    );
+                });
         });
 
     if open_dir {
@@ -143,7 +136,8 @@ fn draw_slideshow_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     .range(0.5..=3600.0)
                     .speed(0.5),
             );
-            ui.add_space(12.0);
+        });
+        ui.horizontal(|ui| {
             ui.checkbox(&mut app.settings.loop_playback, t!("label.loop_wrap"));
             ui.add_space(12.0);
             if ui
@@ -311,117 +305,176 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     }
 }
 
-fn draw_settings_left_col(
+fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        for tab in SettingsTab::ALL {
+            let selected = app.settings_tab == tab;
+            if ui
+                .add(egui::Button::selectable(
+                    selected,
+                    t!(tab.label_key()).to_string(),
+                ))
+                .clicked()
+            {
+                app.settings_tab = tab;
+            }
+        }
+    });
+    ui.add_space(4.0);
+}
+
+fn draw_active_settings_tab(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
+    ctx: &Context,
     open_dir: &mut bool,
     fullscreen_changed: &mut bool,
+    open_music_file: &mut bool,
+    open_music_dir: &mut bool,
+    music_enabled_changed: &mut bool,
 ) {
+    match app.settings_tab {
+        SettingsTab::Library => draw_library_tab(app, ui, open_dir),
+        SettingsTab::Viewing => draw_viewing_tab(app, ui, fullscreen_changed),
+        SettingsTab::Music => draw_music_tab(
+            app,
+            ui,
+            open_music_file,
+            open_music_dir,
+            music_enabled_changed,
+        ),
+        SettingsTab::Appearance => draw_appearance_tab(app, ui, ctx),
+        SettingsTab::Updates => draw_updates_tab(app, ui),
+        #[cfg(target_os = "windows")]
+        SettingsTab::System => draw_system_tab(app, ui),
+        #[cfg(not(target_os = "windows"))]
+        SettingsTab::System => {}
+        SettingsTab::About => draw_about_tab(app, ui),
+    }
+}
+
+fn draw_library_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: &mut bool) {
     ui.vertical(|ui| {
-        // ── Directory ──────────────────────────────────────────────
-        ui.label(
-            RichText::new(t!("section.directory"))
-                .color(app.cached_palette.accent2)
-                .strong(),
-        );
-        ui.add_space(2.0);
+        draw_library_controls(app, ui, open_dir);
+    });
+}
 
-        let dir_full = app
-            .settings
-            .last_image_dir
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned());
-        let dir_short = app
-            .settings
-            .last_image_dir
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| dir_full.clone().unwrap_or_default());
-        let dir_empty = app.settings.last_image_dir.is_none();
-        let dir_label = if dir_empty {
-            t!("label.no_dir").to_string()
-        } else {
-            dir_short
-        };
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if styled_button(ui, t!("btn.pick"), &app.cached_palette).clicked() {
-                    *open_dir = true;
-                }
-                ui.add_space(4.0);
-                if styled_button(ui, t!("btn.refresh"), &app.cached_palette).clicked() {
-                    if let Some(dir) = app.settings.last_image_dir.clone() {
-                        app.load_directory(dir);
-                    }
-                }
+fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: &mut bool) {
+    // ── Directory ──────────────────────────────────────────────
+    ui.label(
+        RichText::new(t!("section.directory"))
+            .color(app.cached_palette.accent2)
+            .strong(),
+    );
+    ui.add_space(2.0);
 
-                let box_w = (ui.available_width() - 16.0).max(20.0);
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let resp =
-                        path_display_box(ui, &dir_label, dir_empty, box_w, &app.cached_palette);
-                    if let Some(full) = &dir_full {
-                        resp.on_hover_text(full.as_str());
-                    }
-                });
-            });
-        });
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let old_recursive = app.settings.recursive;
-            ui.checkbox(
-                &mut app.settings.recursive,
-                t!("label.recursive_scan").to_string(),
-            );
-            if !old_recursive && app.settings.recursive {
-                app.settings.recursive = false;
-                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
-                    crate::ui::dialogs::confirm::State::recursive_scan(
-                        t!("win.confirm_recursive_title").to_string(),
-                        t!("win.confirm_recursive_msg").to_string(),
-                    ),
-                ));
+    let dir_full = app
+        .settings
+        .last_image_dir
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    let dir_short = app
+        .settings
+        .last_image_dir
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir_full.clone().unwrap_or_default());
+    let dir_empty = app.settings.last_image_dir.is_none();
+    let dir_label = if dir_empty {
+        t!("label.no_dir").to_string()
+    } else {
+        dir_short
+    };
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if styled_button(ui, t!("btn.pick"), &app.cached_palette).clicked() {
+                *open_dir = true;
             }
-            if old_recursive && !app.settings.recursive {
+            ui.add_space(4.0);
+            if styled_button(ui, t!("btn.refresh"), &app.cached_palette).clicked() {
                 if let Some(dir) = app.settings.last_image_dir.clone() {
                     app.load_directory(dir);
                 }
-                app.queue_save();
             }
 
-            ui.add_space(12.0);
-
-            if ui
-                .checkbox(
-                    &mut app.settings.preload,
-                    t!("label.enable_preload").to_string(),
-                )
-                .changed()
-            {
-                app.queue_save();
-            }
+            let box_w = (ui.available_width() - 16.0).max(20.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let resp = path_display_box(ui, &dir_label, dir_empty, box_w, &app.cached_palette);
+                if let Some(full) = &dir_full {
+                    resp.on_hover_text(full.as_str());
+                }
+            });
         });
+    });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let old_recursive = app.settings.recursive;
+        ui.checkbox(
+            &mut app.settings.recursive,
+            t!("label.recursive_scan").to_string(),
+        );
+        if !old_recursive && app.settings.recursive {
+            app.settings.recursive = false;
+            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                crate::ui::dialogs::confirm::State::recursive_scan(
+                    t!("win.confirm_recursive_title").to_string(),
+                    t!("win.confirm_recursive_msg").to_string(),
+                ),
+            ));
+        }
+        if old_recursive && !app.settings.recursive {
+            if let Some(dir) = app.settings.last_image_dir.clone() {
+                app.load_directory(dir);
+            }
+            app.queue_save();
+        }
+
+        ui.add_space(12.0);
 
         if ui
             .checkbox(
-                &mut app.settings.resume_last_image,
-                t!("label.resume_last").to_string(),
+                &mut app.settings.preload,
+                t!("label.enable_preload").to_string(),
             )
             .changed()
         {
             app.queue_save();
         }
+    });
 
-        if app.scanning {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(RichText::new(&app.status_message).color(app.cached_palette.text_muted));
-            });
-        }
+    if ui
+        .checkbox(
+            &mut app.settings.resume_last_image,
+            t!("label.resume_last").to_string(),
+        )
+        .changed()
+    {
+        app.queue_save();
+    }
 
-        ui.add_space(8.0);
+    if app.scanning {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new(&app.status_message).color(app.cached_palette.text_muted));
+        });
+    }
+}
 
+fn draw_viewing_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, fullscreen_changed: &mut bool) {
+    ui.columns(2, |cols| {
+        draw_viewing_main_column(app, &mut cols[0], fullscreen_changed);
+        draw_viewing_hdr_column(app, &mut cols[1]);
+    });
+}
+
+fn draw_viewing_main_column(
+    app: &mut ImageViewerApp,
+    ui: &mut egui::Ui,
+    fullscreen_changed: &mut bool,
+) {
+    ui.vertical(|ui| {
         // ── Display ────────────────────────────────────────────────
         ui.label(
             RichText::new(t!("section.display"))
@@ -441,11 +494,7 @@ fn draw_settings_left_col(
 
         ui.add_space(6.0);
 
-        ui.label(
-            RichText::new(t!("label.scale_mode"))
-                .color(app.cached_palette.text_muted)
-                .small(),
-        );
+        ui.label(RichText::new(t!("label.scale_mode")).color(app.cached_palette.text_muted));
         ui.add_space(2.0);
         let old_scale = app.settings.scale_mode;
         ui.horizontal(|ui| {
@@ -478,11 +527,7 @@ fn draw_settings_left_col(
             app.queue_save();
         }
         ui.add_space(4.0);
-        ui.label(
-            RichText::new(t!("label.z_toggle_hint"))
-                .color(app.cached_palette.text_muted)
-                .small(),
-        );
+        ui.label(RichText::new(t!("label.z_toggle_hint")).color(app.cached_palette.text_muted));
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -584,18 +629,20 @@ fn draw_settings_left_col(
                 }
             });
         }
-
-        ui.add_space(8.0);
-        draw_slideshow_section(app, ui);
-        ui.add_space(8.0);
-        draw_updates_section(app, ui);
     });
 }
 
-fn draw_settings_right_col(
+fn draw_viewing_hdr_column(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.vertical(|ui| {
+        draw_slideshow_section(app, ui);
+        ui.add_space(8.0);
+        draw_hdr_settings_if_available(app, ui);
+    });
+}
+
+fn draw_music_tab(
     app: &mut ImageViewerApp,
     ui: &mut egui::Ui,
-    ctx: &Context,
     open_music_file: &mut bool,
     open_music_dir: &mut bool,
     music_enabled_changed: &mut bool,
@@ -680,8 +727,7 @@ fn draw_settings_right_col(
                         ui.spinner();
                         ui.label(
                             RichText::new(t!("music.scanning"))
-                                .color(app.cached_palette.text_muted)
-                                .small(),
+                                .color(app.cached_palette.text_muted),
                         );
                     } else if let Some(count) = app.cached_music_count {
                         if count > 0 {
@@ -691,8 +737,7 @@ fn draw_settings_right_col(
                                         "music.files_ready",
                                         count = count.to_string()
                                     ))
-                                    .color(app.cached_palette.accent2)
-                                    .small(),
+                                    .color(app.cached_palette.accent2),
                                 )
                                 .truncate(),
                             );
@@ -756,8 +801,7 @@ fn draw_settings_right_col(
                         } else {
                             ui.label(
                                 RichText::new(t!("music.no_audio"))
-                                    .color(Color32::from_rgb(255, 180, 60))
-                                    .small(),
+                                    .color(Color32::from_rgb(255, 180, 60)),
                             );
                         }
                     }
@@ -774,17 +818,12 @@ fn draw_settings_right_col(
                     } else {
                         t!("music.playing").to_string()
                     };
-                    ui.label(
-                        RichText::new(status)
-                            .color(app.cached_palette.text_muted)
-                            .small(),
-                    );
+                    ui.label(RichText::new(status).color(app.cached_palette.text_muted));
                     let short_f = middle_truncate(&f, 40);
                     ui.add(
                         egui::Label::new(
                             RichText::new(format!("[{short_f}]"))
-                                .color(app.cached_palette.text_muted)
-                                .small(),
+                                .color(app.cached_palette.text_muted),
                         )
                         .truncate(),
                     )
@@ -795,7 +834,6 @@ fn draw_settings_right_col(
                         egui::Label::new(
                             RichText::new(format!("  │  {m}"))
                                 .color(app.cached_palette.accent2)
-                                .small()
                                 .italics(),
                         )
                         .truncate(),
@@ -834,7 +872,6 @@ fn draw_settings_right_col(
                                     (total_s as u32) / 60,
                                     (total_s as u32) % 60
                                 ))
-                                .small()
                                 .color(app.cached_palette.text_muted),
                             );
 
@@ -849,7 +886,6 @@ fn draw_settings_right_col(
                                             (pos_s as u32) / 60,
                                             (pos_s as u32) % 60
                                         ))
-                                        .small()
                                         .color(app.cached_palette.text_muted),
                                     );
 
@@ -972,12 +1008,15 @@ fn draw_settings_right_col(
             if let Some(err) = app.audio.take_error() {
                 ui.label(
                     RichText::new(t!("music.audio_error", err = err))
-                        .color(Color32::from_rgb(255, 100, 100))
-                        .small(),
+                        .color(Color32::from_rgb(255, 100, 100)),
                 );
             }
         }
+    });
+}
 
+fn draw_appearance_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) {
+    ui.vertical(|ui| {
         ui.add_space(8.0);
         ui.label(
             RichText::new(t!("section.font"))
@@ -1038,8 +1077,7 @@ fn draw_settings_right_col(
             if app.is_font_error {
                 ui.label(
                     RichText::new(t!("label.font_load_error"))
-                        .color(Color32::from_rgb(255, 100, 100))
-                        .small(),
+                        .color(Color32::from_rgb(255, 100, 100)),
                 );
             }
         });
@@ -1113,45 +1151,98 @@ fn draw_settings_right_col(
                 app.queue_save();
             }
         });
+    });
+}
 
-        #[cfg(not(target_os = "linux"))]
-        {
-            ui.add_space(8.0);
+fn draw_updates_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.vertical(|ui| {
+        draw_updates_section(app, ui);
+    });
+}
+
+fn draw_about_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(12.0);
+        draw_about_icon(app, ui);
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(t!("app.title"))
+                .color(app.cached_palette.accent2)
+                .size(20.0)
+                .strong(),
+        );
+        ui.label(
+            RichText::new(t!("about.version", version = env!("CARGO_PKG_VERSION")))
+                .color(app.cached_palette.text_muted),
+        );
+        ui.add_space(8.0);
+        ui.label(RichText::new(t!("about.copyright")).color(app.cached_palette.text_muted));
+        ui.add_space(4.0);
+        ui.hyperlink_to(t!("about.website").to_string(), GITHUB_RELEASES_PAGE);
+    });
+}
+
+fn draw_about_icon(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    if app.about_icon_texture.is_none() {
+        if let Ok(image) = image::load_from_memory(ABOUT_ICON_BYTES) {
+            let rgba = image.into_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let pixels = rgba.into_raw();
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+            app.about_icon_texture = Some(ui.ctx().load_texture(
+                "settings_about_icon",
+                color_image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
+
+    if let Some(texture) = &app.about_icon_texture {
+        ui.image((texture.id(), egui::vec2(ABOUT_ICON_SIZE, ABOUT_ICON_SIZE)));
+    } else {
+        ui.label(
+            RichText::new("🖼")
+                .size(ABOUT_ICON_SIZE * 0.5)
+                .color(app.cached_palette.accent2),
+        );
+    }
+}
+
+fn draw_hdr_settings_if_available(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        ui.add_space(8.0);
+        draw_hdr_section(app, ui);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        ui.add_space(8.0);
+        if crate::hdr::platform::linux_native_hdr_platform_eligible() {
             draw_hdr_section(app, ui);
+        } else {
+            ui.label(
+                RichText::new(t!("hdr.wayland_only_hint")).color(app.cached_palette.text_muted),
+            );
         }
-        #[cfg(target_os = "linux")]
-        {
-            if crate::hdr::platform::linux_native_hdr_platform_eligible() {
-                ui.add_space(8.0);
-                draw_hdr_section(app, ui);
-            } else {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(t!("hdr.wayland_only_hint"))
-                        .color(app.cached_palette.text_muted)
-                        .small(),
-                );
-            }
-        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn draw_system_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    ui.vertical(|ui| {
+        draw_windows_section(app, ui);
     });
 }
 
 #[cfg(target_os = "windows")]
 fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
-    ui.add_space(8.0);
-    ui.separator();
-    ui.add_space(6.0);
     ui.label(
         RichText::new(t!("section.system_windows"))
             .color(app.cached_palette.accent2)
             .strong(),
     );
     ui.add_space(2.0);
-    ui.label(
-        RichText::new(t!("win.register_hint"))
-            .color(app.cached_palette.text_muted)
-            .small(),
-    );
+    ui.label(RichText::new(t!("win.register_hint")).color(app.cached_palette.text_muted));
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if styled_button(ui, t!("win.assoc_formats"), &app.cached_palette).clicked() {

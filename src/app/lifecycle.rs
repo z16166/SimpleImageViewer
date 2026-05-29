@@ -323,6 +323,8 @@ impl ImageViewerApp {
             random_slideshow_order_ready: false,
             audio: AudioPlayer::new(),
             show_settings: settings.last_image_dir.is_none(),
+            settings_tab: crate::app::SettingsTab::Library,
+            about_icon_texture: None,
             images_ever_loaded: false,
             status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
             error_message: None,

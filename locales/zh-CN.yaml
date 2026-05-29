@@ -19,6 +19,20 @@ section.language: "语言"
 section.theme: "界面主题"
 section.updates: "软件更新"
 
+# Settings tabs
+settings_tab.library: "图库"
+settings_tab.viewing: "浏览"
+settings_tab.music: "音乐"
+settings_tab.appearance: "外观"
+settings_tab.updates: "更新"
+settings_tab.system: "系统"
+settings_tab.about: "关于"
+
+# About
+about.version: "版本 %{version}"
+about.copyright: "版权所有 © 2024-2026 Simple Image Viewer Contributors"
+about.website: "项目网站"
+
 # Buttons
 btn.pick: "📁 选择"
 btn.refresh: "🔄 刷新"

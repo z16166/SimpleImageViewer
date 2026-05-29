@@ -21,7 +21,7 @@ pub(crate) fn auto_switch_step(
     random_order: bool,
     random_order_ready: bool,
 ) -> AutoSwitchStep {
-    if image_count == 0 {
+    if image_count <= 1 {
         return AutoSwitchStep::Stop;
     }
     if random_order && !random_order_ready {
@@ -87,6 +87,10 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
 
         ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                action = Some(AppAction::ToggleSettings);
+                return;
+            }
             action = self.map_key_to_action(i);
         });
 
@@ -881,6 +885,14 @@ mod tests {
         assert_eq!(
             auto_switch_step(5, 1, true, false, false),
             AutoSwitchStep::NavigateTo(2)
+        );
+    }
+
+    #[test]
+    fn auto_switch_stops_when_there_is_only_one_image() {
+        assert_eq!(
+            auto_switch_step(1, 0, true, false, false),
+            AutoSwitchStep::Stop
         );
     }
 

@@ -19,6 +19,20 @@ section.language: "語言"
 section.theme: "介面主題"
 section.updates: "軟件更新"
 
+# Settings tabs
+settings_tab.library: "圖片庫"
+settings_tab.viewing: "檢視"
+settings_tab.music: "音樂"
+settings_tab.appearance: "外觀"
+settings_tab.updates: "更新"
+settings_tab.system: "系統"
+settings_tab.about: "關於"
+
+# About
+about.version: "版本 %{version}"
+about.copyright: "版權所有 © 2024-2026 Simple Image Viewer Contributors"
+about.website: "項目網站"
+
 # Buttons
 btn.pick: "📁 選擇"
 btn.refresh: "🔄 重新掃描"
