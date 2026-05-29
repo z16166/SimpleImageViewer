@@ -293,7 +293,11 @@ pub enum FileOpResult {
     Delete(PathBuf, usize, Result<(), String>),
     Exif(PathBuf, Option<Vec<(String, String)>>),
     Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
-    Wallpaper(Option<String>),
+    Wallpaper {
+        current: Option<String>,
+        monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
+        supports_per_monitor: bool,
+    },
 }
 
 /// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).

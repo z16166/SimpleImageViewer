@@ -206,6 +206,9 @@ wallpaper.stretch: "拉伸"
 wallpaper.tile: "平铺"
 wallpaper.center: "居中"
 wallpaper.span: "跨屏（多显示器）"
+wallpaper.target: "应用到"
+wallpaper.target_all: "所有显示器"
+wallpaper.target_monitor: "显示器 %{index} — %{width} × %{height} — %{desc}"
 
 # Goto dialog
 goto.title: "跳转到指定图片…"

@@ -54,8 +54,11 @@ pub enum ModalResult {
 pub enum ModalAction {
     /// Navigate to a specific 0-based image index.
     GotoIndex(usize),
-    /// Set the desktop wallpaper using the current image and the given mode.
-    SetWallpaper(String),
+    /// Set the desktop wallpaper using the current image, mode and target monitor(s).
+    SetWallpaper {
+        mode: String,
+        target: crate::ui::dialogs::wallpaper::WallpaperTarget,
+    },
     /// The user confirmed in the generic confirm dialog; the tag identifies
     /// which operation was confirmed.
     ConfirmTagged(crate::ui::dialogs::confirm::ConfirmTag),

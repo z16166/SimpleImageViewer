@@ -1054,13 +1054,16 @@ impl ImageViewerApp {
                         }
                     }
                 }
-                FileOpResult::Wallpaper(current) => {
+                FileOpResult::Wallpaper {
+                    current,
+                    monitors,
+                    supports_per_monitor,
+                } => {
                     if let Some(crate::ui::dialogs::modal_state::ActiveModal::Wallpaper(
                         ref mut state,
                     )) = self.active_modal
                     {
-                        state.current_system_wallpaper = current;
-                        state.loading = false;
+                        state.apply_wallpaper_probe(current, monitors, supports_per_monitor);
                     }
                 }
             }

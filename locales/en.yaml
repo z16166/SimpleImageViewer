@@ -207,6 +207,9 @@ wallpaper.stretch: "Stretch"
 wallpaper.tile: "Tile"
 wallpaper.center: "Center"
 wallpaper.span: "Span (Multi-monitor)"
+wallpaper.target: "Apply to"
+wallpaper.target_all: "All monitors"
+wallpaper.target_monitor: "Monitor %{index} — %{width} × %{height} — %{desc}"
 
 # Goto dialog
 goto.title: "Go to image…"

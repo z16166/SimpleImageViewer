@@ -492,10 +492,10 @@ impl ImageViewerApp {
             ModalAction::GotoIndex(idx) => {
                 self.navigate_to(idx);
             }
-            ModalAction::SetWallpaper(mode_str) => {
+            ModalAction::SetWallpaper { mode, target } => {
                 if !self.image_files.is_empty() {
                     let path = self.image_files[self.current_index].clone();
-                    crate::ui::dialogs::wallpaper::apply(path, &mode_str);
+                    crate::ui::dialogs::wallpaper::apply(path, &mode, &target);
                 }
             }
             ModalAction::ConfirmTagged(tag) => match tag {

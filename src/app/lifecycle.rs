@@ -231,8 +231,15 @@ impl ImageViewerApp {
                         }
                         crate::app::LightweightFileOpJob::Wallpaper => {
                             let current_wallpaper = wallpaper::get().ok();
-                            let _ = file_op_tx_for_menu_worker
-                                .send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
+                            let (monitors, supports_per_monitor) =
+                                crate::ui::dialogs::wallpaper::probe_windows_wallpaper_targets();
+                            let _ = file_op_tx_for_menu_worker.send(
+                                crate::app::FileOpResult::Wallpaper {
+                                    current: current_wallpaper,
+                                    monitors,
+                                    supports_per_monitor,
+                                },
+                            );
                         }
                     }
                 }
