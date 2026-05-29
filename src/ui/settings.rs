@@ -31,8 +31,6 @@ const HDR_SLIDER_TRACK_WIDTH: f32 = 110.0;
 const HDR_SLIDER_VALUE_WIDTH: f32 = 90.0;
 const APPEARANCE_FORM_CONTROL_WIDTH: f32 = 320.0;
 const APPEARANCE_SLIDER_VALUE_WIDTH: f32 = 70.0;
-const APPEARANCE_SLIDER_TRACK_WIDTH: f32 =
-    APPEARANCE_FORM_CONTROL_WIDTH - APPEARANCE_SLIDER_VALUE_WIDTH;
 const UPDATE_PROXY_CONTROL_WIDTH: f32 = 300.0;
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
@@ -1110,9 +1108,15 @@ fn draw_appearance_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Contex
             .show(ui, |ui| {
                 grid_label(ui, t!("label.interface_size"));
                 let mut current_size = app.temp_font_size.unwrap_or(app.settings.font_size);
+                // Slider total width = slider_width + item_spacing.x + interact_size.x
+                // (item_spacing.x is inserted by ui.horizontal inside Slider::ui).
+                // Derive track width so the right edge aligns with the combo boxes below.
+                let appearance_slider_track_w = APPEARANCE_FORM_CONTROL_WIDTH
+                    - APPEARANCE_SLIDER_VALUE_WIDTH
+                    - ui.spacing().item_spacing.x;
                 let resp = add_fixed_slider(
                     ui,
-                    APPEARANCE_SLIDER_TRACK_WIDTH,
+                    appearance_slider_track_w,
                     APPEARANCE_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(&mut current_size, 12.0..=32.0).step_by(1.0),
                 );
