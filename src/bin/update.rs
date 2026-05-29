@@ -32,8 +32,16 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 fn main() {
-    if let Err(err) = run() {
-        show_message("Simple Image Viewer Update Failed", &err);
+    let parsed = parse_args(std::env::args().skip(1));
+    let locale = parsed
+        .as_ref()
+        .ok()
+        .map(|args| args.locale.clone())
+        .unwrap_or_else(|| "en".to_string());
+    let text = ui_text(&locale);
+
+    if let Err(err) = parsed.and_then(|args| run(&args, &text, &locale)) {
+        show_message(text.failed_title, &err);
         std::process::exit(1);
     }
 }
@@ -48,30 +56,87 @@ struct Args {
     log: std::path::PathBuf,
     success_marker: std::path::PathBuf,
     version: String,
+    locale: String,
     restart: bool,
 }
 
 #[cfg(target_os = "windows")]
-fn run() -> Result<(), String> {
-    let args = parse_args(std::env::args().skip(1))?;
+struct UiText {
+    failed_title: &'static str,
+    backup_old_exe: &'static str,
+    copy_new_exe: &'static str,
+    write_success_marker_failed: &'static str,
+    restart_app_failed: &'static str,
+}
+
+#[cfg(target_os = "windows")]
+fn ui_text(locale: &str) -> UiText {
+    match locale {
+        "zh-CN" => UiText {
+            failed_title: "Simple Image Viewer 更新失败",
+            backup_old_exe: "备份旧程序",
+            copy_new_exe: "复制新程序",
+            write_success_marker_failed: "写入更新成功标记失败",
+            restart_app_failed: "重启程序失败",
+        },
+        "zh-HK" => UiText {
+            failed_title: "Simple Image Viewer 更新失敗",
+            backup_old_exe: "備份舊程式",
+            copy_new_exe: "複製新程式",
+            write_success_marker_failed: "寫入更新成功標記失敗",
+            restart_app_failed: "重新啟動程式失敗",
+        },
+        "zh-TW" => UiText {
+            failed_title: "Simple Image Viewer 更新失敗",
+            backup_old_exe: "備份舊程式",
+            copy_new_exe: "複製新程式",
+            write_success_marker_failed: "寫入更新成功標記失敗",
+            restart_app_failed: "重新啟動程式失敗",
+        },
+        _ => UiText {
+            failed_title: "Simple Image Viewer Update Failed",
+            backup_old_exe: "Backup old executable",
+            copy_new_exe: "Copy new executable",
+            write_success_marker_failed: "Failed to write success marker",
+            restart_app_failed: "Failed to restart app",
+        },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn operation_failed(locale: &str, operation: &str, detail: &str) -> String {
+    match locale {
+        "zh-CN" => format!("{operation}失败：{detail}"),
+        "zh-HK" | "zh-TW" => format!("{operation}失敗：{detail}"),
+        _ => format!("{operation} failed: {detail}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run(args: &Args, text: &UiText, locale: &str) -> Result<(), String> {
     log_line(&args.log, "update helper started");
     wait_for_process_exit(args.pid, &args.log);
     retry(
         || rename_or_replace(&args.old_exe, &args.backup_exe),
         &args.log,
         "backup old exe",
+        text.backup_old_exe,
+        locale,
     )?;
     retry(
         || copy_new_exe(&args.new_exe, &args.old_exe),
         &args.log,
         "copy new exe",
+        text.copy_new_exe,
+        locale,
     )?;
-    std::fs::write(&args.success_marker, args.version.as_bytes())
-        .map_err(|err| format!("failed to write success marker: {err}"))?;
+    std::fs::write(&args.success_marker, args.version.as_bytes()).map_err(|err| {
+        operation_failed(locale, text.write_success_marker_failed, &err.to_string())
+    })?;
     if args.restart {
         std::process::Command::new(&args.old_exe)
             .spawn()
-            .map_err(|err| format!("failed to restart app: {err}"))?;
+            .map_err(|err| operation_failed(locale, text.restart_app_failed, &err.to_string()))?;
     }
     log_line(&args.log, "update helper completed");
     Ok(())
@@ -86,6 +151,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut log = None;
     let mut success_marker = None;
     let mut version = None;
+    let mut locale = None;
     let mut restart = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -96,6 +162,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--log" => log = args.next().map(Into::into),
             "--success-marker" => success_marker = args.next().map(Into::into),
             "--version" => version = args.next(),
+            "--locale" => locale = args.next(),
             "--restart" => restart = true,
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -108,6 +175,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         log: log.ok_or_else(|| "missing --log".to_string())?,
         success_marker: success_marker.ok_or_else(|| "missing --success-marker".to_string())?,
         version: version.ok_or_else(|| "missing --version".to_string())?,
+        locale: locale.unwrap_or_else(|| "en".to_string()),
         restart,
     })
 }
@@ -161,7 +229,9 @@ fn wait_for_process_exit(pid: u32, log: &std::path::Path) {
 fn retry(
     mut op: impl FnMut() -> Result<(), String>,
     log: &std::path::Path,
-    label: &str,
+    log_label: &str,
+    user_label: &str,
+    locale: &str,
 ) -> Result<(), String> {
     let mut last_err = String::new();
     for attempt in 1..=MAX_RENAME_RETRIES {
@@ -171,13 +241,13 @@ fn retry(
                 last_err = err;
                 log_line(
                     log,
-                    &format!("{label} attempt {attempt} failed: {last_err}"),
+                    &format!("{log_label} attempt {attempt} failed: {last_err}"),
                 );
                 std::thread::sleep(std::time::Duration::from_millis(RETRY_SLEEP_MS));
             }
         }
     }
-    Err(format!("{label} failed: {last_err}"))
+    Err(operation_failed(locale, user_label, &last_err))
 }
 
 #[cfg(target_os = "windows")]

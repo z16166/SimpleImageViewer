@@ -614,9 +614,15 @@ impl ImageViewerApp {
         self.update_install_rx = Some(rx);
         self.update_installing = true;
         self.status_message = rust_i18n::t!("update.downloading", percent = 0).to_string();
+        let locale = if self.settings.language.is_empty() {
+            crate::settings::detect_system_language()
+        } else {
+            self.settings.language.clone()
+        };
         crate::update::install::spawn_windows_update_install(
             candidate,
             self.settings.updates.clone(),
+            locale,
             tx,
         );
     }

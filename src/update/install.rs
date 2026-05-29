@@ -33,13 +33,14 @@ pub enum UpdateInstallMessage {
 pub fn spawn_windows_update_install(
     candidate: UpdateCandidate,
     settings: UpdateSettings,
+    locale: String,
     tx: crossbeam_channel::Sender<UpdateInstallMessage>,
 ) {
     let tx_for_spawn_error = tx.clone();
     if let Err(err) = std::thread::Builder::new()
         .name("siv-update-install".to_string())
         .spawn(move || {
-            let result = install_windows_update(&candidate, &settings, &tx);
+            let result = install_windows_update(&candidate, &settings, &locale, &tx);
             match result {
                 Ok(()) => {
                     let _ = tx.send(UpdateInstallMessage::ReadyToRestart);
@@ -60,6 +61,7 @@ pub fn spawn_windows_update_install(
 fn install_windows_update(
     candidate: &UpdateCandidate,
     settings: &UpdateSettings,
+    locale: &str,
     tx: &crossbeam_channel::Sender<UpdateInstallMessage>,
 ) -> Result<(), String> {
     let proxy = settings.proxy.to_proxy_config();
@@ -140,6 +142,7 @@ fn install_windows_update(
         &log_path,
         &success_marker,
         &candidate.version,
+        locale,
     )?;
     Ok(())
 }
@@ -148,6 +151,7 @@ fn install_windows_update(
 fn install_windows_update(
     _candidate: &UpdateCandidate,
     _settings: &UpdateSettings,
+    _locale: &str,
     _tx: &crossbeam_channel::Sender<UpdateInstallMessage>,
 ) -> Result<(), String> {
     Err(rust_i18n::t!("update.err_win_only").to_string())
@@ -332,6 +336,7 @@ fn launch_helper(
     log_path: &Path,
     success_marker: &Path,
     version: &str,
+    locale: &str,
 ) -> Result<(), String> {
     let pid = std::process::id().to_string();
     std::process::Command::new(helper)
@@ -349,6 +354,8 @@ fn launch_helper(
         .arg(success_marker)
         .arg("--version")
         .arg(version)
+        .arg("--locale")
+        .arg(locale)
         .arg("--restart")
         .spawn()
         .map_err(|err| err.to_string())?;
