@@ -33,8 +33,6 @@ const APPEARANCE_FORM_CONTROL_WIDTH: f32 = 320.0;
 const APPEARANCE_SLIDER_VALUE_WIDTH: f32 = 70.0;
 const APPEARANCE_SLIDER_TRACK_WIDTH: f32 = 258.0;
 const UPDATE_PROXY_CONTROL_WIDTH: f32 = 300.0;
-const UPDATE_PROXY_PORT_WIDTH: f32 = 80.0;
-
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
     // The settings layout uses nested UI elements to achieve responsive alignment.
@@ -297,54 +295,57 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     )
     .on_hover_text(t!("update.proxy_hint"));
     if app.settings.updates.proxy.enabled {
-        // ComboBox button height = font_height + 2 * button_padding.y.
-        // TextEdit and DragValue must match this so all rows are the same height,
-        // which also ensures labels are vertically centered at the same baseline.
-        let bp = ui.spacing().button_padding;
-        let control_height = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
+        // All three controls must be the same visual height for row spacing to look
+        // uniform. ComboBox and TextEdit both yield (font_height + 2*button_padding.y).
+        // DragValue uses interact_size.y for its height, so we override that value
+        // inside a scope to bring DragValue in line with the other two.
+        // The scope prevents the override from leaking to the rest of the UI.
+        ui.scope(|ui| {
+            let bp = ui.spacing().button_padding;
+            let control_h = ui.text_style_height(&egui::TextStyle::Body) + 2.0 * bp.y;
+            ui.style_mut().spacing.interact_size.y = control_h;
 
-        egui::Grid::new("update_proxy_grid")
-            .num_columns(2)
-            .min_row_height(control_height)
-            .spacing([8.0, 10.0])
-            .show(ui, |ui| {
-                ui.label(t!("label.update_proxy_type"));
-                egui::ComboBox::from_id_salt("update_proxy_type")
-                    .selected_text(
-                        t!(app.settings.updates.proxy.proxy_type.label_key()).to_string(),
-                    )
-                    .width(UPDATE_PROXY_CONTROL_WIDTH)
-                    .show_ui(ui, |ui| {
-                        for proxy_type in ProxyType::ALL {
-                            ui.selectable_value(
-                                &mut app.settings.updates.proxy.proxy_type,
-                                proxy_type,
-                                t!(proxy_type.label_key()).to_string(),
-                            );
-                        }
-                    });
-                ui.end_row();
+            egui::Grid::new("update_proxy_grid")
+                .num_columns(2)
+                .spacing([8.0, 10.0])
+                .show(ui, |ui| {
+                    ui.label(t!("label.update_proxy_type"));
+                    egui::ComboBox::from_id_salt("update_proxy_type")
+                        .selected_text(
+                            t!(app.settings.updates.proxy.proxy_type.label_key()).to_string(),
+                        )
+                        .width(UPDATE_PROXY_CONTROL_WIDTH)
+                        .show_ui(ui, |ui| {
+                            for proxy_type in ProxyType::ALL {
+                                ui.selectable_value(
+                                    &mut app.settings.updates.proxy.proxy_type,
+                                    proxy_type,
+                                    t!(proxy_type.label_key()).to_string(),
+                                );
+                            }
+                        });
+                    ui.end_row();
 
-                ui.label(t!("label.update_proxy_host"));
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.settings.updates.proxy.host)
-                        .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
-                        .margin(egui::Margin {
-                            left: 4,
-                            right: 4,
-                            top: bp.y as i8,
-                            bottom: bp.y as i8,
-                        }),
-                );
-                ui.end_row();
+                    ui.label(t!("label.update_proxy_host"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.settings.updates.proxy.host)
+                            .desired_width(UPDATE_PROXY_CONTROL_WIDTH)
+                            .margin(egui::Margin {
+                                left: 4,
+                                right: 4,
+                                top: bp.y as i8,
+                                bottom: bp.y as i8,
+                            }),
+                    );
+                    ui.end_row();
 
-                ui.label(t!("label.update_proxy_port"));
-                ui.add_sized(
-                    [UPDATE_PROXY_PORT_WIDTH, control_height],
-                    egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
-                );
-                ui.end_row();
-            });
+                    ui.label(t!("label.update_proxy_port"));
+                    ui.add(
+                        egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
+                    );
+                    ui.end_row();
+                });
+        });
     }
     if app.settings.updates != before {
         app.queue_save();
