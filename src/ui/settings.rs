@@ -299,9 +299,10 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     if app.settings.updates.proxy.enabled {
         egui::Grid::new("update_proxy_grid")
             .num_columns(2)
-            .spacing([8.0, 4.0])
+            .min_row_height(ui.spacing().interact_size.y)
+            .spacing([8.0, 10.0])
             .show(ui, |ui| {
-                grid_label(ui, t!("label.update_proxy_type"));
+                ui.label(t!("label.update_proxy_type"));
                 egui::ComboBox::from_id_salt("update_proxy_type")
                     .selected_text(
                         t!(app.settings.updates.proxy.proxy_type.label_key()).to_string(),
@@ -318,14 +319,14 @@ fn draw_updates_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                     });
                 ui.end_row();
 
-                grid_label(ui, t!("label.update_proxy_host"));
+                ui.label(t!("label.update_proxy_host"));
                 ui.add_sized(
                     [UPDATE_PROXY_CONTROL_WIDTH, 0.0],
                     egui::TextEdit::singleline(&mut app.settings.updates.proxy.host),
                 );
                 ui.end_row();
 
-                grid_label(ui, t!("label.update_proxy_port"));
+                ui.label(t!("label.update_proxy_port"));
                 ui.add_sized(
                     [UPDATE_PROXY_PORT_WIDTH, 0.0],
                     egui::DragValue::new(&mut app.settings.updates.proxy.port).range(0..=65535),
