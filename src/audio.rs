@@ -16,7 +16,7 @@
 
 use crate::constants::{
     AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, AUDIO_RECOVERY_COOLDOWN,
-    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE,
+    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE, is_supported_music_extension,
 };
 use crate::scanner::is_offline;
 use crossbeam_channel::Sender;
@@ -346,12 +346,7 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
     fn is_music(p: &Path) -> bool {
         p.extension()
             .and_then(|e| e.to_str())
-            .map(|e| {
-                matches!(
-                    e.to_lowercase().as_str(),
-                    "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape" | "m3u"
-                )
-            })
+            .map(is_supported_music_extension)
             .unwrap_or(false)
     }
 
@@ -387,13 +382,27 @@ pub fn collect_music_files(path: &PathBuf, cancel: Option<Arc<AtomicBool>>) -> V
 fn is_supported_audio_or_playlist(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| {
-            matches!(
-                e.to_lowercase().as_str(),
-                "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "ape" | "m3u"
-            )
-        })
+        .map(is_supported_music_extension)
         .unwrap_or(false)
+}
+
+fn canonical_or_clone(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn build_base_non_m3u_set(base_playlist: &[PathBuf]) -> HashSet<PathBuf> {
+    base_playlist
+        .iter()
+        .filter(|p| !is_m3u_path(p))
+        .map(|p| canonical_or_clone(p))
+        .collect()
+}
+
+fn expand_m3u_excluding_base(m3u_path: &Path, base_path_set: &HashSet<PathBuf>) -> Vec<PathBuf> {
+    parse_m3u_entries(m3u_path)
+        .into_iter()
+        .filter(|p| !base_path_set.contains(p))
+        .collect()
 }
 
 fn is_m3u_path(path: &Path) -> bool {
@@ -465,6 +474,21 @@ mod tests {
         let files = collect_music_files(&dir, None);
         assert!(files.iter().any(|p| p == &m3u));
         assert!(files.iter().any(|p| p == &mp3));
+        assert!(!files.iter().any(|p| p == &txt));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_music_files_uses_shared_extension_list() {
+        let dir = make_temp_dir("music-ext-shared");
+        let m4a = dir.join("track.m4a");
+        let txt = dir.join("note.txt");
+        fs::write(&m4a, b"fake").expect("write m4a");
+        fs::write(&txt, b"ignore").expect("write txt");
+
+        let files = collect_music_files(&dir, None);
+        assert!(files.iter().any(|p| p == &m4a));
         assert!(!files.iter().any(|p| p == &txt));
 
         let _ = fs::remove_dir_all(&dir);
@@ -550,6 +574,131 @@ mod tests {
         assert_eq!(st.take_next_playable_path(), Some((base2.clone(), false)));
         // Then wrap around and continue playing base tracks normally.
         assert_eq!(st.take_next_playable_path(), Some((base1, false)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_file_on_m3u_returns_last_expanded_track_not_first() {
+        let dir = make_temp_dir("m3u-prev-last-track");
+        let a = dir.join("a.mp3");
+        let b = dir.join("b.mp3");
+        let t1 = dir.join("t1.mp3");
+        let t2 = dir.join("t2.mp3");
+        fs::write(&a, b"fake").expect("write a");
+        fs::write(&b, b"fake").expect("write b");
+        fs::write(&t1, b"fake").expect("write t1");
+        fs::write(&t2, b"fake").expect("write t2");
+        let m3u = dir.join("list.m3u");
+        fs::write(
+            &m3u,
+            format!("{}\n{}\n", t1.to_string_lossy(), t2.to_string_lossy()),
+        )
+        .expect("write m3u");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![a, m3u, b];
+        st.current_track_idx = 3; // Just finished B, next forward index wrapped state
+
+        // Emulate Prev behavior: seek previous base slot then resolve playable path in reverse.
+        if st.current_track_idx > 1 {
+            st.current_track_idx -= 2;
+        } else {
+            st.current_track_idx = st.base_playlist.len().saturating_sub(1);
+        }
+        let prev = st.take_prev_playable_path();
+        assert_eq!(
+            prev,
+            Some((canonical_or_clone(&t2), true)),
+            "Prev on m3u should land on last expanded track"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_file_skips_empty_dedup_m3u_and_reaches_previous_base_track() {
+        let dir = make_temp_dir("m3u-prev-skip-empty");
+        let a = dir.join("a.mp3");
+        let b = dir.join("b.mp3");
+        fs::write(&a, b"fake").expect("write a");
+        fs::write(&b, b"fake").expect("write b");
+        let m3u = dir.join("dup.m3u");
+        fs::write(&m3u, format!("{}\n{}\n", a.to_string_lossy(), b.to_string_lossy()))
+            .expect("write m3u");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![a.clone(), m3u, b];
+        st.current_track_idx = 3; // After B
+
+        // Emulate Prev behavior: step back and resolve in reverse.
+        if st.current_track_idx > 1 {
+            st.current_track_idx -= 2;
+        } else {
+            st.current_track_idx = st.base_playlist.len().saturating_sub(1);
+        }
+        assert_eq!(st.take_prev_playable_path(), Some((a, false)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_playable_none_marks_stopped_for_all_empty_m3u_without_base_tracks() {
+        let dir = make_temp_dir("m3u-all-empty-loop");
+        let missing = dir.join("missing.mp3");
+        let m3u = dir.join("empty.m3u");
+        fs::write(&m3u, format!("{}\n", missing.to_string_lossy())).expect("write m3u");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![m3u];
+        st.stopped = false;
+
+        assert_eq!(st.take_next_playable_path(), None);
+        assert!(st.stopped, "state should stop when no playable entries remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_file_then_next_file_walks_back_through_m3u_chain() {
+        let dir = make_temp_dir("m3u-prev-then-next");
+        let a = dir.join("a.mp3");
+        let b = dir.join("b.mp3");
+        let t1 = dir.join("t1.mp3");
+        let t2 = dir.join("t2.mp3");
+        fs::write(&a, b"fake").expect("write a");
+        fs::write(&b, b"fake").expect("write b");
+        fs::write(&t1, b"fake").expect("write t1");
+        fs::write(&t2, b"fake").expect("write t2");
+        let m3u = dir.join("list.m3u");
+        fs::write(
+            &m3u,
+            format!("{}\n{}\n", t1.to_string_lossy(), t2.to_string_lossy()),
+        )
+        .expect("write m3u");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![a, m3u, b];
+        st.current_track_idx = 3; // Simulate that B was just played.
+
+        if st.current_track_idx > 1 {
+            st.current_track_idx -= 2;
+        } else {
+            st.current_track_idx = st.base_playlist.len().saturating_sub(1);
+        }
+        let prev = st.take_prev_playable_path().expect("prev path");
+        assert_eq!(prev, (canonical_or_clone(&t2), true));
+
+        st.forced_next_path = Some(prev.clone());
+        let picked_prev = st.forced_next_path.take().expect("forced next");
+        assert_eq!(picked_prev, (canonical_or_clone(&t2), true));
+        assert_eq!(st.injected_history, vec![canonical_or_clone(&t1)]);
+
+        // Next prev inside injected chain should rewind to T1.
+        st.current_file_path = Some(canonical_or_clone(&t2));
+        st.current_from_injected = true;
+        assert!(st.rewind_injected_one_step());
+        assert_eq!(st.injected_playlist.pop_front(), Some(canonical_or_clone(&t1)));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1538,6 +1687,7 @@ struct AudioLoopState {
     injected_history: Vec<PathBuf>,
     suppress_injected_history_once: bool,
     current_track_idx: usize,
+    forced_next_path: Option<(PathBuf, bool)>,
     current_file_path: Option<PathBuf>,
     current_from_injected: bool,
     stopped: bool,
@@ -1600,6 +1750,7 @@ impl AudioLoopState {
             injected_history: Vec::new(),
             suppress_injected_history_once: false,
             current_track_idx: 0,
+            forced_next_path: None,
             current_file_path: None,
             current_from_injected: false,
             stopped: true,
@@ -1697,6 +1848,7 @@ impl AudioLoopState {
         self.injected_playlist.clear();
         self.injected_history.clear();
         self.suppress_injected_history_once = false;
+        self.forced_next_path = None;
         self.current_file_path = None;
         self.current_from_injected = false;
         self.backend_player = None;
@@ -1733,10 +1885,12 @@ impl AudioLoopState {
             if self.current_track_idx > 0 {
                 self.current_track_idx -= 1;
             }
-            let path =
-                self.base_playlist[self.current_track_idx % self.base_playlist.len()].clone();
+            let Some((path, from_injected)) = self.take_next_playable_path() else {
+                self.stopped = true;
+                return;
+            };
             self.current_file_path = Some(path.clone());
-            self.current_from_injected = false;
+            self.current_from_injected = from_injected;
             if let Some(source) = open_source(&path, resume_pos, &self.shutdown_flag) {
                 if self.ensure_backend(slots) {
                     let resumed = if let Some(p) = self.backend_player.as_mut() {
@@ -1850,6 +2004,7 @@ impl AudioLoopState {
         if let Some(ref p) = self.backend_player {
             p.clear();
         }
+        self.forced_next_path = None;
         // Keep injected queue/history so `NextFile` can advance within expanded m3u tracks.
         self.cue_sheet = None;
         set_cue_track(&slots.cue_track_slot, None);
@@ -1872,10 +2027,21 @@ impl AudioLoopState {
         } else {
             self.current_track_idx = self.base_playlist.len().saturating_sub(1);
         }
+        // We are switching back to base-list reverse navigation. Clear injected forward/rewind
+        // state so the next selected entry is resolved from base order only.
         self.injected_playlist.clear();
         self.injected_history.clear();
         self.suppress_injected_history_once = false;
         self.current_from_injected = false;
+        if let Some((path, from_injected)) = self.take_prev_playable_path() {
+            self.forced_next_path = Some((path, from_injected));
+            if from_injected {
+                self.current_from_injected = true;
+                self.suppress_injected_history_once = true;
+            }
+        } else {
+            self.stopped = true;
+        }
         if let Some(ref p) = self.backend_player {
             p.clear();
         }
@@ -2007,6 +2173,7 @@ impl AudioLoopState {
         self.injected_playlist.clear();
         self.injected_history.clear();
         self.suppress_injected_history_once = false;
+        self.forced_next_path = None;
         self.current_track_idx = start_idx.unwrap_or(0);
         self.current_file_path = None;
         self.current_from_injected = false;
@@ -2039,7 +2206,12 @@ impl AudioLoopState {
     /// the caller should `continue` (backend not yet ready).
     fn feed_next_file(&mut self, slots: &AudioSlots) -> bool {
         let previous = self.current_file_path.clone();
-        let Some((path, from_injected)) = self.take_next_playable_path() else {
+        let next_selection = self
+            .forced_next_path
+            .take()
+            .or_else(|| self.take_next_playable_path());
+        let Some((path, from_injected)) = next_selection else {
+            self.stopped = true;
             return true;
         };
         if from_injected {
@@ -2146,6 +2318,7 @@ impl AudioLoopState {
             return None;
         }
         let max_scan = self.base_playlist.len().max(1);
+        let base_path_set = build_base_non_m3u_set(&self.base_playlist);
         for _ in 0..max_scan {
             if self.current_track_idx >= self.base_playlist.len() {
                 self.current_track_idx = 0;
@@ -2154,16 +2327,7 @@ impl AudioLoopState {
             let path = self.base_playlist[self.current_track_idx].clone();
             self.current_track_idx += 1;
             if is_m3u_path(&path) {
-                let base_path_set: HashSet<PathBuf> = self
-                    .base_playlist
-                    .iter()
-                    .filter(|p| !is_m3u_path(p))
-                    .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
-                    .collect();
-                let expanded: Vec<PathBuf> = parse_m3u_entries(&path)
-                    .into_iter()
-                    .filter(|p| !base_path_set.contains(p))
-                    .collect();
+                let expanded = expand_m3u_excluding_base(&path, &base_path_set);
                 if expanded.is_empty() {
                     log::warn!("[AUDIO] m3u has no playable entries: {:?}", path);
                     continue;
@@ -2175,9 +2339,52 @@ impl AudioLoopState {
             }
             return Some((path, false));
         }
+        self.stopped = true;
         None
     }
 
+    fn take_prev_playable_path(&mut self) -> Option<(PathBuf, bool)> {
+        if self.base_playlist.is_empty() {
+            return None;
+        }
+        let max_scan = self.base_playlist.len().max(1);
+        let base_path_set = build_base_non_m3u_set(&self.base_playlist);
+        for _ in 0..max_scan {
+            if self.current_track_idx >= self.base_playlist.len() {
+                self.current_track_idx = self.base_playlist.len().saturating_sub(1);
+            }
+            let path = self.base_playlist[self.current_track_idx].clone();
+            self.current_track_idx = if self.current_track_idx == 0 {
+                self.base_playlist.len().saturating_sub(1)
+            } else {
+                self.current_track_idx - 1
+            };
+            if is_m3u_path(&path) {
+                let expanded = expand_m3u_excluding_base(&path, &base_path_set);
+                if expanded.is_empty() {
+                    continue;
+                }
+                self.injected_history = expanded[..expanded.len().saturating_sub(1)].to_vec();
+                // Reverse navigation should land on the last expanded m3u track first.
+                if let Some(last) = expanded.last() {
+                    return Some((last.clone(), true));
+                }
+                continue;
+            }
+            return Some((path, false));
+        }
+        None
+    }
+
+    /// Rewind one step inside the currently injected chain.
+    ///
+    /// Strategy:
+    /// - `injected_history` stores already-played injected tracks in forward order.
+    /// - On Prev, we pull one item from history and push both `previous` then `current`
+    ///   to the front of `injected_playlist`, so playback can restart from the previous
+    ///   injected entry while still keeping the current one as the next forward item.
+    /// - `suppress_injected_history_once` prevents this synthetic rewind transition from
+    ///   immediately re-recording duplicate history on the next `feed_next_file`.
     fn rewind_injected_one_step(&mut self) -> bool {
         if !self.current_from_injected {
             return false;

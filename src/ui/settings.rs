@@ -458,12 +458,6 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         app.queue_save();
     }
 
-    if app.scanning {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(RichText::new(&app.status_message).color(app.cached_palette.text_muted));
-        });
-    }
 }
 
 fn draw_viewing_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, fullscreen_changed: &mut bool) {

@@ -264,7 +264,7 @@ pub fn apply(path: PathBuf, mode_str: &str, target: &WallpaperTarget) {
         // TODO(wallpaper): Add a compatibility conversion fallback (e.g. PNG/JPG)
         // for formats that the OS wallpaper API cannot apply directly.
         if let Err(e) = apply_windows_per_monitor(path.clone(), &mode_str, &target) {
-            log::warn!(
+            log::debug!(
                 "[wallpaper] per-monitor apply failed, falling back to global set: {}",
                 e
             );
@@ -282,7 +282,7 @@ pub fn probe_windows_wallpaper_targets() -> (Vec<MonitorOption>, bool) {
     use windows::Win32::UI::Shell::{DesktopWallpaper, IDesktopWallpaper};
     use windows::core::PWSTR;
 
-    let _com = match crate::wic::ComGuard::new_mta() {
+    let _com = match crate::wic::ComGuard::new() {
         Ok(guard) => guard,
         Err(_) => return (Vec::new(), false),
     };
@@ -395,8 +395,7 @@ fn apply_windows_per_monitor(
     let abs_path = std::fs::canonicalize(&path).unwrap_or(path);
     let path_str = abs_path.to_string_lossy().to_string();
 
-    let _com =
-        crate::wic::ComGuard::new_mta().map_err(|e| format!("CoInitializeEx failed: {e}"))?;
+    let _com = crate::wic::ComGuard::new().map_err(|e| format!("CoInitializeEx failed: {e}"))?;
 
     unsafe {
         let desktop: IDesktopWallpaper = CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)
@@ -422,7 +421,10 @@ fn apply_windows_per_monitor(
                     let id = desktop
                         .GetMonitorDevicePathAt(i)
                         .map_err(|e| format!("GetMonitorDevicePathAt failed: {e}"))?;
-                    let id_h = HSTRING::from(id.to_string().unwrap_or_default());
+                    let id_h = HSTRING::from(
+                        id.to_string()
+                            .map_err(|e| format!("Monitor ID UTF-16 conversion failed: {e}"))?,
+                    );
                     desktop
                         .SetWallpaper(&id_h, &path_h)
                         .map_err(|e| format!("SetWallpaper(all) failed: {e}"))?;
