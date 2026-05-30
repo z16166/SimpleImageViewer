@@ -1,4 +1,5 @@
 use crate::app::ImageViewerApp;
+use crate::ui::dialogs::modal_state::ActiveModal;
 use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
@@ -71,6 +72,29 @@ impl ImageViewerApp {
         let (tx, rx) = crossbeam_channel::unbounded();
         self.print_status_rx = Some(rx);
         spawn_print_job(job, self.is_printing.clone(), tx);
+    }
+
+    /// Delete the current image, showing a confirmation dialog first when moving a
+    /// remote/network file to the Recycle Bin may fail.
+    pub(crate) fn request_delete_current_image(&mut self, permanent: bool) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        if !permanent {
+            let path = self.image_files[self.current_index].clone();
+            if crate::path_location::is_remote_path(&path) {
+                self.active_modal = Some(ActiveModal::Confirm(
+                    crate::ui::dialogs::confirm::State::remote_recycle_delete(
+                        t!("delete.remote_title"),
+                        t!("delete.remote_msg"),
+                    ),
+                ));
+                return;
+            }
+        }
+
+        self.delete_current_image(permanent);
     }
 
     pub(crate) fn delete_current_image(&mut self, permanent: bool) {

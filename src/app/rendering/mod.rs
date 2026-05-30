@@ -8,7 +8,7 @@ pub(crate) mod transitions;
 
 use crate::app::ImageViewerApp;
 use crate::ui::utils::draw_empty_hint;
-use eframe::egui::{self, Align2, Color32, FontId, RichText, Sense, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
 use rust_i18n::t;
 
 impl ImageViewerApp {
@@ -55,11 +55,14 @@ impl ImageViewerApp {
                     }
 
                     if let Some(pos) = self.context_menu_pos {
-                        let area_resp = egui::Area::new(egui::Id::new("__custom_canvas_ctx_menu"))
+                        let menu_id = egui::Id::new(format!(
+                            "__custom_canvas_ctx_menu_{}",
+                            self.settings.language
+                        ));
+                        let area_resp = egui::Area::new(menu_id)
                             .kind(egui::UiKind::Menu)
                             .order(egui::Order::Foreground)
                             .fixed_pos(pos)
-                            .default_width(ctx.global_style().spacing.menu_width)
                             .sense(Sense::hover())
                             .show(&ctx, |ui| {
                                 egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -128,6 +131,22 @@ impl ImageViewerApp {
                 } else if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
                     // Standard / animated path → standard.rs
                     self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
+                } else if self.transition_start.is_none()
+                    && self.pending_transition_target == Some(self.current_index)
+                    && let Some(prev) = self.prev_texture.clone()
+                {
+                    // Navigation target is not ready yet: keep drawing the previous frame
+                    // instead of exposing background/partial transition artifacts.
+                    // Draw it directly (without running current-index transition logic),
+                    // otherwise the frame can jitter due to mixed old/new geometry state.
+                    let prev_dest = self.compute_display_rect(prev.size_vec2(), screen_rect);
+                    ui.painter().image(
+                        prev.id(),
+                        prev_dest,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    ui.ctx().request_repaint();
                 }
 
                 // ── Global HUD / OSD overlay ──────────────────────────────────

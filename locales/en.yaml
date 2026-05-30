@@ -17,6 +17,24 @@ section.font: "Font & Appearance"
 section.system_windows: "System Integration (Windows)"
 section.language: "Language"
 section.theme: "Theme"
+section.updates: "Updates"
+
+# Settings tabs
+settings_tab.library: "Library"
+settings_tab.viewing: "Viewing"
+settings_tab.music: "Music"
+settings_tab.appearance: "Appearance"
+settings_tab.system: "System"
+settings_tab.about: "About"
+
+# About
+about.version: "Version %{version}"
+about.copyright: "Copyright © 2024-2026 Simple Image Viewer Contributors"
+
+# Library
+library.image_count: "Images: %{count}"
+library.scan_idle: "Scan complete"
+library.scan_no_directory: "Choose a folder to start browsing."
 
 # Buttons
 btn.pick: "📁 Pick"
@@ -24,12 +42,18 @@ btn.refresh: "🔄 Refresh"
 btn.close: "Close"
 btn.cancel: "Cancel"
 btn.ok: "OK"
+btn.delete_anyway: "Delete anyway"
 btn.go: "Go"
 btn.pick_dir: "📂 Dir"
 btn.pick_file: "🎵 File"
 btn.set_wallpaper: " Set Wallpaper "
 btn.select_all: "✔ Select All"
 btn.deselect_all: "✘ Deselect All"
+btn.check_now: "Check now"
+btn.update_now: "Update now"
+btn.later: "Later"
+btn.ignore_version: "Ignore this version"
+btn.open_release_page: "Open release page"
 
 # Labels / Checkboxes
 label.recursive_scan: "Recursive scan"
@@ -138,6 +162,8 @@ status.not_found: "No supported images found in this directory."
 status.open_dir_hint: "Open a directory to start viewing images"
 status.no_images_left: "No images left in directory."
 status.delete_failed: "Failed to delete file: %{err}"
+delete.remote_title: "Delete Remote File?"
+delete.remote_msg: "This file is on a network location. Moving it to the Recycle Bin may not work.\n\nConsider using Shift + Delete to permanently delete instead.\n\nDo you still want to try moving it to the Recycle Bin?"
 status.load_failed: "Failed to load image:\n[%{path}]\n%{err}"
 status.loading: "Loading…"
 status.invalid_font: "The chosen font file is unreliable and has been reverted to system default."
@@ -181,6 +207,9 @@ wallpaper.stretch: "Stretch"
 wallpaper.tile: "Tile"
 wallpaper.center: "Center"
 wallpaper.span: "Span (Multi-monitor)"
+wallpaper.target: "Apply to"
+wallpaper.target_all: "All monitors"
+wallpaper.target_monitor: "Monitor %{index} — %{width} × %{height} — %{desc}"
 
 # Goto dialog
 goto.title: "Go to image…"
@@ -256,3 +285,4 @@ error.detection_failed: "Could not detect image format from file content"
 dialog.startup_error_title: "Startup Error"
 dialog.crash_title: "Application Error"
 dialog.crash_msg: "An unexpected error occurred. Diagnostic information has been automatically copied to the clipboard. Please check the log file for details."
+

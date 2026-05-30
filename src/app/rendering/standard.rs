@@ -55,12 +55,26 @@ pub(crate) fn should_draw_static_hdr_immediately(
     transition: TransitionStyle,
     is_animating: bool,
 ) -> bool {
-    plan.backend == PlaneBackendKind::Hdr
-        && !(is_animating
-            && matches!(
-                transition,
-                TransitionStyle::PageFlip | TransitionStyle::Curtain
-            ))
+    if plan.backend != PlaneBackendKind::Hdr {
+        return false;
+    }
+
+    if !is_animating {
+        return true;
+    }
+
+    // During animation, keep standard transitions (Fade/Zoom/Slide/Push/PageFlip/Curtain)
+    // on the transition path. Ripple is the only style that still requires immediate fallback
+    // because its circular mesh path is outside the rectangular HDR callback pipeline.
+    matches!(transition, TransitionStyle::Ripple)
+}
+
+fn should_clear_transition_state_after_static_hdr_draw(
+    static_hdr_draw: bool,
+    pending_transition_target: Option<usize>,
+    current_index: usize,
+) -> bool {
+    static_hdr_draw && pending_transition_target != Some(current_index)
 }
 
 impl ImageViewerApp {
@@ -132,10 +146,20 @@ impl ImageViewerApp {
         let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
         let render_plan =
             self.build_render_plan(RenderShape::Static, hdr_image.is_some(), has_sdr_fallback);
-        if should_draw_static_hdr_immediately(&render_plan, self.active_transition, tp.is_animating)
-        {
-            self.transition_start = None;
-            self.prev_texture = None;
+        let static_hdr_draw = should_draw_static_hdr_immediately(
+            &render_plan,
+            self.active_transition,
+            tp.is_animating,
+        );
+        if static_hdr_draw {
+            if should_clear_transition_state_after_static_hdr_draw(
+                static_hdr_draw,
+                self.pending_transition_target,
+                self.current_index,
+            ) {
+                self.transition_start = None;
+                self.prev_texture = None;
+            }
             tp = crate::app::rendering::transitions::TransitionParams::default();
         }
         if matches!(
@@ -653,7 +677,7 @@ mod tests {
             TransitionStyle::None,
             false
         ));
-        assert!(!should_draw_static_hdr_immediately(
+        assert!(should_draw_static_hdr_immediately(
             &static_plan(
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
@@ -680,6 +704,33 @@ mod tests {
             TransitionStyle::Curtain,
             true
         ));
+        assert!(!should_draw_static_hdr_immediately(
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
+            TransitionStyle::Fade,
+            true
+        ));
+        assert!(!should_draw_static_hdr_immediately(
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
+            TransitionStyle::Slide,
+            true
+        ));
+        assert!(!should_draw_static_hdr_immediately(
+            &static_plan(
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                HdrRenderOutputMode::NativeHdr
+            ),
+            TransitionStyle::Push,
+            true
+        ));
         assert!(should_draw_static_hdr_immediately(
             &static_plan(
                 true,
@@ -688,6 +739,26 @@ mod tests {
             ),
             TransitionStyle::Ripple,
             true
+        ));
+    }
+
+    #[test]
+    fn pending_transition_keeps_previous_frame_state_on_static_hdr_draw() {
+        assert!(!should_clear_transition_state_after_static_hdr_draw(
+            true,
+            Some(7),
+            7
+        ));
+        assert!(should_clear_transition_state_after_static_hdr_draw(
+            true,
+            Some(8),
+            7
+        ));
+        assert!(should_clear_transition_state_after_static_hdr_draw(
+            true, None, 7
+        ));
+        assert!(!should_clear_transition_state_after_static_hdr_draw(
+            false, None, 7
         ));
     }
 }

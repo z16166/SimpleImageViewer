@@ -668,8 +668,6 @@ jobs:
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
           thunk --os win7 --arch x64 -- --profile ci --features legacy_win7
 
-
-
       - name: Package Artifacts
         shell: pwsh
         run: |
@@ -746,6 +744,19 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          cd release-artifacts
+          rm -f SHA256SUMS.txt
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) \
+            ! -name '*-pdb.zip' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed 's#  ./#  #' > SHA256SUMS.txt
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS.txt
 
       - name: Create or Update Release
         env:

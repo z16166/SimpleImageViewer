@@ -96,6 +96,17 @@ pub const AUDIO_CHUNK_SIZE: usize = 4096;
 /// 16 chunks of 4096 samples equals approx 1.5 seconds of audio buffer.
 pub const AUDIO_BUFFER_QUEUE_DEPTH: usize = 16;
 
+/// Supported music file extensions used by file scan and picker filters.
+pub const MUSIC_SUPPORTED_EXTENSIONS: &[&str] =
+    &["mp3", "flac", "ogg", "wav", "aac", "m4a", "ape", "m3u"];
+
+/// Returns true if `ext` is one of [`MUSIC_SUPPORTED_EXTENSIONS`].
+pub fn is_supported_music_extension(ext: &str) -> bool {
+    MUSIC_SUPPORTED_EXTENSIONS
+        .iter()
+        .any(|supported| ext.eq_ignore_ascii_case(supported))
+}
+
 /// Filename for the emergency diagnostic crash report.
 pub const CRASH_REPORT_FILENAME: &str = "crash_report.txt";
 
@@ -119,7 +130,7 @@ pub const SETTINGS_WINDOW_DEFAULT_POS: [f32; 2] = [12.0, 12.0];
 /// Minimum width for the settings window.
 pub const SETTINGS_WINDOW_MIN_WIDTH: f32 = 550.0;
 /// Default width for the settings window.
-pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 640.0;
+pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 580.0;
 /// Maximum width for the settings window.
 pub const SETTINGS_WINDOW_MAX_WIDTH: f32 = 800.0;
 

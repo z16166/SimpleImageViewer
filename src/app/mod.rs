@@ -52,6 +52,48 @@ pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsTab {
+    Library,
+    Viewing,
+    Music,
+    Appearance,
+    System,
+    About,
+}
+
+impl SettingsTab {
+    #[cfg(target_os = "windows")]
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Library,
+        Self::Viewing,
+        Self::Music,
+        Self::Appearance,
+        Self::System,
+        Self::About,
+    ];
+
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Library,
+        Self::Viewing,
+        Self::Music,
+        Self::Appearance,
+        Self::About,
+    ];
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::Library => "settings_tab.library",
+            Self::Viewing => "settings_tab.viewing",
+            Self::Music => "settings_tab.music",
+            Self::Appearance => "settings_tab.appearance",
+            Self::System => "settings_tab.system",
+            Self::About => "settings_tab.about",
+        }
+    }
+}
+
 pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(
     settings: crate::hdr::types::HdrToneMapSettings,
     output_mode: crate::hdr::types::HdrOutputMode,
@@ -251,7 +293,11 @@ pub enum FileOpResult {
     Delete(PathBuf, usize, Result<(), String>),
     Exif(PathBuf, Option<Vec<(String, String)>>),
     Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
-    Wallpaper(Option<String>),
+    Wallpaper {
+        current: Option<String>,
+        monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
+        supports_per_monitor: bool,
+    },
 }
 
 /// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).
@@ -408,6 +454,8 @@ pub struct ImageViewerApp {
     // UI state
     pub(crate) show_settings: bool,
     pub(crate) last_show_settings: bool,
+    pub(crate) settings_tab: SettingsTab,
+    pub(crate) about_icon_texture: Option<egui::TextureHandle>,
     /// True once the very first directory scan has produced at least one image.
     pub(crate) images_ever_loaded: bool,
     pub(crate) status_message: String,
@@ -455,6 +503,7 @@ pub struct ImageViewerApp {
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
     pub(crate) transition_start: Option<Instant>,
+    pub(crate) pending_transition_target: Option<usize>,
     pub(crate) is_next: bool,
     pub(crate) active_transition: TransitionStyle,
 

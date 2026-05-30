@@ -379,7 +379,7 @@ pub fn path_display_box(
         .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.add(egui::Label::new(text.color(text_color).small()).truncate());
+            ui.add(egui::Label::new(text.color(text_color)).truncate());
         });
     frame_resp.response
 }

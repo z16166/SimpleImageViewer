@@ -1,5 +1,4 @@
-use crate::app::ImageViewerApp;
-use crate::app::{CACHE_SIZE, HardwareTier, compute_preload_budgets};
+use crate::app::{CACHE_SIZE, HardwareTier, ImageViewerApp, compute_preload_budgets};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -38,7 +37,6 @@ impl ImageViewerApp {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
-
         let mut theme_cache = SystemThemeCache::default();
         let cached_palette = settings.theme.resolve(&mut theme_cache);
 
@@ -233,8 +231,15 @@ impl ImageViewerApp {
                         }
                         crate::app::LightweightFileOpJob::Wallpaper => {
                             let current_wallpaper = wallpaper::get().ok();
-                            let _ = file_op_tx_for_menu_worker
-                                .send(crate::app::FileOpResult::Wallpaper(current_wallpaper));
+                            let (monitors, supports_per_monitor) =
+                                crate::ui::dialogs::wallpaper::probe_windows_wallpaper_targets();
+                            let _ = file_op_tx_for_menu_worker.send(
+                                crate::app::FileOpResult::Wallpaper {
+                                    current: current_wallpaper,
+                                    monitors,
+                                    supports_per_monitor,
+                                },
+                            );
                         }
                     }
                 }
@@ -317,6 +322,8 @@ impl ImageViewerApp {
             random_slideshow_order_ready: false,
             audio: AudioPlayer::new(),
             show_settings: settings.last_image_dir.is_none(),
+            settings_tab: crate::app::SettingsTab::Library,
+            about_icon_texture: None,
             images_ever_loaded: false,
             status_message: rust_i18n::t!("status.open_dir_hint").to_string(),
             error_message: None,
@@ -338,6 +345,7 @@ impl ImageViewerApp {
             current_image_res: None,
             prev_texture: None,
             transition_start: None,
+            pending_transition_target: None,
             is_next: true,
             active_transition: settings.transition_style,
             osd: crate::ui::osd::OsdRenderer::new(),

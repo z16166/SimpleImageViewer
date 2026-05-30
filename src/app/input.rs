@@ -21,7 +21,7 @@ pub(crate) fn auto_switch_step(
     random_order: bool,
     random_order_ready: bool,
 ) -> AutoSwitchStep {
-    if image_count == 0 {
+    if image_count <= 1 {
         return AutoSwitchStep::Stop;
     }
     if random_order && !random_order_ready {
@@ -87,6 +87,10 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
 
         ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                action = Some(AppAction::ToggleSettings);
+                return;
+            }
             action = self.map_key_to_action(i);
         });
 
@@ -299,7 +303,7 @@ impl ImageViewerApp {
                 const STEP_EV: f32 = 0.5;
                 self.adjust_hdr_exposure_by_ev(-STEP_EV, ctx);
             }
-            AppAction::Delete => self.delete_current_image(false),
+            AppAction::Delete => self.request_delete_current_image(false),
             AppAction::PermanentDelete => self.delete_current_image(true),
             AppAction::Print => self.print_image(ctx, crate::print::PrintMode::FullImage),
             AppAction::ToggleGoto => {
@@ -488,10 +492,10 @@ impl ImageViewerApp {
             ModalAction::GotoIndex(idx) => {
                 self.navigate_to(idx);
             }
-            ModalAction::SetWallpaper(mode_str) => {
+            ModalAction::SetWallpaper { mode, target } => {
                 if !self.image_files.is_empty() {
                     let path = self.image_files[self.current_index].clone();
-                    crate::ui::dialogs::wallpaper::apply(path, &mode_str);
+                    crate::ui::dialogs::wallpaper::apply(path, &mode, &target);
                 }
             }
             ModalAction::ConfirmTagged(tag) => match tag {
@@ -509,6 +513,9 @@ impl ImageViewerApp {
                 }
                 ConfirmTag::InfoOnly => {
                     // Do nothing, the modal is already dismissed.
+                }
+                ConfirmTag::RemoteRecycleDelete => {
+                    self.delete_current_image(false);
                 }
             },
             #[cfg(target_os = "windows")]
@@ -858,6 +865,14 @@ mod tests {
         assert_eq!(
             auto_switch_step(5, 1, true, false, false),
             AutoSwitchStep::NavigateTo(2)
+        );
+    }
+
+    #[test]
+    fn auto_switch_stops_when_there_is_only_one_image() {
+        assert_eq!(
+            auto_switch_step(1, 0, true, false, false),
+            AutoSwitchStep::Stop
         );
     }
 

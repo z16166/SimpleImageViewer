@@ -17,6 +17,24 @@ section.font: "字體與外觀"
 section.system_windows: "系統整合（Windows）"
 section.language: "語言"
 section.theme: "介面主題"
+section.updates: "軟件更新"
+
+# Settings tabs
+settings_tab.library: "圖片庫"
+settings_tab.viewing: "檢視"
+settings_tab.music: "音樂"
+settings_tab.appearance: "外觀"
+settings_tab.system: "系統"
+settings_tab.about: "關於"
+
+# About
+about.version: "版本 %{version}"
+about.copyright: "版權所有 © 2024-2026 Simple Image Viewer Contributors"
+
+# Library
+library.image_count: "圖片數量：%{count}"
+library.scan_idle: "掃描完成"
+library.scan_no_directory: "請選擇資料夾開始瀏覽。"
 
 # Buttons
 btn.pick: "📁 選擇"
@@ -24,12 +42,18 @@ btn.refresh: "🔄 重新掃描"
 btn.close: "關閉"
 btn.cancel: "取消"
 btn.ok: "確定"
+btn.delete_anyway: "仍要刪除"
 btn.go: "跳轉"
 btn.pick_dir: "📂 資料夾"
 btn.pick_file: "🎵 檔案"
 btn.set_wallpaper: " 設為桌布 "
 btn.select_all: "✔ 全選"
 btn.deselect_all: "✘ 取消全選"
+btn.check_now: "立即檢查"
+btn.update_now: "立即更新"
+btn.later: "稍後"
+btn.ignore_version: "忽略此版本"
+btn.open_release_page: "開啟發佈頁面"
 
 # Labels / Checkboxes
 label.recursive_scan: "遞迴掃描子目錄"
@@ -137,6 +161,8 @@ status.not_found: "此目錄中未找到支援的圖片。"
 status.open_dir_hint: "開啟資料夾開始瀏覽圖片"
 status.no_images_left: "目錄中已沒有圖片。"
 status.delete_failed: "刪除檔案失敗：%{err}"
+delete.remote_title: "刪除遠端檔案？"
+delete.remote_msg: "此檔案位於網路位置，可能無法放入資源回收筒。\n\n建議改用 Shift + Delete 永久刪除。\n\n是否仍嘗試放入資源回收筒刪除？"
 status.load_failed: "載入圖片失敗：\n[%{path}]\n%{err}"
 status.loading: "載入中…"
 status.invalid_font: "所選字型檔案不可靠，已恢復至系統預設。"
@@ -180,6 +206,9 @@ wallpaper.stretch: "拉伸"
 wallpaper.tile: "並排"
 wallpaper.center: "置中"
 wallpaper.span: "跨螢幕（多顯示器）"
+wallpaper.target: "套用到"
+wallpaper.target_all: "所有顯示器"
+wallpaper.target_monitor: "顯示器 %{index} — %{width} × %{height} — %{desc}"
 
 # Goto dialog
 goto.title: "跳轉至指定圖片…"
@@ -255,3 +284,6 @@ error.detection_failed: "無法通過文件內容探測到圖像格式"
 dialog.startup_error_title: "啟動錯誤"
 dialog.crash_title: "程式崩潰錯誤"
 dialog.crash_msg: "程式發生了預料之外的嚴重錯誤並已停止運行。診斷資訊已自動複製到剪貼簿，請查看記錄檔了解詳情。"
+
+
+

@@ -17,6 +17,24 @@ section.font: "字体与外观"
 section.system_windows: "系统集成（Windows）"
 section.language: "语言"
 section.theme: "界面主题"
+section.updates: "软件更新"
+
+# Settings tabs
+settings_tab.library: "图库"
+settings_tab.viewing: "浏览"
+settings_tab.music: "音乐"
+settings_tab.appearance: "外观"
+settings_tab.system: "系统"
+settings_tab.about: "关于"
+
+# About
+about.version: "版本 %{version}"
+about.copyright: "版权所有 © 2024-2026 Simple Image Viewer Contributors"
+
+# Library
+library.image_count: "图片数量：%{count}"
+library.scan_idle: "扫描完成"
+library.scan_no_directory: "请选择文件夹开始浏览。"
 
 # Buttons
 btn.pick: "📁 选择"
@@ -24,12 +42,18 @@ btn.refresh: "🔄 刷新"
 btn.close: "关闭"
 btn.cancel: "取消"
 btn.ok: "确定"
+btn.delete_anyway: "仍要删除"
 btn.go: "跳转"
 btn.pick_dir: "📂 文件夹"
 btn.pick_file: "🎵 文件"
 btn.set_wallpaper: " 设为壁纸 "
 btn.select_all: "✔ 全选"
 btn.deselect_all: "✘ 取消全选"
+btn.check_now: "立即检查"
+btn.update_now: "立即更新"
+btn.later: "稍后"
+btn.ignore_version: "忽略此版本"
+btn.open_release_page: "打开发布页面"
 
 # Labels / Checkboxes
 label.recursive_scan: "递归扫描子目录"
@@ -137,6 +161,8 @@ status.not_found: "该目录中未找到支持的图片。"
 status.open_dir_hint: "打开一个目录开始浏览图片"
 status.no_images_left: "目录中已没有图片。"
 status.delete_failed: "删除文件失败：%{err}"
+delete.remote_title: "删除远程文件？"
+delete.remote_msg: "该文件位于网络位置，可能无法放入回收站。\n\n建议使用 Shift + Delete 永久删除。\n\n是否仍尝试放入回收站删除？"
 status.load_failed: "加载图片失败：\n[%{path}]\n%{err}"
 status.loading: "加载中…"
 status.invalid_font: "所选字体文件不可靠，已恢复至系统默认。"
@@ -180,6 +206,9 @@ wallpaper.stretch: "拉伸"
 wallpaper.tile: "平铺"
 wallpaper.center: "居中"
 wallpaper.span: "跨屏（多显示器）"
+wallpaper.target: "应用到"
+wallpaper.target_all: "所有显示器"
+wallpaper.target_monitor: "显示器 %{index} — %{width} × %{height} — %{desc}"
 
 # Goto dialog
 goto.title: "跳转到指定图片…"
@@ -255,3 +284,6 @@ error.detection_failed: "无法通过文件内容探测到图像格式"
 dialog.startup_error_title: "启动错误"
 dialog.crash_title: "程序崩溃错误"
 dialog.crash_msg: "程序发生了预料之外的严重错误并已停止运行。诊断信息已自动复制到剪贴簿，请查看日志文件了解详情。"
+
+
+
