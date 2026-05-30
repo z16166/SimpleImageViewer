@@ -4,11 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-### Added
-- **Update notifications**: The app can check GitHub Releases in the background and tell you when a newer version is available, with release notes shown before you decide what to do.
-- **Windows portable auto-update**: Windows portable builds can download, verify, and install updates with a small helper program, while macOS and Linux users are guided to the release page for manual download.
-- **Update proxy settings**: Update checks and downloads can use HTTP or SOCKS5 proxy settings when your network requires them.
+## [2.2.2] - 2026-05-30
 
+### Added
+- **Windows per-monitor wallpaper target**: You can choose which monitor receives wallpaper updates instead of applying to all screens at once.
+- **m3u dynamic playlist expansion**: `.m3u` entries are expanded at playback time, and `Next/Prev file` navigation now follows expanded tracks consistently.
+
+### Changed
+- **Settings and layout polish**: Settings pages were reorganized and several mixed-height control rows were aligned for cleaner, more consistent spacing.
+
+### Fixed
+- **Playback dedup across playlists**: Tracks parsed from `.m3u` are now deduplicated against the base playlist by absolute path, and fully deduplicated `.m3u` files are skipped without breaking navigation.
+- **Transition/rendering resilience**: Transition state handling is more stable across HDR and decode failure paths.
+- **Startup/resume behavior**: First-batch preload is deferred when resuming the last image to reduce startup contention.
+- **Localization refresh on language switch**: Window title and related context-menu labels now update more reliably after changing language.
+- **Remote file deletion safety**: Deleting remote files now shows an explicit confirmation before recycle-bin operations.
 
 ## [2.2.1] - 2026-05-28
 

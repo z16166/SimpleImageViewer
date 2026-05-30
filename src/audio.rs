@@ -20,7 +20,7 @@ use crate::constants::{
 };
 use crate::scanner::is_offline;
 use crossbeam_channel::Sender;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -493,6 +493,63 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries.iter().any(|p| p == &rel_norm));
         assert!(entries.iter().any(|p| p == &abs_norm));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn take_next_playable_path_filters_entries_already_in_base_playlist() {
+        let dir = make_temp_dir("m3u-dedup-base");
+        let in_base = dir.join("in-base.mp3");
+        let only_in_m3u = dir.join("only-in-m3u.mp3");
+        fs::write(&in_base, b"fake").expect("write in_base");
+        fs::write(&only_in_m3u, b"fake").expect("write only_in_m3u");
+        let m3u = dir.join("playlist.m3u");
+        let content = format!(
+            "{}\n{}\n",
+            in_base.to_string_lossy(),
+            only_in_m3u.to_string_lossy()
+        );
+        fs::write(&m3u, content).expect("write playlist");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![in_base.clone(), m3u];
+        st.current_track_idx = 1;
+
+        let next = st.take_next_playable_path();
+        assert_eq!(
+            next,
+            Some((only_in_m3u.canonicalize().expect("canonical only_in_m3u"), true))
+        );
+        assert!(st.injected_playlist.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn m3u_dedup_to_empty_still_advances_on_base_playlist() {
+        let dir = make_temp_dir("m3u-dedup-empty");
+        let base1 = dir.join("base1.mp3");
+        let base2 = dir.join("base2.mp3");
+        fs::write(&base1, b"fake").expect("write base1");
+        fs::write(&base2, b"fake").expect("write base2");
+        let m3u = dir.join("playlist.m3u");
+        let content = format!(
+            "{}\n{}\n",
+            base1.to_string_lossy(),
+            base2.to_string_lossy()
+        );
+        fs::write(&m3u, content).expect("write playlist");
+
+        let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
+        st.base_playlist = vec![base1.clone(), m3u, base2.clone()];
+        st.current_track_idx = 1;
+
+        // m3u entries are fully deduped against base_playlist, so this should skip m3u
+        // and continue to the next base track.
+        assert_eq!(st.take_next_playable_path(), Some((base2.clone(), false)));
+        // Then wrap around and continue playing base tracks normally.
+        assert_eq!(st.take_next_playable_path(), Some((base1, false)));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2097,7 +2154,16 @@ impl AudioLoopState {
             let path = self.base_playlist[self.current_track_idx].clone();
             self.current_track_idx += 1;
             if is_m3u_path(&path) {
-                let expanded = parse_m3u_entries(&path);
+                let base_path_set: HashSet<PathBuf> = self
+                    .base_playlist
+                    .iter()
+                    .filter(|p| !is_m3u_path(p))
+                    .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+                    .collect();
+                let expanded: Vec<PathBuf> = parse_m3u_entries(&path)
+                    .into_iter()
+                    .filter(|p| !base_path_set.contains(p))
+                    .collect();
                 if expanded.is_empty() {
                     log::warn!("[AUDIO] m3u has no playable entries: {:?}", path);
                     continue;
