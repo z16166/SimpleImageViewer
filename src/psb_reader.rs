@@ -739,12 +739,3 @@ pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), 
     let rgba = width as u64 * height as u64 * 4;
     Ok((width, height, channels, rgba))
 }
-
-/// Estimate the memory required to decode a PSD/PSB composite (in bytes).
-/// Returns (width, height, channels, estimated_bytes) or an error.
-#[allow(dead_code)]
-pub fn estimate_memory(path: &Path) -> Result<(u32, u32, u32, u64), String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
-    let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
-    estimate_memory_from_bytes(&mmap)
-}

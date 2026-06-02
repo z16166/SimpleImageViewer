@@ -77,10 +77,14 @@ pub(crate) fn load_static(
 pub(crate) fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
     path: &PathBuf,
+    mmap: Option<&[u8]>,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     if raw_frames.len() <= 1 {
+        if let Some(bytes) = mmap {
+            return load_static_from_mmap(path, bytes, hdr_target_capacity, hdr_tone_map);
+        }
         return load_static(path, hdr_target_capacity, hdr_tone_map);
     }
 
@@ -133,7 +137,13 @@ pub(crate) fn load_gif(
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
+    process_animation_frames(
+        raw_frames,
+        path,
+        Some(&mmap),
+        hdr_target_capacity,
+        hdr_tone_map,
+    )
 }
 
 pub(crate) fn load_png(
@@ -160,7 +170,13 @@ pub(crate) fn load_png(
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
+    process_animation_frames(
+        raw_frames,
+        path,
+        Some(&mmap),
+        hdr_target_capacity,
+        hdr_tone_map,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +200,13 @@ pub(crate) fn load_webp(
         .collect_frames()
         .map_err(|e| e.to_string())?;
 
-    process_animation_frames(raw_frames, path, hdr_target_capacity, hdr_tone_map)
+    process_animation_frames(
+        raw_frames,
+        path,
+        Some(&mmap),
+        hdr_target_capacity,
+        hdr_tone_map,
+    )
 }
 
 // ---------------------------------------------------------------------------

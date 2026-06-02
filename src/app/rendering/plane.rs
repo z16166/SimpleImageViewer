@@ -216,7 +216,7 @@ mod tests {
                 HdrRenderOutputMode::SdrToneMapped
             )
             .backend,
-            super::PlaneBackendKind::Sdr
+            super::PlaneBackendKind::Hdr
         );
         assert_eq!(
             RenderPlan::new(

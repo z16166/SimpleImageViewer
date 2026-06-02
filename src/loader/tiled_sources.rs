@@ -208,7 +208,7 @@ impl RawImageSource {
         raw_height: u32,
         refine_tx: Sender<RefinementRequest>,
         orientation_override: i32,
-    ) -> Self {
+    ) -> Result<Self, String> {
         // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
         // Previously this called resize_exact(raw_width, raw_height) which allocated
         // ~400MB per image (e.g. 11648×8736×4). With rapid switching and prefetching,
@@ -219,19 +219,25 @@ impl RawImageSource {
         // the image becomes the actively-viewed one (via request_refinement()). This
         // prevents prefetched images from each spawning ~400MB LibRaw develop tasks.
 
-        let rgba = preview.into_rgba8_image();
+        let rgba = preview.into_rgba8_image().map_err(|err| {
+            format!(
+                "RAW preview buffer is invalid for {}: {}",
+                path.display(),
+                err
+            )
+        })?;
         let developed_image = Arc::new(PLRwLock::new(Some(DynamicImage::ImageRgba8(rgba))));
 
         let refine_tx = refine_tx.clone();
 
-        Self {
+        Ok(Self {
             path,
             width: raw_width,
             height: raw_height,
             developed_image,
             refine_tx,
             orientation_override,
-        }
+        })
     }
 }
 

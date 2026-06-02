@@ -66,20 +66,16 @@ impl DecodedImage {
     }
 
     /// Build `RgbaImage`; avoids copying the buffer when this is the only [`Arc`] handle.
-    pub fn into_rgba8_image(self) -> RgbaImage {
+    pub fn into_rgba8_image(self) -> Result<RgbaImage, String> {
         let w = self.width;
         let h = self.height;
         let vec = Arc::try_unwrap(self.pixels).unwrap_or_else(|a| (*a).clone());
         match RgbaImage::from_raw(w, h, vec) {
-            Some(img) => img,
-            None => {
-                log::error!(
-                    "[Loader] DecodedImage dimensions {}x{} do not match RGBA buffer size. Returning empty image.",
-                    w,
-                    h
-                );
-                RgbaImage::new(w, h)
-            }
+            Some(img) => Ok(img),
+            None => Err(format!(
+                "DecodedImage dimensions {}x{} do not match RGBA buffer size",
+                w, h
+            )),
         }
     }
 

@@ -71,11 +71,9 @@ fn load_bmff_ftyp_container(
     brand: &[u8],
 ) -> Result<ImageData, String> {
     if brand.len() == 4 {
-        if let Ok(brand_arr) = brand.try_into() {
-            let brand_arr: [u8; 4] = brand_arr;
-            if is_motion_video_bmff_brand(&brand_arr) {
-                return Err(motion_video_bmff_error(&brand_arr));
-            }
+        let brand_arr = [brand[0], brand[1], brand[2], brand[3]];
+        if is_motion_video_bmff_brand(&brand_arr) {
+            return Err(motion_video_bmff_error(&brand_arr));
         }
     }
 

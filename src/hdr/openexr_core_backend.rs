@@ -525,6 +525,12 @@ impl OpenExrCoreReadContext {
                         }
                     }
                     Err(e) => {
+                        // `exr_start_read` failed before handing back a valid context, so OpenEXRCore
+                        // will not call `destroy_fn` for this initializer. We must release the cookie
+                        // explicitly before falling back to file I/O to avoid leaking the mmap Arc.
+                        unsafe {
+                            openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
+                        }
                         log::debug!(
                             "EXR mmap read via OpenEXRCore failed ({}); falling back to file I/O for {}",
                             e,
@@ -1301,7 +1307,11 @@ impl OpenExrCoreReadContext {
         } else {
             // SLOW PATH: Handles subsampling (YCbCr etc)
             let (y_idx_val, ry_idx_val, by_idx_val) = if is_yryby {
-                (y_idx.unwrap_or(0), ry_idx.unwrap_or(0), by_idx.unwrap_or(0))
+                (
+                    y_idx.expect("is_yryby guarantees Y index"),
+                    ry_idx.expect("is_yryby guarantees RY index"),
+                    by_idx.expect("is_yryby guarantees BY index"),
+                )
             } else {
                 (0, 0, 0)
             };

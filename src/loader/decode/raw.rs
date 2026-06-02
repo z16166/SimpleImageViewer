@@ -242,7 +242,7 @@ pub(crate) fn load_raw(
         height,
         refine_tx,
         final_lr_flip,
-    ));
+    )?);
 
     log::info!(
         "[Loader] RAW {}x{} ({:.1} MP) >= 64MP - Falling back to Async Tiled preview refinement.",

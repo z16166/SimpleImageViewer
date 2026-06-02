@@ -1358,24 +1358,10 @@ fn linear_to_srgb_u8(value: f32) -> u8 {
 
 #[cfg(feature = "jpegxl")]
 fn icc_find_tag_element_offset(icc: &[u8], tag: &[u8; 4]) -> Option<usize> {
-    const HEADER: usize = 128;
-    if icc.len() < HEADER + 4 {
-        return None;
-    }
-    let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?) as usize;
-    if tag_count > MAX_ICC_TAG_COUNT {
-        return None;
-    }
-    let mut entry = 132usize;
-    for _ in 0..tag_count {
-        if entry + 12 > icc.len() {
-            break;
+    for (sig, offset, _size) in icc_tag_entries(icc)? {
+        if sig == *tag {
+            return Some(offset as usize);
         }
-        if &icc[entry..entry + 4] == tag {
-            let offset = u32::from_be_bytes(icc[entry + 4..entry + 8].try_into().ok()?) as usize;
-            return Some(offset);
-        }
-        entry += 12;
     }
     None
 }
@@ -1550,22 +1536,9 @@ fn hdr_metadata_from_icc_rgb_xyz_primaries_for_jxl_float(icc: &[u8]) -> Option<H
 
 #[cfg(feature = "jpegxl")]
 fn icc_scan_cicp_tag(icc: &[u8]) -> Option<(u16, u16, u16, bool)> {
-    const HEADER: usize = 128;
-    if icc.len() < HEADER + 4 {
-        return None;
-    }
-    let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?) as usize;
-    if tag_count > MAX_ICC_TAG_COUNT {
-        return None;
-    }
-    let mut entry = 132usize;
-    for _ in 0..tag_count {
-        if entry + 12 > icc.len() {
-            break;
-        }
-        if icc[entry..entry + 4] == *b"cicp" {
-            let offset = u32::from_be_bytes(icc[entry + 4..entry + 8].try_into().ok()?) as usize;
-            let _size = u32::from_be_bytes(icc[entry + 8..entry + 12].try_into().ok()?) as usize;
+    for (sig, offset, _size) in icc_tag_entries(icc)? {
+        if sig == *b"cicp" {
+            let offset = offset as usize;
             // Tag data: signature (4) + reserved (4) + payload
             if offset + 12 > icc.len() {
                 return None;
@@ -1576,9 +1549,33 @@ fn icc_scan_cicp_tag(icc: &[u8]) -> Option<(u16, u16, u16, bool)> {
             let fr = icc[offset + 11] != 0;
             return Some((p, t, m, fr));
         }
-        entry += 12;
     }
     None
+}
+
+#[cfg(feature = "jpegxl")]
+fn icc_tag_entries(icc: &[u8]) -> Option<Vec<([u8; 4], u32, u32)>> {
+    const HEADER: usize = 128;
+    if icc.len() < HEADER + 4 {
+        return None;
+    }
+    let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?) as usize;
+    if tag_count > MAX_ICC_TAG_COUNT {
+        return None;
+    }
+    let mut out = Vec::with_capacity(tag_count.min(128));
+    let mut entry = 132usize;
+    for _ in 0..tag_count {
+        if entry + 12 > icc.len() {
+            break;
+        }
+        let sig = icc[entry..entry + 4].try_into().ok()?;
+        let offset = u32::from_be_bytes(icc[entry + 4..entry + 8].try_into().ok()?);
+        let size = u32::from_be_bytes(icc[entry + 8..entry + 12].try_into().ok()?);
+        out.push((sig, offset, size));
+        entry += 12;
+    }
+    Some(out)
 }
 
 #[cfg(feature = "jpegxl")]
