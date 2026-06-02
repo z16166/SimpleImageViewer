@@ -110,8 +110,6 @@ pub struct Settings {
     pub auto_switch: bool,
     #[serde(default = "default_interval")]
     pub auto_switch_interval: f32,
-    #[serde(default = "default_true")]
-    pub loop_playback: bool,
     #[serde(default)]
     pub random_slideshow_order: bool,
 
@@ -238,7 +236,7 @@ fn default_font_family() -> String {
     "System Default".to_string()
 }
 fn default_font_size() -> f32 {
-    16.0
+    14.0
 }
 fn default_transition_style() -> TransitionStyle {
     TransitionStyle::None
@@ -270,7 +268,6 @@ impl Default for Settings {
             last_image_dir: None,
             auto_switch: false,
             auto_switch_interval: default_interval(),
-            loop_playback: true,
             random_slideshow_order: false,
             scale_mode: ScaleMode::FitToWindow,
             transition_style: default_transition_style(),

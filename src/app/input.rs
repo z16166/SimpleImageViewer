@@ -1,5 +1,6 @@
 use crate::app::ImageViewerApp;
 use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
+use crate::hotkeys::model::{HotkeyActionId, HotkeyLogicalKey, KeyChord};
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
 use crate::ui::{hud as ui_hud, settings as ui_settings};
@@ -14,10 +15,14 @@ pub(crate) enum AutoSwitchStep {
     ShuffleToFirst,
 }
 
+struct WheelHotkeyMatch {
+    action: AppAction,
+    normalized_delta_y: f32,
+}
+
 pub(crate) fn auto_switch_step(
     image_count: usize,
     current_index: usize,
-    loop_playback: bool,
     random_order: bool,
     random_order_ready: bool,
 ) -> AutoSwitchStep {
@@ -30,9 +35,7 @@ pub(crate) fn auto_switch_step(
 
     let last = image_count - 1;
     if current_index >= last {
-        if !loop_playback {
-            return AutoSwitchStep::Stop;
-        }
+        // Playback always loops; the loop_playback setting has been removed.
         if random_order {
             return AutoSwitchStep::ShuffleToFirst;
         }
@@ -69,8 +72,8 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
         ctx.input(|i| {
             action = self.map_key_to_action(i);
-            // Escape closes settings
-            if i.key_pressed(Key::Escape) {
+            // Escape closes settings unless the Hotkeys tab is actively capturing it.
+            if self.hotkeys_capture_target.is_none() && i.key_pressed(Key::Escape) {
                 self.show_settings = false;
             }
         });
@@ -87,10 +90,6 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
 
         ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                action = Some(AppAction::ToggleSettings);
-                return;
-            }
             action = self.map_key_to_action(i);
         });
 
@@ -113,107 +112,164 @@ impl ImageViewerApp {
             return;
         }
 
-        let (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos) =
-            Self::collect_wheel_input(ctx);
-
-        self.handle_mouse_input(
-            ctx,
-            scroll_delta,
-            zoom_delta,
-            is_ctrl_pressed,
-            is_alt_pressed,
-            mouse_pos,
-        );
+        let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
+        let Some(wheel_match) = self.map_wheel_to_action(ctx) else {
+            return;
+        };
+        self.dispatch_wheel_action(ctx, wheel_match, mouse_pos);
     }
 
-    fn collect_wheel_input(ctx: &Context) -> (Vec2, f32, bool, bool, Option<egui::Pos2>) {
-        let (line_scroll_speed, scroll_zoom_speed, zoom_modifier) = ctx.options(|o| {
-            let io = &o.input_options;
-            (io.line_scroll_speed, io.scroll_zoom_speed, io.zoom_modifier)
-        });
-
-        ctx.input(|i| {
-            let mut scroll_delta = i.smooth_scroll_delta;
-            let mut zoom_delta = i.zoom_delta();
-            let is_ctrl_pressed = i.modifiers.ctrl || i.modifiers.command;
-            let is_alt_pressed = i.modifiers.alt;
-            let mouse_pos = i.pointer.latest_pos();
-
-            // Fallback when smoothing has not accumulated yet this frame.
-            if scroll_delta == Vec2::ZERO || zoom_delta == 1.0 {
-                for event in &i.events {
-                    let Event::MouseWheel {
-                        unit,
-                        delta,
-                        modifiers,
-                        ..
-                    } = event
-                    else {
-                        continue;
-                    };
-
-                    let mut d = *delta;
-                    match unit {
-                        MouseWheelUnit::Line => d *= line_scroll_speed,
-                        MouseWheelUnit::Page => {
-                            let size = i.viewport_rect().size();
-                            d.x *= size.x;
-                            d.y *= size.y;
-                        }
-                        MouseWheelUnit::Point => {}
-                    }
-
-                    if modifiers.matches_any(zoom_modifier) {
-                        if zoom_delta == 1.0 {
-                            zoom_delta *= (scroll_zoom_speed * (d.x + d.y)).exp();
-                        }
-                    } else if scroll_delta == Vec2::ZERO {
-                        scroll_delta += d;
-                    }
-                }
-            }
-
-            (
-                scroll_delta,
-                zoom_delta,
-                is_ctrl_pressed,
-                is_alt_pressed,
-                mouse_pos,
-            )
-        })
-    }
-
-    /// Future-proofing: Map a key press to a logical application action.
-    /// This is where we will eventually plug in user-configurable hotkeys.
-    /// Map a key press to a logical application action using a prioritized static lookup table.
-    ///
-    /// [Design Choice: Flat Sorted Array]
-    /// For a small number of hotkeys (~30-50), a linear scan of a pre-sorted array is faster
-    /// than a HashMap due to CPU cache locality and zero hashing overhead. The array is sorted
-    /// by modifier complexity (more modifiers first) to ensure exact matches take priority
-    /// over simple ones (e.g., Ctrl+Left overrides Left).
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
-        let current_mods = get_modifiers_mask(i.modifiers);
-
-        for binding in HOTKEY_MAP {
-            if i.key_pressed(binding.key) && current_mods == binding.modifiers {
-                return Some(binding.action);
+        for ev in &i.events {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = ev
+            {
+                let chord = KeyChord::from_input_event(*key, *modifiers);
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    return Some(app_action_from_hotkey_action_id(action_id));
+                }
             }
         }
 
         // Some keyboard layouts report zoom keys as text input rather than plain key presses.
+        let current_mods = get_modifiers_mask(i.modifiers);
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
-                match text.as_str() {
-                    "+" => return Some(AppAction::ZoomIn),
-                    "-" => return Some(AppAction::ZoomOut),
-                    "*" => return Some(AppAction::ZoomReset),
-                    _ => {}
+                let logical = match text.as_str() {
+                    "+" => Some(HotkeyLogicalKey::Text("+")),
+                    "-" => Some(HotkeyLogicalKey::Text("-")),
+                    "*" => Some(HotkeyLogicalKey::Text("*")),
+                    _ => None,
+                };
+                if let Some(logical) = logical {
+                    let chord = KeyChord {
+                        modifiers: current_mods,
+                        key: logical,
+                    };
+                    if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                        return Some(app_action_from_hotkey_action_id(action_id));
+                    }
                 }
             }
         }
 
         None
+    }
+
+    pub(crate) fn map_pointer_button_to_action(&self, ctx: &Context) -> Option<AppAction> {
+        ctx.input(|i| {
+            for event in &i.events {
+                let Event::PointerButton {
+                    button,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let Some(chord) = KeyChord::from_pointer_button(*button, *modifiers) else {
+                    continue;
+                };
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    return Some(app_action_from_hotkey_action_id(action_id));
+                }
+            }
+            None
+        })
+    }
+
+    fn map_wheel_to_action(&self, ctx: &Context) -> Option<WheelHotkeyMatch> {
+        let line_scroll_speed = ctx.options(|o| o.input_options.line_scroll_speed);
+        ctx.input(|i| {
+            for event in &i.events {
+                let Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let Some(chord) = KeyChord::from_wheel_input(delta.y, *modifiers) else {
+                    continue;
+                };
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    let normalized_delta_y = match unit {
+                        MouseWheelUnit::Line => delta.y * line_scroll_speed,
+                        MouseWheelUnit::Page => delta.y * i.viewport_rect().height(),
+                        MouseWheelUnit::Point => delta.y,
+                    };
+                    return Some(WheelHotkeyMatch {
+                        action: app_action_from_hotkey_action_id(action_id),
+                        normalized_delta_y,
+                    });
+                }
+            }
+            None
+        })
+    }
+
+    fn dispatch_wheel_action(
+        &mut self,
+        ctx: &Context,
+        wheel_match: WheelHotkeyMatch,
+        mouse_pos: Option<egui::Pos2>,
+    ) {
+        match wheel_match.action {
+            AppAction::Next | AppAction::Prev => {
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    match wheel_match.action {
+                        AppAction::Next => self.navigate_next(),
+                        AppAction::Prev => self.navigate_prev(),
+                        _ => unreachable!(),
+                    }
+                    self.last_mouse_wheel_nav = now;
+                }
+            }
+            AppAction::ZoomIn | AppAction::ZoomOut => {
+                let scroll_zoom_speed = ctx.options(|o| o.input_options.scroll_zoom_speed);
+                let factor =
+                    (scroll_zoom_speed * wheel_match.normalized_delta_y.abs().max(1.0)).exp();
+                let factor = if wheel_match.action == AppAction::ZoomOut {
+                    1.0 / factor
+                } else {
+                    factor
+                };
+                self.zoom_at_mouse(ctx, factor, mouse_pos);
+            }
+            AppAction::RotateCW | AppAction::RotateCCW => {
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    let clockwise = wheel_match.action == AppAction::RotateCW;
+                    self.apply_rotation_with_tracking(clockwise, ctx);
+                    self.last_mouse_wheel_nav = now;
+                }
+            }
+            action => self.dispatch_action(action, ctx),
+        }
+    }
+
+    fn zoom_at_mouse(&mut self, ctx: &Context, factor: f32, mouse_pos: Option<egui::Pos2>) {
+        if factor == 1.0 {
+            return;
+        }
+        let old_zoom = self.zoom_factor;
+        self.zoom_factor = (self.zoom_factor * factor).clamp(0.05, 20.0);
+        let ratio = self.zoom_factor / old_zoom;
+
+        if let Some(mouse) = mouse_pos {
+            let screen_center = ctx.input(|i| i.content_rect()).center();
+            let d = mouse - screen_center;
+            self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
+        }
+        self.invalidate_tile_requests_for_view_change();
     }
 
     /// Applies ±½ EV using the same rule as the settings exposure slider
@@ -238,7 +294,7 @@ impl ImageViewerApp {
         ctx.request_repaint();
     }
 
-    fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
+    pub(crate) fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         match action {
             AppAction::Next => {
                 let now = ctx.input(|i| i.time);
@@ -337,50 +393,6 @@ impl ImageViewerApp {
         }
     }
 
-    fn handle_mouse_input(
-        &mut self,
-        ctx: &Context,
-        scroll_delta: Vec2,
-        zoom_delta: f32,
-        is_ctrl_pressed: bool,
-        is_alt_pressed: bool,
-        mouse_pos: Option<egui::Pos2>,
-    ) {
-        if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
-            // Rotation with Alt + Mouse Wheel
-            let now = ctx.input(|i| i.time);
-            if now - self.last_mouse_wheel_nav > 0.2 {
-                self.apply_rotation_with_tracking(scroll_delta.y < 0.0, ctx);
-                self.last_mouse_wheel_nav = now;
-            }
-        } else if is_ctrl_pressed {
-            // Zoom-to-cursor
-            if zoom_delta != 1.0 {
-                let old_zoom = self.zoom_factor;
-                self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
-                let ratio = self.zoom_factor / old_zoom;
-
-                if let Some(mouse) = mouse_pos {
-                    let screen_center = ctx.input(|i| i.content_rect()).center();
-                    let d = mouse - screen_center;
-                    self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
-                }
-                self.invalidate_tile_requests_for_view_change();
-            }
-        } else if scroll_delta.y.abs() > 0.0 {
-            // Navigation with mouse wheel
-            let now = ctx.input(|i| i.time);
-            if now - self.last_mouse_wheel_nav > 0.2 {
-                if scroll_delta.y > 0.0 {
-                    self.navigate_prev();
-                } else {
-                    self.navigate_next();
-                }
-                self.last_mouse_wheel_nav = now;
-            }
-        }
-    }
-
     // ------------------------------------------------------------------
     // Auto-switch
     // ------------------------------------------------------------------
@@ -397,7 +409,6 @@ impl ImageViewerApp {
             match auto_switch_step(
                 self.image_files.len(),
                 self.current_index,
-                self.settings.loop_playback,
                 self.settings.random_slideshow_order,
                 self.random_slideshow_order_ready,
             ) {
@@ -685,13 +696,14 @@ pub(crate) enum AppAction {
     ExitFullscreen,
 }
 
+#[cfg(test)]
 struct HotkeyBinding {
     modifiers: u8, // Bitmask: Bit 0=Ctrl/Cmd, 1=Shift, 2=Alt
     key: egui::Key,
-    action: AppAction,
 }
 
 // Modifier bitmask constants
+#[cfg(test)]
 const M_NONE: u8 = 0;
 const M_CTRL: u8 = 1;
 const M_SHIFT: u8 = 2;
@@ -713,173 +725,174 @@ fn get_modifiers_mask(m: egui::Modifiers) -> u8 {
     mask
 }
 
+#[cfg(test)]
 const HOTKEY_MAP: &[HotkeyBinding] = &[
     // --- Group 1: High Priority (Complex Modifiers) ---
     HotkeyBinding {
         modifiers: M_SHIFT,
         key: egui::Key::Delete,
-        action: AppAction::PermanentDelete,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowLeft,
-        action: AppAction::RotateCCW,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowRight,
-        action: AppAction::RotateCW,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowUp,
-        action: AppAction::HdrExposureUp,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowDown,
-        action: AppAction::HdrExposureDown,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::P,
-        action: AppAction::Print,
     },
     #[cfg(not(target_os = "windows"))]
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::Q,
-        action: AppAction::Quit,
     },
     // --- Group 2: Simple Navigation / Control ---
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowRight,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowDown,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::PageDown,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowLeft,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowUp,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::PageUp,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Home,
-        action: AppAction::First,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::End,
-        action: AppAction::Last,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Space,
-        action: AppAction::ToggleAutoSwitch,
     },
     // --- Group 3: Functional Keys ---
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Tab,
-        action: AppAction::ToggleOSD,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F1,
-        action: AppAction::ToggleSettings,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F11,
-        action: AppAction::ToggleFullscreen,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F,
-        action: AppAction::ToggleFullscreen,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Z,
-        action: AppAction::ToggleScaleMode,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::G,
-        action: AppAction::ToggleGoto,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Delete,
-        action: AppAction::Delete,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Escape,
-        action: AppAction::ExitFullscreen,
     },
     // Zoom
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Plus,
-        action: AppAction::ZoomIn,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Equals,
-        action: AppAction::ZoomIn,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Minus,
-        action: AppAction::ZoomOut,
     },
 ];
 
+fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAction {
+    match action {
+        HotkeyActionId::NextImage => AppAction::Next,
+        HotkeyActionId::PrevImage => AppAction::Prev,
+        HotkeyActionId::FirstImage => AppAction::First,
+        HotkeyActionId::LastImage => AppAction::Last,
+        HotkeyActionId::ZoomIn => AppAction::ZoomIn,
+        HotkeyActionId::ZoomOut => AppAction::ZoomOut,
+        HotkeyActionId::ZoomReset => AppAction::ZoomReset,
+        HotkeyActionId::ToggleSettings => AppAction::ToggleSettings,
+        HotkeyActionId::ToggleFullscreen => AppAction::ToggleFullscreen,
+        HotkeyActionId::ToggleScaleMode => AppAction::ToggleScaleMode,
+        HotkeyActionId::ToggleOsd => AppAction::ToggleOSD,
+        HotkeyActionId::RotateCw => AppAction::RotateCW,
+        HotkeyActionId::RotateCcw => AppAction::RotateCCW,
+        HotkeyActionId::HdrExposureUp => AppAction::HdrExposureUp,
+        HotkeyActionId::HdrExposureDown => AppAction::HdrExposureDown,
+        HotkeyActionId::DeleteToRecycleBin => AppAction::Delete,
+        HotkeyActionId::PermanentDelete => AppAction::PermanentDelete,
+        HotkeyActionId::PrintCurrent => AppAction::Print,
+        HotkeyActionId::ToggleGoto => AppAction::ToggleGoto,
+        HotkeyActionId::ToggleSlideshow => AppAction::ToggleAutoSwitch,
+        #[cfg(not(target_os = "windows"))]
+        HotkeyActionId::Quit => AppAction::Quit,
+        HotkeyActionId::ExitFullscreen => AppAction::ExitFullscreen,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AutoSwitchStep, auto_switch_step};
+    use super::{AutoSwitchStep, HOTKEY_MAP, app_action_from_hotkey_action_id, auto_switch_step};
+    use crate::hotkeys::model::keychord_from_legacy_binding;
+    use std::collections::HashSet;
 
     #[test]
     fn auto_switch_uses_existing_order_when_random_is_disabled() {
         assert_eq!(
-            auto_switch_step(5, 1, true, false, false),
+            auto_switch_step(5, 1, false, false),
             AutoSwitchStep::NavigateTo(2)
         );
     }
 
     #[test]
     fn auto_switch_stops_when_there_is_only_one_image() {
-        assert_eq!(
-            auto_switch_step(1, 0, true, false, false),
-            AutoSwitchStep::Stop
-        );
+        assert_eq!(auto_switch_step(1, 0, true, false), AutoSwitchStep::Stop);
     }
 
     #[test]
     fn random_auto_switch_starts_by_shuffling_to_first_image() {
         assert_eq!(
-            auto_switch_step(5, 1, true, true, false),
+            auto_switch_step(5, 1, true, false),
             AutoSwitchStep::ShuffleToFirst
         );
     }
@@ -887,16 +900,36 @@ mod tests {
     #[test]
     fn random_auto_switch_reshuffles_before_next_loop() {
         assert_eq!(
-            auto_switch_step(5, 4, true, true, true),
+            auto_switch_step(5, 4, true, true),
             AutoSwitchStep::ShuffleToFirst
         );
     }
 
     #[test]
-    fn random_auto_switch_stops_at_end_when_loop_is_disabled() {
+    fn auto_switch_loops_at_end_when_random_is_disabled() {
         assert_eq!(
-            auto_switch_step(5, 4, false, true, true),
-            AutoSwitchStep::Stop
+            auto_switch_step(5, 4, false, true),
+            AutoSwitchStep::NavigateTo(0)
         );
+    }
+
+    #[test]
+    fn legacy_hotkey_map_has_no_conflicts() {
+        let mut seen = HashSet::new();
+        for binding in HOTKEY_MAP {
+            let chord = keychord_from_legacy_binding(binding.modifiers, binding.key);
+            assert!(
+                seen.insert(chord),
+                "duplicate legacy chord: {:?}",
+                chord.display_string()
+            );
+        }
+    }
+
+    #[test]
+    fn all_runtime_actions_map_to_app_actions() {
+        for desc in crate::hotkeys::model::all_action_descriptors() {
+            let _app_action = app_action_from_hotkey_action_id(desc.id);
+        }
     }
 }

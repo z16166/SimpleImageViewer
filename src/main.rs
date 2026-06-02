@@ -31,6 +31,7 @@ mod audio;
 mod constants;
 mod formats;
 mod hdr;
+mod hotkeys;
 mod ipc;
 mod libtiff_loader;
 mod loader;

@@ -80,6 +80,58 @@ impl ImageViewerApp {
             }
         };
 
+        let mut hotkeys_load_error = None;
+        let hotkeys_runtime = match crate::hotkeys::load_runtime_hotkeys_state() {
+            Ok(state) => {
+                for warning in &state.warnings {
+                    log::warn!(
+                        "[hotkeys] {}",
+                        crate::app::localized_hotkey_warning(warning)
+                    );
+                }
+                for conflict in &state.conflicts {
+                    log::warn!(
+                        "[hotkeys] conflict {}: {:?}",
+                        conflict.key,
+                        conflict.actions
+                    );
+                }
+                state
+            }
+            Err(e) => {
+                log::error!("[hotkeys] failed to load runtime hotkeys: {}", e);
+                hotkeys_load_error = Some(e);
+                crate::hotkeys::rebuild_runtime_state(
+                    &crate::hotkeys::model::default_hotkey_config_file(),
+                )
+            }
+        };
+        let hotkeys_draft_config = hotkeys_runtime.config.clone();
+        let (hotkeys_save_tx, hotkeys_save_rx) =
+            crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
+        let (hotkeys_save_error_tx, hotkeys_save_error_rx) =
+            crossbeam_channel::unbounded::<String>();
+        let hotkeys_saver_res = std::thread::Builder::new()
+            .name("hotkeys-saver".to_string())
+            .spawn(move || {
+                while let Ok(mut cfg) = hotkeys_save_rx.recv() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    while let Ok(newer) = hotkeys_save_rx.try_recv() {
+                        cfg = newer;
+                    }
+                    if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&cfg) {
+                        let _ = hotkeys_save_error_tx.send(e);
+                    }
+                }
+            });
+        let hotkeys_saver_handle = match hotkeys_saver_res {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                log::error!("[Core] Failed to spawn hotkeys-saver thread: {}", e);
+                None
+            }
+        };
+
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
         // ── GPU Limits ───────────────────────────────────────────────────────
@@ -380,6 +432,18 @@ impl ImageViewerApp {
             cached_audio_devices: Vec::new(),
             last_show_settings: settings.last_image_dir.is_none(),
             music_hud_drag_offset: Vec2::ZERO,
+            hotkeys_runtime,
+            hotkeys_draft_config,
+            hotkeys_save_error_rx,
+            hotkeys_save_tx,
+            hotkeys_saver_handle,
+            last_hotkeys_save_error: None,
+            hotkeys_load_error,
+            startup_hotkeys_alert_shown: false,
+            hotkeys_capture_target: None,
+            hotkeys_selected_row: None,
+            hotkeys_add_row_dialog_open: false,
+            hotkeys_add_row_action: crate::hotkeys::model::HotkeyActionId::NextImage,
             settings,
         };
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
@@ -427,5 +491,11 @@ impl ImageViewerApp {
 
     pub(crate) fn queue_save(&self) {
         let _ = self.save_tx.send(self.settings.clone());
+    }
+
+    pub(crate) fn queue_hotkeys_save(&self) {
+        let _ = self
+            .hotkeys_save_tx
+            .send(self.hotkeys_runtime.config.clone());
     }
 }

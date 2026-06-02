@@ -56,29 +56,35 @@ pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD 
 pub(crate) enum SettingsTab {
     Library,
     Viewing,
+    Slideshow,
     Music,
     Appearance,
+    Hotkeys,
     System,
     About,
 }
 
 impl SettingsTab {
     #[cfg(target_os = "windows")]
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Library,
         Self::Viewing,
+        Self::Slideshow,
         Self::Music,
         Self::Appearance,
+        Self::Hotkeys,
         Self::System,
         Self::About,
     ];
 
     #[cfg(not(target_os = "windows"))]
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Library,
         Self::Viewing,
+        Self::Slideshow,
         Self::Music,
         Self::Appearance,
+        Self::Hotkeys,
         Self::About,
     ];
 
@@ -86,8 +92,10 @@ impl SettingsTab {
         match self {
             Self::Library => "settings_tab.library",
             Self::Viewing => "settings_tab.viewing",
+            Self::Slideshow => "settings_tab.slideshow",
             Self::Music => "settings_tab.music",
             Self::Appearance => "settings_tab.appearance",
+            Self::Hotkeys => "settings_tab.hotkeys",
             Self::System => "settings_tab.system",
             Self::About => "settings_tab.about",
         }
@@ -465,7 +473,6 @@ pub struct ImageViewerApp {
     /// Included in each dialog's egui Window Id so that egui has no position
     /// memory from a previous opening — the dialog always starts centered.
     pub(crate) modal_generation: u32,
-
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
     // Cached system font families
@@ -572,6 +579,20 @@ pub struct ImageViewerApp {
 
     // Music HUD drag offset (user-adjustable position relative to default bottom-center)
     pub(crate) music_hud_drag_offset: Vec2,
+    // Runtime hotkeys loaded from siv_hotkeys.yaml
+    pub(crate) hotkeys_runtime: crate::hotkeys::RuntimeHotkeyState,
+    pub(crate) hotkeys_draft_config: crate::hotkeys::model::HotkeyConfigFile,
+    pub(crate) hotkeys_save_error_rx: Receiver<String>,
+    pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
+    pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
+    pub(crate) last_hotkeys_save_error: Option<(String, Instant)>,
+    pub(crate) hotkeys_load_error: Option<String>,
+    pub(crate) startup_hotkeys_alert_shown: bool,
+    pub(crate) hotkeys_capture_target:
+        Option<(crate::hotkeys::model::HotkeyActionId, usize, usize)>,
+    pub(crate) hotkeys_selected_row: Option<(usize, usize)>,
+    pub(crate) hotkeys_add_row_dialog_open: bool,
+    pub(crate) hotkeys_add_row_action: crate::hotkeys::model::HotkeyActionId,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -584,7 +605,94 @@ pub(crate) struct PendingAnimUpload {
     next_frame: usize,
 }
 
+pub(crate) fn build_hotkeys_issue_message(
+    load_error: Option<&str>,
+    conflicts: &[crate::hotkeys::model::HotkeyConflict],
+    warnings: &[crate::hotkeys::model::HotkeyWarning],
+) -> Option<String> {
+    if load_error.is_none() && conflicts.is_empty() && warnings.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if let Some(error) = load_error {
+        lines.push(t!("hotkeys.load_failed", error = error).to_string());
+    }
+    if !conflicts.is_empty() {
+        lines.push(t!("hotkeys.startup_conflicts", count = conflicts.len()).to_string());
+        for conflict in conflicts.iter().take(3) {
+            let actions = conflict
+                .actions
+                .iter()
+                .map(|action| crate::hotkeys::model::action_id_to_str(*action))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("{}: {}", conflict.key, actions));
+        }
+    }
+    if !warnings.is_empty() {
+        lines.push(t!("hotkeys.startup_warnings", count = warnings.len()).to_string());
+        lines.extend(warnings.iter().take(3).map(localized_hotkey_warning));
+    }
+    lines.push(t!("hotkeys.startup_open_settings_hint").to_string());
+    Some(lines.join("\n"))
+}
+
+pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWarning) -> String {
+    use crate::hotkeys::model::{HotkeyWarning, action_id_to_str};
+    match warning {
+        HotkeyWarning::MissingAction { action_id } => t!(
+            "hotkeys.warning.missing_action",
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::InvalidKey { action_id, key } => t!(
+            "hotkeys.warning.invalid_key",
+            key = key.as_str(),
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::MouseClickRequiresModifier { action_id, key } => t!(
+            "hotkeys.warning.mouse_click_requires_modifier",
+            key = key.as_str(),
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::NoValidKeys { action_id } => t!(
+            "hotkeys.warning.no_valid_keys",
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::UnknownAction { action_id } => t!(
+            "hotkeys.warning.unknown_action",
+            action = action_id.as_str()
+        )
+        .to_string(),
+    }
+}
+
 impl ImageViewerApp {
+    pub(crate) fn hotkeys_status_message(&self) -> Option<String> {
+        build_hotkeys_issue_message(
+            self.hotkeys_load_error.as_deref(),
+            &self.hotkeys_runtime.conflicts,
+            &self.hotkeys_runtime.warnings,
+        )
+    }
+
+    pub(crate) fn open_startup_hotkeys_alert_if_needed(&mut self) {
+        if self.startup_hotkeys_alert_shown || self.active_modal.is_some() {
+            return;
+        }
+        let Some(message) = self.hotkeys_status_message() else {
+            return;
+        };
+        self.active_modal = Some(ActiveModal::Confirm(
+            crate::ui::dialogs::confirm::State::info(t!("hotkeys.startup_issue_title"), message),
+        ));
+        self.startup_hotkeys_alert_shown = true;
+    }
+
     pub(crate) fn effective_hdr_monitor_selection(
         &self,
     ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
@@ -709,6 +817,10 @@ impl eframe::App for ImageViewerApp {
         let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
         let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
         drop(old_tx);
+        let (dummy_hotkey_tx, _) =
+            crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
+        let old_hotkey_tx = std::mem::replace(&mut self.hotkeys_save_tx, dummy_hotkey_tx);
+        drop(old_hotkey_tx);
 
         // Wait for the saver thread to finish any in-progress I/O
         if let Some(handle) = self.saver_handle.take() {
@@ -716,9 +828,17 @@ impl eframe::App for ImageViewerApp {
                 log::error!("[on_exit] Saver thread panicked: {:?}", e);
             }
         }
+        if let Some(handle) = self.hotkeys_saver_handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
+            }
+        }
 
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
+        }
+        if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&self.hotkeys_runtime.config) {
+            log::error!("[on_exit] Failed to save hotkeys: {}", e);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.
@@ -1018,11 +1138,20 @@ impl eframe::App for ImageViewerApp {
             log::error!("Settings persistence error: {}", err);
             self.last_save_error = Some((err, Instant::now()));
         }
+        while let Ok(err) = self.hotkeys_save_error_rx.try_recv() {
+            log::error!("Hotkeys persistence error: {}", err);
+            self.last_hotkeys_save_error = Some((err, Instant::now()));
+        }
 
         // Clear persistence error after 5 seconds
         if let Some((_, start)) = self.last_save_error {
             if start.elapsed().as_secs() >= 5 {
                 self.last_save_error = None;
+            }
+        }
+        if let Some((_, start)) = self.last_hotkeys_save_error {
+            if start.elapsed().as_secs() >= 5 {
+                self.last_hotkeys_save_error = None;
             }
         }
 
@@ -1123,6 +1252,8 @@ impl eframe::App for ImageViewerApp {
         // only dims visually (Order::Background); to achieve true modality we
         // must prevent the settings panel from being rendered (and thus from
         // receiving input) while a dialog is on screen.
+        self.open_startup_hotkeys_alert_if_needed();
+
         let modal_open = self.active_modal.is_some();
         if self.show_settings && !modal_open {
             self.draw_settings_panel(&ctx, frame);
@@ -1488,6 +1619,32 @@ mod tests {
         assert!(refresh.indices_to_invalidate.is_empty());
         assert!(!refresh.reload_current);
         assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
+    }
+
+    #[test]
+    fn hotkey_issue_message_reports_load_errors() {
+        let message = build_hotkeys_issue_message(Some("bad yaml"), &[], &[])
+            .expect("load error should be user-visible");
+        assert!(message.contains("bad yaml"));
+    }
+
+    #[test]
+    fn hotkey_issue_message_reports_conflicts_and_warnings() {
+        let conflicts = vec![crate::hotkeys::model::HotkeyConflict {
+            key: "D".to_string(),
+            actions: vec![
+                crate::hotkeys::model::HotkeyActionId::NextImage,
+                crate::hotkeys::model::HotkeyActionId::PrevImage,
+            ],
+        }];
+        let warnings = vec![crate::hotkeys::model::HotkeyWarning::InvalidKey {
+            action_id: crate::hotkeys::model::HotkeyActionId::NextImage,
+            key: "Foo".to_string(),
+        }];
+        let message = build_hotkeys_issue_message(None, &conflicts, &warnings)
+            .expect("validation issues should be user-visible");
+        assert!(message.contains("D"));
+        assert!(message.contains("Foo"));
     }
 
     #[test]

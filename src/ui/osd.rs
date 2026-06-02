@@ -159,7 +159,7 @@ impl OsdRenderer {
             }
         }
 
-        // Display persistence error if active
+        // Display persistence error if active.
         if let Some((err, _)) = save_error {
             let err_offset_y = if self.cached_hdr_line.is_some() {
                 crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE

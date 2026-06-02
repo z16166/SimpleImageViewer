@@ -50,10 +50,8 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn open_music_file_dialog(&mut self, frame: &eframe::Frame) {
-        let dialog = crate::app::rfd_parent::file_dialog_for_main_window(frame).add_filter(
-            "Music files",
-            MUSIC_SUPPORTED_EXTENSIONS,
-        );
+        let dialog = crate::app::rfd_parent::file_dialog_for_main_window(frame)
+            .add_filter("Music files", MUSIC_SUPPORTED_EXTENSIONS);
         if let Some(path) = dialog.pick_file() {
             self.settings.music_path = Some(path.clone());
             self.restart_audio_if_enabled();
