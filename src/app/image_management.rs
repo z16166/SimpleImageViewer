@@ -254,43 +254,54 @@ enum ImageInstallPlan<'a> {
         ultra_hdr_capacity_sensitive: bool,
     },
     Error {
-        error: &'a String,
+        error: &'a str,
     },
 }
 
 impl<'a> ImageInstallPlan<'a> {
     fn from_load_result(load_result: &'a LoadResult) -> Self {
         let _preview_stage = load_result.preview_bundle.stage();
-        let Ok(image_data) = load_result.result.as_ref() else {
-            return Self::Error {
-                error: load_result.result.as_ref().err().expect("load error"),
-            };
+        let image_data = match &load_result.result {
+            Ok(img) => img,
+            Err(error) => {
+                return Self::Error {
+                    error: error.as_str(),
+                };
+            }
         };
 
         match image_data.preferred_render_shape() {
             LoadedRenderShape::Static if image_data.has_plane(PixelPlaneKind::Hdr) => {
+                let Some(hdr) = image_data.static_hdr() else {
+                    return Self::Error {
+                        error: "Static HDR image is missing the HDR plane",
+                    };
+                };
+                let Some(fallback) = image_data.static_sdr() else {
+                    return Self::Error {
+                        error: "Static HDR image is missing the SDR fallback plane",
+                    };
+                };
                 Self::StaticHdr {
-                    hdr: Arc::new(
-                        image_data
-                            .static_hdr()
-                            .expect("static HDR image exposes HDR plane")
-                            .clone(),
-                    ),
-                    fallback: image_data
-                        .static_sdr()
-                        .expect("static HDR image exposes SDR fallback plane"),
+                    hdr: Arc::new(hdr.clone()),
+                    fallback,
                     ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
                 }
             }
-            LoadedRenderShape::Static => Self::StaticSdr {
-                decoded: image_data
-                    .static_sdr()
-                    .expect("static SDR image exposes SDR plane"),
-            },
+            LoadedRenderShape::Static => {
+                let Some(decoded) = image_data.static_sdr() else {
+                    return Self::Error {
+                        error: "Static SDR image is missing the SDR plane",
+                    };
+                };
+                Self::StaticSdr { decoded }
+            }
             LoadedRenderShape::Tiled => {
-                let source = image_data
-                    .tiled_sdr_source()
-                    .expect("tiled image exposes SDR source");
+                let Some(source) = image_data.tiled_sdr_source() else {
+                    return Self::Error {
+                        error: "Tiled image is missing the SDR source",
+                    };
+                };
                 let hdr_source = image_data.tiled_hdr_source().cloned();
                 let hdr_preview = load_result
                     .preview_bundle

@@ -1253,8 +1253,10 @@ impl OpenExrCoreReadContext {
             && g_idx.is_none()
             && b_idx.is_none();
 
-        let chunk_width_u32 = u32::try_from(chunk_width).unwrap();
-        let chunk_height_u32 = u32::try_from(chunk_height).unwrap();
+        let chunk_width_u32 = u32::try_from(chunk_width)
+            .map_err(|e| format!("OpenEXRCore chunk width overflow: {e}"))?;
+        let chunk_height_u32 = u32::try_from(chunk_height)
+            .map_err(|e| format!("OpenEXRCore chunk height overflow: {e}"))?;
 
         // FAST PATH: All involved channels are 1:1 resolution (no subsampling)
         let mut can_use_fast_path = !is_yryby;
@@ -1301,6 +1303,12 @@ impl OpenExrCoreReadContext {
             }
         } else {
             // SLOW PATH: Handles subsampling (YCbCr etc)
+            let (y_idx_val, ry_idx_val, by_idx_val) = if is_yryby {
+                (y_idx.unwrap_or(0), ry_idx.unwrap_or(0), by_idx.unwrap_or(0))
+            } else {
+                (0, 0, 0)
+            };
+
             for row_u in 0..chunk_height_u32 {
                 for col_u in 0..chunk_width_u32 {
                     let dest = (row_u as usize * chunk_width + col_u as usize) * 4;
@@ -1322,7 +1330,7 @@ impl OpenExrCoreReadContext {
                         let y = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
-                            y_idx.unwrap(),
+                            y_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,
@@ -1330,7 +1338,7 @@ impl OpenExrCoreReadContext {
                         let ry_ratio = channel_sample_f32_filtered(
                             &buffers,
                             &channel_layouts,
-                            ry_idx.unwrap(),
+                            ry_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,
@@ -1339,7 +1347,7 @@ impl OpenExrCoreReadContext {
                         let by_ratio = channel_sample_f32_filtered(
                             &buffers,
                             &channel_layouts,
-                            by_idx.unwrap(),
+                            by_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,

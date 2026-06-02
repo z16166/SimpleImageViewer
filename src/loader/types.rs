@@ -70,7 +70,17 @@ impl DecodedImage {
         let w = self.width;
         let h = self.height;
         let vec = Arc::try_unwrap(self.pixels).unwrap_or_else(|a| (*a).clone());
-        RgbaImage::from_raw(w, h, vec).expect("DecodedImage dimensions must match RGBA buffer")
+        match RgbaImage::from_raw(w, h, vec) {
+            Some(img) => img,
+            None => {
+                log::error!(
+                    "[Loader] DecodedImage dimensions {}x{} do not match RGBA buffer size. Returning empty image.",
+                    w,
+                    h
+                );
+                RgbaImage::new(w, h)
+            }
+        }
     }
 
     pub fn set_rgba_buffer(&mut self, width: u32, height: u32, pixels: Vec<u8>) {
