@@ -7,6 +7,7 @@ pub(crate) mod tiled;
 pub(crate) mod transitions;
 
 use crate::app::ImageViewerApp;
+use crate::app::rendering::standard::should_dispatch_standard_draw;
 use crate::ui::utils::draw_empty_hint;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Vec2};
 use rust_i18n::t;
@@ -142,25 +143,34 @@ impl ImageViewerApp {
                 if self.tiled_canvas_matches_current_index() {
                     // Large-image tiled path → tiled.rs
                     self.draw_tiled_image(ui, screen_rect, &canvas_resp);
-                } else if let Some(texture) = self.texture_cache.get(self.current_index).cloned() {
-                    // Standard / animated path → standard.rs
-                    self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
-                } else if self.transition_start.is_none()
-                    && self.pending_transition_target == Some(self.current_index)
-                    && let Some(prev) = self.prev_texture.clone()
-                {
-                    // Navigation target is not ready yet: keep drawing the previous frame
-                    // instead of exposing background/partial transition artifacts.
-                    // Draw it directly (without running current-index transition logic),
-                    // otherwise the frame can jitter due to mixed old/new geometry state.
-                    let prev_dest = self.compute_display_rect(prev.size_vec2(), screen_rect);
-                    ui.painter().image(
-                        prev.id(),
-                        prev_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    ui.ctx().request_repaint();
+                } else {
+                    let texture = self.texture_cache.get(self.current_index).cloned();
+                    let has_hdr_plane = self
+                        .current_hdr_image
+                        .as_ref()
+                        .is_some_and(|current| {
+                            current.image_for_index(self.current_index).is_some()
+                        });
+                    if should_dispatch_standard_draw(texture.is_some(), has_hdr_plane) {
+                        // Standard / animated path → standard.rs
+                        self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
+                    } else if self.transition_start.is_none()
+                        && self.pending_transition_target == Some(self.current_index)
+                        && let Some(prev) = self.prev_texture.clone()
+                    {
+                        // Navigation target is not ready yet: keep drawing the previous frame
+                        // instead of exposing background/partial transition artifacts.
+                        // Draw it directly (without running current-index transition logic),
+                        // otherwise the frame can jitter due to mixed old/new geometry state.
+                        let prev_dest = self.compute_display_rect(prev.size_vec2(), screen_rect);
+                        ui.painter().image(
+                            prev.id(),
+                            prev_dest,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 // ── Global HUD / OSD overlay ──────────────────────────────────
