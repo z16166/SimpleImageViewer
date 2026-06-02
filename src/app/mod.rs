@@ -586,6 +586,7 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
     pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
     pub(crate) last_hotkeys_save_error: Option<(String, Instant)>,
+    pub(crate) hotkeys_apply_success_at: Option<Instant>,
     pub(crate) hotkeys_load_error: Option<String>,
     pub(crate) startup_hotkeys_alert_shown: bool,
     pub(crate) hotkeys_capture_target:
@@ -593,6 +594,12 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_selected_row: Option<(usize, usize)>,
     pub(crate) hotkeys_add_row_dialog_open: bool,
     pub(crate) hotkeys_add_row_action: crate::hotkeys::model::HotkeyActionId,
+    /// Add Row dialog: user pressed Record Key and is waiting for the next input.
+    pub(crate) hotkeys_add_row_capture_active: bool,
+    /// Add Row dialog: key captured via Record Key (not yet committed to the grid).
+    pub(crate) hotkeys_add_row_captured_key: Option<String>,
+    /// Add Row dialog: OK clicked without a recorded key.
+    pub(crate) hotkeys_add_row_need_key_hint: bool,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -672,12 +679,40 @@ pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWa
 }
 
 impl ImageViewerApp {
+    pub(crate) fn is_hotkey_capture_active(&self) -> bool {
+        self.hotkeys_capture_target.is_some() || self.hotkeys_add_row_capture_active
+    }
+
+    pub(crate) fn reset_hotkeys_add_row_dialog_state(&mut self) {
+        self.hotkeys_add_row_capture_active = false;
+        self.hotkeys_add_row_captured_key = None;
+        self.hotkeys_add_row_need_key_hint = false;
+    }
+
     pub(crate) fn hotkeys_status_message(&self) -> Option<String> {
         build_hotkeys_issue_message(
             self.hotkeys_load_error.as_deref(),
             &self.hotkeys_runtime.conflicts,
             &self.hotkeys_runtime.warnings,
         )
+    }
+
+    /// Bottom inset for the on-canvas hotkeys issue overlay so it sits above the OSD stack.
+    pub(crate) fn hotkeys_issue_bottom_inset(&self) -> f32 {
+        let mut inset = crate::constants::OSD_MARGIN;
+        if self.settings.show_osd {
+            inset += crate::constants::OSD_TEXT_SIZE;
+            if self.current_hdr_osd_tag().is_some() {
+                inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+            }
+            if self.last_save_error.is_some() {
+                inset = inset.max(
+                    crate::constants::OSD_ERROR_OFFSET
+                        + crate::constants::OSD_ERROR_TEXT_SIZE,
+                );
+            }
+        }
+        inset + crate::constants::HOTKEYS_ISSUE_GAP_ABOVE_OSD
     }
 
     pub(crate) fn open_startup_hotkeys_alert_if_needed(&mut self) {
@@ -1152,6 +1187,11 @@ impl eframe::App for ImageViewerApp {
         if let Some((_, start)) = self.last_hotkeys_save_error {
             if start.elapsed().as_secs() >= 5 {
                 self.last_hotkeys_save_error = None;
+            }
+        }
+        if let Some(start) = self.hotkeys_apply_success_at {
+            if start.elapsed().as_secs() >= 3 {
+                self.hotkeys_apply_success_at = None;
             }
         }
 

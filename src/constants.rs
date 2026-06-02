@@ -153,6 +153,8 @@ pub const OSD_ERROR_TEXT_SIZE: f32 = 13.0;
 pub const OSD_ERROR_OFFSET: f32 = 32.0;
 /// Extra offset when a second (HDR) OSD line is present.
 pub const OSD_ERROR_EXTRA_WHEN_HDR_LINE: f32 = 16.0;
+/// Gap between the bottom OSD stack and the hotkeys issue overlay.
+pub const HOTKEYS_ISSUE_GAP_ABOVE_OSD: f32 = 10.0;
 
 /// Width deduction for the progress slider in the OSD/HUD to account for labels.
 pub const SLIDER_WIDTH_LABEL_OFFSET: f32 = 40.0;

@@ -70,10 +70,13 @@ impl ImageViewerApp {
     /// Layer 2: Input handling when the non-modal settings panel is open.
     fn handle_settings_input(&mut self, ctx: &Context) {
         let mut action: Option<AppAction> = None;
+        let capturing = self.is_hotkey_capture_active();
         ctx.input(|i| {
-            action = self.map_key_to_action(i);
-            // Escape closes settings unless the Hotkeys tab is actively capturing it.
-            if self.hotkeys_capture_target.is_none() && i.key_pressed(Key::Escape) {
+            if !capturing {
+                action = self.map_key_to_action(i);
+            }
+            // Escape closes settings unless a hotkey capture session is active (allows ESC binding).
+            if !capturing && i.key_pressed(Key::Escape) {
                 self.show_settings = false;
             }
         });
