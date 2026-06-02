@@ -16,7 +16,7 @@
 
 use crate::app::{ImageViewerApp, ScaleMode, SettingsTab, TransitionStyle};
 use crate::hotkeys::model::{
-    HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file, default_key_chords,
+    HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file,
 };
 use crate::ui::utils::{
     middle_truncate, path_display_box, settings_card, styled_button, styled_button_widget,
@@ -475,36 +475,21 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         ui.add_space(4.0);
 
         let preview = crate::hotkeys::rebuild_runtime_state(&draft);
-        if !preview.conflicts.is_empty() {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(t!("hotkeys.conflict_block_save"))
-                    .color(Color32::from_rgb(255, 100, 100))
-                    .strong(),
-            );
-            for conflict in &preview.conflicts {
-                let action_names = conflict
-                    .actions
-                    .iter()
-                    .map(|it| localized_hotkey_action_label(*it))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                ui.label(
-                    RichText::new(format!("{}: {}", conflict.key, action_names))
-                        .color(Color32::from_rgb(255, 130, 130)),
-                );
-            }
-        }
-
-        if !preview.warnings.is_empty() {
-            ui.add_space(4.0);
-            for warning in &preview.warnings {
-                ui.label(RichText::new(warning.as_str()).color(Color32::from_rgb(255, 180, 120)));
-            }
-        }
-
+        let conflict_keys: std::collections::HashSet<String> =
+            preview.conflicts.iter().map(|conflict| conflict.key.clone()).collect();
+        let has_empty_key = draft
+            .bindings
+            .iter()
+            .any(|entry| entry.keys.iter().any(|key| key.trim().is_empty()));
         ui.add_space(8.0);
-        let available_h = (ui.available_height() - 44.0).max(80.0);
+        let status_rows = (app.hotkeys_capture_target.is_some() || set_key_target.is_some())
+            as usize
+            + has_empty_key as usize
+            + (!preview.conflicts.is_empty()) as usize
+            + preview.conflicts.len()
+            + preview.warnings.len();
+        let footer_h = 48.0 + if status_rows > 0 { 8.0 + 20.0 * status_rows.min(6) as f32 } else { 0.0 };
+        let available_h = (ui.available_height() - footer_h).max(80.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), available_h),
             egui::Layout::top_down(egui::Align::Min),
@@ -582,21 +567,37 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                                     } else {
                                         ui.visuals().text_color()
                                     };
+                                    let key_is_empty = key_text.trim().is_empty();
+                                    let key_has_error = key_is_empty || conflict_keys.contains(key_text);
+                                    let key_fill = if key_has_error && !selected {
+                                        app.cached_palette.widget_active
+                                    } else {
+                                        cell_fill
+                                    };
+                                    let key_text_color = if key_has_error {
+                                        ui.visuals().error_fg_color
+                                    } else {
+                                        text_color
+                                    };
                                     let font = egui::TextStyle::Body.resolve(ui.style());
 
-                                    let draw_cell =
-                                        |ui: &mut egui::Ui, width: f32, text: &str| -> bool {
+                                    let draw_cell = |ui: &mut egui::Ui,
+                                                     width: f32,
+                                                     text: &str,
+                                                     fill: Color32,
+                                                     color: Color32|
+                                     -> bool {
                                             let (rect, response) = ui.allocate_exact_size(
                                                 egui::vec2(width, 24.0),
                                                 egui::Sense::click(),
                                             );
-                                            ui.painter().rect_filled(rect, 0.0, cell_fill);
+                                            ui.painter().rect_filled(rect, 0.0, fill);
                                             ui.painter().text(
                                                 egui::pos2(rect.left() + 8.0, rect.center().y),
                                                 egui::Align2::LEFT_CENTER,
                                                 text,
                                                 font.clone(),
-                                                text_color,
+                                                color,
                                             );
                                             response.clicked()
                                         };
@@ -604,12 +605,24 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                                         ui,
                                         HOTKEYS_INDEX_COL_WIDTH,
                                         &(row_idx + 1).to_string(),
+                                        cell_fill,
+                                        text_color,
                                     );
                                     let action_label = localized_hotkey_action_label(*action_id);
-                                    let action_clicked =
-                                        draw_cell(ui, HOTKEYS_ACTION_COL_WIDTH, &action_label);
-                                    let key_clicked =
-                                        draw_cell(ui, HOTKEYS_KEY_COL_WIDTH, key_text);
+                                    let action_clicked = draw_cell(
+                                        ui,
+                                        HOTKEYS_ACTION_COL_WIDTH,
+                                        &action_label,
+                                        cell_fill,
+                                        text_color,
+                                    );
+                                    let key_clicked = draw_cell(
+                                        ui,
+                                        HOTKEYS_KEY_COL_WIDTH,
+                                        key_text,
+                                        key_fill,
+                                        key_text_color,
+                                    );
 
                                     if index_clicked || action_clicked || key_clicked {
                                         app.hotkeys_selected_row = Some((*entry_idx, *key_idx));
@@ -681,35 +694,106 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
             }
             if styled_button(ui, t!("hotkeys.apply"), &app.cached_palette).clicked() {
                 let validated = crate::hotkeys::rebuild_runtime_state(&draft);
-                if validated.conflicts.is_empty() {
+                if has_empty_key {
+                    app.hotkeys_runtime = validated;
+                } else if validated.conflicts.is_empty() {
                     app.hotkeys_runtime = validated;
                     should_save = true;
                 } else {
                     app.hotkeys_runtime = validated;
                 }
             }
-            if app.hotkeys_capture_target.is_some() {
-                ui.label(
+        });
+        if app.hotkeys_capture_target.is_some() || set_key_target.is_some() {
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
                     RichText::new(t!("hotkeys.capture_hint")).color(app.cached_palette.text_muted),
+                )
+                .wrap(),
+            );
+        }
+        if has_empty_key {
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(t!("hotkeys.empty_key_block_save"))
+                        .color(ui.visuals().error_fg_color)
+                        .strong(),
+                )
+                .wrap(),
+            );
+        }
+        if !preview.conflicts.is_empty() {
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(t!("hotkeys.conflict_block_save"))
+                        .color(ui.visuals().error_fg_color)
+                        .strong(),
+                )
+                .wrap(),
+            );
+            for conflict in &preview.conflicts {
+                let action_names = conflict
+                    .actions
+                    .iter()
+                    .map(|it| localized_hotkey_action_label(*it))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{}: {}", conflict.key, action_names))
+                            .color(ui.visuals().error_fg_color),
+                    )
+                    .wrap(),
                 );
             }
-        });
+        }
+        if !preview.warnings.is_empty() {
+            ui.add_space(4.0);
+            for warning in &preview.warnings {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(warning.as_str()).color(app.cached_palette.accent2),
+                    )
+                    .wrap(),
+                );
+            }
+        }
     });
 
+    let capture_started = set_key_target.is_some();
     if let Some(target) = set_key_target {
         app.hotkeys_capture_target = Some(target);
     }
 
     if app.hotkeys_add_row_dialog_open {
         let mut open = true;
+        let dialog_size = egui::vec2(360.0, 150.0);
+        let viewport_size = ctx.input(|i| {
+            i.viewport()
+                .inner_rect
+                .map(|r| r.size())
+                .unwrap_or_else(|| egui::vec2(1024.0, 720.0))
+        });
+        let default_pos = egui::pos2(
+            ((viewport_size.x - dialog_size.x) * 0.5).max(0.0),
+            ((viewport_size.y - dialog_size.y) * 0.5).max(0.0),
+        );
         egui::Window::new(t!("hotkeys.add_row"))
             .collapsible(false)
             .resizable(false)
+            .default_pos(default_pos)
+            .default_size(dialog_size)
             .open(&mut open)
             .show(ctx, |ui| {
+                ui.set_min_width(320.0);
                 ui.label(t!("hotkeys.select_action"));
+                ui.add_space(6.0);
                 egui::ComboBox::from_id_salt("hotkeys_add_row_action")
                     .selected_text(localized_hotkey_action_label(app.hotkeys_add_row_action))
+                    .width(ui.available_width())
                     .show_ui(ui, |ui| {
                         for desc in crate::hotkeys::model::all_action_descriptors() {
                             ui.selectable_value(
@@ -719,13 +803,13 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                             );
                         }
                     });
-                ui.add_space(8.0);
+                ui.add_space(16.0);
                 ui.horizontal(|ui| {
-                    if styled_button(ui, t!("btn.cancel"), &app.cached_palette).clicked() {
-                        app.hotkeys_add_row_dialog_open = false;
-                    }
                     if styled_button(ui, t!("btn.ok"), &app.cached_palette).clicked() {
                         row_to_add = Some(app.hotkeys_add_row_action);
+                        app.hotkeys_add_row_dialog_open = false;
+                    }
+                    if styled_button(ui, t!("btn.cancel"), &app.cached_palette).clicked() {
                         app.hotkeys_add_row_dialog_open = false;
                     }
                 });
@@ -736,21 +820,28 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
     }
 
     if let Some(action_id) = row_to_add {
-        let default_key = default_key_chords(action_id)
-            .first()
-            .map(|chord| (*chord).display_string())
-            .unwrap_or_else(|| "F1".to_string());
-        draft
+        let action_id_text = action_id_to_str(action_id).to_string();
+        if let Some((entry_idx, entry)) = draft
             .bindings
-            .push(crate::hotkeys::model::HotkeyBindingEntry {
+            .iter_mut()
+            .enumerate()
+            .find(|(_, entry)| entry.action_id == action_id_text)
+        {
+            entry.keys.push(String::new());
+            let key_idx = entry.keys.len().saturating_sub(1);
+            app.hotkeys_capture_target = Some((action_id, entry_idx, key_idx));
+            app.hotkeys_selected_row = Some((entry_idx, key_idx));
+        } else {
+            draft.bindings.push(crate::hotkeys::model::HotkeyBindingEntry {
                 action_id: action_id_to_str(action_id).to_string(),
-                keys: vec![default_key],
+                keys: vec![String::new()],
                 enabled: true,
                 comment: String::new(),
             });
-        if let Some(new_idx) = draft.bindings.len().checked_sub(1) {
-            app.hotkeys_capture_target = Some((action_id, new_idx, 0));
-            app.hotkeys_selected_row = Some((new_idx, 0));
+            if let Some(new_idx) = draft.bindings.len().checked_sub(1) {
+                app.hotkeys_capture_target = Some((action_id, new_idx, 0));
+                app.hotkeys_selected_row = Some((new_idx, 0));
+            }
         }
         should_save = true;
     }
@@ -777,7 +868,9 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         }
     }
 
-    if let Some((target, entry_idx, key_idx)) = app.hotkeys_capture_target {
+    if let Some((target, entry_idx, key_idx)) = app.hotkeys_capture_target
+        && !capture_started
+    {
         let mut captured: Option<String> = None;
         ctx.input(|i| {
             for event in &i.events {
@@ -819,7 +912,12 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         }
     }
     let validated = crate::hotkeys::rebuild_runtime_state(&draft);
-    if validated.conflicts.is_empty() && should_save {
+    let has_empty_key = validated
+        .config
+        .bindings
+        .iter()
+        .any(|entry| entry.keys.iter().any(|key| key.trim().is_empty()));
+    if !has_empty_key && validated.conflicts.is_empty() && should_save {
         app.hotkeys_runtime = validated.clone();
         app.queue_hotkeys_save();
     } else {

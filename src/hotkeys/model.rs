@@ -430,63 +430,19 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
 }
 
 pub fn parse_logical_key_name(value: &str) -> Option<HotkeyLogicalKey> {
-    let key = value.trim().to_ascii_lowercase();
-    match key.as_str() {
-        "left" | "arrowleft" => Some(HotkeyLogicalKey::Egui(egui::Key::ArrowLeft)),
-        "right" | "arrowright" => Some(HotkeyLogicalKey::Egui(egui::Key::ArrowRight)),
-        "up" | "arrowup" => Some(HotkeyLogicalKey::Egui(egui::Key::ArrowUp)),
-        "down" | "arrowdown" => Some(HotkeyLogicalKey::Egui(egui::Key::ArrowDown)),
-        "pagedown" => Some(HotkeyLogicalKey::Egui(egui::Key::PageDown)),
-        "pageup" => Some(HotkeyLogicalKey::Egui(egui::Key::PageUp)),
-        "home" => Some(HotkeyLogicalKey::Egui(egui::Key::Home)),
-        "end" => Some(HotkeyLogicalKey::Egui(egui::Key::End)),
-        "space" => Some(HotkeyLogicalKey::Egui(egui::Key::Space)),
-        "tab" => Some(HotkeyLogicalKey::Egui(egui::Key::Tab)),
-        "f1" => Some(HotkeyLogicalKey::Egui(egui::Key::F1)),
-        "f11" => Some(HotkeyLogicalKey::Egui(egui::Key::F11)),
-        "f" => Some(HotkeyLogicalKey::Egui(egui::Key::F)),
-        "z" => Some(HotkeyLogicalKey::Egui(egui::Key::Z)),
-        "g" => Some(HotkeyLogicalKey::Egui(egui::Key::G)),
-        "q" => Some(HotkeyLogicalKey::Egui(egui::Key::Q)),
-        "delete" => Some(HotkeyLogicalKey::Egui(egui::Key::Delete)),
-        "escape" | "esc" => Some(HotkeyLogicalKey::Egui(egui::Key::Escape)),
-        "equals" => Some(HotkeyLogicalKey::Egui(egui::Key::Equals)),
-        "plus" => Some(HotkeyLogicalKey::Text("+")),
-        "minus" => Some(HotkeyLogicalKey::Text("-")),
-        "dash" => Some(HotkeyLogicalKey::Text("-")),
-        "p" => Some(HotkeyLogicalKey::Egui(egui::Key::P)),
-        "asterisk" => Some(HotkeyLogicalKey::Text("*")),
-        "+" => Some(HotkeyLogicalKey::Text("+")),
-        "-" => Some(HotkeyLogicalKey::Text("-")),
-        "*" => Some(HotkeyLogicalKey::Text("*")),
-        _ => None,
+    let trimmed = value.trim();
+    let normalized = trimmed.to_ascii_lowercase();
+    match normalized.as_str() {
+        "plus" | "+" => Some(HotkeyLogicalKey::Text("+")),
+        "minus" | "dash" | "-" => Some(HotkeyLogicalKey::Text("-")),
+        "asterisk" | "*" => Some(HotkeyLogicalKey::Text("*")),
+        _ => egui::Key::from_name(trimmed).map(HotkeyLogicalKey::Egui),
     }
 }
 
 pub fn logical_key_to_name(key: HotkeyLogicalKey) -> &'static str {
     match key {
-        HotkeyLogicalKey::Egui(egui::Key::ArrowLeft) => "Left",
-        HotkeyLogicalKey::Egui(egui::Key::ArrowRight) => "Right",
-        HotkeyLogicalKey::Egui(egui::Key::ArrowUp) => "Up",
-        HotkeyLogicalKey::Egui(egui::Key::ArrowDown) => "Down",
-        HotkeyLogicalKey::Egui(egui::Key::PageDown) => "PageDown",
-        HotkeyLogicalKey::Egui(egui::Key::PageUp) => "PageUp",
-        HotkeyLogicalKey::Egui(egui::Key::Home) => "Home",
-        HotkeyLogicalKey::Egui(egui::Key::End) => "End",
-        HotkeyLogicalKey::Egui(egui::Key::Space) => "Space",
-        HotkeyLogicalKey::Egui(egui::Key::Tab) => "Tab",
-        HotkeyLogicalKey::Egui(egui::Key::F1) => "F1",
-        HotkeyLogicalKey::Egui(egui::Key::F11) => "F11",
-        HotkeyLogicalKey::Egui(egui::Key::F) => "F",
-        HotkeyLogicalKey::Egui(egui::Key::Z) => "Z",
-        HotkeyLogicalKey::Egui(egui::Key::G) => "G",
-        HotkeyLogicalKey::Egui(egui::Key::Q) => "Q",
-        HotkeyLogicalKey::Egui(egui::Key::Delete) => "Delete",
-        HotkeyLogicalKey::Egui(egui::Key::Escape) => "Escape",
-        HotkeyLogicalKey::Egui(egui::Key::Plus) => "Plus",
-        HotkeyLogicalKey::Egui(egui::Key::Equals) => "Equals",
-        HotkeyLogicalKey::Egui(egui::Key::Minus) => "Minus",
-        HotkeyLogicalKey::Egui(egui::Key::P) => "P",
+        HotkeyLogicalKey::Egui(key) => key.name(),
         HotkeyLogicalKey::Text("+") => "Plus",
         HotkeyLogicalKey::Text("-") => "Dash",
         HotkeyLogicalKey::Text("*") => "Asterisk",
@@ -496,11 +452,19 @@ pub fn logical_key_to_name(key: HotkeyLogicalKey) -> &'static str {
 
 pub fn normalized_bindings_map(
     config: &HotkeyConfigFile,
-) -> HashMap<HotkeyActionId, &HotkeyBindingEntry> {
+) -> HashMap<HotkeyActionId, HotkeyBindingEntry> {
     let mut out = HashMap::new();
     for entry in &config.bindings {
         if let Some(action_id) = action_id_from_str(&entry.action_id) {
-            out.insert(action_id, entry);
+            out.entry(action_id)
+                .and_modify(|existing: &mut HotkeyBindingEntry| {
+                    existing.keys.extend(entry.keys.iter().cloned());
+                    existing.enabled |= entry.enabled;
+                    if existing.comment.is_empty() {
+                        existing.comment = entry.comment.clone();
+                    }
+                })
+                .or_insert_with(|| entry.clone());
         }
     }
     out

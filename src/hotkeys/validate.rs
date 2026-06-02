@@ -43,7 +43,7 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
                 comment: String::new(),
             });
 
-        let source = incoming.get(&action_id).copied().unwrap_or(&fallback);
+        let source = incoming.get(&action_id).unwrap_or(&fallback);
         if incoming.get(&action_id).is_none() {
             warnings.push(format!(
                 "hotkeys missing action '{}', fallback to default",
@@ -60,6 +60,10 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
 
         if source.enabled {
             for key_text in &source.keys {
+                if key_text.trim().is_empty() {
+                    normalized_entry.keys.push(String::new());
+                    continue;
+                }
                 match crate::hotkeys::model::KeyChord::parse(key_text) {
                     Some(chord) => {
                         let display = chord.display_string();
@@ -207,5 +211,110 @@ mod tests {
         };
         let out = validate_hotkey_config(&config);
         assert!(!out.conflicts.is_empty());
+    }
+
+    #[test]
+    fn single_letter_hotkey_is_preserved() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![HotkeyBindingEntry {
+                action_id: "toggle_goto".to_string(),
+                keys: vec!["D".to_string()],
+                enabled: true,
+                comment: String::new(),
+            }],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let toggle_goto = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "toggle_goto")
+            .expect("toggle_goto binding exists");
+
+        assert_eq!(toggle_goto.keys, vec!["D".to_string()]);
+    }
+
+    #[test]
+    fn modified_letter_hotkey_is_preserved() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![HotkeyBindingEntry {
+                action_id: "toggle_goto".to_string(),
+                keys: vec!["Ctrl+Alt+Shift+D".to_string()],
+                enabled: true,
+                comment: String::new(),
+            }],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let toggle_goto = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "toggle_goto")
+            .expect("toggle_goto binding exists");
+
+        assert_eq!(toggle_goto.keys, vec!["Ctrl+Shift+Alt+D".to_string()]);
+    }
+
+    #[test]
+    fn duplicate_action_entries_are_merged() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![
+                HotkeyBindingEntry {
+                    action_id: "next_image".to_string(),
+                    keys: vec!["Right".to_string(), "Down".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+                HotkeyBindingEntry {
+                    action_id: "next_image".to_string(),
+                    keys: vec!["D".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+            ],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let next = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "next_image")
+            .expect("next_image binding exists");
+
+        assert_eq!(next.keys, vec!["Right", "Down", "D"]);
+    }
+
+    #[test]
+    fn empty_hotkey_row_is_preserved_without_runtime_binding() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![HotkeyBindingEntry {
+                action_id: "next_image".to_string(),
+                keys: vec![String::new()],
+                enabled: true,
+                comment: String::new(),
+            }],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let next = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "next_image")
+            .expect("next_image binding exists");
+
+        assert_eq!(next.keys, vec![String::new()]);
+        assert!(
+            out.runtime_bindings
+                .iter()
+                .all(|binding| binding.action_id != HotkeyActionId::NextImage)
+        );
     }
 }

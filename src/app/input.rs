@@ -85,10 +85,6 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
 
         ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                action = Some(AppAction::ToggleSettings);
-                return;
-            }
             action = self.map_key_to_action(i);
         });
 
@@ -181,28 +177,24 @@ impl ImageViewerApp {
         })
     }
 
-    /// Future-proofing: Map a key press to a logical application action.
-    /// This is where we will eventually plug in user-configurable hotkeys.
-    /// Map a key press to a logical application action using a prioritized static lookup table.
-    ///
-    /// [Design Choice: Flat Sorted Array]
-    /// For a small number of hotkeys (~30-50), a linear scan of a pre-sorted array is faster
-    /// than a HashMap due to CPU cache locality and zero hashing overhead. The array is sorted
-    /// by modifier complexity (more modifiers first) to ensure exact matches take priority
-    /// over simple ones (e.g., Ctrl+Left overrides Left).
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
-        let current_mods = get_modifiers_mask(i.modifiers);
-        for key in pressed_key_candidates(i) {
-            let chord = KeyChord {
-                modifiers: current_mods,
-                key: HotkeyLogicalKey::Egui(key),
-            };
-            if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
-                return Some(app_action_from_hotkey_action_id(action_id));
+        for ev in &i.events {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = ev
+            {
+                let chord = KeyChord::from_input_event(*key, *modifiers);
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    return Some(app_action_from_hotkey_action_id(action_id));
+                }
             }
         }
 
         // Some keyboard layouts report zoom keys as text input rather than plain key presses.
+        let current_mods = get_modifiers_mask(i.modifiers);
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
                 let logical = match text.as_str() {
@@ -868,34 +860,6 @@ fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAction {
     }
 }
 
-fn pressed_key_candidates(i: &egui::InputState) -> Vec<egui::Key> {
-    const KEYS: &[egui::Key] = &[
-        egui::Key::ArrowLeft,
-        egui::Key::ArrowRight,
-        egui::Key::ArrowUp,
-        egui::Key::ArrowDown,
-        egui::Key::PageDown,
-        egui::Key::PageUp,
-        egui::Key::Home,
-        egui::Key::End,
-        egui::Key::Space,
-        egui::Key::Tab,
-        egui::Key::F1,
-        egui::Key::F11,
-        egui::Key::F,
-        egui::Key::Z,
-        egui::Key::G,
-        egui::Key::Q,
-        egui::Key::Delete,
-        egui::Key::Escape,
-        egui::Key::Plus,
-        egui::Key::Equals,
-        egui::Key::Minus,
-        egui::Key::P,
-    ];
-    KEYS.iter().copied().filter(|k| i.key_pressed(*k)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{AutoSwitchStep, HOTKEY_MAP, app_action_from_hotkey_action_id, auto_switch_step};
@@ -905,23 +869,20 @@ mod tests {
     #[test]
     fn auto_switch_uses_existing_order_when_random_is_disabled() {
         assert_eq!(
-            auto_switch_step(5, 1, true, false, false),
+            auto_switch_step(5, 1, false, false),
             AutoSwitchStep::NavigateTo(2)
         );
     }
 
     #[test]
     fn auto_switch_stops_when_there_is_only_one_image() {
-        assert_eq!(
-            auto_switch_step(1, 0, true, false, false),
-            AutoSwitchStep::Stop
-        );
+        assert_eq!(auto_switch_step(1, 0, true, false), AutoSwitchStep::Stop);
     }
 
     #[test]
     fn random_auto_switch_starts_by_shuffling_to_first_image() {
         assert_eq!(
-            auto_switch_step(5, 1, true, true, false),
+            auto_switch_step(5, 1, true, false),
             AutoSwitchStep::ShuffleToFirst
         );
     }
@@ -929,16 +890,16 @@ mod tests {
     #[test]
     fn random_auto_switch_reshuffles_before_next_loop() {
         assert_eq!(
-            auto_switch_step(5, 4, true, true, true),
+            auto_switch_step(5, 4, true, true),
             AutoSwitchStep::ShuffleToFirst
         );
     }
 
     #[test]
-    fn random_auto_switch_stops_at_end_when_loop_is_disabled() {
+    fn auto_switch_loops_at_end_when_random_is_disabled() {
         assert_eq!(
-            auto_switch_step(5, 4, false, true, true),
-            AutoSwitchStep::Stop
+            auto_switch_step(5, 4, false, true),
+            AutoSwitchStep::NavigateTo(0)
         );
     }
 
