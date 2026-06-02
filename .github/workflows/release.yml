@@ -42,7 +42,7 @@ env:
   # When dispatching manually with release_tag set, checkout and release use that tag; otherwise use the triggering ref.
   CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref_name }}
-  MONKEY_SDK_VERSION: "1293"
+  MONKEY_SDK_VERSION: "1301"
   MONKEY_SDK_DIR: "3rdparty/monkey-sdk"
   MACOSX_DEPLOYMENT_TARGET: "11.0"
   # vcpkg accepts at most: nuget,<url>[,read|readwrite] — token cannot be a 4th segment (parse error).
