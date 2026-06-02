@@ -438,12 +438,16 @@ impl ImageViewerApp {
             hotkeys_save_tx,
             hotkeys_saver_handle,
             last_hotkeys_save_error: None,
+            hotkeys_apply_success_at: None,
             hotkeys_load_error,
             startup_hotkeys_alert_shown: false,
             hotkeys_capture_target: None,
             hotkeys_selected_row: None,
             hotkeys_add_row_dialog_open: false,
             hotkeys_add_row_action: crate::hotkeys::model::HotkeyActionId::NextImage,
+            hotkeys_add_row_capture_active: false,
+            hotkeys_add_row_captured_key: None,
+            hotkeys_add_row_need_key_hint: false,
             settings,
         };
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {
