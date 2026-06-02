@@ -17,7 +17,7 @@
 use crate::theme::ThemePalette;
 use crate::ui::dialogs::MovableModal;
 use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
-use crate::ui::utils::{styled_button, themed_mini_toggle_switch};
+use crate::ui::utils::{styled_button, themed_checkbox};
 use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
@@ -176,7 +176,7 @@ fn render_format_group(
 
     egui::Grid::new(format!("file_assoc_grid_{:?}", group))
         .num_columns(cols)
-        .spacing([16.0, 5.0])
+        .spacing([18.0, 6.0])
         .show(ui, |ui| {
             for row in 0..rows {
                 for col in 0..cols {
@@ -188,7 +188,7 @@ fn render_format_group(
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             let mut v = state.selections[fi];
-                            if themed_mini_toggle_switch(ui, &mut v, palette).changed() {
+                            if themed_checkbox(ui, &mut v, palette).changed() {
                                 state.selections[fi] = v;
                             }
                             ui.label(label).on_hover_text(&desc);

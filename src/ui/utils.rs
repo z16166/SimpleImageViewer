@@ -359,77 +359,6 @@ pub fn styled_button_widget<'a>(
     }
 }
 
-pub fn themed_toggle_switch(
-    ui: &mut egui::Ui,
-    value: &mut bool,
-    palette: &ThemePalette,
-) -> Response {
-    themed_toggle_switch_sized(ui, value, palette, egui::vec2(34.0, 18.0), 1.8)
-}
-
-pub fn themed_mini_toggle_switch(
-    ui: &mut egui::Ui,
-    value: &mut bool,
-    palette: &ThemePalette,
-) -> Response {
-    themed_toggle_switch_sized(ui, value, palette, egui::vec2(30.0, 16.0), 1.5)
-}
-
-fn themed_toggle_switch_sized(
-    ui: &mut egui::Ui,
-    value: &mut bool,
-    palette: &ThemePalette,
-    desired_size: Vec2,
-    knob_margin: f32,
-) -> Response {
-    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
-
-    if response.clicked() {
-        *value = !*value;
-        response.mark_changed();
-    }
-
-    let t = ui.ctx().animate_bool(response.id, *value);
-    let off_color = if palette.is_dark {
-        Color32::from_gray(54)
-    } else {
-        Color32::from_gray(190)
-    };
-    let bg_color = if *value {
-        if palette.is_dark {
-            Color32::from_rgb(38, 78, 118)
-        } else {
-            palette.button_primary
-        }
-    } else {
-        off_color
-    };
-    let lerp_channel =
-        |a: u8, b: u8| -> u8 { ((a as f32) + ((b as f32) - (a as f32)) * t).round() as u8 };
-    let animated_bg = Color32::from_rgba_unmultiplied(
-        lerp_channel(off_color.r(), bg_color.r()),
-        lerp_channel(off_color.g(), bg_color.g()),
-        lerp_channel(off_color.b(), bg_color.b()),
-        lerp_channel(off_color.a(), bg_color.a()),
-    );
-
-    let radius = rect.height() * 0.5;
-    ui.painter().rect_filled(rect, radius, animated_bg);
-
-    let knob_radius = radius - knob_margin;
-    let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
-    let knob_center = egui::pos2(knob_x, rect.center().y);
-    let knob_color = if palette.is_dark {
-        Color32::from_gray(190)
-    } else {
-        Color32::WHITE
-    };
-    ui.painter()
-        .circle_filled(knob_center, knob_radius, knob_color);
-
-    response
-}
-
 pub fn themed_labeled_toggle(
     ui: &mut egui::Ui,
     value: &mut bool,
@@ -439,7 +368,7 @@ pub fn themed_labeled_toggle(
     ui.horizontal(|ui| {
         let label_resp = ui.label(label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let toggle_resp = themed_toggle_switch(ui, value, palette);
+            let toggle_resp = themed_checkbox(ui, value, palette);
             if label_resp.clicked() {
                 *value = !*value;
             }
@@ -448,6 +377,67 @@ pub fn themed_labeled_toggle(
         .inner
     })
     .inner
+}
+
+pub fn themed_checkbox(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    palette: &ThemePalette,
+) -> Response {
+    let desired_size = egui::vec2(18.0, 18.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+
+    let visuals = ui.style().interact(&response);
+    let fill = if *value {
+        if palette.is_dark {
+            Color32::from_rgb(42, 84, 122)
+        } else {
+            palette.button_primary
+        }
+    } else if palette.is_dark {
+        Color32::from_gray(44)
+    } else {
+        Color32::from_gray(245)
+    };
+    let stroke_color = if *value {
+        if palette.is_dark {
+            Color32::from_gray(120)
+        } else {
+            palette.button_primary
+        }
+    } else {
+        visuals.bg_stroke.color
+    };
+
+    ui.painter().rect(
+        rect.shrink(1.0),
+        egui::CornerRadius::same(4),
+        fill,
+        egui::Stroke::new(1.0_f32, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+
+    if *value {
+        let check_color = if palette.is_dark {
+            Color32::from_gray(210)
+        } else {
+            Color32::WHITE
+        };
+        let left = egui::pos2(rect.left() + 4.5, rect.center().y);
+        let mid = egui::pos2(rect.left() + 8.0, rect.bottom() - 5.0);
+        let right = egui::pos2(rect.right() - 4.0, rect.top() + 5.0);
+        ui.painter()
+            .line_segment([left, mid], egui::Stroke::new(2.0_f32, check_color));
+        ui.painter()
+            .line_segment([mid, right], egui::Stroke::new(2.0_f32, check_color));
+    }
+
+    response
 }
 
 pub fn settings_card<R>(
