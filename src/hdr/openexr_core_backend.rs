@@ -525,9 +525,6 @@ impl OpenExrCoreReadContext {
                         }
                     }
                     Err(e) => {
-                        unsafe {
-                            openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
-                        }
                         log::debug!(
                             "EXR mmap read via OpenEXRCore failed ({}); falling back to file I/O for {}",
                             e,

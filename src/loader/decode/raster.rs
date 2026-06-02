@@ -29,19 +29,23 @@ use std::time::Duration;
 use super::assemble::make_image_data;
 use super::hdr_formats::{is_exr_path, load_hdr};
 
-pub(crate) fn load_static(
+pub(crate) fn load_static_from_mmap(
     path: &PathBuf,
+    mmap: &[u8],
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     use image::ImageReader;
+    use std::io::Cursor;
 
     if is_exr_path(path) {
         return load_hdr(path, hdr_target_capacity, hdr_tone_map);
     }
 
-    let reader = ImageReader::open(path).map_err(|e| e.to_string())?;
-    let mut decoder = reader.with_guessed_format().map_err(|e| e.to_string())?;
+    let reader = ImageReader::new(Cursor::new(mmap))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut decoder = reader;
     // Remove the default memory limit (512MB) to allow gigapixel images
     decoder.no_limits();
 
@@ -57,6 +61,18 @@ pub(crate) fn load_static(
         path.as_path(),
         make_image_data(DecodedImage::new(width, height, pixels)),
     ))
+}
+
+pub(crate) fn load_static(
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: HdrToneMapSettings,
+) -> Result<ImageData, String> {
+    if is_exr_path(path) {
+        return load_hdr(path, hdr_target_capacity, hdr_tone_map);
+    }
+    let mmap = crate::mmap_util::map_file(path)?;
+    load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map)
 }
 pub(crate) fn process_animation_frames(
     raw_frames: Vec<image::Frame>,
@@ -107,10 +123,10 @@ pub(crate) fn load_gif(
 ) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::gif::GifDecoder;
-    use std::io::BufReader;
+    use std::io::Cursor;
 
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let mmap = crate::mmap_util::map_file(path)?;
+    let reader = Cursor::new(&mmap[..]);
     let decoder = GifDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -127,14 +143,14 @@ pub(crate) fn load_png(
 ) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::png::PngDecoder;
-    use std::io::BufReader;
+    use std::io::Cursor;
 
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let mmap = crate::mmap_util::map_file(path)?;
+    let reader = Cursor::new(&mmap[..]);
     let decoder = PngDecoder::new(reader).map_err(|e| e.to_string())?;
 
     if !decoder.is_apng().map_err(|e| e.to_string())? {
-        return load_static(path, hdr_target_capacity, hdr_tone_map);
+        return load_static_from_mmap(path, &mmap, hdr_target_capacity, hdr_tone_map);
     }
 
     let raw_frames = decoder
@@ -158,10 +174,10 @@ pub(crate) fn load_webp(
 ) -> Result<ImageData, String> {
     use image::AnimationDecoder;
     use image::codecs::webp::WebPDecoder;
-    use std::io::BufReader;
+    use std::io::Cursor;
 
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let mmap = crate::mmap_util::map_file(path)?;
+    let reader = Cursor::new(&mmap[..]);
     let decoder = WebPDecoder::new(reader).map_err(|e| e.to_string())?;
     let raw_frames = decoder
         .into_frames()
@@ -176,11 +192,15 @@ pub(crate) fn load_webp(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
-    // Step 1: Estimate memory requirement from header
-    let (width, height, _channels, estimated_bytes) = crate::psb_reader::estimate_memory(path)?;
+    // Step 1: Map the file once standardly
+    let mmap = crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
+
+    // Step 2: Estimate memory requirement from header bytes
+    let (width, height, _channels, estimated_bytes) =
+        crate::psb_reader::estimate_memory_from_bytes(&mmap)?;
     let estimated_mb = estimated_bytes / BYTES_PER_MB;
 
-    // Step 2: Check available RAM
+    // Step 3: Check available RAM
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
@@ -201,14 +221,8 @@ pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         height
     );
 
-    // Step 3: Detect version and choose decoder
-    let mut sig_buf = [0u8; 6];
-    {
-        use std::io::Read;
-        let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        f.read_exact(&mut sig_buf).map_err(|e| e.to_string())?;
-    }
-    let version = u16::from_be_bytes([sig_buf[4], sig_buf[5]]);
+    // Step 4: Detect version and choose decoder
+    let version = u16::from_be_bytes([mmap[4], mmap[5]]);
 
     if version == 2 {
         // PSB v2: Use tiled source for large files
@@ -220,8 +234,6 @@ pub(crate) fn load_psd(path: &PathBuf) -> Result<ImageData, String> {
         // PSD v1: use the psd crate (mmap bitstream; `psd` still allocates its own structures).
         // Decode on a dedicated thread: `join()` turns any unwinding panic into `Err`, which is
         // more reliable than `catch_unwind` alone when the loader runs on worker pools / mixed stacks.
-        let mmap =
-            crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read PSD: {e}"))?;
 
         let handle = std::thread::Builder::new()
             .name("siv-psd-v1".to_string())

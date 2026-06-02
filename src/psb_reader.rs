@@ -719,26 +719,32 @@ fn read_u64(r: &mut impl Read) -> Result<u64, String> {
     Ok(u64::from_be_bytes(buf))
 }
 
-/// Estimate the memory required to decode a PSD/PSB composite (in bytes).
+/// Estimate the memory required to decode a PSD/PSB composite (in bytes) from header bytes.
 /// Returns (width, height, channels, estimated_bytes) or an error.
-pub fn estimate_memory(path: &Path) -> Result<(u32, u32, u32, u64), String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
-    let mut r = BufReader::new(file);
-
-    let mut sig = [0u8; 4];
-    r.read_exact(&mut sig)
-        .map_err(|e| format!("Read error: {e}"))?;
-    if &sig != b"8BPS" {
-        return Err("Not a PSD/PSB file".into());
+pub fn estimate_memory_from_bytes(bytes: &[u8]) -> Result<(u32, u32, u32, u64), String> {
+    if bytes.len() < 26 {
+        return Err("PSD/PSB header is too short".into());
     }
-    let _version = read_u16(&mut r)?;
-    r.seek(SeekFrom::Current(6))
-        .map_err(|e| format!("Seek error: {e}"))?;
-    let channels = read_u16(&mut r)? as u32;
-    let height = read_u32(&mut r)?;
-    let width = read_u32(&mut r)?;
+    if &bytes[0..4] != b"8BPS" {
+        return Err("Not a PSD/PSB file (invalid signature)".into());
+    }
+    let version = u16::from_be_bytes([bytes[4], bytes[5]]);
+    if version != 1 && version != 2 {
+        return Err(format!("Unknown PSD/PSB version: {version}"));
+    }
+    let channels = u16::from_be_bytes([bytes[12], bytes[13]]) as u32;
+    let height = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
+    let width = u32::from_be_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
 
-    // Optimized memory: width * height * 4 (the final RGBA output is the main consumer)
     let rgba = width as u64 * height as u64 * 4;
     Ok((width, height, channels, rgba))
+}
+
+/// Estimate the memory required to decode a PSD/PSB composite (in bytes).
+/// Returns (width, height, channels, estimated_bytes) or an error.
+#[allow(dead_code)]
+pub fn estimate_memory(path: &Path) -> Result<(u32, u32, u32, u64), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("Cannot open file: {e}"))?;
+    let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("Mmap failed: {e}"))? };
+    estimate_memory_from_bytes(&mmap)
 }
