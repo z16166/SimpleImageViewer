@@ -585,6 +585,8 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
     pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
     pub(crate) last_hotkeys_save_error: Option<(String, Instant)>,
+    pub(crate) hotkeys_load_error: Option<String>,
+    pub(crate) startup_hotkeys_alert_shown: bool,
     pub(crate) hotkeys_capture_target:
         Option<(crate::hotkeys::model::HotkeyActionId, usize, usize)>,
     pub(crate) hotkeys_selected_row: Option<(usize, usize)>,
@@ -602,7 +604,61 @@ pub(crate) struct PendingAnimUpload {
     next_frame: usize,
 }
 
+pub(crate) fn build_hotkeys_issue_message(
+    load_error: Option<&str>,
+    conflicts: &[crate::hotkeys::model::HotkeyConflict],
+    warnings: &[String],
+) -> Option<String> {
+    if load_error.is_none() && conflicts.is_empty() && warnings.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if let Some(error) = load_error {
+        lines.push(t!("hotkeys.load_failed", error = error).to_string());
+    }
+    if !conflicts.is_empty() {
+        lines.push(t!("hotkeys.startup_conflicts", count = conflicts.len()).to_string());
+        for conflict in conflicts.iter().take(3) {
+            let actions = conflict
+                .actions
+                .iter()
+                .map(|action| crate::hotkeys::model::action_id_to_str(*action))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("{}: {}", conflict.key, actions));
+        }
+    }
+    if !warnings.is_empty() {
+        lines.push(t!("hotkeys.startup_warnings", count = warnings.len()).to_string());
+        lines.extend(warnings.iter().take(3).cloned());
+    }
+    lines.push(t!("hotkeys.startup_open_settings_hint").to_string());
+    Some(lines.join("\n"))
+}
+
 impl ImageViewerApp {
+    pub(crate) fn hotkeys_status_message(&self) -> Option<String> {
+        build_hotkeys_issue_message(
+            self.hotkeys_load_error.as_deref(),
+            &self.hotkeys_runtime.conflicts,
+            &self.hotkeys_runtime.warnings,
+        )
+    }
+
+    pub(crate) fn open_startup_hotkeys_alert_if_needed(&mut self) {
+        if self.startup_hotkeys_alert_shown || self.active_modal.is_some() {
+            return;
+        }
+        let Some(message) = self.hotkeys_status_message() else {
+            return;
+        };
+        self.active_modal = Some(ActiveModal::Confirm(
+            crate::ui::dialogs::confirm::State::info(t!("hotkeys.startup_issue_title"), message),
+        ));
+        self.startup_hotkeys_alert_shown = true;
+    }
+
     pub(crate) fn effective_hdr_monitor_selection(
         &self,
     ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
@@ -1162,6 +1218,8 @@ impl eframe::App for ImageViewerApp {
         // only dims visually (Order::Background); to achieve true modality we
         // must prevent the settings panel from being rendered (and thus from
         // receiving input) while a dialog is on screen.
+        self.open_startup_hotkeys_alert_if_needed();
+
         let modal_open = self.active_modal.is_some();
         if self.show_settings && !modal_open {
             self.draw_settings_panel(&ctx, frame);
@@ -1527,6 +1585,29 @@ mod tests {
         assert!(refresh.indices_to_invalidate.is_empty());
         assert!(!refresh.reload_current);
         assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
+    }
+
+    #[test]
+    fn hotkey_issue_message_reports_load_errors() {
+        let message = build_hotkeys_issue_message(Some("bad yaml"), &[], &[])
+            .expect("load error should be user-visible");
+        assert!(message.contains("bad yaml"));
+    }
+
+    #[test]
+    fn hotkey_issue_message_reports_conflicts_and_warnings() {
+        let conflicts = vec![crate::hotkeys::model::HotkeyConflict {
+            key: "D".to_string(),
+            actions: vec![
+                crate::hotkeys::model::HotkeyActionId::NextImage,
+                crate::hotkeys::model::HotkeyActionId::PrevImage,
+            ],
+        }];
+        let warnings = vec!["invalid key 'Foo' for action 'next_image', ignored".to_string()];
+        let message = build_hotkeys_issue_message(None, &conflicts, &warnings)
+            .expect("validation issues should be user-visible");
+        assert!(message.contains("D"));
+        assert!(message.contains("invalid key"));
     }
 
     #[test]

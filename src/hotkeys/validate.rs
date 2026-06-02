@@ -411,11 +411,7 @@ mod tests {
             .expect("print_current binding exists");
 
         assert!(!toggle_goto.keys.contains(&"LeftClick".to_string()));
-        assert!(
-            toggle_settings
-                .keys
-                .contains(&"Ctrl+LeftClick".to_string())
-        );
+        assert!(toggle_settings.keys.contains(&"Ctrl+LeftClick".to_string()));
         assert!(print_current.keys.contains(&"MiddleClick".to_string()));
     }
 }

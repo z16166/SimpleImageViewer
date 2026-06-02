@@ -543,7 +543,10 @@ mod tests {
         let next = st.take_next_playable_path();
         assert_eq!(
             next,
-            Some((only_in_m3u.canonicalize().expect("canonical only_in_m3u"), true))
+            Some((
+                only_in_m3u.canonicalize().expect("canonical only_in_m3u"),
+                true
+            ))
         );
         assert!(st.injected_playlist.is_empty());
 
@@ -558,11 +561,7 @@ mod tests {
         fs::write(&base1, b"fake").expect("write base1");
         fs::write(&base2, b"fake").expect("write base2");
         let m3u = dir.join("playlist.m3u");
-        let content = format!(
-            "{}\n{}\n",
-            base1.to_string_lossy(),
-            base2.to_string_lossy()
-        );
+        let content = format!("{}\n{}\n", base1.to_string_lossy(), base2.to_string_lossy());
         fs::write(&m3u, content).expect("write playlist");
 
         let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
@@ -624,8 +623,11 @@ mod tests {
         fs::write(&a, b"fake").expect("write a");
         fs::write(&b, b"fake").expect("write b");
         let m3u = dir.join("dup.m3u");
-        fs::write(&m3u, format!("{}\n{}\n", a.to_string_lossy(), b.to_string_lossy()))
-            .expect("write m3u");
+        fs::write(
+            &m3u,
+            format!("{}\n{}\n", a.to_string_lossy(), b.to_string_lossy()),
+        )
+        .expect("write m3u");
 
         let mut st = AudioLoopState::new(Arc::new(AtomicBool::new(false)));
         st.base_playlist = vec![a.clone(), m3u, b];
@@ -654,7 +656,10 @@ mod tests {
         st.stopped = false;
 
         assert_eq!(st.take_next_playable_path(), None);
-        assert!(st.stopped, "state should stop when no playable entries remain");
+        assert!(
+            st.stopped,
+            "state should stop when no playable entries remain"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -698,7 +703,10 @@ mod tests {
         st.current_file_path = Some(canonical_or_clone(&t2));
         st.current_from_injected = true;
         assert!(st.rewind_injected_one_step());
-        assert_eq!(st.injected_playlist.pop_front(), Some(canonical_or_clone(&t1)));
+        assert_eq!(
+            st.injected_playlist.pop_front(),
+            Some(canonical_or_clone(&t1))
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

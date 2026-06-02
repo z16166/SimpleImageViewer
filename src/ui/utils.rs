@@ -379,11 +379,7 @@ pub fn themed_labeled_toggle(
     .inner
 }
 
-pub fn themed_checkbox(
-    ui: &mut egui::Ui,
-    value: &mut bool,
-    palette: &ThemePalette,
-) -> Response {
+pub fn themed_checkbox(ui: &mut egui::Ui, value: &mut bool, palette: &ThemePalette) -> Response {
     let desired_size = egui::vec2(18.0, 18.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 

@@ -80,15 +80,24 @@ impl ImageViewerApp {
             }
         };
 
+        let mut hotkeys_load_error = None;
         let hotkeys_runtime = match crate::hotkeys::load_runtime_hotkeys_state() {
             Ok(state) => {
                 for warning in &state.warnings {
                     log::warn!("[hotkeys] {}", warning);
                 }
+                for conflict in &state.conflicts {
+                    log::warn!(
+                        "[hotkeys] conflict {}: {:?}",
+                        conflict.key,
+                        conflict.actions
+                    );
+                }
                 state
             }
             Err(e) => {
                 log::error!("[hotkeys] failed to load runtime hotkeys: {}", e);
+                hotkeys_load_error = Some(e);
                 crate::hotkeys::rebuild_runtime_state(
                     &crate::hotkeys::model::default_hotkey_config_file(),
                 )
@@ -424,6 +433,8 @@ impl ImageViewerApp {
             hotkeys_save_tx,
             hotkeys_saver_handle,
             last_hotkeys_save_error: None,
+            hotkeys_load_error,
+            startup_hotkeys_alert_shown: false,
             hotkeys_capture_target: None,
             hotkeys_selected_row: None,
             hotkeys_add_row_dialog_open: false,

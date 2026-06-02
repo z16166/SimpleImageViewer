@@ -47,7 +47,9 @@ impl ImageViewerApp {
                 // an existing menu, making it impossible to re-open the menu
                 // with a single right-click.  Instead we detect raw right-clicks
                 // via `ctx.input()` and render the menu through `egui::Area`.
-                if !any_modal_open && pointer_hotkey_action.is_none() && !self.image_files.is_empty()
+                if !any_modal_open
+                    && pointer_hotkey_action.is_none()
+                    && !self.image_files.is_empty()
                 {
                     let ctx = ui.ctx().clone();
                     let raw_secondary = ctx.input(|i| i.pointer.secondary_clicked());
@@ -252,10 +254,38 @@ impl ImageViewerApp {
                         );
                     }
                 }
+                self.draw_hotkeys_issue_overlay(ui, screen_rect);
 
                 // Wheel navigation/zoom: run after the canvas is allocated so egui hover
                 // heuristics in `logic()` cannot swallow scroll (see `handle_main_window_wheel_input`).
                 self.handle_main_window_wheel_input(ui.ctx());
+            });
+    }
+
+    fn draw_hotkeys_issue_overlay(&self, ui: &mut egui::Ui, screen_rect: Rect) {
+        let Some(message) = self.hotkeys_status_message() else {
+            return;
+        };
+        egui::Area::new("hotkeys_issue_overlay".into())
+            .anchor(
+                Align2::LEFT_BOTTOM,
+                Vec2::new(
+                    crate::constants::OSD_MARGIN,
+                    -crate::constants::OSD_ERROR_OFFSET,
+                ),
+            )
+            .show(ui.ctx(), |ui| {
+                ui.set_max_width(
+                    (screen_rect.width() - crate::constants::OSD_MARGIN * 2.0).max(64.0),
+                );
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(message)
+                            .font(FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE))
+                            .color(Color32::from_rgb(255, 100, 100)),
+                    )
+                    .wrap(),
+                );
             });
     }
 }

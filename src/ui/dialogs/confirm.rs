@@ -110,14 +110,16 @@ impl State {
     /// Build state for a simple info/success dialog (single button).
     #[allow(dead_code)]
     pub fn info(title: impl Into<String>, message: impl Into<String>) -> Self {
+        let message = message.into();
+        let line_count = message.lines().count().max(1) as f32;
         Self {
             title: title.into(),
-            message: message.into(),
+            message,
             confirm_label: t!("btn.ok").to_string(),
             cancel_label: String::new(),
             tag: ConfirmTag::InfoOnly,
             show_cancel: false,
-            dialog_height: 160.0,
+            dialog_height: (140.0 + line_count * 18.0).clamp(160.0, 320.0),
         }
     }
 }
@@ -147,7 +149,10 @@ pub fn show(state: &State, ctx: &Context, palette: &ThemePalette) -> ModalResult
                         .color(egui::Color32::from_rgb(255, 180, 60)),
                 );
                 ui.add_space(4.0);
-                ui.label(RichText::new(&state.message).color(palette.text_normal));
+                ui.add(
+                    egui::Label::new(RichText::new(&state.message).color(palette.text_normal))
+                        .wrap(),
+                );
             });
             ui.add_space(16.0);
 
