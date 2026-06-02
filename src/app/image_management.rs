@@ -169,7 +169,8 @@ fn should_reset_transition_when_source_texture_missing(
     transition_style: TransitionStyle,
     has_source_texture: bool,
 ) -> bool {
-    transition_style == TransitionStyle::None || !has_source_texture
+    let _ = transition_style;
+    !has_source_texture
 }
 
 fn transition_preroll_duration(transition_ms: u32) -> Duration {
@@ -192,6 +193,15 @@ fn can_start_pending_transition(
 
 fn should_start_transition_immediately(target_has_texture: bool, has_source_texture: bool) -> bool {
     target_has_texture && has_source_texture
+}
+
+fn navigation_is_forward(current_index: usize, target_index: usize, total: usize) -> bool {
+    if total == 0 || current_index == target_index {
+        return true;
+    }
+    let forward_steps = (target_index + total - current_index) % total;
+    let backward_steps = (current_index + total - target_index) % total;
+    forward_steps <= backward_steps
 }
 
 fn select_transition_source_texture(
@@ -699,10 +709,13 @@ impl ImageViewerApp {
             return;
         }
 
+        let previous_index = self.current_index;
         let target_index = new_index % self.image_files.len();
         if target_index == self.current_index {
             return;
         }
+        let preload_forward =
+            navigation_is_forward(previous_index, target_index, self.image_files.len());
 
         // Setup transition if enabled. We defer transition start until the target
         // texture is actually ready to draw, avoiding black/stale-frame flashes.
@@ -747,14 +760,23 @@ impl ImageViewerApp {
                 self.pending_transition_target = None;
             }
         } else {
+            let source_tex = self.texture_cache.get(self.current_index).cloned();
+            let source_has_texture = source_tex.is_some();
+            let target_has_texture = self.texture_cache.contains(target_index);
             self.active_transition = TransitionStyle::None;
-            self.pending_transition_target = None;
+            self.transition_start = None;
+            self.prev_texture = select_transition_source_texture(source_tex);
+            self.pending_transition_target = if !target_has_texture && source_has_texture {
+                Some(target_index)
+            } else {
+                None
+            };
             if should_reset_transition_when_source_texture_missing(
                 self.settings.transition_style,
-                true,
+                self.prev_texture.is_some(),
             ) {
                 self.prev_texture = None;
-                self.transition_start = None;
+                self.pending_transition_target = None;
             }
         }
 
@@ -886,7 +908,7 @@ impl ImageViewerApp {
         // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
         self.evict_distant_prefetch_caches();
 
-        self.schedule_preloads(true);
+        self.schedule_preloads(preload_forward);
         // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
         // current index that still carries the old prefetch generation — it may have arrived in
         // the channel between the generation bump and now and must not be thrown away.
@@ -1505,8 +1527,15 @@ impl ImageViewerApp {
             self.current_index,
             self.texture_cache.contains(self.current_index),
         ) {
-            self.transition_start =
-                Some(Instant::now() - transition_preroll_duration(self.settings.transition_ms));
+            if self.active_transition != TransitionStyle::None {
+                self.transition_start =
+                    Some(Instant::now() - transition_preroll_duration(self.settings.transition_ms));
+            } else {
+                // No-transition mode uses `prev_texture` only as a one-frame safety net while
+                // waiting for the target texture. Once current texture is ready, release it
+                // immediately instead of keeping an extra stale handle until next navigation.
+                self.prev_texture = None;
+            }
             self.pending_transition_target = None;
         }
     }
@@ -2634,6 +2663,26 @@ mod tests {
     #[test]
     fn transition_source_texture_selection_clears_when_current_missing() {
         assert!(select_transition_source_texture(None).is_none());
+    }
+
+    #[test]
+    fn transition_none_keeps_source_frame_until_target_is_ready() {
+        assert!(!should_reset_transition_when_source_texture_missing(
+            TransitionStyle::None,
+            true
+        ));
+        assert!(should_reset_transition_when_source_texture_missing(
+            TransitionStyle::None,
+            false
+        ));
+    }
+
+    #[test]
+    fn navigation_direction_matches_wrap_aware_next_prev_behavior() {
+        assert!(navigation_is_forward(1, 2, 10));
+        assert!(!navigation_is_forward(2, 1, 10));
+        assert!(navigation_is_forward(9, 0, 10));
+        assert!(!navigation_is_forward(0, 9, 10));
     }
 
     #[test]
