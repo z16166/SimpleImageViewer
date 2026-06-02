@@ -383,6 +383,23 @@ impl<'a> ImageInstallPlan<'a> {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
+        if self
+            .hdr_placeholder_fallback_indices
+            .contains(&self.current_index)
+        {
+            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
+                let source_key = source_key_for_path(&self.image_files[self.current_index]);
+                self.loader.trigger_hdr_sdr_fallback_refinement(
+                    self.current_index,
+                    self.generation,
+                    hdr,
+                    source_key,
+                );
+            }
+        }
+    }
+
     pub(crate) fn invalidate_random_slideshow_order(&mut self) {
         self.random_slideshow_order_ready = false;
     }
@@ -1076,6 +1093,7 @@ impl ImageViewerApp {
             .map(|old_gen| (self.current_index, old_gen));
         self.loader
             .discard_pending_stale_outputs(self.generation, also_keep);
+        self.trigger_current_hdr_fallback_refinement_if_needed();
     }
 
     pub(crate) fn navigate_next(&mut self) {
@@ -2023,6 +2041,16 @@ impl ImageViewerApp {
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+
+            if sdr_fallback_is_placeholder {
+                let source_key = source_key_for_path(&self.image_files[idx]);
+                self.loader.trigger_hdr_sdr_fallback_refinement(
+                    idx,
+                    self.generation,
+                    Arc::clone(&hdr),
+                    source_key,
+                );
+            }
         }
     }
 
