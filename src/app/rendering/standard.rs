@@ -80,8 +80,9 @@ fn should_clear_transition_state_after_static_hdr_draw(
 pub(crate) fn should_dispatch_standard_draw(
     has_sdr_texture: bool,
     has_current_hdr_image: bool,
+    sdr_fallback_is_placeholder: bool,
 ) -> bool {
-    has_sdr_texture || has_current_hdr_image
+    has_current_hdr_image || (has_sdr_texture && !sdr_fallback_is_placeholder)
 }
 
 impl ImageViewerApp {
@@ -125,7 +126,8 @@ impl ImageViewerApp {
         };
 
         // Use original image dimensions if known (Tiled previews are smaller than the real image)
-        let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+        let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index)
+        {
             Vec2::new(w as f32, h as f32)
         } else if let Some((w, h)) = self.current_image_res {
             Vec2::new(w as f32, h as f32)
@@ -148,6 +150,8 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))
             .cloned();
+        let hdr_image =
+            hdr_image.or_else(|| self.hdr_image_cache.get(&self.current_index).cloned());
         // `draw_standard_image` is only reached when `texture_cache.get(current_index)` returned
         // `Some`. Static HDR installs always register [`ImageViewerApp::hdr_sdr_fallback_indices`];
         // keep [`build_render_plan`]/[`crate::hdr::monitor::effective_render_output_mode`] inputs
@@ -606,9 +610,10 @@ mod tests {
 
     #[test]
     fn standard_dispatch_allows_hdr_plane_without_sdr_texture() {
-        assert!(should_dispatch_standard_draw(true, false));
-        assert!(should_dispatch_standard_draw(false, true));
-        assert!(!should_dispatch_standard_draw(false, false));
+        assert!(should_dispatch_standard_draw(true, false, false));
+        assert!(!should_dispatch_standard_draw(true, false, true));
+        assert!(should_dispatch_standard_draw(false, true, true));
+        assert!(!should_dispatch_standard_draw(false, false, false));
     }
 
     #[test]

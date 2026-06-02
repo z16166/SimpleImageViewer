@@ -16,8 +16,18 @@
 
 use image::{DynamicImage, RgbaImage};
 use parking_lot::RwLock as PLRwLock;
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub type SourceKey = u64;
+
+pub fn source_key_for_path(path: &Path) -> SourceKey {
+    let normalized = path.to_string_lossy().to_lowercase();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// RGBA8 in a shared [`Arc`] so decode → channel → UI can reuse one allocation (cheap `Clone`).
 /// `egui::ColorImage::from_rgba_unmultiplied` still converts RGBA8 → `Color32` once at upload time.
@@ -392,6 +402,7 @@ impl PreviewBundle {
 pub struct LoadResult {
     pub index: usize,
     pub generation: u64,
+    pub source_key: SourceKey,
     pub result: Result<ImageData, String>,
     pub preview_bundle: PreviewBundle,
     pub ultra_hdr_capacity_sensitive: bool,
@@ -408,6 +419,7 @@ pub struct LoadResult {
 pub struct HdrSdrFallbackResult {
     pub index: usize,
     pub generation: u64,
+    pub source_key: SourceKey,
     pub fallback: DecodedImage,
 }
 
@@ -461,6 +473,7 @@ impl TileDecodeSource {
 pub struct PreviewResult {
     pub index: usize,
     pub generation: u64,
+    pub source_key: SourceKey,
     pub preview_bundle: PreviewBundle,
     pub error: Option<String>,
 }
@@ -469,6 +482,7 @@ impl PreviewResult {
     pub fn from_sdr_preview(
         index: usize,
         generation: u64,
+        source_key: SourceKey,
         result: Result<DecodedImage, String>,
     ) -> Self {
         let (preview_bundle, error) = match result {
@@ -478,6 +492,7 @@ impl PreviewResult {
         Self {
             index,
             generation,
+            source_key,
             preview_bundle,
             error,
         }
@@ -498,6 +513,7 @@ pub struct RefinementRequest {
     pub path: PathBuf,
     pub index: usize,
     pub generation: u64,
+    pub source_key: SourceKey,
     pub orientation_override: Option<i32>,
     pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
 }

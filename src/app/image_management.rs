@@ -4,7 +4,7 @@ use crate::app::{
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
-    RenderShape as LoadedRenderShape, TileResult,
+    RenderShape as LoadedRenderShape, TileResult, source_key_for_path,
 };
 use crate::scanner::{self, ScanMessage};
 use crate::tile_cache::TileManager;
@@ -186,13 +186,24 @@ fn transition_preroll_duration(transition_ms: u32) -> Duration {
 fn can_start_pending_transition(
     target: Option<usize>,
     current_index: usize,
-    has_texture: bool,
+    target_is_render_ready: bool,
 ) -> bool {
-    target == Some(current_index) && has_texture
+    target == Some(current_index) && target_is_render_ready
 }
 
 fn should_start_transition_immediately(target_has_texture: bool, has_source_texture: bool) -> bool {
     target_has_texture && has_source_texture
+}
+
+fn target_is_render_ready(
+    has_sdr_texture: bool,
+    has_hdr_plane: bool,
+    sdr_fallback_is_placeholder: bool,
+) -> bool {
+    if has_hdr_plane {
+        return true;
+    }
+    has_sdr_texture && !sdr_fallback_is_placeholder
 }
 
 fn navigation_is_forward(current_index: usize, target_index: usize, total: usize) -> bool {
@@ -204,10 +215,55 @@ fn navigation_is_forward(current_index: usize, target_index: usize, total: usize
     forward_steps <= backward_steps
 }
 
+fn source_key_matches_index(
+    image_files: &[PathBuf],
+    index: usize,
+    source_key: crate::loader::SourceKey,
+) -> bool {
+    image_files
+        .get(index)
+        .is_some_and(|path| source_key_for_path(path) == source_key)
+}
+
+fn output_mode_is_hdr(mode: crate::hdr::types::HdrOutputMode) -> bool {
+    mode != crate::hdr::types::HdrOutputMode::SdrToneMapped
+}
+
+fn output_mode_crosses_hdr_sdr_boundary(
+    previous: crate::hdr::types::HdrOutputMode,
+    next: crate::hdr::types::HdrOutputMode,
+) -> bool {
+    output_mode_is_hdr(previous) != output_mode_is_hdr(next)
+}
+
+fn should_use_current_texture_as_transition_source(current_has_placeholder_fallback: bool) -> bool {
+    !current_has_placeholder_fallback
+}
+
+fn should_reuse_previous_transition_source(
+    current_has_placeholder_fallback: bool,
+    has_current_source_texture: bool,
+) -> bool {
+    current_has_placeholder_fallback || !has_current_source_texture
+}
+
 fn select_transition_source_texture(
     current_source_texture: Option<egui::TextureHandle>,
+    current_has_placeholder_fallback: bool,
+    previous_transition_source: Option<egui::TextureHandle>,
 ) -> Option<egui::TextureHandle> {
-    current_source_texture
+    if should_use_current_texture_as_transition_source(current_has_placeholder_fallback)
+        && !should_reuse_previous_transition_source(
+            current_has_placeholder_fallback,
+            current_source_texture.is_some(),
+        )
+    {
+        current_source_texture
+    } else {
+        // Keep the previous non-placeholder source when the current frame is only a
+        // temporary black fallback; this avoids black flashes on rapid direction changes.
+        previous_transition_source
+    }
 }
 
 fn invalidate_tile_manager_requests_for_view_change(
@@ -435,23 +491,49 @@ impl ImageViewerApp {
         )
     }
 
+    pub(crate) fn sync_hdr_tone_map_settings(&mut self) {
+        let tone = self.effective_hdr_tone_map_settings();
+        self.hdr_renderer.tone_map = tone;
+        self.loader.set_hdr_tone_map_settings(tone);
+    }
+
     pub(crate) fn refresh_ultra_hdr_decode_capacity(&mut self, ctx: &egui::Context) {
         const CAPACITY_EPSILON: f32 = 0.001;
+        let next_output_mode = self.hdr_capabilities.output_mode;
         let next_capacity = self.effective_ultra_hdr_decode_capacity();
-        if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON {
+        let crosses_hdr_sdr_boundary = output_mode_crosses_hdr_sdr_boundary(
+            self.ultra_hdr_decode_output_mode,
+            next_output_mode,
+        );
+        if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON
+            && !crosses_hdr_sdr_boundary
+        {
             return;
         }
 
         let previous_capacity = self.ultra_hdr_decode_capacity;
+        let previous_output_mode = self.ultra_hdr_decode_output_mode;
         self.ultra_hdr_decode_capacity = next_capacity;
+        self.ultra_hdr_decode_output_mode = next_output_mode;
         self.loader.set_hdr_target_capacity(next_capacity);
         self.loader
             .set_hdr_tone_map_settings(self.effective_hdr_tone_map_settings());
         log::info!(
-            "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}",
+            "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}; output_mode {:?} -> {:?}",
             previous_capacity,
-            next_capacity
+            next_capacity,
+            previous_output_mode,
+            next_output_mode
         );
+
+        if crosses_hdr_sdr_boundary {
+            log::info!(
+                "[HDR] HDR/SDR output boundary changed; invalidating in-flight/preload state and reloading current image"
+            );
+            self.reload_current_after_hdr_sdr_output_boundary_change();
+            ctx.request_repaint();
+            return;
+        }
 
         self.invalidate_ultra_hdr_capacity_sensitive_state(ctx);
     }
@@ -475,6 +557,7 @@ impl ImageViewerApp {
         // *old* capacity snapshot.  Those stale workers must be evicted so that the
         // re-scheduled preloads below use the updated capacity.
         self.loader.cancel_all();
+        self.clear_preloaded_assets_for_capacity_change();
 
         if refresh.indices_to_invalidate.is_empty() {
             // No cached HDR images to evict, but we still need to reschedule preloads
@@ -518,6 +601,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.clear();
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
+        self.hdr_placeholder_fallback_indices.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
@@ -530,6 +614,7 @@ impl ImageViewerApp {
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
+        self.hdr_placeholder_fallback_indices.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
@@ -570,6 +655,65 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(evicted_idx);
     }
 
+    fn clear_preloaded_assets_for_capacity_change(&mut self) {
+        let current = self.current_index;
+        let mut indices = std::collections::BTreeSet::new();
+        indices.extend(self.texture_cache.textures.keys().copied());
+        indices.extend(self.prefetched_tiles.keys().copied());
+        indices.extend(self.hdr_image_cache.keys().copied());
+        indices.extend(self.hdr_tiled_source_cache.keys().copied());
+        indices.extend(self.hdr_tiled_preview_cache.keys().copied());
+        indices.extend(self.deferred_sdr_uploads.keys().copied());
+        indices.extend(self.animation_cache.keys().copied());
+        indices.extend(self.hdr_sdr_fallback_indices.iter().copied());
+        indices.extend(self.hdr_placeholder_fallback_indices.iter().copied());
+        indices.extend(self.ultra_hdr_capacity_sensitive_indices.iter().copied());
+
+        for idx in indices {
+            if idx == current {
+                continue;
+            }
+            self.texture_cache.remove(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.animation_cache.remove(&idx);
+            self.deferred_sdr_uploads.remove(&idx);
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            self.remove_hdr_image_index(idx);
+        }
+    }
+
+    fn reload_current_after_hdr_sdr_output_boundary_change(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+        self.clear_preloaded_assets_for_capacity_change();
+
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        let idx = self.current_index;
+        self.texture_cache.remove(idx);
+        self.prefetched_tiles.remove(&idx);
+        crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+        self.remove_hdr_image_index(idx);
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.animation = None;
+        self.pending_anim_frames = None;
+        self.prev_texture = None;
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prefetch_prev_generation = None;
+
+        self.loader.request_load(
+            idx,
+            self.generation,
+            self.image_files[idx].clone(),
+            self.settings.raw_high_quality,
+        );
+    }
+
     /// Circular index distance used for preload tile / CPU cache retention.
     const PREFETCH_WINDOW_DISTANCE: usize = 2;
 
@@ -590,6 +734,7 @@ impl ImageViewerApp {
             .filter(|&idx| !within_window(idx))
             .collect();
         for idx in distant_hdr {
+            self.texture_cache.remove(idx);
             self.remove_hdr_image_index(idx);
         }
     }
@@ -735,14 +880,31 @@ impl ImageViewerApp {
             // Always overwrite transition source. If current index has no texture
             // (e.g. decode failed and only error text is shown), keeping an older
             // prev_texture can make unrelated stale pixels flash during next navigation.
-            self.prev_texture = select_transition_source_texture(source_tex);
+            self.prev_texture = select_transition_source_texture(
+                source_tex,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_texture.clone(),
+            );
             // Handle wrap-around logic for direction
             self.is_next = target_index > self.current_index
                 || (target_index == 0 && self.current_index == self.image_files.len() - 1);
             self.transition_start = None;
             let source_has_texture = self.prev_texture.is_some();
             let target_has_texture = self.texture_cache.contains(target_index);
-            if should_start_transition_immediately(target_has_texture, source_has_texture) {
+            let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+                || self.hdr_tiled_source_cache.contains_key(&target_index);
+            let target_placeholder_only = self
+                .hdr_placeholder_fallback_indices
+                .contains(&target_index);
+            if should_start_transition_immediately(
+                target_is_render_ready(
+                    target_has_texture,
+                    target_has_hdr_plane,
+                    target_placeholder_only,
+                ),
+                source_has_texture,
+            ) {
                 self.transition_start =
                     Some(now - transition_preroll_duration(self.settings.transition_ms));
                 self.pending_transition_target = None;
@@ -763,10 +925,25 @@ impl ImageViewerApp {
             let source_tex = self.texture_cache.get(self.current_index).cloned();
             let source_has_texture = source_tex.is_some();
             let target_has_texture = self.texture_cache.contains(target_index);
+            let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+                || self.hdr_tiled_source_cache.contains_key(&target_index);
+            let target_placeholder_only = self
+                .hdr_placeholder_fallback_indices
+                .contains(&target_index);
             self.active_transition = TransitionStyle::None;
             self.transition_start = None;
-            self.prev_texture = select_transition_source_texture(source_tex);
-            self.pending_transition_target = if !target_has_texture && source_has_texture {
+            self.prev_texture = select_transition_source_texture(
+                source_tex,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_texture.clone(),
+            );
+            self.pending_transition_target = if !target_is_render_ready(
+                target_has_texture,
+                target_has_hdr_plane,
+                target_placeholder_only,
+            ) && source_has_texture
+            {
                 Some(target_index)
             } else {
                 None
@@ -1074,10 +1251,19 @@ impl ImageViewerApp {
     }
 
     fn has_loaded_asset(&self, index: usize) -> bool {
+        let has_static_hdr = self.hdr_image_cache.contains_key(&index);
+        let has_hdr_tiled_source = self.hdr_tiled_source_cache.contains_key(&index);
+        let has_hdr_plane = has_static_hdr || has_hdr_tiled_source;
+        if !hdr_fallback_asset_is_loaded(
+            self.hdr_sdr_fallback_indices.contains(&index),
+            has_hdr_plane,
+        ) {
+            return false;
+        }
         current_image_has_loaded_asset(
             self.texture_cache.contains(index),
-            self.hdr_image_cache.contains_key(&index),
-            self.hdr_tiled_source_cache.contains_key(&index),
+            has_static_hdr,
+            has_hdr_tiled_source,
             self.animation_cache.contains_key(&index),
         ) || self.deferred_sdr_uploads.contains_key(&index)
     }
@@ -1414,6 +1600,15 @@ impl ImageViewerApp {
                         self.loader.finish_image_request(idx, generation);
                         continue;
                     }
+                    if !source_key_matches_index(&self.image_files, idx, load_result.source_key) {
+                        log::warn!(
+                            "[App] Image result discarded (source key mismatch): index={} generation={}",
+                            idx,
+                            generation
+                        );
+                        self.loader.finish_image_request(idx, generation);
+                        continue;
+                    }
 
                     // DESIGN: The current image ALWAYS bypasses the upload quota.
                     //
@@ -1460,6 +1655,18 @@ impl ImageViewerApp {
 
                 LoaderOutput::Preview(preview_update) => {
                     let preview_is_current = preview_update.index == self.current_index;
+                    if !source_key_matches_index(
+                        &self.image_files,
+                        preview_update.index,
+                        preview_update.source_key,
+                    ) {
+                        log::warn!(
+                            "[App] Preview update discarded (source key mismatch): index={} generation={}",
+                            preview_update.index,
+                            preview_update.generation
+                        );
+                        continue;
+                    }
 
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
@@ -1495,6 +1702,15 @@ impl ImageViewerApp {
                     if update.generation != self.generation {
                         continue;
                     }
+                    if !source_key_matches_index(&self.image_files, update.index, update.source_key)
+                    {
+                        log::warn!(
+                            "[App] HDR SDR fallback discarded (source key mismatch): index={} generation={}",
+                            update.index,
+                            update.generation
+                        );
+                        continue;
+                    }
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
@@ -1525,7 +1741,18 @@ impl ImageViewerApp {
         if can_start_pending_transition(
             self.pending_transition_target,
             self.current_index,
-            self.texture_cache.contains(self.current_index),
+            target_is_render_ready(
+                self.texture_cache.contains(self.current_index),
+                self.current_hdr_image
+                    .as_ref()
+                    .is_some_and(|current| current.image_for_index(self.current_index).is_some())
+                    || self.hdr_image_cache.contains_key(&self.current_index)
+                    || self
+                        .hdr_tiled_source_cache
+                        .contains_key(&self.current_index),
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+            ),
         ) {
             if self.active_transition != TransitionStyle::None {
                 self.transition_start =
@@ -1654,6 +1881,7 @@ impl ImageViewerApp {
                     idx,
                     hdr,
                     fallback,
+                    load_result.sdr_fallback_is_placeholder,
                     ultra_hdr_capacity_sensitive,
                     ctx,
                 );
@@ -1785,12 +2013,18 @@ impl ImageViewerApp {
         idx: usize,
         hdr: Arc<crate::hdr::types::HdrImageBuffer>,
         fallback: &DecodedImage,
+        sdr_fallback_is_placeholder: bool,
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
         self.remove_hdr_image_index(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
         self.hdr_sdr_fallback_indices.insert(idx);
+        if sdr_fallback_is_placeholder {
+            self.hdr_placeholder_fallback_indices.insert(idx);
+        } else {
+            self.hdr_placeholder_fallback_indices.remove(&idx);
+        }
         if ultra_hdr_capacity_sensitive {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
@@ -1820,6 +2054,7 @@ impl ImageViewerApp {
             return;
         }
         self.hdr_sdr_fallback_indices.insert(idx);
+        self.hdr_placeholder_fallback_indices.remove(&idx);
         self.queue_or_upload_static_sdr_texture(
             idx,
             &update.fallback,
@@ -2330,6 +2565,10 @@ fn current_image_has_loaded_asset(
     has_sdr_texture || has_static_hdr || has_hdr_tiled_source || has_animation
 }
 
+fn hdr_fallback_asset_is_loaded(has_hdr_fallback: bool, has_hdr_plane: bool) -> bool {
+    !has_hdr_fallback || has_hdr_plane
+}
+
 fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {
     if image_count == 0 {
         return usize::MAX;
@@ -2396,6 +2635,28 @@ mod tests {
         assert!(!prefetch_window_contains(0, 100, 3, 2));
         assert!(prefetch_window_contains(50, 100, 48, 2));
         assert!(!prefetch_window_contains(50, 100, 47, 2));
+    }
+
+    #[test]
+    fn output_mode_boundary_changes_only_when_crossing_hdr_and_sdr() {
+        use crate::hdr::types::HdrOutputMode;
+
+        assert!(output_mode_crosses_hdr_sdr_boundary(
+            HdrOutputMode::SdrToneMapped,
+            HdrOutputMode::WindowsScRgb
+        ));
+        assert!(output_mode_crosses_hdr_sdr_boundary(
+            HdrOutputMode::MacOsEdr,
+            HdrOutputMode::SdrToneMapped
+        ));
+        assert!(!output_mode_crosses_hdr_sdr_boundary(
+            HdrOutputMode::WindowsScRgb,
+            HdrOutputMode::MacOsEdr
+        ));
+        assert!(!output_mode_crosses_hdr_sdr_boundary(
+            HdrOutputMode::SdrToneMapped,
+            HdrOutputMode::SdrToneMapped
+        ));
     }
 
     struct DummyTiledSource {
@@ -2615,6 +2876,13 @@ mod tests {
     }
 
     #[test]
+    fn hdr_fallback_texture_without_hdr_plane_is_not_loaded_asset() {
+        assert!(hdr_fallback_asset_is_loaded(false, false));
+        assert!(hdr_fallback_asset_is_loaded(true, true));
+        assert!(!hdr_fallback_asset_is_loaded(true, false));
+    }
+
+    #[test]
     fn first_batch_preload_waits_when_scan_done_is_already_available() {
         assert!(!should_schedule_first_batch_preload(true, 3, true, false));
         assert!(should_schedule_first_batch_preload(true, 3, false, false));
@@ -2654,6 +2922,14 @@ mod tests {
     }
 
     #[test]
+    fn target_render_ready_requires_hdr_plane_or_non_placeholder_sdr() {
+        assert!(target_is_render_ready(true, false, false));
+        assert!(!target_is_render_ready(true, false, true));
+        assert!(target_is_render_ready(false, true, true));
+        assert!(!target_is_render_ready(false, false, false));
+    }
+
+    #[test]
     fn transition_can_start_immediately_when_target_is_already_cached() {
         assert!(should_start_transition_immediately(true, true));
         assert!(!should_start_transition_immediately(false, true));
@@ -2662,7 +2938,22 @@ mod tests {
 
     #[test]
     fn transition_source_texture_selection_clears_when_current_missing() {
-        assert!(select_transition_source_texture(None).is_none());
+        assert!(select_transition_source_texture(None, false, None).is_none());
+    }
+
+    #[test]
+    fn transition_source_texture_skips_placeholder_fallback_frames() {
+        assert!(should_use_current_texture_as_transition_source(false));
+        assert!(!should_use_current_texture_as_transition_source(true));
+        assert!(select_transition_source_texture(None, true, None).is_none());
+    }
+
+    #[test]
+    fn transition_source_reuse_policy_matches_placeholder_and_source_presence() {
+        assert!(should_reuse_previous_transition_source(true, true));
+        assert!(should_reuse_previous_transition_source(true, false));
+        assert!(should_reuse_previous_transition_source(false, false));
+        assert!(!should_reuse_previous_transition_source(false, true));
     }
 
     #[test]
@@ -2801,6 +3092,7 @@ mod tests {
         let load = LoadResult {
             index: 0,
             generation: 1,
+            source_key: 0,
             result: Ok(crate::loader::ImageData::Hdr {
                 hdr: crate::hdr::types::HdrImageBuffer {
                     width: 1,
@@ -2826,6 +3118,7 @@ mod tests {
         let load = LoadResult {
             index: 0,
             generation: 1,
+            source_key: 0,
             result: Ok(crate::loader::ImageData::Hdr {
                 hdr: crate::hdr::types::HdrImageBuffer {
                     width: 1,

@@ -268,24 +268,24 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 ui.end_row();
             });
 
-        if old
-            != (
-                (
-                    app.settings.hdr_exposure_ev_native,
-                    app.settings.hdr_exposure_ev_sdr,
-                ),
-                app.settings.hdr_sdr_white_nits,
-                app.settings.hdr_max_display_nits,
-            )
-        {
+        let new = (
+            (
+                app.settings.hdr_exposure_ev_native,
+                app.settings.hdr_exposure_ev_sdr,
+            ),
+            app.settings.hdr_sdr_white_nits,
+            app.settings.hdr_max_display_nits,
+        );
+        if old != new {
+            let capacity_inputs_changed = old.1 != new.1 || old.2 != new.2;
             app.settings.hdr_max_display_nits = app
                 .settings
                 .hdr_max_display_nits
                 .max(app.settings.hdr_sdr_white_nits);
-            app.hdr_renderer.tone_map = app.effective_hdr_tone_map_settings();
-            app.loader
-                .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
-            app.refresh_ultra_hdr_decode_capacity(ui.ctx());
+            app.sync_hdr_tone_map_settings();
+            if capacity_inputs_changed {
+                app.refresh_ultra_hdr_decode_capacity(ui.ctx());
+            }
             app.queue_save();
             ui.ctx().request_repaint();
         }

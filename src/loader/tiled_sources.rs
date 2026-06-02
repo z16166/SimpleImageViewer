@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use crate::constants::RGBA_CHANNELS;
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::types::{DecodedImage, RefinementRequest, TiledImageSource};
+use crate::loader::types::{
+    DecodedImage, RefinementRequest, TiledImageSource, source_key_for_path,
+};
 
 /// A TiledImageSource that serves tiles from an in-memory byte buffer.
 /// Primarily used for common formats (PNG, JPEG, etc.) that exceed the GPU's single texture limit.
@@ -333,6 +335,7 @@ impl TiledImageSource for RawImageSource {
             path: self.path.clone(),
             index,
             generation,
+            source_key: source_key_for_path(&self.path),
             orientation_override: Some(self.orientation_override),
             developed_image: self.developed_image.clone(),
         });

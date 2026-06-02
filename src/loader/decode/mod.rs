@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use super::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewBundle, PreviewStage,
-    RefinementRequest,
+    RefinementRequest, source_key_for_path,
 };
 use super::{extract_exif_thumbnail, hdr_display_requests_sdr_preview};
 
@@ -769,6 +769,7 @@ pub(crate) fn load_image_file(
     LoadResult {
         index,
         generation,
+        source_key: source_key_for_path(path),
         ultra_hdr_capacity_sensitive: is_hdr_capacity_sensitive_load(path, &final_result),
         result: final_result,
         preview_bundle,

@@ -23,6 +23,7 @@ use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
     PreviewResult, RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
     hdr_display_requests_sdr_preview, hdr_to_sdr_with_user_tone, hq_preview_max_side,
+    source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -568,6 +569,7 @@ impl ImageLoader {
                                 PreviewResult::from_sdr_preview(
                                     req.index,
                                     req.generation,
+                                    req.source_key,
                                     Ok(preview),
                                 ),
                             ));
@@ -819,6 +821,7 @@ impl ImageLoader {
             LoadResult {
                 index,
                 generation,
+                source_key: source_key_for_path(&path),
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
@@ -934,6 +937,7 @@ impl ImageLoader {
                                 let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                                     index,
                                     generation: final_gen,
+                                    source_key: load_result.source_key,
                                     preview_bundle: bundle,
                                     error: None,
                                 }));
@@ -996,6 +1000,7 @@ impl ImageLoader {
                                     PreviewResult::from_sdr_preview(
                                         index,
                                         final_gen,
+                                        load_result.source_key,
                                         Ok(DecodedImage::new(pw, ph, p_pixels)),
                                     ),
                                 ));
@@ -1180,6 +1185,7 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
         return;
     };
     let index = load_result.index;
+    let source_key = load_result.source_key;
     let hdr = hdr.clone();
     let tx = tx.clone();
     let loading = Arc::clone(loading);
@@ -1210,6 +1216,7 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
                 let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
                     index,
                     generation: final_gen,
+                    source_key,
                     fallback,
                 }));
             }

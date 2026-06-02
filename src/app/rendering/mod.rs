@@ -145,13 +145,18 @@ impl ImageViewerApp {
                     self.draw_tiled_image(ui, screen_rect, &canvas_resp);
                 } else {
                     let texture = self.texture_cache.get(self.current_index).cloned();
-                    let has_hdr_plane = self
-                        .current_hdr_image
-                        .as_ref()
-                        .is_some_and(|current| {
+                    let has_hdr_plane =
+                        self.current_hdr_image.as_ref().is_some_and(|current| {
                             current.image_for_index(self.current_index).is_some()
-                        });
-                    if should_dispatch_standard_draw(texture.is_some(), has_hdr_plane) {
+                        }) || self.hdr_image_cache.contains_key(&self.current_index);
+                    let sdr_fallback_is_placeholder = self
+                        .hdr_placeholder_fallback_indices
+                        .contains(&self.current_index);
+                    if should_dispatch_standard_draw(
+                        texture.is_some(),
+                        has_hdr_plane,
+                        sdr_fallback_is_placeholder,
+                    ) {
                         // Standard / animated path → standard.rs
                         self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
                     } else if self.transition_start.is_none()
