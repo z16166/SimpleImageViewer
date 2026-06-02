@@ -18,4 +18,5 @@ pub mod dialogs;
 pub mod hud;
 pub mod osd;
 pub mod settings;
+mod settings_appearance;
 pub mod utils;

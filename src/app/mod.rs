@@ -56,29 +56,35 @@ pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD 
 pub(crate) enum SettingsTab {
     Library,
     Viewing,
+    Slideshow,
     Music,
     Appearance,
+    Hotkeys,
     System,
     About,
 }
 
 impl SettingsTab {
     #[cfg(target_os = "windows")]
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Library,
         Self::Viewing,
+        Self::Slideshow,
         Self::Music,
         Self::Appearance,
+        Self::Hotkeys,
         Self::System,
         Self::About,
     ];
 
     #[cfg(not(target_os = "windows"))]
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Library,
         Self::Viewing,
+        Self::Slideshow,
         Self::Music,
         Self::Appearance,
+        Self::Hotkeys,
         Self::About,
     ];
 
@@ -86,8 +92,10 @@ impl SettingsTab {
         match self {
             Self::Library => "settings_tab.library",
             Self::Viewing => "settings_tab.viewing",
+            Self::Slideshow => "settings_tab.slideshow",
             Self::Music => "settings_tab.music",
             Self::Appearance => "settings_tab.appearance",
+            Self::Hotkeys => "settings_tab.hotkeys",
             Self::System => "settings_tab.system",
             Self::About => "settings_tab.about",
         }
@@ -465,7 +473,6 @@ pub struct ImageViewerApp {
     /// Included in each dialog's egui Window Id so that egui has no position
     /// memory from a previous opening — the dialog always starts centered.
     pub(crate) modal_generation: u32,
-
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
     // Cached system font families
@@ -572,6 +579,17 @@ pub struct ImageViewerApp {
 
     // Music HUD drag offset (user-adjustable position relative to default bottom-center)
     pub(crate) music_hud_drag_offset: Vec2,
+    // Runtime hotkeys loaded from siv_hotkeys.yaml
+    pub(crate) hotkeys_runtime: crate::hotkeys::RuntimeHotkeyState,
+    pub(crate) hotkeys_save_error_rx: Receiver<String>,
+    pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
+    pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
+    pub(crate) last_hotkeys_save_error: Option<(String, Instant)>,
+    pub(crate) hotkeys_capture_target:
+        Option<(crate::hotkeys::model::HotkeyActionId, usize, usize)>,
+    pub(crate) hotkeys_selected_row: Option<(usize, usize)>,
+    pub(crate) hotkeys_add_row_dialog_open: bool,
+    pub(crate) hotkeys_add_row_action: crate::hotkeys::model::HotkeyActionId,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -709,6 +727,10 @@ impl eframe::App for ImageViewerApp {
         let (dummy_tx, _) = crossbeam_channel::unbounded::<Settings>();
         let old_tx = std::mem::replace(&mut self.save_tx, dummy_tx);
         drop(old_tx);
+        let (dummy_hotkey_tx, _) =
+            crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
+        let old_hotkey_tx = std::mem::replace(&mut self.hotkeys_save_tx, dummy_hotkey_tx);
+        drop(old_hotkey_tx);
 
         // Wait for the saver thread to finish any in-progress I/O
         if let Some(handle) = self.saver_handle.take() {
@@ -716,9 +738,17 @@ impl eframe::App for ImageViewerApp {
                 log::error!("[on_exit] Saver thread panicked: {:?}", e);
             }
         }
+        if let Some(handle) = self.hotkeys_saver_handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
+            }
+        }
 
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
+        }
+        if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&self.hotkeys_runtime.config) {
+            log::error!("[on_exit] Failed to save hotkeys: {}", e);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.
@@ -1018,11 +1048,20 @@ impl eframe::App for ImageViewerApp {
             log::error!("Settings persistence error: {}", err);
             self.last_save_error = Some((err, Instant::now()));
         }
+        while let Ok(err) = self.hotkeys_save_error_rx.try_recv() {
+            log::error!("Hotkeys persistence error: {}", err);
+            self.last_hotkeys_save_error = Some((err, Instant::now()));
+        }
 
         // Clear persistence error after 5 seconds
         if let Some((_, start)) = self.last_save_error {
             if start.elapsed().as_secs() >= 5 {
                 self.last_save_error = None;
+            }
+        }
+        if let Some((_, start)) = self.last_hotkeys_save_error {
+            if start.elapsed().as_secs() >= 5 {
+                self.last_hotkeys_save_error = None;
             }
         }
 

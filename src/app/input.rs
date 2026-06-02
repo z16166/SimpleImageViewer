@@ -1,5 +1,6 @@
 use crate::app::ImageViewerApp;
 use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
+use crate::hotkeys::model::{HotkeyActionId, HotkeyLogicalKey, KeyChord};
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
 use crate::ui::{hud as ui_hud, settings as ui_settings};
@@ -17,7 +18,6 @@ pub(crate) enum AutoSwitchStep {
 pub(crate) fn auto_switch_step(
     image_count: usize,
     current_index: usize,
-    loop_playback: bool,
     random_order: bool,
     random_order_ready: bool,
 ) -> AutoSwitchStep {
@@ -30,9 +30,7 @@ pub(crate) fn auto_switch_step(
 
     let last = image_count - 1;
     if current_index >= last {
-        if !loop_playback {
-            return AutoSwitchStep::Stop;
-        }
+        // Playback always loops; the loop_playback setting has been removed.
         if random_order {
             return AutoSwitchStep::ShuffleToFirst;
         }
@@ -194,21 +192,33 @@ impl ImageViewerApp {
     /// over simple ones (e.g., Ctrl+Left overrides Left).
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
         let current_mods = get_modifiers_mask(i.modifiers);
-
-        for binding in HOTKEY_MAP {
-            if i.key_pressed(binding.key) && current_mods == binding.modifiers {
-                return Some(binding.action);
+        for key in pressed_key_candidates(i) {
+            let chord = KeyChord {
+                modifiers: current_mods,
+                key: HotkeyLogicalKey::Egui(key),
+            };
+            if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                return Some(app_action_from_hotkey_action_id(action_id));
             }
         }
 
         // Some keyboard layouts report zoom keys as text input rather than plain key presses.
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
-                match text.as_str() {
-                    "+" => return Some(AppAction::ZoomIn),
-                    "-" => return Some(AppAction::ZoomOut),
-                    "*" => return Some(AppAction::ZoomReset),
-                    _ => {}
+                let logical = match text.as_str() {
+                    "+" => Some(HotkeyLogicalKey::Text("+")),
+                    "-" => Some(HotkeyLogicalKey::Text("-")),
+                    "*" => Some(HotkeyLogicalKey::Text("*")),
+                    _ => None,
+                };
+                if let Some(logical) = logical {
+                    let chord = KeyChord {
+                        modifiers: current_mods,
+                        key: logical,
+                    };
+                    if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                        return Some(app_action_from_hotkey_action_id(action_id));
+                    }
                 }
             }
         }
@@ -397,7 +407,6 @@ impl ImageViewerApp {
             match auto_switch_step(
                 self.image_files.len(),
                 self.current_index,
-                self.settings.loop_playback,
                 self.settings.random_slideshow_order,
                 self.random_slideshow_order_ready,
             ) {
@@ -685,13 +694,14 @@ pub(crate) enum AppAction {
     ExitFullscreen,
 }
 
+#[cfg(test)]
 struct HotkeyBinding {
     modifiers: u8, // Bitmask: Bit 0=Ctrl/Cmd, 1=Shift, 2=Alt
     key: egui::Key,
-    action: AppAction,
 }
 
 // Modifier bitmask constants
+#[cfg(test)]
 const M_NONE: u8 = 0;
 const M_CTRL: u8 = 1;
 const M_SHIFT: u8 = 2;
@@ -713,152 +723,184 @@ fn get_modifiers_mask(m: egui::Modifiers) -> u8 {
     mask
 }
 
+#[cfg(test)]
 const HOTKEY_MAP: &[HotkeyBinding] = &[
     // --- Group 1: High Priority (Complex Modifiers) ---
     HotkeyBinding {
         modifiers: M_SHIFT,
         key: egui::Key::Delete,
-        action: AppAction::PermanentDelete,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowLeft,
-        action: AppAction::RotateCCW,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowRight,
-        action: AppAction::RotateCW,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowUp,
-        action: AppAction::HdrExposureUp,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::ArrowDown,
-        action: AppAction::HdrExposureDown,
     },
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::P,
-        action: AppAction::Print,
     },
     #[cfg(not(target_os = "windows"))]
     HotkeyBinding {
         modifiers: M_CTRL,
         key: egui::Key::Q,
-        action: AppAction::Quit,
     },
     // --- Group 2: Simple Navigation / Control ---
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowRight,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowDown,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::PageDown,
-        action: AppAction::Next,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowLeft,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::ArrowUp,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::PageUp,
-        action: AppAction::Prev,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Home,
-        action: AppAction::First,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::End,
-        action: AppAction::Last,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Space,
-        action: AppAction::ToggleAutoSwitch,
     },
     // --- Group 3: Functional Keys ---
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Tab,
-        action: AppAction::ToggleOSD,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F1,
-        action: AppAction::ToggleSettings,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F11,
-        action: AppAction::ToggleFullscreen,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::F,
-        action: AppAction::ToggleFullscreen,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Z,
-        action: AppAction::ToggleScaleMode,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::G,
-        action: AppAction::ToggleGoto,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Delete,
-        action: AppAction::Delete,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Escape,
-        action: AppAction::ExitFullscreen,
     },
     // Zoom
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Plus,
-        action: AppAction::ZoomIn,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Equals,
-        action: AppAction::ZoomIn,
     },
     HotkeyBinding {
         modifiers: M_NONE,
         key: egui::Key::Minus,
-        action: AppAction::ZoomOut,
     },
 ];
 
+fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAction {
+    match action {
+        HotkeyActionId::NextImage => AppAction::Next,
+        HotkeyActionId::PrevImage => AppAction::Prev,
+        HotkeyActionId::FirstImage => AppAction::First,
+        HotkeyActionId::LastImage => AppAction::Last,
+        HotkeyActionId::ZoomIn => AppAction::ZoomIn,
+        HotkeyActionId::ZoomOut => AppAction::ZoomOut,
+        HotkeyActionId::ZoomReset => AppAction::ZoomReset,
+        HotkeyActionId::ToggleSettings => AppAction::ToggleSettings,
+        HotkeyActionId::ToggleFullscreen => AppAction::ToggleFullscreen,
+        HotkeyActionId::ToggleScaleMode => AppAction::ToggleScaleMode,
+        HotkeyActionId::ToggleOsd => AppAction::ToggleOSD,
+        HotkeyActionId::RotateCw => AppAction::RotateCW,
+        HotkeyActionId::RotateCcw => AppAction::RotateCCW,
+        HotkeyActionId::HdrExposureUp => AppAction::HdrExposureUp,
+        HotkeyActionId::HdrExposureDown => AppAction::HdrExposureDown,
+        HotkeyActionId::DeleteToRecycleBin => AppAction::Delete,
+        HotkeyActionId::PermanentDelete => AppAction::PermanentDelete,
+        HotkeyActionId::PrintCurrent => AppAction::Print,
+        HotkeyActionId::ToggleGoto => AppAction::ToggleGoto,
+        HotkeyActionId::ToggleSlideshow => AppAction::ToggleAutoSwitch,
+        #[cfg(not(target_os = "windows"))]
+        HotkeyActionId::Quit => AppAction::Quit,
+        HotkeyActionId::ExitFullscreen => AppAction::ExitFullscreen,
+    }
+}
+
+fn pressed_key_candidates(i: &egui::InputState) -> Vec<egui::Key> {
+    const KEYS: &[egui::Key] = &[
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowUp,
+        egui::Key::ArrowDown,
+        egui::Key::PageDown,
+        egui::Key::PageUp,
+        egui::Key::Home,
+        egui::Key::End,
+        egui::Key::Space,
+        egui::Key::Tab,
+        egui::Key::F1,
+        egui::Key::F11,
+        egui::Key::F,
+        egui::Key::Z,
+        egui::Key::G,
+        egui::Key::Q,
+        egui::Key::Delete,
+        egui::Key::Escape,
+        egui::Key::Plus,
+        egui::Key::Equals,
+        egui::Key::Minus,
+        egui::Key::P,
+    ];
+    KEYS.iter().copied().filter(|k| i.key_pressed(*k)).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AutoSwitchStep, auto_switch_step};
+    use super::{AutoSwitchStep, HOTKEY_MAP, app_action_from_hotkey_action_id, auto_switch_step};
+    use crate::hotkeys::model::keychord_from_legacy_binding;
+    use std::collections::HashSet;
 
     #[test]
     fn auto_switch_uses_existing_order_when_random_is_disabled() {
@@ -898,5 +940,25 @@ mod tests {
             auto_switch_step(5, 4, false, true, true),
             AutoSwitchStep::Stop
         );
+    }
+
+    #[test]
+    fn legacy_hotkey_map_has_no_conflicts() {
+        let mut seen = HashSet::new();
+        for binding in HOTKEY_MAP {
+            let chord = keychord_from_legacy_binding(binding.modifiers, binding.key);
+            assert!(
+                seen.insert(chord),
+                "duplicate legacy chord: {:?}",
+                chord.display_string()
+            );
+        }
+    }
+
+    #[test]
+    fn all_runtime_actions_map_to_app_actions() {
+        for desc in crate::hotkeys::model::all_action_descriptors() {
+            let _app_action = app_action_from_hotkey_action_id(desc.id);
+        }
     }
 }

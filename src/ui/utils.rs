@@ -16,7 +16,7 @@
 
 use crate::settings::Settings;
 use crate::theme::ThemePalette;
-use eframe::egui::{self, Align2, Color32, Context, FontId, Rect, Vec2};
+use eframe::egui::{self, Align2, Color32, Context, FontId, Rect, Response, RichText, Vec2};
 use rust_i18n::t;
 
 pub fn setup_visuals(ctx: &Context, settings: &Settings, palette: &ThemePalette) {
@@ -357,6 +357,141 @@ pub fn styled_button_widget<'a>(
         })
         .inner
     }
+}
+
+pub fn themed_toggle_switch(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    palette: &ThemePalette,
+) -> Response {
+    let desired_size = egui::vec2(38.0, 22.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+    if response.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+
+    let t = ui.ctx().animate_bool(response.id, *value);
+    let off_color = if palette.is_dark {
+        palette.widget_bg
+    } else {
+        Color32::from_gray(190)
+    };
+    let bg_color = if *value {
+        palette.button_primary
+    } else {
+        off_color
+    };
+    let lerp_channel =
+        |a: u8, b: u8| -> u8 { ((a as f32) + ((b as f32) - (a as f32)) * t).round() as u8 };
+    let animated_bg = Color32::from_rgba_unmultiplied(
+        lerp_channel(off_color.r(), bg_color.r()),
+        lerp_channel(off_color.g(), bg_color.g()),
+        lerp_channel(off_color.b(), bg_color.b()),
+        lerp_channel(off_color.a(), bg_color.a()),
+    );
+
+    let radius = rect.height() * 0.5;
+    ui.painter().rect_filled(rect, radius, animated_bg);
+
+    let knob_margin = 2.0;
+    let knob_radius = radius - knob_margin;
+    let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
+    let knob_center = egui::pos2(knob_x, rect.center().y);
+    ui.painter()
+        .circle_filled(knob_center, knob_radius, Color32::WHITE);
+
+    response
+}
+
+pub fn themed_labeled_toggle(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    label: impl Into<egui::WidgetText>,
+    palette: &ThemePalette,
+) -> Response {
+    ui.horizontal(|ui| {
+        let label_resp = ui.label(label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let toggle_resp = themed_toggle_switch(ui, value, palette);
+            if label_resp.clicked() {
+                *value = !*value;
+            }
+            label_resp.union(toggle_resp)
+        })
+        .inner
+    })
+    .inner
+}
+
+pub fn settings_card<R>(
+    ui: &mut egui::Ui,
+    palette: &ThemePalette,
+    title: impl Into<String>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::Frame::new()
+        .fill(
+            palette
+                .widget_bg
+                .gamma_multiply(if palette.is_dark { 0.55 } else { 0.9 }),
+        )
+        .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).color(palette.accent2).strong());
+            ui.add_space(6.0);
+            add_contents(ui)
+        })
+        .inner
+}
+
+/// Centers a block in a settings panel, both horizontally and vertically.
+///
+/// Horizontal centering: `top_down(Center)` places each child at horizontal center.
+///
+/// Vertical centering: egui cannot center dynamic-height content in a single pass because
+/// it does not know the content height before running the closure. We use the standard
+/// egui two-frame approach: cache the card height from the previous frame in temp data and
+/// prepend the appropriate top padding each frame. One frame of incorrect placement on the
+/// very first open is acceptable (card stabilises immediately on the next frame).
+///
+/// `content_width` is clamped to `pane_w` so the card never overflows into the sidebar
+/// when the settings window is dragged narrower than the card's natural width.
+pub fn center_in_settings_panel<R>(
+    ui: &mut egui::Ui,
+    content_width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let pane_w = ui.max_rect().width();
+    let pane_h = ui.max_rect().height();
+    let card_w = content_width.min(pane_w);
+
+    let cache_id = egui::Id::new("center_in_settings_panel_card_h");
+    let card_h: f32 = ui.ctx().data(|d| d.get_temp(cache_id).unwrap_or(0.0));
+    let top_pad = ((pane_h - card_h) / 2.0).max(0.0);
+
+    ui.allocate_ui_with_layout(
+        egui::vec2(pane_w, pane_h),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.add_space(top_pad);
+            let resp = ui.allocate_ui_with_layout(
+                egui::vec2(card_w, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_max_width(card_w);
+                    add_contents(ui)
+                },
+            );
+            let measured_h = resp.response.rect.height();
+            ui.ctx().data_mut(|d| d.insert_temp(cache_id, measured_h));
+            resp.inner
+        },
+    )
+    .inner
 }
 
 pub fn path_display_box(

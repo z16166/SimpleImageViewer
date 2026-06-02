@@ -126,13 +126,18 @@ pub const CRASH_DIALOG_FALLBACK_TITLE: &str = "Application Error";
 pub const CRASH_DIALOG_FALLBACK_MSG: &str = "An unexpected error occurred.\n\nDiagnostic info has been copied to the clipboard and saved to the crash report file.";
 
 /// Default position for the settings window.
-pub const SETTINGS_WINDOW_DEFAULT_POS: [f32; 2] = [12.0, 12.0];
+/// Golden ratio φ — default settings window uses width / height = φ (landscape).
+pub const GOLDEN_RATIO: f32 = 1.618_033_988_7;
 /// Minimum width for the settings window.
 pub const SETTINGS_WINDOW_MIN_WIDTH: f32 = 550.0;
 /// Default width for the settings window.
 pub const SETTINGS_WINDOW_DEFAULT_WIDTH: f32 = 580.0;
 /// Maximum width for the settings window.
 pub const SETTINGS_WINDOW_MAX_WIDTH: f32 = 800.0;
+/// Default height for the settings window (`DEFAULT_WIDTH / φ`).
+pub const SETTINGS_WINDOW_DEFAULT_HEIGHT: f32 = SETTINGS_WINDOW_DEFAULT_WIDTH / GOLDEN_RATIO;
+/// Minimum height for the settings window (`MIN_WIDTH / φ`).
+pub const SETTINGS_WINDOW_MIN_HEIGHT: f32 = SETTINGS_WINDOW_MIN_WIDTH / GOLDEN_RATIO;
 
 /// Margin for standard OSD elements.
 pub const OSD_MARGIN: f32 = 12.0;

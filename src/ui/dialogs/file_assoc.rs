@@ -17,7 +17,7 @@
 use crate::theme::ThemePalette;
 use crate::ui::dialogs::MovableModal;
 use crate::ui::dialogs::modal_state::{ModalAction, ModalResult};
-use crate::ui::utils::styled_button;
+use crate::ui::utils::{styled_button, themed_toggle_switch};
 use eframe::egui::{self, Color32, Context, RichText};
 use rust_i18n::t;
 
@@ -185,8 +185,13 @@ fn render_format_group(
                         let fi = indices[gi];
                         let label = format!(".{}", state.formats[fi].extension);
                         let desc = state.formats[fi].description.clone();
-                        ui.checkbox(&mut state.selections[fi], label)
-                            .on_hover_text(&desc);
+                        ui.horizontal(|ui| {
+                            let mut v = state.selections[fi];
+                            if themed_toggle_switch(ui, &mut v, palette).changed() {
+                                state.selections[fi] = v;
+                            }
+                            ui.label(label).on_hover_text(&desc);
+                        });
                     }
                 }
                 ui.end_row();
