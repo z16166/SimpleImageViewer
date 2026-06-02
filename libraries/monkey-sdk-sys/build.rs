@@ -112,6 +112,7 @@ fn main() {
             maclib_src.join("Old").join("AntiPredictorFastOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorHighOld.cpp"),
             maclib_src.join("Old").join("AntiPredictorNormalOld.cpp"),
+            maclib_src.join("Old").join("NewPredictorOld.cpp"),
             maclib_src.join("Old").join("APEDecompressCoreOld.cpp"),
             maclib_src.join("Old").join("APEDecompressOld.cpp"),
             maclib_src.join("Old").join("UnBitArrayOld.cpp"),
