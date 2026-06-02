@@ -525,27 +525,15 @@ impl OpenExrCoreReadContext {
                         }
                     }
                     Err(e) => {
-                        // `exr_start_read` failed before handing back a valid context, so OpenEXRCore
-                        // will not call `destroy_fn` for this initializer. We must release the cookie
-                        // explicitly before falling back to file I/O to avoid leaking the mmap Arc.
-                        unsafe {
-                            openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
-                        }
+                        // OpenEXRCore owns the initializer userdata once `exr_start_read` is called
+                        // and may invoke `destroy_fn` even on header-parse failures. Do not free
+                        // `cookie_ptr` here: doing so can double-free on malformed EXR-like files.
                         log::debug!(
-                            "EXR mmap read via OpenEXRCore failed ({}); falling back to file I/O for {}",
+                            "EXR mmap read via OpenEXRCore failed ({}) for {}",
                             e,
                             path.display()
                         );
-                        raw = ptr::null_mut();
-                        exr_result(unsafe {
-                            sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null())
-                        })?;
-                        if raw.is_null() {
-                            return Err(format!(
-                                "OpenEXRCore returned a null context for {}",
-                                path.display()
-                            ));
-                        }
+                        return Err(e);
                     }
                 }
             }
