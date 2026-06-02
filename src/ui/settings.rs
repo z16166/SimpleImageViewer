@@ -1718,7 +1718,12 @@ fn system_settings_card<R>(
         )
         .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
         .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(Margin::symmetric(10, 8))
+        .inner_margin(Margin {
+            left: 10,
+            right: 10,
+            top: 8,
+            bottom: 16,
+        })
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.label(RichText::new(title).color(palette.accent2).strong());
