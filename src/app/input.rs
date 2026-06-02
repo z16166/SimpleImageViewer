@@ -112,79 +112,11 @@ impl ImageViewerApp {
             return;
         }
 
-        let (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos) =
-            Self::collect_wheel_input(ctx);
-
-        if let Some(wheel_match) = self.map_wheel_to_action(ctx) {
-            self.dispatch_wheel_action(ctx, wheel_match, mouse_pos);
+        let mouse_pos = ctx.input(|i| i.pointer.latest_pos());
+        let Some(wheel_match) = self.map_wheel_to_action(ctx) else {
             return;
-        }
-
-        self.handle_mouse_input(
-            ctx,
-            scroll_delta,
-            zoom_delta,
-            is_ctrl_pressed,
-            is_alt_pressed,
-            mouse_pos,
-        );
-    }
-
-    fn collect_wheel_input(ctx: &Context) -> (Vec2, f32, bool, bool, Option<egui::Pos2>) {
-        let (line_scroll_speed, scroll_zoom_speed, zoom_modifier) = ctx.options(|o| {
-            let io = &o.input_options;
-            (io.line_scroll_speed, io.scroll_zoom_speed, io.zoom_modifier)
-        });
-
-        ctx.input(|i| {
-            let mut scroll_delta = i.smooth_scroll_delta;
-            let mut zoom_delta = i.zoom_delta();
-            let is_ctrl_pressed = i.modifiers.ctrl || i.modifiers.command;
-            let is_alt_pressed = i.modifiers.alt;
-            let mouse_pos = i.pointer.latest_pos();
-
-            // Fallback when smoothing has not accumulated yet this frame.
-            if scroll_delta == Vec2::ZERO || zoom_delta == 1.0 {
-                for event in &i.events {
-                    let Event::MouseWheel {
-                        unit,
-                        delta,
-                        modifiers,
-                        ..
-                    } = event
-                    else {
-                        continue;
-                    };
-
-                    let mut d = *delta;
-                    match unit {
-                        MouseWheelUnit::Line => d *= line_scroll_speed,
-                        MouseWheelUnit::Page => {
-                            let size = i.viewport_rect().size();
-                            d.x *= size.x;
-                            d.y *= size.y;
-                        }
-                        MouseWheelUnit::Point => {}
-                    }
-
-                    if modifiers.matches_any(zoom_modifier) {
-                        if zoom_delta == 1.0 {
-                            zoom_delta *= (scroll_zoom_speed * (d.x + d.y)).exp();
-                        }
-                    } else if scroll_delta == Vec2::ZERO {
-                        scroll_delta += d;
-                    }
-                }
-            }
-
-            (
-                scroll_delta,
-                zoom_delta,
-                is_ctrl_pressed,
-                is_alt_pressed,
-                mouse_pos,
-            )
-        })
+        };
+        self.dispatch_wheel_action(ctx, wheel_match, mouse_pos);
     }
 
     fn map_key_to_action(&self, i: &egui::InputState) -> Option<AppAction> {
@@ -311,6 +243,14 @@ impl ImageViewerApp {
                     factor
                 };
                 self.zoom_at_mouse(ctx, factor, mouse_pos);
+            }
+            AppAction::RotateCW | AppAction::RotateCCW => {
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    let clockwise = wheel_match.action == AppAction::RotateCW;
+                    self.apply_rotation_with_tracking(clockwise, ctx);
+                    self.last_mouse_wheel_nav = now;
+                }
             }
             action => self.dispatch_action(action, ctx),
         }
@@ -449,41 +389,6 @@ impl ImageViewerApp {
                     self.pending_fullscreen = Some(false);
                     self.queue_save();
                 }
-            }
-        }
-    }
-
-    fn handle_mouse_input(
-        &mut self,
-        ctx: &Context,
-        scroll_delta: Vec2,
-        zoom_delta: f32,
-        is_ctrl_pressed: bool,
-        is_alt_pressed: bool,
-        mouse_pos: Option<egui::Pos2>,
-    ) {
-        if is_alt_pressed && scroll_delta.y.abs() > 0.0 {
-            // Rotation with Alt + Mouse Wheel
-            let now = ctx.input(|i| i.time);
-            if now - self.last_mouse_wheel_nav > 0.2 {
-                self.apply_rotation_with_tracking(scroll_delta.y < 0.0, ctx);
-                self.last_mouse_wheel_nav = now;
-            }
-        } else if is_ctrl_pressed {
-            // Zoom-to-cursor
-            if zoom_delta != 1.0 {
-                self.zoom_at_mouse(ctx, zoom_delta, mouse_pos);
-            }
-        } else if scroll_delta.y.abs() > 0.0 {
-            // Navigation with mouse wheel
-            let now = ctx.input(|i| i.time);
-            if now - self.last_mouse_wheel_nav > 0.2 {
-                if scroll_delta.y > 0.0 {
-                    self.navigate_prev();
-                } else {
-                    self.navigate_next();
-                }
-                self.last_mouse_wheel_nav = now;
             }
         }
     }

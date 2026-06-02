@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [2.2.3] - 2026-06-02
+
+### Added
+- **Custom hotkeys**: Remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse clicks from the new **Hotkeys** tab in Settings.
+
+### Changed
+- **Settings layout**: The settings panel uses vertical tabs and clearer sections for browsing, viewing, slideshow, music, appearance, and system options.
+- **Default interface size**: New installs default to a slightly smaller on-screen text size for a less crowded layout.
+- **Slideshow playback**: Auto-advance slideshows always loop through the folder.
+
+### Fixed
+- **Hotkey setup feedback**: You are notified when saved hotkey settings cannot be loaded or contain conflicts, instead of shortcuts failing silently.
+- **Hotkey warnings with OSD off**: Hotkey problem messages still appear when the on-screen display is hidden.
+- **Settings polish**: Library scan status is no longer shown twice; the System tab has more comfortable spacing; settings toggles use checkboxes that read better in dark themes.
+
 ## [2.2.2] - 2026-05-30
 
 ### Added

@@ -457,14 +457,26 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
             modifiers: 0,
             key: HotkeyLogicalKey::Egui(egui::Key::Tab),
         }],
-        HotkeyActionId::RotateCw => &[KeyChord {
-            modifiers: MOD_CTRL,
-            key: HotkeyLogicalKey::Egui(egui::Key::ArrowRight),
-        }],
-        HotkeyActionId::RotateCcw => &[KeyChord {
-            modifiers: MOD_CTRL,
-            key: HotkeyLogicalKey::Egui(egui::Key::ArrowLeft),
-        }],
+        HotkeyActionId::RotateCw => &[
+            KeyChord {
+                modifiers: MOD_CTRL,
+                key: HotkeyLogicalKey::Egui(egui::Key::ArrowRight),
+            },
+            KeyChord {
+                modifiers: MOD_ALT,
+                key: HotkeyLogicalKey::WheelDown,
+            },
+        ],
+        HotkeyActionId::RotateCcw => &[
+            KeyChord {
+                modifiers: MOD_CTRL,
+                key: HotkeyLogicalKey::Egui(egui::Key::ArrowLeft),
+            },
+            KeyChord {
+                modifiers: MOD_ALT,
+                key: HotkeyLogicalKey::WheelUp,
+            },
+        ],
         HotkeyActionId::HdrExposureUp => &[KeyChord {
             modifiers: MOD_CTRL,
             key: HotkeyLogicalKey::Egui(egui::Key::ArrowUp),

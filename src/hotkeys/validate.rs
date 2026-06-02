@@ -382,6 +382,26 @@ mod tests {
     }
 
     #[test]
+    fn default_rotate_bindings_include_alt_wheel() {
+        let out = validate_hotkey_config(&default_hotkey_config_file());
+        let rotate_cw = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "rotate_cw")
+            .expect("rotate_cw binding exists");
+        let rotate_ccw = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "rotate_ccw")
+            .expect("rotate_ccw binding exists");
+
+        assert!(rotate_cw.keys.iter().any(|key| key == "Alt+WheelDown"));
+        assert!(rotate_ccw.keys.iter().any(|key| key == "Alt+WheelUp"));
+    }
+
+    #[test]
     fn mouse_click_hotkeys_require_modifiers_for_left_and_right() {
         let config = HotkeyConfigFile {
             version: HOTKEYS_FILE_VERSION,
