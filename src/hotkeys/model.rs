@@ -193,6 +193,9 @@ pub enum HotkeyLogicalKey {
     Text(&'static str),
     WheelUp,
     WheelDown,
+    MouseLeft,
+    MouseRight,
+    MouseMiddle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -247,6 +250,23 @@ impl KeyChord {
             return None;
         };
         Some(Self::from_logical_input(key, mods))
+    }
+
+    pub fn from_pointer_button(button: egui::PointerButton, mods: egui::Modifiers) -> Option<Self> {
+        let key = match button {
+            egui::PointerButton::Primary => HotkeyLogicalKey::MouseLeft,
+            egui::PointerButton::Secondary => HotkeyLogicalKey::MouseRight,
+            egui::PointerButton::Middle => HotkeyLogicalKey::MouseMiddle,
+            egui::PointerButton::Extra1 | egui::PointerButton::Extra2 => return None,
+        };
+        Some(Self::from_logical_input(key, mods))
+    }
+
+    pub fn requires_modifier(self) -> bool {
+        matches!(
+            self.key,
+            HotkeyLogicalKey::MouseLeft | HotkeyLogicalKey::MouseRight
+        )
     }
 
     fn from_logical_input(key: HotkeyLogicalKey, mods: egui::Modifiers) -> Self {
@@ -470,6 +490,15 @@ pub fn parse_logical_key_name(value: &str) -> Option<HotkeyLogicalKey> {
     match normalized.as_str() {
         "wheelup" | "mousewheelup" | "mouse wheel up" => Some(HotkeyLogicalKey::WheelUp),
         "wheeldown" | "mousewheeldown" | "mouse wheel down" => Some(HotkeyLogicalKey::WheelDown),
+        "leftclick" | "mouseleft" | "mouse left" | "mouse left click" => {
+            Some(HotkeyLogicalKey::MouseLeft)
+        }
+        "rightclick" | "mouseright" | "mouse right" | "mouse right click" => {
+            Some(HotkeyLogicalKey::MouseRight)
+        }
+        "middleclick" | "mousemiddle" | "mouse middle" | "mouse middle click" => {
+            Some(HotkeyLogicalKey::MouseMiddle)
+        }
         "plus" | "+" => Some(HotkeyLogicalKey::Text("+")),
         "minus" | "dash" | "-" => Some(HotkeyLogicalKey::Text("-")),
         "asterisk" | "*" => Some(HotkeyLogicalKey::Text("*")),
@@ -485,6 +514,9 @@ pub fn logical_key_to_name(key: HotkeyLogicalKey) -> &'static str {
         HotkeyLogicalKey::Text("*") => "Asterisk",
         HotkeyLogicalKey::WheelUp => "WheelUp",
         HotkeyLogicalKey::WheelDown => "WheelDown",
+        HotkeyLogicalKey::MouseLeft => "LeftClick",
+        HotkeyLogicalKey::MouseRight => "RightClick",
+        HotkeyLogicalKey::MouseMiddle => "MiddleClick",
         _ => "Unknown",
     }
 }

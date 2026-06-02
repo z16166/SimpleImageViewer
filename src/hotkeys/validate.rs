@@ -66,6 +66,14 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
                 }
                 match crate::hotkeys::model::KeyChord::parse(key_text) {
                     Some(chord) => {
+                        if chord.requires_modifier() && chord.modifiers == 0 {
+                            warnings.push(format!(
+                                "mouse click key '{}' for action '{}' requires Ctrl, Alt, or Shift",
+                                key_text,
+                                action_id_to_str(action_id)
+                            ));
+                            continue;
+                        }
                         let display = chord.display_string();
                         normalized_entry.keys.push(display.clone());
                         runtime_bindings.push(RuntimeHotkeyBinding { action_id, chord });
@@ -354,5 +362,60 @@ mod tests {
 
         assert!(next.keys.iter().any(|key| key == "WheelDown"));
         assert!(zoom_in.keys.iter().any(|key| key == "Ctrl+WheelDown"));
+    }
+
+    #[test]
+    fn mouse_click_hotkeys_require_modifiers_for_left_and_right() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![
+                HotkeyBindingEntry {
+                    action_id: "toggle_goto".to_string(),
+                    keys: vec!["LeftClick".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+                HotkeyBindingEntry {
+                    action_id: "toggle_settings".to_string(),
+                    keys: vec!["Ctrl+LeftClick".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+                HotkeyBindingEntry {
+                    action_id: "print_current".to_string(),
+                    keys: vec!["MiddleClick".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+            ],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let toggle_goto = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "toggle_goto")
+            .expect("toggle_goto binding exists");
+        let toggle_settings = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "toggle_settings")
+            .expect("toggle_settings binding exists");
+        let print_current = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "print_current")
+            .expect("print_current binding exists");
+
+        assert!(!toggle_goto.keys.contains(&"LeftClick".to_string()));
+        assert!(
+            toggle_settings
+                .keys
+                .contains(&"Ctrl+LeftClick".to_string())
+        );
+        assert!(print_current.keys.contains(&"MiddleClick".to_string()));
     }
 }

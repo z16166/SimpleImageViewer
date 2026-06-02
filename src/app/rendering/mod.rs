@@ -32,6 +32,14 @@ impl ImageViewerApp {
                     Sense::click_and_drag()
                 };
                 let canvas_resp = ui.allocate_rect(screen_rect, sense);
+                let pointer_hotkey_action = if !any_modal_open && canvas_resp.hovered() {
+                    self.map_pointer_button_to_action(ui.ctx())
+                } else {
+                    None
+                };
+                if let Some(action) = pointer_hotkey_action {
+                    self.dispatch_action(action, ui.ctx());
+                }
 
                 // ── Custom right-click context menu ──────────────────────────
                 // We bypass `response.context_menu()` entirely because egui's
@@ -39,7 +47,8 @@ impl ImageViewerApp {
                 // an existing menu, making it impossible to re-open the menu
                 // with a single right-click.  Instead we detect raw right-clicks
                 // via `ctx.input()` and render the menu through `egui::Area`.
-                if !any_modal_open && !self.image_files.is_empty() {
+                if !any_modal_open && pointer_hotkey_action.is_none() && !self.image_files.is_empty()
+                {
                     let ctx = ui.ctx().clone();
                     let raw_secondary = ctx.input(|i| i.pointer.secondary_clicked());
                     let interact_pos = ctx.input(|i| i.pointer.interact_pos());
@@ -88,7 +97,10 @@ impl ImageViewerApp {
                     }
                 }
 
-                if self.show_settings && canvas_resp.clicked_by(egui::PointerButton::Primary) {
+                if pointer_hotkey_action.is_none()
+                    && self.show_settings
+                    && canvas_resp.clicked_by(egui::PointerButton::Primary)
+                {
                     self.show_settings = false;
                 }
 

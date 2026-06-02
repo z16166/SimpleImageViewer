@@ -228,6 +228,29 @@ impl ImageViewerApp {
         None
     }
 
+    pub(crate) fn map_pointer_button_to_action(&self, ctx: &Context) -> Option<AppAction> {
+        ctx.input(|i| {
+            for event in &i.events {
+                let Event::PointerButton {
+                    button,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let Some(chord) = KeyChord::from_pointer_button(*button, *modifiers) else {
+                    continue;
+                };
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    return Some(app_action_from_hotkey_action_id(action_id));
+                }
+            }
+            None
+        })
+    }
+
     fn map_wheel_to_action(&self, ctx: &Context) -> Option<WheelHotkeyMatch> {
         let line_scroll_speed = ctx.options(|o| o.input_options.line_scroll_speed);
         ctx.input(|i| {
@@ -331,7 +354,7 @@ impl ImageViewerApp {
         ctx.request_repaint();
     }
 
-    fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
+    pub(crate) fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         match action {
             AppAction::Next => {
                 let now = ctx.input(|i| i.time);

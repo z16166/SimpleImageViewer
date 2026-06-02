@@ -893,6 +893,17 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                             break;
                         }
                     }
+                    egui::Event::PointerButton {
+                        button,
+                        pressed: false,
+                        modifiers,
+                        ..
+                    } => {
+                        if let Some(chord) = KeyChord::from_pointer_button(*button, *modifiers) {
+                            captured = Some(chord.display_string());
+                            break;
+                        }
+                    }
                     _ => {}
                 }
             }
