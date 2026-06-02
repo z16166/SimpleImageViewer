@@ -185,3 +185,10 @@ pub const LOG_FILE_SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 /// A value of 0.01 (1%) provides robust normalization for high-dynamic range images
 /// that would otherwise be rendered as all-black due to high sensor black levels.
 pub const RAW_AUTO_BRIGHT_THR: f32 = 0.01;
+
+/// Standard SMPTE ST 2084 / ITU-R BT.2100 PQ transfer function coefficients.
+pub const PQ_M1: f32 = 2610.0 / 16384.0;
+pub const PQ_M2: f32 = 2523.0 / 32.0;
+pub const PQ_C1: f32 = 3424.0 / 4096.0;
+pub const PQ_C2: f32 = 2413.0 / 128.0;
+pub const PQ_C3: f32 = 2392.0 / 128.0;

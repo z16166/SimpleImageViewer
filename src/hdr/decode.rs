@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -83,8 +82,7 @@ pub fn decode_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
 }
 
 fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
-    let file = File::open(path).map_err(|err| err.to_string())?;
-    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+    let mmap = crate::mmap_util::map_file(path)?;
     let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(&mmap, None)?;
     log::debug!(
         "[HDR] {}: Radiance decode {}x{} (resolution-line orientation unfolded)",
@@ -379,15 +377,14 @@ fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
 /// Normative: **ITU-R BT.2100-3** Table 4 (PQ system reference EOTF); same rational coefficients as
 /// **SMPTE ST 2084** and the HDR plane WGSL in `renderer.rs`.
 pub(crate) fn pq_nonlinear_to_absolute_nits(code: f32) -> f32 {
-    let m1 = 2610.0 / 16384.0;
-    let m2 = 2523.0 / 32.0;
-    let c1 = 3424.0 / 4096.0;
-    let c2 = 2413.0 / 128.0;
-    let c3 = 2392.0 / 128.0;
+    let m2 = crate::constants::PQ_M2;
+    let c1 = crate::constants::PQ_C1;
+    let c2 = crate::constants::PQ_C2;
+    let c3 = crate::constants::PQ_C3;
     let code_m2 = code.clamp(0.0, 1.0).powf(1.0 / m2);
     let numerator = (code_m2 - c1).max(0.0);
     let denominator = (c2 - c3 * code_m2).max(0.000001);
-    10_000.0 * (numerator / denominator).powf(1.0 / m1)
+    10_000.0 * (numerator / denominator).powf(1.0 / crate::constants::PQ_M1)
 }
 
 /// Reference **PQ EOTF** (non-linear code → absolute luminance, then ÷ `sdr_white_nits` for display-relative linear).

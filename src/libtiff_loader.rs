@@ -1664,8 +1664,7 @@ pub fn load_via_libtiff(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mmap = Arc::new(unsafe { Mmap::map(&file).map_err(|e| e.to_string())? });
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
 
     let mut ctx = Box::new(TiffMmapContext {
         mmap: mmap.clone(),

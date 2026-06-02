@@ -40,8 +40,7 @@ pub(crate) fn load_jpeg_with_target_capacity(
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
     let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mmap = unsafe { memmap2::Mmap::map(&file).map_err(|e| e.to_string())? };
+    let mmap = crate::mmap_util::map_file(path)?;
     if mmap.len() < 3 || !mmap.starts_with(&[0xFF, 0xD8, 0xFF]) {
         if let Some(brand) = super::detect::bmff_ftyp_brand(&mmap) {
             if super::detect::is_motion_video_bmff_brand(&brand) {

@@ -50,10 +50,7 @@ fn path_to_utf8(path: &Path) -> Result<String, String> {
 
     #[cfg(not(any(unix, windows)))]
     {
-        Err(format!(
-            "EXR path is not valid UTF-8: {}",
-            path.display()
-        ))
+        Err(format!("EXR path is not valid UTF-8: {}", path.display()))
     }
 }
 

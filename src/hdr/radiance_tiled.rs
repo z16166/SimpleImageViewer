@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fs::File;
 use std::io::{BufRead, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -317,8 +316,7 @@ pub struct RadianceHdrTiledImageSource {
 
 impl RadianceHdrTiledImageSource {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|err| err.to_string())?;
-        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
+        let mmap = Arc::new(crate::mmap_util::map_file(path)?);
         let mut params = crate::hdr::decode::RadianceHeaderParams::default();
         let mut reader = Cursor::new(&mmap[..]);
         let raster = read_radiance_header(&mut reader, &mut params)?;

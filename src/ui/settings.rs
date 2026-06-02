@@ -619,8 +619,7 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
             .iter()
             .any(|entry| entry.keys.iter().any(|key| key.trim().is_empty()));
         ui.add_space(8.0);
-        let capture_pending =
-            app.hotkeys_capture_target.is_some() || set_key_target.is_some();
+        let capture_pending = app.hotkeys_capture_target.is_some() || set_key_target.is_some();
         let apply_success = app.hotkeys_apply_success_at.is_some();
         let status_rows = apply_success as usize
             + capture_pending as usize
@@ -916,9 +915,7 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                     .filter(|k| !k.trim().is_empty())
                     .map(|k| k.to_string())
                     .unwrap_or_else(|| t!("hotkeys.no_keys").to_string());
-                ui.add(
-                    egui::Label::new(RichText::new(key_label).strong()).wrap(),
-                );
+                ui.add(egui::Label::new(RichText::new(key_label).strong()).wrap());
                 ui.add_space(6.0);
                 if ui
                     .add(styled_button_widget(

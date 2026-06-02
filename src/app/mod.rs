@@ -707,8 +707,7 @@ impl ImageViewerApp {
             }
             if self.last_save_error.is_some() {
                 inset = inset.max(
-                    crate::constants::OSD_ERROR_OFFSET
-                        + crate::constants::OSD_ERROR_TEXT_SIZE,
+                    crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_TEXT_SIZE,
                 );
             }
         }

@@ -781,8 +781,7 @@ impl HugeTiffStrideDecoder {
         max_size: u32,
         orientation: u32,
     ) -> Result<(u32, u32, Vec<u8>), String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+        let mmap = crate::mmap_util::map_file(path)?;
 
         let cursor = Cursor::new(&mmap[..]);
         let mut decoder = Decoder::new(cursor).map_err(|e| e.to_string())?;
@@ -1091,10 +1090,8 @@ pub fn load_via_image_io(
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     unsafe {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mmap = Arc::new(Mmap::map(&file).map_err(|e| e.to_string())?);
-
         let cf_data = CFDataCreateWithBytesNoCopy(
             kCFAllocatorDefault,
             mmap.as_ptr(),

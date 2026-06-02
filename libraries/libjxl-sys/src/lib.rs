@@ -275,8 +275,13 @@ unsafe extern "C" {
         start_range: u32,
         end_range: u32,
     ) -> JxlParallelRetCode;
-    pub fn JxlResizableParallelRunnerCreate(memory_manager: *const libc::c_void) -> *mut libc::c_void;
-    pub fn JxlResizableParallelRunnerSetThreads(runner_opaque: *mut libc::c_void, num_threads: usize);
+    pub fn JxlResizableParallelRunnerCreate(
+        memory_manager: *const libc::c_void,
+    ) -> *mut libc::c_void;
+    pub fn JxlResizableParallelRunnerSetThreads(
+        runner_opaque: *mut libc::c_void,
+        num_threads: usize,
+    );
     pub fn JxlResizableParallelRunnerSuggestThreads(xsize: u64, ysize: u64) -> u32;
     pub fn JxlResizableParallelRunnerDestroy(runner_opaque: *mut libc::c_void);
     pub fn JxlDecoderSubscribeEvents(
@@ -557,9 +562,8 @@ pub struct CmsProfile(cmsHPROFILE);
 impl CmsProfile {
     /// Parse ICC bytes; returns `None` when lcms rejects the profile.
     pub fn open_from_mem(bytes: &[u8]) -> Option<Self> {
-        let p = unsafe {
-            cmsOpenProfileFromMem(bytes.as_ptr().cast(), bytes.len() as cmsUInt32Number)
-        };
+        let p =
+            unsafe { cmsOpenProfileFromMem(bytes.as_ptr().cast(), bytes.len() as cmsUInt32Number) };
         (!p.is_null()).then_some(Self(p))
     }
 

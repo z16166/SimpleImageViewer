@@ -92,22 +92,19 @@ pub(crate) struct UltraHdrJpegInfo {
 
 #[cfg(test)]
 fn inspect_ultra_hdr_jpeg(path: &Path) -> Result<UltraHdrJpegInfo, String> {
-    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
-    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+    let bytes = crate::mmap_util::map_file(path)?;
     inspect_ultra_hdr_jpeg_bytes(&bytes)
 }
 
 #[cfg(test)]
 fn extract_gain_map_jpeg(path: &Path) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
-    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+    let bytes = crate::mmap_util::map_file(path)?;
     extract_gain_map_jpeg_bytes(&bytes)
 }
 
 #[cfg(test)]
 fn decode_ultra_hdr_jpeg(path: &Path) -> Result<HdrImageBuffer, String> {
-    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
-    let bytes = unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? };
+    let bytes = crate::mmap_util::map_file(path)?;
     decode_ultra_hdr_jpeg_bytes_with_cpu_compose(
         &bytes,
         HdrToneMapSettings::default().target_hdr_capacity(),
@@ -241,8 +238,7 @@ impl UltraHdrTiledImageSource {
         orientation: u16,
         target_hdr_capacity: f32,
     ) -> Result<Self, String> {
-        let file = std::fs::File::open(&path).map_err(|err| err.to_string())?;
-        let bytes = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
+        let bytes = Arc::new(crate::mmap_util::map_file(&path)?);
         let info = inspect_ultra_hdr_jpeg_bytes(&bytes)?;
         if !info.is_ultra_hdr {
             return Err("JPEG does not advertise Ultra HDR gain map metadata".to_string());

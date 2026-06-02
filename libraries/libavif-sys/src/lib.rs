@@ -256,7 +256,8 @@ unsafe extern "C" {
         data: *const u8,
         size: usize,
     ) -> avifResult;
-    pub fn avifDecoderSetSource(decoder: *mut avifDecoder, source: avifDecoderSource) -> avifResult;
+    pub fn avifDecoderSetSource(decoder: *mut avifDecoder, source: avifDecoderSource)
+    -> avifResult;
     pub fn avifDecoderSetIOMemory(
         decoder: *mut avifDecoder,
         data: *const u8,
