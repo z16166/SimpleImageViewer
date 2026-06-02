@@ -655,6 +655,7 @@ impl ImageViewerApp {
                         output_mode: render_plan.output_mode,
                         rotation_steps: rotation as u32,
                         alpha: 1.0,
+                        ripple: None,
                     },
                 );
             }

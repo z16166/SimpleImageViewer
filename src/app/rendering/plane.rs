@@ -35,6 +35,7 @@ pub(crate) enum PlaneDrawSource {
         output_mode: crate::hdr::renderer::HdrRenderOutputMode,
         rotation_steps: u32,
         alpha: f32,
+        ripple: Option<(egui::Pos2, f32, f32)>,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
@@ -76,6 +77,7 @@ pub(crate) fn draw_plane(
             output_mode,
             rotation_steps,
             alpha,
+            ripple,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -90,6 +92,7 @@ pub(crate) fn draw_plane(
                     rotation_steps,
                     alpha,
                     uv_subrect(uv, uv_rect),
+                    ripple,
                 ));
         }
         PlaneDrawSource::HdrTile {

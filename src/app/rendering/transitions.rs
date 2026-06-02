@@ -17,6 +17,24 @@
 use crate::app::{ImageViewerApp, TransitionStyle};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
+pub(crate) fn draw_ripple_rings(ui: &egui::Ui, center: Pos2, current_radius: f32) {
+    for ring in 0..4u32 {
+        let ring_radius = current_radius - ring as f32 * 14.0;
+        if ring_radius <= 2.0 {
+            continue;
+        }
+        let ring_alpha = (0.35 - ring as f32 * 0.09).max(0.0);
+        let ring_color = Color32::from_rgba_unmultiplied(180, 215, 255, (ring_alpha * 255.0) as u8);
+        let ring_width = 2.5 - ring as f32 * 0.5;
+        ui.painter().circle(
+            center,
+            ring_radius,
+            Color32::TRANSPARENT,
+            egui::Stroke::new(ring_width, ring_color),
+        );
+    }
+}
+
 /// Parameters computed per-frame for the current transition animation.
 pub(crate) struct TransitionParams {
     pub alpha: f32,
@@ -347,29 +365,7 @@ impl ImageViewerApp {
             .add(egui::Shape::mesh(mesh));
 
         // 4. Water ripple rings at the expanding edge
-        for ring in 0..4u32 {
-            let ring_radius = current_radius - ring as f32 * 14.0;
-            if ring_radius <= 2.0 {
-                continue;
-            }
-            let ring_alpha = (0.35 - ring as f32 * 0.09).max(0.0);
-            let ring_color =
-                Color32::from_rgba_unmultiplied(180, 215, 255, (ring_alpha * 255.0) as u8);
-            let ring_width = 2.5 - ring as f32 * 0.5;
-            let points: Vec<Pos2> = (0..=segments)
-                .map(|i| {
-                    let a = (i as f32 / segments as f32) * std::f32::consts::TAU;
-                    Pos2::new(
-                        center.x + ring_radius * a.cos(),
-                        center.y + ring_radius * a.sin(),
-                    )
-                })
-                .collect();
-            ui.painter().add(egui::Shape::line(
-                points,
-                egui::Stroke::new(ring_width, ring_color),
-            ));
-        }
+        draw_ripple_rings(ui, center, current_radius);
     }
 
     fn draw_curtain(

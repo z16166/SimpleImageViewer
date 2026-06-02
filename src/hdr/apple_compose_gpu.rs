@@ -63,6 +63,13 @@ struct ToneMapSettings {
     primary_height: u32,
     /// Row offset for strip compose when primary exceeds `max_storage_buffer_binding_size`.
     compose_row_offset: u32,
+    ripple_center: vec2<f32>,
+    ripple_radius: f32,
+    ripple_enabled: u32,
+    pixels_per_point: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<storage, read> encoded_primary: array<vec4<f32>>;
@@ -216,6 +223,12 @@ fn compose_apple_at_primary_pixel(px: i32, py: i32, local_py: i32, settings: Ton
     return vec4<f32>(rgb, base.a);
 }
 
+// NOTE: The compose compute shader is run ONLY ONCE when the image is first loaded or when
+// target display capacity changes, rather than run every frame during transition.
+// Therefore, we must compose the ENTIRE primary image including pixels outside the ripple circle.
+// If we were to skip compose for pixels outside the ripple radius here, those pixels would remain
+// uncomposed/empty when the ripple radius expands in subsequent frames of the transition animation.
+// Discarding fragments outside the circle is instead handled efficiently in the fragment shader `fs_main`.
 @compute @workgroup_size(16, 16, 1)
 fn cs_compose_apple_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= tone_map.primary_width {
@@ -332,6 +345,7 @@ pub(super) fn create_compose_compute_resources(
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
             None,
+            None,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
@@ -392,6 +406,7 @@ fn compose_tone_map_uniform(
             image.height,
             tone_map.target_hdr_capacity(),
         )),
+        None,
     );
     uniform._apple_pad = compose_row_offset;
     uniform
