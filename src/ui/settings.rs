@@ -874,18 +874,26 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         let mut captured: Option<String> = None;
         ctx.input(|i| {
             for event in &i.events {
-                if let egui::Event::Key {
-                    key,
-                    pressed,
-                    modifiers,
-                    ..
-                } = event
-                {
-                    if *pressed {
+                match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => {
                         let chord = KeyChord::from_input_event(*key, *modifiers);
                         captured = Some(chord.display_string());
                         break;
                     }
+                    egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } => {
+                        if let Some(chord) = KeyChord::from_wheel_input(delta.y, *modifiers) {
+                            captured = Some(chord.display_string());
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
         });

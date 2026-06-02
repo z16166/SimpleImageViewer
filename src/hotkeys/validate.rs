@@ -317,4 +317,42 @@ mod tests {
                 .all(|binding| binding.action_id != HotkeyActionId::NextImage)
         );
     }
+
+    #[test]
+    fn wheel_hotkeys_are_supported() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![
+                HotkeyBindingEntry {
+                    action_id: "next_image".to_string(),
+                    keys: vec!["WheelDown".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+                HotkeyBindingEntry {
+                    action_id: "zoom_in".to_string(),
+                    keys: vec!["Ctrl+WheelDown".to_string()],
+                    enabled: true,
+                    comment: String::new(),
+                },
+            ],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let next = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "next_image")
+            .expect("next_image binding exists");
+        let zoom_in = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "zoom_in")
+            .expect("zoom_in binding exists");
+
+        assert!(next.keys.iter().any(|key| key == "WheelDown"));
+        assert!(zoom_in.keys.iter().any(|key| key == "Ctrl+WheelDown"));
+    }
 }

@@ -15,6 +15,11 @@ pub(crate) enum AutoSwitchStep {
     ShuffleToFirst,
 }
 
+struct WheelHotkeyMatch {
+    action: AppAction,
+    normalized_delta_y: f32,
+}
+
 pub(crate) fn auto_switch_step(
     image_count: usize,
     current_index: usize,
@@ -109,6 +114,11 @@ impl ImageViewerApp {
 
         let (scroll_delta, zoom_delta, is_ctrl_pressed, is_alt_pressed, mouse_pos) =
             Self::collect_wheel_input(ctx);
+
+        if let Some(wheel_match) = self.map_wheel_to_action(ctx) {
+            self.dispatch_wheel_action(ctx, wheel_match, mouse_pos);
+            return;
+        }
 
         self.handle_mouse_input(
             ctx,
@@ -216,6 +226,87 @@ impl ImageViewerApp {
         }
 
         None
+    }
+
+    fn map_wheel_to_action(&self, ctx: &Context) -> Option<WheelHotkeyMatch> {
+        let line_scroll_speed = ctx.options(|o| o.input_options.line_scroll_speed);
+        ctx.input(|i| {
+            for event in &i.events {
+                let Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let Some(chord) = KeyChord::from_wheel_input(delta.y, *modifiers) else {
+                    continue;
+                };
+                if let Some(action_id) = self.hotkeys_runtime.map.get(&chord).copied() {
+                    let normalized_delta_y = match unit {
+                        MouseWheelUnit::Line => delta.y * line_scroll_speed,
+                        MouseWheelUnit::Page => delta.y * i.viewport_rect().height(),
+                        MouseWheelUnit::Point => delta.y,
+                    };
+                    return Some(WheelHotkeyMatch {
+                        action: app_action_from_hotkey_action_id(action_id),
+                        normalized_delta_y,
+                    });
+                }
+            }
+            None
+        })
+    }
+
+    fn dispatch_wheel_action(
+        &mut self,
+        ctx: &Context,
+        wheel_match: WheelHotkeyMatch,
+        mouse_pos: Option<egui::Pos2>,
+    ) {
+        match wheel_match.action {
+            AppAction::Next | AppAction::Prev => {
+                let now = ctx.input(|i| i.time);
+                if now - self.last_mouse_wheel_nav > 0.2 {
+                    match wheel_match.action {
+                        AppAction::Next => self.navigate_next(),
+                        AppAction::Prev => self.navigate_prev(),
+                        _ => unreachable!(),
+                    }
+                    self.last_mouse_wheel_nav = now;
+                }
+            }
+            AppAction::ZoomIn | AppAction::ZoomOut => {
+                let scroll_zoom_speed = ctx.options(|o| o.input_options.scroll_zoom_speed);
+                let factor =
+                    (scroll_zoom_speed * wheel_match.normalized_delta_y.abs().max(1.0)).exp();
+                let factor = if wheel_match.action == AppAction::ZoomOut {
+                    1.0 / factor
+                } else {
+                    factor
+                };
+                self.zoom_at_mouse(ctx, factor, mouse_pos);
+            }
+            action => self.dispatch_action(action, ctx),
+        }
+    }
+
+    fn zoom_at_mouse(&mut self, ctx: &Context, factor: f32, mouse_pos: Option<egui::Pos2>) {
+        if factor == 1.0 {
+            return;
+        }
+        let old_zoom = self.zoom_factor;
+        self.zoom_factor = (self.zoom_factor * factor).clamp(0.05, 20.0);
+        let ratio = self.zoom_factor / old_zoom;
+
+        if let Some(mouse) = mouse_pos {
+            let screen_center = ctx.input(|i| i.content_rect()).center();
+            let d = mouse - screen_center;
+            self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
+        }
+        self.invalidate_tile_requests_for_view_change();
     }
 
     /// Applies ±½ EV using the same rule as the settings exposure slider
@@ -358,16 +449,7 @@ impl ImageViewerApp {
         } else if is_ctrl_pressed {
             // Zoom-to-cursor
             if zoom_delta != 1.0 {
-                let old_zoom = self.zoom_factor;
-                self.zoom_factor = (self.zoom_factor * zoom_delta).clamp(0.05, 20.0);
-                let ratio = self.zoom_factor / old_zoom;
-
-                if let Some(mouse) = mouse_pos {
-                    let screen_center = ctx.input(|i| i.content_rect()).center();
-                    let d = mouse - screen_center;
-                    self.pan_offset = d * (1.0 - ratio) + self.pan_offset * ratio;
-                }
-                self.invalidate_tile_requests_for_view_change();
+                self.zoom_at_mouse(ctx, zoom_delta, mouse_pos);
             }
         } else if scroll_delta.y.abs() > 0.0 {
             // Navigation with mouse wheel

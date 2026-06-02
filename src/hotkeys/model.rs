@@ -191,6 +191,8 @@ pub struct HotkeyConfigFile {
 pub enum HotkeyLogicalKey {
     Egui(egui::Key),
     Text(&'static str),
+    WheelUp,
+    WheelDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -233,6 +235,21 @@ impl KeyChord {
     }
 
     pub fn from_input_event(key: egui::Key, mods: egui::Modifiers) -> Self {
+        Self::from_logical_input(HotkeyLogicalKey::Egui(key), mods)
+    }
+
+    pub fn from_wheel_input(delta_y: f32, mods: egui::Modifiers) -> Option<Self> {
+        let key = if delta_y > 0.0 {
+            HotkeyLogicalKey::WheelUp
+        } else if delta_y < 0.0 {
+            HotkeyLogicalKey::WheelDown
+        } else {
+            return None;
+        };
+        Some(Self::from_logical_input(key, mods))
+    }
+
+    fn from_logical_input(key: HotkeyLogicalKey, mods: egui::Modifiers) -> Self {
         let mut mask = 0_u8;
         if mods.ctrl || mods.command {
             mask |= MOD_CTRL;
@@ -245,7 +262,7 @@ impl KeyChord {
         }
         Self {
             modifiers: mask,
-            key: HotkeyLogicalKey::Egui(key),
+            key,
         }
     }
 }
@@ -308,6 +325,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::NextImage => &[
             KeyChord {
                 modifiers: 0,
+                key: HotkeyLogicalKey::WheelDown,
+            },
+            KeyChord {
+                modifiers: 0,
                 key: HotkeyLogicalKey::Egui(egui::Key::ArrowRight),
             },
             KeyChord {
@@ -320,6 +341,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
             },
         ],
         HotkeyActionId::PrevImage => &[
+            KeyChord {
+                modifiers: 0,
+                key: HotkeyLogicalKey::WheelUp,
+            },
             KeyChord {
                 modifiers: 0,
                 key: HotkeyLogicalKey::Egui(egui::Key::ArrowLeft),
@@ -343,6 +368,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         }],
         HotkeyActionId::ZoomIn => &[
             KeyChord {
+                modifiers: MOD_CTRL,
+                key: HotkeyLogicalKey::WheelDown,
+            },
+            KeyChord {
                 modifiers: 0,
                 key: HotkeyLogicalKey::Egui(egui::Key::Plus),
             },
@@ -351,10 +380,16 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
                 key: HotkeyLogicalKey::Egui(egui::Key::Equals),
             },
         ],
-        HotkeyActionId::ZoomOut => &[KeyChord {
-            modifiers: 0,
-            key: HotkeyLogicalKey::Egui(egui::Key::Minus),
-        }],
+        HotkeyActionId::ZoomOut => &[
+            KeyChord {
+                modifiers: MOD_CTRL,
+                key: HotkeyLogicalKey::WheelUp,
+            },
+            KeyChord {
+                modifiers: 0,
+                key: HotkeyLogicalKey::Egui(egui::Key::Minus),
+            },
+        ],
         HotkeyActionId::ZoomReset => &[KeyChord {
             modifiers: 0,
             key: HotkeyLogicalKey::Text("*"),
@@ -433,6 +468,8 @@ pub fn parse_logical_key_name(value: &str) -> Option<HotkeyLogicalKey> {
     let trimmed = value.trim();
     let normalized = trimmed.to_ascii_lowercase();
     match normalized.as_str() {
+        "wheelup" | "mousewheelup" | "mouse wheel up" => Some(HotkeyLogicalKey::WheelUp),
+        "wheeldown" | "mousewheeldown" | "mouse wheel down" => Some(HotkeyLogicalKey::WheelDown),
         "plus" | "+" => Some(HotkeyLogicalKey::Text("+")),
         "minus" | "dash" | "-" => Some(HotkeyLogicalKey::Text("-")),
         "asterisk" | "*" => Some(HotkeyLogicalKey::Text("*")),
@@ -446,6 +483,8 @@ pub fn logical_key_to_name(key: HotkeyLogicalKey) -> &'static str {
         HotkeyLogicalKey::Text("+") => "Plus",
         HotkeyLogicalKey::Text("-") => "Dash",
         HotkeyLogicalKey::Text("*") => "Asterisk",
+        HotkeyLogicalKey::WheelUp => "WheelUp",
+        HotkeyLogicalKey::WheelDown => "WheelDown",
         _ => "Unknown",
     }
 }
