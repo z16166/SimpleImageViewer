@@ -41,7 +41,16 @@ pub fn setup_or_forward_args(
     initial_image: Option<&PathBuf>,
     no_recursive: bool,
 ) -> bool {
-    let sock_name = IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>().unwrap();
+    let sock_name = match IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>() {
+        Ok(name) => name,
+        Err(e) => {
+            log::error!(
+                "Failed to resolve IPC socket name: {}. Single-instance mode disabled.",
+                e
+            );
+            return false;
+        }
+    };
 
     let payload = if let Some(path) = initial_image {
         if let Some(p) = path.to_str() {
@@ -163,7 +172,16 @@ pub fn setup_or_forward_args(
                 e
             );
             cleanup_stale_socket();
-            let sock_name_retry = IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>().unwrap();
+            let sock_name_retry = match IPC_SOCKET_NAME.to_ns_name::<GenericNamespaced>() {
+                Ok(name) => name,
+                Err(err) => {
+                    log::error!(
+                        "Failed to resolve IPC socket name on retry: {}. Single-instance mode disabled.",
+                        err
+                    );
+                    return false;
+                }
+            };
             match ListenerOptions::new().name(sock_name_retry).create_sync() {
                 Ok(listener) => {
                     log::info!("Successfully bound IPC socket after stale cleanup.");
