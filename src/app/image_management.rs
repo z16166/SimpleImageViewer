@@ -356,9 +356,7 @@ impl ImageViewerApp {
         self.prev_texture = None;
         self.transition_start = None;
         self.prefetch_prev_generation = None;
-        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.clear();
-        }
+        crate::tile_cache::PIXEL_CACHE.lock().clear();
     }
 
     pub(crate) fn shuffle_slideshow_order_to_first(&mut self) {
@@ -470,9 +468,7 @@ impl ImageViewerApp {
         for idx in &refresh.indices_to_invalidate {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
-            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                cache.remove_image(*idx);
-            }
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
             self.remove_hdr_image_index(*idx);
         }
 
@@ -606,9 +602,7 @@ impl ImageViewerApp {
         self.transition_start = None;
         self.tile_manager = None;
         self.prefetched_tiles.clear();
-        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.clear();
-        }
+        crate::tile_cache::PIXEL_CACHE.lock().clear();
         self.current_image_res = None;
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
@@ -1512,9 +1506,7 @@ impl ImageViewerApp {
         if idx == self.current_index && gen_id == self.generation {
             log::info!("[App] Refined image notification for index={}", idx);
 
-            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                cache.remove_image(idx);
-            }
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
 
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
@@ -1567,9 +1559,7 @@ impl ImageViewerApp {
                 "[App] Refined: background update for index {} (not current). Invalidating caches.",
                 idx
             );
-            if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                cache.remove_image(idx);
-            }
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
             self.prefetched_tiles.remove(&idx);
             self.texture_cache.remove(idx);
             self.remove_hdr_image_index(idx);

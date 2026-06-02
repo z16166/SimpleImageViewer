@@ -8,11 +8,12 @@
 
 #![allow(dead_code)]
 
+use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use memmap2::Mmap;
@@ -1103,10 +1104,7 @@ impl OpenExrCoreReadContext {
         chunk_origin: (u32, u32),
     ) -> Result<OpenExrCoreDecodedChunkFetch, String> {
         let key = decoded_chunk_key(part_index, chunk, chunk_origin)?;
-        let mut cache = self
-            .decoded_chunks
-            .lock()
-            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        let mut cache = self.decoded_chunks.lock();
         loop {
             if let Some(decoded) = cache.get(&key) {
                 return Ok(OpenExrCoreDecodedChunkFetch {
@@ -1118,10 +1116,7 @@ impl OpenExrCoreReadContext {
             if cache.begin_decode(key) {
                 break;
             }
-            cache = self
-                .decoded_chunk_ready
-                .wait(cache)
-                .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+            self.decoded_chunk_ready.wait(&mut cache);
         }
         drop(cache);
 
@@ -1129,17 +1124,12 @@ impl OpenExrCoreReadContext {
         let (decoded, decode_ms) = match decode_result {
             Ok(decoded) => decoded,
             Err(err) => {
-                if let Ok(mut cache) = self.decoded_chunks.lock() {
-                    cache.finish_decode(&key);
-                }
+                self.decoded_chunks.lock().finish_decode(&key);
                 self.decoded_chunk_ready.notify_all();
                 return Err(err);
             }
         };
-        let mut cache = self
-            .decoded_chunks
-            .lock()
-            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        let mut cache = self.decoded_chunks.lock();
         cache.finish_decode(&key);
         cache.insert(key, Arc::clone(&decoded));
         drop(cache);

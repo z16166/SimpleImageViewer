@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
@@ -191,26 +191,17 @@ impl HdrTiledImageSource {
 
     #[cfg(test)]
     fn cached_tile_count(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.len())
-            .unwrap_or_default()
+        self.tile_cache.lock().len()
     }
 
     #[cfg(test)]
     fn cached_tile_bytes(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.current_bytes())
-            .unwrap_or_default()
+        self.tile_cache.lock().current_bytes()
     }
 
     #[cfg(test)]
     fn cache_budget_bytes(&self) -> usize {
-        self.tile_cache
-            .lock()
-            .map(|cache| cache.max_bytes())
-            .unwrap_or_default()
+        self.tile_cache.lock().max_bytes()
     }
 }
 
@@ -258,16 +249,13 @@ impl HdrTiledSource for HdrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Option<Arc<HdrTileBuffer>> {
-        self.tile_cache
-            .lock()
-            .ok()
-            .and_then(|mut cache| cache.get((x, y, width, height)))
+        self.tile_cache.lock().get((x, y, width, height))
     }
 
     fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.set_protected_keys(tiles.iter().copied());
-        }
+        self.tile_cache
+            .lock()
+            .set_protected_keys(tiles.iter().copied());
     }
 
     fn extract_tile_rgba32f_arc(
@@ -279,7 +267,8 @@ impl HdrTiledSource for HdrTiledImageSource {
     ) -> Result<Arc<HdrTileBuffer>, String> {
         validate_tile_bounds(self.image.width, self.image.height, x, y, width, height)?;
         let key = (x, y, width, height);
-        if let Ok(mut cache) = self.tile_cache.lock() {
+        {
+            let mut cache = self.tile_cache.lock();
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
             }
@@ -304,9 +293,7 @@ impl HdrTiledSource for HdrTiledImageSource {
             Arc::new(tile),
         ));
 
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.insert(key, Arc::clone(&tile));
-        }
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
 
         Ok(tile)
     }
@@ -609,8 +596,8 @@ pub(crate) fn validate_tile_bounds(
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::Mutex;
     use std::sync::Arc;
-    use std::sync::Mutex;
 
     use crate::hdr::tiled::{
         HdrTileBuffer, HdrTiledImageSource, HdrTiledSource, HdrTiledSourceKind,
@@ -748,11 +735,7 @@ mod tests {
         let preview = super::hdr_preview_from_tiled_source_nearest(&source, 64, 64)
             .expect("generate disk-backed preview");
 
-        let mut requested_rows = source
-            .requested_rows
-            .lock()
-            .expect("read requested rows")
-            .clone();
+        let mut requested_rows = source.requested_rows.lock().clone();
         requested_rows.sort_unstable();
         requested_rows.dedup();
         assert_eq!((preview.width, preview.height), (1, 64));
@@ -1012,10 +995,7 @@ mod tests {
             assert_eq!(x, 0);
             assert_eq!(width, self.width);
             assert_eq!(height, 1);
-            self.requested_rows
-                .lock()
-                .expect("record requested row")
-                .push(y);
+            self.requested_rows.lock().push(y);
             Ok(Arc::new(HdrTileBuffer::new(
                 width,
                 height,

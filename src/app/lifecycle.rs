@@ -247,9 +247,9 @@ impl ImageViewerApp {
         let available_ram_mb = sys.available_memory() / (1024 * 1024);
         let (cpu_cache_mb, hdr_tile_cache_mb) =
             crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
-        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.set_max_mb(cpu_cache_mb);
-        }
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .set_max_mb(cpu_cache_mb);
         crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
             hdr_tile_cache_mb * 1024 * 1024,
             std::sync::atomic::Ordering::Relaxed,

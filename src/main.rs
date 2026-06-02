@@ -636,14 +636,12 @@ fn join_dx12_cache_validate_thread(jh: Option<std::thread::JoinHandle<()>>) {
 }
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-static DX12_CACHE_VALIDATE_JOIN_ON_EXIT: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
-    std::sync::Mutex::new(None);
+static DX12_CACHE_VALIDATE_JOIN_ON_EXIT: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>> =
+    parking_lot::Mutex::new(None);
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 pub(crate) fn register_dx12_cache_validate_join_for_exit(handle: std::thread::JoinHandle<()>) {
-    let mut slot = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
+    let mut slot = DX12_CACHE_VALIDATE_JOIN_ON_EXIT.lock();
     if slot.replace(handle).is_some() {
         log::warn!("[startup] wgpu dx12 cache-validate join slot overwritten");
     }
@@ -653,10 +651,7 @@ pub(crate) fn register_dx12_cache_validate_join_for_exit(handle: std::thread::Jo
 /// thread can finish writing `siv_wgpu_preprobe_cache.yaml` (see `join_dx12_cache_validate_thread`).
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 pub(crate) fn take_and_join_dx12_cache_validate_thread() {
-    let h = DX12_CACHE_VALIDATE_JOIN_ON_EXIT
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
+    let h = DX12_CACHE_VALIDATE_JOIN_ON_EXIT.lock().take();
     join_dx12_cache_validate_thread(h);
 }
 

@@ -15,10 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use eframe::egui::{self, TextureHandle};
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
 /// Tile size in pixels (each tile is tile_size x tile_size).
@@ -333,7 +334,7 @@ impl TileManager {
         let mut cpu = 0;
         let mut pending = 0;
 
-        if let Ok(cache) = PIXEL_CACHE.try_lock() {
+        if let Some(cache) = PIXEL_CACHE.try_lock() {
             for coord in visible {
                 if self.tiles.contains_key(coord) {
                     gpu += 1;
@@ -353,7 +354,7 @@ impl TileManager {
     /// Returns global counts using a non-blocking try_lock
     #[cfg(feature = "tile-debug")]
     pub fn tiles_and_pending(&self) -> (usize, usize, usize) {
-        let cpu_cached = if let Ok(cache) = PIXEL_CACHE.try_lock() {
+        let cpu_cached = if let Some(cache) = PIXEL_CACHE.try_lock() {
             cache.count_for_image(self.image_index)
         } else {
             0
@@ -363,10 +364,7 @@ impl TileManager {
 
     /// Returns true if any of the visible tiles are in CPU cache but NOT in GPU.
     pub fn has_ready_to_upload(&self, visible: &[TileCoord]) -> bool {
-        let cache = match PIXEL_CACHE.lock() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
+        let cache = PIXEL_CACHE.lock();
 
         for coord in visible {
             if !self.tiles.contains_key(coord) {
@@ -425,13 +423,7 @@ impl TileManager {
         }
 
         // 1. Check Global Pixel Cache (CPU)
-        let cached_pixels: Option<Arc<Vec<u8>>> = {
-            if let Ok(mut cache) = PIXEL_CACHE.lock() {
-                cache.get(self.image_index, coord)
-            } else {
-                None
-            }
-        };
+        let cached_pixels: Option<Arc<Vec<u8>>> = PIXEL_CACHE.lock().get(self.image_index, coord);
 
         if let Some(pixels) = cached_pixels {
             if allow_upload {
