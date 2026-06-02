@@ -2,9 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
-
-## [2.2.3] - 2026-06-02
+## [2.3.0] - 2026-06-02
 
 ### Added
 - **Custom hotkeys**: Remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse clicks from the new **Hotkeys** tab in Settings.
