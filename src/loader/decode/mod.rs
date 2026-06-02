@@ -281,51 +281,102 @@ pub(crate) fn load_image_file(
                 hdr.height(),
                 (hdr.width() as f64 * hdr.height() as f64) / 1_000_000.0
             );
-
-            let t0 = std::time::Instant::now();
-            let hdr_preview_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                hdr.generate_hdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
-            }));
-            match hdr_preview_result {
-                Ok(Ok(image)) if image.width > 0 && image.height > 0 => {
-                    log::info!(
-                        "[{}] HDR {}px preview generated ({}x{}) in {:?}",
-                        file_name,
-                        DEFAULT_PREVIEW_SIZE,
-                        image.width,
-                        image.height,
-                        t0.elapsed()
-                    );
-                    hdr_preview = Some(std::sync::Arc::new(image));
-                }
-                Ok(Err(err)) => {
-                    log::warn!(
-                        "[{}] HDR preview generation failed in {:?}: {}",
-                        file_name,
-                        t0.elapsed(),
-                        err
-                    );
-                }
-                Err(err) => {
-                    log::error!(
-                        "[{}] HDR preview generation PANICKED: {:?} in {:?}",
-                        file_name,
-                        err,
-                        t0.elapsed()
-                    );
-                }
-                _ => {}
-            }
-
-            if hdr_preview.is_none() {
+            if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
+                // HDR mode: generate HDR preview primarily, fallback to SDR if it fails
                 let t0 = std::time::Instant::now();
-                let gen_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    fallback.generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
-                }));
-                match gen_result {
-                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                let hdr_preview_result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        hdr.generate_hdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                    }));
+                match hdr_preview_result {
+                    Ok(Ok(image)) if image.width > 0 && image.height > 0 => {
                         log::info!(
-                            "[{}] HDR fallback {}px preview generated ({}x{}) in {:?}",
+                            "[{}] HDR {}px preview generated ({}x{}) in {:?}",
+                            file_name,
+                            DEFAULT_PREVIEW_SIZE,
+                            image.width,
+                            image.height,
+                            t0.elapsed()
+                        );
+                        hdr_preview = Some(std::sync::Arc::new(image));
+                    }
+                    _ => {
+                        log::warn!(
+                            "[{}] HDR preview generation failed or zero-sized in {:?}, trying source SDR preview fallback",
+                            file_name,
+                            t0.elapsed()
+                        );
+                        let sdr_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                hdr.generate_sdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                            }));
+                        match sdr_result {
+                            Ok(Ok((pw, ph, p_pixels))) if pw > 0 && ph > 0 => {
+                                log::info!(
+                                    "[{}] Source SDR fallback preview generated ({}x{}) in {:?}",
+                                    file_name,
+                                    pw,
+                                    ph,
+                                    t0.elapsed()
+                                );
+                                let hdr_buf = sdr_preview_to_hdr_preview(
+                                    pw,
+                                    ph,
+                                    &p_pixels,
+                                    hdr.color_space(),
+                                );
+                                hdr_preview = Some(std::sync::Arc::new(hdr_buf));
+                            }
+                            _ => {
+                                log::warn!(
+                                    "[{}] Source SDR preview fallback failed, trying fallback.generate_preview",
+                                    file_name
+                                );
+                                let gen_result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        fallback.generate_preview(
+                                            DEFAULT_PREVIEW_SIZE,
+                                            DEFAULT_PREVIEW_SIZE,
+                                        )
+                                    }));
+                                match gen_result {
+                                    Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                                        log::info!(
+                                            "[{}] Fallback SDR preview generated ({}x{}) in {:?}",
+                                            file_name,
+                                            pw,
+                                            ph,
+                                            t0.elapsed()
+                                        );
+                                        let hdr_buf = sdr_preview_to_hdr_preview(
+                                            pw,
+                                            ph,
+                                            &p_pixels,
+                                            hdr.color_space(),
+                                        );
+                                        hdr_preview = Some(std::sync::Arc::new(hdr_buf));
+                                    }
+                                    _ => {
+                                        log::error!(
+                                            "[{}] All preview paths exhausted (HDR + source SDR + fallback). No preview available.",
+                                            file_name
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // SDR mode: generate SDR preview primarily, fallback to HDR if it fails
+                let t0 = std::time::Instant::now();
+                let sdr_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    hdr.generate_sdr_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                }));
+                match sdr_result {
+                    Ok(Ok((pw, ph, p_pixels))) if pw > 0 && ph > 0 => {
+                        log::info!(
+                            "[{}] Source SDR {}px preview generated ({}x{}) in {:?}",
                             file_name,
                             DEFAULT_PREVIEW_SIZE,
                             pw,
@@ -334,20 +385,73 @@ pub(crate) fn load_image_file(
                         );
                         preview = Some(DecodedImage::new(pw, ph, p_pixels));
                     }
-                    Ok(_) => {
+                    _ => {
                         log::warn!(
-                            "[{}] HDR fallback generate_preview returned empty/zero-size result in {:?}",
+                            "[{}] Source SDR preview generation failed or zero-sized in {:?}, trying fallback.generate_preview",
                             file_name,
                             t0.elapsed()
                         );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[{}] HDR fallback generate_preview PANICKED: {:?} in {:?}",
-                            file_name,
-                            e,
-                            t0.elapsed()
-                        );
+                        let gen_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                fallback
+                                    .generate_preview(DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SIZE)
+                            }));
+                        match gen_result {
+                            Ok((pw, ph, p_pixels)) if pw > 0 && ph > 0 => {
+                                log::info!(
+                                    "[{}] Fallback SDR preview generated ({}x{}) in {:?}",
+                                    file_name,
+                                    pw,
+                                    ph,
+                                    t0.elapsed()
+                                );
+                                preview = Some(DecodedImage::new(pw, ph, p_pixels));
+                            }
+                            _ => {
+                                log::warn!(
+                                    "[{}] Fallback generate_preview failed, trying emergency HDR preview fallback",
+                                    file_name
+                                );
+                                let hdr_preview_result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        hdr.generate_hdr_preview(
+                                            DEFAULT_PREVIEW_SIZE,
+                                            DEFAULT_PREVIEW_SIZE,
+                                        )
+                                    }));
+                                match hdr_preview_result {
+                                    Ok(Ok(image)) if image.width > 0 && image.height > 0 => {
+                                        log::info!(
+                                            "[{}] Emergency HDR fallback preview generated ({}x{}) in {:?}",
+                                            file_name,
+                                            image.width,
+                                            image.height,
+                                            t0.elapsed()
+                                        );
+                                        match crate::hdr::tiled::sdr_preview_from_hdr_preview(
+                                            &image,
+                                        ) {
+                                            Ok((pw, ph, p_pixels)) => {
+                                                preview = Some(DecodedImage::new(pw, ph, p_pixels));
+                                            }
+                                            Err(err) => {
+                                                log::error!(
+                                                    "[{}] Emergency HDR to SDR preview conversion failed: {}",
+                                                    file_name,
+                                                    err
+                                                );
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        log::error!(
+                                            "[{}] All preview paths exhausted (source SDR + fallback + HDR). No preview available.",
+                                            file_name
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -473,6 +577,35 @@ fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String
             result,
             Ok(ImageData::Hdr { .. } | ImageData::HdrTiled { .. } | ImageData::HdrAnimated(_))
         )
+}
+
+fn sdr_preview_to_hdr_preview(
+    w: u32,
+    h: u32,
+    rgba_u8: &[u8],
+    color_space: crate::hdr::types::HdrColorSpace,
+) -> crate::hdr::types::HdrImageBuffer {
+    let mut rgba_f32 = Vec::with_capacity(rgba_u8.len());
+    for chunk in rgba_u8.chunks_exact(4) {
+        let r = (chunk[0] as f32 / 255.0).powf(2.2);
+        let g = (chunk[1] as f32 / 255.0).powf(2.2);
+        let b = (chunk[2] as f32 / 255.0).powf(2.2);
+        let a = chunk[3] as f32 / 255.0;
+        rgba_f32.extend_from_slice(&[r, g, b, a]);
+    }
+    crate::hdr::types::HdrImageBuffer {
+        width: w,
+        height: h,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space,
+        metadata: crate::hdr::types::HdrImageMetadata {
+            transfer_function: crate::hdr::types::HdrTransferFunction::Linear,
+            reference: crate::hdr::types::HdrReference::SceneLinear,
+            color_profile: crate::hdr::types::HdrColorProfile::LinearSrgb,
+            ..Default::default()
+        },
+        rgba_f32: std::sync::Arc::new(rgba_f32),
+    }
 }
 
 #[cfg(test)]

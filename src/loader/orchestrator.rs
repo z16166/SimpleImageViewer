@@ -22,7 +22,7 @@ use crate::loader::preview_caps::REFINEMENT_POOL;
 use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
     PreviewResult, RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
-    hdr_to_sdr_with_user_tone, hq_preview_max_side,
+    hdr_display_requests_sdr_preview, hdr_to_sdr_with_user_tone, hq_preview_max_side,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -870,6 +870,7 @@ impl ImageLoader {
 
                         let limit = hq_preview_max_side();
                         let started_at = std::time::Instant::now();
+                        let is_hdr_mode = !hdr_display_requests_sdr_preview(hdr_target_capacity);
                         log::info!(
                             "[Loader] [{}] HQ preview start: index={} generation={} limit={} source={}x{} (hdr_mode={})",
                             file_name,
@@ -878,18 +879,17 @@ impl ImageLoader {
                             limit,
                             source.width(),
                             source.height(),
-                            hdr_target_capacity > 1.0
+                            is_hdr_mode
                         );
-                        let is_hdr_mode = hdr_target_capacity > 1.0;
                         let r_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
-                                let hdr = source.generate_hdr_preview(limit, limit)?;
-                                let sdr = if !is_hdr_mode {
-                                    Some(crate::hdr::tiled::sdr_preview_from_hdr_preview(&hdr)?)
+                                if is_hdr_mode {
+                                    let hdr = source.generate_hdr_preview(limit, limit)?;
+                                    Ok((Some(hdr), None))
                                 } else {
-                                    None
-                                };
-                                Ok((hdr, sdr))
+                                    let sdr = source.generate_sdr_preview(limit, limit)?;
+                                    Ok((None, Some(sdr)))
+                                }
                             }));
 
                         match r_result {
@@ -904,23 +904,29 @@ impl ImageLoader {
                                     );
                                     return;
                                 }
+                                let (pw, ph) = if let Some(ref h) = hdr {
+                                    (h.width, h.height)
+                                } else if let Some(ref s) = sdr {
+                                    (s.0, s.1)
+                                } else {
+                                    (0, 0)
+                                };
+                                let preview_kind = if is_hdr_mode { "HDR" } else { "SDR" };
                                 log::debug!(
-                                    "[Loader] [{}] HQ previews generated: {}x{} (source {}x{}, limit={}, elapsed={:?}, hdr_mode={})",
+                                    "[Loader] [{}] HQ {} preview generated: {}x{} (source {}x{}, limit={}, elapsed={:?})",
                                     file_name,
-                                    hdr.width,
-                                    hdr.height,
+                                    preview_kind,
+                                    pw,
+                                    ph,
                                     source.width(),
                                     source.height(),
                                     limit,
-                                    started_at.elapsed(),
-                                    is_hdr_mode
+                                    started_at.elapsed()
                                 );
-                                // Always publish the HDR float preview when we decoded it. `hdr_mode`
-                                // only controls whether we also build an SDR tone-map helper plane;
-                                // native HDR display samples the HDR preview cache/TM path and would
-                                // otherwise stay on the coarse bootstrap HDR if we attached SDR only.
-                                let mut bundle =
-                                    PreviewBundle::refined().with_hdr(Arc::new(hdr));
+                                let mut bundle = PreviewBundle::refined();
+                                if let Some(h) = hdr {
+                                    bundle = bundle.with_hdr(Arc::new(h));
+                                }
                                 if let Some(s) = sdr {
                                     bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
                                 }
