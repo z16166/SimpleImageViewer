@@ -803,11 +803,11 @@ mod tests {
     fn pq_oetf_normalizes_absolute_nits_by_reference_luminance() {
         fn display_linear_nits_to_pq(nits: f32) -> f32 {
             const PQ_REFERENCE_LUMINANCE_NITS: f32 = 10000.0;
-            let m1 = 2610.0 / 16384.0;
-            let m2 = 2523.0 / 32.0;
-            let c1 = 3424.0 / 4096.0;
-            let c2 = 2413.0 / 128.0;
-            let c3 = 2392.0 / 128.0;
+            let m1 = crate::constants::PQ_M1;
+            let m2 = crate::constants::PQ_M2;
+            let c1 = crate::constants::PQ_C1;
+            let c2 = crate::constants::PQ_C2;
+            let c3 = crate::constants::PQ_C3;
             if !nits.is_finite() {
                 return nits;
             }

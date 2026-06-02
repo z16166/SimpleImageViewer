@@ -192,3 +192,13 @@ pub const PQ_M2: f32 = 2523.0 / 32.0;
 pub const PQ_C1: f32 = 3424.0 / 4096.0;
 pub const PQ_C2: f32 = 2413.0 / 128.0;
 pub const PQ_C3: f32 = 2392.0 / 128.0;
+
+/// Maximum number of tags allowed in an ICC profile to prevent malformed profile processing loops.
+pub const MAX_ICC_TAG_COUNT: usize = 4096;
+
+/// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
+pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
+
+/// Default buffer/profile size for building mock ICC profiles in unit tests.
+#[cfg(test)]
+pub const MOCK_ICC_PROFILE_SIZE: usize = 4096;

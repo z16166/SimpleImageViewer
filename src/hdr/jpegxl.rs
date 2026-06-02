@@ -23,7 +23,10 @@ use crate::hdr::types::{
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "jpegxl")]
 use crate::{
-    constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS},
+    constants::{
+        DEFAULT_ANIMATION_DELAY_MS, JXL_PROBE_ITERATION_CAP, MAX_ICC_TAG_COUNT,
+        MIN_ANIMATION_DELAY_THRESHOLD_MS,
+    },
     loader::{AnimationFrame, DecodedImage, ImageData},
 };
 #[cfg(feature = "jpegxl")]
@@ -105,7 +108,7 @@ pub(crate) fn libjxl_probe_orientation_from_bytes(bytes: &[u8]) -> Option<u16> {
         libjxl_sys::JxlDecoderCloseInput(decoder.0);
 
         // Subscribed-only basic-info probes should terminate quickly; cap iterations on bad input.
-        for _ in 0..4096_usize {
+        for _ in 0..JXL_PROBE_ITERATION_CAP {
             match libjxl_sys::JxlDecoderProcessInput(decoder.0) {
                 libjxl_sys::JXL_DEC_BASIC_INFO => {
                     let mut info = std::mem::MaybeUninit::<libjxl_sys::JxlBasicInfo>::uninit();
@@ -1360,7 +1363,7 @@ fn icc_find_tag_element_offset(icc: &[u8], tag: &[u8; 4]) -> Option<usize> {
         return None;
     }
     let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?) as usize;
-    if tag_count > 4096 {
+    if tag_count > MAX_ICC_TAG_COUNT {
         return None;
     }
     let mut entry = 132usize;
@@ -1552,7 +1555,7 @@ fn icc_scan_cicp_tag(icc: &[u8]) -> Option<(u16, u16, u16, bool)> {
         return None;
     }
     let tag_count = u32::from_be_bytes(icc[128..132].try_into().ok()?) as usize;
-    if tag_count > 4096 {
+    if tag_count > MAX_ICC_TAG_COUNT {
         return None;
     }
     let mut entry = 132usize;
@@ -3322,12 +3325,12 @@ mod tests {
     #[cfg(feature = "jpegxl")]
     #[test]
     fn icc_trc_kind_classifies_linear_gamma_and_lut() {
-        // Build a minimal 4096-byte ICC profile with a single rTRC tag at a
+        // Build a minimal MOCK_ICC_PROFILE_SIZE-byte ICC profile with a single rTRC tag at a
         // known offset. We don't need a valid header — `icc_find_tag_element_offset`
         // only reads the tag-table at offset 128.
         fn make(count: u32, payload_after_count: &[u8]) -> Vec<u8> {
             let trc_offset = 256_u32;
-            let mut icc = vec![0u8; 4096];
+            let mut icc = vec![0u8; crate::constants::MOCK_ICC_PROFILE_SIZE];
             icc[128..132].copy_from_slice(&1_u32.to_be_bytes()); // tag_count
             icc[132..136].copy_from_slice(b"rTRC");
             icc[136..140].copy_from_slice(&trc_offset.to_be_bytes());
