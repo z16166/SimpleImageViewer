@@ -236,7 +236,7 @@ fn default_font_family() -> String {
     "System Default".to_string()
 }
 fn default_font_size() -> f32 {
-    16.0
+    14.0
 }
 fn default_transition_style() -> TransitionStyle {
     TransitionStyle::None
