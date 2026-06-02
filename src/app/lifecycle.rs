@@ -247,9 +247,9 @@ impl ImageViewerApp {
         let available_ram_mb = sys.available_memory() / (1024 * 1024);
         let (cpu_cache_mb, hdr_tile_cache_mb) =
             crate::app::memory_aware_tile_cache_budgets_mb(tier, available_ram_mb);
-        if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-            cache.set_max_mb(cpu_cache_mb);
-        }
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .set_max_mb(cpu_cache_mb);
         crate::hdr::tiled::HDR_TILE_CACHE_MAX_BYTES.store(
             hdr_tile_cache_mb * 1024 * 1024,
             std::sync::atomic::Ordering::Relaxed,
@@ -357,6 +357,7 @@ impl ImageViewerApp {
             last_logged_swap_chain_format_request: None,
             rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
+            ultra_hdr_decode_output_mode: initial_hdr_output_mode,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,
@@ -364,6 +365,7 @@ impl ImageViewerApp {
             current_hdr_tiled_preview: None,
             hdr_tiled_preview_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
+            hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,

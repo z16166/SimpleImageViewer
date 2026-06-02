@@ -14,9 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use parking_lot::{Condvar, Mutex};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use crate::hdr::tiled::{
@@ -57,9 +58,10 @@ struct ScanlineBandPrefillLeader<'a> {
 
 impl Drop for ScanlineBandPrefillLeader<'_> {
     fn drop(&mut self) {
-        if let Ok(mut in_flight) = self.source.scanline_band_prefills.lock() {
-            in_flight.remove(&self.band_key);
-        }
+        self.source
+            .scanline_band_prefills
+            .lock()
+            .remove(&self.band_key);
         self.source.scanline_band_prefills_ready.notify_all();
     }
 }
@@ -137,7 +139,8 @@ impl ExrTiledImageSource {
         #[cfg(feature = "tile-debug")]
         let tile_count = keys.len();
         let band_key = (y, band_height);
-        if let Ok(mut cache) = self.tile_cache.lock() {
+        {
+            let mut cache = self.tile_cache.lock();
             if keys.iter().all(|key| cache.get(*key).is_some()) {
                 #[cfg(feature = "tile-debug")]
                 log::debug!(
@@ -156,18 +159,17 @@ impl ExrTiledImageSource {
         }
 
         loop {
-            let mut in_flight = self.scanline_band_prefills.lock().unwrap();
+            let mut in_flight = self.scanline_band_prefills.lock();
             if in_flight.insert(band_key) {
                 break;
             }
 
-            in_flight = self
-                .scanline_band_prefills_ready
-                .wait_while(in_flight, |in_flight| in_flight.contains(&band_key))
-                .unwrap();
+            self.scanline_band_prefills_ready
+                .wait_while(&mut in_flight, |in_flight| in_flight.contains(&band_key));
             drop(in_flight);
 
-            if let Ok(mut cache) = self.tile_cache.lock() {
+            {
+                let mut cache = self.tile_cache.lock();
                 if keys.iter().all(|key| cache.get(*key).is_some()) {
                     #[cfg(feature = "tile-debug")]
                     log::debug!(
@@ -226,7 +228,8 @@ impl ExrTiledImageSource {
                 ));
             }
 
-            if let Ok(mut cache) = self.tile_cache.lock() {
+            {
+                let mut cache = self.tile_cache.lock();
                 for (key, tile) in tiles {
                     cache.insert(key, tile);
                 }
@@ -334,7 +337,8 @@ impl HdrTiledSource for ExrTiledImageSource {
         height: u32,
     ) -> Result<Arc<HdrTileBuffer>, String> {
         let key = (x, y, width, height);
-        if let Ok(mut cache) = self.tile_cache.lock() {
+        {
+            let mut cache = self.tile_cache.lock();
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
             }
@@ -342,7 +346,8 @@ impl HdrTiledSource for ExrTiledImageSource {
 
         if self.should_prefill_scanline_band(x, y, width, height) {
             self.prefill_scanline_band_tiles(y, height)?;
-            if let Ok(mut cache) = self.tile_cache.lock() {
+            {
+                let mut cache = self.tile_cache.lock();
                 if let Some(tile) = cache.get(key) {
                     return Ok(tile);
                 }
@@ -362,9 +367,7 @@ impl HdrTiledSource for ExrTiledImageSource {
             Arc::new(tile.rgba),
         ));
 
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.insert(key, Arc::clone(&tile));
-        }
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
         Ok(tile)
     }
 
@@ -375,16 +378,13 @@ impl HdrTiledSource for ExrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Option<Arc<HdrTileBuffer>> {
-        self.tile_cache
-            .lock()
-            .ok()
-            .and_then(|mut cache| cache.get((x, y, width, height)))
+        self.tile_cache.lock().get((x, y, width, height))
     }
 
     fn protect_cached_tiles(&self, keys: &[(u32, u32, u32, u32)]) {
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.set_protected_keys(keys.iter().copied());
-        }
+        self.tile_cache
+            .lock()
+            .set_protected_keys(keys.iter().copied());
     }
 }
 

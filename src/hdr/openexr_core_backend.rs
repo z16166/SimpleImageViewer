@@ -8,11 +8,15 @@
 
 #![allow(dead_code)]
 
+use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use memmap2::Mmap;
@@ -408,9 +412,9 @@ impl OpenExrCoreDecodedChunkCache {
     }
 }
 
-#[derive(Clone)]
 struct ExrMmapReadCookie {
     mmap: Arc<Mmap>,
+    destroy_called: AtomicBool,
 }
 
 /// OpenEXRCore expects `pread`-like threading semantics — backing store is immutable mapped bytes.
@@ -467,7 +471,58 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
         return;
     }
     unsafe {
-        drop(Box::from_raw(userdata.cast::<ExrMmapReadCookie>()));
+        let cookie = Arc::from_raw(userdata.cast::<ExrMmapReadCookie>());
+        cookie.destroy_called.store(true, Ordering::Release);
+    }
+}
+
+struct ExrMmapCookieGuard {
+    cookie: Arc<ExrMmapReadCookie>,
+    c_ref: *const ExrMmapReadCookie,
+    context_alive: bool,
+}
+
+impl ExrMmapCookieGuard {
+    fn new(mmap: Mmap) -> Self {
+        let cookie = Arc::new(ExrMmapReadCookie {
+            mmap: Arc::new(mmap),
+            destroy_called: AtomicBool::new(false),
+        });
+        let c_ref = Arc::into_raw(Arc::clone(&cookie));
+        Self {
+            cookie,
+            c_ref,
+            context_alive: false,
+        }
+    }
+
+    fn as_mut_ptr(&self) -> *mut c_void {
+        self.c_ref.cast_mut().cast::<c_void>()
+    }
+
+    /// Mark the C-held cookie reference as owned by a live OpenEXRCore context.
+    ///
+    /// OpenEXRCore's public docs say `user_data` is caller-managed custom stream data. The
+    /// implementation copies that pointer into a context. If header parsing later fails,
+    /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn` and drops the
+    /// C-held `Arc` reference.
+    ///
+    /// The Rust guard keeps its own `Arc`, so the callback can signal whether cleanup happened. If
+    /// `exr_start_read` fails before creating a context and never calls `destroy_fn`, the guard drops
+    /// the C-held reference itself.
+    fn mark_context_alive(&mut self) {
+        self.context_alive = true;
+    }
+}
+
+impl Drop for ExrMmapCookieGuard {
+    fn drop(&mut self) {
+        if self.context_alive || self.cookie.destroy_called.load(Ordering::Acquire) {
+            return;
+        }
+        unsafe {
+            drop(Arc::from_raw(self.c_ref));
+        }
     }
 }
 
@@ -502,46 +557,32 @@ impl OpenExrCoreReadContext {
 
         match crate::mmap_util::map_file(path) {
             Ok(m) => {
-                let mmap_arc = Arc::new(m);
-                let cookie = Box::new(ExrMmapReadCookie {
-                    mmap: Arc::clone(&mmap_arc),
-                });
-                let cookie_ptr = Box::into_raw(cookie).cast::<c_void>();
-                let ctxt_init = openexr_memory_map_initializer(cookie_ptr);
+                let mut cookie = ExrMmapCookieGuard::new(m);
+                let ctxt_init = openexr_memory_map_initializer(cookie.as_mut_ptr());
 
-                match exr_result(unsafe {
-                    sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init)
-                }) {
+                let start_result =
+                    unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
+
+                match exr_result(start_result) {
                     Ok(()) => {
                         if raw.is_null() {
-                            unsafe {
-                                openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
-                            }
                             return Err(format!(
                                 "OpenEXRCore returned a null context for {}",
                                 path.display()
                             ));
                         }
+                        cookie.mark_context_alive();
                     }
                     Err(e) => {
-                        unsafe {
-                            openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
-                        }
+                        // Do not fall back to file I/O here. The mmap reader already classified the
+                        // file and malformed EXR-like inputs previously crashed on Windows when this
+                        // error path retried through OpenEXRCore's native file reader.
                         log::debug!(
-                            "EXR mmap read via OpenEXRCore failed ({}); falling back to file I/O for {}",
+                            "EXR mmap read via OpenEXRCore failed ({}) for {}",
                             e,
                             path.display()
                         );
-                        raw = ptr::null_mut();
-                        exr_result(unsafe {
-                            sys::exr_start_read(&mut raw, filename.as_ptr(), ptr::null())
-                        })?;
-                        if raw.is_null() {
-                            return Err(format!(
-                                "OpenEXRCore returned a null context for {}",
-                                path.display()
-                            ));
-                        }
+                        return Err(e);
                     }
                 }
             }
@@ -1103,10 +1144,7 @@ impl OpenExrCoreReadContext {
         chunk_origin: (u32, u32),
     ) -> Result<OpenExrCoreDecodedChunkFetch, String> {
         let key = decoded_chunk_key(part_index, chunk, chunk_origin)?;
-        let mut cache = self
-            .decoded_chunks
-            .lock()
-            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        let mut cache = self.decoded_chunks.lock();
         loop {
             if let Some(decoded) = cache.get(&key) {
                 return Ok(OpenExrCoreDecodedChunkFetch {
@@ -1118,10 +1156,7 @@ impl OpenExrCoreReadContext {
             if cache.begin_decode(key) {
                 break;
             }
-            cache = self
-                .decoded_chunk_ready
-                .wait(cache)
-                .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+            self.decoded_chunk_ready.wait(&mut cache);
         }
         drop(cache);
 
@@ -1129,17 +1164,12 @@ impl OpenExrCoreReadContext {
         let (decoded, decode_ms) = match decode_result {
             Ok(decoded) => decoded,
             Err(err) => {
-                if let Ok(mut cache) = self.decoded_chunks.lock() {
-                    cache.finish_decode(&key);
-                }
+                self.decoded_chunks.lock().finish_decode(&key);
                 self.decoded_chunk_ready.notify_all();
                 return Err(err);
             }
         };
-        let mut cache = self
-            .decoded_chunks
-            .lock()
-            .map_err(|_| "OpenEXRCore decoded chunk cache mutex was poisoned".to_string())?;
+        let mut cache = self.decoded_chunks.lock();
         cache.finish_decode(&key);
         cache.insert(key, Arc::clone(&decoded));
         drop(cache);
@@ -1263,8 +1293,10 @@ impl OpenExrCoreReadContext {
             && g_idx.is_none()
             && b_idx.is_none();
 
-        let chunk_width_u32 = u32::try_from(chunk_width).unwrap();
-        let chunk_height_u32 = u32::try_from(chunk_height).unwrap();
+        let chunk_width_u32 = u32::try_from(chunk_width)
+            .map_err(|e| format!("OpenEXRCore chunk width overflow: {e}"))?;
+        let chunk_height_u32 = u32::try_from(chunk_height)
+            .map_err(|e| format!("OpenEXRCore chunk height overflow: {e}"))?;
 
         // FAST PATH: All involved channels are 1:1 resolution (no subsampling)
         let mut can_use_fast_path = !is_yryby;
@@ -1311,6 +1343,16 @@ impl OpenExrCoreReadContext {
             }
         } else {
             // SLOW PATH: Handles subsampling (YCbCr etc)
+            let (y_idx_val, ry_idx_val, by_idx_val) = if is_yryby {
+                (
+                    y_idx.expect("is_yryby guarantees Y index"),
+                    ry_idx.expect("is_yryby guarantees RY index"),
+                    by_idx.expect("is_yryby guarantees BY index"),
+                )
+            } else {
+                (0, 0, 0)
+            };
+
             for row_u in 0..chunk_height_u32 {
                 for col_u in 0..chunk_width_u32 {
                     let dest = (row_u as usize * chunk_width + col_u as usize) * 4;
@@ -1332,7 +1374,7 @@ impl OpenExrCoreReadContext {
                         let y = channel_sample_f32(
                             &buffers,
                             &channel_layouts,
-                            y_idx.unwrap(),
+                            y_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,
@@ -1340,7 +1382,7 @@ impl OpenExrCoreReadContext {
                         let ry_ratio = channel_sample_f32_filtered(
                             &buffers,
                             &channel_layouts,
-                            ry_idx.unwrap(),
+                            ry_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,
@@ -1349,7 +1391,7 @@ impl OpenExrCoreReadContext {
                         let by_ratio = channel_sample_f32_filtered(
                             &buffers,
                             &channel_layouts,
-                            by_idx.unwrap(),
+                            by_idx_val,
                             chunk_origin,
                             col_u,
                             row_u,

@@ -22,9 +22,10 @@ use crate::hdr::types::{
 use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use libtiff_viewer as lib;
 use memmap2::Mmap;
+use parking_lot::Mutex;
 use std::ffi::{CString, c_int, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Context passed to libtiff callbacks
 struct TiffMmapContext {
@@ -193,7 +194,7 @@ pub struct LibTiffTiledSource {
 impl LibTiffTiledSource {
     fn acquire_handle(&self) -> Result<TiffHandle, String> {
         {
-            let mut pool = self.pool.lock().map_err(|e| e.to_string())?;
+            let mut pool = self.pool.lock();
             if let Some(handle) = pool.pop() {
                 return Ok(handle);
             }
@@ -202,9 +203,7 @@ impl LibTiffTiledSource {
     }
 
     fn release_handle(&self, handle: TiffHandle) {
-        if let Ok(mut pool) = self.pool.lock() {
-            pool.push(handle);
-        }
+        self.pool.lock().push(handle);
     }
 }
 
@@ -477,7 +476,7 @@ pub struct LibTiffScanlineSource {
 impl LibTiffScanlineSource {
     fn acquire_handle(&self) -> Result<TiffHandle, String> {
         {
-            let mut pool = self.pool.lock().map_err(|e| e.to_string())?;
+            let mut pool = self.pool.lock();
             if let Some(handle) = pool.pop() {
                 return Ok(handle);
             }
@@ -486,16 +485,14 @@ impl LibTiffScanlineSource {
     }
 
     fn release_handle(&self, handle: TiffHandle) {
-        if let Ok(mut pool) = self.pool.lock() {
-            pool.push(handle);
-        }
+        self.pool.lock().push(handle);
     }
 
     fn get_or_decode_strip(&self, strip_idx: u32, handle: &TiffHandle) -> Option<Arc<Vec<u8>>> {
         {
-            let cache = self.strip_cache.lock().unwrap();
+            let cache = self.strip_cache.lock();
             if let Some(data) = cache.get(&strip_idx) {
-                let mut order = self.cache_order.lock().unwrap();
+                let mut order = self.cache_order.lock();
                 if let Some(pos) = order.iter().position(|&k| k == strip_idx) {
                     order.remove(pos);
                 }
@@ -537,8 +534,8 @@ impl LibTiffScanlineSource {
         let data = Arc::new(rgba);
 
         {
-            let mut cache = self.strip_cache.lock().unwrap();
-            let mut order = self.cache_order.lock().unwrap();
+            let mut cache = self.strip_cache.lock();
+            let mut order = self.cache_order.lock();
 
             while order.len() >= self.max_cached_strips {
                 if let Some(oldest) = order.first().copied() {
@@ -1664,8 +1661,7 @@ pub fn load_via_libtiff(
     hdr_target_capacity: f32,
     tone_map: HdrToneMapSettings,
 ) -> Result<ImageData, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mmap = Arc::new(unsafe { Mmap::map(&file).map_err(|e| e.to_string())? });
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
 
     let mut ctx = Box::new(TiffMmapContext {
         mmap: mmap.clone(),

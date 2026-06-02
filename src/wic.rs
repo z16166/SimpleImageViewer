@@ -636,53 +636,44 @@ fn load_via_wic_inner(
         let mut mmap_out: Option<std::sync::Arc<memmap2::Mmap>> = None;
 
         if prefer_stream_sniff {
-            match std::fs::File::open(path) {
-                Ok(file) => match memmap2::Mmap::map(&file) {
-                    Ok(mmap) => {
-                        let m_arc = std::sync::Arc::new(mmap);
-                        match factory.CreateStream() {
-                            Ok(stream) => {
-                                if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
-                                    decoder_res = factory.CreateDecoderFromStream(
-                                        &stream,
-                                        std::ptr::null(),
-                                        WICDecodeMetadataCacheOnDemand,
-                                    );
-                                    if decoder_res.is_ok() {
-                                        stream_out = Some(stream);
-                                        mmap_out = Some(m_arc);
-                                    } else {
-                                        log::debug!(
-                                            "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
-                                            path
-                                        );
-                                    }
+            match crate::mmap_util::map_file(path) {
+                Ok(mmap) => {
+                    let m_arc = std::sync::Arc::new(mmap);
+                    match factory.CreateStream() {
+                        Ok(stream) => {
+                            if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
+                                decoder_res = factory.CreateDecoderFromStream(
+                                    &stream,
+                                    std::ptr::null(),
+                                    WICDecodeMetadataCacheOnDemand,
+                                );
+                                if decoder_res.is_ok() {
+                                    stream_out = Some(stream);
+                                    mmap_out = Some(m_arc);
                                 } else {
                                     log::debug!(
-                                        "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                        "[WIC] stream_sniff CreateDecoderFromStream failed for {:?}",
                                         path
                                     );
                                 }
-                            }
-                            Err(e) => {
+                            } else {
                                 log::debug!(
-                                    "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
-                                    path,
-                                    e
+                                    "[WIC] stream_sniff InitializeFromMemory failed for {:?}",
+                                    path
                                 );
                             }
                         }
+                        Err(e) => {
+                            log::debug!(
+                                "[WIC] stream_sniff CreateStream failed for {:?}: {:?}",
+                                path,
+                                e
+                            );
+                        }
                     }
-                    Err(e) => {
-                        log::debug!("[WIC] stream_sniff mmap failed for {:?}: {:?}", path, e);
-                    }
-                },
+                }
                 Err(e) => {
-                    log::debug!(
-                        "[WIC] stream_sniff file open failed for {:?}: {:?}",
-                        path,
-                        e
-                    );
+                    log::debug!("[WIC] stream_sniff map_file failed for {:?}: {:?}", path, e);
                 }
             }
         }
@@ -711,9 +702,7 @@ fn load_via_wic_inner(
                 if let Ok(sd) = specific_decoder {
                     if let Ok(stream) = factory.CreateStream() {
                         // --- Mmap Path ---
-                        let file = std::fs::File::open(path)
-                            .map_err(|e| format!("File open failed: {:?}", e))?;
-                        if let Ok(mmap) = memmap2::Mmap::map(&file) {
+                        if let Ok(mmap) = crate::mmap_util::map_file(path) {
                             let m_arc = std::sync::Arc::new(mmap);
                             if stream.InitializeFromMemory(&m_arc[..]).is_ok() {
                                 if sd

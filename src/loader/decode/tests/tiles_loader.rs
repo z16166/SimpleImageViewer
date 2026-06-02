@@ -34,6 +34,7 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
     let load_result = LoadResult {
         index,
         generation,
+        source_key: 0,
         result: Err("synthetic".to_string()),
         preview_bundle: PreviewBundle::initial(),
         ultra_hdr_capacity_sensitive: false,

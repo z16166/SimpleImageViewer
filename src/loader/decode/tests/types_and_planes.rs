@@ -24,6 +24,7 @@ use crate::loader::tiled_sources::MemoryImageSource;
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, PixelPlaneKind, PreviewBundle, PreviewResult,
     PreviewStage, RenderShape, TileDecodeSource, TilePixelKind, TileResult, TiledImageSource,
+    source_key_for_path,
 };
 
 #[test]
@@ -86,6 +87,7 @@ fn load_result_exposes_unified_preview_bundle_without_compat_fields() {
     let result = LoadResult {
         index: 1,
         generation: 2,
+        source_key: 0,
         result: Ok(ImageData::Static(sdr_preview.clone())),
         preview_bundle: bundle,
         ultra_hdr_capacity_sensitive: false,
@@ -156,7 +158,7 @@ fn image_data_exposes_render_shape_and_available_planes() {
 #[test]
 fn preview_result_exposes_refined_sdr_preview_bundle() {
     let preview = DecodedImage::new(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]);
-    let update = PreviewResult::from_sdr_preview(3, 5, Ok(preview.clone()));
+    let update = PreviewResult::from_sdr_preview(3, 5, 99, Ok(preview.clone()));
 
     assert!(update.error.is_none());
     assert_eq!(update.preview_bundle.stage(), PreviewStage::Refined);
@@ -183,6 +185,7 @@ fn preview_result_exposes_refined_hdr_preview_bundle() {
     let update = PreviewResult {
         index: 3,
         generation: 5,
+        source_key: 99,
         preview_bundle: PreviewBundle::refined().with_hdr(Arc::clone(&hdr_preview)),
         error: None,
     };
@@ -223,4 +226,12 @@ fn tile_result_exposes_shared_pending_key_and_repaint_policy() {
         )
     );
     assert!(result.should_request_repaint());
+}
+
+#[test]
+fn source_key_for_path_is_case_insensitive() {
+    assert_eq!(
+        source_key_for_path(std::path::Path::new("C:/Images/Foo.AVIF")),
+        source_key_for_path(std::path::Path::new("c:/images/foo.avif"))
+    );
 }

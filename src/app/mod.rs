@@ -429,6 +429,7 @@ pub struct ImageViewerApp {
     last_logged_swap_chain_format_request: Option<wgpu::TextureFormat>,
     rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
+    pub(crate) ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
@@ -436,6 +437,8 @@ pub struct ImageViewerApp {
     pub(crate) current_hdr_tiled_preview: Option<CurrentHdrImage>,
     pub(crate) hdr_tiled_preview_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
+    /// HDR indices whose current SDR fallback texture is a temporary black placeholder.
+    pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
     pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,
@@ -707,8 +710,7 @@ impl ImageViewerApp {
             }
             if self.last_save_error.is_some() {
                 inset = inset.max(
-                    crate::constants::OSD_ERROR_OFFSET
-                        + crate::constants::OSD_ERROR_TEXT_SIZE,
+                    crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_TEXT_SIZE,
                 );
             }
         }
@@ -1101,8 +1103,7 @@ impl eframe::App for ImageViewerApp {
         }
         let tone = self.effective_hdr_tone_map_settings();
         if tone != self.hdr_renderer.tone_map {
-            self.hdr_renderer.tone_map = tone;
-            self.loader.set_hdr_tone_map_settings(tone);
+            self.sync_hdr_tone_map_settings();
         }
 
         // If the active monitor's HDR capability disagrees with the current

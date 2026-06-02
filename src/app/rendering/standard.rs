@@ -77,6 +77,14 @@ fn should_clear_transition_state_after_static_hdr_draw(
     static_hdr_draw && pending_transition_target != Some(current_index)
 }
 
+pub(crate) fn should_dispatch_standard_draw(
+    has_sdr_texture: bool,
+    has_current_hdr_image: bool,
+    sdr_fallback_is_placeholder: bool,
+) -> bool {
+    has_current_hdr_image || (has_sdr_texture && !sdr_fallback_is_placeholder)
+}
+
 impl ImageViewerApp {
     /// Draw the standard (non-tiled) image rendering path, including transition animations.
     ///
@@ -86,7 +94,7 @@ impl ImageViewerApp {
         ui: &mut egui::Ui,
         screen_rect: Rect,
         canvas_resp: &egui::Response,
-        texture: egui::TextureHandle,
+        texture: Option<egui::TextureHandle>,
     ) {
         // --- Animated image frame advancement ---
         let texture = if let Some(ref mut anim) = self.animation {
@@ -109,7 +117,7 @@ impl ImageViewerApp {
                 let remaining =
                     anim.delays[anim.current_frame].saturating_sub(anim.frame_start.elapsed());
                 ui.ctx().request_repaint_after(remaining);
-                anim.textures[anim.current_frame].clone()
+                Some(anim.textures[anim.current_frame].clone())
             } else {
                 texture
             }
@@ -121,8 +129,12 @@ impl ImageViewerApp {
         let img_size = if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index)
         {
             Vec2::new(w as f32, h as f32)
-        } else {
+        } else if let Some((w, h)) = self.current_image_res {
+            Vec2::new(w as f32, h as f32)
+        } else if let Some(texture) = texture.as_ref() {
             texture.size_vec2()
+        } else {
+            Vec2::splat(1.0)
         };
 
         if canvas_resp.dragged() {
@@ -138,6 +150,8 @@ impl ImageViewerApp {
             .as_ref()
             .and_then(|current| current.image_for_index(self.current_index))
             .cloned();
+        let hdr_image =
+            hdr_image.or_else(|| self.hdr_image_cache.get(&self.current_index).cloned());
         // `draw_standard_image` is only reached when `texture_cache.get(current_index)` returned
         // `Some`. Static HDR installs always register [`ImageViewerApp::hdr_sdr_fallback_indices`];
         // keep [`build_render_plan`]/[`crate::hdr::monitor::effective_render_output_mode`] inputs
@@ -259,12 +273,13 @@ impl ImageViewerApp {
                 self.active_transition,
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             )
+            && texture.is_some()
         {
             // Complex per-pixel transitions handled in transitions.rs
             self.draw_complex_transition(
                 ui,
                 screen_rect,
-                &texture,
+                texture.as_ref().expect("checked above"),
                 final_dest,
                 unrotated_final_dest,
                 rotation,
@@ -294,15 +309,17 @@ impl ImageViewerApp {
             }
 
             // 2. Draw NEW image (on top, with alpha/motion)
-            draw_sdr_texture_plane(
-                ui,
-                screen_rect,
-                texture.id(),
-                unrotated_final_dest,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE.linear_multiply(tp.alpha),
-                &final_layout,
-            );
+            if let Some(texture) = texture.as_ref() {
+                draw_sdr_texture_plane(
+                    ui,
+                    screen_rect,
+                    texture.id(),
+                    unrotated_final_dest,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE.linear_multiply(tp.alpha),
+                    &final_layout,
+                );
+            }
         }
     }
 
@@ -589,6 +606,14 @@ mod tests {
         output_mode: HdrRenderOutputMode,
     ) -> RenderPlan {
         RenderPlan::new(RenderShape::Static, has_hdr_plane, target, output_mode)
+    }
+
+    #[test]
+    fn standard_dispatch_allows_hdr_plane_without_sdr_texture() {
+        assert!(should_dispatch_standard_draw(true, false, false));
+        assert!(!should_dispatch_standard_draw(true, false, true));
+        assert!(should_dispatch_standard_draw(false, true, true));
+        assert!(!should_dispatch_standard_draw(false, false, false));
     }
 
     #[test]

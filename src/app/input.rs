@@ -289,10 +289,7 @@ impl ImageViewerApp {
             _ => &mut self.settings.hdr_exposure_ev_native,
         };
         *slot = (*slot + delta_ev).clamp(-8.0, 8.0);
-        let tone = self.effective_hdr_tone_map_settings();
-        self.hdr_renderer.tone_map = tone;
-        self.loader.set_hdr_tone_map_settings(tone);
-        self.refresh_ultra_hdr_decode_capacity(ctx);
+        self.sync_hdr_tone_map_settings();
         self.queue_save();
         ctx.request_repaint();
     }

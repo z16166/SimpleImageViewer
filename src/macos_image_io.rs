@@ -16,12 +16,12 @@
 
 use crate::loader::{DecodedImage, ImageData, TiledImageSource};
 use memmap2::Mmap;
+use parking_lot::Mutex;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
@@ -612,7 +612,7 @@ impl TiffStripCachingSource {
 
     fn get_or_decode_chunk(&self, chunk_idx: u32) -> Option<Arc<Vec<u8>>> {
         {
-            let cache = self.strip_cache.lock().unwrap();
+            let cache = self.strip_cache.lock();
             if let Some(chunk) = cache.get(&chunk_idx) {
                 return Some(Arc::clone(chunk));
             }
@@ -623,8 +623,8 @@ impl TiffStripCachingSource {
         let data_arc = Arc::new(data);
 
         {
-            let mut cache = self.strip_cache.lock().unwrap();
-            let mut order = self.cache_order.lock().unwrap();
+            let mut cache = self.strip_cache.lock();
+            let mut order = self.cache_order.lock();
 
             cache.insert(chunk_idx, Arc::clone(&data_arc));
             order.push(chunk_idx);
@@ -781,8 +781,7 @@ impl HugeTiffStrideDecoder {
         max_size: u32,
         orientation: u32,
     ) -> Result<(u32, u32, Vec<u8>), String> {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mmap = unsafe { Mmap::map(&file).map_err(|e| e.to_string())? };
+        let mmap = crate::mmap_util::map_file(path)?;
 
         let cursor = Cursor::new(&mmap[..]);
         let mut decoder = Decoder::new(cursor).map_err(|e| e.to_string())?;
@@ -1091,10 +1090,8 @@ pub fn load_via_image_io(
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
+    let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     unsafe {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        let mmap = Arc::new(Mmap::map(&file).map_err(|e| e.to_string())?);
-
         let cf_data = CFDataCreateWithBytesNoCopy(
             kCFAllocatorDefault,
             mmap.as_ptr(),

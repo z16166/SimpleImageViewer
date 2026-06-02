@@ -642,20 +642,17 @@ pub(crate) fn decode_heif_hdr_bytes(
                 decode_heif_gain_map(handle.0, decode_opts_ptr)
             {
                 let headroom_span = headroom.linear_headroom - 1.0;
-                match crate::hdr::heif_apple_gain_map_gpu::validate_apple_deferred_planes(
-                    &hdr, gain_w, gain_h, &gain_rgba,
+                match crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(
+                    hdr.clone(),
+                    gain_w,
+                    gain_h,
+                    gain_rgba,
+                    headroom_span,
+                    headroom.stops,
+                    hdr_target_capacity,
                 ) {
-                    Ok(()) => {
-                        hdr = crate::hdr::heif_apple_gain_map_gpu::attach_apple_heic_gpu_deferred(
-                            hdr,
-                            gain_w,
-                            gain_h,
-                            gain_rgba,
-                            headroom_span,
-                            headroom.stops,
-                            hdr_target_capacity,
-                        )
-                        .expect("validated Apple deferred planes");
+                    Ok(new_hdr) => {
+                        hdr = new_hdr;
                     }
                     Err(err) => {
                         log::warn!("[HDR] Apple HDR Gain Map GPU deferred attach failed: {err}");

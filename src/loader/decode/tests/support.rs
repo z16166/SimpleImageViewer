@@ -16,7 +16,8 @@
 
 //! Shared knobs for decode tests (`TILED_THRESHOLD` overrides).
 
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::LazyLock;
 
 static TILED_THRESHOLD_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -41,7 +42,5 @@ impl Drop for TiledThresholdOverride {
 }
 
 pub(crate) fn lock_tiled_threshold_for_test() -> MutexGuard<'static, ()> {
-    TILED_THRESHOLD_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    TILED_THRESHOLD_TEST_LOCK.lock()
 }

@@ -214,8 +214,7 @@ unsafe extern "C" {
     ) -> ExrResult;
     pub fn exr_finish(ctxt: *mut ExrContext) -> ExrResult;
     pub fn exr_get_count(ctxt: ExrConstContext, count: *mut c_int) -> ExrResult;
-    pub fn exr_get_storage(ctxt: ExrConstContext, part_index: c_int, out: *mut c_int)
-    -> ExrResult;
+    pub fn exr_get_storage(ctxt: ExrConstContext, part_index: c_int, out: *mut c_int) -> ExrResult;
     pub fn exr_get_data_window(
         ctxt: ExrConstContext,
         part_index: c_int,
@@ -278,10 +277,8 @@ unsafe extern "C" {
         part_index: c_int,
         decode: *mut ExrDecodePipeline,
     ) -> ExrResult;
-    pub fn exr_decoding_destroy(
-        ctxt: ExrConstContext,
-        decode: *mut ExrDecodePipeline,
-    ) -> ExrResult;
+    pub fn exr_decoding_destroy(ctxt: ExrConstContext, decode: *mut ExrDecodePipeline)
+    -> ExrResult;
 
     /// Flatten a single-part deep scanline RGBAZ image to RGBA32F (Imf C++ path).
     /// Returns 0 on success; negative on failure. `out_len` must be >= width*height*4 floats.

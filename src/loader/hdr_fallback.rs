@@ -23,6 +23,11 @@ pub(crate) fn hdr_to_sdr_with_user_tone(
     buffer: &HdrImageBuffer,
     tone: &HdrToneMapSettings,
 ) -> Result<Vec<u8>, String> {
+    if let Some(gain_map) = buffer.metadata.gain_map.as_ref()
+        && let Some(iso) = gain_map.iso_deferred.as_ref()
+    {
+        return Ok(iso.sdr_rgba.as_ref().clone());
+    }
     crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(buffer, tone.exposure_ev, tone)
 }
 
@@ -125,6 +130,48 @@ mod tests {
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
                 .expect("fallback");
         assert_eq!(out.as_slice(), iso_sdr);
+    }
+
+    #[test]
+    fn sdr_fallback_with_iso_deferred_baseline_works_after_placeholder() {
+        let iso_sdr = vec![64_u8, 128, 192, 255];
+        let mut metadata = HdrImageMetadata::default();
+        metadata.gain_map = Some(HdrGainMapMetadata {
+            source: "JPEG_R",
+            target_hdr_capacity: Some(4.0),
+            diagnostic: String::new(),
+            capped_display_referred: false,
+            apple_heic_deferred: None,
+            iso_deferred: Some(IsoGainMapGpuSource {
+                sdr_rgba: Arc::new(iso_sdr.clone()),
+                gain_rgba: Arc::new(vec![0; 4]),
+                gain_width: 1,
+                gain_height: 1,
+                metadata: crate::hdr::gain_map::GainMapMetadata {
+                    gain_map_min: [0.0; 3],
+                    gain_map_max: [1.0; 3],
+                    gamma: [1.0; 3],
+                    offset_sdr: [0.0; 3],
+                    offset_hdr: [0.0; 3],
+                    hdr_capacity_min: 1.0,
+                    hdr_capacity_max: 4.0,
+                    backward_direction: false,
+                },
+            }),
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+
+        let out = hdr_to_sdr_with_user_tone(&hdr, &HdrToneMapSettings::default())
+            .expect("ISO deferred fallback should use baseline SDR");
+
+        assert_eq!(out, iso_sdr);
     }
 
     #[test]

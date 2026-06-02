@@ -29,6 +29,7 @@ use super::types::{
     HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
 };
+use crate::hdr::gain_map::GainMapMetadata;
 use eframe::{
     egui,
     egui_wgpu::{self, CallbackResources, CallbackTrait},
@@ -1622,7 +1623,21 @@ struct HdrImageKey {
     format: HdrPixelFormat,
     rgba_ptr: usize,
     rgba_len: usize,
+    rgba_sample_hash: u64,
+    iso_deferred_sdr_ptr: Option<usize>,
+    iso_deferred_sdr_len: Option<usize>,
+    iso_deferred_sdr_sample_hash: Option<u64>,
+    iso_deferred_gain_ptr: Option<usize>,
+    iso_deferred_gain_len: Option<usize>,
+    iso_deferred_gain_sample_hash: Option<u64>,
+    iso_deferred_metadata_hash: Option<u64>,
     apple_deferred_ptr: Option<usize>,
+    apple_deferred_len: Option<usize>,
+    apple_deferred_sample_hash: Option<u64>,
+    apple_deferred_headroom_bits: Option<u32>,
+    apple_deferred_stops_bits: Option<u32>,
+    gain_map_target_capacity_bits: Option<u32>,
+    gain_map_capped_display_referred: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1658,20 +1673,161 @@ impl HdrTileKey {
 
 impl HdrImageKey {
     fn from_image(image: &HdrImageBuffer) -> Self {
+        let (
+            iso_deferred_sdr_ptr,
+            iso_deferred_sdr_len,
+            iso_deferred_sdr_sample_hash,
+            iso_deferred_gain_ptr,
+            iso_deferred_gain_len,
+            iso_deferred_gain_sample_hash,
+            iso_deferred_metadata_hash,
+            apple_deferred_ptr,
+            apple_deferred_len,
+            apple_deferred_sample_hash,
+            apple_deferred_headroom_bits,
+            apple_deferred_stops_bits,
+            gain_map_target_capacity_bits,
+            gain_map_capped_display_referred,
+        ) = image
+            .metadata
+            .gain_map
+            .as_ref()
+            .map(|gm| {
+                let (iso_sdr_ptr, iso_sdr_len, iso_sdr_hash) = gm
+                    .iso_deferred
+                    .as_ref()
+                    .map(|d| {
+                        (
+                            Some(std::sync::Arc::as_ptr(&d.sdr_rgba) as usize),
+                            Some(d.sdr_rgba.len()),
+                            Some(sample_hash_u8(d.sdr_rgba.as_slice())),
+                        )
+                    })
+                    .unwrap_or((None, None, None));
+                let (iso_gain_ptr, iso_gain_len, iso_gain_hash) = gm
+                    .iso_deferred
+                    .as_ref()
+                    .map(|d| {
+                        (
+                            Some(std::sync::Arc::as_ptr(&d.gain_rgba) as usize),
+                            Some(d.gain_rgba.len()),
+                            Some(sample_hash_u8(d.gain_rgba.as_slice())),
+                        )
+                    })
+                    .unwrap_or((None, None, None));
+                let iso_metadata_hash = gm
+                    .iso_deferred
+                    .as_ref()
+                    .map(|d| gain_map_metadata_hash(d.metadata));
+                let (apple_ptr, apple_len, apple_hash) = gm
+                    .apple_heic_deferred
+                    .as_ref()
+                    .map(|d| {
+                        (
+                            Some(std::sync::Arc::as_ptr(&d.gain_rgba) as usize),
+                            Some(d.gain_rgba.len()),
+                            Some(sample_hash_u8(d.gain_rgba.as_slice())),
+                        )
+                    })
+                    .unwrap_or((None, None, None));
+                let apple_headroom_bits = gm
+                    .apple_heic_deferred
+                    .as_ref()
+                    .map(|d| d.headroom_span.to_bits());
+                let apple_stops_bits = gm.apple_heic_deferred.as_ref().map(|d| d.stops.to_bits());
+                (
+                    iso_sdr_ptr,
+                    iso_sdr_len,
+                    iso_sdr_hash,
+                    iso_gain_ptr,
+                    iso_gain_len,
+                    iso_gain_hash,
+                    iso_metadata_hash,
+                    apple_ptr,
+                    apple_len,
+                    apple_hash,
+                    apple_headroom_bits,
+                    apple_stops_bits,
+                    gm.target_hdr_capacity.map(f32::to_bits),
+                    gm.capped_display_referred,
+                )
+            })
+            .unwrap_or((
+                None, None, None, None, None, None, None, None, None, None, None, None, None, false,
+            ));
         Self {
             width: image.width,
             height: image.height,
             format: image.format,
             rgba_ptr: std::sync::Arc::as_ptr(&image.rgba_f32) as usize,
             rgba_len: image.rgba_f32.len(),
-            apple_deferred_ptr: image
-                .metadata
-                .gain_map
-                .as_ref()
-                .and_then(|gm| gm.apple_heic_deferred.as_ref())
-                .map(|d| std::sync::Arc::as_ptr(&d.gain_rgba) as usize),
+            rgba_sample_hash: sample_hash_f32(image.rgba_f32.as_slice()),
+            iso_deferred_sdr_ptr,
+            iso_deferred_sdr_len,
+            iso_deferred_sdr_sample_hash,
+            iso_deferred_gain_ptr,
+            iso_deferred_gain_len,
+            iso_deferred_gain_sample_hash,
+            iso_deferred_metadata_hash,
+            apple_deferred_ptr,
+            apple_deferred_len,
+            apple_deferred_sample_hash,
+            apple_deferred_headroom_bits,
+            apple_deferred_stops_bits,
+            gain_map_target_capacity_bits,
+            gain_map_capped_display_referred,
         }
     }
+}
+
+fn gain_map_metadata_hash(metadata: GainMapMetadata) -> u64 {
+    let mut h = 0x475f_4d41_505f_4d45_u64; // "G_MAP_ME"
+    for value in metadata
+        .gain_map_min
+        .into_iter()
+        .chain(metadata.gain_map_max)
+        .chain(metadata.gamma)
+        .chain(metadata.offset_sdr)
+        .chain(metadata.offset_hdr)
+        .chain([metadata.hdr_capacity_min, metadata.hdr_capacity_max])
+    {
+        h = h.rotate_left(9) ^ u64::from(value.to_bits());
+    }
+    h ^ u64::from(metadata.backward_direction)
+}
+
+fn sample_hash_f32(values: &[f32]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut h: u64 = values.len() as u64;
+    let sample_points = [
+        0usize,
+        values.len() / 3,
+        (values.len() * 2) / 3,
+        values.len() - 1,
+    ];
+    for idx in sample_points {
+        h = h.rotate_left(7) ^ u64::from(values[idx].to_bits());
+    }
+    h
+}
+
+fn sample_hash_u8(values: &[u8]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut h: u64 = values.len() as u64;
+    let sample_points = [
+        0usize,
+        values.len() / 3,
+        (values.len() * 2) / 3,
+        values.len() - 1,
+    ];
+    for idx in sample_points {
+        h = h.rotate_left(5) ^ u64::from(values[idx]);
+    }
+    h
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

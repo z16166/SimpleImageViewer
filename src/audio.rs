@@ -20,11 +20,12 @@ use crate::constants::{
 };
 use crate::scanner::is_offline;
 use crossbeam_channel::Sender;
+use parking_lot::Mutex;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lofty::prelude::*;
@@ -206,19 +207,19 @@ impl AudioPlayer {
     }
 
     pub fn take_error(&self) -> Option<String> {
-        self.last_error.try_lock().ok()?.take()
+        self.last_error.try_lock()?.take()
     }
 
     pub fn get_current_track(&self) -> Option<String> {
-        self.current_track.try_lock().ok()?.clone()
+        self.current_track.try_lock()?.clone()
     }
 
     pub fn get_current_track_path(&self) -> Option<PathBuf> {
-        self.current_track_path.try_lock().ok()?.clone()
+        self.current_track_path.try_lock()?.clone()
     }
 
     pub fn get_metadata(&self) -> Option<String> {
-        self.current_metadata.try_lock().ok()?.clone()
+        self.current_metadata.try_lock()?.clone()
     }
 
     pub fn has_tracks(&self) -> bool {
@@ -287,11 +288,11 @@ impl AudioPlayer {
     }
 
     pub fn get_current_cue_track(&self) -> Option<usize> {
-        self.current_cue_track.try_lock().ok()?.clone()
+        self.current_cue_track.try_lock()?.clone()
     }
 
     pub fn get_cue_markers(&self) -> Vec<u64> {
-        self.cue_markers.lock().unwrap().clone()
+        self.cue_markers.lock().clone()
     }
 
     pub fn seek(&self, pos: Duration) {
@@ -320,7 +321,7 @@ impl AudioPlayer {
     }
 
     pub fn set_device(&self, device_name: Option<String>) {
-        if let Ok(mut guard) = self.current_device.try_lock() {
+        if let Some(mut guard) = self.current_device.try_lock() {
             *guard = device_name.clone();
         }
         if let Some(tx) = &self.cmd_tx {
@@ -806,39 +807,27 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 fn set_error(slot: &AudioError, msg: impl Into<String>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = Some(msg.into());
-    }
+    *slot.lock() = Some(msg.into());
 }
 
 fn set_current_track(slot: &Arc<Mutex<Option<String>>>, name: Option<String>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = name;
-    }
+    *slot.lock() = name;
 }
 
 fn set_current_path(slot: &Arc<Mutex<Option<PathBuf>>>, path: Option<PathBuf>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = path;
-    }
+    *slot.lock() = path;
 }
 
 fn set_metadata(slot: &Arc<Mutex<Option<String>>>, meta: Option<String>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = meta;
-    }
+    *slot.lock() = meta;
 }
 
 fn set_cue_track(slot: &Arc<Mutex<Option<usize>>>, idx: Option<usize>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = idx;
-    }
+    *slot.lock() = idx;
 }
 
 fn set_cue_markers(slot: &Arc<Mutex<Vec<u64>>>, markers: Vec<u64>) {
-    if let Ok(mut g) = slot.lock() {
-        *g = markers;
-    }
+    *slot.lock() = markers;
 }
 
 // ---------------------------------------------------------------------------
@@ -1799,7 +1788,7 @@ impl AudioLoopState {
             return false;
         }
 
-        let selected_device = slots.device_slot.lock().unwrap().clone();
+        let selected_device = slots.device_slot.lock().clone();
         let sink_result = if let Some(ref name) = selected_device {
             use rodio::cpal::traits::{DeviceTrait, HostTrait};
             ::rodio::cpal::default_host()
@@ -2481,7 +2470,7 @@ impl AudioLoopState {
                     "{}. {} - {}",
                     current_t.number, current_t.title, current_t.performer
                 );
-                if let Ok(mut g) = slots.meta_slot.try_lock() {
+                if let Some(mut g) = slots.meta_slot.try_lock() {
                     if g.as_ref() != Some(&meta) {
                         *g = Some(meta);
                         set_cue_track(&slots.cue_track_slot, Some(idx));

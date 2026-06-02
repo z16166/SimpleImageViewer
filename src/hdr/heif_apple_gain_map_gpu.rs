@@ -303,11 +303,11 @@ mod tests {
             2 => {
                 // INPUT_TRANSFER_PQ — same formula as WGSL `pq_to_display_linear`
                 // using DEFAULT_SDR_WHITE_NITS (same as compute shader uniform).
-                let m1 = 2610.0 / 16384.0;
-                let m2 = 2523.0 / 32.0;
-                let c1 = 3424.0 / 4096.0;
-                let c2 = 2413.0 / 128.0;
-                let c3 = 2392.0 / 128.0;
+                let m1 = crate::constants::PQ_M1;
+                let m2 = crate::constants::PQ_M2;
+                let c1 = crate::constants::PQ_C1;
+                let c2 = crate::constants::PQ_C2;
+                let c3 = crate::constants::PQ_C3;
                 let sdr_white = DEFAULT_SDR_WHITE_NITS;
                 let f = |c: f32| -> f32 {
                     let c = c.clamp(0.0, 1.0);

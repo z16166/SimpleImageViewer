@@ -14,10 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 pub const DEFAULT_SDR_WHITE_NITS: f32 = 203.0;
 pub const DEFAULT_MAX_DISPLAY_NITS: f32 = 1000.0;
@@ -288,9 +289,7 @@ fn icc_bytes_to_lower_hex(bytes: &[u8]) -> String {
 /// Raw hex only — embedded text may be UTF-16 `mluc` / vendor-specific; encoding is not assumed.
 fn log_unrecognized_embedded_icc_profile_once(icc: &[u8]) {
     let fp = icc_profile_fingerprint_for_dedup(icc);
-    let mut seen = ICC_UNRECOGNIZED_LOG_DEDUPE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut seen = ICC_UNRECOGNIZED_LOG_DEDUPE.lock();
     if !seen.insert(fp) {
         return;
     }

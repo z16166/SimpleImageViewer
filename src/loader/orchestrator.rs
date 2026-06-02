@@ -22,16 +22,18 @@ use crate::loader::preview_caps::REFINEMENT_POOL;
 use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
     PreviewResult, RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
-    hdr_to_sdr_with_user_tone, hq_preview_max_side,
+    hdr_display_requests_sdr_preview, hdr_to_sdr_with_user_tone, hq_preview_max_side,
+    source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use image::DynamicImage;
+use parking_lot::{Condvar, Mutex};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -214,10 +216,10 @@ impl ImageLoader {
                     let (lock, cvar) = &*state;
                     loop {
                         let mut job = {
-                            let mut g = lock.lock().unwrap();
+                            let mut g = lock.lock();
                             loop {
                                 while g.is_none() {
-                                    g = cvar.wait(g).unwrap();
+                                    cvar.wait(&mut g);
                                 }
                                 if let Some(j) = g.take() {
                                     break j;
@@ -226,7 +228,7 @@ impl ImageLoader {
                         };
                         loop {
                             std::thread::sleep(Duration::from_millis(50));
-                            let mut g = lock.lock().unwrap();
+                            let mut g = lock.lock();
                             if let Some(newer) = g.take() {
                                 job = newer;
                                 drop(g);
@@ -238,7 +240,7 @@ impl ImageLoader {
 
                         let global_gen = job.current_gen.load(std::sync::atomic::Ordering::Relaxed);
                         if job.generation != global_gen {
-                            let mut loading = job.loading.lock().unwrap();
+                            let mut loading = job.loading.lock();
                             if loading.get(&job.index) == Some(&job.generation) {
                                 loading.remove(&job.index);
                             }
@@ -309,9 +311,9 @@ impl ImageLoader {
                     loop {
                         let request = {
                             let (lock, cvar) = &*queue;
-                            let mut heap = lock.lock().unwrap();
+                            let mut heap = lock.lock();
                             while heap.is_empty() {
-                                heap = cvar.wait(heap).unwrap();
+                                cvar.wait(&mut heap);
                             }
                             if let Some(req) = heap.pop() {
                                 req
@@ -340,19 +342,16 @@ impl ImageLoader {
 
                         let already_cached = match &request.source {
                             TileDecodeSource::Sdr(_) => {
-                                if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                    cache
-                                        .get(
-                                            request.index,
-                                            crate::tile_cache::TileCoord {
-                                                col: request.col,
-                                                row: request.row,
-                                            },
-                                        )
-                                        .is_some()
-                                } else {
-                                    false
-                                }
+                                crate::tile_cache::PIXEL_CACHE
+                                    .lock()
+                                    .get(
+                                        request.index,
+                                        crate::tile_cache::TileCoord {
+                                            col: request.col,
+                                            row: request.row,
+                                        },
+                                    )
+                                    .is_some()
                             }
                             TileDecodeSource::Hdr(source) => {
                                 let tw = tile_size.min(source.width() - x);
@@ -373,7 +372,7 @@ impl ImageLoader {
 
                         // Claim this tile — skip if another worker is already decoding it
                         {
-                            let mut set = flight.lock().unwrap();
+                            let mut set = flight.lock();
                             if !set.insert(tile_key) {
                                 continue; // Another worker is already on it
                             }
@@ -412,9 +411,8 @@ impl ImageLoader {
                                         col: request.col,
                                         row: request.row,
                                     };
-                                    if let Ok(mut cache) = crate::tile_cache::PIXEL_CACHE.lock() {
-                                        cache.insert(request.index, coord, pixels);
-                                    }
+                                    let mut cache = crate::tile_cache::PIXEL_CACHE.lock();
+                                    cache.insert(request.index, coord, pixels);
                                 }
                             }
                             TileDecodeSource::Hdr(source) => {
@@ -452,7 +450,7 @@ impl ImageLoader {
                                         request.row,
                                         err
                                     );
-                                    let mut set = flight.lock().unwrap();
+                                    let mut set = flight.lock();
                                     set.remove(&tile_key);
                                     drop(set);
                                     let _ = tx.send(LoaderOutput::Tile(TileResult {
@@ -469,7 +467,7 @@ impl ImageLoader {
 
                         // Remove from in-flight set (cache already has the data)
                         {
-                            let mut set = flight.lock().unwrap();
+                            let mut set = flight.lock();
                             set.remove(&tile_key);
                         }
 
@@ -571,6 +569,7 @@ impl ImageLoader {
                                 PreviewResult::from_sdr_preview(
                                     req.index,
                                     req.generation,
+                                    req.source_key,
                                     Ok(preview),
                                 ),
                             ));
@@ -605,17 +604,12 @@ impl ImageLoader {
     }
 
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
-        self.loading.lock().unwrap().get(&index) == Some(&generation)
+        self.loading.lock().get(&index) == Some(&generation)
     }
 
     #[allow(dead_code)]
     pub fn current_generation(&self, index: usize) -> u64 {
-        self.loading
-            .lock()
-            .unwrap()
-            .get(&index)
-            .copied()
-            .unwrap_or(0)
+        self.loading.lock().get(&index).copied().unwrap_or(0)
     }
 
     /// Update the global generation counter so stale preloads abort early.
@@ -677,7 +671,7 @@ impl ImageLoader {
         high_quality: bool,
     ) {
         {
-            let mut loading = self.loading.lock().unwrap();
+            let mut loading = self.loading.lock();
             if !should_spawn_load_task(&mut loading, index, generation) {
                 return;
             }
@@ -704,7 +698,7 @@ impl ImageLoader {
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
             if generation != global_gen {
-                let mut loading = loading1.lock().unwrap();
+                let mut loading = loading1.lock();
                 if loading.get(&index) == Some(&generation) {
                     loading.remove(&index);
                 }
@@ -752,7 +746,7 @@ impl ImageLoader {
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
-            let mut slot = lock.lock().unwrap();
+            let mut slot = lock.lock();
             *slot = Some(delayed_job);
             cvar.notify_one();
         }
@@ -774,7 +768,6 @@ impl ImageLoader {
     ) -> bool {
         loading
             .lock()
-            .unwrap()
             .get(&index)
             .is_some_and(|&registered| registered > adoptee_generation)
     }
@@ -794,7 +787,7 @@ impl ImageLoader {
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
         {
-            let loading = loading_ref.lock().unwrap();
+            let loading = loading_ref.lock();
             if !loading.contains_key(&index) {
                 return;
             }
@@ -828,6 +821,7 @@ impl ImageLoader {
             LoadResult {
                 index,
                 generation,
+                source_key: source_key_for_path(&path),
                 result: Err(format!("Decoder Panic: {}", msg)),
                 preview_bundle: PreviewBundle::initial(),
                 ultra_hdr_capacity_sensitive: false,
@@ -844,7 +838,7 @@ impl ImageLoader {
         // This allows the worker to "adopt" newer generations that were requested
         // while the decode was in progress.
         let final_gen = {
-            let map = loading_ref.lock().unwrap();
+            let map = loading_ref.lock();
             if let Some(&latest) = map.get(&index) {
                 latest
             } else {
@@ -879,6 +873,7 @@ impl ImageLoader {
 
                         let limit = hq_preview_max_side();
                         let started_at = std::time::Instant::now();
+                        let is_hdr_mode = !hdr_display_requests_sdr_preview(hdr_target_capacity);
                         log::info!(
                             "[Loader] [{}] HQ preview start: index={} generation={} limit={} source={}x{} (hdr_mode={})",
                             file_name,
@@ -887,18 +882,17 @@ impl ImageLoader {
                             limit,
                             source.width(),
                             source.height(),
-                            hdr_target_capacity > 1.0
+                            is_hdr_mode
                         );
-                        let is_hdr_mode = hdr_target_capacity > 1.0;
                         let r_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
-                                let hdr = source.generate_hdr_preview(limit, limit)?;
-                                let sdr = if !is_hdr_mode {
-                                    Some(crate::hdr::tiled::sdr_preview_from_hdr_preview(&hdr)?)
+                                if is_hdr_mode {
+                                    let hdr = source.generate_hdr_preview(limit, limit)?;
+                                    Ok((Some(hdr), None))
                                 } else {
-                                    None
-                                };
-                                Ok((hdr, sdr))
+                                    let sdr = source.generate_sdr_preview(limit, limit)?;
+                                    Ok((None, Some(sdr)))
+                                }
                             }));
 
                         match r_result {
@@ -913,23 +907,29 @@ impl ImageLoader {
                                     );
                                     return;
                                 }
+                                let (pw, ph) = if let Some(ref h) = hdr {
+                                    (h.width, h.height)
+                                } else if let Some(ref s) = sdr {
+                                    (s.0, s.1)
+                                } else {
+                                    (0, 0)
+                                };
+                                let preview_kind = if is_hdr_mode { "HDR" } else { "SDR" };
                                 log::debug!(
-                                    "[Loader] [{}] HQ previews generated: {}x{} (source {}x{}, limit={}, elapsed={:?}, hdr_mode={})",
+                                    "[Loader] [{}] HQ {} preview generated: {}x{} (source {}x{}, limit={}, elapsed={:?})",
                                     file_name,
-                                    hdr.width,
-                                    hdr.height,
+                                    preview_kind,
+                                    pw,
+                                    ph,
                                     source.width(),
                                     source.height(),
                                     limit,
-                                    started_at.elapsed(),
-                                    is_hdr_mode
+                                    started_at.elapsed()
                                 );
-                                // Always publish the HDR float preview when we decoded it. `hdr_mode`
-                                // only controls whether we also build an SDR tone-map helper plane;
-                                // native HDR display samples the HDR preview cache/TM path and would
-                                // otherwise stay on the coarse bootstrap HDR if we attached SDR only.
-                                let mut bundle =
-                                    PreviewBundle::refined().with_hdr(Arc::new(hdr));
+                                let mut bundle = PreviewBundle::refined();
+                                if let Some(h) = hdr {
+                                    bundle = bundle.with_hdr(Arc::new(h));
+                                }
                                 if let Some(s) = sdr {
                                     bundle = bundle.with_sdr(DecodedImage::new(s.0, s.1, s.2));
                                 }
@@ -937,6 +937,7 @@ impl ImageLoader {
                                 let _ = tx_cloned.send(LoaderOutput::Preview(PreviewResult {
                                     index,
                                     generation: final_gen,
+                                    source_key: load_result.source_key,
                                     preview_bundle: bundle,
                                     error: None,
                                 }));
@@ -999,6 +1000,7 @@ impl ImageLoader {
                                     PreviewResult::from_sdr_preview(
                                         index,
                                         final_gen,
+                                        load_result.source_key,
                                         Ok(DecodedImage::new(pw, ph, p_pixels)),
                                     ),
                                 ));
@@ -1044,7 +1046,7 @@ impl ImageLoader {
         row: u32,
     ) {
         let (lock, cvar) = &*self.tile_queue;
-        let mut heap = lock.lock().unwrap();
+        let mut heap = lock.lock();
         heap.push(TileRequest {
             generation,
             priority,
@@ -1088,7 +1090,7 @@ impl ImageLoader {
             if keep(&output) {
                 retained.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock().unwrap();
+                let mut loading = self.loading.lock();
                 if loading.get(&r.index) == Some(&r.generation) {
                     loading.remove(&r.index);
                 }
@@ -1100,7 +1102,7 @@ impl ImageLoader {
             if keep(&output) {
                 self.local_queue.push_back(output);
             } else if let LoaderOutput::Image(ref r) = output {
-                let mut loading = self.loading.lock().unwrap();
+                let mut loading = self.loading.lock();
                 if loading.get(&r.index) == Some(&r.generation) {
                     loading.remove(&r.index);
                 }
@@ -1121,7 +1123,7 @@ impl ImageLoader {
     }
 
     pub fn finish_image_request(&self, index: usize, generation: u64) {
-        let mut loading = self.loading.lock().unwrap();
+        let mut loading = self.loading.lock();
         if let Some(&g) = loading.get(&index) {
             if g <= generation {
                 loading.remove(&index);
@@ -1140,28 +1142,28 @@ impl ImageLoader {
     /// Called on zoom change to discard tiles from stale zoom levels.
     pub fn flush_tile_queue(&self) {
         let (lock, _) = &*self.tile_queue;
-        lock.lock().unwrap().clear();
+        lock.lock().clear();
     }
 
     pub fn cancel_all(&mut self) {
-        self.loading.lock().unwrap().clear();
+        self.loading.lock().clear();
         self.local_queue.clear();
         {
             let (lock, cvar) = &*self.delayed_fallback;
-            let mut slot = lock.lock().unwrap();
+            let mut slot = lock.lock();
             *slot = None;
             cvar.notify_one();
         }
         {
             let (lock, _) = &*self.tile_queue;
-            lock.lock().unwrap().clear();
+            lock.lock().clear();
         }
         while self.rx.try_recv().is_ok() {}
     }
 
     #[cfg(test)]
     pub(crate) fn test_register_inflight(&self, index: usize, generation: u64) {
-        self.loading.lock().unwrap().insert(index, generation);
+        self.loading.lock().insert(index, generation);
     }
 
     #[cfg(test)]
@@ -1183,6 +1185,7 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
         return;
     };
     let index = load_result.index;
+    let source_key = load_result.source_key;
     let hdr = hdr.clone();
     let tx = tx.clone();
     let loading = Arc::clone(loading);
@@ -1213,6 +1216,7 @@ fn spawn_hdr_sdr_fallback_if_placeholder(
                 let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
                     index,
                     generation: final_gen,
+                    source_key,
                     fallback,
                 }));
             }

@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fs::File;
+use parking_lot::Mutex;
 use std::io::{BufRead, Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
@@ -317,8 +317,7 @@ pub struct RadianceHdrTiledImageSource {
 
 impl RadianceHdrTiledImageSource {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|err| err.to_string())?;
-        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&file).map_err(|err| err.to_string())? });
+        let mmap = Arc::new(crate::mmap_util::map_file(path)?);
         let mut params = crate::hdr::decode::RadianceHeaderParams::default();
         let mut reader = Cursor::new(&mmap[..]);
         let raster = read_radiance_header(&mut reader, &mut params)?;
@@ -397,16 +396,13 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
         width: u32,
         height: u32,
     ) -> Option<Arc<HdrTileBuffer>> {
-        self.tile_cache
-            .lock()
-            .ok()
-            .and_then(|mut cache| cache.get((x, y, width, height)))
+        self.tile_cache.lock().get((x, y, width, height))
     }
 
     fn protect_cached_tiles(&self, tiles: &[(u32, u32, u32, u32)]) {
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.set_protected_keys(tiles.iter().copied());
-        }
+        self.tile_cache
+            .lock()
+            .set_protected_keys(tiles.iter().copied());
     }
 
     fn extract_tile_rgba32f_arc(
@@ -418,7 +414,8 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
     ) -> Result<Arc<HdrTileBuffer>, String> {
         validate_tile_bounds(self.width, self.height, x, y, width, height)?;
         let key = (x, y, width, height);
-        if let Ok(mut cache) = self.tile_cache.lock() {
+        {
+            let mut cache = self.tile_cache.lock();
             if let Some(tile) = cache.get(key) {
                 return Ok(tile);
             }
@@ -443,9 +440,7 @@ impl HdrTiledSource for RadianceHdrTiledImageSource {
             Arc::new(rgba),
         ));
 
-        if let Ok(mut cache) = self.tile_cache.lock() {
-            cache.insert(key, Arc::clone(&tile));
-        }
+        self.tile_cache.lock().insert(key, Arc::clone(&tile));
 
         Ok(tile)
     }

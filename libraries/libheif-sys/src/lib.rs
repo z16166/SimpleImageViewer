@@ -111,8 +111,9 @@ unsafe extern "C" {
         handle: *mut *mut heif_image_handle,
     ) -> heif_error;
     pub fn heif_image_handle_release(handle: *const heif_image_handle);
-    pub fn heif_image_handle_get_luma_bits_per_pixel(handle: *const heif_image_handle)
-    -> libc::c_int;
+    pub fn heif_image_handle_get_luma_bits_per_pixel(
+        handle: *const heif_image_handle,
+    ) -> libc::c_int;
     pub fn heif_image_handle_get_chroma_bits_per_pixel(
         handle: *const heif_image_handle,
     ) -> libc::c_int;
