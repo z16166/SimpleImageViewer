@@ -72,8 +72,8 @@ impl ImageViewerApp {
         let mut action: Option<AppAction> = None;
         ctx.input(|i| {
             action = self.map_key_to_action(i);
-            // Escape closes settings
-            if i.key_pressed(Key::Escape) {
+            // Escape closes settings unless the Hotkeys tab is actively capturing it.
+            if self.hotkeys_capture_target.is_none() && i.key_pressed(Key::Escape) {
                 self.show_settings = false;
             }
         });

@@ -19,7 +19,7 @@ pub mod model;
 pub mod validate;
 
 use crate::hotkeys::model::{
-    HotkeyActionId, HotkeyConfigFile, HotkeyConflict, KeyChord, ValidationOutput,
+    HotkeyActionId, HotkeyConfigFile, HotkeyConflict, HotkeyWarning, KeyChord, ValidationOutput,
 };
 use std::collections::HashMap;
 
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 pub struct RuntimeHotkeyState {
     pub config: HotkeyConfigFile,
     pub map: HashMap<KeyChord, HotkeyActionId>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<HotkeyWarning>,
     pub conflicts: Vec<HotkeyConflict>,
 }
 

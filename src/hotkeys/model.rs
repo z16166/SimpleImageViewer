@@ -299,11 +299,32 @@ pub struct HotkeyConflict {
     pub actions: Vec<HotkeyActionId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HotkeyWarning {
+    MissingAction {
+        action_id: HotkeyActionId,
+    },
+    InvalidKey {
+        action_id: HotkeyActionId,
+        key: String,
+    },
+    MouseClickRequiresModifier {
+        action_id: HotkeyActionId,
+        key: String,
+    },
+    NoValidKeys {
+        action_id: HotkeyActionId,
+    },
+    UnknownAction {
+        action_id: String,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct ValidationOutput {
     pub normalized: HotkeyConfigFile,
     pub runtime_bindings: Vec<RuntimeHotkeyBinding>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<HotkeyWarning>,
     pub conflicts: Vec<HotkeyConflict>,
 }
 

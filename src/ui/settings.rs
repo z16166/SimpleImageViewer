@@ -459,7 +459,7 @@ fn draw_active_settings_tab(
 }
 
 fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) {
-    let mut draft = app.hotkeys_runtime.config.clone();
+    let mut draft = app.hotkeys_draft_config.clone();
     let mut should_save = false;
     let mut row_to_delete: Option<(usize, usize)> = None;
     let mut row_to_add: Option<HotkeyActionId> = None;
@@ -689,9 +689,9 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                 .clicked()
             {
                 if let Some((entry_idx, key_idx)) = app.hotkeys_selected_row
-                    && let Some(action_id) = crate::hotkeys::model::action_id_from_str(
-                        &draft.bindings[entry_idx].action_id,
-                    )
+                    && let Some(binding) = draft.bindings.get(entry_idx)
+                    && let Some(action_id) =
+                        crate::hotkeys::model::action_id_from_str(&binding.action_id)
                 {
                     set_key_target = Some((action_id, entry_idx, key_idx));
                 }
@@ -704,14 +704,10 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
             }
             if styled_button(ui, t!("hotkeys.apply"), &app.cached_palette).clicked() {
                 let validated = crate::hotkeys::rebuild_runtime_state(&draft);
-                if has_empty_key {
-                    app.hotkeys_runtime = validated;
-                } else if validated.conflicts.is_empty() {
+                if !has_empty_key && validated.conflicts.is_empty() {
                     app.hotkeys_runtime = validated;
                     app.hotkeys_load_error = None;
                     should_save = true;
-                } else {
-                    app.hotkeys_runtime = validated;
                 }
             }
         });
@@ -777,7 +773,8 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
             for warning in &preview.warnings {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(warning.as_str()).color(app.cached_palette.accent2),
+                        RichText::new(crate::app::localized_hotkey_warning(warning))
+                            .color(app.cached_palette.accent2),
                     )
                     .wrap(),
                 );
@@ -962,12 +959,12 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         .any(|entry| entry.keys.iter().any(|key| key.trim().is_empty()));
     if !has_empty_key && validated.conflicts.is_empty() && should_save {
         app.hotkeys_runtime = validated.clone();
+        app.hotkeys_draft_config = validated.config.clone();
         app.hotkeys_load_error = None;
         app.queue_hotkeys_save();
     } else {
-        app.hotkeys_runtime = validated.clone();
+        app.hotkeys_draft_config = draft;
     }
-    app.hotkeys_runtime.config = validated.config;
 }
 
 fn localized_hotkey_action_label(action_id: HotkeyActionId) -> String {

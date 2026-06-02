@@ -84,7 +84,10 @@ impl ImageViewerApp {
         let hotkeys_runtime = match crate::hotkeys::load_runtime_hotkeys_state() {
             Ok(state) => {
                 for warning in &state.warnings {
-                    log::warn!("[hotkeys] {}", warning);
+                    log::warn!(
+                        "[hotkeys] {}",
+                        crate::app::localized_hotkey_warning(warning)
+                    );
                 }
                 for conflict in &state.conflicts {
                     log::warn!(
@@ -103,6 +106,7 @@ impl ImageViewerApp {
                 )
             }
         };
+        let hotkeys_draft_config = hotkeys_runtime.config.clone();
         let (hotkeys_save_tx, hotkeys_save_rx) =
             crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
         let (hotkeys_save_error_tx, hotkeys_save_error_rx) =
@@ -111,13 +115,13 @@ impl ImageViewerApp {
             .name("hotkeys-saver".to_string())
             .spawn(move || {
                 while let Ok(mut cfg) = hotkeys_save_rx.recv() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                     while let Ok(newer) = hotkeys_save_rx.try_recv() {
                         cfg = newer;
                     }
                     if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&cfg) {
                         let _ = hotkeys_save_error_tx.send(e);
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             });
         let hotkeys_saver_handle = match hotkeys_saver_res {
@@ -429,6 +433,7 @@ impl ImageViewerApp {
             last_show_settings: settings.last_image_dir.is_none(),
             music_hud_drag_offset: Vec2::ZERO,
             hotkeys_runtime,
+            hotkeys_draft_config,
             hotkeys_save_error_rx,
             hotkeys_save_tx,
             hotkeys_saver_handle,

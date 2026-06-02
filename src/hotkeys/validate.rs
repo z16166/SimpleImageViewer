@@ -15,9 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::hotkeys::model::{
-    HotkeyActionId, HotkeyBindingEntry, HotkeyConfigFile, HotkeyConflict, RuntimeHotkeyBinding,
-    ValidationOutput, action_id_from_str, action_id_to_str, all_action_descriptors,
-    default_hotkey_config_file, normalized_bindings_map,
+    HotkeyActionId, HotkeyBindingEntry, HotkeyConfigFile, HotkeyConflict, HotkeyWarning,
+    RuntimeHotkeyBinding, ValidationOutput, action_id_from_str, action_id_to_str,
+    all_action_descriptors, default_hotkey_config_file, normalized_bindings_map,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -45,10 +45,7 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
 
         let source = incoming.get(&action_id).unwrap_or(&fallback);
         if incoming.get(&action_id).is_none() {
-            warnings.push(format!(
-                "hotkeys missing action '{}', fallback to default",
-                action_id_to_str(action_id)
-            ));
+            warnings.push(HotkeyWarning::MissingAction { action_id });
         }
 
         let mut normalized_entry = HotkeyBindingEntry {
@@ -67,11 +64,10 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
                 match crate::hotkeys::model::KeyChord::parse(key_text) {
                     Some(chord) => {
                         if chord.requires_modifier() && chord.modifiers == 0 {
-                            warnings.push(format!(
-                                "mouse click key '{}' for action '{}' requires Ctrl, Alt, or Shift",
-                                key_text,
-                                action_id_to_str(action_id)
-                            ));
+                            warnings.push(HotkeyWarning::MouseClickRequiresModifier {
+                                action_id,
+                                key: key_text.clone(),
+                            });
                             continue;
                         }
                         let display = chord.display_string();
@@ -79,20 +75,25 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
                         runtime_bindings.push(RuntimeHotkeyBinding { action_id, chord });
                         by_chord.entry(display).or_default().push(action_id);
                     }
-                    None => warnings.push(format!(
-                        "invalid key '{}' for action '{}', ignored",
-                        key_text,
-                        action_id_to_str(action_id)
-                    )),
+                    None => warnings.push(HotkeyWarning::InvalidKey {
+                        action_id,
+                        key: key_text.clone(),
+                    }),
                 }
             }
         }
 
+        let has_placeholder_only = !normalized_entry.keys.is_empty()
+            && normalized_entry
+                .keys
+                .iter()
+                .all(|key| key.trim().is_empty());
+        if has_placeholder_only {
+            warnings.push(HotkeyWarning::NoValidKeys { action_id });
+        }
+
         if normalized_entry.keys.is_empty() {
-            warnings.push(format!(
-                "action '{}' has no valid keys, fallback to defaults",
-                action_id_to_str(action_id)
-            ));
+            warnings.push(HotkeyWarning::NoValidKeys { action_id });
             let defaults = default_hotkey_config_file();
             if let Some(default_entry) = defaults
                 .bindings
@@ -125,10 +126,9 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
 
     for entry in &config.bindings {
         if action_id_from_str(&entry.action_id).is_none() {
-            warnings.push(format!(
-                "unknown action id '{}', this entry is ignored",
-                entry.action_id
-            ));
+            warnings.push(HotkeyWarning::UnknownAction {
+                action_id: entry.action_id.clone(),
+            });
         }
     }
 
@@ -167,6 +167,15 @@ pub fn bindings_to_map(
 ) -> HashMap<crate::hotkeys::model::KeyChord, HotkeyActionId> {
     let mut out = HashMap::new();
     for binding in bindings {
+        if let Some(existing) = out.get(&binding.chord) {
+            log::warn!(
+                "[hotkeys] duplicate runtime binding for {}; keeping {}, ignoring {}",
+                binding.chord.display_string(),
+                action_id_to_str(*existing),
+                action_id_to_str(binding.action_id)
+            );
+            continue;
+        }
         out.insert(binding.chord, binding.action_id);
     }
     out
@@ -319,6 +328,14 @@ mod tests {
             .expect("next_image binding exists");
 
         assert_eq!(next.keys, vec![String::new()]);
+        assert!(out.warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                HotkeyWarning::NoValidKeys {
+                    action_id: HotkeyActionId::NextImage
+                }
+            )
+        }));
         assert!(
             out.runtime_bindings
                 .iter()

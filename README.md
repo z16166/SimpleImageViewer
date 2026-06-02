@@ -32,6 +32,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Update checks** — checks GitHub Releases in the background at most once per day. Windows portable builds can install verified updates automatically; macOS and Linux builds notify you and open the download page.
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode
+- **Custom hotkeys** — remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks from the settings panel
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
 - **Modal Dialogs** — metadata and settings dialogs now behave as true modals; background interactions are blocked with a visual dimmer for a focused experience
@@ -105,6 +106,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop or random-order playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
 | **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |
+| **Hotkeys** | Customize keyboard, mouse wheel, and modifier-assisted mouse button bindings |
 | **Language** | Manually switch between English, Simplified Chinese, and Traditional Chinese |
 | **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
 | **Updates** | Enable/disable update checks, run a manual check, and configure HTTP/SOCKS5 proxy settings for release checks and downloads |

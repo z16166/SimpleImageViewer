@@ -581,6 +581,7 @@ pub struct ImageViewerApp {
     pub(crate) music_hud_drag_offset: Vec2,
     // Runtime hotkeys loaded from siv_hotkeys.yaml
     pub(crate) hotkeys_runtime: crate::hotkeys::RuntimeHotkeyState,
+    pub(crate) hotkeys_draft_config: crate::hotkeys::model::HotkeyConfigFile,
     pub(crate) hotkeys_save_error_rx: Receiver<String>,
     pub(crate) hotkeys_save_tx: Sender<crate::hotkeys::model::HotkeyConfigFile>,
     pub(crate) hotkeys_saver_handle: Option<std::thread::JoinHandle<()>>,
@@ -607,7 +608,7 @@ pub(crate) struct PendingAnimUpload {
 pub(crate) fn build_hotkeys_issue_message(
     load_error: Option<&str>,
     conflicts: &[crate::hotkeys::model::HotkeyConflict],
-    warnings: &[String],
+    warnings: &[crate::hotkeys::model::HotkeyWarning],
 ) -> Option<String> {
     if load_error.is_none() && conflicts.is_empty() && warnings.is_empty() {
         return None;
@@ -631,10 +632,43 @@ pub(crate) fn build_hotkeys_issue_message(
     }
     if !warnings.is_empty() {
         lines.push(t!("hotkeys.startup_warnings", count = warnings.len()).to_string());
-        lines.extend(warnings.iter().take(3).cloned());
+        lines.extend(warnings.iter().take(3).map(localized_hotkey_warning));
     }
     lines.push(t!("hotkeys.startup_open_settings_hint").to_string());
     Some(lines.join("\n"))
+}
+
+pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWarning) -> String {
+    use crate::hotkeys::model::{HotkeyWarning, action_id_to_str};
+    match warning {
+        HotkeyWarning::MissingAction { action_id } => t!(
+            "hotkeys.warning.missing_action",
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::InvalidKey { action_id, key } => t!(
+            "hotkeys.warning.invalid_key",
+            key = key.as_str(),
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::MouseClickRequiresModifier { action_id, key } => t!(
+            "hotkeys.warning.mouse_click_requires_modifier",
+            key = key.as_str(),
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::NoValidKeys { action_id } => t!(
+            "hotkeys.warning.no_valid_keys",
+            action = action_id_to_str(*action_id)
+        )
+        .to_string(),
+        HotkeyWarning::UnknownAction { action_id } => t!(
+            "hotkeys.warning.unknown_action",
+            action = action_id.as_str()
+        )
+        .to_string(),
+    }
 }
 
 impl ImageViewerApp {
@@ -1603,11 +1637,14 @@ mod tests {
                 crate::hotkeys::model::HotkeyActionId::PrevImage,
             ],
         }];
-        let warnings = vec!["invalid key 'Foo' for action 'next_image', ignored".to_string()];
+        let warnings = vec![crate::hotkeys::model::HotkeyWarning::InvalidKey {
+            action_id: crate::hotkeys::model::HotkeyActionId::NextImage,
+            key: "Foo".to_string(),
+        }];
         let message = build_hotkeys_issue_message(None, &conflicts, &warnings)
             .expect("validation issues should be user-visible");
         assert!(message.contains("D"));
-        assert!(message.contains("invalid key"));
+        assert!(message.contains("Foo"));
     }
 
     #[test]
