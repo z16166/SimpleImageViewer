@@ -472,6 +472,46 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
     }
 }
 
+struct ExrMmapCookieGuard {
+    ptr: *mut c_void,
+}
+
+impl ExrMmapCookieGuard {
+    fn new(mmap: Mmap) -> Self {
+        let cookie = Box::new(ExrMmapReadCookie {
+            mmap: Arc::new(mmap),
+        });
+        Self {
+            ptr: Box::into_raw(cookie).cast::<c_void>(),
+        }
+    }
+
+    fn as_mut_ptr(&self) -> *mut c_void {
+        self.ptr
+    }
+
+    /// Disarm Rust-side cleanup after handing the cookie to `exr_start_read`.
+    ///
+    /// OpenEXRCore's public docs say `user_data` is caller-managed custom stream data. The
+    /// implementation copies that pointer into a context, and if header parsing later fails,
+    /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn`. Keeping this guard
+    /// armed after the call would double-free malformed EXR-like inputs on Windows.
+    fn disarm_after_start_read(&mut self) {
+        self.ptr = ptr::null_mut();
+    }
+}
+
+impl Drop for ExrMmapCookieGuard {
+    fn drop(&mut self) {
+        if self.ptr.is_null() {
+            return;
+        }
+        unsafe {
+            openexr_destroy_mmap_cookie(ptr::null(), self.ptr, 0);
+        }
+    }
+}
+
 fn openexr_memory_map_initializer(cookie: *mut c_void) -> sys::ExrContextInitializer {
     sys::ExrContextInitializer {
         size: std::mem::size_of::<sys::ExrContextInitializer>(),
@@ -503,21 +543,16 @@ impl OpenExrCoreReadContext {
 
         match crate::mmap_util::map_file(path) {
             Ok(m) => {
-                let mmap_arc = Arc::new(m);
-                let cookie = Box::new(ExrMmapReadCookie {
-                    mmap: Arc::clone(&mmap_arc),
-                });
-                let cookie_ptr = Box::into_raw(cookie).cast::<c_void>();
-                let ctxt_init = openexr_memory_map_initializer(cookie_ptr);
+                let mut cookie = ExrMmapCookieGuard::new(m);
+                let ctxt_init = openexr_memory_map_initializer(cookie.as_mut_ptr());
 
-                match exr_result(unsafe {
-                    sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init)
-                }) {
+                let start_result =
+                    unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
+                cookie.disarm_after_start_read();
+
+                match exr_result(start_result) {
                     Ok(()) => {
                         if raw.is_null() {
-                            unsafe {
-                                openexr_destroy_mmap_cookie(ptr::null(), cookie_ptr, 0);
-                            }
                             return Err(format!(
                                 "OpenEXRCore returned a null context for {}",
                                 path.display()
@@ -525,9 +560,9 @@ impl OpenExrCoreReadContext {
                         }
                     }
                     Err(e) => {
-                        // OpenEXRCore owns the initializer userdata once `exr_start_read` is called
-                        // and may invoke `destroy_fn` even on header-parse failures. Do not free
-                        // `cookie_ptr` here: doing so can double-free on malformed EXR-like files.
+                        // Do not fall back to file I/O or free `user_data` here. If OpenEXRCore
+                        // created a context before this parse error, its `exr_start_read` cleanup
+                        // path has already called our `destroy_fn` through `exr_finish`.
                         log::debug!(
                             "EXR mmap read via OpenEXRCore failed ({}) for {}",
                             e,
