@@ -13,7 +13,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 
 use memmap2::Mmap;
@@ -409,9 +412,9 @@ impl OpenExrCoreDecodedChunkCache {
     }
 }
 
-#[derive(Clone)]
 struct ExrMmapReadCookie {
     mmap: Arc<Mmap>,
+    destroy_called: AtomicBool,
 }
 
 /// OpenEXRCore expects `pread`-like threading semantics — backing store is immutable mapped bytes.
@@ -468,46 +471,57 @@ unsafe extern "C" fn openexr_destroy_mmap_cookie(
         return;
     }
     unsafe {
-        drop(Box::from_raw(userdata.cast::<ExrMmapReadCookie>()));
+        let cookie = Arc::from_raw(userdata.cast::<ExrMmapReadCookie>());
+        cookie.destroy_called.store(true, Ordering::Release);
     }
 }
 
 struct ExrMmapCookieGuard {
-    ptr: *mut c_void,
+    cookie: Arc<ExrMmapReadCookie>,
+    c_ref: *const ExrMmapReadCookie,
+    context_alive: bool,
 }
 
 impl ExrMmapCookieGuard {
     fn new(mmap: Mmap) -> Self {
-        let cookie = Box::new(ExrMmapReadCookie {
+        let cookie = Arc::new(ExrMmapReadCookie {
             mmap: Arc::new(mmap),
+            destroy_called: AtomicBool::new(false),
         });
+        let c_ref = Arc::into_raw(Arc::clone(&cookie));
         Self {
-            ptr: Box::into_raw(cookie).cast::<c_void>(),
+            cookie,
+            c_ref,
+            context_alive: false,
         }
     }
 
     fn as_mut_ptr(&self) -> *mut c_void {
-        self.ptr
+        self.c_ref.cast_mut().cast::<c_void>()
     }
 
-    /// Disarm Rust-side cleanup after handing the cookie to `exr_start_read`.
+    /// Mark the C-held cookie reference as owned by a live OpenEXRCore context.
     ///
     /// OpenEXRCore's public docs say `user_data` is caller-managed custom stream data. The
-    /// implementation copies that pointer into a context, and if header parsing later fails,
-    /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn`. Keeping this guard
-    /// armed after the call would double-free malformed EXR-like inputs on Windows.
-    fn disarm_after_start_read(&mut self) {
-        self.ptr = ptr::null_mut();
+    /// implementation copies that pointer into a context. If header parsing later fails,
+    /// `exr_start_read` calls `exr_finish(&ret)`, which invokes our `destroy_fn` and drops the
+    /// C-held `Arc` reference.
+    ///
+    /// The Rust guard keeps its own `Arc`, so the callback can signal whether cleanup happened. If
+    /// `exr_start_read` fails before creating a context and never calls `destroy_fn`, the guard drops
+    /// the C-held reference itself.
+    fn mark_context_alive(&mut self) {
+        self.context_alive = true;
     }
 }
 
 impl Drop for ExrMmapCookieGuard {
     fn drop(&mut self) {
-        if self.ptr.is_null() {
+        if self.context_alive || self.cookie.destroy_called.load(Ordering::Acquire) {
             return;
         }
         unsafe {
-            openexr_destroy_mmap_cookie(ptr::null(), self.ptr, 0);
+            drop(Arc::from_raw(self.c_ref));
         }
     }
 }
@@ -548,7 +562,6 @@ impl OpenExrCoreReadContext {
 
                 let start_result =
                     unsafe { sys::exr_start_read(&mut raw, filename.as_ptr(), &ctxt_init) };
-                cookie.disarm_after_start_read();
 
                 match exr_result(start_result) {
                     Ok(()) => {
@@ -558,11 +571,12 @@ impl OpenExrCoreReadContext {
                                 path.display()
                             ));
                         }
+                        cookie.mark_context_alive();
                     }
                     Err(e) => {
-                        // Do not fall back to file I/O or free `user_data` here. If OpenEXRCore
-                        // created a context before this parse error, its `exr_start_read` cleanup
-                        // path has already called our `destroy_fn` through `exr_finish`.
+                        // Do not fall back to file I/O here. The mmap reader already classified the
+                        // file and malformed EXR-like inputs previously crashed on Windows when this
+                        // error path retried through OpenEXRCore's native file reader.
                         log::debug!(
                             "EXR mmap read via OpenEXRCore failed ({}) for {}",
                             e,

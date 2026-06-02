@@ -165,11 +165,7 @@ fn current_hdr_tiled_preview_matches_index(
     current.is_some_and(|current| current.image_for_index(index).is_some())
 }
 
-fn should_reset_transition_when_source_texture_missing(
-    transition_style: TransitionStyle,
-    has_source_texture: bool,
-) -> bool {
-    let _ = transition_style;
+fn should_reset_transition_when_source_texture_missing(has_source_texture: bool) -> bool {
     !has_source_texture
 }
 
@@ -236,28 +232,12 @@ fn output_mode_crosses_hdr_sdr_boundary(
     output_mode_is_hdr(previous) != output_mode_is_hdr(next)
 }
 
-fn should_use_current_texture_as_transition_source(current_has_placeholder_fallback: bool) -> bool {
-    !current_has_placeholder_fallback
-}
-
-fn should_reuse_previous_transition_source(
-    current_has_placeholder_fallback: bool,
-    has_current_source_texture: bool,
-) -> bool {
-    current_has_placeholder_fallback || !has_current_source_texture
-}
-
 fn select_transition_source_texture(
     current_source_texture: Option<egui::TextureHandle>,
     current_has_placeholder_fallback: bool,
     previous_transition_source: Option<egui::TextureHandle>,
 ) -> Option<egui::TextureHandle> {
-    if should_use_current_texture_as_transition_source(current_has_placeholder_fallback)
-        && !should_reuse_previous_transition_source(
-            current_has_placeholder_fallback,
-            current_source_texture.is_some(),
-        )
-    {
+    if !current_has_placeholder_fallback && current_source_texture.is_some() {
         current_source_texture
     } else {
         // Keep the previous non-placeholder source when the current frame is only a
@@ -669,6 +649,15 @@ impl ImageViewerApp {
         indices.extend(self.hdr_placeholder_fallback_indices.iter().copied());
         indices.extend(self.ultra_hdr_capacity_sensitive_indices.iter().copied());
 
+        let pixel_cache_indices: std::collections::HashSet<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&idx| idx != current)
+            .collect();
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .remove_images(&pixel_cache_indices);
+
         for idx in indices {
             if idx == current {
                 continue;
@@ -677,7 +666,6 @@ impl ImageViewerApp {
             self.prefetched_tiles.remove(&idx);
             self.animation_cache.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
-            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
             self.remove_hdr_image_index(idx);
         }
     }
@@ -912,10 +900,7 @@ impl ImageViewerApp {
                 self.pending_transition_target = Some(target_index);
             }
 
-            if should_reset_transition_when_source_texture_missing(
-                self.settings.transition_style,
-                self.prev_texture.is_some(),
-            ) {
+            if should_reset_transition_when_source_texture_missing(self.prev_texture.is_some()) {
                 // No texture available for the source frame: avoid reusing stale
                 // transition state from previous navigation.
                 self.prev_texture = None;
@@ -948,10 +933,7 @@ impl ImageViewerApp {
             } else {
                 None
             };
-            if should_reset_transition_when_source_texture_missing(
-                self.settings.transition_style,
-                self.prev_texture.is_some(),
-            ) {
+            if should_reset_transition_when_source_texture_missing(self.prev_texture.is_some()) {
                 self.prev_texture = None;
                 self.pending_transition_target = None;
             }
@@ -2943,29 +2925,19 @@ mod tests {
 
     #[test]
     fn transition_source_texture_skips_placeholder_fallback_frames() {
-        assert!(should_use_current_texture_as_transition_source(false));
-        assert!(!should_use_current_texture_as_transition_source(true));
         assert!(select_transition_source_texture(None, true, None).is_none());
     }
 
     #[test]
-    fn transition_source_reuse_policy_matches_placeholder_and_source_presence() {
-        assert!(should_reuse_previous_transition_source(true, true));
-        assert!(should_reuse_previous_transition_source(true, false));
-        assert!(should_reuse_previous_transition_source(false, false));
-        assert!(!should_reuse_previous_transition_source(false, true));
+    fn transition_source_selection_reuses_previous_when_current_unusable() {
+        assert!(select_transition_source_texture(None, false, None).is_none());
+        assert!(select_transition_source_texture(None, true, None).is_none());
     }
 
     #[test]
     fn transition_none_keeps_source_frame_until_target_is_ready() {
-        assert!(!should_reset_transition_when_source_texture_missing(
-            TransitionStyle::None,
-            true
-        ));
-        assert!(should_reset_transition_when_source_texture_missing(
-            TransitionStyle::None,
-            false
-        ));
+        assert!(!should_reset_transition_when_source_texture_missing(true));
+        assert!(should_reset_transition_when_source_texture_missing(false));
     }
 
     #[test]

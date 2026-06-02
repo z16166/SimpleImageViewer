@@ -22,6 +22,11 @@ use std::sync::Arc;
 
 pub type SourceKey = u64;
 
+/// Best-effort key used to drop stale async loader results after navigation.
+///
+/// This intentionally derives from a Unicode-lowercased path because the key is only a guardrail for
+/// the current file list, not a persisted identifier or proof of file identity. A hash collision would
+/// at worst fail to reject one stale in-flight result; normal index/generation checks still apply.
 pub fn source_key_for_path(path: &Path) -> SourceKey {
     let normalized = path.to_string_lossy().to_lowercase();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

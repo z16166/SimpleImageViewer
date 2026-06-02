@@ -363,7 +363,7 @@ pub(crate) fn linear_srgb_linear_to_srgb_u8(linear: f32) -> u8 {
     (encoded * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
+pub(crate) fn srgb_nonlinear_channel_to_linear(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.04045 {
         c / 12.92

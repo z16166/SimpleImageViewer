@@ -175,6 +175,28 @@ impl TilePixelCache {
         }
     }
 
+    /// Remove all tiles belonging to any of the provided image indices.
+    pub fn remove_images(&mut self, indices: &std::collections::HashSet<usize>) {
+        if indices.is_empty() {
+            return;
+        }
+        let keys_to_remove: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|(idx, _, _)| indices.contains(idx))
+            .copied()
+            .collect();
+
+        for key in keys_to_remove {
+            if let Some(pixels) = self.entries.remove(&key) {
+                self.current_bytes -= pixels.len();
+            }
+            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
+                self.lru.remove(pos);
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.lru.clear();

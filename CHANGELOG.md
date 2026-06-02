@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.1] - 2026-06-02
+
+### Fixed
+- **HDR and AVIF browsing**: Flipping through photos with **No transition** is less likely to show a black frame, especially when you change direction mid-folder or browse recently preloaded images.
+- **AVIF brightness after navigation**: Reverse browsing no longer leaves some images stuck too dark or too bright, and exposure adjustments keep working on HDR displays.
+- **HDR ↔ SDR monitor moves**: When the window crosses an HDR and SDR display, the current image reloads more reliably so brightness and exposure controls stay in sync with the active screen.
+- **Corrupt EXR headers**: Opening files that look like EXR but are incomplete or malformed no longer risks crashing the viewer.
+
+### Improved
+- **Faster still-image loading**: Common JPEG, PNG, and similar formats decode with less file I/O overhead, so nearby images in a folder feel snappier to open and preload.
+- **Large tiled HDR previews**: Preview quality follows whether you are viewing in HDR or SDR mode, with fewer wasted decode steps on the wrong path.
+- **Display capability changes**: Clearing stale preloaded images when HDR output mode changes is smoother and less likely to stall the UI on large folders.
+- **File association / IPC launch**: Opening the viewer from another app handles local socket path quirks more gracefully on some systems.
+
 ## [2.3.0] - 2026-06-02
 
 ### Added
