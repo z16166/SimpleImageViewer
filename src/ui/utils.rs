@@ -364,7 +364,24 @@ pub fn themed_toggle_switch(
     value: &mut bool,
     palette: &ThemePalette,
 ) -> Response {
-    let desired_size = egui::vec2(38.0, 22.0);
+    themed_toggle_switch_sized(ui, value, palette, egui::vec2(34.0, 18.0), 1.8)
+}
+
+pub fn themed_mini_toggle_switch(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    palette: &ThemePalette,
+) -> Response {
+    themed_toggle_switch_sized(ui, value, palette, egui::vec2(30.0, 16.0), 1.5)
+}
+
+fn themed_toggle_switch_sized(
+    ui: &mut egui::Ui,
+    value: &mut bool,
+    palette: &ThemePalette,
+    desired_size: Vec2,
+    knob_margin: f32,
+) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
     if response.clicked() {
@@ -374,12 +391,16 @@ pub fn themed_toggle_switch(
 
     let t = ui.ctx().animate_bool(response.id, *value);
     let off_color = if palette.is_dark {
-        palette.widget_bg
+        Color32::from_gray(54)
     } else {
         Color32::from_gray(190)
     };
     let bg_color = if *value {
-        palette.button_primary
+        if palette.is_dark {
+            Color32::from_rgb(38, 78, 118)
+        } else {
+            palette.button_primary
+        }
     } else {
         off_color
     };
@@ -395,12 +416,16 @@ pub fn themed_toggle_switch(
     let radius = rect.height() * 0.5;
     ui.painter().rect_filled(rect, radius, animated_bg);
 
-    let knob_margin = 2.0;
     let knob_radius = radius - knob_margin;
     let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
     let knob_center = egui::pos2(knob_x, rect.center().y);
+    let knob_color = if palette.is_dark {
+        Color32::from_gray(190)
+    } else {
+        Color32::WHITE
+    };
     ui.painter()
-        .circle_filled(knob_center, knob_radius, Color32::WHITE);
+        .circle_filled(knob_center, knob_radius, knob_color);
 
     response
 }
