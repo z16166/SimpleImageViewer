@@ -44,9 +44,6 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
             });
 
         let source = incoming.get(&action_id).unwrap_or(&fallback);
-        if incoming.get(&action_id).is_none() {
-            warnings.push(HotkeyWarning::MissingAction { action_id });
-        }
 
         let mut normalized_entry = HotkeyBindingEntry {
             action_id: action_id_to_str(action_id).to_string(),
@@ -450,5 +447,32 @@ mod tests {
         assert!(!toggle_goto.keys.contains(&"LeftClick".to_string()));
         assert!(toggle_settings.keys.contains(&"Ctrl+LeftClick".to_string()));
         assert!(print_current.keys.contains(&"MiddleClick".to_string()));
+    }
+
+    #[test]
+    fn test_missing_action_applies_default_without_warning() {
+        let config = HotkeyConfigFile {
+            version: HOTKEYS_FILE_VERSION,
+            bindings: vec![HotkeyBindingEntry {
+                action_id: "next_image".to_string(),
+                keys: vec!["Right".to_string()],
+                enabled: true,
+                comment: String::new(),
+            }],
+        };
+
+        let out = validate_hotkey_config(&config);
+
+        // Assert no warnings are generated for missing actions
+        assert!(out.warnings.is_empty());
+
+        // Assert the missing refresh_file_list action is populated with its default key (F5)
+        let refresh_binding = out
+            .runtime_bindings
+            .iter()
+            .find(|b| b.action_id == HotkeyActionId::RefreshFileList)
+            .expect("refresh_file_list binding populated by default");
+
+        assert_eq!(refresh_binding.chord.display_string(), "F5");
     }
 }

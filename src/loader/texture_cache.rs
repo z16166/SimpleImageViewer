@@ -64,6 +64,21 @@ impl TextureCache {
         self.is_tiled.remove(&index);
     }
 
+    pub fn relocate(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if let Some(tex) = self.textures.remove(&from) {
+            self.textures.insert(to, tex);
+        }
+        if let Some(res) = self.original_res.remove(&from) {
+            self.original_res.insert(to, res);
+        }
+        if let Some(tiled) = self.is_tiled.remove(&from) {
+            self.is_tiled.insert(to, tiled);
+        }
+    }
+
     /// Check if the image at index is a Tiled/Large image.
 
     pub fn get(&self, index: usize) -> Option<&egui::TextureHandle> {
@@ -117,5 +132,32 @@ impl TextureCache {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_texture_cache_relocate() {
+        let ctx = egui::Context::default();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+        let handle = ctx.load_texture("test_tex", color_image, egui::TextureOptions::LINEAR);
+
+        let mut cache = TextureCache::new(5);
+        cache.insert(3, handle, 100, 200, true, 3, 10);
+
+        assert!(cache.contains(3));
+        assert!(!cache.contains(7));
+        assert_eq!(cache.get_original_res(3), Some((100, 200)));
+        assert!(cache.is_preview_placeholder(3));
+
+        cache.relocate(3, 7);
+
+        assert!(!cache.contains(3));
+        assert!(cache.contains(7));
+        assert_eq!(cache.get_original_res(7), Some((100, 200)));
+        assert!(cache.is_preview_placeholder(7));
     }
 }

@@ -31,7 +31,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Update checks** — checks GitHub Releases in the background at most once per day. Windows portable builds can install verified updates automatically; macOS and Linux builds notify you and open the download page.
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
-- **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode
+- **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode, and `F5` to refresh the image list without losing your zoom/rotation or playing animations
 - **Custom hotkeys** — remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks from the settings panel
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
@@ -84,6 +84,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `G` | Open *Go to image…* dialog (jump to index) |
 | `F` / `F11` | Toggle full-screen |
 | `F1` | Open Settings panel |
+| `F5` | Refresh image file list |
 | `Esc` | Exit full-screen / Close dialogs |
 | `Left-Click (bg)` | Close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |

@@ -1098,6 +1098,7 @@ fn localized_hotkey_action_label(action_id: HotkeyActionId) -> String {
         HotkeyActionId::PrintCurrent => "hotkeys.action.print_current",
         HotkeyActionId::ToggleGoto => "hotkeys.action.toggle_goto",
         HotkeyActionId::ToggleSlideshow => "hotkeys.action.toggle_slideshow",
+        HotkeyActionId::RefreshFileList => "hotkeys.action.refresh_file_list",
         #[cfg(not(target_os = "windows"))]
         HotkeyActionId::Quit => "hotkeys.action.quit_app",
         HotkeyActionId::ExitFullscreen => "hotkeys.action.exit_fullscreen",

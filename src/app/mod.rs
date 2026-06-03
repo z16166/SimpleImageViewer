@@ -605,6 +605,17 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_add_row_captured_key: Option<String>,
     /// Add Row dialog: OK clicked without a recorded key.
     pub(crate) hotkeys_add_row_need_key_hint: bool,
+    /// True while a refresh-file-list scan (F5) is in progress.
+    /// Prevents re-entry and blocks navigation actions that would
+    /// dereference image_files during the incomplete rebuild.
+    pub(crate) refresh_scan_in_progress: bool,
+    /// Records whether the slideshow was actively playing (not paused)
+    /// before the F5 refresh scan started, so it can be restored on completion.
+    pub(crate) refresh_scan_slideshow_was_playing: bool,
+    /// The absolute path of the image that was current when F5 was pressed.
+    /// Survives across multiple scan batches so Done can always relocate the
+    /// original file, even when it wasn't present in the first batch.
+    pub(crate) refresh_anchor_path: Option<std::path::PathBuf>,
 }
 
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
@@ -653,11 +664,6 @@ pub(crate) fn build_hotkeys_issue_message(
 pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWarning) -> String {
     use crate::hotkeys::model::{HotkeyWarning, action_id_to_str};
     match warning {
-        HotkeyWarning::MissingAction { action_id } => t!(
-            "hotkeys.warning.missing_action",
-            action = action_id_to_str(*action_id)
-        )
-        .to_string(),
         HotkeyWarning::InvalidKey { action_id, key } => t!(
             "hotkeys.warning.invalid_key",
             key = key.as_str(),

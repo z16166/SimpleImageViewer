@@ -295,6 +295,23 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
+        // During a refresh scan the file list is being rebuilt: block all actions
+        // that dereference image_files by index to avoid out-of-bounds panics or
+        // navigating into stale/incomplete list state.
+        if self.refresh_scan_in_progress {
+            match action {
+                AppAction::Next
+                | AppAction::Prev
+                | AppAction::First
+                | AppAction::Last
+                | AppAction::Delete
+                | AppAction::PermanentDelete
+                | AppAction::Print
+                | AppAction::ToggleGoto
+                | AppAction::ToggleAutoSwitch => return,
+                _ => {}
+            }
+        }
         match action {
             AppAction::Next => {
                 let now = ctx.input(|i| i.time);
@@ -379,6 +396,9 @@ impl ImageViewerApp {
                     }
                 }
             }
+            AppAction::RefreshFileList => {
+                self.start_refresh_file_list();
+            }
             #[cfg(not(target_os = "windows"))]
             AppAction::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -398,7 +418,11 @@ impl ImageViewerApp {
     // ------------------------------------------------------------------
 
     pub(crate) fn check_auto_switch(&mut self) {
-        if !self.settings.auto_switch || self.slideshow_paused || self.image_files.is_empty() {
+        if self.refresh_scan_in_progress
+            || !self.settings.auto_switch
+            || self.slideshow_paused
+            || self.image_files.is_empty()
+        {
             return;
         }
         if self.settings.random_slideshow_order && self.scanning {
@@ -691,6 +715,7 @@ pub(crate) enum AppAction {
     Print,
     ToggleGoto,
     ToggleAutoSwitch,
+    RefreshFileList,
     #[cfg(not(target_os = "windows"))]
     Quit,
     ExitFullscreen,
@@ -864,6 +889,7 @@ fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAction {
         HotkeyActionId::PrintCurrent => AppAction::Print,
         HotkeyActionId::ToggleGoto => AppAction::ToggleGoto,
         HotkeyActionId::ToggleSlideshow => AppAction::ToggleAutoSwitch,
+        HotkeyActionId::RefreshFileList => AppAction::RefreshFileList,
         #[cfg(not(target_os = "windows"))]
         HotkeyActionId::Quit => AppAction::Quit,
         HotkeyActionId::ExitFullscreen => AppAction::ExitFullscreen,

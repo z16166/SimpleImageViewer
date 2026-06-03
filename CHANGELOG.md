@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.2] - 2026-06-03
+
+### Added
+- **F5 List Refresh**: Press F5 to refresh the folder's image list. The scan runs asynchronously in the background, keeping the user interface completely responsive. It retains your current viewing context—including active image, zoom/pan position, rotation, and playing GIF/APNG animations—so the screen never flickers or goes blank. If the current image was deleted from the disk, the viewer smoothly falls back to the first available image in the folder. Slideshow playback automatically pauses and resumes once the scan finishes.
+- **HDR Ripple Transition**: The **Ripple (Water)** transition effect now fully supports high-dynamic-range (HDR) displays. When browsing HDR photos or images with gain-map details, the expanding water ripple animation runs on the GPU's HDR float plane, preserving full highlight brightness and vivid colors during the transition.
+
+### Fixed
+- **Glitch-Free Transitions**: Fixed a masking bug in the Ripple transition where the expanding circle did not discard pixels of the old image correctly, ensuring smooth and glitch-free animations.
+- **Seamless Hotkey Upgrades**: Upgrading the application no longer triggers persistent red OSD warning messages due to newly introduced shortcuts (like the F5 refresh hotkey) missing from your old configuration file. The viewer now automatically populates and saves missing shortcuts with their default bindings on exit without flashing warnings.
+- **Background Resource Efficiency**: Optimized HDR fallback refinement to run on-demand only for the current active photo, significantly reducing CPU/GPU overhead during navigation. Background queues and in-flight channels clean up late-arriving tasks more reliably, preventing resource leaks.
+- **Dead i18n Strings**: Cleaned up obsolete warning messages in all supported language localization files to keep translation files tidy.
+
 ## [2.3.1] - 2026-06-02
 
 ### Fixed
