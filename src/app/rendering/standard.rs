@@ -197,27 +197,7 @@ impl ImageViewerApp {
                 (hdr_image.clone(), self.hdr_target_format)
             {
                 if self.active_transition == TransitionStyle::Ripple {
-                    // 1. Draw OLD image as full background.
-                    // NOTE: We render the old image using its cached SDR fallback texture.
-                    // This is an intentional design choice/trade-off: the WGPU rendering callback binds
-                    // only one active HDR image buffer at a time. Drawing both old and new images
-                    // in HDR simultaneously would require binding multiple HDR textures in a single frame,
-                    // which is currently not supported by the single-binding callback pipeline.
-                    // Using the SDR fallback for the background avoids this complexity while still
-                    // preventing brightness flash at the end of the transition, since the new image
-                    // is rendered in full HDR throughout the transition.
-                    if let Some(prev) = self.prev_texture.as_ref() {
-                        let p_size = prev.size_vec2();
-                        let p_dest = self.compute_display_rect(p_size, screen_rect);
-                        ui.painter().image(
-                            prev.id(),
-                            p_dest,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                    }
-
-                    // 2. Compute ripple state
+                    // 1. Compute ripple state
                     let elapsed = self
                         .transition_start
                         .map(|s| s.elapsed().as_secs_f32())
@@ -238,6 +218,29 @@ impl ImageViewerApp {
                         .map(|c| center.distance(*c))
                         .fold(0.0f32, f32::max);
                     let current_radius = max_radius * ease;
+
+                    // 2. Draw OLD image (clipped with a circular hole)
+                    // NOTE: We render the old image using its cached SDR fallback texture.
+                    // This is an intentional design choice/trade-off: the WGPU rendering callback binds
+                    // only one active HDR image buffer at a time. Drawing both old and new images
+                    // in HDR simultaneously would require binding multiple HDR textures in a single frame,
+                    // which is currently not supported by the single-binding callback pipeline.
+                    // Using the SDR fallback for the background avoids this complexity while still
+                    // preventing brightness flash at the end of the transition, since the new image
+                    // is rendered in full HDR throughout the transition.
+                    if let Some(prev) = self.prev_texture.as_ref() {
+                        let p_size = prev.size_vec2();
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        crate::app::rendering::transitions::draw_ripple_old_image(
+                            ui,
+                            prev,
+                            p_dest,
+                            center,
+                            current_radius,
+                            rotation,
+                            angle,
+                        );
+                    }
 
                     // 3. Draw NEW image in HDR with circular clip in shader
                     let ppp = ui.ctx().pixels_per_point();
