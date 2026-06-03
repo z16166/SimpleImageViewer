@@ -160,6 +160,12 @@ fn display_to_physical_pixel(
     }
 }
 
+// NOTE: The compose compute shader is run ONLY ONCE when the image is first loaded or when
+// target display capacity changes, rather than run every frame during transition.
+// Therefore, we must compose the ENTIRE primary image including pixels outside the ripple circle.
+// If we were to skip compose for pixels outside the ripple radius here, those pixels would remain
+// uncomposed/empty when the ripple radius expands in subsequent frames of the transition animation.
+// Discarding fragments outside the circle is instead handled efficiently in the fragment shader `fs_main`.
 @compute @workgroup_size(16, 16, 1)
 fn cs_compose_jpeg_gain(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= settings.physical_width || gid.y >= settings.physical_height {

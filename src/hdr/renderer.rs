@@ -195,6 +195,13 @@ struct ToneMapSettings {
     primary_width: u32,
     primary_height: u32,
     _apple_pad: u32,
+    ripple_center: vec2<f32>,
+    ripple_radius: f32,
+    ripple_enabled: u32,
+    pixels_per_point: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 struct VertexOutput {
@@ -534,6 +541,15 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    if (tone_map.ripple_enabled != 0u) {
+        let frag_logical = input.position.xy / tone_map.pixels_per_point;
+        let diff = frag_logical - tone_map.ripple_center;
+        let dist_sq = dot(diff, diff);
+        let radius_sq = tone_map.ripple_radius * tone_map.ripple_radius;
+        if (dist_sq > radius_sq) {
+            discard;
+        }
+    }
     let rotated_uv = rotate_uv_for_display(input.uv, tone_map.rotation_steps);
     let sampled_uv = tone_map.uv_min + rotated_uv * (tone_map.uv_max - tone_map.uv_min);
     let clamped_uv = clamp(sampled_uv, vec2<f32>(0.0), vec2<f32>(MAX_UV_CLAMP));
@@ -701,6 +717,7 @@ pub fn hdr_image_plane_callback(
         rotation_steps,
         alpha,
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        None,
     )
 }
 
@@ -713,6 +730,7 @@ pub fn hdr_image_plane_callback_with_uv(
     rotation_steps: u32,
     alpha: f32,
     uv_rect: egui::Rect,
+    ripple: Option<(egui::Pos2, f32, f32)>,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -724,6 +742,7 @@ pub fn hdr_image_plane_callback_with_uv(
             rotation_steps: rotation_steps % 4,
             alpha,
             uv_rect,
+            ripple,
         },
     ))
 }
@@ -783,6 +802,7 @@ struct HdrImagePlaneCallback {
     rotation_steps: u32,
     alpha: f32,
     uv_rect: egui::Rect,
+    ripple: Option<(egui::Pos2, f32, f32)>,
 }
 
 #[allow(dead_code)]
@@ -1019,6 +1039,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.uv_rect,
             native_display_scale,
             deferred_gpu_composed,
+            self.ripple,
         );
         queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -1411,12 +1432,19 @@ struct ToneMapUniform {
     primary_width: u32,
     primary_height: u32,
     _apple_pad: u32,
+    ripple_center: [f32; 2],
+    ripple_radius: f32,
+    ripple_enabled: u32,
+    pixels_per_point: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 unsafe impl bytemuck::Zeroable for ToneMapUniform {}
 unsafe impl bytemuck::Pod for ToneMapUniform {}
 
-const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 96);
+const _: () = assert!(std::mem::size_of::<ToneMapUniform>() == 128);
 
 impl ToneMapUniform {
     fn from_settings(
@@ -1431,6 +1459,7 @@ impl ToneMapUniform {
         uv_rect: egui::Rect,
         native_display_scale: f32,
         apple: Option<(&crate::hdr::types::AppleHeicGainMapGpuSource, u32, u32, f32)>,
+        ripple: Option<(egui::Pos2, f32, f32)>,
     ) -> Self {
         let manual_srgb = output_mode == HdrRenderOutputMode::SdrToneMapped
             && hdr_sdr_framebuffer_needs_manual_srgb_oetf(framebuffer_format);
@@ -1458,6 +1487,12 @@ impl ToneMapUniform {
         } else {
             (0, 0.0, 0.0, 0, 0, 0, 0)
         };
+        let (ripple_center, ripple_radius, ripple_enabled, pixels_per_point) =
+            if let Some((center, radius, ppp)) = ripple {
+                ([center.x, center.y], radius, 1u32, ppp)
+            } else {
+                ([0.0, 0.0], 0.0, 0u32, 1.0)
+            };
         Self {
             exposure_ev: settings.exposure_ev,
             sdr_white_nits: settings.sdr_white_nits,
@@ -1481,6 +1516,13 @@ impl ToneMapUniform {
             primary_width,
             primary_height,
             _apple_pad: 0,
+            ripple_center,
+            ripple_radius,
+            ripple_enabled,
+            pixels_per_point,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         }
     }
 }
@@ -1571,6 +1613,7 @@ fn tile_tone_map_uniform(
         uv_rect,
         native_display_scale,
         None,
+        None,
     )
 }
 
@@ -1584,6 +1627,7 @@ fn image_tone_map_uniform(
     uv_rect: egui::Rect,
     native_display_scale: f32,
     apple_gpu_composed: bool,
+    ripple: Option<(egui::Pos2, f32, f32)>,
 ) -> ToneMapUniform {
     if apple_gpu_composed {
         return ToneMapUniform::from_settings(
@@ -1598,6 +1642,7 @@ fn image_tone_map_uniform(
             uv_rect,
             native_display_scale,
             None,
+            ripple,
         );
     }
 
@@ -1613,6 +1658,7 @@ fn image_tone_map_uniform(
         uv_rect,
         native_display_scale,
         None,
+        ripple,
     )
 }
 
@@ -2017,6 +2063,7 @@ fn create_callback_resources(
             HdrReference::Unknown,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            None,
             None,
         )),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -3002,7 +3049,7 @@ mod tests {
 
     #[test]
     fn tone_map_uniform_byte_size_matches_wgpu_shader() {
-        assert_eq!(std::mem::size_of::<ToneMapUniform>(), 96);
+        assert_eq!(std::mem::size_of::<ToneMapUniform>(), 128);
     }
 
     #[test]
@@ -3095,6 +3142,7 @@ mod tests {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
             false,
+            None,
         );
         let tile_uniform = tile_tone_map_uniform(
             settings,
@@ -3337,6 +3385,7 @@ mod tests {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
             None,
+            None,
         );
 
         assert_eq!(uniform.rotation_steps, 1);
@@ -3392,6 +3441,7 @@ mod tests {
             HdrReference::DisplayReferred,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             1.0,
+            None,
             None,
         );
 

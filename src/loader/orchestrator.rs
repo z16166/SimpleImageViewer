@@ -20,10 +20,9 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::REFINEMENT_POOL;
 use crate::loader::{
-    DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
-    PreviewResult, RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
-    hdr_display_requests_sdr_preview, hdr_to_sdr_with_user_tone, hq_preview_max_side,
-    source_key_for_path,
+    DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
+    RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
+    hdr_display_requests_sdr_preview, hq_preview_max_side, source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -646,7 +645,7 @@ impl ImageLoader {
         );
     }
 
-    fn hdr_tone_map_settings_snapshot(&self) -> HdrToneMapSettings {
+    pub(crate) fn hdr_tone_map_settings_snapshot(&self) -> HdrToneMapSettings {
         HdrToneMapSettings {
             exposure_ev: f32::from_bits(
                 self.hdr_tone_exposure_ev_bits
@@ -1013,27 +1012,99 @@ impl ImageLoader {
                     });
                 }
                 (None, None) => {
-                    spawn_hdr_sdr_fallback_if_placeholder(
-                        &load_result,
-                        final_gen,
-                        &tx,
-                        &loading_ref,
-                        hdr_tone_map,
-                    );
                     let _ = tx.send(LoaderOutput::Image(load_result));
                     return;
                 }
             }
         }
 
-        spawn_hdr_sdr_fallback_if_placeholder(
-            &load_result,
-            final_gen,
-            &tx,
-            &loading_ref,
-            hdr_tone_map,
-        );
         let _ = tx.send(LoaderOutput::Image(load_result));
+    }
+
+    pub fn trigger_hdr_sdr_fallback_refinement(
+        &self,
+        index: usize,
+        generation: u64,
+        hdr: std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+        source_key: u64,
+    ) {
+        let tx = self.tx.clone();
+        let loading = std::sync::Arc::clone(&self.loading);
+        let tone = self.hdr_tone_map_settings_snapshot();
+
+        REFINEMENT_POOL.spawn(move || {
+            struct RefinementGuard {
+                tx: Sender<LoaderOutput>,
+                index: usize,
+                generation: u64,
+                source_key: u64,
+                sent: bool,
+            }
+            impl Drop for RefinementGuard {
+                fn drop(&mut self) {
+                    if !self.sent {
+                        let _ = self.tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
+                            index: self.index,
+                            generation: self.generation,
+                            source_key: self.source_key,
+                            fallback: None,
+                        }));
+                    }
+                }
+            }
+
+            let mut guard = RefinementGuard {
+                tx: tx.clone(),
+                index,
+                generation,
+                source_key,
+                sent: false,
+            };
+
+            if Self::hq_refinement_superseded(&loading, index, generation) {
+                return;
+            }
+            #[cfg(target_os = "windows")]
+            let _com = crate::wic::ComGuard::new();
+
+            let started_at = std::time::Instant::now();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::loader::hdr_fallback::hdr_to_sdr_with_user_tone(&hdr, &tone)
+            }));
+            match r {
+                Ok(Ok(pixels)) => {
+                    if Self::hq_refinement_superseded(&loading, index, generation) {
+                        log::info!(
+                            "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={generation}"
+                        );
+                        return;
+                    }
+                    log::debug!(
+                        "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={generation} elapsed={:?}",
+                        started_at.elapsed()
+                    );
+                    let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
+                    guard.sent = true;
+                    let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
+                        index,
+                        generation,
+                        source_key,
+                        fallback: Some(fallback),
+                    }));
+                }
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "[Loader] HDR SDR fallback refinement failed: index={index} generation={generation}: {e}"
+                    );
+                }
+                Err(payload) => {
+                    log::error!(
+                        "[Loader] HDR SDR fallback refinement panicked: index={index} generation={generation}: {:?}",
+                        payload
+                    );
+                }
+            }
+        });
     }
 
     pub fn request_tile(
@@ -1079,7 +1150,7 @@ impl ImageLoader {
                         || also_keep_preview
                             .is_some_and(|(idx, old_gen)| p.index == idx && p.generation == old_gen)
                 }
-                LoaderOutput::HdrSdrFallback(h) => h.generation == keep_generation,
+                LoaderOutput::HdrSdrFallback(_) => true,
                 LoaderOutput::Refined(_, g) => *g == keep_generation,
                 LoaderOutput::Tile(t) => t.generation == keep_generation,
             }
@@ -1171,69 +1242,6 @@ impl ImageLoader {
         self.tx.send(output).expect("test loader channel send");
     }
 }
-fn spawn_hdr_sdr_fallback_if_placeholder(
-    load_result: &LoadResult,
-    final_gen: u64,
-    tx: &Sender<LoaderOutput>,
-    loading: &Arc<Mutex<HashMap<usize, u64>>>,
-    tone: HdrToneMapSettings,
-) {
-    if !load_result.sdr_fallback_is_placeholder {
-        return;
-    }
-    let Ok(ImageData::Hdr { hdr, .. }) = &load_result.result else {
-        return;
-    };
-    let index = load_result.index;
-    let source_key = load_result.source_key;
-    let hdr = hdr.clone();
-    let tx = tx.clone();
-    let loading = Arc::clone(loading);
-    REFINEMENT_POOL.spawn(move || {
-        if ImageLoader::hq_refinement_superseded(&loading, index, final_gen) {
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        let _com = crate::wic::ComGuard::new();
-
-        let started_at = std::time::Instant::now();
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hdr_to_sdr_with_user_tone(&hdr, &tone)
-        }));
-        match r {
-            Ok(Ok(pixels)) => {
-                if ImageLoader::hq_refinement_superseded(&loading, index, final_gen) {
-                    log::info!(
-                        "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={final_gen}"
-                    );
-                    return;
-                }
-                log::debug!(
-                    "[Loader] HDR SDR fallback refined after placeholder: index={index} generation={final_gen} elapsed={:?}",
-                    started_at.elapsed()
-                );
-                let fallback = DecodedImage::new(hdr.width, hdr.height, pixels);
-                let _ = tx.send(LoaderOutput::HdrSdrFallback(HdrSdrFallbackResult {
-                    index,
-                    generation: final_gen,
-                    source_key,
-                    fallback,
-                }));
-            }
-            Ok(Err(e)) => {
-                log::warn!(
-                    "[Loader] HDR SDR fallback refinement failed: index={index} generation={final_gen}: {e}"
-                );
-            }
-            Err(payload) => {
-                log::error!(
-                    "[Loader] HDR SDR fallback refinement panicked: index={index} generation={final_gen}: {:?}",
-                    payload
-                );
-            }
-        }
-    });
-}
 
 #[cfg(test)]
 mod tests {
@@ -1258,5 +1266,74 @@ mod tests {
         // Older generation should be ignored.
         assert!(!should_spawn_load_task(&mut loading, 7, 1));
         assert_eq!(loading.get(&7), Some(&2));
+    }
+
+    #[test]
+    fn test_discard_pending_stale_outputs_preserves_hdr_fallback() {
+        use super::{HdrSdrFallbackResult, ImageLoader, LoaderOutput};
+        let mut loader = ImageLoader::new();
+
+        let fallback_result = HdrSdrFallbackResult {
+            index: 0,
+            generation: 1,
+            source_key: 12345,
+            fallback: None,
+        };
+        loader.test_send_loader_output(LoaderOutput::HdrSdrFallback(fallback_result));
+
+        // Call discard with a newer generation (2)
+        loader.discard_pending_stale_outputs(2, None);
+
+        // The fallback result should still be retrievable via poll()
+        let result = loader.poll();
+        assert!(result.is_some());
+        if let Some(LoaderOutput::HdrSdrFallback(r)) = result {
+            assert_eq!(r.generation, 1);
+            assert_eq!(r.source_key, 12345);
+            assert!(r.fallback.is_none());
+        } else {
+            panic!("Expected LoaderOutput::HdrSdrFallback");
+        }
+    }
+
+    #[test]
+    fn test_fallback_refinement_failure_clears_inflight() {
+        use super::{ImageLoader, LoaderOutput};
+        use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let mut loader = ImageLoader::new();
+
+        // Construct a malformed HDR buffer to force a failure (only 3 floats instead of 4)
+        let malformed_hdr = Arc::new(HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
+            rgba_f32: Arc::new(vec![0.0, 0.0, 0.0]),
+        });
+
+        loader.trigger_hdr_sdr_fallback_refinement(0, 1, malformed_hdr, 12345);
+
+        // Poll loader with a timeout until we get the fallback result
+        let start = Instant::now();
+        let mut fallback_received = None;
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(output) = loader.poll() {
+                if let LoaderOutput::HdrSdrFallback(r) = output {
+                    fallback_received = Some(r);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let r = fallback_received.expect("Should have received HdrSdrFallback on failure path");
+        assert_eq!(r.index, 0);
+        assert_eq!(r.generation, 1);
+        assert_eq!(r.source_key, 12345);
+        assert!(r.fallback.is_none());
     }
 }

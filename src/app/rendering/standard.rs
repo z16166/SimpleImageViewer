@@ -26,10 +26,6 @@ use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 use std::time::Instant;
 
-pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating: bool) -> bool {
-    !is_animating || !matches!(transition, TransitionStyle::Ripple)
-}
-
 /// Decide whether to render this static draw via the HDR float-image-plane shader.
 ///
 /// Returning `true` means the per-pixel float buffer is uploaded to a `Rgba16Float`
@@ -42,17 +38,13 @@ pub(crate) fn should_use_hdr_callback(transition: TransitionStyle, is_animating:
 /// [`PlaneBackendKind::Hdr`] so WGSL `encode_sdr` stays live (exposure / peak nits); SDR‑grade
 /// JXL that decodes as display‑referred should rely on transfer metadata so Reinhard is not
 /// misapplied.
-pub(crate) fn should_route_through_hdr_plane(
-    plan: &RenderPlan,
-    transition: TransitionStyle,
-    is_animating: bool,
-) -> bool {
-    plan.backend == PlaneBackendKind::Hdr && should_use_hdr_callback(transition, is_animating)
+pub(crate) fn should_route_through_hdr_plane(plan: &RenderPlan) -> bool {
+    plan.backend == PlaneBackendKind::Hdr
 }
 
 pub(crate) fn should_draw_static_hdr_immediately(
     plan: &RenderPlan,
-    transition: TransitionStyle,
+    _transition: TransitionStyle,
     is_animating: bool,
 ) -> bool {
     if plan.backend != PlaneBackendKind::Hdr {
@@ -63,10 +55,8 @@ pub(crate) fn should_draw_static_hdr_immediately(
         return true;
     }
 
-    // During animation, keep standard transitions (Fade/Zoom/Slide/Push/PageFlip/Curtain)
-    // on the transition path. Ripple is the only style that still requires immediate fallback
-    // because its circular mesh path is outside the rectangular HDR callback pipeline.
-    matches!(transition, TransitionStyle::Ripple)
+    // During animation, keep standard and complex transitions on their transition paths.
+    false
 }
 
 fn should_clear_transition_state_after_static_hdr_draw(
@@ -199,38 +189,109 @@ impl ImageViewerApp {
         if tp.is_animating
             && matches!(
                 self.active_transition,
-                TransitionStyle::PageFlip | TransitionStyle::Curtain
+                TransitionStyle::PageFlip | TransitionStyle::Curtain | TransitionStyle::Ripple
             )
             && render_plan.backend == PlaneBackendKind::Hdr
         {
             if let (Some(hdr_image), Some(target_format)) =
                 (hdr_image.clone(), self.hdr_target_format)
             {
-                self.draw_rectangular_hdr_transition(
-                    ui,
-                    screen_rect,
-                    hdr_image_plane_rect(&final_layout),
-                    unrotated_final_dest,
-                    rotation,
-                    angle,
-                    hdr_image,
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    render_plan.output_mode,
-                    tp.alpha,
-                );
-                ui.ctx().request_repaint();
-                return;
+                if self.active_transition == TransitionStyle::Ripple {
+                    // 1. Compute ripple state
+                    let elapsed = self
+                        .transition_start
+                        .map(|s| s.elapsed().as_secs_f32())
+                        .unwrap_or(0.0);
+                    let duration = self.settings.transition_ms as f32 / 1000.0;
+                    let t = (elapsed / duration).clamp(0.0, 1.0);
+                    let ease = 3.0 * t * t - 2.0 * t * t * t; // smoothstep
+
+                    let center = final_dest.center();
+                    let corners = [
+                        screen_rect.left_top(),
+                        screen_rect.right_top(),
+                        screen_rect.left_bottom(),
+                        screen_rect.right_bottom(),
+                    ];
+                    let max_radius = corners
+                        .iter()
+                        .map(|c| center.distance(*c))
+                        .fold(0.0f32, f32::max);
+                    let current_radius = max_radius * ease;
+
+                    // 2. Draw OLD image (clipped with a circular hole)
+                    // NOTE: We render the old image using its cached SDR fallback texture.
+                    // This is an intentional design choice/trade-off: the WGPU rendering callback binds
+                    // only one active HDR image buffer at a time. Drawing both old and new images
+                    // in HDR simultaneously would require binding multiple HDR textures in a single frame,
+                    // which is currently not supported by the single-binding callback pipeline.
+                    // Using the SDR fallback for the background avoids this complexity while still
+                    // preventing brightness flash at the end of the transition, since the new image
+                    // is rendered in full HDR throughout the transition.
+                    if let Some(prev) = self.prev_texture.as_ref() {
+                        let p_size = prev.size_vec2();
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        crate::app::rendering::transitions::draw_ripple_old_image(
+                            ui,
+                            prev,
+                            p_dest,
+                            center,
+                            current_radius,
+                            rotation,
+                            angle,
+                        );
+                    }
+
+                    // 3. Draw NEW image in HDR with circular clip in shader
+                    let ppp = ui.ctx().pixels_per_point();
+                    self.draw_hdr_image_plane_clipped(
+                        ui,
+                        screen_rect,
+                        hdr_image_plane_rect(&final_layout),
+                        hdr_image,
+                        self.hdr_renderer.tone_map,
+                        target_format,
+                        render_plan.output_mode,
+                        rotation,
+                        tp.alpha,
+                        Some((center, current_radius, ppp)),
+                    );
+
+                    // 4. Water ripple rings at the expanding edge
+                    crate::app::rendering::transitions::draw_ripple_rings(
+                        ui,
+                        center,
+                        current_radius,
+                    );
+                    ui.ctx().request_repaint();
+                    return;
+                } else {
+                    self.draw_rectangular_hdr_transition(
+                        ui,
+                        screen_rect,
+                        hdr_image_plane_rect(&final_layout),
+                        unrotated_final_dest,
+                        rotation,
+                        angle,
+                        hdr_image,
+                        self.hdr_renderer.tone_map,
+                        target_format,
+                        render_plan.output_mode,
+                        tp.alpha,
+                    );
+                    ui.ctx().request_repaint();
+                    return;
+                }
             }
         }
 
         // Static HDR images draw through egui-wgpu so the float buffer reaches the shader.
-        // Ripple remains on the SDR texture path because its circular mesh cannot be expressed
-        // by the current rectangular HDR image-plane callback.
+        // Ripple transitions route the new image through the HDR plane path, while the background
+        // old image remains on the SDR texture path due to GPU texture binding limits.
         // The plan's backend must be `Hdr`; otherwise (e.g. monitor probed as SDR-only, or
         // probe failed and the conservative gate kicked in) the cached SDR fallback texture
         // is the correct visual source — see `should_route_through_hdr_plane`.
-        if should_route_through_hdr_plane(&render_plan, self.active_transition, tp.is_animating) {
+        if should_route_through_hdr_plane(&render_plan) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 if tp.is_animating {
                     if let Some(prev) = &self.prev_texture.clone() {
@@ -262,6 +323,7 @@ impl ImageViewerApp {
                     render_plan.output_mode,
                     rotation,
                     tp.alpha,
+                    None,
                 );
                 return;
             }
@@ -378,6 +440,7 @@ impl ImageViewerApp {
         hdr_output_mode: HdrRenderOutputMode,
         rotation: i32,
         alpha: f32,
+        ripple: Option<(egui::Pos2, f32, f32)>,
     ) {
         let layout = PlaneLayout::from_dest(Vec2::new(rect.width(), rect.height()), rotation, rect);
         draw_plane(
@@ -393,6 +456,7 @@ impl ImageViewerApp {
                 output_mode: hdr_output_mode,
                 rotation_steps: rotation as u32,
                 alpha,
+                ripple,
             },
         );
     }
@@ -447,6 +511,7 @@ impl ImageViewerApp {
                 hdr_output_mode,
                 rotation,
                 alpha,
+                None,
             );
 
             let mut old_clip = union_rect;
@@ -537,6 +602,7 @@ impl ImageViewerApp {
                 hdr_output_mode,
                 0,
                 alpha,
+                None,
             );
 
             let left_clip = Rect::from_min_max(
@@ -617,34 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn hdr_callback_is_disabled_during_complex_transitions() {
-        for style in [TransitionStyle::Ripple] {
-            assert!(!should_use_hdr_callback(style, true));
-            assert!(should_use_hdr_callback(style, false));
-        }
-    }
-
-    #[test]
-    fn rectangular_complex_transitions_can_reveal_static_hdr_directly() {
-        for style in [TransitionStyle::PageFlip, TransitionStyle::Curtain] {
-            assert!(should_use_hdr_callback(style, true));
-        }
-    }
-
-    #[test]
-    fn hdr_callback_can_render_standard_transitions() {
-        for style in [
-            TransitionStyle::Fade,
-            TransitionStyle::ZoomFade,
-            TransitionStyle::Slide,
-            TransitionStyle::Push,
-            TransitionStyle::None,
-        ] {
-            assert!(should_use_hdr_callback(style, true));
-        }
-    }
-
-    #[test]
     fn hdr_plane_routing_uses_shader_for_sdr_tone_mapped_when_float_plane_exists() {
         // When [`HdrRenderOutputMode::SdrToneMapped`] (SDR framebuffer or conservative probe),
         // the HDR float buffer must still flow through WGSL tone-map (`PlaneBackendKind::Hdr`)
@@ -656,7 +694,7 @@ mod tests {
         );
         assert_eq!(tone_mapped_plan.backend, PlaneBackendKind::Hdr);
         assert!(
-            should_route_through_hdr_plane(&tone_mapped_plan, TransitionStyle::None, false),
+            should_route_through_hdr_plane(&tone_mapped_plan),
             "`SdrToneMapped` must not mask the HDR plane shader when HDR float data exists"
         );
 
@@ -667,28 +705,20 @@ mod tests {
         );
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert!(
-            should_route_through_hdr_plane(&hdr_plan, TransitionStyle::None, false),
+            should_route_through_hdr_plane(&hdr_plan),
             "Hdr backend must continue to stream the float buffer through the plane shader"
         );
     }
 
     #[test]
-    fn hdr_plane_routing_still_skips_ripple_animation_on_hdr_backend() {
+    fn hdr_plane_routing_uses_shader_for_ripple_animation_on_hdr_backend() {
         let hdr_plan = static_plan(
             true,
             Some(wgpu::TextureFormat::Rgba16Float),
             HdrRenderOutputMode::NativeHdr,
         );
-        assert!(!should_route_through_hdr_plane(
-            &hdr_plan,
-            TransitionStyle::Ripple,
-            true
-        ));
-        assert!(should_route_through_hdr_plane(
-            &hdr_plan,
-            TransitionStyle::Ripple,
-            false
-        ));
+        assert!(should_route_through_hdr_plane(&hdr_plan));
+        assert!(should_route_through_hdr_plane(&hdr_plan));
     }
 
     #[test]
@@ -756,7 +786,7 @@ mod tests {
             TransitionStyle::Push,
             true
         ));
-        assert!(should_draw_static_hdr_immediately(
+        assert!(!should_draw_static_hdr_immediately(
             &static_plan(
                 true,
                 Some(wgpu::TextureFormat::Rgba16Float),
