@@ -44,9 +44,6 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
             });
 
         let source = incoming.get(&action_id).unwrap_or(&fallback);
-        if incoming.get(&action_id).is_none() {
-            warnings.push(HotkeyWarning::MissingAction { action_id });
-        }
 
         let mut normalized_entry = HotkeyBindingEntry {
             action_id: action_id_to_str(action_id).to_string(),

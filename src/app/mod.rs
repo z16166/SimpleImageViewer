@@ -664,11 +664,6 @@ pub(crate) fn build_hotkeys_issue_message(
 pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWarning) -> String {
     use crate::hotkeys::model::{HotkeyWarning, action_id_to_str};
     match warning {
-        HotkeyWarning::MissingAction { action_id } => t!(
-            "hotkeys.warning.missing_action",
-            action = action_id_to_str(*action_id)
-        )
-        .to_string(),
         HotkeyWarning::InvalidKey { action_id, key } => t!(
             "hotkeys.warning.invalid_key",
             key = key.as_str(),

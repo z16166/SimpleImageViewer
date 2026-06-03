@@ -306,9 +306,6 @@ pub struct HotkeyConflict {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyWarning {
-    MissingAction {
-        action_id: HotkeyActionId,
-    },
     InvalidKey {
         action_id: HotkeyActionId,
         key: String,
