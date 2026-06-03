@@ -514,6 +514,7 @@ pub struct ImageViewerApp {
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
+    pub(crate) prev_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) transition_start: Option<Instant>,
     pub(crate) pending_transition_target: Option<usize>,
     pub(crate) is_next: bool,

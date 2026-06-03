@@ -404,24 +404,22 @@ fn compose_tile_uniform(
 pub(super) fn encode_compose_compute_pass(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    resources: &HdrCallbackResources,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    pipeline: &wgpu::ComputePipeline,
     image: &HdrImageBuffer,
     deferred: &IsoGainMapGpuSource,
     tone_map: &HdrToneMapSettings,
     sdr_view: &wgpu::TextureView,
     gain_view: &wgpu::TextureView,
     display_storage_view: &wgpu::TextureView,
+    uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
     let uniform = compose_uniform(deferred, image, tone_map.target_hdr_capacity());
-    queue.write_buffer(
-        &resources.jpeg_compose_uniform_buffer,
-        0,
-        bytemuck::bytes_of(&uniform),
-    );
+    queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-bind-group"),
-        layout: &resources.jpeg_compose_bind_group_layout,
+        layout: bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -433,7 +431,7 @@ pub(super) fn encode_compose_compute_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: resources.jpeg_compose_uniform_buffer.as_entire_binding(),
+                resource: uniform_buffer.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
@@ -450,7 +448,7 @@ pub(super) fn encode_compose_compute_pass(
             label: Some("simple-image-viewer-hdr-jpeg-compose-pass"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&resources.jpeg_compose_pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(
             image.width.div_ceil(COMPOSE_WORKGROUP_SIZE),

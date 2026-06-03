@@ -123,6 +123,7 @@ impl ImageViewerApp {
             self.clear_hdr_image_state();
             self.animation_cache.clear();
             self.prev_texture = None;
+            self.prev_hdr_image = None;
 
             // Successfully unlinked from UI, now delete in background
             let tx = self.file_op_tx.clone();
@@ -163,6 +164,7 @@ impl ImageViewerApp {
             self.animation = None;
             self.current_hdr_image = None;
             self.prev_texture = None;
+            self.prev_hdr_image = None;
             self.transition_start = None;
             // Close any open EXIF/XMP modal since the image is gone
             self.active_modal = None;
@@ -175,6 +177,7 @@ impl ImageViewerApp {
             // Reset state for new image
             self.animation = None;
             self.prev_texture = None;
+            self.prev_hdr_image = None;
             self.transition_start = None;
             self.current_rotation = 0;
             self.zoom_factor = 1.0;

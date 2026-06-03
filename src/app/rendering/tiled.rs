@@ -19,6 +19,7 @@ use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
+use crate::app::rendering::transitions::TransitionParams;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::tiled::HdrTiledSource;
 use crate::loader::{TileDecodeSource, TilePixelKind};
@@ -57,6 +58,46 @@ fn should_draw_tiled_preview_transition_for_backend(
 ) -> bool {
     plane_backend == PlaneBackendKind::Sdr
         && should_draw_tiled_preview_transition(transition, is_animating, has_preview_texture)
+}
+
+/// Returns `(tile_alpha, prev_alpha)` for the HDR tiled rendering path.
+///
+/// For transition styles whose geometric effect is incompatible with per-tile wgpu
+/// callbacks (Slide, Push, PageFlip, Ripple, Curtain), degrades to a crossfade so
+/// the old image fades out and the new one fades in instead of hard-cutting.
+///
+/// `TransitionParams::alpha` / `prev_alpha` for these styles are their defaults
+/// (1.0 / 0.0) because their custom rendering path never sets them — they cannot
+/// be used directly in the tiled path.
+fn effective_hdr_tiled_alphas(tp: &TransitionParams, style: TransitionStyle) -> (f32, f32) {
+    if !tp.is_animating {
+        return (1.0, 0.0);
+    }
+    match style {
+        TransitionStyle::Fade | TransitionStyle::ZoomFade => {
+            // Standard alpha params already encode a correct crossfade.
+            (tp.alpha, tp.prev_alpha)
+        }
+        _ => {
+            // Slide / Push (position-based), PageFlip / Ripple / Curtain (geometry-based):
+            // tp.alpha / prev_alpha are at their defaults (1.0 / 0.0) for these styles.
+            // Degrade to a crossfade driven by the raw normalised time `tp.t`.
+            let ease_out = 1.0 - (1.0 - tp.t).powi(3);
+            (ease_out, 1.0 - tp.t)
+        }
+    }
+}
+
+fn prev_transition_params_for_tiled_draw(
+    tp: TransitionParams,
+    prev_alpha_eff: f32,
+) -> TransitionParams {
+    TransitionParams {
+        prev_alpha: prev_alpha_eff,
+        prev_offset: Vec2::ZERO,
+        prev_scale: 1.0,
+        ..tp
+    }
 }
 
 fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
@@ -442,6 +483,7 @@ fn draw_hdr_plane_tile_visit(
     loader: &mut crate::loader::ImageLoader,
     current_index: usize,
     tone_map: crate::hdr::types::HdrToneMapSettings,
+    alpha: f32,
     #[cfg_attr(not(feature = "tile-debug"), allow(unused_variables))] show_tile_debug_osd: bool,
 ) {
     let Some(hdr_source) = hdr_source_for_frame else {
@@ -487,7 +529,7 @@ fn draw_hdr_plane_tile_visit(
                 .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
             output_mode: render_plan.output_mode,
             rotation_steps: rotation_steps as u32,
-            alpha: 1.0,
+            alpha,
         },
     );
 
@@ -607,6 +649,27 @@ impl ImageViewerApp {
             }
         }
 
+        let (tile_alpha, prev_alpha_eff) = effective_hdr_tiled_alphas(&tp, self.active_transition);
+
+        if tp.is_animating {
+            ui.ctx().request_repaint();
+        }
+
+        // Draw the previous image underneath for crossfade effect if we are animating
+        // and have a valid previous alpha.
+        if tp.is_animating && prev_alpha_eff > 0.0 && plane_backend == PlaneBackendKind::Hdr {
+            let prev_tp = prev_transition_params_for_tiled_draw(tp, prev_alpha_eff);
+            self.draw_prev_image_underneath(
+                ui,
+                screen_rect,
+                &prev_tp,
+                rotation,
+                render_plan.target_format,
+                Some(render_plan.output_mode),
+                Some(hdr_image_plane_rect(&layout)),
+            );
+        }
+
         // Render high-res tiles.
         // We use a dynamic threshold: Never trigger tiling in "Fit to Window" mode (regardless of image size).
         // For giant images, we also only trigger tiling when the effective scale exceeds
@@ -654,7 +717,7 @@ impl ImageViewerApp {
                             .unwrap_or(wgpu::TextureFormat::Bgra8Unorm),
                         output_mode: render_plan.output_mode,
                         rotation_steps: rotation as u32,
-                        alpha: 1.0,
+                        alpha: tile_alpha,
                         ripple: None,
                     },
                 );
@@ -837,6 +900,7 @@ impl ImageViewerApp {
                             loader,
                             current_index,
                             tone_map,
+                            tile_alpha,
                             self.settings.show_osd,
                         );
                         continue;
@@ -960,16 +1024,17 @@ impl ImageViewerApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        TileRequestBudget, TiledPlaneKind, has_pending_visible_tiles_for_backend,
-        is_tiled_plane_active, rotated_axis_aligned_rect, should_draw_tiled_preview_for_backend,
-        should_draw_tiled_preview_transition_for_backend, should_draw_tiled_tile_plane_for_backend,
-        should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
-        should_schedule_tile_request, tile_decode_source_for_backend,
-        tile_kind_uses_shared_schedule_policy, tile_pending_key_for_backend,
-        tile_pixel_kind_for_backend, tile_plane_kind_for_backend, tile_plane_rect_for_tile,
-        tile_request_frame_schedule_cap, tile_request_hard_pending_cap, tile_request_pending_cap,
-        tile_request_priority, tile_visits_for_backend, tiled_plane_threshold,
-        tiled_plane_threshold_for_backend,
+        TileRequestBudget, TiledPlaneKind, effective_hdr_tiled_alphas,
+        has_pending_visible_tiles_for_backend, is_tiled_plane_active,
+        prev_transition_params_for_tiled_draw, rotated_axis_aligned_rect,
+        should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
+        should_draw_tiled_tile_plane_for_backend, should_invalidate_tile_requests_on_pan_drag,
+        should_repaint_for_ready_tiles_for_backend, should_schedule_tile_request,
+        tile_decode_source_for_backend, tile_kind_uses_shared_schedule_policy,
+        tile_pending_key_for_backend, tile_pixel_kind_for_backend, tile_plane_kind_for_backend,
+        tile_plane_rect_for_tile, tile_request_frame_schedule_cap, tile_request_hard_pending_cap,
+        tile_request_pending_cap, tile_request_priority, tile_visits_for_backend,
+        tiled_plane_threshold, tiled_plane_threshold_for_backend,
     };
     use crate::app::TransitionStyle;
     use crate::app::rendering::plane::{PlaneBackendKind, clipped_plane_rect_and_uv};
@@ -1011,6 +1076,94 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn test_effective_hdr_tiled_alphas() {
+        use crate::app::rendering::transitions::TransitionParams;
+
+        // Case 1: not animating -> default full opacity for new, invisible for prev
+        let tp = TransitionParams {
+            is_animating: false,
+            alpha: 0.5,
+            prev_alpha: 0.8,
+            t: 0.3,
+            ..Default::default()
+        };
+        let (tile_alpha, prev_alpha) = effective_hdr_tiled_alphas(&tp, TransitionStyle::Fade);
+        assert_eq!(tile_alpha, 1.0);
+        assert_eq!(prev_alpha, 0.0);
+
+        // Case 2: animating, Fade -> uses standard alpha params
+        let tp = TransitionParams {
+            is_animating: true,
+            alpha: 0.5,
+            prev_alpha: 0.8,
+            t: 0.3,
+            ..Default::default()
+        };
+        let (tile_alpha, prev_alpha) = effective_hdr_tiled_alphas(&tp, TransitionStyle::Fade);
+        assert_eq!(tile_alpha, 0.5);
+        assert_eq!(prev_alpha, 0.8);
+
+        // Case 3: animating, Curtain (geometric / position transition style) -> degraded to crossfade driven by t
+        let tp = TransitionParams {
+            is_animating: true,
+            alpha: 1.0,      // default for curtain
+            prev_alpha: 0.0, // default for curtain
+            t: 0.4,
+            ..Default::default()
+        };
+        let (tile_alpha, prev_alpha) = effective_hdr_tiled_alphas(&tp, TransitionStyle::Curtain);
+        // ease_out = 1.0 - (1.0 - 0.4)^3 = 1.0 - 0.216 = 0.784
+        assert!((tile_alpha - 0.784).abs() < 1e-5);
+        assert!((prev_alpha - 0.6).abs() < 1e-5);
+
+        // Case 4: animating, Push (position transition style) -> degraded to crossfade driven by t
+        let tp = TransitionParams {
+            is_animating: true,
+            alpha: 1.0,
+            prev_alpha: 0.0,
+            t: 0.25,
+            ..Default::default()
+        };
+        let (tile_alpha, prev_alpha) = effective_hdr_tiled_alphas(&tp, TransitionStyle::Push);
+        // ease_out = 1.0 - (1.0 - 0.25)^3 = 1.0 - 0.421875 = 0.578125
+        assert!((tile_alpha - 0.578125).abs() < 1e-5);
+        assert!((prev_alpha - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_prev_transition_params_for_tiled_draw() {
+        use crate::app::rendering::transitions::TransitionParams;
+        use eframe::egui::Vec2;
+
+        let tp = TransitionParams {
+            alpha: 0.5,
+            scale: 2.0,
+            offset: Vec2::new(10.0, 20.0),
+            prev_alpha: 0.1,
+            prev_scale: 0.8,
+            prev_offset: Vec2::new(5.0, 5.0),
+            is_animating: true,
+            t: 0.3,
+        };
+
+        let prev_tp = prev_transition_params_for_tiled_draw(tp, 0.7);
+
+        // Verification:
+        // 1. prev_alpha MUST capture the provided value (0.7)
+        assert_eq!(prev_tp.prev_alpha, 0.7);
+        // 2. prev_offset MUST be reset to Vec2::ZERO (essential to prevent moving background)
+        assert_eq!(prev_tp.prev_offset, Vec2::ZERO);
+        // 3. prev_scale MUST be reset to 1.0
+        assert_eq!(prev_tp.prev_scale, 1.0);
+        // 4. Other fields MUST be preserved from original tp
+        assert_eq!(prev_tp.alpha, 0.5);
+        assert_eq!(prev_tp.scale, 2.0);
+        assert_eq!(prev_tp.offset, Vec2::new(10.0, 20.0));
+        assert_eq!(prev_tp.is_animating, true);
+        assert_eq!(prev_tp.t, 0.3);
     }
 
     #[test]

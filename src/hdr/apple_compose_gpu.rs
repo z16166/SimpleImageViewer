@@ -16,7 +16,7 @@
 
 //! GPU compute path for deferred Apple HEIC gain-map composition.
 
-use super::{HdrCallbackResources, HdrRenderOutputMode, ToneMapUniform};
+use super::{HdrImageBinding, HdrRenderOutputMode, ToneMapUniform};
 use crate::hdr::heif_apple_gain_map_gpu::apple_heic_compose_effective_color_space;
 use crate::hdr::types::{AppleHeicGainMapGpuSource, HdrImageBuffer, HdrToneMapSettings};
 use eframe::egui;
@@ -358,23 +358,23 @@ pub(super) fn create_compose_compute_resources(
 
 pub(super) fn ensure_encoded_primary_buffer(
     device: &wgpu::Device,
-    resources: &mut HdrCallbackResources,
+    binding: &mut HdrImageBinding,
     width: u32,
     max_binding_size: u64,
 ) -> Result<(), String> {
     let chunk_rows = chunk_row_count(width, max_binding_size);
     let byte_len = chunk_byte_len(width, chunk_rows);
-    let needs_new = resources.encoded_primary_buffer_bytes != byte_len as usize;
+    let needs_new = binding.encoded_primary_buffer_bytes != byte_len as usize;
     if needs_new {
-        resources.encoded_primary_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+        binding.encoded_primary_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("simple-image-viewer-hdr-apple-encoded-primary-buffer"),
             size: byte_len,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
-        resources.encoded_primary_buffer_bytes = byte_len as usize;
+        binding.encoded_primary_buffer_bytes = byte_len as usize;
     }
-    if resources.encoded_primary_buffer.is_some() {
+    if binding.encoded_primary_buffer.is_some() {
         Ok(())
     } else {
         Err("Apple encoded primary buffer missing".to_string())
@@ -415,7 +415,8 @@ fn compose_tone_map_uniform(
 pub(super) fn encode_compose_compute_pass(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    resources: &HdrCallbackResources,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    pipeline: &wgpu::ComputePipeline,
     image: &HdrImageBuffer,
     deferred: &AppleHeicGainMapGpuSource,
     tone_map: &HdrToneMapSettings,
@@ -423,6 +424,7 @@ pub(super) fn encode_compose_compute_pass(
     gain_view: &wgpu::TextureView,
     display_storage_view: &wgpu::TextureView,
     upload_primary: bool,
+    compose_tone_map_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
     let max_binding = device.limits().max_storage_buffer_binding_size;
     let chunk_rows = chunk_row_count(image.width, max_binding).min(image.height);
@@ -436,7 +438,7 @@ pub(super) fn encode_compose_compute_pass(
             label: Some("simple-image-viewer-hdr-apple-compose-pass"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&resources.compose_pipeline);
+        pass.set_pipeline(pipeline);
 
         let mut row_start = 0_u32;
         while row_start < image.height {
@@ -456,7 +458,7 @@ pub(super) fn encode_compose_compute_pass(
 
             let compose_uniform = compose_tone_map_uniform(image, *tone_map, deferred, row_start);
             queue.write_buffer(
-                &resources.compose_tone_map_buffer,
+                compose_tone_map_buffer,
                 0,
                 bytemuck::bytes_of(&compose_uniform),
             );
@@ -466,7 +468,7 @@ pub(super) fn encode_compose_compute_pass(
 
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("simple-image-viewer-hdr-apple-compose-bind-group"),
-                layout: &resources.compose_bind_group_layout,
+                layout: bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -482,7 +484,7 @@ pub(super) fn encode_compose_compute_pass(
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: resources.compose_tone_map_buffer.as_entire_binding(),
+                        resource: compose_tone_map_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
