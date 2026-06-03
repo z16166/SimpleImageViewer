@@ -284,6 +284,7 @@ impl ImageViewerApp {
             } else {
                 self.transition_start = None;
                 self.prev_texture = None;
+                self.prev_hdr_image = None;
             }
         }
         p

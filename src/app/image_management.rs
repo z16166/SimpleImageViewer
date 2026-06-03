@@ -232,18 +232,40 @@ fn output_mode_crosses_hdr_sdr_boundary(
     output_mode_is_hdr(previous) != output_mode_is_hdr(next)
 }
 
+fn select_transition_source<T: Clone>(
+    current: Option<T>,
+    current_has_placeholder_fallback: bool,
+    previous: Option<T>,
+) -> Option<T> {
+    if !current_has_placeholder_fallback && current.is_some() {
+        current
+    } else {
+        previous
+    }
+}
+
 fn select_transition_source_texture(
     current_source_texture: Option<egui::TextureHandle>,
     current_has_placeholder_fallback: bool,
     previous_transition_source: Option<egui::TextureHandle>,
 ) -> Option<egui::TextureHandle> {
-    if !current_has_placeholder_fallback && current_source_texture.is_some() {
-        current_source_texture
-    } else {
-        // Keep the previous non-placeholder source when the current frame is only a
-        // temporary black fallback; this avoids black flashes on rapid direction changes.
-        previous_transition_source
-    }
+    select_transition_source(
+        current_source_texture,
+        current_has_placeholder_fallback,
+        previous_transition_source,
+    )
+}
+
+fn select_transition_source_hdr(
+    current_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    current_has_placeholder_fallback: bool,
+    previous_transition_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+) -> Option<Arc<crate::hdr::types::HdrImageBuffer>> {
+    select_transition_source(
+        current_hdr_image,
+        current_has_placeholder_fallback,
+        previous_transition_hdr_image,
+    )
 }
 
 fn invalidate_tile_manager_requests_for_view_change(
@@ -436,6 +458,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.current_image_res = None;
         self.prev_texture = None;
+        self.prev_hdr_image = None;
         self.transition_start = None;
         self.prefetch_prev_generation = None;
         crate::tile_cache::PIXEL_CACHE.lock().clear();
@@ -602,6 +625,7 @@ impl ImageViewerApp {
         }
 
         self.prev_texture = None;
+        self.prev_hdr_image = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;
@@ -901,6 +925,7 @@ impl ImageViewerApp {
         self.animation = None;
         self.pending_anim_frames = None;
         self.prev_texture = None;
+        self.prev_hdr_image = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;
@@ -964,6 +989,7 @@ impl ImageViewerApp {
         self.animation_cache.clear();
         self.animation = None;
         self.prev_texture = None;
+        self.prev_hdr_image = None;
         self.transition_start = None;
         self.tile_manager = None;
         self.prefetched_tiles.clear();
@@ -1125,6 +1151,7 @@ impl ImageViewerApp {
 
         // Clear transition/pending state that references old indices.
         self.prev_texture = None;
+        self.prev_hdr_image = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;
@@ -1245,6 +1272,7 @@ impl ImageViewerApp {
             }
 
             let source_tex = self.texture_cache.get(self.current_index).cloned();
+            let source_hdr = self.first_cached_hdr_still_for_index(self.current_index);
             // Always overwrite transition source. If current index has no texture
             // (e.g. decode failed and only error text is shown), keeping an older
             // prev_texture can make unrelated stale pixels flash during next navigation.
@@ -1254,11 +1282,17 @@ impl ImageViewerApp {
                     .contains(&self.current_index),
                 self.prev_texture.clone(),
             );
+            self.prev_hdr_image = select_transition_source_hdr(
+                source_hdr,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_hdr_image.clone(),
+            );
             // Handle wrap-around logic for direction
             self.is_next = target_index > self.current_index
                 || (target_index == 0 && self.current_index == self.image_files.len() - 1);
             self.transition_start = None;
-            let source_has_texture = self.prev_texture.is_some();
+            let source_has_texture = self.prev_texture.is_some() || self.prev_hdr_image.is_some();
             let target_has_texture = self.texture_cache.contains(target_index);
             let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
                 || self.hdr_tiled_source_cache.contains_key(&target_index);
@@ -1280,15 +1314,19 @@ impl ImageViewerApp {
                 self.pending_transition_target = Some(target_index);
             }
 
-            if should_reset_transition_when_source_texture_missing(self.prev_texture.is_some()) {
+            if should_reset_transition_when_source_texture_missing(
+                self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+            ) {
                 // No texture available for the source frame: avoid reusing stale
                 // transition state from previous navigation.
                 self.prev_texture = None;
+                self.prev_hdr_image = None;
                 self.pending_transition_target = None;
             }
         } else {
             let source_tex = self.texture_cache.get(self.current_index).cloned();
-            let source_has_texture = source_tex.is_some();
+            let source_hdr = self.first_cached_hdr_still_for_index(self.current_index);
+            let source_has_texture = source_tex.is_some() || source_hdr.is_some();
             let target_has_texture = self.texture_cache.contains(target_index);
             let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
                 || self.hdr_tiled_source_cache.contains_key(&target_index);
@@ -1303,6 +1341,12 @@ impl ImageViewerApp {
                     .contains(&self.current_index),
                 self.prev_texture.clone(),
             );
+            self.prev_hdr_image = select_transition_source_hdr(
+                source_hdr,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_hdr_image.clone(),
+            );
             self.pending_transition_target = if !target_is_render_ready(
                 target_has_texture,
                 target_has_hdr_plane,
@@ -1313,8 +1357,11 @@ impl ImageViewerApp {
             } else {
                 None
             };
-            if should_reset_transition_when_source_texture_missing(self.prev_texture.is_some()) {
+            if should_reset_transition_when_source_texture_missing(
+                self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+            ) {
                 self.prev_texture = None;
+                self.prev_hdr_image = None;
                 self.pending_transition_target = None;
             }
         }
@@ -2166,6 +2213,7 @@ impl ImageViewerApp {
                 // waiting for the target texture. Once current texture is ready, release it
                 // immediately instead of keeping an extra stale handle until next navigation.
                 self.prev_texture = None;
+                self.prev_hdr_image = None;
             }
             self.pending_transition_target = None;
         }
@@ -3395,6 +3443,52 @@ mod tests {
     fn transition_source_selection_reuses_previous_when_current_unusable() {
         assert!(select_transition_source_texture(None, false, None).is_none());
         assert!(select_transition_source_texture(None, true, None).is_none());
+    }
+
+    #[test]
+    fn transition_source_hdr_selection_clears_when_current_missing() {
+        assert!(select_transition_source_hdr(None, false, None).is_none());
+    }
+
+    #[test]
+    fn transition_source_hdr_skips_placeholder_fallback_frames() {
+        assert!(select_transition_source_hdr(None, true, None).is_none());
+    }
+
+    #[test]
+    fn transition_source_hdr_selection_reuses_previous_when_current_unusable() {
+        let dummy_hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
+            rgba_f32: Arc::new(vec![0.0; 4]),
+        });
+
+        let res = select_transition_source_hdr(None, true, Some(Arc::clone(&dummy_hdr)));
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().width, 1);
+    }
+
+    #[test]
+    fn transition_source_hdr_happy_path_returns_current() {
+        let dummy_hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                crate::hdr::types::HdrColorSpace::LinearSrgb,
+            ),
+            rgba_f32: Arc::new(vec![0.0; 4]),
+        });
+
+        let res = select_transition_source_hdr(Some(Arc::clone(&dummy_hdr)), false, None);
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().width, 1);
     }
 
     #[test]

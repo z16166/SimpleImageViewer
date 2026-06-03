@@ -24,7 +24,7 @@ pub const DEFAULT_SDR_WHITE_NITS: f32 = 203.0;
 pub const DEFAULT_MAX_DISPLAY_NITS: f32 = 1000.0;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HdrPixelFormat {
     Rgba16Float,
     Rgba32Float,

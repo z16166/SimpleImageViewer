@@ -41,6 +41,9 @@ use wgpu::util::DeviceExt;
 
 pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
+pub(crate) const RIPPLE_CLIP_INSIDE: u32 = 1;
+pub(crate) const RIPPLE_CLIP_OUTSIDE: u32 = 2;
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrRenderOutputMode {
@@ -541,13 +544,21 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // ripple_enabled: 0 = disabled, 1 = inside clip (RIPPLE_CLIP_INSIDE), 2 = outside clip (RIPPLE_CLIP_OUTSIDE).
+    // Avoid using other values (e.g., 3) to prevent unexpected behaviors or bugs.
     if (tone_map.ripple_enabled != 0u) {
         let frag_logical = input.position.xy / tone_map.pixels_per_point;
         let diff = frag_logical - tone_map.ripple_center;
         let dist_sq = dot(diff, diff);
         let radius_sq = tone_map.ripple_radius * tone_map.ripple_radius;
-        if (dist_sq > radius_sq) {
-            discard;
+        if (tone_map.ripple_enabled == 1u) {
+            if (dist_sq > radius_sq) {
+                discard;
+            }
+        } else if (tone_map.ripple_enabled == 2u) {
+            if (dist_sq <= radius_sq) {
+                discard;
+            }
         }
     }
     let rotated_uv = rotate_uv_for_display(input.uv, tone_map.rotation_steps);
@@ -730,7 +741,7 @@ pub fn hdr_image_plane_callback_with_uv(
     rotation_steps: u32,
     alpha: f32,
     uv_rect: egui::Rect,
-    ripple: Option<(egui::Pos2, f32, f32)>,
+    ripple: Option<(egui::Pos2, f32, f32, u32)>,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -802,7 +813,7 @@ struct HdrImagePlaneCallback {
     rotation_steps: u32,
     alpha: f32,
     uv_rect: egui::Rect,
-    ripple: Option<(egui::Pos2, f32, f32)>,
+    ripple: Option<(egui::Pos2, f32, f32, u32)>,
 }
 
 #[allow(dead_code)]
@@ -851,153 +862,193 @@ impl CallbackTrait for HdrImagePlaneCallback {
         #[cfg(not(feature = "heif-native"))]
         let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
-        let needs_upload = resources.uploaded_image_key != Some(image_key);
-        let needs_jpeg_compose = iso_deferred.is_some()
-            && (needs_upload
-                || resources.baked_jpeg_image_key != Some(image_key)
-                || resources.baked_jpeg_weight_bits != Some(target_capacity_bits));
-        #[cfg(feature = "heif-native")]
-        let needs_apple_compose = apple_deferred.is_some()
-            && (needs_upload
-                || resources.baked_apple_image_key != Some(image_key)
-                || resources.baked_apple_weight_bits != Some(target_capacity_bits));
-        #[cfg(not(feature = "heif-native"))]
-        let needs_apple_compose = false;
 
-        if needs_upload {
+        if !resources.image_bindings.contains_key(&image_key) {
             match upload_image_plane(device, queue, &self.image) {
                 Ok(uploaded) => {
-                    resources.uploaded_image_key = Some(image_key);
-                    resources.uploaded_texture = Some(uploaded.base.texture);
-                    resources.uploaded_view = Some(uploaded.base.view);
-                    resources.uploaded_display_storage_view = uploaded.base.storage_view;
-                    if let Some(sdr) = uploaded.sdr_baseline {
-                        resources.uploaded_sdr_texture = Some(sdr.texture);
-                        resources.uploaded_sdr_view = Some(sdr.view);
-                        resources.baked_jpeg_image_key = None;
-                        resources.baked_jpeg_weight_bits = None;
+                    let tone_map_buffer =
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
+                            contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
+                                HdrToneMapSettings::default(),
+                                0,
+                                1.0,
+                                HdrRenderOutputMode::SdrToneMapped,
+                                self.target_format,
+                                HdrColorSpace::LinearSrgb,
+                                HdrTransferFunction::Linear,
+                                HdrReference::Unknown,
+                                egui::Rect::from_min_max(
+                                    egui::Pos2::ZERO,
+                                    egui::Pos2::new(1.0, 1.0),
+                                ),
+                                1.0,
+                                None,
+                                None,
+                            )),
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        });
+
+                    let jpeg_compose_uniform_buffer = if iso_deferred.is_some() {
+                        Some(device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),
+                            size: 128,
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        }))
                     } else {
-                        resources.uploaded_sdr_texture = None;
-                        resources.uploaded_sdr_view = None;
-                    }
-                    if let Some(gain) = uploaded.gain {
-                        resources.uploaded_gain_texture = Some(gain.texture);
-                        resources.uploaded_gain_view = Some(gain.view);
-                        #[cfg(feature = "heif-native")]
-                        if apple_deferred.is_some() {
-                            resources.baked_apple_image_key = None;
-                            resources.baked_apple_weight_bits = None;
-                            resources.encoded_primary_source_ptr = None;
-                        }
+                        None
+                    };
+
+                    #[cfg(feature = "heif-native")]
+                    let (
+                        compose_tone_map_buffer,
+                        encoded_primary_buffer,
+                        encoded_primary_buffer_bytes,
+                    ) = if apple_deferred.is_some() {
+                        let compose_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),
+                            size: std::mem::size_of::<ToneMapUniform>() as u64,
+                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        });
+                        (Some(compose_buf), None, 0)
                     } else {
-                        resources.uploaded_gain_texture = None;
-                        resources.uploaded_gain_view = None;
-                        resources.uploaded_display_storage_view = None;
-                        resources.baked_apple_image_key = None;
-                        resources.baked_apple_weight_bits = None;
-                        resources.baked_jpeg_image_key = None;
-                        resources.baked_jpeg_weight_bits = None;
+                        (None, None, 0)
+                    };
+
+                    let (uploaded_texture, uploaded_view, uploaded_display_storage_view) = (
+                        uploaded.base.texture,
+                        uploaded.base.view,
+                        uploaded.base.storage_view,
+                    );
+                    let (uploaded_gain_texture, uploaded_gain_view) =
+                        if let Some(gain) = uploaded.gain {
+                            (Some(gain.texture), Some(gain.view))
+                        } else {
+                            (None, None)
+                        };
+                    let (uploaded_sdr_texture, uploaded_sdr_view) =
+                        if let Some(sdr) = uploaded.sdr_baseline {
+                            (Some(sdr.texture), Some(sdr.view))
+                        } else {
+                            (None, None)
+                        };
+
+                    let binding = HdrImageBinding {
+                        uploaded_texture,
+                        uploaded_view,
+                        uploaded_gain_texture,
+                        uploaded_gain_view,
+                        uploaded_sdr_texture,
+                        uploaded_sdr_view,
+                        uploaded_display_storage_view,
+                        baked_jpeg_image_key: None,
+                        baked_jpeg_weight_bits: None,
+                        baked_apple_image_key: None,
+                        baked_apple_weight_bits: None,
+                        tone_map_buffer,
+                        jpeg_compose_uniform_buffer,
                         #[cfg(feature = "heif-native")]
-                        {
-                            resources.encoded_primary_source_ptr = None;
-                        }
-                    }
+                        compose_tone_map_buffer,
+                        #[cfg(feature = "heif-native")]
+                        encoded_primary_buffer,
+                        #[cfg(feature = "heif-native")]
+                        encoded_primary_buffer_bytes,
+                        #[cfg(feature = "heif-native")]
+                        encoded_primary_source_ptr: None,
+                        bind_group: None,
+                        last_use: std::time::Instant::now(),
+                    };
+                    resources.image_bindings.insert(image_key, binding);
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR image plane upload: {err}");
-                    resources.uploaded_image_key = None;
-                    resources.uploaded_texture = None;
-                    resources.uploaded_view = None;
-                    resources.uploaded_gain_texture = None;
-                    resources.uploaded_gain_view = None;
-                    resources.uploaded_sdr_texture = None;
-                    resources.uploaded_sdr_view = None;
-                    resources.uploaded_display_storage_view = None;
-                    #[cfg(feature = "heif-native")]
-                    {
-                        resources.encoded_primary_source_ptr = None;
-                    }
-                    resources.baked_apple_image_key = None;
-                    resources.baked_apple_weight_bits = None;
-                    resources.baked_jpeg_image_key = None;
-                    resources.baked_jpeg_weight_bits = None;
-                    resources.bind_group = None;
                     return Vec::new();
                 }
             }
         }
 
+        let Some(binding) = resources.image_bindings.get_mut(&image_key) else {
+            return Vec::new();
+        };
+        binding.last_use = std::time::Instant::now();
+
+        let needs_jpeg_compose = iso_deferred.is_some()
+            && (binding.baked_jpeg_image_key != Some(image_key)
+                || binding.baked_jpeg_weight_bits != Some(target_capacity_bits));
+        #[cfg(feature = "heif-native")]
+        let needs_apple_compose = apple_deferred.is_some()
+            && (binding.baked_apple_image_key != Some(image_key)
+                || binding.baked_apple_weight_bits != Some(target_capacity_bits));
+        #[cfg(not(feature = "heif-native"))]
+        let needs_apple_compose = false;
+
         let mut compose_command_buffers = Vec::new();
         if needs_jpeg_compose {
-            if resources.uploaded_view.is_none()
-                || resources.uploaded_sdr_view.is_none()
-                || resources.uploaded_gain_view.is_none()
-                || resources.uploaded_display_storage_view.is_none()
-            {
-                resources.bind_group = None;
-                return compose_command_buffers;
-            }
             if let Some(deferred) = iso_deferred {
-                let sdr_view = resources.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-                let gain_view = resources
-                    .uploaded_gain_view
-                    .as_ref()
-                    .expect("jpeg gain view");
-                let display_storage = resources
+                let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
+                let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
+                let display_storage = binding
                     .uploaded_display_storage_view
                     .as_ref()
                     .expect("jpeg display storage view");
+                let uniform_buf = binding
+                    .jpeg_compose_uniform_buffer
+                    .as_ref()
+                    .expect("jpeg compose uniform buffer");
                 compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
                     device,
                     queue,
-                    resources,
+                    &resources.jpeg_compose_bind_group_layout,
+                    &resources.jpeg_compose_pipeline,
                     &self.image,
                     deferred,
                     &self.tone_map,
                     sdr_view,
                     gain_view,
                     display_storage,
+                    uniform_buf,
                 ));
-                resources.baked_jpeg_image_key = Some(image_key);
-                resources.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                binding.baked_jpeg_image_key = Some(image_key);
+                binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                binding.bind_group = None;
             }
         }
 
         #[cfg(feature = "heif-native")]
         if needs_apple_compose {
-            if resources.uploaded_view.is_none()
-                || resources.uploaded_gain_view.is_none()
-                || resources.uploaded_display_storage_view.is_none()
-            {
-                resources.bind_group = None;
-                return compose_command_buffers;
-            }
             if let Some(deferred) = apple_deferred {
                 let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
-                let upload_primary =
-                    needs_upload || resources.encoded_primary_source_ptr != Some(primary_ptr);
+                let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
+                let max_binding = device.limits().max_storage_buffer_binding_size;
                 if let Err(err) = apple_compose_gpu::ensure_encoded_primary_buffer(
                     device,
-                    resources,
+                    binding,
                     self.image.width,
-                    device.limits().max_storage_buffer_binding_size,
+                    max_binding,
                 ) {
                     log::warn!("[HDR] Apple GPU compose primary buffer allocation failed: {err}");
-                    resources.bind_group = None;
+                    binding.bind_group = None;
                 } else {
-                    let gain_view = resources.uploaded_gain_view.as_ref().expect("gain view");
-                    let display_storage = resources
+                    let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                    let display_storage = binding
                         .uploaded_display_storage_view
                         .as_ref()
                         .expect("display storage view");
-                    let encoded_primary_buffer = resources
+                    let encoded_primary_buffer = binding
                         .encoded_primary_buffer
                         .as_ref()
                         .expect("encoded primary buffer");
+                    let compose_tone_map_buf = binding
+                        .compose_tone_map_buffer
+                        .as_ref()
+                        .expect("apple compose tone map buffer");
                     compose_command_buffers.push(apple_compose_gpu::encode_compose_compute_pass(
                         device,
                         queue,
-                        resources,
+                        &resources.compose_bind_group_layout,
+                        &resources.compose_pipeline,
                         &self.image,
                         deferred,
                         &self.tone_map,
@@ -1005,27 +1056,26 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         gain_view,
                         display_storage,
                         upload_primary,
+                        compose_tone_map_buf,
                     ));
                     if upload_primary {
-                        resources.encoded_primary_source_ptr = Some(primary_ptr);
+                        binding.encoded_primary_source_ptr = Some(primary_ptr);
                     }
-                    resources.baked_apple_image_key = Some(image_key);
-                    resources.baked_apple_weight_bits = Some(target_capacity_bits);
+                    binding.baked_apple_image_key = Some(image_key);
+                    binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                    binding.bind_group = None;
                 }
             }
         }
 
-        let apple_gpu_composed = apple_deferred.is_some()
-            && resources.baked_apple_image_key == Some(image_key)
-            && resources.uploaded_view.is_some();
-        let jpeg_gpu_composed = iso_deferred.is_some()
-            && resources.baked_jpeg_image_key == Some(image_key)
-            && resources.uploaded_view.is_some();
+        let apple_gpu_composed =
+            apple_deferred.is_some() && binding.baked_apple_image_key == Some(image_key);
+        let jpeg_gpu_composed =
+            iso_deferred.is_some() && binding.baked_jpeg_image_key == Some(image_key);
         let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
 
-        // Never display uncomposed deferred planes (SDR baseline / encoded primary).
         if (apple_deferred.is_some() || iso_deferred.is_some()) && !deferred_gpu_composed {
-            resources.bind_group = None;
+            binding.bind_group = None;
             return compose_command_buffers;
         }
 
@@ -1041,27 +1091,37 @@ impl CallbackTrait for HdrImagePlaneCallback {
             deferred_gpu_composed,
             self.ripple,
         );
-        queue.write_buffer(&resources.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
+        queue.write_buffer(&binding.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        let gain_view = if deferred_gpu_composed {
-            &resources.dummy_gain_view
-        } else {
-            resources
-                .uploaded_gain_view
-                .as_ref()
-                .unwrap_or(&resources.dummy_gain_view)
-        };
-        let hdr_view = resources.uploaded_view.as_ref();
-        if let Some(hdr_view) = hdr_view {
-            resources.bind_group = Some(create_hdr_image_plane_bind_group(
+        if binding.bind_group.is_none() {
+            let gain_view = if deferred_gpu_composed {
+                &resources.dummy_gain_view
+            } else {
+                binding
+                    .uploaded_gain_view
+                    .as_ref()
+                    .unwrap_or(&resources.dummy_gain_view)
+            };
+            binding.bind_group = Some(create_hdr_image_plane_bind_group(
                 device,
                 &resources.bind_group_layout,
-                hdr_view,
+                &binding.uploaded_view,
                 gain_view,
-                &resources.tone_map_buffer,
+                &binding.tone_map_buffer,
             ));
-        } else {
-            resources.bind_group = None;
+        }
+
+        while resources.image_bindings.len() > 3 {
+            if let Some(oldest_key) = resources
+                .image_bindings
+                .iter()
+                .min_by_key(|(_, b)| b.last_use)
+                .map(|(&k, _)| k)
+            {
+                resources.image_bindings.remove(&oldest_key);
+            } else {
+                break;
+            }
         }
 
         compose_command_buffers
@@ -1076,12 +1136,14 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let Some(resources) = callback_resources.get::<HdrCallbackResources>() else {
             return;
         };
-        let Some(bind_group) = resources.bind_group.as_ref() else {
+        let image_key = HdrImageKey::from_image(&self.image);
+        let Some(binding) = resources.image_bindings.get(&image_key) else {
+            return;
+        };
+        let Some(bind_group) = binding.bind_group.as_ref() else {
             return;
         };
 
-        // egui-wgpu already sets this viewport before invoking callbacks; repeat it
-        // here so the fullscreen triangle is explicitly scoped to the image rect.
         let viewport = info.viewport_in_pixels();
         render_pass.set_viewport(
             viewport.left_px as f32,
@@ -1251,7 +1313,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             gain_view,
                             display_storage,
                         );
-                        resources.uploaded_image_key = None;
+                        if !resources.image_bindings.is_empty() {
+                            resources.image_bindings.clear();
+                        }
                         let tone_map_buffer =
                             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                 label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
@@ -1303,7 +1367,9 @@ impl CallbackTrait for HdrTilePlaneCallback {
         } else if !resources.tile_bindings.contains(tile_key) {
             match upload_callback_tile(device, queue, &self.tile) {
                 Ok(uploaded) => {
-                    resources.uploaded_image_key = None;
+                    if !resources.image_bindings.is_empty() {
+                        resources.image_bindings.clear();
+                    }
                     let tone_map_buffer =
                         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                             label: Some("simple-image-viewer-hdr-tile-plane-tone-map-buffer"),
@@ -1459,7 +1525,7 @@ impl ToneMapUniform {
         uv_rect: egui::Rect,
         native_display_scale: f32,
         apple: Option<(&crate::hdr::types::AppleHeicGainMapGpuSource, u32, u32, f32)>,
-        ripple: Option<(egui::Pos2, f32, f32)>,
+        ripple: Option<(egui::Pos2, f32, f32, u32)>,
     ) -> Self {
         let manual_srgb = output_mode == HdrRenderOutputMode::SdrToneMapped
             && hdr_sdr_framebuffer_needs_manual_srgb_oetf(framebuffer_format);
@@ -1488,8 +1554,8 @@ impl ToneMapUniform {
             (0, 0.0, 0.0, 0, 0, 0, 0)
         };
         let (ripple_center, ripple_radius, ripple_enabled, pixels_per_point) =
-            if let Some((center, radius, ppp)) = ripple {
-                ([center.x, center.y], radius, 1u32, ppp)
+            if let Some((center, radius, ppp, mode)) = ripple {
+                ([center.x, center.y], radius, mode, ppp)
             } else {
                 ([0.0, 0.0], 0.0, 0u32, 1.0)
             };
@@ -1627,7 +1693,7 @@ fn image_tone_map_uniform(
     uv_rect: egui::Rect,
     native_display_scale: f32,
     apple_gpu_composed: bool,
-    ripple: Option<(egui::Pos2, f32, f32)>,
+    ripple: Option<(egui::Pos2, f32, f32, u32)>,
 ) -> ToneMapUniform {
     if apple_gpu_composed {
         return ToneMapUniform::from_settings(
@@ -1662,8 +1728,8 @@ fn image_tone_map_uniform(
     )
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HdrImageKey {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct HdrImageKey {
     width: u32,
     height: u32,
     format: HdrPixelFormat,
@@ -1882,58 +1948,62 @@ struct JpegTiledUploadKey {
     gain_ptr: usize,
 }
 
+#[allow(dead_code)]
+pub(super) struct HdrImageBinding {
+    pub(super) uploaded_texture: wgpu::Texture,
+    pub(super) uploaded_view: wgpu::TextureView,
+    pub(super) uploaded_gain_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_gain_view: Option<wgpu::TextureView>,
+    pub(super) uploaded_sdr_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_sdr_view: Option<wgpu::TextureView>,
+    pub(super) uploaded_display_storage_view: Option<wgpu::TextureView>,
+
+    pub(super) baked_jpeg_image_key: Option<HdrImageKey>,
+    pub(super) baked_jpeg_weight_bits: Option<u32>,
+    pub(super) baked_apple_image_key: Option<HdrImageKey>,
+    pub(super) baked_apple_weight_bits: Option<u32>,
+
+    pub(super) tone_map_buffer: wgpu::Buffer,
+    pub(super) jpeg_compose_uniform_buffer: Option<wgpu::Buffer>,
+    #[cfg(feature = "heif-native")]
+    pub(super) compose_tone_map_buffer: Option<wgpu::Buffer>,
+    #[cfg(feature = "heif-native")]
+    pub(super) encoded_primary_buffer: Option<wgpu::Buffer>,
+    #[cfg(feature = "heif-native")]
+    pub(super) encoded_primary_buffer_bytes: usize,
+    #[cfg(feature = "heif-native")]
+    pub(super) encoded_primary_source_ptr: Option<usize>,
+
+    pub(super) bind_group: Option<wgpu::BindGroup>,
+    pub(super) last_use: std::time::Instant,
+}
+
 struct HdrCallbackResources {
     target_format: wgpu::TextureFormat,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    tone_map_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     dummy_gain_texture: wgpu::Texture,
     dummy_gain_view: wgpu::TextureView,
-    uploaded_image_key: Option<HdrImageKey>,
     tile_bindings: HdrTileBindings,
-    uploaded_texture: Option<wgpu::Texture>,
-    uploaded_view: Option<wgpu::TextureView>,
-    uploaded_gain_texture: Option<wgpu::Texture>,
-    uploaded_gain_view: Option<wgpu::TextureView>,
-    uploaded_sdr_texture: Option<wgpu::Texture>,
-    uploaded_sdr_view: Option<wgpu::TextureView>,
-    uploaded_display_storage_view: Option<wgpu::TextureView>,
+    image_bindings: HashMap<HdrImageKey, HdrImageBinding>,
     jpeg_compose_bind_group_layout: wgpu::BindGroupLayout,
     jpeg_compose_pipeline: wgpu::ComputePipeline,
     jpeg_compose_tile_pipeline: wgpu::ComputePipeline,
-    /// Single ISO gain-map compose uniform for this viewport's [`HdrCallbackResources`].
+    /// Single ISO gain-map compose uniform for tiled Ultra HDR via [`HdrTilePlaneCallback`].
     ///
-    /// Shared by [`jpeg_compose_gpu::encode_compose_compute_pass`] (static deferred JPEG via
-    /// [`HdrImagePlaneCallback`]) and [`jpeg_compose_gpu::encode_tile_compose_compute_pass`]
-    /// (tiled Ultra HDR via [`HdrTilePlaneCallback`]). No mutex is needed:
-    /// - routing never registers both callbacks for the same image;
-    /// - egui runs all `prepare` hooks sequentially on one thread;
-    /// - at most one tile issues a compose command buffer per frame in normal pan/zoom
-    ///   (rebake is rare; other visible tiles reuse cached bindings).
+    /// Static deferred JPEG via [`HdrImagePlaneCallback`] uses per-binding buffers
+    /// (see `HdrImageBinding::jpeg_compose_uniform_buffer`) to avoid data races in concurrent drawing.
     jpeg_compose_uniform_buffer: wgpu::Buffer,
     jpeg_tiled_upload_key: Option<JpegTiledUploadKey>,
     jpeg_tiled_sdr_texture: Option<wgpu::Texture>,
     jpeg_tiled_sdr_view: Option<wgpu::TextureView>,
     jpeg_tiled_gain_texture: Option<wgpu::Texture>,
     jpeg_tiled_gain_view: Option<wgpu::TextureView>,
-    baked_jpeg_image_key: Option<HdrImageKey>,
-    baked_jpeg_weight_bits: Option<u32>,
     #[cfg(feature = "heif-native")]
     compose_bind_group_layout: wgpu::BindGroupLayout,
     #[cfg(feature = "heif-native")]
     compose_pipeline: wgpu::ComputePipeline,
-    #[cfg(feature = "heif-native")]
-    compose_tone_map_buffer: wgpu::Buffer,
-    #[cfg(feature = "heif-native")]
-    encoded_primary_buffer: Option<wgpu::Buffer>,
-    #[cfg(feature = "heif-native")]
-    encoded_primary_buffer_bytes: usize,
-    #[cfg(feature = "heif-native")]
-    encoded_primary_source_ptr: Option<usize>,
-    baked_apple_image_key: Option<HdrImageKey>,
-    baked_apple_weight_bits: Option<u32>,
-    bind_group: Option<wgpu::BindGroup>,
 }
 
 struct CallbackUpload {
@@ -2050,28 +2120,10 @@ fn create_callback_resources(
         multiview_mask: None,
         cache: None,
     });
-    let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
-        contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
-            HdrToneMapSettings::default(),
-            0,
-            1.0,
-            HdrRenderOutputMode::SdrToneMapped,
-            target_format,
-            HdrColorSpace::LinearSrgb,
-            HdrTransferFunction::Linear,
-            HdrReference::Unknown,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-            1.0,
-            None,
-            None,
-        )),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
     let (dummy_gain_texture, dummy_gain_view) = create_dummy_gain_texture(device);
 
     #[cfg(feature = "heif-native")]
-    let (compose_bind_group_layout, compose_pipeline, compose_tone_map_buffer) =
+    let (compose_bind_group_layout, compose_pipeline, _compose_tone_map_buffer) =
         apple_compose_gpu::create_compose_compute_resources(device);
     let (
         jpeg_compose_bind_group_layout,
@@ -2084,18 +2136,10 @@ fn create_callback_resources(
         target_format,
         bind_group_layout,
         pipeline,
-        tone_map_buffer,
         dummy_gain_texture,
         dummy_gain_view,
-        uploaded_image_key: None,
         tile_bindings: HdrTileBindings::default(),
-        uploaded_texture: None,
-        uploaded_view: None,
-        uploaded_gain_texture: None,
-        uploaded_gain_view: None,
-        uploaded_sdr_texture: None,
-        uploaded_sdr_view: None,
-        uploaded_display_storage_view: None,
+        image_bindings: HashMap::new(),
         jpeg_compose_bind_group_layout,
         jpeg_compose_pipeline,
         jpeg_compose_tile_pipeline,
@@ -2105,23 +2149,10 @@ fn create_callback_resources(
         jpeg_tiled_sdr_view: None,
         jpeg_tiled_gain_texture: None,
         jpeg_tiled_gain_view: None,
-        baked_jpeg_image_key: None,
-        baked_jpeg_weight_bits: None,
         #[cfg(feature = "heif-native")]
         compose_bind_group_layout,
         #[cfg(feature = "heif-native")]
         compose_pipeline,
-        #[cfg(feature = "heif-native")]
-        compose_tone_map_buffer,
-        #[cfg(feature = "heif-native")]
-        encoded_primary_buffer: None,
-        #[cfg(feature = "heif-native")]
-        encoded_primary_buffer_bytes: 0,
-        #[cfg(feature = "heif-native")]
-        encoded_primary_source_ptr: None,
-        baked_apple_image_key: None,
-        baked_apple_weight_bits: None,
-        bind_group: None,
     }
 }
 
@@ -3624,5 +3655,160 @@ mod tests {
 
     fn hdr_tile(width: u32, height: u32, rgba_f32: Vec<f32>) -> HdrTileBuffer {
         HdrTileBuffer::new(width, height, HdrColorSpace::LinearSrgb, Arc::new(rgba_f32))
+    }
+
+    #[test]
+    fn test_hdr_renderer_multi_binding_and_lru_eviction() {
+        let Some((_instance, _adapter, device, queue)) = pollster::block_on(async {
+            let instance = wgpu::Instance::default();
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                })
+                .await
+                .ok()?;
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .ok()?;
+            Some((instance, adapter, device, queue))
+        }) else {
+            log::warn!("Skipping GPU test: no adapter available");
+            return;
+        };
+
+        let mut callback_resources = CallbackResources::default();
+        let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        callback_resources.insert(create_callback_resources(&device, target_format));
+
+        let images = [
+            Arc::new(hdr_image(
+                10,
+                10,
+                HdrPixelFormat::Rgba32Float,
+                vec![1.0; 10 * 10 * 4],
+            )),
+            Arc::new(hdr_image(
+                20,
+                20,
+                HdrPixelFormat::Rgba32Float,
+                vec![1.0; 20 * 20 * 4],
+            )),
+            Arc::new(hdr_image(
+                30,
+                30,
+                HdrPixelFormat::Rgba32Float,
+                vec![1.0; 30 * 30 * 4],
+            )),
+            Arc::new(hdr_image(
+                40,
+                40,
+                HdrPixelFormat::Rgba32Float,
+                vec![1.0; 40 * 40 * 4],
+            )),
+        ];
+
+        let screen_desc = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [100, 100],
+            pixels_per_point: 1.0,
+        };
+
+        // Prepare the first three callbacks (sleeping briefly to ensure unique last_use timestamps)
+        for (i, img) in images.iter().take(3).enumerate() {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let callback = HdrImagePlaneCallback {
+                image: Arc::clone(img),
+                tone_map: HdrToneMapSettings::default(),
+                target_format,
+                output_mode: HdrRenderOutputMode::SdrToneMapped,
+                rotation_steps: 0,
+                alpha: 1.0,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                ripple: None,
+            };
+
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            let cmds = callback.prepare(
+                &device,
+                &queue,
+                &screen_desc,
+                &mut encoder,
+                &mut callback_resources,
+            );
+            if !cmds.is_empty() {
+                queue.submit(cmds);
+            }
+        }
+
+        // Verify that we have exactly 3 bindings in resources and they are independent
+        {
+            let resources = callback_resources.get::<HdrCallbackResources>().unwrap();
+            assert_eq!(resources.image_bindings.len(), 3);
+
+            let key0 = HdrImageKey::from_image(&images[0]);
+            let key1 = HdrImageKey::from_image(&images[1]);
+            let key2 = HdrImageKey::from_image(&images[2]);
+
+            let b0 = resources.image_bindings.get(&key0).unwrap();
+            let b1 = resources.image_bindings.get(&key1).unwrap();
+            let b2 = resources.image_bindings.get(&key2).unwrap();
+
+            assert!(b0.bind_group.is_some());
+            assert!(b1.bind_group.is_some());
+            assert!(b2.bind_group.is_some());
+
+            // Assert that they maintain independent textures (proven by distinct dimensions)
+            assert_eq!(b0.uploaded_texture.width(), 10);
+            assert_eq!(b1.uploaded_texture.width(), 20);
+            assert_eq!(b2.uploaded_texture.width(), 30);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        // Now prepare the 4th image callback. This should trigger eviction of the oldest (the 1st one)
+        {
+            let callback = HdrImagePlaneCallback {
+                image: Arc::clone(&images[3]),
+                tone_map: HdrToneMapSettings::default(),
+                target_format,
+                output_mode: HdrRenderOutputMode::SdrToneMapped,
+                rotation_steps: 0,
+                alpha: 1.0,
+                uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                ripple: None,
+            };
+
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            let cmds = callback.prepare(
+                &device,
+                &queue,
+                &screen_desc,
+                &mut encoder,
+                &mut callback_resources,
+            );
+            if !cmds.is_empty() {
+                queue.submit(cmds);
+            }
+        }
+
+        // Verify that resources has size 3 and images[0] has been evicted
+        {
+            let resources = callback_resources.get::<HdrCallbackResources>().unwrap();
+            assert_eq!(resources.image_bindings.len(), 3);
+
+            let key_evicted = HdrImageKey::from_image(&images[0]);
+            assert!(!resources.image_bindings.contains_key(&key_evicted));
+
+            for img in images.iter().skip(1) {
+                let key = HdrImageKey::from_image(img);
+                assert!(resources.image_bindings.contains_key(&key));
+            }
+        }
     }
 }

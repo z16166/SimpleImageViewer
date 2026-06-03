@@ -35,7 +35,7 @@ pub(crate) enum PlaneDrawSource {
         output_mode: crate::hdr::renderer::HdrRenderOutputMode,
         rotation_steps: u32,
         alpha: f32,
-        ripple: Option<(egui::Pos2, f32, f32)>,
+        ripple: Option<(egui::Pos2, f32, f32, u32)>,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,

@@ -399,6 +399,7 @@ impl ImageViewerApp {
             music_scan_path: None,
             current_image_res: None,
             prev_texture: None,
+            prev_hdr_image: None,
             transition_start: None,
             pending_transition_target: None,
             is_next: true,

@@ -163,6 +163,7 @@ impl ImageViewerApp {
             ) {
                 self.transition_start = None;
                 self.prev_texture = None;
+                self.prev_hdr_image = None;
             }
             tp = crate::app::rendering::transitions::TransitionParams::default();
         }
@@ -220,15 +221,28 @@ impl ImageViewerApp {
                     let current_radius = max_radius * ease;
 
                     // 2. Draw OLD image (clipped with a circular hole)
-                    // NOTE: We render the old image using its cached SDR fallback texture.
-                    // This is an intentional design choice/trade-off: the WGPU rendering callback binds
-                    // only one active HDR image buffer at a time. Drawing both old and new images
-                    // in HDR simultaneously would require binding multiple HDR textures in a single frame,
-                    // which is currently not supported by the single-binding callback pipeline.
-                    // Using the SDR fallback for the background avoids this complexity while still
-                    // preventing brightness flash at the end of the transition, since the new image
-                    // is rendered in full HDR throughout the transition.
-                    if let Some(prev) = self.prev_texture.as_ref() {
+                    if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
+                        let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+                        let p_dest = self.compute_display_rect(p_size, screen_rect);
+                        let ppp = ui.ctx().pixels_per_point();
+                        self.draw_hdr_image_plane_clipped(
+                            ui,
+                            screen_rect,
+                            p_dest,
+                            Arc::clone(prev_hdr),
+                            self.hdr_renderer.tone_map,
+                            target_format,
+                            render_plan.output_mode,
+                            rotation,
+                            1.0,
+                            Some((
+                                center,
+                                current_radius,
+                                ppp,
+                                crate::hdr::renderer::RIPPLE_CLIP_OUTSIDE,
+                            )),
+                        );
+                    } else if let Some(prev) = self.prev_texture.as_ref() {
                         let p_size = prev.size_vec2();
                         let p_dest = self.compute_display_rect(p_size, screen_rect);
                         crate::app::rendering::transitions::draw_ripple_old_image(
@@ -254,7 +268,12 @@ impl ImageViewerApp {
                         render_plan.output_mode,
                         rotation,
                         tp.alpha,
-                        Some((center, current_radius, ppp)),
+                        Some((
+                            center,
+                            current_radius,
+                            ppp,
+                            crate::hdr::renderer::RIPPLE_CLIP_INSIDE,
+                        )),
                     );
 
                     // 4. Water ripple rings at the expanding edge
@@ -286,28 +305,22 @@ impl ImageViewerApp {
         }
 
         // Static HDR images draw through egui-wgpu so the float buffer reaches the shader.
-        // Ripple transitions route the new image through the HDR plane path, while the background
-        // old image remains on the SDR texture path due to GPU texture binding limits.
+        // All HDR transitions (including Curtain, PageFlip, and Ripple) draw both the new image
+        // and the previous background image through the HDR plane path if `prev_hdr_image` is available.
         // The plan's backend must be `Hdr`; otherwise (e.g. monitor probed as SDR-only, or
         // probe failed and the conservative gate kicked in) the cached SDR fallback texture
         // is the correct visual source — see `should_route_through_hdr_plane`.
         if should_route_through_hdr_plane(&render_plan) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 if tp.is_animating {
-                    if let Some(prev) = &self.prev_texture.clone() {
-                        let p_size = prev.size_vec2();
-                        let p_dest = self.compute_display_rect(p_size, screen_rect);
-                        let p_final_dest = Rect::from_center_size(
-                            p_dest.center() + tp.prev_offset,
-                            p_dest.size() * tp.prev_scale,
-                        );
-                        ui.painter().image(
-                            prev.id(),
-                            p_final_dest,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE.linear_multiply(tp.prev_alpha),
-                        );
-                    }
+                    self.draw_prev_image_underneath(
+                        ui,
+                        screen_rect,
+                        &tp,
+                        rotation,
+                        Some(target_format),
+                        Some(render_plan.output_mode),
+                    );
                     ui.ctx().request_repaint();
                 }
 
@@ -353,20 +366,7 @@ impl ImageViewerApp {
 
             // 1. Draw OLD image (underneath or fading out)
             if tp.is_animating {
-                if let Some(prev) = &self.prev_texture.clone() {
-                    let p_size = prev.size_vec2();
-                    let p_dest = self.compute_display_rect(p_size, screen_rect);
-                    let p_final_dest = Rect::from_center_size(
-                        p_dest.center() + tp.prev_offset,
-                        p_dest.size() * tp.prev_scale,
-                    );
-                    ui.painter().image(
-                        prev.id(),
-                        p_final_dest,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE.linear_multiply(tp.prev_alpha),
-                    );
-                }
+                self.draw_prev_image_underneath(ui, screen_rect, &tp, rotation, None, None);
                 ui.ctx().request_repaint();
             }
 
@@ -382,6 +382,55 @@ impl ImageViewerApp {
                     &final_layout,
                 );
             }
+        }
+    }
+
+    fn draw_prev_image_underneath(
+        &self,
+        ui: &mut egui::Ui,
+        screen_rect: Rect,
+        tp: &crate::app::rendering::transitions::TransitionParams,
+        rotation: i32,
+        target_format: Option<wgpu::TextureFormat>,
+        hdr_output_mode: Option<HdrRenderOutputMode>,
+    ) {
+        if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
+            if let (Some(target_format), Some(hdr_output_mode)) = (target_format, hdr_output_mode) {
+                let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+                let p_dest = self.compute_display_rect(p_size, screen_rect);
+                let p_final_dest = Rect::from_center_size(
+                    p_dest.center() + tp.prev_offset,
+                    p_dest.size() * tp.prev_scale,
+                );
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    screen_rect,
+                    p_final_dest,
+                    Arc::clone(prev_hdr),
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation,
+                    tp.prev_alpha,
+                    None,
+                );
+                return;
+            }
+        }
+
+        if let Some(prev) = &self.prev_texture.clone() {
+            let p_size = prev.size_vec2();
+            let p_dest = self.compute_display_rect(p_size, screen_rect);
+            let p_final_dest = Rect::from_center_size(
+                p_dest.center() + tp.prev_offset,
+                p_dest.size() * tp.prev_scale,
+            );
+            ui.painter().image(
+                prev.id(),
+                p_final_dest,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE.linear_multiply(tp.prev_alpha),
+            );
         }
     }
 
@@ -440,7 +489,7 @@ impl ImageViewerApp {
         hdr_output_mode: HdrRenderOutputMode,
         rotation: i32,
         alpha: f32,
-        ripple: Option<(egui::Pos2, f32, f32)>,
+        ripple: Option<(egui::Pos2, f32, f32, u32)>,
     ) {
         let layout = PlaneLayout::from_dest(Vec2::new(rect.width(), rect.height()), rotation, rect);
         draw_plane(
@@ -476,8 +525,13 @@ impl ImageViewerApp {
         hdr_output_mode: HdrRenderOutputMode,
         alpha: f32,
     ) {
-        if let Some(prev) = self.prev_texture.as_ref() {
-            let p_size = prev.size_vec2();
+        if self.prev_texture.is_some() || self.prev_hdr_image.is_some() {
+            let p_size = self
+                .prev_hdr_image
+                .as_ref()
+                .map(|h| Vec2::new(h.width as f32, h.height as f32))
+                .or_else(|| self.prev_texture.as_ref().map(|t| t.size_vec2()))
+                .expect("either prev_hdr_image or prev_texture must be Some");
             let p_dest = self.compute_display_rect(p_size, screen_rect);
             let union_rect = p_dest.union(final_dest);
 
@@ -520,12 +574,28 @@ impl ImageViewerApp {
             } else {
                 old_clip.min.x = clip_x;
             }
-            ui.painter().with_clip_rect(old_clip).image(
-                prev.id(),
-                p_dest,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+
+            if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    old_clip,
+                    p_dest,
+                    Arc::clone(prev_hdr),
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    rotation,
+                    alpha,
+                    None,
+                );
+            } else if let Some(prev) = self.prev_texture.as_ref() {
+                ui.painter().with_clip_rect(old_clip).image(
+                    prev.id(),
+                    p_dest,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
 
             let shadow_width = 40.0;
             let shadow_alpha = (1.0 - ease_in_out) * 0.4;
@@ -571,8 +641,13 @@ impl ImageViewerApp {
         hdr_output_mode: HdrRenderOutputMode,
         alpha: f32,
     ) {
-        if let Some(prev) = self.prev_texture.as_ref() {
-            let p_size = prev.size_vec2();
+        if self.prev_texture.is_some() || self.prev_hdr_image.is_some() {
+            let p_size = self
+                .prev_hdr_image
+                .as_ref()
+                .map(|h| Vec2::new(h.width as f32, h.height as f32))
+                .or_else(|| self.prev_texture.as_ref().map(|t| t.size_vec2()))
+                .expect("either prev_hdr_image or prev_texture must be Some");
             let p_dest = self.compute_display_rect(p_size, screen_rect);
             let union_rect = p_dest.union(final_dest);
 
@@ -609,23 +684,50 @@ impl ImageViewerApp {
                 union_rect.left_top(),
                 Pos2::new(center_x - shift, union_rect.max.y),
             );
-            ui.painter().with_clip_rect(left_clip).image(
-                prev.id(),
-                p_dest.translate(Vec2::new(-shift, 0.0)),
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
-
             let right_clip = Rect::from_min_max(
                 Pos2::new(center_x + shift, union_rect.min.y),
                 union_rect.right_bottom(),
             );
-            ui.painter().with_clip_rect(right_clip).image(
-                prev.id(),
-                p_dest.translate(Vec2::new(shift, 0.0)),
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+
+            if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    left_clip,
+                    p_dest.translate(Vec2::new(-shift, 0.0)),
+                    Arc::clone(prev_hdr),
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    0,
+                    alpha,
+                    None,
+                );
+                self.draw_hdr_image_plane_clipped(
+                    ui,
+                    right_clip,
+                    p_dest.translate(Vec2::new(shift, 0.0)),
+                    Arc::clone(prev_hdr),
+                    self.hdr_renderer.tone_map,
+                    target_format,
+                    hdr_output_mode,
+                    0,
+                    alpha,
+                    None,
+                );
+            } else if let Some(prev) = self.prev_texture.as_ref() {
+                ui.painter().with_clip_rect(left_clip).image(
+                    prev.id(),
+                    p_dest.translate(Vec2::new(-shift, 0.0)),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                ui.painter().with_clip_rect(right_clip).image(
+                    prev.id(),
+                    p_dest.translate(Vec2::new(shift, 0.0)),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
 
             let shadow_w = 30.0;
             let shadow_alpha = (1.0 - ease) * 0.45;
