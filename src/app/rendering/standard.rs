@@ -38,11 +38,7 @@ use std::time::Instant;
 /// [`PlaneBackendKind::Hdr`] so WGSL `encode_sdr` stays live (exposure / peak nits); SDR‑grade
 /// JXL that decodes as display‑referred should rely on transfer metadata so Reinhard is not
 /// misapplied.
-pub(crate) fn should_route_through_hdr_plane(
-    plan: &RenderPlan,
-    _transition: TransitionStyle,
-    _is_animating: bool,
-) -> bool {
+pub(crate) fn should_route_through_hdr_plane(plan: &RenderPlan) -> bool {
     plan.backend == PlaneBackendKind::Hdr
 }
 
@@ -292,7 +288,7 @@ impl ImageViewerApp {
         // The plan's backend must be `Hdr`; otherwise (e.g. monitor probed as SDR-only, or
         // probe failed and the conservative gate kicked in) the cached SDR fallback texture
         // is the correct visual source — see `should_route_through_hdr_plane`.
-        if should_route_through_hdr_plane(&render_plan, self.active_transition, tp.is_animating) {
+        if should_route_through_hdr_plane(&render_plan) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 if tp.is_animating {
                     if let Some(prev) = &self.prev_texture.clone() {
@@ -695,7 +691,7 @@ mod tests {
         );
         assert_eq!(tone_mapped_plan.backend, PlaneBackendKind::Hdr);
         assert!(
-            should_route_through_hdr_plane(&tone_mapped_plan, TransitionStyle::None, false),
+            should_route_through_hdr_plane(&tone_mapped_plan),
             "`SdrToneMapped` must not mask the HDR plane shader when HDR float data exists"
         );
 
@@ -706,7 +702,7 @@ mod tests {
         );
         assert_eq!(hdr_plan.backend, PlaneBackendKind::Hdr);
         assert!(
-            should_route_through_hdr_plane(&hdr_plan, TransitionStyle::None, false),
+            should_route_through_hdr_plane(&hdr_plan),
             "Hdr backend must continue to stream the float buffer through the plane shader"
         );
     }
@@ -718,16 +714,8 @@ mod tests {
             Some(wgpu::TextureFormat::Rgba16Float),
             HdrRenderOutputMode::NativeHdr,
         );
-        assert!(should_route_through_hdr_plane(
-            &hdr_plan,
-            TransitionStyle::Ripple,
-            true
-        ));
-        assert!(should_route_through_hdr_plane(
-            &hdr_plan,
-            TransitionStyle::Ripple,
-            false
-        ));
+        assert!(should_route_through_hdr_plane(&hdr_plan));
+        assert!(should_route_through_hdr_plane(&hdr_plan));
     }
 
     #[test]
