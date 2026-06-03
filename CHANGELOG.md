@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.3] - 2026-06-03
+
+### Added
+- **Smooth HDR Transitions**: High-dynamic-range (HDR) images now transition smoothly without flickering or briefly dropping back to standard SDR brightness.
+- **Large HDR Photo Support**: Large (tiled) HDR photos now support smooth transition animations instead of hard-cutting between images.
+
+### Fixed
+- **Navigation Lockup**: Fixed an issue where the viewer could get stuck on a black loading screen when navigating between large photos with transitions disabled.
+- **Tiled Image Reliability**: Added defensive loading checks to prevent images from getting stuck in a loading state when system caches are evicted or inconsistent.
+
 ## [2.3.2] - 2026-06-03
 
 ### Added
