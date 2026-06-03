@@ -47,6 +47,7 @@ pub enum HotkeyActionId {
     PrintCurrent,
     ToggleGoto,
     ToggleSlideshow,
+    RefreshFileList,
     #[cfg(not(target_os = "windows"))]
     Quit,
     ExitFullscreen,
@@ -138,6 +139,10 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
     ActionDescriptor {
         id: HotkeyActionId::ToggleSlideshow,
         id_str: "toggle_slideshow",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::RefreshFileList,
+        id_str: "refresh_file_list",
     },
     #[cfg(not(target_os = "windows"))]
     ActionDescriptor {
@@ -504,6 +509,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::ToggleSlideshow => &[KeyChord {
             modifiers: 0,
             key: HotkeyLogicalKey::Egui(egui::Key::Space),
+        }],
+        HotkeyActionId::RefreshFileList => &[KeyChord {
+            modifiers: 0,
+            key: HotkeyLogicalKey::Egui(egui::Key::F5),
         }],
         #[cfg(not(target_os = "windows"))]
         HotkeyActionId::Quit => &[KeyChord {

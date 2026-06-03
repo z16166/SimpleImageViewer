@@ -451,6 +451,9 @@ impl ImageViewerApp {
             hotkeys_add_row_capture_active: false,
             hotkeys_add_row_captured_key: None,
             hotkeys_add_row_need_key_hint: false,
+            refresh_scan_in_progress: false,
+            refresh_scan_slideshow_was_playing: false,
+            refresh_anchor_path: None,
             settings,
         };
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {

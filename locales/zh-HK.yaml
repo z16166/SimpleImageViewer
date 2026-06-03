@@ -224,6 +224,7 @@ hotkeys.action.permanent_delete: "永久刪除"
 hotkeys.action.print_current: "列印目前圖片"
 hotkeys.action.toggle_goto: "開啟/關閉跳轉"
 hotkeys.action.toggle_slideshow: "切換幻燈片"
+hotkeys.action.refresh_file_list: "重新整理圖片列表"
 hotkeys.action.quit_app: "退出程式"
 hotkeys.action.exit_fullscreen: "退出全螢幕"
 

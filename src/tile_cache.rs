@@ -197,6 +197,46 @@ impl TilePixelCache {
         }
     }
 
+    pub fn relocate_image(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        let keys_to_relocate: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|&&(idx, _, _)| idx == from)
+            .copied()
+            .collect();
+        for key in keys_to_relocate {
+            if let Some(pixels) = self.entries.remove(&key) {
+                let new_key = (to, key.1, key.2);
+                self.entries.insert(new_key, pixels);
+            }
+        }
+        for item in self.lru.iter_mut() {
+            if item.0 == from {
+                item.0 = to;
+            }
+        }
+    }
+
+    pub fn remove_images_except(&mut self, except_idx: usize) {
+        let keys_to_remove: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|&&(idx, _, _)| idx != except_idx)
+            .copied()
+            .collect();
+        for key in keys_to_remove {
+            if let Some(pixels) = self.entries.remove(&key) {
+                self.current_bytes -= pixels.len();
+            }
+            if let Some(pos) = self.lru.iter().position(|k| *k == key) {
+                self.lru.remove(pos);
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.lru.clear();
@@ -271,6 +311,25 @@ mod tests {
             PendingTileKey::new(coord, crate::loader::TilePixelKind::Sdr),
             PendingTileKey::new(coord, crate::loader::TilePixelKind::Hdr)
         );
+    }
+
+    #[test]
+    fn test_tile_pixel_cache_relocate_and_remove_except() {
+        let mut cache = TilePixelCache::new(512);
+        let pixels = Arc::new(vec![0; 100]);
+
+        cache.insert(3, TileCoord { col: 1, row: 2 }, Arc::clone(&pixels));
+        cache.insert(5, TileCoord { col: 3, row: 4 }, Arc::clone(&pixels));
+
+        // Test relocate
+        cache.relocate_image(3, 7);
+        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_some());
+        assert!(cache.get(3, TileCoord { col: 1, row: 2 }).is_none());
+
+        // Test remove_except
+        cache.remove_images_except(5);
+        assert!(cache.get(5, TileCoord { col: 3, row: 4 }).is_some());
+        assert!(cache.get(7, TileCoord { col: 1, row: 2 }).is_none());
     }
 }
 

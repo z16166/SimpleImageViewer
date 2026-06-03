@@ -441,6 +441,190 @@ impl ImageViewerApp {
         crate::tile_cache::PIXEL_CACHE.lock().clear();
     }
 
+    fn relocate_index_keyed_cache(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        // 1. Texture cache
+        self.texture_cache.relocate(from, to);
+
+        // 2. HDR caches
+        if let Some(hdr) = self.hdr_image_cache.remove(&from) {
+            self.hdr_image_cache.insert(to, hdr);
+        }
+        if let Some(src) = self.hdr_tiled_source_cache.remove(&from) {
+            self.hdr_tiled_source_cache.insert(to, src);
+        }
+        if let Some(prev) = self.hdr_tiled_preview_cache.remove(&from) {
+            self.hdr_tiled_preview_cache.insert(to, prev);
+        }
+
+        // 3. Fallback sets
+        if self.hdr_sdr_fallback_indices.remove(&from) {
+            self.hdr_sdr_fallback_indices.insert(to);
+        }
+        if self.hdr_placeholder_fallback_indices.remove(&from) {
+            self.hdr_placeholder_fallback_indices.insert(to);
+        }
+        if self.hdr_in_flight_fallback_refinements.remove(&from) {
+            self.hdr_in_flight_fallback_refinements.insert(to);
+        }
+        if self.ultra_hdr_capacity_sensitive_indices.remove(&from) {
+            self.ultra_hdr_capacity_sensitive_indices.insert(to);
+        }
+
+        // 4. Deferred uploads
+        if let Some(upload) = self.deferred_sdr_uploads.remove(&from) {
+            self.deferred_sdr_uploads.insert(to, upload);
+        }
+
+        // 5. Prefetched tiles / animations
+        if let Some(mut tiles) = self.prefetched_tiles.remove(&from) {
+            tiles.image_index = to;
+            self.prefetched_tiles.insert(to, tiles);
+        }
+        if let Some(mut anim) = self.animation_cache.remove(&from) {
+            anim.image_index = to;
+            self.animation_cache.insert(to, anim);
+        }
+        if let Some(ref mut anim) = self.animation {
+            if anim.image_index == from {
+                anim.image_index = to;
+            }
+        }
+
+        // 6. Current HDR image states
+        if let Some(ref mut curr) = self.current_hdr_image {
+            if curr.index == from {
+                curr.index = to;
+            }
+        }
+        if let Some(ref mut curr) = self.current_hdr_tiled_image {
+            if curr.index == from {
+                curr.index = to;
+            }
+        }
+        if let Some(ref mut curr) = self.current_hdr_tiled_preview {
+            if curr.index == from {
+                curr.index = to;
+            }
+        }
+
+        // 7. Tile manager index
+        if let Some(ref mut manager) = self.tile_manager {
+            if manager.image_index == from {
+                manager.image_index = to;
+            }
+        }
+
+        // 8. Global tile pixel cache
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .relocate_image(from, to);
+    }
+
+    fn clear_index_keyed_state_after_list_reorder_except_index(&mut self, except_idx: usize) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+
+        // 1. Texture cache: remove everything except except_idx
+        let to_remove_tex: Vec<usize> = self
+            .texture_cache
+            .textures
+            .keys()
+            .copied()
+            .filter(|&idx| idx != except_idx)
+            .collect();
+        for idx in to_remove_tex {
+            self.texture_cache.remove(idx);
+        }
+
+        // 2. HDR caches
+        let to_remove_hdr: Vec<usize> = self
+            .hdr_image_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != except_idx)
+            .collect();
+        for idx in to_remove_hdr {
+            self.hdr_image_cache.remove(&idx);
+        }
+
+        let to_remove_tiled_source: Vec<usize> = self
+            .hdr_tiled_source_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != except_idx)
+            .collect();
+        for idx in to_remove_tiled_source {
+            self.hdr_tiled_source_cache.remove(&idx);
+        }
+
+        let to_remove_tiled_preview: Vec<usize> = self
+            .hdr_tiled_preview_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != except_idx)
+            .collect();
+        for idx in to_remove_tiled_preview {
+            self.hdr_tiled_preview_cache.remove(&idx);
+        }
+
+        self.hdr_sdr_fallback_indices
+            .retain(|&idx| idx == except_idx);
+        self.hdr_placeholder_fallback_indices
+            .retain(|&idx| idx == except_idx);
+        self.hdr_in_flight_fallback_refinements
+            .retain(|&idx| idx == except_idx);
+        self.deferred_sdr_uploads
+            .retain(|&idx, _| idx == except_idx);
+        self.ultra_hdr_capacity_sensitive_indices
+            .retain(|&idx| idx == except_idx);
+
+        // 3. Prefetched tiles, animation cache
+        self.prefetched_tiles.retain(|&idx, _| idx == except_idx);
+        self.animation_cache.retain(|&idx, _| idx == except_idx);
+
+        // 4. Other states
+        if let Some(ref anim) = self.animation {
+            if anim.image_index != except_idx {
+                self.animation = None;
+            }
+        }
+        self.pending_anim_frames = None;
+
+        // Keep self.tile_manager if its index matches except_idx
+        if let Some(ref manager) = self.tile_manager {
+            if manager.image_index != except_idx {
+                self.tile_manager = None;
+            }
+        }
+
+        self.prev_texture = None;
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prefetch_prev_generation = None;
+
+        // Clear only non-except_idx entries from the global tile pixel cache
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .remove_images_except(except_idx);
+    }
+
+    pub(crate) fn finish_refresh_scan_state(&mut self) {
+        if self.refresh_scan_in_progress {
+            self.refresh_scan_in_progress = false;
+            self.refresh_anchor_path = None;
+            if self.refresh_scan_slideshow_was_playing {
+                self.slideshow_paused = false;
+                self.last_switch_time = Instant::now();
+                self.refresh_scan_slideshow_was_playing = false;
+            }
+            log::info!("[RefreshFileList] Refresh scan finished/cleaned up");
+        }
+    }
+
     pub(crate) fn shuffle_slideshow_order_to_first(&mut self) {
         if self.image_files.is_empty() {
             self.random_slideshow_order_ready = false;
@@ -816,6 +1000,175 @@ impl ImageViewerApp {
     }
 
     // ------------------------------------------------------------------
+    // F5 Refresh file list
+    // ------------------------------------------------------------------
+
+    /// Refresh the image file list for the current directory (bound to F5).
+    ///
+    /// Compared to [`Self::load_directory`] this variant:
+    /// - Guards against re-entry while a scan is already running.
+    /// - Preserves the current image's GPU texture and tile manager so the
+    ///   canvas keeps rendering during the scan instead of going blank.
+    /// - Evicts all *other* preloaded caches (non-current texture entries,
+    ///   HDR planes, animation frames, prefetched tiles, pixel tile cache)
+    ///   so stale data doesn't linger with wrong index keys.
+    /// - Does **not** reset zoom / pan / rotation.
+    /// - Pauses slideshow playback and restores it when the scan finishes.
+    pub(crate) fn start_refresh_file_list(&mut self) {
+        // Guard: ignore if a directory scan or a previous refresh is already running.
+        if self.scanning || self.refresh_scan_in_progress {
+            log::debug!("[RefreshFileList] Ignored: scan already in progress");
+            return;
+        }
+        let Some(dir) = self.settings.last_image_dir.clone() else {
+            log::debug!("[RefreshFileList] Ignored: no directory configured");
+            return;
+        };
+
+        // If the list is empty there is no "current file" to anchor to; fall back
+        // to a regular directory load so the UI behaves like the first open.
+        if self.image_files.is_empty() {
+            self.load_directory(dir);
+            return;
+        }
+
+        log::info!("[RefreshFileList] Starting refresh scan of {:?}", dir);
+
+        // Save current file as anchor so it survives multi-batch scans,
+        // and do not set initial_image so process_scan_results first-batch doesn't consume it.
+        let current_file = self.image_files[self.current_index].clone();
+        self.refresh_anchor_path = Some(current_file);
+        self.initial_image = None;
+
+        // Pause slideshow and record state for restoration on completion.
+        let slideshow_was_playing = self.settings.auto_switch && !self.slideshow_paused;
+        self.refresh_scan_slideshow_was_playing = slideshow_was_playing;
+        if slideshow_was_playing {
+            self.slideshow_paused = true;
+        }
+
+        self.refresh_scan_in_progress = true;
+
+        // Cancel all in-flight background loads; the index space is about to change.
+        self.loader.cancel_all();
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+
+        // ------------------------------------------------------------------
+        // Selectively evict preload state: keep only the current image entry
+        // so the canvas continues rendering while the scan runs.
+        // ------------------------------------------------------------------
+        let keep = self.current_index;
+
+        // GPU texture cache: remove all entries except current.
+        let to_remove_tex: Vec<usize> = self
+            .texture_cache
+            .textures
+            .keys()
+            .copied()
+            .filter(|&idx| idx != keep)
+            .collect();
+        for idx in to_remove_tex {
+            self.texture_cache.remove(idx);
+        }
+
+        // HDR caches: remove/retain all non-current entries using fine-grained cleanups
+        // to avoid mixing redundant cleanup logic.
+        let to_remove_hdr: Vec<usize> = self
+            .hdr_image_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != keep)
+            .collect();
+        for idx in to_remove_hdr {
+            self.hdr_image_cache.remove(&idx);
+        }
+
+        let to_remove_tiled_source: Vec<usize> = self
+            .hdr_tiled_source_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != keep)
+            .collect();
+        for idx in to_remove_tiled_source {
+            self.hdr_tiled_source_cache.remove(&idx);
+        }
+
+        let to_remove_tiled_preview: Vec<usize> = self
+            .hdr_tiled_preview_cache
+            .keys()
+            .copied()
+            .filter(|&idx| idx != keep)
+            .collect();
+        for idx in to_remove_tiled_preview {
+            self.hdr_tiled_preview_cache.remove(&idx);
+        }
+
+        self.hdr_sdr_fallback_indices.retain(|&idx| idx == keep);
+        self.hdr_placeholder_fallback_indices
+            .retain(|&idx| idx == keep);
+        self.hdr_in_flight_fallback_refinements
+            .retain(|&idx| idx == keep);
+        self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);
+        self.ultra_hdr_capacity_sensitive_indices
+            .retain(|&idx| idx == keep);
+
+        // Prefetched tile managers, animations: non-current only.
+        self.prefetched_tiles.retain(|&idx, _| idx == keep);
+        self.animation_cache.retain(|&idx, _| idx == keep);
+
+        // Tile pixel cache: retain the current image's tiles so they don't have to be reloaded,
+        // keeping consistency with clear_index_keyed_state_after_list_reorder_except_index.
+        crate::tile_cache::PIXEL_CACHE
+            .lock()
+            .remove_images_except(keep);
+
+        // Clear transition/pending state that references old indices.
+        self.prev_texture = None;
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prefetch_prev_generation = None;
+
+        // Pending animation upload is tied to a specific index; drop it.
+        self.pending_anim_frames = None;
+
+        // Keep self.tile_manager — it is keyed by image_index, and
+        // tiled_canvas_matches_current_index() guards its usage, so it will
+        // remain valid until the new current_index is resolved and a fresh
+        // TileManager is installed.
+        // Relocate all kept state to index 0 so that it matches current_index during scan.
+        self.relocate_index_keyed_cache(keep, 0);
+
+        // ------------------------------------------------------------------
+        // Reset list state and start the background scan.
+        // ------------------------------------------------------------------
+        self.image_files.clear();
+        self.file_byte_len_by_index.clear();
+        self.current_index = 0;
+        self.error_message = None;
+        self.is_font_error = false;
+        self.scanning = true;
+        self.invalidate_random_slideshow_order();
+
+        let dir_name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        self.status_message = t!("status.scanning", dir = dir_name).to_string();
+
+        // Cancel any previous (already-running) scan.
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.scan_cancel = Some(Arc::clone(&cancel));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.scan_rx = Some(rx);
+        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
+    }
+
+    // ------------------------------------------------------------------
     // Navigation
     // ------------------------------------------------------------------
 
@@ -865,7 +1218,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn navigate_to(&mut self, new_index: usize) {
-        if self.image_files.is_empty() {
+        if self.refresh_scan_in_progress || self.image_files.is_empty() {
             return;
         }
 
@@ -1389,9 +1742,14 @@ impl ImageViewerApp {
                             self.status_message =
                                 t!("status.found", count = count.to_string()).to_string();
 
-                            // On first batch: resolve initial position and start preloading immediately
+                            // On first batch: resolve initial position and start preloading.
+                            // For refresh scans, initial_image is kept None so that
+                            // resolve_initial_position() does not consume (and reset to None)
+                            // the anchor before the final sorted Done pass.
                             if is_first_batch && count > 0 {
-                                self.resolve_initial_position();
+                                if !self.refresh_scan_in_progress {
+                                    self.resolve_initial_position();
+                                }
                                 // Auto-close the settings panel only during the very first
                                 // startup scan (images_ever_loaded == false).
                                 if !self.images_ever_loaded {
@@ -1407,6 +1765,10 @@ impl ImageViewerApp {
 
                             if self.image_files.is_empty() {
                                 self.status_message = t!("status.not_found").to_string();
+                                // Bug fix: clear refresh state even when directory is empty,
+                                // otherwise refresh_scan_in_progress stays true forever and
+                                // blocks all navigation and future F5 presses.
+                                self.finish_refresh_scan_state();
                             } else {
                                 // Re-sort the full list now that all batches have arrived.
                                 debug_assert_eq!(
@@ -1423,24 +1785,64 @@ impl ImageViewerApp {
                                 self.image_files = paths;
                                 self.file_byte_len_by_index = sizes;
 
-                                // CRITICAL: Global sort finished; all index-keyed caches and
-                                // pending loads may now point at the wrong file.
-                                self.clear_index_keyed_state_after_list_reorder();
-                                self.invalidate_random_slideshow_order();
+                                if self.refresh_scan_in_progress {
+                                    // Refresh path: relocate using the stable anchor path so that
+                                    // the position survives multi-batch scans. Then clear all other
+                                    // index-keyed states except the resolved new_idx.
+                                    if let Some(anchor) = self.refresh_anchor_path.take() {
+                                        // Find where the anchor file landed after sorting.
+                                        if let Some(new_idx) = self.find_index_for_path(&anchor) {
+                                            // Relocate kept state from temporary index 0 to new_idx.
+                                            self.relocate_index_keyed_cache(0, new_idx);
 
-                                // Indices and cache entries were just invalidated by the global sort;
-                                // reset view state so pan/zoom/rotation cannot refer to stale layout.
-                                self.zoom_factor = 1.0;
-                                self.pan_offset = Vec2::ZERO;
-                                self.current_rotation = 0;
+                                            // Wipe all other index-keyed states except the current resolved image at new_idx.
+                                            self.clear_index_keyed_state_after_list_reorder_except_index(new_idx);
+                                            self.invalidate_random_slideshow_order();
 
-                                // Re-resolve position after global sort (indices may have shifted)
-                                self.resolve_initial_position();
+                                            self.current_index = new_idx;
+                                        } else {
+                                            // Anchor file was deleted or not found in the new list:
+                                            // wipe all index-keyed states completely and fall back to index 0.
+                                            self.clear_index_keyed_state_after_list_reorder();
+                                            self.invalidate_random_slideshow_order();
+                                            self.current_index = 0;
+
+                                            // Request loading of the fallback index 0 file
+                                            let fallback_path = self.image_files[0].clone();
+                                            self.loader.request_load(
+                                                0,
+                                                self.generation,
+                                                fallback_path,
+                                                self.settings.raw_high_quality,
+                                            );
+                                        }
+                                    } else {
+                                        // anchor path not set (e.g. list was empty at F5 time)
+                                        self.clear_index_keyed_state_after_list_reorder();
+                                        self.invalidate_random_slideshow_order();
+                                        self.resolve_initial_position();
+                                    }
+                                } else {
+                                    // CRITICAL: Global sort finished; all index-keyed caches and
+                                    // pending loads may now point at the wrong file.
+                                    self.clear_index_keyed_state_after_list_reorder();
+                                    self.invalidate_random_slideshow_order();
+
+                                    // Regular new-directory scan: reset pan/zoom/rotation.
+                                    self.zoom_factor = 1.0;
+                                    self.pan_offset = Vec2::ZERO;
+                                    self.current_rotation = 0;
+
+                                    // Re-resolve position after global sort.
+                                    self.resolve_initial_position();
+                                }
 
                                 let count = self.image_files.len();
                                 self.status_message =
                                     t!("status.found", count = count.to_string()).to_string();
                                 self.schedule_preloads(true);
+
+                                self.finish_refresh_scan_state();
                             }
                             break;
                         }
@@ -1453,17 +1855,26 @@ impl ImageViewerApp {
                     if self.image_files.is_empty() {
                         self.status_message = t!("status.not_found").to_string();
                     }
+                    // Scan thread disconnected unexpectedly: clean up refresh state if active
+                    // and restore slideshow so playback is not left permanently paused.
+                    if self.refresh_scan_in_progress {
+                        self.refresh_anchor_path = None;
+                        log::warn!("[RefreshFileList] Scan thread disconnected; refresh aborted");
+                        self.finish_refresh_scan_state();
+                    }
                     break;
                 }
             }
         }
 
-        if should_schedule_first_batch_preload(
-            first_batch_preload_pending,
-            self.image_files.len(),
-            done,
-            startup_target_pending,
-        ) {
+        if !self.refresh_scan_in_progress
+            && should_schedule_first_batch_preload(
+                first_batch_preload_pending,
+                self.image_files.len(),
+                done,
+                startup_target_pending,
+            )
+        {
             self.schedule_preloads(true);
         }
 
@@ -1473,38 +1884,20 @@ impl ImageViewerApp {
         }
     }
 
+    pub(crate) fn find_index_for_path(&self, path: &std::path::Path) -> Option<usize> {
+        find_index_for_path_impl(&self.image_files, path)
+    }
+
     /// Resolve the starting image index from initial_image or resume settings.
     pub(crate) fn resolve_initial_position(&mut self) {
         if let Some(ref path) = self.initial_image {
-            // Fast path: try direct path comparison first (no syscalls)
-            let found = self.image_files.iter().position(|p| p == path);
-            let found = found.or_else(|| {
-                // Fallback: canonicalize only the target, then compare
-                // with case-insensitive file names to handle path variations
-                // without calling canonicalize() on every file in the list.
-                let target = path.canonicalize().unwrap_or_else(|_| path.clone());
-                let target_name = target
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase());
-                self.image_files.iter().position(|p| {
-                    if let Some(ref tn) = target_name {
-                        if let Some(name) = p.file_name() {
-                            if name.to_string_lossy().to_lowercase() == *tn {
-                                return p.parent() == target.parent()
-                                    || p.canonicalize().ok().as_ref() == Some(&target);
-                            }
-                        }
-                    }
-                    false
-                })
-            });
-            if let Some(pos) = found {
+            if let Some(pos) = self.find_index_for_path(path) {
                 self.current_index = pos;
             }
             self.initial_image = None;
         } else if self.settings.resume_last_image {
             if let Some(last_path) = &self.settings.last_viewed_image {
-                if let Some(pos) = self.image_files.iter().position(|p| p == last_path) {
+                if let Some(pos) = self.find_index_for_path(last_path) {
                     self.current_index = pos;
                 }
             }
@@ -2649,6 +3042,31 @@ fn first_cached_hdr_still_for_index(
     })
 }
 
+fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> Option<usize> {
+    // Fast path: try direct path comparison first (no syscalls)
+    let found = image_files.iter().position(|p| p == path);
+    found.or_else(|| {
+        // Fallback: canonicalize only the target, then compare
+        // with case-insensitive file names to handle path variations
+        // without calling canonicalize() on every file in the list.
+        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let target_name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase());
+        image_files.iter().position(|p| {
+            if let Some(ref tn) = target_name {
+                if let Some(name) = p.file_name() {
+                    if name.to_string_lossy().to_lowercase() == *tn {
+                        return p.parent() == target.parent()
+                            || p.canonicalize().ok().as_ref() == Some(&target);
+                    }
+                }
+            }
+            false
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3153,5 +3571,50 @@ mod tests {
             target_hdr_capacity: 1.0,
         };
         assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
+    }
+
+    #[test]
+    fn test_find_index_for_path_impl_matching() {
+        let files = vec![
+            PathBuf::from("H:/images/photo1.jpg"),
+            PathBuf::from("H:/images/photo2.PNG"),
+            PathBuf::from("H:/images/SUBDIR/photo3.jpg"),
+        ];
+
+        // 1. Exact match
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("H:/images/photo1.jpg")),
+            Some(0)
+        );
+
+        // 2. Case variation on extension
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("H:/images/photo2.png")),
+            Some(1)
+        );
+
+        // 3. Slash variations (Windows vs Unix style)
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("H:\\images\\photo1.jpg")),
+            Some(0)
+        );
+
+        // 4. Case variation in filename/directory
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("h:/images/PHOTO2.png")),
+            Some(1)
+        );
+
+        // 5. Subdirectory matching
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("H:\\images\\SUBDIR\\photo3.jpg")),
+            Some(2)
+        );
+
+        // 6. Not found
+        assert_eq!(
+            find_index_for_path_impl(&files, &PathBuf::from("H:/images/nonexistent.jpg")),
+            None
+        );
     }
 }

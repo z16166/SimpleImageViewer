@@ -225,6 +225,7 @@ hotkeys.action.permanent_delete: "Permanent Delete"
 hotkeys.action.print_current: "Print Current Image"
 hotkeys.action.toggle_goto: "Toggle Goto"
 hotkeys.action.toggle_slideshow: "Toggle Slideshow"
+hotkeys.action.refresh_file_list: "Refresh File List"
 hotkeys.action.quit_app: "Quit App"
 hotkeys.action.exit_fullscreen: "Exit Fullscreen"
 
