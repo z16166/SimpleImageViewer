@@ -388,8 +388,16 @@ impl ImageViewerApp {
             .hdr_placeholder_fallback_indices
             .contains(&self.current_index)
         {
+            if self
+                .hdr_in_flight_fallback_refinements
+                .contains(&self.current_index)
+            {
+                return;
+            }
             if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
                 let source_key = source_key_for_path(&self.image_files[self.current_index]);
+                self.hdr_in_flight_fallback_refinements
+                    .insert(self.current_index);
                 self.loader.trigger_hdr_sdr_fallback_refinement(
                     self.current_index,
                     self.generation,
@@ -599,6 +607,7 @@ impl ImageViewerApp {
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
+        self.hdr_in_flight_fallback_refinements.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
         self.current_hdr_image = None;
@@ -612,6 +621,7 @@ impl ImageViewerApp {
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
         self.hdr_placeholder_fallback_indices.remove(&index);
+        self.hdr_in_flight_fallback_refinements.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
         if self
@@ -1699,11 +1709,10 @@ impl ImageViewerApp {
 
                 LoaderOutput::HdrSdrFallback(update) => {
                     let is_current = update.index == self.current_index;
-                    if update.generation != self.generation {
-                        continue;
-                    }
                     if !source_key_matches_index(&self.image_files, update.index, update.source_key)
                     {
+                        self.hdr_in_flight_fallback_refinements
+                            .remove(&update.index);
                         log::warn!(
                             "[App] HDR SDR fallback discarded (source key mismatch): index={} generation={}",
                             update.index,
@@ -1716,6 +1725,8 @@ impl ImageViewerApp {
                         ctx.request_repaint();
                         break;
                     }
+                    self.hdr_in_flight_fallback_refinements
+                        .remove(&update.index);
                     self.handle_hdr_sdr_fallback_update(update, ctx);
                     uploads_this_frame += 1;
                     if should_request_repaint_for_asset_update(
@@ -2043,13 +2054,16 @@ impl ImageViewerApp {
             self.clear_current_animation_for_index(idx);
 
             if sdr_fallback_is_placeholder {
-                let source_key = source_key_for_path(&self.image_files[idx]);
-                self.loader.trigger_hdr_sdr_fallback_refinement(
-                    idx,
-                    self.generation,
-                    Arc::clone(&hdr),
-                    source_key,
-                );
+                if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
+                    let source_key = source_key_for_path(&self.image_files[idx]);
+                    self.hdr_in_flight_fallback_refinements.insert(idx);
+                    self.loader.trigger_hdr_sdr_fallback_refinement(
+                        idx,
+                        self.generation,
+                        Arc::clone(&hdr),
+                        source_key,
+                    );
+                }
             }
         }
     }
@@ -2063,11 +2077,14 @@ impl ImageViewerApp {
         if !self.hdr_image_cache.contains_key(&idx) {
             return;
         }
+        let Some(fallback_image) = update.fallback else {
+            return;
+        };
         self.hdr_sdr_fallback_indices.insert(idx);
         self.hdr_placeholder_fallback_indices.remove(&idx);
         self.queue_or_upload_static_sdr_texture(
             idx,
-            &update.fallback,
+            &fallback_image,
             format!("img_hdr_fallback_{idx}"),
             ctx,
         );

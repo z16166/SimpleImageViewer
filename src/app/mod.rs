@@ -439,6 +439,8 @@ pub struct ImageViewerApp {
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// HDR indices whose current SDR fallback texture is a temporary black placeholder.
     pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
+    /// HDR indices for which fallback refinement is currently in-flight.
+    pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
     pub(crate) deferred_sdr_uploads: HashMap<usize, crate::loader::DecodedImage>,
     pub(crate) ultra_hdr_capacity_sensitive_indices: HashSet<usize>,

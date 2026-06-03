@@ -366,6 +366,7 @@ impl ImageViewerApp {
             hdr_tiled_preview_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
+            hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
             animation: None,

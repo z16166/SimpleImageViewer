@@ -425,7 +425,7 @@ pub struct HdrSdrFallbackResult {
     pub index: usize,
     pub generation: u64,
     pub source_key: SourceKey,
-    pub fallback: DecodedImage,
+    pub fallback: Option<DecodedImage>,
 }
 
 pub struct TileResult {
