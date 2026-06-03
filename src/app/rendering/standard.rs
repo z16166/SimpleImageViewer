@@ -320,6 +320,7 @@ impl ImageViewerApp {
                         rotation,
                         Some(target_format),
                         Some(render_plan.output_mode),
+                        None,
                     );
                     ui.ctx().request_repaint();
                 }
@@ -366,7 +367,7 @@ impl ImageViewerApp {
 
             // 1. Draw OLD image (underneath or fading out)
             if tp.is_animating {
-                self.draw_prev_image_underneath(ui, screen_rect, &tp, rotation, None, None);
+                self.draw_prev_image_underneath(ui, screen_rect, &tp, rotation, None, None, None);
                 ui.ctx().request_repaint();
             }
 
@@ -385,7 +386,14 @@ impl ImageViewerApp {
         }
     }
 
-    fn draw_prev_image_underneath(
+    /// Draws the previous image underneath the current image for crossfade transitions.
+    ///
+    /// # Parameters
+    /// * `override_dest` - When `Some`, uses this rect directly instead of computing it
+    ///   via `compute_display_rect`. Callers on the tiled path pass `hdr_image_plane_rect(&layout)`
+    ///   so the previous image aligns pixel-perfectly with the current frame. When `None` (standard path),
+    ///   the rect is computed dynamically from the image's native pixel dimensions.
+    pub(crate) fn draw_prev_image_underneath(
         &self,
         ui: &mut egui::Ui,
         screen_rect: Rect,
@@ -393,11 +401,14 @@ impl ImageViewerApp {
         rotation: i32,
         target_format: Option<wgpu::TextureFormat>,
         hdr_output_mode: Option<HdrRenderOutputMode>,
+        override_dest: Option<Rect>,
     ) {
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
             if let (Some(target_format), Some(hdr_output_mode)) = (target_format, hdr_output_mode) {
-                let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
-                let p_dest = self.compute_display_rect(p_size, screen_rect);
+                let p_dest = override_dest.unwrap_or_else(|| {
+                    let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+                    self.compute_display_rect(p_size, screen_rect)
+                });
                 let p_final_dest = Rect::from_center_size(
                     p_dest.center() + tp.prev_offset,
                     p_dest.size() * tp.prev_scale,
@@ -418,9 +429,11 @@ impl ImageViewerApp {
             }
         }
 
-        if let Some(prev) = &self.prev_texture.clone() {
-            let p_size = prev.size_vec2();
-            let p_dest = self.compute_display_rect(p_size, screen_rect);
+        if let Some(ref prev) = self.prev_texture {
+            let p_dest = override_dest.unwrap_or_else(|| {
+                let p_size = prev.size_vec2();
+                self.compute_display_rect(p_size, screen_rect)
+            });
             let p_final_dest = Rect::from_center_size(
                 p_dest.center() + tp.prev_offset,
                 p_dest.size() * tp.prev_scale,

@@ -204,6 +204,7 @@ fn snap_pos_to_rect_edges(pos: Pos2, rect: Rect) -> Pos2 {
 }
 
 /// Parameters computed per-frame for the current transition animation.
+#[derive(Clone, Copy)]
 pub(crate) struct TransitionParams {
     pub alpha: f32,
     pub scale: f32,
@@ -212,6 +213,11 @@ pub(crate) struct TransitionParams {
     pub prev_scale: f32,
     pub prev_offset: Vec2,
     pub is_animating: bool,
+    /// Normalized animation progress in `[0.0, 1.0]`, valid only when `is_animating`.
+    ///
+    /// Exposed so callers that cannot use the pre-computed geometric `alpha`/`offset`
+    /// (e.g. the tiled HDR path) can derive their own easing from raw `t`.
+    pub t: f32,
 }
 
 impl Default for TransitionParams {
@@ -224,6 +230,7 @@ impl Default for TransitionParams {
             prev_scale: 1.0,
             prev_offset: Vec2::ZERO,
             is_animating: false,
+            t: 0.0,
         }
     }
 }
@@ -242,6 +249,7 @@ impl ImageViewerApp {
             if elapsed < duration {
                 p.is_animating = true;
                 let t = (elapsed / duration).clamp(0.0, 1.0);
+                p.t = t;
                 // Easing: Cubic Out
                 let ease_out = 1.0 - (1.0 - t).powi(3);
 
