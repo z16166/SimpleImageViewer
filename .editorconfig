@@ -1,0 +1,26 @@
+# https://editorconfig.org — editors and formatters read this; AI agents do not unless told to.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.rs]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,md,toml,json}]
+indent_style = space
+indent_size = 2
+
+[*.wgsl]
+indent_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+[*.bat]
+end_of_line = crlf
