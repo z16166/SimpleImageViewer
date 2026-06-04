@@ -1,0 +1,411 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::*;
+
+impl ImageViewerApp {
+    pub(crate) fn reload_current(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+
+        // Only trigger reload if the current file is a RAW format, as the setting only affects RAW.
+        let is_raw = self
+            .image_files
+            .get(self.current_index)
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .map(|ext| crate::raw_processor::is_raw_extension(ext))
+            .unwrap_or(false);
+
+        if !is_raw {
+            return;
+        }
+
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+
+        // Cancel all ongoing background tasks (like heavy RAW development)
+        // to immediately free up resources for the new loading request.
+        self.loader.cancel_all();
+
+        // Clear current image from all relevant caches to force a fresh reload from disk
+        self.texture_cache.remove(self.current_index);
+        self.remove_hdr_image_index(self.current_index);
+        self.prefetched_tiles.remove(&self.current_index);
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.animation = None;
+
+        let path = self.image_files[self.current_index].clone();
+        self.loader.request_load(
+            self.current_index,
+            self.generation,
+            path,
+            self.settings.raw_high_quality,
+        );
+
+        // Re-schedule preloads to update nearby images with the new setting as well
+        self.schedule_preloads(true);
+    }
+
+    pub(crate) fn navigate_to(&mut self, new_index: usize) {
+        if self.refresh_scan_in_progress || self.image_files.is_empty() {
+            return;
+        }
+
+        let previous_index = self.current_index;
+        let target_index = new_index % self.image_files.len();
+        if target_index == self.current_index {
+            return;
+        }
+        let preload_forward =
+            navigation_is_forward(previous_index, target_index, self.image_files.len());
+
+        // Setup transition if enabled. We defer transition start until the target
+        // texture is actually ready to draw, avoiding black/stale-frame flashes.
+        if self.settings.transition_style != TransitionStyle::None {
+            let now = Instant::now();
+            if self.settings.transition_style == TransitionStyle::Random {
+                // Pick a random style from the pool using rand for uniform distribution
+                let pool = TransitionStyle::RANDOM_POOL;
+                self.active_transition = *pool
+                    .choose(&mut rand::thread_rng())
+                    .unwrap_or(&TransitionStyle::Fade);
+            } else {
+                self.active_transition = self.settings.transition_style;
+            }
+
+            let source_tex = self.texture_cache.get(self.current_index).cloned();
+            let source_hdr = self.first_cached_hdr_or_tiled_preview_for_index(self.current_index);
+            // Always overwrite transition source. If current index has no texture
+            // (e.g. decode failed and only error text is shown), keeping an older
+            // prev_texture can make unrelated stale pixels flash during next navigation.
+            self.prev_texture = select_transition_source_texture(
+                source_tex,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_texture.clone(),
+            );
+            self.prev_hdr_image = select_transition_source_hdr(
+                source_hdr,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_hdr_image.clone(),
+            );
+            // Handle wrap-around logic for direction
+            self.is_next = target_index > self.current_index
+                || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+            self.transition_start = None;
+            let source_has_texture = self.prev_texture.is_some() || self.prev_hdr_image.is_some();
+            let target_has_texture = self.texture_cache.contains(target_index);
+            let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+                || self.hdr_tiled_source_cache.contains_key(&target_index);
+            let target_placeholder_only = self
+                .hdr_placeholder_fallback_indices
+                .contains(&target_index);
+            if should_start_transition_immediately(
+                target_is_render_ready(
+                    target_has_texture,
+                    target_has_hdr_plane,
+                    target_placeholder_only,
+                ),
+                source_has_texture,
+            ) {
+                self.transition_start =
+                    Some(now - transition_preroll_duration(self.settings.transition_ms));
+                self.pending_transition_target = None;
+            } else {
+                self.pending_transition_target = Some(target_index);
+            }
+
+            if should_reset_transition_when_source_texture_missing(
+                self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+            ) {
+                // No texture available for the source frame: avoid reusing stale
+                // transition state from previous navigation.
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.pending_transition_target = None;
+            }
+        } else {
+            let source_tex = self.texture_cache.get(self.current_index).cloned();
+            let source_hdr = self.first_cached_hdr_or_tiled_preview_for_index(self.current_index);
+            let source_has_texture = source_tex.is_some() || source_hdr.is_some();
+            let target_has_texture = self.texture_cache.contains(target_index);
+            let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+                || self.hdr_tiled_source_cache.contains_key(&target_index);
+            let target_placeholder_only = self
+                .hdr_placeholder_fallback_indices
+                .contains(&target_index);
+            self.active_transition = TransitionStyle::None;
+            self.transition_start = None;
+            self.prev_texture = select_transition_source_texture(
+                source_tex,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_texture.clone(),
+            );
+            self.prev_hdr_image = select_transition_source_hdr(
+                source_hdr,
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+                self.prev_hdr_image.clone(),
+            );
+            self.pending_transition_target = if !target_is_render_ready(
+                target_has_texture,
+                target_has_hdr_plane,
+                target_placeholder_only,
+            ) && source_has_texture
+            {
+                Some(target_index)
+            } else {
+                None
+            };
+            if should_reset_transition_when_source_texture_missing(
+                self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+            ) {
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+                self.pending_transition_target = None;
+            }
+        }
+
+        preserve_current_tile_manager_for_navigation(
+            self.current_index,
+            target_index,
+            &mut self.tile_manager,
+            &mut self.prefetched_tiles,
+        );
+        self.current_index = target_index;
+        self.current_hdr_image = self
+            .first_cached_hdr_still_for_index(self.current_index)
+            .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
+        self.current_hdr_tiled_image = self
+            .hdr_tiled_source_cache
+            .get(&self.current_index)
+            .cloned()
+            .map(|source| crate::app::CurrentHdrTiledImage::new(self.current_index, source));
+        self.current_hdr_tiled_preview = self
+            .hdr_tiled_preview_cache
+            .get(&self.current_index)
+            .cloned()
+            .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
+        self.current_rotation = 0;
+        self.zoom_factor = 1.0;
+        self.pan_offset = Vec2::ZERO;
+        self.animation = None;
+
+        // Update resolution if already in cache (for immediate low-res display)
+        if self.texture_cache.contains(self.current_index) {
+            if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                self.current_image_res = Some((w, h));
+            } else if let Some(texture) = self.texture_cache.get(self.current_index) {
+                let size = texture.size();
+                self.current_image_res = Some((size[0] as u32, size[1] as u32));
+            }
+        } else {
+            self.current_image_res = None;
+        }
+
+        self.last_switch_time = Instant::now();
+        self.error_message = None;
+        self.is_font_error = false;
+        // Close any open EXIF/XMP modal — it shows data for the previous image
+        if matches!(
+            self.active_modal,
+            Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_))
+                | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))
+        ) {
+            self.active_modal = None;
+        }
+
+        // Try to pull from predictive cache if available
+        if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
+            if let Some(hdr_frames) = &cached_anim.hdr_frames {
+                if let Some(hdr) = hdr_frames.first() {
+                    self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
+                        self.current_index,
+                        Arc::clone(hdr),
+                    ));
+                }
+            }
+            self.animation = Some(AnimationPlayback {
+                image_index: cached_anim.image_index,
+                textures: cached_anim.textures.clone(),
+                hdr_frames: cached_anim.hdr_frames.clone(),
+                delays: cached_anim.delays.clone(),
+                current_frame: 0,
+                frame_start: Instant::now(),
+            });
+        }
+
+        // Check if we have a prefetched TileManager ready to use!
+        if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
+            // We successfully hit the cache!
+            // Save the prefetch-phase generation before incrementing. Any in-flight HQ preview
+            // tasks (HDR or SDR) were spawned with this old generation. We record it so that
+            // handle_preview_update() can accept their results instead of discarding them as
+            // stale — avoiding a from-scratch re-render of huge EXR/JXL files.
+            let prefetch_gen = self.generation;
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            self.prefetch_prev_generation = Some(prefetch_gen);
+
+            tm.generation = self.generation;
+            self.current_image_res = Some((tm.full_width, tm.full_height));
+
+            // Trigger deferred refinement for RAW sources (LibRaw demosaic).
+            // HDR tiled sources: in-flight prefetch tasks carry `prefetch_gen` and will be
+            // accepted by handle_preview_update via prefetch_prev_generation — no re-spawn needed.
+            tm.get_source()
+                .request_refinement(self.current_index, self.generation);
+
+            self.tile_manager = Some(tm);
+
+            log::debug!(
+                "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
+                self.current_index,
+                prefetch_gen,
+                self.generation
+            );
+        } else if self.has_loaded_asset(self.current_index) {
+            // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
+            self.prefetch_prev_generation = None;
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            let is_tiled = self
+                .texture_cache
+                .is_preview_placeholder(self.current_index);
+            if is_tiled && self.tile_manager.is_none() {
+                // Defensive fallback for any tiled preview (SDR or HDR with missing source cache)
+                // that doesn't have a TileManager installed.
+                if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                    self.current_image_res = Some((w, h));
+                }
+                self.loader.request_load(
+                    self.current_index,
+                    self.generation,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                );
+            } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                self.current_image_res = Some((hdr.width, hdr.height));
+            } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
+                self.current_image_res = Some((src.width(), src.height()));
+                // Defensive fallback: if it is a tiled HDR image but the TileManager is missing,
+                // trigger a request_load to rebuild the TileManager.
+                if self.tile_manager.is_none() {
+                    self.loader.request_load(
+                        self.current_index,
+                        self.generation,
+                        self.image_files[self.current_index].clone(),
+                        self.settings.raw_high_quality,
+                    );
+                }
+            } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
+                self.current_image_res = Some((decoded.width, decoded.height));
+            }
+        } else {
+            // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
+            // so handle_preview_update doesn't erroneously accept stale old-gen results.
+            self.prefetch_prev_generation = None;
+            // ALWAYS increment generation on every navigation and request a fresh load.
+            // This ensures TileManager is re-initialized for large images and
+            // low-res thumbnails are upgraded to full resolution.
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            self.loader.request_load(
+                self.current_index,
+                self.generation,
+                self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
+            );
+        }
+
+        // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
+        self.evict_distant_prefetch_caches();
+
+        self.schedule_preloads(preload_forward);
+        // When a prefetch hit occurred, also_keep_preview preserves any Preview result for the
+        // current index that still carries the old prefetch generation — it may have arrived in
+        // the channel between the generation bump and now and must not be thrown away.
+        let also_keep = self
+            .prefetch_prev_generation
+            .map(|old_gen| (self.current_index, old_gen));
+        self.loader
+            .discard_pending_stale_outputs(self.generation, also_keep);
+        self.trigger_current_hdr_fallback_refinement_if_needed();
+    }
+
+    pub(crate) fn navigate_next(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let idx = (self.current_index + 1) % self.image_files.len();
+        self.navigate_to(idx);
+    }
+
+    pub(crate) fn navigate_prev(&mut self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let idx = if self.current_index == 0 {
+            self.image_files.len() - 1
+        } else {
+            self.current_index - 1
+        };
+        self.navigate_to(idx);
+    }
+
+    pub(crate) fn navigate_first(&mut self) {
+        self.navigate_to(0);
+    }
+
+    pub(crate) fn navigate_last(&mut self) {
+        if !self.image_files.is_empty() {
+            let last = self.image_files.len() - 1;
+            self.navigate_to(last);
+        }
+    }
+
+    pub(crate) fn shuffle_slideshow_order_to_first(&mut self) {
+        if self.image_files.is_empty() {
+            self.random_slideshow_order_ready = false;
+            return;
+        }
+
+        self.shuffle_current_image_list_preserving_pairs();
+        self.clear_index_keyed_state_after_list_reorder();
+
+        self.current_index = 0;
+        self.current_rotation = 0;
+        self.zoom_factor = 1.0;
+        self.pan_offset = Vec2::ZERO;
+        self.error_message = None;
+        self.is_font_error = false;
+        self.random_slideshow_order_ready = true;
+        self.last_switch_time = Instant::now();
+
+        self.loader.request_load(
+            self.current_index,
+            self.generation,
+            self.image_files[self.current_index].clone(),
+            self.settings.raw_high_quality,
+        );
+        self.schedule_preloads(true);
+    }
+}

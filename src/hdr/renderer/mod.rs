@@ -1,0 +1,282 @@
+﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#[cfg(feature = "heif-native")]
+#[path = "../apple_compose_gpu.rs"]
+mod apple_compose_gpu;
+#[path = "../jpeg_compose_gpu.rs"]
+mod jpeg_compose_gpu;
+
+mod output_mode;
+pub(crate) use output_mode::hdr_sdr_framebuffer_needs_manual_srgb_oetf;
+pub use output_mode::{
+    HdrRenderOutputMode, hdr_egui_overlay_diagnostics, hdr_render_output_diagnostics,
+};
+
+mod shader_source;
+use shader_source::HDR_IMAGE_PLANE_SHADER;
+
+mod tone_map_uniform;
+use self::tone_map_uniform::{
+    ToneMapUniform, hdr_tile_tone_map_uniform, image_tone_map_uniform,
+    libavif_tone_map_native_display_scale,
+};
+
+pub(super) mod image_key;
+pub(super) use self::image_key::{HdrImageKey, HdrTileKey};
+
+pub(super) mod resources;
+pub(super) use self::resources::{
+    CallbackUpload, HDR_APPLE_GAIN_TEXTURE_FORMAT, HdrCallbackResources, HdrImageBinding,
+    ImagePlaneUpload, JpegTiledUploadKey, create_callback_resources,
+};
+
+pub(super) mod tile_cache;
+pub(super) use self::tile_cache::{HdrTileBindings, iso_deferred_tile_compose_views_reusable};
+
+pub(super) mod upload;
+pub(super) use self::upload::{
+    create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
+    rgba32f_as_bytes, upload_callback_tile, upload_image_plane, upload_jpeg_tiled_source_textures,
+    validate_upload_layout,
+};
+
+pub(super) mod image_callback;
+pub(super) use self::image_callback::HdrImagePlaneCallback;
+
+pub(super) mod tile_callback;
+pub(super) use self::tile_callback::HdrTilePlaneCallback;
+
+#[cfg(feature = "heif-native")]
+use super::heif_apple_gain_map::apple_gain_map_display_weight;
+#[cfg(feature = "heif-native")]
+use super::heif_apple_gain_map_gpu::apple_heic_deferred_from_metadata;
+use super::jpeg_gain_map_gpu::iso_deferred_from_metadata;
+use super::types::{
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
+};
+use crate::hdr::gain_map::GainMapMetadata;
+use eframe::{
+    egui,
+    egui_wgpu::{self, CallbackResources, CallbackTrait},
+};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+
+pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+pub(crate) const RIPPLE_CLIP_INSIDE: u32 = 1;
+pub(crate) const RIPPLE_CLIP_OUTSIDE: u32 = 2;
+
+#[allow(dead_code)]
+pub struct UploadedHdrImage {
+    pub size: wgpu::Extent3d,
+    pub format: wgpu::TextureFormat,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+}
+
+pub struct HdrImageRenderer {
+    pub tone_map: HdrToneMapSettings,
+    uploaded_image: Option<UploadedHdrImage>,
+}
+
+impl HdrImageRenderer {
+    pub fn new() -> Self {
+        Self {
+            tone_map: HdrToneMapSettings::default(),
+            uploaded_image: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn uploaded_image(&self) -> Option<&UploadedHdrImage> {
+        self.uploaded_image.as_ref()
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_uploaded_image(&mut self) {
+        self.uploaded_image = None;
+    }
+
+    #[allow(dead_code)]
+    pub fn upload_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &HdrImageBuffer,
+    ) -> Result<(), String> {
+        let layout = validate_upload_layout(image, device.limits().max_texture_dimension_2d)?;
+        let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+            rgba32f_as_bytes(image.rgba_f32.as_slice()),
+            image.width,
+            image.height,
+            std::mem::size_of::<f32>() as u32 * 4,
+        )
+        .map_err(|err| format!("HDR upload: {err}"))?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("simple-image-viewer-hdr-image-plane"),
+            size: layout.size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: layout.format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &upload_bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(layout.size.height),
+            },
+            layout.size,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("simple-image-viewer-hdr-image-plane-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        self.uploaded_image = Some(UploadedHdrImage {
+            size: layout.size,
+            format: layout.format,
+            texture,
+            view,
+            sampler,
+        });
+
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+pub fn hdr_image_plane_callback(
+    rect: egui::Rect,
+    image: Arc<HdrImageBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+) -> egui::Shape {
+    hdr_image_plane_callback_with_uv(
+        rect,
+        image,
+        tone_map,
+        target_format,
+        output_mode,
+        rotation_steps,
+        alpha,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        None,
+    )
+}
+
+pub fn hdr_image_plane_callback_with_uv(
+    rect: egui::Rect,
+    image: Arc<HdrImageBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+    uv_rect: egui::Rect,
+    ripple: Option<(egui::Pos2, f32, f32, u32)>,
+) -> egui::Shape {
+    egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        HdrImagePlaneCallback {
+            image,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps: rotation_steps % 4,
+            alpha,
+            uv_rect,
+            ripple,
+        },
+    ))
+}
+
+#[allow(dead_code)]
+pub fn hdr_tile_plane_callback(
+    rect: egui::Rect,
+    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+) -> egui::Shape {
+    hdr_tile_plane_callback_with_uv(
+        rect,
+        tile,
+        tone_map,
+        target_format,
+        output_mode,
+        rotation_steps,
+        alpha,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+    )
+}
+
+#[allow(dead_code)]
+pub fn hdr_tile_plane_callback_with_uv(
+    rect: egui::Rect,
+    tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
+    tone_map: HdrToneMapSettings,
+    target_format: wgpu::TextureFormat,
+    output_mode: HdrRenderOutputMode,
+    rotation_steps: u32,
+    alpha: f32,
+    uv_rect: egui::Rect,
+) -> egui::Shape {
+    egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        HdrTilePlaneCallback {
+            tile,
+            tone_map,
+            target_format,
+            output_mode,
+            rotation_steps: rotation_steps % 4,
+            alpha,
+            uv_rect,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests;
