@@ -1,0 +1,494 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::*;
+
+impl ImageViewerApp {
+    pub(crate) fn process_file_op_results(&mut self) {
+        while let Ok(res) = self.file_op_rx.try_recv() {
+            match res {
+                FileOpResult::Delete(path, original_idx, res) => {
+                    if let Err(e) = res {
+                        log::error!("Failed to delete {:?}: {}", path, e);
+                        self.error_message =
+                            Some(t!("status.delete_failed", err = e.to_string()).to_string());
+
+                        // ROLLBACK: Restore the file to the in-memory list if it failed to delete.
+                        // We use the original index to maintain order.
+                        if original_idx <= self.image_files.len() {
+                            self.image_files.insert(original_idx, path.clone());
+                            let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.insert(original_idx, sz);
+                        } else {
+                            self.image_files.push(path.clone());
+                            let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.push(sz);
+                        }
+
+                        // Restore viewer state to ensure consistency.
+                        // We jump back to the file that failed to delete to ensure the index is valid.
+                        self.current_index = original_idx;
+                        self.generation = self.generation.wrapping_add(1);
+                        self.loader.set_generation(self.generation);
+                        self.status_message =
+                            t!("status.found", count = self.image_files.len().to_string())
+                                .to_string();
+                        self.images_ever_loaded = true;
+                        self.schedule_preloads(true);
+                    } else {
+                        log::info!("Successfully deleted {:?}", path);
+                    }
+                }
+                FileOpResult::Exif(path, data) => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(ref mut state)) =
+                        self.active_modal
+                    {
+                        if state.path == path {
+                            state.data = data;
+                            state.loading = false;
+                        }
+                    }
+                }
+                FileOpResult::Xmp(path, data) => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(ref mut state)) =
+                        self.active_modal
+                    {
+                        if state.path == path {
+                            if let Some((d, x)) = data {
+                                state.data = Some(d);
+                                state.xml = Some(x);
+                            } else {
+                                state.data = None;
+                                state.xml = None;
+                            }
+                            state.loading = false;
+                        }
+                    }
+                }
+                FileOpResult::Wallpaper {
+                    current,
+                    monitors,
+                    supports_per_monitor,
+                } => {
+                    if let Some(crate::ui::dialogs::modal_state::ActiveModal::Wallpaper(
+                        ref mut state,
+                    )) = self.active_modal
+                    {
+                        state.apply_wallpaper_probe(current, monitors, supports_per_monitor);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process results from the background ImageLoader.
+    pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
+        self.flush_deferred_sdr_upload_for_current(ctx);
+
+        // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
+        const ANIM_UPLOAD_QUOTA: usize = 8;
+        if let Some(ref mut pending) = self.pending_anim_frames {
+            let mut uploaded = 0;
+            while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
+                let i = pending.next_frame;
+                let frame = &pending.frames[i];
+                let color_image = ColorImage::from_rgba_unmultiplied(
+                    [frame.width as usize, frame.height as usize],
+                    frame.rgba(),
+                );
+                let name = format!("anim_{}_{}", pending.image_index, i);
+                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                pending.textures.push(handle);
+                pending.delays.push(frame.delay);
+                pending.next_frame += 1;
+                uploaded += 1;
+            }
+
+            // Check if all frames have been uploaded
+            if pending.next_frame >= pending.frames.len() {
+                let idx = pending.image_index;
+
+                // Build the final AnimationPlayback from the now-complete upload
+                let playback = AnimationPlayback {
+                    image_index: idx,
+                    textures: std::mem::take(&mut pending.textures),
+                    hdr_frames: pending.hdr_frames.clone(),
+                    delays: std::mem::take(&mut pending.delays),
+                    current_frame: 0,
+                    frame_start: Instant::now(),
+                };
+
+                if idx == self.current_index {
+                    if let Some(hdr_frames) = &playback.hdr_frames {
+                        if let Some(hdr) = hdr_frames.first() {
+                            self.current_hdr_image =
+                                Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
+                        }
+                    }
+                    self.animation = Some(AnimationPlayback {
+                        image_index: playback.image_index,
+                        textures: playback.textures.clone(),
+                        hdr_frames: playback.hdr_frames.clone(),
+                        delays: playback.delays.clone(),
+                        current_frame: 0,
+                        frame_start: Instant::now(),
+                    });
+                }
+                self.animation_cache.insert(idx, playback);
+                self.pending_anim_frames = None;
+            } else {
+                // More frames remain — ask for another repaint
+                ctx.request_repaint();
+            }
+        }
+
+        // ── 2. Process results from the background ImageLoader ──
+        //
+        // Generation vs `prefetch_prev_generation` (why Preview is special):
+        // `handle_preview_update` accepts HQ preview results whose `generation` equals
+        // `prefetch_prev_generation` for the current index, because refinement can finish after
+        // we bump `self.generation` when promoting a prefetched `TileManager`. `LoaderOutput::Image`
+        // uses no analogous bypass: decoded images are keyed to the generation from the active
+        // `request_load` / refinement request (`do_load` tracks that generation), so they either match
+        // `self.generation` in `gen_match` below or must be dropped; extending the prefetch survivor rule
+        // here would widen the stale-result window without a matching in-flight Image pipeline.
+        //
+        // QUOTA DESIGN:
+        //   - We count each ctx.load_texture() call as one "upload slot".
+        //   - Tile results and Refined notifications do NOT consume slots
+        //     (they don't call load_texture on the main thread path).
+        //   - The current image is always allowed through, regardless of quota,
+        //     so switching images is never blocked by background preload traffic.
+        //   - When quota is reached, the polled-but-unprocessed item is pushed
+        //     back via repush() so it is the first thing processed next frame.
+        const GLOBAL_UPLOAD_QUOTA: usize = 3;
+        let mut uploads_this_frame: usize = 0;
+
+        while let Some(output) = self.loader.poll() {
+            match output {
+                LoaderOutput::Image(load_result) => {
+                    let idx = load_result.index;
+                    let generation = load_result.generation;
+                    let is_current = idx == self.current_index;
+                    let gen_match = generation == self.generation;
+
+                    // CRITICAL: Drop any stale results, even for the current index.
+                    // This prevents a race where deleting an image reuses the index
+                    // but a late decode from the deleted file arrives and overwrites
+                    // the new current image state.
+                    if !gen_match {
+                        self.loader.finish_image_request(idx, generation);
+                        continue;
+                    }
+                    if !source_key_matches_index(&self.image_files, idx, load_result.source_key) {
+                        log::warn!(
+                            "[App] Image result discarded (source key mismatch): index={} generation={}",
+                            idx,
+                            generation
+                        );
+                        self.loader.finish_image_request(idx, generation);
+                        continue;
+                    }
+
+                    // DESIGN: The current image ALWAYS bypasses the upload quota.
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
+                    self.loader.finish_image_request(idx, generation);
+                    if let Some((requeue_idx, requeue_gen, requeue_path)) =
+                        self.handle_image_load_result(load_result, ctx)
+                    {
+                        // The slot was just freed by finish_image_request above; it is now safe to
+                        // re-queue.  The loader holds the current (correct) HDR capacity.
+                        self.loader.request_load(
+                            requeue_idx,
+                            requeue_gen,
+                            requeue_path,
+                            self.settings.raw_high_quality,
+                        );
+                    }
+                    uploads_this_frame += 1;
+
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::ImageLoaded,
+                        is_current,
+                        false,
+                    ) {
+                        ctx.request_repaint();
+                    }
+                }
+
+                LoaderOutput::Preview(preview_update) => {
+                    let preview_is_current = preview_update.index == self.current_index;
+                    if !source_key_matches_index(
+                        &self.image_files,
+                        preview_update.index,
+                        preview_update.source_key,
+                    ) {
+                        log::warn!(
+                            "[App] Preview update discarded (source key mismatch): index={} generation={}",
+                            preview_update.index,
+                            preview_update.generation
+                        );
+                        continue;
+                    }
+
+                    // DESIGN: Mirror the Image bypass — the current image's HQ preview
+                    // also skips the quota.
+                    if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader.repush(LoaderOutput::Preview(preview_update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    self.handle_preview_update(preview_update, ctx);
+                    uploads_this_frame += 1;
+                }
+
+                LoaderOutput::Tile(tile_result) => {
+                    // Tile signals are free: pixels live in PIXEL_CACHE; GPU upload
+                    // happens lazily in the tile rendering pass, not here.
+                    self.handle_tile_load_result(tile_result, ctx);
+                }
+
+                LoaderOutput::Refined(idx, gen_id) => {
+                    // Metadata-only notification — no load_texture call here.
+                    self.handle_refined_notification(idx, gen_id, ctx);
+                }
+
+                LoaderOutput::HdrSdrFallback(update) => {
+                    let is_current = update.index == self.current_index;
+                    if !source_key_matches_index(&self.image_files, update.index, update.source_key)
+                    {
+                        self.hdr_in_flight_fallback_refinements
+                            .remove(&update.index);
+                        log::warn!(
+                            "[App] HDR SDR fallback discarded (source key mismatch): index={} generation={}",
+                            update.index,
+                            update.generation
+                        );
+                        continue;
+                    }
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    self.hdr_in_flight_fallback_refinements
+                        .remove(&update.index);
+                    self.handle_hdr_sdr_fallback_update(update, ctx);
+                    uploads_this_frame += 1;
+                    if should_request_repaint_for_asset_update(
+                        AssetUpdateKind::ImageLoaded,
+                        is_current,
+                        false,
+                    ) {
+                        ctx.request_repaint();
+                    }
+                }
+            }
+
+            // Secondary quota check after each processed item.
+            if uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                ctx.request_repaint();
+                break;
+            }
+        }
+
+        // Start any deferred transition exactly when the target texture is ready.
+        // This runs AFTER processing loader outputs so we don't render one static
+        // frame in between "texture became ready" and "transition started".
+        if can_start_pending_transition(
+            self.pending_transition_target,
+            self.current_index,
+            target_is_render_ready(
+                self.texture_cache.contains(self.current_index),
+                self.current_hdr_image
+                    .as_ref()
+                    .is_some_and(|current| current.image_for_index(self.current_index).is_some())
+                    || self.hdr_image_cache.contains_key(&self.current_index)
+                    || self
+                        .hdr_tiled_source_cache
+                        .contains_key(&self.current_index),
+                self.hdr_placeholder_fallback_indices
+                    .contains(&self.current_index),
+            ),
+        ) {
+            if self.active_transition != TransitionStyle::None {
+                self.transition_start =
+                    Some(Instant::now() - transition_preroll_duration(self.settings.transition_ms));
+            } else {
+                // No-transition mode uses `prev_texture` only as a one-frame safety net while
+                // waiting for the target texture. Once current texture is ready, release it
+                // immediately instead of keeping an extra stale handle until next navigation.
+                self.prev_texture = None;
+                self.prev_hdr_image = None;
+            }
+            self.pending_transition_target = None;
+        }
+    }
+
+    /// Handles a Refined notification: bumps generation so TileManager
+    /// re-fetches tiles from the newly developed high-resolution buffer.
+    pub(super) fn handle_refined_notification(
+        &mut self,
+        idx: usize,
+        gen_id: u64,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index && gen_id == self.generation {
+            log::info!("[App] Refined image notification for index={}", idx);
+
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+
+            if let Some(tm) = &mut self.tile_manager {
+                log::info!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
+                tm.generation = self.generation;
+                tm.pending_tiles.clear();
+                self.texture_cache.remove(idx);
+                self.remove_hdr_image_index(idx);
+            } else {
+                log::warn!(
+                    "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
+                );
+                self.texture_cache.remove(idx);
+                self.remove_hdr_image_index(idx);
+                self.loader.request_load(
+                    self.current_index,
+                    self.generation,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                );
+            }
+
+            self.loader.flush_tile_queue();
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::RefinedFullPlane,
+                true,
+                false,
+            ) {
+                ctx.request_repaint();
+            }
+        } else {
+            // Non-current image refined in background OR stale refinement result.
+
+            // CRITICAL: If it's the current index but the generation doesn't match,
+            // it's a stale result from a previous visit. We MUST NOT evict the
+            // CURRENT texture cache, otherwise the screen will flicker or go blank.
+            if idx == self.current_index {
+                log::info!(
+                    "[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})",
+                    idx,
+                    gen_id,
+                    self.generation
+                );
+                return;
+            }
+
+            log::info!(
+                "[App] Refined: background update for index {} (not current). Invalidating caches.",
+                idx
+            );
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.texture_cache.remove(idx);
+            self.remove_hdr_image_index(idx);
+        }
+    }
+
+    /// Returns `Some((idx, generation, path))` when the result was stale (wrong HDR capacity) and
+    /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
+    /// slot.
+    pub(crate) fn handle_image_load_result(
+        &mut self,
+        load_result: LoadResult,
+        ctx: &egui::Context,
+    ) -> Option<(usize, u64, std::path::PathBuf)> {
+        let idx = load_result.index;
+        let generation = load_result.generation;
+        let preview_bundle = load_result.preview_bundle.clone();
+
+        if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
+            log::info!(
+                "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
+                idx,
+                load_result.target_hdr_capacity,
+                self.ultra_hdr_decode_capacity
+            );
+            if !self.image_files.is_empty() && idx < self.image_files.len() {
+                return Some((idx, generation, self.image_files[idx].clone()));
+            }
+            return None;
+        }
+
+        match ImageInstallPlan::from_load_result(&load_result) {
+            ImageInstallPlan::StaticSdr { decoded } => {
+                self.install_static_sdr_image(idx, decoded, ctx);
+            }
+            ImageInstallPlan::StaticHdr {
+                hdr,
+                fallback,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_static_hdr_image(
+                    idx,
+                    hdr,
+                    fallback,
+                    load_result.sdr_fallback_is_placeholder,
+                    ultra_hdr_capacity_sensitive,
+                    ctx,
+                );
+            }
+            ImageInstallPlan::Tiled {
+                source,
+                hdr_source,
+                hdr_preview,
+                hdr_sdr_fallback,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_tiled_image(
+                    idx,
+                    generation,
+                    source,
+                    hdr_source,
+                    preview_bundle.sdr(),
+                    hdr_preview,
+                    hdr_sdr_fallback,
+                    ultra_hdr_capacity_sensitive,
+                    ctx,
+                );
+            }
+            ImageInstallPlan::Animated { frames } => {
+                self.install_animated_image(idx, frames, ctx);
+            }
+            ImageInstallPlan::HdrAnimated {
+                frames,
+                ultra_hdr_capacity_sensitive,
+            } => {
+                self.install_hdr_animated_image(idx, frames, ultra_hdr_capacity_sensitive, ctx);
+            }
+            ImageInstallPlan::Error { error } => {
+                self.install_image_error(idx, error);
+            }
+        }
+        None
+    }
+}

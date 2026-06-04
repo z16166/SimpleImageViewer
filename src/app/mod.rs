@@ -1,4 +1,4 @@
-// Simple Image Viewer - A high-performance, cross-platform image viewer
+﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// ── Submodules ──────────────────────────────────────────────────────────────
+// 鈹€鈹€ Submodules 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;
@@ -407,7 +407,7 @@ pub struct ImageViewerApp {
     /// swap-chain target format here after every successful runtime hot-swap.
     /// The application reads from this mailbox in `logic()` instead of trusting
     /// `frame.wgpu_render_state().target_format`, because `egui_wgpu::RenderState`
-    /// derives `Clone` and eframe stores a clone in `Frame` — the painter's
+    /// derives `Clone` and eframe stores a clone in `Frame` 鈥?the painter's
     /// post-swap mutation of `RenderState.target_format` is therefore never
     /// observable through `wgpu_render_state()`. Without this side channel the
     /// OSD freezes on the very first runtime swap (e.g. moving the window from
@@ -476,7 +476,7 @@ pub struct ImageViewerApp {
     pub(crate) is_font_error: bool,
     /// Incremented each time a modal dialog is opened.
     /// Included in each dialog's egui Window Id so that egui has no position
-    /// memory from a previous opening — the dialog always starts centered.
+    /// memory from a previous opening 鈥?the dialog always starts centered.
     pub(crate) modal_generation: u32,
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
@@ -496,7 +496,7 @@ pub struct ImageViewerApp {
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,
 
-    // Active modal dialog — only one can be open at a time.
+    // Active modal dialog 鈥?only one can be open at a time.
     // All per-dialog state lives inside the enum variant; setting this to None
     // automatically drops and cleans up the dialog's temporary data.
     pub(crate) active_modal: Option<ActiveModal>,
@@ -935,7 +935,7 @@ impl eframe::App for ImageViewerApp {
             // Diagnostic: log the FIRST time we observe a placement, then
             // only on subsequent changes at debug level. If the first-time
             // log never appears, `viewport.outer_rect` is `None` on this
-            // build and we have no position to persist — that would explain
+            // build and we have no position to persist 鈥?that would explain
             // why the saved-position recall does nothing on a fresh install.
             let was_unset = self.cached_window_placement.is_none();
             let changed = self.cached_window_placement != Some(placement);
@@ -995,20 +995,20 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        // ── Drag-and-Drop handling (cross-platform via egui/winit) ───────
+        // 鈹€鈹€ Drag-and-Drop handling (cross-platform via egui/winit) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(dropped_file) = dropped.into_iter().next() {
             if let Some(path) = dropped_file.path {
                 // Guard: don't re-trigger if we're already scanning from a previous drop
                 if !self.scanning {
                     if path.is_dir() {
-                        // Dropped a directory — scan it (non-recursive to avoid surprises)
+                        // Dropped a directory 鈥?scan it (non-recursive to avoid surprises)
                         log::info!("Drop: opening directory {:?}", path);
                         self.settings.recursive = false;
                         self.load_directory(path);
                         self.queue_save();
                     } else if path.is_file() {
-                        // Dropped a single file — check if it's a supported format
+                        // Dropped a single file 鈥?check if it's a supported format
                         let is_supported = path
                             .extension()
                             .map(|ext| crate::scanner::is_supported_extension(ext))
@@ -1117,7 +1117,7 @@ impl eframe::App for ImageViewerApp {
 
         // If the active monitor's HDR capability disagrees with the current
         // swap-chain target format, ask the Painter to hot-swap. This is what
-        // makes `Rgba16Float` ↔ `Bgra8Unorm` follow the user as they drag the
+        // makes `Rgba16Float` 鈫?`Bgra8Unorm` follow the user as they drag the
         // window between an HDR monitor and an SDR monitor at runtime.
         //
         // `desired_target_format_for_active_monitor` returns `None` when the
@@ -1125,7 +1125,7 @@ impl eframe::App for ImageViewerApp {
         // (transient DXGI hand-off, brief `EnumWindows` hiccups, the very
         // first frames before the first probe has completed). We MUST treat
         // that as "no opinion / keep current format" rather than blindly
-        // demoting to `Bgra8Unorm` — otherwise we would request a swap-chain
+        // demoting to `Bgra8Unorm` 鈥?otherwise we would request a swap-chain
         // demotion every frame the probe was pending, defeating the
         // spawn-time HDR detection that already chose the correct initial
         // format.
@@ -1211,7 +1211,7 @@ impl eframe::App for ImageViewerApp {
         self.process_file_op_results();
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
-        // mode preemption) and needs a full restart — same path as toggling the checkbox.
+        // mode preemption) and needs a full restart 鈥?same path as toggling the checkbox.
         if self.settings.play_music && self.audio.take_needs_restart() {
             log::warn!("[UI] Audio stall detected by watchdog, triggering full restart");
             self.force_restart_audio();
@@ -1311,9 +1311,9 @@ impl eframe::App for ImageViewerApp {
             self.last_show_settings = false;
         }
 
-        // Detect modal transitions: None → Some means a new dialog just opened.
+        // Detect modal transitions: None 鈫?Some means a new dialog just opened.
         // Incrementing modal_generation makes the egui::Window Id unique for this
-        // opening — egui has no position memory from previous openings, so the
+        // opening 鈥?egui has no position memory from previous openings, so the
         // dialog always appears at the calculated center position.
         {
             let id = egui::Id::new(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
@@ -1328,7 +1328,7 @@ impl eframe::App for ImageViewerApp {
         // Dispatch the single active modal dialog (MovableModal handles the overlay)
         self.dispatch_active_modal(&ctx);
 
-        // ── Music HUD (Foreground Layer) ─────────────────────────────────
+        // 鈹€鈹€ Music HUD (Foreground Layer) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         self.draw_music_hud_foreground(&ctx);
     }
 }
@@ -1349,7 +1349,7 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
         let val = if f.tag == exif::Tag::Orientation {
             match f.value.get_uint(0) {
                 Some(n) if (1..=8).contains(&n) => {
-                    format!("{} — {}", n, f.display_value().with_unit(&exif))
+                    format!("{} 鈥?{}", n, f.display_value().with_unit(&exif))
                 }
                 _ => format!("{}", f.display_value().with_unit(&exif)),
             }
@@ -1480,230 +1480,4 @@ pub(crate) fn extract_xmp(path: &std::path::Path) -> Option<(Vec<(String, String
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
-
-    #[test]
-    fn current_hdr_image_only_matches_its_source_index() {
-        let image = Arc::new(HdrImageBuffer {
-            width: 1,
-            height: 1,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: HdrColorSpace::LinearSrgb,
-            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
-            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
-        });
-        let current = CurrentHdrImage::new(7, Arc::clone(&image));
-
-        assert!(current.image_for_index(6).is_none());
-        assert!(Arc::ptr_eq(current.image_for_index(7).unwrap(), &image));
-    }
-
-    #[test]
-    fn current_hdr_tiled_image_only_matches_its_source_index() {
-        let image = HdrImageBuffer {
-            width: 1,
-            height: 1,
-            format: HdrPixelFormat::Rgba32Float,
-            color_space: HdrColorSpace::LinearSrgb,
-            metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
-            rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
-        };
-        let source: Arc<dyn crate::hdr::tiled::HdrTiledSource> = Arc::new(
-            crate::hdr::tiled::HdrTiledImageSource::new(image).expect("valid HDR tiled source"),
-        );
-        let current = CurrentHdrTiledImage::new(7, Arc::clone(&source));
-
-        assert!(current.source_for_index(6).is_none());
-        assert!(Arc::ptr_eq(current.source_for_index(7).unwrap(), &source));
-    }
-
-    #[test]
-    fn hardware_tier_scales_hdr_tile_cache_budget() {
-        assert_eq!(HardwareTier::Low.hdr_tile_cache_mb(), 256);
-        assert_eq!(HardwareTier::Medium.hdr_tile_cache_mb(), 512);
-        assert_eq!(HardwareTier::High.hdr_tile_cache_mb(), 1024);
-    }
-
-    #[test]
-    fn memory_aware_tile_cache_budgets_keep_tier_defaults_when_memory_is_available() {
-        assert_eq!(
-            memory_aware_tile_cache_budgets_mb(HardwareTier::High, 16 * 1024),
-            (2048, 1024)
-        );
-    }
-
-    #[test]
-    fn memory_aware_tile_cache_budgets_shrink_when_available_memory_is_low() {
-        let (cpu_mb, hdr_mb) = memory_aware_tile_cache_budgets_mb(HardwareTier::High, 2048);
-
-        assert!(cpu_mb < HardwareTier::High.cpu_cache_mb());
-        assert!(hdr_mb < HardwareTier::High.hdr_tile_cache_mb());
-        assert!(cpu_mb + hdr_mb <= 512);
-        assert!(cpu_mb >= 256);
-        assert!(hdr_mb >= 256);
-    }
-
-    #[test]
-    fn sdr_output_mode_uses_sdr_ultra_hdr_decode_capacity() {
-        let settings = crate::hdr::types::HdrToneMapSettings {
-            exposure_ev: 0.0,
-            sdr_white_nits: 200.0,
-            max_display_nits: 1000.0,
-        };
-
-        assert_eq!(
-            ultra_hdr_decode_capacity_for_output_mode(
-                settings,
-                crate::hdr::types::HdrOutputMode::SdrToneMapped,
-                None
-            ),
-            1.0
-        );
-        assert_eq!(
-            ultra_hdr_decode_capacity_for_output_mode(
-                settings,
-                crate::hdr::types::HdrOutputMode::WindowsScRgb,
-                None
-            ),
-            5.0
-        );
-    }
-
-    #[test]
-    fn native_output_uses_monitor_peak_luminance_for_ultra_hdr_capacity() {
-        let settings = crate::hdr::types::HdrToneMapSettings {
-            exposure_ev: 0.0,
-            sdr_white_nits: 200.0,
-            max_display_nits: 1000.0,
-        };
-        let monitor = crate::hdr::monitor::HdrMonitorSelection {
-            hdr_supported: true,
-            label: "HDR".to_string(),
-            max_luminance_nits: Some(1200.0),
-            max_full_frame_luminance_nits: Some(600.0),
-            max_hdr_capacity: None,
-            hdr_capacity_source: Some("Windows DXGI MaxLuminance"),
-            native_surface_encoding: Some(
-                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
-            ),
-        };
-
-        assert_eq!(
-            ultra_hdr_decode_capacity_for_output_mode(
-                settings,
-                crate::hdr::types::HdrOutputMode::WindowsScRgb,
-                Some(&monitor)
-            ),
-            6.0
-        );
-    }
-
-    #[test]
-    fn native_output_uses_monitor_hdr_capacity_multiplier_before_peak_nits() {
-        let settings = crate::hdr::types::HdrToneMapSettings {
-            exposure_ev: 0.0,
-            sdr_white_nits: 200.0,
-            max_display_nits: 1000.0,
-        };
-        let monitor = crate::hdr::monitor::HdrMonitorSelection {
-            hdr_supported: true,
-            label: "macOS EDR".to_string(),
-            max_luminance_nits: Some(1200.0),
-            max_full_frame_luminance_nits: None,
-            max_hdr_capacity: Some(2.5),
-            hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
-            native_surface_encoding: Some(
-                crate::hdr::monitor::HdrNativeSurfaceEncoding::LinearScRgb,
-            ),
-        };
-
-        assert_eq!(
-            ultra_hdr_decode_capacity_for_output_mode(
-                settings,
-                crate::hdr::types::HdrOutputMode::MacOsEdr,
-                Some(&monitor)
-            ),
-            2.5
-        );
-    }
-
-    #[test]
-    fn capacity_refresh_targets_all_hdr_cache_indices() {
-        let static_hdr = HashSet::from([1_usize, 4]);
-        let hdr_tiled = HashSet::from([2_usize, 4]);
-        let hdr_fallback = HashSet::from([3_usize, 4]);
-
-        assert_eq!(
-            collect_ultra_hdr_capacity_sensitive_indices(&static_hdr, &hdr_tiled, &hdr_fallback),
-            vec![1, 2, 3, 4]
-        );
-    }
-
-    #[test]
-    fn capacity_refresh_reloads_current_when_current_is_hdr() {
-        let static_hdr = HashSet::from([7_usize]);
-        let hdr_tiled = HashSet::new();
-        let hdr_fallback = HashSet::new();
-        let ultra_hdr = HashSet::from([7_usize]);
-
-        let refresh =
-            plan_ultra_hdr_capacity_refresh(7, &static_hdr, &hdr_tiled, &hdr_fallback, &ultra_hdr);
-
-        assert_eq!(refresh.indices_to_invalidate, vec![7]);
-        assert!(refresh.reload_current);
-        assert!(capacity_refresh_should_reschedule_preloads(&refresh));
-    }
-
-    #[test]
-    fn capacity_refresh_ignores_non_ultra_hdr_caches() {
-        let static_hdr = HashSet::from([7_usize]);
-        let hdr_tiled = HashSet::from([8_usize]);
-        let hdr_fallback = HashSet::from([9_usize]);
-        let ultra_hdr = HashSet::new();
-
-        let refresh =
-            plan_ultra_hdr_capacity_refresh(7, &static_hdr, &hdr_tiled, &hdr_fallback, &ultra_hdr);
-
-        assert!(refresh.indices_to_invalidate.is_empty());
-        assert!(!refresh.reload_current);
-        assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
-    }
-
-    #[test]
-    fn hotkey_issue_message_reports_load_errors() {
-        let message = build_hotkeys_issue_message(Some("bad yaml"), &[], &[])
-            .expect("load error should be user-visible");
-        assert!(message.contains("bad yaml"));
-    }
-
-    #[test]
-    fn hotkey_issue_message_reports_conflicts_and_warnings() {
-        let conflicts = vec![crate::hotkeys::model::HotkeyConflict {
-            key: "D".to_string(),
-            actions: vec![
-                crate::hotkeys::model::HotkeyActionId::NextImage,
-                crate::hotkeys::model::HotkeyActionId::PrevImage,
-            ],
-        }];
-        let warnings = vec![crate::hotkeys::model::HotkeyWarning::InvalidKey {
-            action_id: crate::hotkeys::model::HotkeyActionId::NextImage,
-            key: "Foo".to_string(),
-        }];
-        let message = build_hotkeys_issue_message(None, &conflicts, &warnings)
-            .expect("validation issues should be user-visible");
-        assert!(message.contains("D"));
-        assert!(message.contains("Foo"));
-    }
-
-    #[test]
-    fn empty_capacity_refresh_does_not_reschedule_preloads() {
-        let refresh = UltraHdrCapacityRefresh {
-            indices_to_invalidate: Vec::new(),
-            reload_current: false,
-        };
-
-        assert!(!capacity_refresh_should_reschedule_preloads(&refresh));
-    }
-}
+mod tests;

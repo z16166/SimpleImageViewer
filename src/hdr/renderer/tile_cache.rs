@@ -1,0 +1,228 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::*;
+
+pub(crate) struct HdrTileBindings {
+    pub(super) entries: HashMap<HdrTileKey, HdrTileBinding>,
+    pub(super) lru: VecDeque<HdrTileKey>,
+    pub(super) protected_recent: HashSet<HdrTileKey>,
+    pub(super) protected_order: VecDeque<HdrTileKey>,
+    pub(super) current_bytes: usize,
+    pub(super) max_bytes: usize,
+}
+
+pub(super) const HDR_TILE_BINDING_RECENT_PROTECTION_COUNT: usize = 512;
+
+impl Default for HdrTileBindings {
+    fn default() -> Self {
+        Self::with_budget(crate::hdr::tiled::configured_hdr_tile_cache_max_bytes())
+    }
+}
+
+impl HdrTileBindings {
+    pub(crate) fn with_budget(max_bytes: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            protected_recent: HashSet::new(),
+            protected_order: VecDeque::new(),
+            current_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    pub(crate) fn contains(&mut self, key: HdrTileKey) -> bool {
+        if self.entries.contains_key(&key) {
+            self.touch(key);
+            self.protect_recent(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        key: HdrTileKey,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        compose_storage_view: Option<wgpu::TextureView>,
+        tone_map_buffer: wgpu::Buffer,
+        bind_group: wgpu::BindGroup,
+        baked_jpeg_weight_bits: Option<u32>,
+    ) {
+        self.protect_recent(key);
+        self.insert_binding(
+            key,
+            HdrTileBinding {
+                _texture: Some(texture),
+                _view: Some(view),
+                compose_storage_view,
+                tone_map_buffer: Some(tone_map_buffer),
+                bind_group: Some(bind_group),
+                estimated_bytes: 0,
+                baked_jpeg_weight_bits,
+            },
+        );
+    }
+
+    pub(crate) fn insert_binding(&mut self, key: HdrTileKey, binding: HdrTileBinding) {
+        if let Some(old_binding) = self.entries.remove(&key) {
+            self.current_bytes = self
+                .current_bytes
+                .saturating_sub(old_binding.estimated_bytes);
+            self.lru.retain(|existing| *existing != key);
+        }
+
+        let bytes = hdr_tile_key_bytes(key);
+        while !self.lru.is_empty() && self.current_bytes.saturating_add(bytes) > self.max_bytes {
+            let evict_pos = self
+                .lru
+                .iter()
+                .position(|existing| !self.protected_recent.contains(existing));
+            let Some(evict_pos) = evict_pos else {
+                break;
+            };
+            let Some(evicted_key) = self.lru.remove(evict_pos) else {
+                break;
+            };
+            self.protected_recent.remove(&evicted_key);
+            self.protected_order
+                .retain(|existing| *existing != evicted_key);
+            if let Some(evicted_binding) = self.entries.remove(&evicted_key) {
+                self.current_bytes = self
+                    .current_bytes
+                    .saturating_sub(evicted_binding.estimated_bytes);
+            }
+        }
+
+        if self.current_bytes.saturating_add(bytes) <= self.max_bytes
+            || self.protected_recent.contains(&key)
+        {
+            let mut binding = binding;
+            binding.estimated_bytes = bytes;
+            self.entries.insert(key, binding);
+            self.lru.push_back(key);
+            self.current_bytes += bytes;
+        }
+    }
+
+    pub(crate) fn protect_recent(&mut self, key: HdrTileKey) {
+        self.protected_order.retain(|existing| *existing != key);
+        self.protected_order.push_back(key);
+        self.protected_recent.insert(key);
+        while self.protected_order.len() > HDR_TILE_BINDING_RECENT_PROTECTION_COUNT {
+            if let Some(expired) = self.protected_order.pop_front() {
+                self.protected_recent.remove(&expired);
+            }
+        }
+    }
+
+    pub(crate) fn touch(&mut self, key: HdrTileKey) {
+        if let Some(pos) = self.lru.iter().position(|existing| *existing == key) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_bytes(&self) -> usize {
+        self.current_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_placeholder(&mut self, key: HdrTileKey) {
+        self.insert_binding(
+            key,
+            HdrTileBinding {
+                _texture: None,
+                _view: None,
+                compose_storage_view: None,
+                tone_map_buffer: None,
+                bind_group: None,
+                estimated_bytes: 0,
+                baked_jpeg_weight_bits: None,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_protected_placeholder(&mut self, key: HdrTileKey) {
+        self.protect_recent(key);
+        self.insert_placeholder(key);
+    }
+
+    pub(crate) fn remove(&mut self, key: HdrTileKey) {
+        if let Some(binding) = self.entries.remove(&key) {
+            self.current_bytes = self.current_bytes.saturating_sub(binding.estimated_bytes);
+        }
+        self.lru.retain(|existing| *existing != key);
+        self.protected_recent.remove(&key);
+        self.protected_order.retain(|existing| *existing != key);
+    }
+
+    pub(crate) fn bind_group(&self, key: HdrTileKey) -> Option<&wgpu::BindGroup> {
+        self.entries
+            .get(&key)
+            .and_then(|entry| entry.bind_group.as_ref())
+    }
+
+    pub(crate) fn binding(&self, key: HdrTileKey) -> Option<&HdrTileBinding> {
+        self.entries.get(&key)
+    }
+
+    pub(crate) fn binding_mut(&mut self, key: HdrTileKey) -> Option<&mut HdrTileBinding> {
+        self.entries.get_mut(&key)
+    }
+}
+
+pub(crate) struct HdrTileBinding {
+    pub(super) _texture: Option<wgpu::Texture>,
+    pub(super) _view: Option<wgpu::TextureView>,
+    /// Storage view for ISO deferred tile GPU compose; reused across rebakes at the same tile size.
+    pub(super) compose_storage_view: Option<wgpu::TextureView>,
+    pub(super) tone_map_buffer: Option<wgpu::Buffer>,
+    pub(super) bind_group: Option<wgpu::BindGroup>,
+    pub(super) estimated_bytes: usize,
+    pub(super) baked_jpeg_weight_bits: Option<u32>,
+}
+
+pub(crate) fn iso_deferred_tile_compose_views_reusable(
+    binding: &HdrTileBinding,
+    width: u32,
+    height: u32,
+) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+    let hdr_view = binding._view.as_ref()?;
+    let storage_view = binding.compose_storage_view.as_ref()?;
+    if binding._texture.is_none() || width == 0 || height == 0 {
+        return None;
+    }
+    Some((hdr_view.clone(), storage_view.clone()))
+}
+
+pub(crate) fn hdr_tile_key_bytes(key: HdrTileKey) -> usize {
+    if key.rgba_len > 0 {
+        key.rgba_len * std::mem::size_of::<f32>()
+    } else {
+        key.width as usize * key.height as usize * 4 * std::mem::size_of::<f32>()
+    }
+}
