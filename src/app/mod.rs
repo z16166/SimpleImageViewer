@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// 鈹€鈹€ Submodules 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Submodules ──────────────────────────────────────────────────────────────
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;
@@ -407,7 +407,7 @@ pub struct ImageViewerApp {
     /// swap-chain target format here after every successful runtime hot-swap.
     /// The application reads from this mailbox in `logic()` instead of trusting
     /// `frame.wgpu_render_state().target_format`, because `egui_wgpu::RenderState`
-    /// derives `Clone` and eframe stores a clone in `Frame` 鈥?the painter's
+    /// derives `Clone` and eframe stores a clone in `Frame` — the painter's
     /// post-swap mutation of `RenderState.target_format` is therefore never
     /// observable through `wgpu_render_state()`. Without this side channel the
     /// OSD freezes on the very first runtime swap (e.g. moving the window from
@@ -476,7 +476,7 @@ pub struct ImageViewerApp {
     pub(crate) is_font_error: bool,
     /// Incremented each time a modal dialog is opened.
     /// Included in each dialog's egui Window Id so that egui has no position
-    /// memory from a previous opening 鈥?the dialog always starts centered.
+    /// memory from a previous opening — the dialog always starts centered.
     pub(crate) modal_generation: u32,
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
@@ -496,7 +496,7 @@ pub struct ImageViewerApp {
     pub(crate) cached_music_count: Option<usize>,
     pub(crate) cached_pixels_per_point: f32,
 
-    // Active modal dialog 鈥?only one can be open at a time.
+    // Active modal dialog — only one can be open at a time.
     // All per-dialog state lives inside the enum variant; setting this to None
     // automatically drops and cleans up the dialog's temporary data.
     pub(crate) active_modal: Option<ActiveModal>,
@@ -935,7 +935,7 @@ impl eframe::App for ImageViewerApp {
             // Diagnostic: log the FIRST time we observe a placement, then
             // only on subsequent changes at debug level. If the first-time
             // log never appears, `viewport.outer_rect` is `None` on this
-            // build and we have no position to persist 鈥?that would explain
+            // build and we have no position to persist — that would explain
             // why the saved-position recall does nothing on a fresh install.
             let was_unset = self.cached_window_placement.is_none();
             let changed = self.cached_window_placement != Some(placement);
@@ -995,20 +995,20 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        // 鈹€鈹€ Drag-and-Drop handling (cross-platform via egui/winit) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+        // ── Drag-and-Drop handling (cross-platform via egui/winit) ───────
         let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(dropped_file) = dropped.into_iter().next() {
             if let Some(path) = dropped_file.path {
                 // Guard: don't re-trigger if we're already scanning from a previous drop
                 if !self.scanning {
                     if path.is_dir() {
-                        // Dropped a directory 鈥?scan it (non-recursive to avoid surprises)
+                        // Dropped a directory — scan it (non-recursive to avoid surprises)
                         log::info!("Drop: opening directory {:?}", path);
                         self.settings.recursive = false;
                         self.load_directory(path);
                         self.queue_save();
                     } else if path.is_file() {
-                        // Dropped a single file 鈥?check if it's a supported format
+                        // Dropped a single file — check if it's a supported format
                         let is_supported = path
                             .extension()
                             .map(|ext| crate::scanner::is_supported_extension(ext))
@@ -1125,7 +1125,7 @@ impl eframe::App for ImageViewerApp {
         // (transient DXGI hand-off, brief `EnumWindows` hiccups, the very
         // first frames before the first probe has completed). We MUST treat
         // that as "no opinion / keep current format" rather than blindly
-        // demoting to `Bgra8Unorm` 鈥?otherwise we would request a swap-chain
+        // demoting to `Bgra8Unorm` — otherwise we would request a swap-chain
         // demotion every frame the probe was pending, defeating the
         // spawn-time HDR detection that already chose the correct initial
         // format.
@@ -1211,7 +1211,7 @@ impl eframe::App for ImageViewerApp {
         self.process_file_op_results();
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive
-        // mode preemption) and needs a full restart 鈥?same path as toggling the checkbox.
+        // mode preemption) and needs a full restart — same path as toggling the checkbox.
         if self.settings.play_music && self.audio.take_needs_restart() {
             log::warn!("[UI] Audio stall detected by watchdog, triggering full restart");
             self.force_restart_audio();
@@ -1313,7 +1313,7 @@ impl eframe::App for ImageViewerApp {
 
         // Detect modal transitions: None 鈫?Some means a new dialog just opened.
         // Incrementing modal_generation makes the egui::Window Id unique for this
-        // opening 鈥?egui has no position memory from previous openings, so the
+        // opening — egui has no position memory from previous openings, so the
         // dialog always appears at the calculated center position.
         {
             let id = egui::Id::new(crate::ui::dialogs::modal_state::ID_PREV_HAD_MODAL);
@@ -1328,7 +1328,7 @@ impl eframe::App for ImageViewerApp {
         // Dispatch the single active modal dialog (MovableModal handles the overlay)
         self.dispatch_active_modal(&ctx);
 
-        // 鈹€鈹€ Music HUD (Foreground Layer) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+        // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
     }
 }
@@ -1349,7 +1349,7 @@ pub(crate) fn extract_exif(path: &std::path::Path) -> Option<Vec<(String, String
         let val = if f.tag == exif::Tag::Orientation {
             match f.value.get_uint(0) {
                 Some(n) if (1..=8).contains(&n) => {
-                    format!("{} 鈥?{}", n, f.display_value().with_unit(&exif))
+                    format!("{} — {}", n, f.display_value().with_unit(&exif))
                 }
                 _ => format!("{}", f.display_value().with_unit(&exif)),
             }

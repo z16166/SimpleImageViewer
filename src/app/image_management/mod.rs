@@ -1,4 +1,20 @@
-﻿use crate::app::{
+﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
 use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
@@ -511,7 +527,7 @@ fn first_cached_hdr_still_for_index(
 /// 2. Tiled HDR downsampled preview from `hdr_tiled_preview_cache`.
 /// 3. In-memory `current_hdr_tiled_preview` as a last-resort fallback when not yet cached.
 ///
-/// Returns `None` when none of the above are available 鈥?the transition degrades gracefully
+/// Returns `None` when none of the above are available — the transition degrades gracefully
 /// (no previous-image background is shown), matching existing behaviour.
 fn first_cached_hdr_or_tiled_preview_for_index(
     hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,

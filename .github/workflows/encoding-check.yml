@@ -1,0 +1,33 @@
+name: Encoding check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/check-encoding.sh"
+      - ".editorconfig"
+      - ".gitattributes"
+      - "AGENTS.md"
+      - ".github/workflows/encoding-check.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/check-encoding.sh"
+      - ".editorconfig"
+      - ".gitattributes"
+      - "AGENTS.md"
+      - ".github/workflows/encoding-check.yml"
+
+jobs:
+  mojibake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Check src/ for UTF-8 mojibake
+        run: bash scripts/check-encoding.sh
