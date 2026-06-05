@@ -1117,7 +1117,7 @@ impl eframe::App for ImageViewerApp {
 
         // If the active monitor's HDR capability disagrees with the current
         // swap-chain target format, ask the Painter to hot-swap. This is what
-        // makes `Rgba16Float` 鈫?`Bgra8Unorm` follow the user as they drag the
+        // makes `Rgba16Float` → `Bgra8Unorm` follow the user as they drag the
         // window between an HDR monitor and an SDR monitor at runtime.
         //
         // `desired_target_format_for_active_monitor` returns `None` when the
@@ -1311,7 +1311,7 @@ impl eframe::App for ImageViewerApp {
             self.last_show_settings = false;
         }
 
-        // Detect modal transitions: None 鈫?Some means a new dialog just opened.
+        // Detect modal transitions: None → Some means a new dialog just opened.
         // Incrementing modal_generation makes the egui::Window Id unique for this
         // opening — egui has no position memory from previous openings, so the
         // dialog always appears at the calculated center position.
