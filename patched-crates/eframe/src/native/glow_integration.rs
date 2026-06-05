@@ -926,6 +926,7 @@ impl GlowWinitRunning<'_> {
                     && 0 < physical_size.height
                     && let Some(viewport_id) = viewport_id
                 {
+                    let mut is_stale = false;
                     if let Some(viewport) = glutin.viewports.get(&viewport_id) {
                         if let Some(window) = &viewport.window {
                             let live_size = window.inner_size();
@@ -935,15 +936,17 @@ impl GlowWinitRunning<'_> {
                                     physical_size,
                                     live_size
                                 );
-                                return EventResult::Wait;
+                                is_stale = true;
                             }
                         }
                     }
 
-                    repaint_asap = true;
-                    glutin.resize(viewport_id, *physical_size);
-                    if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
-                        viewport.current_physical_size = Some(*physical_size);
+                    if !is_stale {
+                        repaint_asap = true;
+                        glutin.resize(viewport_id, *physical_size);
+                        if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+                            viewport.current_physical_size = Some(*physical_size);
+                        }
                     }
                 }
             }
@@ -1573,8 +1576,10 @@ fn process_deferred_viewport_commands(
 
                 if resized {
                     any_resized = true;
-                    viewport.current_physical_size = Some(new_inner_size);
-                    resizes.push((payload.viewport_id, new_inner_size));
+                    if new_inner_size.width > 0 && new_inner_size.height > 0 {
+                        viewport.current_physical_size = Some(new_inner_size);
+                        resizes.push((payload.viewport_id, new_inner_size));
+                    }
                 }
             }
         }

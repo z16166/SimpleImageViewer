@@ -994,6 +994,7 @@ impl WgpuWinitRunning<'_> {
                         NonZeroU32::new(physical_size.height),
                     )
                 {
+                    let mut is_stale = false;
                     if let Some(viewport) = shared.viewports.get(&id) {
                         if let Some(window) = &viewport.window {
                             let live_size = window.inner_size();
@@ -1003,20 +1004,22 @@ impl WgpuWinitRunning<'_> {
                                     physical_size,
                                     live_size
                                 );
-                                return EventResult::Wait;
+                                is_stale = true;
                             }
                         }
                     }
 
-                    if shared.resized_viewport != viewport_id {
-                        shared.resized_viewport = viewport_id;
-                        shared.painter.on_window_resize_state_change(id, true);
+                    if !is_stale {
+                        if shared.resized_viewport != viewport_id {
+                            shared.resized_viewport = viewport_id;
+                            shared.painter.on_window_resize_state_change(id, true);
+                        }
+                        shared.painter.on_window_resized(id, width, height);
+                        if let Some(viewport) = shared.viewports.get_mut(&id) {
+                            viewport.current_physical_size = Some(*physical_size);
+                        }
+                        repaint_asap = true;
                     }
-                    shared.painter.on_window_resized(id, width, height);
-                    if let Some(viewport) = shared.viewports.get_mut(&id) {
-                        viewport.current_physical_size = Some(*physical_size);
-                    }
-                    repaint_asap = true;
                 }
             }
 
