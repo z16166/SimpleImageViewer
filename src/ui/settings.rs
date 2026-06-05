@@ -524,7 +524,9 @@ fn draw_hotkeys_tab_status(
         ui.add_space(4.0);
         ui.add(
             egui::Label::new(
-                RichText::new(t!("hotkeys.capture_hint")).color(app.cached_palette.text_muted),
+                RichText::new(t!("hotkeys.capture_hint"))
+                    .color(app.cached_palette.button_primary)
+                    .strong(),
             )
             .wrap(),
         );
@@ -621,18 +623,6 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
         ui.add_space(8.0);
         let capture_pending = app.hotkeys_capture_target.is_some() || set_key_target.is_some();
         let apply_success = app.hotkeys_apply_success_at.is_some();
-        let status_rows = apply_success as usize
-            + capture_pending as usize
-            + app.hotkeys_load_error.is_some() as usize
-            + has_empty_key as usize
-            + (!preview.conflicts.is_empty()) as usize
-            + preview.conflicts.len()
-            + preview.warnings.len();
-        let status_h = if status_rows > 0 {
-            8.0 + 20.0 * status_rows.min(6) as f32
-        } else {
-            0.0
-        };
         draw_hotkeys_tab_status(
             app,
             ui,
@@ -642,7 +632,7 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
             apply_success,
         );
         let footer_h = 54.0;
-        let available_h = (ui.available_height() - footer_h - status_h).max(80.0);
+        let available_h = (ui.available_height() - footer_h).max(80.0);
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), available_h),
             egui::Layout::top_down(egui::Align::Min),
@@ -933,7 +923,8 @@ fn draw_hotkeys_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) 
                     ui.add(
                         egui::Label::new(
                             RichText::new(t!("hotkeys.capture_hint"))
-                                .color(app.cached_palette.text_muted),
+                                .color(app.cached_palette.button_primary)
+                                .strong(),
                         )
                         .wrap(),
                     );
