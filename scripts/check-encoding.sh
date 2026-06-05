@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PATTERN='鈥|鈹|脳|â€|Ã—|锟'
+PATTERN='鈥|鈹|脳|â€|Ã—|锟|鈫'
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "error: ripgrep (rg) is required for scripts/check-encoding.sh" >&2

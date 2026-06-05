@@ -20,5 +20,7 @@
 *.gif binary
 *.ico binary
 *.webp binary
+*.tif binary
+*.tiff binary
 *.woff binary
 *.woff2 binary
