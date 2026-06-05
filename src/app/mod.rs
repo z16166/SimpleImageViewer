@@ -1,4 +1,4 @@
-﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -691,6 +691,10 @@ pub(crate) fn localized_hotkey_warning(warning: &crate::hotkeys::model::HotkeyWa
 }
 
 impl ImageViewerApp {
+    pub(crate) fn layout_uses_fullscreen_metrics(&self) -> bool {
+        self.settings.fullscreen
+    }
+
     pub(crate) fn is_hotkey_capture_active(&self) -> bool {
         self.hotkeys_capture_target.is_some() || self.hotkeys_add_row_capture_active
     }
@@ -909,25 +913,31 @@ impl eframe::App for ImageViewerApp {
         // systems this is what determines which monitor the next session
         // spawns onto, and therefore whether `Rgba16Float` or `Bgra8Unorm` is
         // selected for the swap chain.
-        if let Some(placement) = ctx.input(|i| {
+        if let Some((placement, is_fullscreen)) = ctx.input(|i| {
             let viewport = i.viewport();
             let outer_rect = viewport.outer_rect?;
             let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
             let center = outer_rect.center();
-            Some(CachedWindowPlacement {
-                outer_position: [
-                    outer_rect.min.x.round() as i32,
-                    outer_rect.min.y.round() as i32,
-                ],
-                outer_center: [center.x.round() as i32, center.y.round() as i32],
-                inner_size: [
-                    inner_size.x.round().max(1.0) as u32,
-                    inner_size.y.round().max(1.0) as u32,
-                ],
-                maximized: viewport.maximized.unwrap_or(false),
-            })
+            let is_fullscreen = viewport.fullscreen.unwrap_or(false);
+            Some((
+                CachedWindowPlacement {
+                    outer_position: [
+                        outer_rect.min.x.round() as i32,
+                        outer_rect.min.y.round() as i32,
+                    ],
+                    outer_center: [center.x.round() as i32, center.y.round() as i32],
+                    inner_size: [
+                        inner_size.x.round().max(1.0) as u32,
+                        inner_size.y.round().max(1.0) as u32,
+                    ],
+                    maximized: viewport.maximized.unwrap_or(false),
+                },
+                is_fullscreen,
+            ))
         }) {
             if !placement.maximized
+                && !is_fullscreen
+                && !self.layout_uses_fullscreen_metrics()
                 && Settings::valid_outer_position(placement.outer_position).is_some()
             {
                 self.cached_restore_placement = Some(placement);

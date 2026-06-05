@@ -119,6 +119,8 @@ struct Viewport {
     gl_surface: Option<glutin::surface::Surface<glutin::surface::WindowSurface>>,
     window: Option<Arc<Window>>,
     egui_winit: Option<egui_winit::State>,
+
+    pub(crate) current_physical_size: Option<winit::dpi::PhysicalSize<u32>>,
 }
 
 // ----------------------------------------------------------------------------
@@ -205,7 +207,10 @@ impl<'app> GlowWinitApp<'app> {
             );
             let clear_color =
                 epi_integration::default_clear_color(&egui_ctx.global_style().visuals);
-            let screen_size: [u32; 2] = window.inner_size().into();
+            let screen_size: [u32; 2] = viewport
+                .current_physical_size
+                .unwrap_or_else(|| window.inner_size())
+                .into();
             painter.clear(screen_size, clear_color);
             gl_surface
                 .swap_buffers(current_gl_context)
@@ -573,20 +578,68 @@ impl GlowWinitRunning<'_> {
         let (raw_input, viewport_ui_cb, is_visible) = {
             let mut glutin = self.glutin.borrow_mut();
             let egui_ctx = glutin.egui_ctx.clone();
+
+            // First check live size to resize synchronously, avoiding borrow checker conflicts
+            let mut needs_resize = None;
+            if let Some(viewport) = glutin.viewports.get(&viewport_id) {
+                if let Some(window) = &viewport.window {
+                    let live_size = window.inner_size();
+                    log::debug!(
+                        "[Glow Paint Start] viewport={:?} live_size={:?} current_physical_size={:?}",
+                        viewport_id,
+                        live_size,
+                        viewport.current_physical_size
+                    );
+                    if live_size.width > 0 && live_size.height > 0 {
+                        if Some(live_size) != viewport.current_physical_size {
+                            needs_resize = Some(live_size);
+                        }
+                    }
+                }
+            }
+
+            if let Some(live_size) = needs_resize {
+                log::debug!(
+                    "[Glow Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
+                    viewport_id,
+                    glutin.viewports.get(&viewport_id).and_then(|vp| vp.current_physical_size),
+                    live_size
+                );
+                glutin.resize(viewport_id, live_size);
+                if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+                    viewport.current_physical_size = Some(live_size);
+                }
+            }
+
+            // Now borrow viewport mutably safely
             let Some(viewport) = glutin.viewports.get_mut(&viewport_id) else {
                 return Ok(EventResult::Wait);
             };
-            let Some(window) = viewport.window.as_ref() else {
+            let Some(window) = viewport.window.clone() else {
                 return Ok(EventResult::Wait);
             };
-            egui_winit::update_viewport_info(&mut viewport.info, &egui_ctx, window, false);
+            egui_winit::update_viewport_info(&mut viewport.info, &egui_ctx, &window, false);
 
             let is_visible = viewport.info.visible().unwrap_or(true);
 
             let Some(egui_winit) = viewport.egui_winit.as_mut() else {
                 return Ok(EventResult::Wait);
             };
-            let mut raw_input = egui_winit.take_egui_input(window);
+            let mut raw_input = egui_winit.take_egui_input(&window);
+            if let Some(physical_size) = viewport.current_physical_size {
+                let rect = screen_rect_from_physical_size(
+                    &egui_ctx,
+                    &window,
+                    physical_size,
+                );
+                log::debug!(
+                    "[Glow ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
+                    viewport_id,
+                    physical_size,
+                    rect
+                );
+                raw_input.screen_rect = Some(rect);
+            }
             let viewport_ui_cb = viewport.viewport_ui_cb.clone();
 
             self.integration.pre_update();
@@ -632,7 +685,10 @@ impl GlowWinitRunning<'_> {
                 return Ok(EventResult::Wait);
             };
 
-            let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
+            let screen_size_in_pixels: [u32; 2] = viewport
+                .current_physical_size
+                .unwrap_or_else(|| window.inner_size())
+                .into();
 
             {
                 frame_timer.pause();
@@ -666,7 +722,19 @@ impl GlowWinitRunning<'_> {
             ..
         } = self;
 
-        let (window, viewport_output) = {
+        {
+            let mut glutin = glutin.borrow_mut();
+            glutin.remove_viewports_not_in(&full_output.viewport_output);
+            glutin.handle_viewport_output(
+                event_loop,
+                &integration.egui_ctx,
+                &full_output.viewport_output,
+            );
+        }
+
+        let transition_resized = process_deferred_viewport_commands(&integration.egui_ctx, glutin);
+
+        let window = {
             let mut glutin = glutin.borrow_mut();
             let mut painter = painter.borrow_mut();
 
@@ -675,10 +743,8 @@ impl GlowWinitRunning<'_> {
                 textures_delta,
                 shapes,
                 pixels_per_point,
-                viewport_output,
+                viewport_output: _,
             } = full_output;
-
-            glutin.remove_viewports_not_in(&viewport_output);
 
             let GlutinWindowContext {
                 viewports,
@@ -699,7 +765,11 @@ impl GlowWinitRunning<'_> {
             egui_winit.handle_platform_output(&window, platform_output);
 
             if is_visible {
-                let clipped_primitives = integration.egui_ctx.tessellate(shapes, pixels_per_point);
+                let clipped_primitives = if transition_resized {
+                    vec![]
+                } else {
+                    integration.egui_ctx.tessellate(shapes, pixels_per_point)
+                };
 
                 {
                     // We may need to switch contexts again, because of immediate viewports:
@@ -708,7 +778,10 @@ impl GlowWinitRunning<'_> {
                     frame_timer.resume();
                 }
 
-                let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
+                let screen_size_in_pixels: [u32; 2] = viewport
+                    .current_physical_size
+                    .unwrap_or_else(|| window.inner_size())
+                    .into();
 
                 if !clear_before_update {
                     painter.clear(screen_size_in_pixels, clear_color);
@@ -781,15 +854,8 @@ impl GlowWinitRunning<'_> {
                 }
             }
 
-            (window, viewport_output)
+            window
         };
-
-        glutin.borrow_mut().handle_viewport_output(
-            event_loop,
-            &integration.egui_ctx,
-            &viewport_output,
-        );
-        process_deferred_viewport_commands(&integration.egui_ctx, glutin);
 
         integration.report_frame_time(frame_timer.total_time_sec()); // don't count auto-save time as part of regular frame time
 
@@ -860,8 +926,28 @@ impl GlowWinitRunning<'_> {
                     && 0 < physical_size.height
                     && let Some(viewport_id) = viewport_id
                 {
-                    repaint_asap = true;
-                    glutin.resize(viewport_id, *physical_size);
+                    let mut is_stale = false;
+                    if let Some(viewport) = glutin.viewports.get(&viewport_id) {
+                        if let Some(window) = &viewport.window {
+                            let live_size = window.inner_size();
+                            if live_size != *physical_size {
+                                log::debug!(
+                                    "[Glow WindowEvent::Resized] ignoring stale resize event: event={:?}, live={:?}",
+                                    physical_size,
+                                    live_size
+                                );
+                                is_stale = true;
+                            }
+                        }
+                    }
+
+                    if !is_stale {
+                        repaint_asap = true;
+                        glutin.resize(viewport_id, *physical_size);
+                        if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+                            viewport.current_physical_size = Some(*physical_size);
+                        }
+                    }
                 }
             }
 
@@ -1122,6 +1208,7 @@ impl GlutinWindowContext {
             });
         }
 
+        let current_physical_size = window.as_ref().map(|w| w.inner_size());
         let mut viewports = OrderedViewportIdMap::default();
         viewports.insert(
             ViewportId::ROOT,
@@ -1136,6 +1223,7 @@ impl GlutinWindowContext {
                 gl_surface: None,
                 window: window.map(Arc::new),
                 egui_winit: None,
+                current_physical_size,
             },
         );
 
@@ -1213,6 +1301,7 @@ impl GlutinWindowContext {
             );
 
             egui_winit::update_viewport_info(&mut viewport.info, &self.egui_ctx, &window, true);
+            viewport.current_physical_size = Some(window.inner_size());
             viewport.window.insert(Arc::new(window))
         };
 
@@ -1413,8 +1502,9 @@ struct ViewportCommandPayload {
 fn process_deferred_viewport_commands(
     egui_ctx: &egui::Context,
     glutin: &RefCell<GlutinWindowContext>,
-) {
+) -> bool {
     let mut payloads = Vec::new();
+    let mut any_resized = false;
 
     // 1. Collect and clear commands under borrow
     {
@@ -1440,7 +1530,23 @@ fn process_deferred_viewport_commands(
     }
 
     if payloads.is_empty() {
-        return;
+        return false;
+    }
+
+    // Check if any payload contains a transition command before we consume payload.commands
+    let mut has_transition_cmd = false;
+    for payload in &payloads {
+        if payload.commands.iter().any(|cmd| {
+            matches!(
+                cmd,
+                egui::ViewportCommand::Fullscreen(_)
+                    | egui::ViewportCommand::Maximized(_)
+                    | egui::ViewportCommand::Minimized(_)
+                    | egui::ViewportCommand::InnerSize(_)
+            )
+        }) {
+            has_transition_cmd = true;
+        }
     }
 
     // 2. Process commands outside the borrow
@@ -1461,14 +1567,17 @@ fn process_deferred_viewport_commands(
         let GlutinWindowContext { viewports, .. } = &mut *glutin_mut;
 
         for payload in payloads {
+            let new_inner_size = payload.window.inner_size();
+            let resized = new_inner_size != payload.old_inner_size;
+
             if let Some(viewport) = viewports.get_mut(&payload.viewport_id) {
                 viewport.info = payload.info;
                 viewport.actions_requested = payload.actions_requested;
 
-                // For Wayland : https://github.com/emilk/egui/issues/4196
-                if cfg!(target_os = "linux") {
-                    let new_inner_size = payload.window.inner_size();
-                    if new_inner_size != payload.old_inner_size {
+                if resized {
+                    any_resized = true;
+                    if new_inner_size.width > 0 && new_inner_size.height > 0 {
+                        viewport.current_physical_size = Some(new_inner_size);
                         resizes.push((payload.viewport_id, new_inner_size));
                     }
                 }
@@ -1479,6 +1588,8 @@ fn process_deferred_viewport_commands(
     for (viewport_id, new_inner_size) in resizes {
         glutin.borrow_mut().resize(viewport_id, new_inner_size);
     }
+
+    any_resized || has_transition_cmd
 }
 
 fn initialize_or_update_viewport(
@@ -1514,6 +1625,7 @@ fn initialize_or_update_viewport(
                 window: None,
                 egui_winit: None,
                 gl_surface: None,
+                current_physical_size: None,
             })
         }
 
@@ -1590,15 +1702,63 @@ fn render_immediate_viewport(
     let input = {
         let mut glutin = glutin.borrow_mut();
 
+        // First check live size to resize synchronously, avoiding borrow checker conflicts
+        let mut needs_resize = None;
+        if let Some(viewport) = glutin.viewports.get(&viewport_id) {
+            if let Some(window) = &viewport.window {
+                let live_size = window.inner_size();
+                log::debug!(
+                    "[Glow Immediate Paint Start] viewport={:?} live_size={:?} current_physical_size={:?}",
+                    viewport_id,
+                    live_size,
+                    viewport.current_physical_size
+                );
+                if live_size.width > 0 && live_size.height > 0 {
+                    if Some(live_size) != viewport.current_physical_size {
+                        needs_resize = Some(live_size);
+                    }
+                }
+            }
+        }
+
+        if let Some(live_size) = needs_resize {
+            log::debug!(
+                "[Glow Immediate Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
+                viewport_id,
+                glutin.viewports.get(&viewport_id).and_then(|vp| vp.current_physical_size),
+                live_size
+            );
+            glutin.resize(viewport_id, live_size);
+            if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
+                viewport.current_physical_size = Some(live_size);
+            }
+        }
+
+        // Now borrow viewport mutably safely
         let Some(viewport) = glutin.viewports.get_mut(&viewport_id) else {
             return;
         };
         let (Some(egui_winit), Some(window)) = (&mut viewport.egui_winit, &viewport.window) else {
             return;
         };
-        egui_winit::update_viewport_info(&mut viewport.info, egui_ctx, window, false);
+        let window = window.clone();
+        egui_winit::update_viewport_info(&mut viewport.info, egui_ctx, &window, false);
 
-        let mut raw_input = egui_winit.take_egui_input(window);
+        let mut raw_input = egui_winit.take_egui_input(&window);
+        if let Some(physical_size) = viewport.current_physical_size {
+            let rect = screen_rect_from_physical_size(
+                egui_ctx,
+                &window,
+                physical_size,
+            );
+            log::debug!(
+                "[Glow Immediate ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
+                viewport_id,
+                physical_size,
+                rect
+            );
+            raw_input.screen_rect = Some(rect);
+        }
         raw_input.viewports = glutin
             .viewports
             .iter()
@@ -1650,7 +1810,10 @@ fn render_immediate_viewport(
             return;
         };
 
-        let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
+        let screen_size_in_pixels: [u32; 2] = viewport
+            .current_physical_size
+            .unwrap_or_else(|| window.inner_size())
+            .into();
 
         change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
 
@@ -1723,4 +1886,15 @@ fn save_screenshot_and_exit(
 
     #[expect(clippy::exit)]
     std::process::exit(0);
+}
+
+fn screen_rect_from_physical_size(
+    egui_ctx: &egui::Context,
+    window: &winit::window::Window,
+    physical_size: winit::dpi::PhysicalSize<u32>,
+) -> egui::Rect {
+    let ppp = egui_winit::pixels_per_point(egui_ctx, window);
+    let width_points = physical_size.width as f32 / ppp;
+    let height_points = physical_size.height as f32 / ppp;
+    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width_points, height_points))
 }

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.4] - 2026-06-05
+
+### Fixed
+- **Fullscreen transitions**: Entering and leaving full-screen mode no longer flashes a stretched, clipped, or top-left-aligned stale frame during the window resize handoff.
+- **Context menu fullscreen toggle**: Fixed a fullscreen toggle deadlock that could occur when using the context menu.
+- **Hotkeys settings layout**: Improved hotkey settings layout so controls stay readable and aligned.
+
 ## [2.3.3] - 2026-06-03
 
 ### Added

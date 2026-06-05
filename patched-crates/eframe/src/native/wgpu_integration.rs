@@ -96,6 +96,8 @@ pub struct Viewport {
 
     /// `window` and `egui_winit` are initialized together.
     egui_winit: Option<egui_winit::State>,
+
+    pub(crate) current_physical_size: Option<winit::dpi::PhysicalSize<u32>>,
 }
 
 // ----------------------------------------------------------------------------
@@ -325,6 +327,7 @@ impl<'app> WgpuWinitApp<'app> {
         let mut viewport_from_window = HashMap::default();
         viewport_from_window.insert(window.id(), ViewportId::ROOT);
 
+        let current_physical_size = Some(window.inner_size());
         let mut viewports = Viewports::default();
         viewports.insert(
             ViewportId::ROOT,
@@ -338,6 +341,7 @@ impl<'app> WgpuWinitApp<'app> {
                 viewport_ui_cb: None,
                 window: Some(window),
                 egui_winit: Some(egui_winit),
+                current_physical_size,
             },
         );
 
@@ -648,6 +652,13 @@ impl WgpuWinitRunning<'_> {
             let Some(window) = window else {
                 return Ok(EventResult::Wait);
             };
+            let live_size = window.inner_size();
+            log::debug!(
+                "[WGPU Paint Start] viewport={:?} live_size={:?} current_physical_size={:?}",
+                viewport_id,
+                live_size,
+                viewport.current_physical_size
+            );
             egui_winit::update_viewport_info(info, &integration.egui_ctx, window, false);
 
             let is_visible = viewport.info.visible().unwrap_or(true);
@@ -657,10 +668,43 @@ impl WgpuWinitRunning<'_> {
                 pollster::block_on(painter.set_window(viewport_id, Some(Arc::clone(window))))?;
             }
 
+            // Force synchronous resize if window size changed and is non-zero
+            if live_size.width > 0 && live_size.height > 0 {
+                if Some(live_size) != viewport.current_physical_size {
+                    if let (Some(width), Some(height)) = (
+                        NonZeroU32::new(live_size.width),
+                        NonZeroU32::new(live_size.height),
+                    ) {
+                        log::debug!(
+                            "[WGPU Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
+                            viewport_id,
+                            viewport.current_physical_size,
+                            live_size
+                        );
+                        painter.on_window_resized(viewport_id, width, height);
+                        viewport.current_physical_size = Some(live_size);
+                    }
+                }
+            }
+
             let Some(egui_winit) = egui_winit.as_mut() else {
                 return Ok(EventResult::Wait);
             };
             let mut raw_input = egui_winit.take_egui_input(window);
+            if let Some(physical_size) = viewport.current_physical_size {
+                let rect = screen_rect_from_physical_size(
+                    &integration.egui_ctx,
+                    window,
+                    physical_size,
+                );
+                log::debug!(
+                    "[WGPU ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
+                    viewport_id,
+                    physical_size,
+                    rect
+                );
+                raw_input.screen_rect = Some(rect);
+            }
 
             integration.pre_update();
 
@@ -721,6 +765,34 @@ impl WgpuWinitRunning<'_> {
 
         // ------------------------------------------------------------
 
+        // Apply viewport commands (e.g. leave fullscreen) before paint so the
+        // swap chain matches the window and we can skip a stale full-screen blit.
+        {
+            let mut shared_mut = shared.borrow_mut();
+            let SharedState {
+                viewports,
+                painter,
+                viewport_from_window,
+                ..
+            } = &mut *shared_mut;
+
+            let FullOutput {
+                ref viewport_output,
+                ..
+            } = full_output;
+
+            remove_viewports_not_in(viewports, painter, viewport_from_window, viewport_output);
+            handle_viewport_output(
+                &integration.egui_ctx,
+                viewport_output,
+                viewports,
+                painter,
+                viewport_from_window,
+            );
+        }
+
+        let transition_resized = process_deferred_viewport_commands(&integration.egui_ctx, shared);
+
         let (window_opt, vsync_secs) = {
             let mut shared_mut = shared.borrow_mut();
 
@@ -737,10 +809,8 @@ impl WgpuWinitRunning<'_> {
                 textures_delta,
                 shapes,
                 pixels_per_point,
-                viewport_output,
+                viewport_output: _,
             } = full_output;
-
-            remove_viewports_not_in(viewports, painter, viewport_from_window, &viewport_output);
 
             let Some(viewport) = viewports.get_mut(&viewport_id) else {
                 return Ok(EventResult::Wait);
@@ -760,7 +830,13 @@ impl WgpuWinitRunning<'_> {
             egui_winit.handle_platform_output(window, platform_output);
 
             let vsync_secs = if is_visible {
-                let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
+                let clipped_primitives = if transition_resized {
+                    // Skip drawing stale UI elements to avoid flicker during fullscreen transition.
+                    // This will render a solid background color frame, preventing the top-left stale layout glitch.
+                    vec![]
+                } else {
+                    egui_ctx.tessellate(shapes, pixels_per_point)
+                };
 
                 let mut screenshot_commands = vec![];
                 viewport.actions_requested.retain(|cmd| {
@@ -812,21 +888,6 @@ impl WgpuWinitRunning<'_> {
                 0.0
             };
 
-            let active_viewports_ids: ViewportIdSet = viewport_output.keys().copied().collect();
-
-            handle_viewport_output(
-                &integration.egui_ctx,
-                &viewport_output,
-                viewports,
-                painter,
-                viewport_from_window,
-            );
-
-            // Prune dead viewports:
-            viewports.retain(|id, _| active_viewports_ids.contains(id));
-            viewport_from_window.retain(|_, id| active_viewports_ids.contains(id));
-            painter.gc_viewports(&active_viewports_ids);
-
             let window = viewport_from_window
                 .get(&window_id)
                 .and_then(|id| viewports.get(id))
@@ -834,8 +895,6 @@ impl WgpuWinitRunning<'_> {
 
             (window, vsync_secs)
         };
-
-        process_deferred_viewport_commands(&integration.egui_ctx, shared);
 
         integration.report_frame_time(frame_timer.total_time_sec() - vsync_secs); // don't count auto-save time as part of regular frame time
 
@@ -921,6 +980,11 @@ impl WgpuWinitRunning<'_> {
             }
 
             winit::event::WindowEvent::Resized(physical_size) => {
+                log::debug!(
+                    "[WGPU WindowEvent::Resized] viewport={:?} size={:?}",
+                    viewport_id,
+                    physical_size
+                );
                 // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
                 // See: https://github.com/rust-windowing/winit/issues/208
                 // This solves an issue where the app would panic when minimizing on Windows.
@@ -930,12 +994,32 @@ impl WgpuWinitRunning<'_> {
                         NonZeroU32::new(physical_size.height),
                     )
                 {
-                    if shared.resized_viewport != viewport_id {
-                        shared.resized_viewport = viewport_id;
-                        shared.painter.on_window_resize_state_change(id, true);
+                    let mut is_stale = false;
+                    if let Some(viewport) = shared.viewports.get(&id) {
+                        if let Some(window) = &viewport.window {
+                            let live_size = window.inner_size();
+                            if live_size != *physical_size {
+                                log::debug!(
+                                    "[WGPU WindowEvent::Resized] ignoring stale resize event: event={:?}, live={:?}",
+                                    physical_size,
+                                    live_size
+                                );
+                                is_stale = true;
+                            }
+                        }
                     }
-                    shared.painter.on_window_resized(id, width, height);
-                    repaint_asap = true;
+
+                    if !is_stale {
+                        if shared.resized_viewport != viewport_id {
+                            shared.resized_viewport = viewport_id;
+                            shared.painter.on_window_resize_state_change(id, true);
+                        }
+                        shared.painter.on_window_resized(id, width, height);
+                        if let Some(viewport) = shared.viewports.get_mut(&id) {
+                            viewport.current_physical_size = Some(*physical_size);
+                        }
+                        repaint_asap = true;
+                    }
                 }
             }
 
@@ -1038,6 +1122,7 @@ impl Viewport {
                 ));
 
                 egui_winit::update_viewport_info(&mut self.info, egui_ctx, &window, true);
+                self.current_physical_size = Some(window.inner_size());
                 self.window = Some(window);
             }
             Err(err) => {
@@ -1110,9 +1195,49 @@ fn render_immediate_viewport(
         let (Some(window), Some(egui_winit)) = (&viewport.window, &mut viewport.egui_winit) else {
             return;
         };
+        let live_size = window.inner_size();
+        log::debug!(
+            "[WGPU Immediate Paint Start] viewport={:?} live_size={:?} current_physical_size={:?}",
+            ids.this,
+            live_size,
+            viewport.current_physical_size
+        );
         egui_winit::update_viewport_info(&mut viewport.info, egui_ctx, window, false);
 
+        // Force synchronous resize if window size changed and is non-zero
+        if live_size.width > 0 && live_size.height > 0 {
+            if Some(live_size) != viewport.current_physical_size {
+                if let (Some(width), Some(height)) = (
+                    NonZeroU32::new(live_size.width),
+                    NonZeroU32::new(live_size.height),
+                ) {
+                    log::debug!(
+                        "[WGPU Immediate Sync Resize Executed] resizing viewport={:?} from={:?} to={:?}",
+                        ids.this,
+                        viewport.current_physical_size,
+                        live_size
+                    );
+                    painter.on_window_resized(ids.this, width, height);
+                    viewport.current_physical_size = Some(live_size);
+                }
+            }
+        }
+
         let mut input = egui_winit.take_egui_input(window);
+        if let Some(physical_size) = viewport.current_physical_size {
+            let rect = screen_rect_from_physical_size(
+                egui_ctx,
+                window,
+                physical_size,
+            );
+            log::debug!(
+                "[WGPU Immediate ScreenRect Overwrite] viewport={:?} physical_size={:?} screen_rect={:?}",
+                ids.this,
+                physical_size,
+                rect
+            );
+            input.screen_rect = Some(rect);
+        }
         input.viewports = viewports
             .iter()
             .map(|(id, viewport)| (*id, viewport.info.clone()))
@@ -1254,8 +1379,12 @@ struct ViewportCommandPayload {
     old_inner_size: winit::dpi::PhysicalSize<u32>,
 }
 
-fn process_deferred_viewport_commands(egui_ctx: &egui::Context, shared: &RefCell<SharedState>) {
+fn process_deferred_viewport_commands(
+    egui_ctx: &egui::Context,
+    shared: &RefCell<SharedState>,
+) -> bool {
     let mut payloads = Vec::new();
+    let mut any_resized = false;
 
     // 1. Collect and clear commands under borrow
     {
@@ -1281,7 +1410,23 @@ fn process_deferred_viewport_commands(egui_ctx: &egui::Context, shared: &RefCell
     }
 
     if payloads.is_empty() {
-        return;
+        return false;
+    }
+
+    // Check if any payload contains a transition command before we consume payload.commands
+    let mut has_transition_cmd = false;
+    for payload in &payloads {
+        if payload.commands.iter().any(|cmd| {
+            matches!(
+                cmd,
+                egui::ViewportCommand::Fullscreen(_)
+                    | egui::ViewportCommand::Maximized(_)
+                    | egui::ViewportCommand::Minimized(_)
+                    | egui::ViewportCommand::InnerSize(_)
+            )
+        }) {
+            has_transition_cmd = true;
+        }
     }
 
     // 2. Process commands outside the borrow
@@ -1303,27 +1448,29 @@ fn process_deferred_viewport_commands(egui_ctx: &egui::Context, shared: &RefCell
         } = &mut *shared_mut;
 
         for payload in payloads {
+            let new_inner_size = payload.window.inner_size();
+            let resized = new_inner_size != payload.old_inner_size;
+
             if let Some(viewport) = viewports.get_mut(&payload.viewport_id) {
                 viewport.info = payload.info;
                 viewport.actions_requested = payload.actions_requested;
 
-                // For Wayland : https://github.com/emilk/egui/issues/4196
-                if cfg!(target_os = "linux") {
-                    if let Some(window) = &viewport.window {
-                        let new_inner_size = window.inner_size();
-                        if new_inner_size != payload.old_inner_size
-                            && let (Some(width), Some(height)) = (
-                                NonZeroU32::new(new_inner_size.width),
-                                NonZeroU32::new(new_inner_size.height),
-                            )
-                        {
-                            painter.on_window_resized(payload.viewport_id, width, height);
-                        }
+                if resized {
+                    any_resized = true;
+                    if let (Some(width), Some(height)) = (
+                        NonZeroU32::new(new_inner_size.width),
+                        NonZeroU32::new(new_inner_size.height),
+                    ) {
+                        // Wayland needs an explicit resize; Windows needs it when leaving
+                        // fullscreen so the next present targets the restored swap chain.
+                        painter.on_window_resized(payload.viewport_id, width, height);
+                        viewport.current_physical_size = Some(new_inner_size);
                     }
                 }
             }
         }
     }
+    any_resized || has_transition_cmd
 }
 
 fn initialize_or_update_viewport<'a>(
@@ -1359,6 +1506,7 @@ fn initialize_or_update_viewport<'a>(
                 viewport_ui_cb,
                 window: None,
                 egui_winit: None,
+                current_physical_size: None,
             })
         }
 
@@ -1393,4 +1541,15 @@ fn initialize_or_update_viewport<'a>(
             entry.into_mut()
         }
     }
+}
+
+fn screen_rect_from_physical_size(
+    egui_ctx: &egui::Context,
+    window: &winit::window::Window,
+    physical_size: winit::dpi::PhysicalSize<u32>,
+) -> egui::Rect {
+    let ppp = egui_winit::pixels_per_point(egui_ctx, window);
+    let width_points = physical_size.width as f32 / ppp;
+    let height_points = physical_size.height as f32 / ppp;
+    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width_points, height_points))
 }
