@@ -511,7 +511,8 @@ fn poll_hotkey_capture_from_input(ctx: &Context) -> Option<String> {
 
 fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) {
     let mut draft = app.context_menu_draft_config.clone();
-    let mut should_apply = false;
+    let mut draft_changed = false;
+    let mut apply_clicked = false;
     let mut row_to_delete = None;
     let mut move_selected: Option<ContextMenuMove> = None;
     let mut edit_result: Option<ContextMenuEntry> = None;
@@ -653,6 +654,9 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
                                             },
                                         )
                                         .inner;
+                                    if enabled_clicked {
+                                        draft_changed = true;
+                                    }
                                     if index_clicked || label_clicked || enabled_clicked {
                                         app.context_menu_selected_row = Some(row_idx);
                                     }
@@ -706,10 +710,10 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
             {
                 draft = default_context_menu_config_file();
                 app.context_menu_selected_row = None;
-                should_apply = true;
+                draft_changed = true;
             }
             if styled_button(ui, t!("context_menu.apply"), &app.cached_palette).clicked() {
-                should_apply = true;
+                apply_clicked = true;
             }
         });
     });
@@ -724,7 +728,7 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
         } else {
             Some(idx.min(draft.items.len() - 1))
         };
-        should_apply = true;
+        draft_changed = true;
     }
 
     if let Some(movement) = move_selected
@@ -741,7 +745,7 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
             let entry = draft.items.remove(idx);
             draft.items.insert(new_idx, entry);
             app.context_menu_selected_row = Some(new_idx);
-            should_apply = true;
+            draft_changed = true;
         }
     }
 
@@ -766,12 +770,15 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
         app.context_menu_edit_dialog_open = false;
         app.context_menu_edit_target = None;
         app.context_menu_edit_draft = EditableContextMenuEntry::default();
-        should_apply = true;
+        draft_changed = true;
     }
 
     let validated = crate::context_menu::rebuild_runtime_state(&draft);
     app.context_menu_draft_config = validated.config.clone();
-    if should_apply {
+    if draft_changed {
+        app.context_menu_apply_success_at = None;
+    }
+    if apply_clicked {
         app.context_menu_runtime = validated;
         app.context_menu_apply_success_at = Some(Instant::now());
         app.queue_context_menu_save();
