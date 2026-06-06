@@ -732,7 +732,7 @@ impl GlowWinitRunning<'_> {
             );
         }
 
-        let transition_resized = process_deferred_viewport_commands(&integration.egui_ctx, glutin);
+        let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, glutin);
 
         let window = {
             let mut glutin = glutin.borrow_mut();
@@ -765,10 +765,14 @@ impl GlowWinitRunning<'_> {
             egui_winit.handle_platform_output(&window, platform_output);
 
             if is_visible {
-                let clipped_primitives = if transition_resized {
-                    vec![]
-                } else {
-                    integration.egui_ctx.tessellate(shapes, pixels_per_point)
+                let clipped_primitives = match transition_paint {
+                    TransitionPaint::Blank => vec![],
+                    TransitionPaint::Content => {
+                        integration.egui_ctx.tessellate(shapes, pixels_per_point)
+                    }
+                    TransitionPaint::None => {
+                        integration.egui_ctx.tessellate(shapes, pixels_per_point)
+                    }
                 };
 
                 {
@@ -927,7 +931,11 @@ impl GlowWinitRunning<'_> {
                     && let Some(viewport_id) = viewport_id
                 {
                     let mut is_stale = false;
+                    let mut is_duplicate = false;
                     if let Some(viewport) = glutin.viewports.get(&viewport_id) {
+                        if viewport.current_physical_size == Some(*physical_size) {
+                            is_duplicate = true;
+                        }
                         if let Some(window) = &viewport.window {
                             let live_size = window.inner_size();
                             if live_size != *physical_size {
@@ -941,12 +949,14 @@ impl GlowWinitRunning<'_> {
                         }
                     }
 
-                    if !is_stale {
+                    if !is_stale && !is_duplicate {
                         repaint_asap = true;
                         glutin.resize(viewport_id, *physical_size);
                         if let Some(viewport) = glutin.viewports.get_mut(&viewport_id) {
                             viewport.current_physical_size = Some(*physical_size);
                         }
+                    } else if is_duplicate {
+                        repaint_asap = true;
                     }
                 }
             }
@@ -1505,10 +1515,17 @@ fn contains_fullscreen_true_command(commands: &[egui::viewport::ViewportCommand]
         .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransitionPaint {
+    None,
+    Blank,
+    Content,
+}
+
 fn process_deferred_viewport_commands(
     egui_ctx: &egui::Context,
     glutin: &RefCell<GlutinWindowContext>,
-) -> bool {
+) -> TransitionPaint {
     let mut payloads = Vec::new();
     let mut any_resized = false;
 
@@ -1536,15 +1553,17 @@ fn process_deferred_viewport_commands(
     }
 
     if payloads.is_empty() {
-        return false;
+        return TransitionPaint::None;
     }
 
     // Check if any payload contains a transition command before we consume payload.commands
     let mut has_transition_cmd = false;
+    let mut should_paint_transition_content = false;
     let mut needs_reveal_after_fullscreen = Vec::new();
     for payload in &payloads {
         if contains_fullscreen_true_command(&payload.commands) {
             needs_reveal_after_fullscreen.push(payload.viewport_id);
+            should_paint_transition_content = true;
         }
         if payload.commands.iter().any(|cmd| {
             matches!(
@@ -1606,7 +1625,15 @@ fn process_deferred_viewport_commands(
         glutin.borrow_mut().resize(viewport_id, new_inner_size);
     }
 
-    any_resized || has_transition_cmd
+    if any_resized || has_transition_cmd {
+        if should_paint_transition_content {
+            TransitionPaint::Content
+        } else {
+            TransitionPaint::Blank
+        }
+    } else {
+        TransitionPaint::None
+    }
 }
 
 fn initialize_or_update_viewport(

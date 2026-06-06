@@ -791,7 +791,7 @@ impl WgpuWinitRunning<'_> {
             );
         }
 
-        let transition_resized = process_deferred_viewport_commands(&integration.egui_ctx, shared);
+        let transition_paint = process_deferred_viewport_commands(&integration.egui_ctx, shared);
 
         let (window_opt, vsync_secs) = {
             let mut shared_mut = shared.borrow_mut();
@@ -830,12 +830,12 @@ impl WgpuWinitRunning<'_> {
             egui_winit.handle_platform_output(window, platform_output);
 
             let vsync_secs = if is_visible {
-                let clipped_primitives = if transition_resized {
-                    // Skip drawing stale UI elements to avoid flicker during fullscreen transition.
-                    // This will render a solid background color frame, preventing the top-left stale layout glitch.
-                    vec![]
-                } else {
-                    egui_ctx.tessellate(shapes, pixels_per_point)
+                let clipped_primitives = match transition_paint {
+                    TransitionPaint::Blank => vec![],
+                    TransitionPaint::Content => {
+                        egui_ctx.tessellate(shapes, pixels_per_point)
+                    }
+                    TransitionPaint::None => egui_ctx.tessellate(shapes, pixels_per_point),
                 };
 
                 let mut screenshot_commands = vec![];
@@ -995,7 +995,11 @@ impl WgpuWinitRunning<'_> {
                     )
                 {
                     let mut is_stale = false;
+                    let mut is_duplicate = false;
                     if let Some(viewport) = shared.viewports.get(&id) {
+                        if viewport.current_physical_size == Some(*physical_size) {
+                            is_duplicate = true;
+                        }
                         if let Some(window) = &viewport.window {
                             let live_size = window.inner_size();
                             if live_size != *physical_size {
@@ -1009,7 +1013,7 @@ impl WgpuWinitRunning<'_> {
                         }
                     }
 
-                    if !is_stale {
+                    if !is_stale && !is_duplicate {
                         if shared.resized_viewport != viewport_id {
                             shared.resized_viewport = viewport_id;
                             shared.painter.on_window_resize_state_change(id, true);
@@ -1018,6 +1022,8 @@ impl WgpuWinitRunning<'_> {
                         if let Some(viewport) = shared.viewports.get_mut(&id) {
                             viewport.current_physical_size = Some(*physical_size);
                         }
+                        repaint_asap = true;
+                    } else if is_duplicate {
                         repaint_asap = true;
                     }
                 }
@@ -1385,10 +1391,17 @@ fn contains_fullscreen_true_command(commands: &[egui::viewport::ViewportCommand]
         .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransitionPaint {
+    None,
+    Blank,
+    Content,
+}
+
 fn process_deferred_viewport_commands(
     egui_ctx: &egui::Context,
     shared: &RefCell<SharedState>,
-) -> bool {
+) -> TransitionPaint {
     let mut payloads = Vec::new();
     let mut any_resized = false;
 
@@ -1416,15 +1429,17 @@ fn process_deferred_viewport_commands(
     }
 
     if payloads.is_empty() {
-        return false;
+        return TransitionPaint::None;
     }
 
     // Check if any payload contains a transition command before we consume payload.commands
     let mut has_transition_cmd = false;
+    let mut should_paint_transition_content = false;
     let mut needs_reveal_after_fullscreen = Vec::new();
     for payload in &payloads {
         if contains_fullscreen_true_command(&payload.commands) {
             needs_reveal_after_fullscreen.push(payload.viewport_id);
+            should_paint_transition_content = true;
         }
         if payload.commands.iter().any(|cmd| {
             matches!(
@@ -1487,7 +1502,15 @@ fn process_deferred_viewport_commands(
             }
         }
     }
-    any_resized || has_transition_cmd
+    if any_resized || has_transition_cmd {
+        if should_paint_transition_content {
+            TransitionPaint::Content
+        } else {
+            TransitionPaint::Blank
+        }
+    } else {
+        TransitionPaint::None
+    }
 }
 
 fn initialize_or_update_viewport<'a>(
