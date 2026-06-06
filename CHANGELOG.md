@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.6] - 2026-06-06
+
+### Fixed
+- **Fullscreen transitions and stability**: Fixed an issue where switching between windowed and fullscreen modes (via F or F11) could cause the main window to disappear or become unresponsive.
+- **Visual transition quality**: Significantly reduced screen flicker and flashes when entering fullscreen mode, delivering smoother and higher-quality display transitions.
+
 ## [2.3.5] - 2026-06-06
 
 ### Fixed
