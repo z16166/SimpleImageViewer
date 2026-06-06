@@ -275,9 +275,9 @@ impl ImageViewerApp {
                                 t!("status.found", count = count.to_string()).to_string();
 
                             // On first batch: resolve initial position and start preloading.
-                            // For refresh scans, initial_image is kept None so that
-                            // resolve_initial_position() does not consume (and reset to None)
-                            // the anchor before the final sorted Done pass.
+                            // For refresh scans, initial_image is kept None; for startup scans,
+                            // resolve_initial_position() delays clearing initial_image to None until
+                            // scanning is complete so that it survives the final sorted Done pass.
                             if is_first_batch && count > 0 {
                                 if !self.refresh_scan_in_progress {
                                     self.resolve_initial_position();
@@ -426,7 +426,9 @@ impl ImageViewerApp {
             if let Some(pos) = self.find_index_for_path(path) {
                 self.current_index = pos;
             }
-            self.initial_image = None;
+            if !self.scanning {
+                self.initial_image = None;
+            }
         } else if self.settings.resume_last_image {
             if let Some(last_path) = &self.settings.last_viewed_image {
                 if let Some(pos) = self.find_index_for_path(last_path) {
