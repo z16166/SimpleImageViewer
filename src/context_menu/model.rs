@@ -381,7 +381,8 @@ fn path_to_string(path: &Path) -> String {
 pub fn quote_arg(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        trimmed.to_string()
+        let inner = &trimmed[1..trimmed.len() - 1];
+        format!("\"{}\"", inner.replace('"', "\\\""))
     } else {
         format!("\"{}\"", trimmed.replace('"', "\\\""))
     }

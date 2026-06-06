@@ -103,10 +103,7 @@ fn load_icon_from_build_rgba() -> egui::IconData {
 }
 
 fn init_logging(settings: &crate::settings::Settings) {
-    let log_dir = crate::settings::settings_path()
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let log_dir = std::env::temp_dir();
 
     let logger = flexi_logger::Logger::try_with_env_or_str(&settings.log_level)
         .expect("Failed to initialize logger");

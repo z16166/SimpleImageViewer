@@ -233,4 +233,19 @@ mod tests {
             "\"C:/Program Files/App/App.exe\" \"D:/Work Images/photo 1.jpg\""
         );
     }
+
+    #[test]
+    fn command_building_escapes_quotes_inside_quoted_executable_path() {
+        let image = std::path::Path::new("D:/Work Images/photo.jpg");
+        let exe = ContextMenuCommand::Executable {
+            path: "\"C:/Program Files/App/Bad \"Quote\" Path.exe\"".to_string(),
+        };
+
+        let cmd = exe.command_line_for_image(image).expect("exe command");
+
+        assert_eq!(
+            cmd,
+            "\"C:/Program Files/App/Bad \\\"Quote\\\" Path.exe\" \"D:/Work Images/photo.jpg\""
+        );
+    }
 }

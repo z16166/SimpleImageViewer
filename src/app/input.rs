@@ -627,8 +627,9 @@ impl ImageViewerApp {
                         pending_separator = false;
                     }
                     if ui.button(item.label.as_str()).clicked() {
-                        let item = self.context_menu_runtime.config.items[idx].clone();
-                        self.run_custom_context_menu_action(&item, &path);
+                        if let Some(command) = item.command.clone() {
+                            self.run_custom_context_menu_action(&command, &path);
+                        }
                         self.context_menu_pos = None;
                     }
                     drew_action = true;
@@ -702,12 +703,9 @@ impl ImageViewerApp {
 
     fn run_custom_context_menu_action(
         &mut self,
-        item: &crate::context_menu::model::ContextMenuEntry,
+        command: &crate::context_menu::model::ContextMenuCommand,
         path: &std::path::Path,
     ) {
-        let Some(command) = item.command.as_ref() else {
-            return;
-        };
         let result = match command {
             crate::context_menu::model::ContextMenuCommand::Executable { path: exe } => {
                 std::process::Command::new(exe)
