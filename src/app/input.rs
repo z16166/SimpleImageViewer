@@ -585,9 +585,6 @@ impl ImageViewerApp {
         let mut drew_action = false;
         let mut pending_separator = false;
         for item in self.context_menu_runtime.config.items.clone() {
-            if !item.enabled {
-                continue;
-            }
             match item.kind {
                 crate::context_menu::model::ContextMenuItemKind::Separator => {
                     if drew_action {
@@ -595,6 +592,9 @@ impl ImageViewerApp {
                     }
                 }
                 crate::context_menu::model::ContextMenuItemKind::Builtin => {
+                    if !item.enabled {
+                        continue;
+                    }
                     let Some(id) = item.builtin_id.as_deref() else {
                         continue;
                     };
@@ -622,6 +622,9 @@ impl ImageViewerApp {
                     drew_action = true;
                 }
                 crate::context_menu::model::ContextMenuItemKind::Custom => {
+                    if !item.enabled {
+                        continue;
+                    }
                     if pending_separator {
                         ui.separator();
                         pending_separator = false;
