@@ -581,114 +581,169 @@ impl ImageViewerApp {
     /// Shared content for the right-click context menu (used by the custom
     /// `egui::Area`-based popup in [`Self::draw_image_canvas_ui`]).
     pub(crate) fn draw_context_menu_items(&mut self, ui: &mut egui::Ui) {
-        let path = &self.image_files[self.current_index];
+        let path = self.image_files[self.current_index].clone();
+        let mut drew_action = false;
+        let mut pending_separator = false;
+        for item in self.context_menu_runtime.config.items.clone() {
+            if !item.enabled {
+                continue;
+            }
+            match item.kind {
+                crate::context_menu::model::ContextMenuItemKind::Separator => {
+                    if drew_action {
+                        pending_separator = true;
+                    }
+                }
+                crate::context_menu::model::ContextMenuItemKind::Builtin => {
+                    let Some(id) = item.builtin_id.as_deref() else {
+                        continue;
+                    };
+                    let Some(desc) = crate::context_menu::model::builtin_descriptor(id) else {
+                        continue;
+                    };
+                    if pending_separator {
+                        ui.separator();
+                        pending_separator = false;
+                    }
+                    let label = if desc.id == "toggle_fullscreen" {
+                        if self.settings.fullscreen {
+                            t!("ctx.fullscreen_exit").to_string()
+                        } else {
+                            t!("ctx.fullscreen_enter").to_string()
+                        }
+                    } else if desc.id == "print_current" && cfg!(not(target_os = "windows")) {
+                        t!("ctx.print_pdf_full").to_string()
+                    } else {
+                        t!(desc.label_key).to_string()
+                    };
+                    if ui.button(label).clicked() {
+                        self.run_builtin_context_menu_action(desc.id, &path, ui);
+                    }
+                    drew_action = true;
+                }
+                crate::context_menu::model::ContextMenuItemKind::Custom => {
+                    if pending_separator {
+                        ui.separator();
+                        pending_separator = false;
+                    }
+                    if ui.button(item.label.clone()).clicked() {
+                        self.run_custom_context_menu_action(&item, &path);
+                        self.context_menu_pos = None;
+                    }
+                    drew_action = true;
+                }
+            }
+        }
+    }
+
+    fn run_builtin_context_menu_action(
+        &mut self,
+        id: &str,
+        path: &std::path::Path,
+        ui: &mut egui::Ui,
+    ) {
         let path_str = path.to_string_lossy().to_string();
-
-        if ui.button(t!("ctx.copy_path").to_string()).clicked() {
-            ui.ctx().copy_text(path_str.clone());
-            self.context_menu_pos = None;
-        }
-
-        if ui.button(t!("ctx.copy_file").to_string()).clicked() {
-            copy_file_to_clipboard(&path_str);
-            self.context_menu_pos = None;
-        }
-
-        ui.separator();
-
-        if ui.button(t!("ctx.view_exif").to_string()).clicked() {
-            self.active_modal = Some(ActiveModal::Exif(
-                crate::ui::dialogs::exif::State::new_loading(path.clone()),
-            ));
-
-            let path_clone = path.clone();
-            if let Err(e) = self
-                .lightweight_file_op_tx
-                .send(crate::app::LightweightFileOpJob::Exif(path_clone))
-            {
-                log::warn!("EXIF context-menu job queue send failed: {}", e);
+        match id {
+            "copy_path" => ui.ctx().copy_text(path_str),
+            "copy_file" => copy_file_to_clipboard(&path_str),
+            "view_exif" => {
+                self.active_modal = Some(ActiveModal::Exif(
+                    crate::ui::dialogs::exif::State::new_loading(path.to_path_buf()),
+                ));
+                if let Err(e) = self
+                    .lightweight_file_op_tx
+                    .send(crate::app::LightweightFileOpJob::Exif(path.to_path_buf()))
+                {
+                    log::warn!("EXIF context-menu job queue send failed: {}", e);
+                }
             }
-
-            self.context_menu_pos = None;
-        }
-
-        if ui.button(t!("ctx.view_xmp").to_string()).clicked() {
-            self.active_modal = Some(ActiveModal::Xmp(
-                crate::ui::dialogs::xmp::State::new_loading(path.clone()),
-            ));
-
-            let path_clone = path.clone();
-            if let Err(e) = self
-                .lightweight_file_op_tx
-                .send(crate::app::LightweightFileOpJob::Xmp(path_clone))
-            {
-                log::warn!("XMP context-menu job queue send failed: {}", e);
+            "view_xmp" => {
+                self.active_modal = Some(ActiveModal::Xmp(
+                    crate::ui::dialogs::xmp::State::new_loading(path.to_path_buf()),
+                ));
+                if let Err(e) = self
+                    .lightweight_file_op_tx
+                    .send(crate::app::LightweightFileOpJob::Xmp(path.to_path_buf()))
+                {
+                    log::warn!("XMP context-menu job queue send failed: {}", e);
+                }
             }
-            self.context_menu_pos = None;
-        }
-
-        ui.separator();
-
-        if ui.button(t!("ctx.rotate_ccw").to_string()).clicked() {
-            self.apply_rotation_with_tracking(false, ui.ctx());
-            self.context_menu_pos = None;
-        }
-
-        if ui.button(t!("ctx.rotate_cw").to_string()).clicked() {
-            self.apply_rotation_with_tracking(true, ui.ctx());
-            self.context_menu_pos = None;
-        }
-
-        ui.separator();
-        if ui
-            .button(if cfg!(not(target_os = "windows")) {
-                t!("ctx.print_pdf_full").to_string()
-            } else {
-                t!("ctx.print_full").to_string()
-            })
-            .clicked()
-        {
-            self.print_image(ui.ctx(), crate::print::PrintMode::FullImage);
-            self.context_menu_pos = None;
-        }
-        if ui
-            .button(if cfg!(not(target_os = "windows")) {
-                t!("ctx.print_pdf_visible").to_string()
-            } else {
-                t!("ctx.print_visible").to_string()
-            })
-            .clicked()
-        {
-            self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea);
-            self.context_menu_pos = None;
-        }
-
-        ui.separator();
-        if ui.button(t!("ctx.set_wallpaper").to_string()).clicked() {
-            self.active_modal = Some(ActiveModal::Wallpaper(
-                crate::ui::dialogs::wallpaper::State::new_loading(),
-            ));
-
-            if let Err(e) = self
-                .lightweight_file_op_tx
-                .send(crate::app::LightweightFileOpJob::Wallpaper)
-            {
-                log::warn!("Wallpaper context-menu job queue send failed: {}", e);
+            "zoom_in" => self.dispatch_action(AppAction::ZoomIn, ui.ctx()),
+            "zoom_out" => self.dispatch_action(AppAction::ZoomOut, ui.ctx()),
+            "zoom_reset" => self.dispatch_action(AppAction::ZoomReset, ui.ctx()),
+            "toggle_scale_mode" => self.dispatch_action(AppAction::ToggleScaleMode, ui.ctx()),
+            "toggle_osd" => self.dispatch_action(AppAction::ToggleOSD, ui.ctx()),
+            "rotate_ccw" => self.apply_rotation_with_tracking(false, ui.ctx()),
+            "rotate_cw" => self.apply_rotation_with_tracking(true, ui.ctx()),
+            "hdr_exposure_up" => self.dispatch_action(AppAction::HdrExposureUp, ui.ctx()),
+            "hdr_exposure_down" => self.dispatch_action(AppAction::HdrExposureDown, ui.ctx()),
+            "delete_to_recycle_bin" => self.dispatch_action(AppAction::Delete, ui.ctx()),
+            "permanent_delete" => self.dispatch_action(AppAction::PermanentDelete, ui.ctx()),
+            "print_current" => self.print_image(ui.ctx(), crate::print::PrintMode::FullImage),
+            "print_visible" => self.print_image(ui.ctx(), crate::print::PrintMode::VisibleArea),
+            "set_wallpaper" => {
+                self.active_modal = Some(ActiveModal::Wallpaper(
+                    crate::ui::dialogs::wallpaper::State::new_loading(),
+                ));
+                if let Err(e) = self
+                    .lightweight_file_op_tx
+                    .send(crate::app::LightweightFileOpJob::Wallpaper)
+                {
+                    log::warn!("Wallpaper context-menu job queue send failed: {}", e);
+                }
             }
-            self.context_menu_pos = None;
+            "toggle_fullscreen" => self.dispatch_action(AppAction::ToggleFullscreen, ui.ctx()),
+            "exit_fullscreen" => self.dispatch_action(AppAction::ExitFullscreen, ui.ctx()),
+            _ => log::warn!("Unknown context menu builtin action: {}", id),
         }
+        self.context_menu_pos = None;
+    }
 
-        ui.separator();
-        let fs_label = if self.settings.fullscreen {
-            t!("ctx.fullscreen_exit").to_string()
-        } else {
-            t!("ctx.fullscreen_enter").to_string()
+    fn run_custom_context_menu_action(
+        &mut self,
+        item: &crate::context_menu::model::ContextMenuEntry,
+        path: &std::path::Path,
+    ) {
+        let Some(command) = item.command.as_ref() else {
+            return;
         };
-        if ui.button(fs_label).clicked() {
-            self.settings.fullscreen = !self.settings.fullscreen;
-            self.pending_fullscreen = Some(self.settings.fullscreen);
-            self.queue_save();
-            self.context_menu_pos = None;
+        let result = match command {
+            crate::context_menu::model::ContextMenuCommand::Executable { path: exe } => {
+                std::process::Command::new(exe)
+                    .arg(path)
+                    .spawn()
+                    .map(|_| ())
+            }
+            crate::context_menu::model::ContextMenuCommand::CommandLine { .. } => {
+                let Some(line) = command.command_line_for_image(path) else {
+                    return;
+                };
+                #[cfg(target_os = "windows")]
+                {
+                    std::process::Command::new("cmd")
+                        .arg("/C")
+                        .arg(line)
+                        .spawn()
+                        .map(|_| ())
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(line)
+                        .spawn()
+                        .map(|_| ())
+                }
+            }
+        };
+        if let Err(e) = result {
+            log::warn!("Custom context-menu command failed: {}", e);
+            self.active_modal = Some(ActiveModal::Confirm(
+                crate::ui::dialogs::confirm::State::info(
+                    t!("context_menu.command_failed_title"),
+                    t!("context_menu.command_failed_msg", error = e.to_string()),
+                ),
+            ));
         }
     }
 }

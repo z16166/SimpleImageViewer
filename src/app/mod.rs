@@ -60,12 +60,26 @@ pub(crate) enum SettingsTab {
     Music,
     Appearance,
     Hotkeys,
+    ContextMenu,
     System,
     About,
 }
 
 impl SettingsTab {
     #[cfg(target_os = "windows")]
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Library,
+        Self::Viewing,
+        Self::Slideshow,
+        Self::Music,
+        Self::Appearance,
+        Self::Hotkeys,
+        Self::ContextMenu,
+        Self::System,
+        Self::About,
+    ];
+
+    #[cfg(not(target_os = "windows"))]
     pub(crate) const ALL: [Self; 8] = [
         Self::Library,
         Self::Viewing,
@@ -73,18 +87,7 @@ impl SettingsTab {
         Self::Music,
         Self::Appearance,
         Self::Hotkeys,
-        Self::System,
-        Self::About,
-    ];
-
-    #[cfg(not(target_os = "windows"))]
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Library,
-        Self::Viewing,
-        Self::Slideshow,
-        Self::Music,
-        Self::Appearance,
-        Self::Hotkeys,
+        Self::ContextMenu,
         Self::About,
     ];
 
@@ -96,6 +99,7 @@ impl SettingsTab {
             Self::Music => "settings_tab.music",
             Self::Appearance => "settings_tab.appearance",
             Self::Hotkeys => "settings_tab.hotkeys",
+            Self::ContextMenu => "settings_tab.context_menu",
             Self::System => "settings_tab.system",
             Self::About => "settings_tab.about",
         }
@@ -606,6 +610,17 @@ pub struct ImageViewerApp {
     pub(crate) hotkeys_add_row_captured_key: Option<String>,
     /// Add Row dialog: OK clicked without a recorded key.
     pub(crate) hotkeys_add_row_need_key_hint: bool,
+    pub(crate) context_menu_runtime: crate::context_menu::RuntimeContextMenuState,
+    pub(crate) context_menu_draft_config: crate::context_menu::model::ContextMenuConfigFile,
+    pub(crate) context_menu_save_error_rx: Receiver<String>,
+    pub(crate) context_menu_save_tx: Sender<crate::context_menu::model::ContextMenuConfigFile>,
+    pub(crate) context_menu_saver_handle: Option<std::thread::JoinHandle<()>>,
+    pub(crate) last_context_menu_save_error: Option<(String, Instant)>,
+    pub(crate) context_menu_apply_success_at: Option<Instant>,
+    pub(crate) context_menu_selected_row: Option<usize>,
+    pub(crate) context_menu_edit_dialog_open: bool,
+    pub(crate) context_menu_edit_target: Option<usize>,
+    pub(crate) context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry,
     /// True while a refresh-file-list scan (F5) is in progress.
     /// Prevents re-entry and blocks navigation actions that would
     /// dereference image_files during the incomplete rebuild.
@@ -871,6 +886,11 @@ impl eframe::App for ImageViewerApp {
             crossbeam_channel::unbounded::<crate::hotkeys::model::HotkeyConfigFile>();
         let old_hotkey_tx = std::mem::replace(&mut self.hotkeys_save_tx, dummy_hotkey_tx);
         drop(old_hotkey_tx);
+        let (dummy_context_menu_tx, _) =
+            crossbeam_channel::unbounded::<crate::context_menu::model::ContextMenuConfigFile>();
+        let old_context_menu_tx =
+            std::mem::replace(&mut self.context_menu_save_tx, dummy_context_menu_tx);
+        drop(old_context_menu_tx);
 
         // Wait for the saver thread to finish any in-progress I/O
         if let Some(handle) = self.saver_handle.take() {
@@ -883,12 +903,22 @@ impl eframe::App for ImageViewerApp {
                 log::error!("[on_exit] Hotkeys saver thread panicked: {:?}", e);
             }
         }
+        if let Some(handle) = self.context_menu_saver_handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("[on_exit] Context menu saver thread panicked: {:?}", e);
+            }
+        }
 
         if let Err(e) = self.settings.save() {
             log::error!("[on_exit] Failed to save settings: {}", e);
         }
         if let Err(e) = crate::hotkeys::io::save_hotkeys_file(&self.hotkeys_runtime.config) {
             log::error!("[on_exit] Failed to save hotkeys: {}", e);
+        }
+        if let Err(e) =
+            crate::context_menu::io::save_context_menu_file(&self.context_menu_runtime.config)
+        {
+            log::error!("[on_exit] Failed to save context menu: {}", e);
         }
 
         // Force-terminate BEFORE eframe tries to tear down GPU resources.
@@ -1197,6 +1227,10 @@ impl eframe::App for ImageViewerApp {
             log::error!("Hotkeys persistence error: {}", err);
             self.last_hotkeys_save_error = Some((err, Instant::now()));
         }
+        while let Ok(err) = self.context_menu_save_error_rx.try_recv() {
+            log::error!("Context menu persistence error: {}", err);
+            self.last_context_menu_save_error = Some((err, Instant::now()));
+        }
 
         // Clear persistence error after 5 seconds
         if let Some((_, start)) = self.last_save_error {
@@ -1209,9 +1243,19 @@ impl eframe::App for ImageViewerApp {
                 self.last_hotkeys_save_error = None;
             }
         }
+        if let Some((_, start)) = self.last_context_menu_save_error {
+            if start.elapsed().as_secs() >= 5 {
+                self.last_context_menu_save_error = None;
+            }
+        }
         if let Some(start) = self.hotkeys_apply_success_at {
             if start.elapsed().as_secs() >= 3 {
                 self.hotkeys_apply_success_at = None;
+            }
+        }
+        if let Some(start) = self.context_menu_apply_success_at {
+            if start.elapsed().as_secs() >= 3 {
+                self.context_menu_apply_success_at = None;
             }
         }
 

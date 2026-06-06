@@ -29,6 +29,7 @@ use eframe::egui;
 use std::time::Instant;
 mod audio;
 mod constants;
+mod context_menu;
 mod formats;
 mod hdr;
 mod hotkeys;

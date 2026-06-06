@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::{ImageViewerApp, ScaleMode, SettingsTab, TransitionStyle};
+use crate::context_menu::model::{
+    ContextMenuCommand, ContextMenuEntry, ContextMenuItemKind, EditableContextMenuEntry,
+    EditableContextMenuEntryKind, builtin_descriptor, default_context_menu_config_file,
+};
 use crate::hotkeys::model::{
     HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file,
 };
@@ -37,6 +41,9 @@ const SETTINGS_TAB_ITEM_HEIGHT: f32 = 34.0;
 const HOTKEYS_INDEX_COL_WIDTH: f32 = 48.0;
 const HOTKEYS_ACTION_COL_WIDTH: f32 = 230.0;
 const HOTKEYS_KEY_COL_WIDTH: f32 = 320.0;
+const CONTEXT_MENU_INDEX_COL_WIDTH: f32 = 48.0;
+const CONTEXT_MENU_LABEL_COL_WIDTH: f32 = 360.0;
+const CONTEXT_MENU_ENABLED_COL_WIDTH: f32 = 96.0;
 pub fn draw(app: &mut ImageViewerApp, ctx: &Context, frame: &Frame) {
     // [Point 19] Explanatory Comments:
     // The settings layout uses nested UI elements to achieve responsive alignment.
@@ -450,6 +457,7 @@ fn draw_active_settings_tab(
         ),
         SettingsTab::Appearance => crate::ui::settings_appearance::draw(app, ui, ctx),
         SettingsTab::Hotkeys => draw_hotkeys_tab(app, ui, ctx),
+        SettingsTab::ContextMenu => draw_context_menu_tab(app, ui, ctx),
         #[cfg(target_os = "windows")]
         SettingsTab::System => draw_system_tab(app, ui),
         #[cfg(not(target_os = "windows"))]
@@ -499,6 +507,494 @@ fn poll_hotkey_capture_from_input(ctx: &Context) -> Option<String> {
         }
     });
     captured
+}
+
+fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Context) {
+    let mut draft = app.context_menu_draft_config.clone();
+    let mut should_apply = false;
+    let mut row_to_delete = None;
+    let mut move_selected: Option<ContextMenuMove> = None;
+    let mut edit_result: Option<ContextMenuEntry> = None;
+
+    handle_context_menu_tab_shortcuts(app, ctx, &mut row_to_delete, &mut move_selected);
+
+    ui.vertical(|ui| {
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(t!("section.context_menu"))
+                .color(app.cached_palette.accent2)
+                .strong(),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(t!("context_menu.order_hint")).wrap());
+        if app.context_menu_apply_success_at.is_some() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(t!("context_menu.apply_success"))
+                    .color(app.cached_palette.button_primary)
+                    .strong(),
+            );
+        }
+
+        let footer_h = 58.0;
+        let available_h = (ui.available_height() - footer_h).max(120.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), available_h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("context_menu_tab_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::Grid::new("context_menu_grid")
+                            .num_columns(3)
+                            .spacing([0.0, 2.0])
+                            .striped(false)
+                            .show(ui, |ui| {
+                                let header_font = egui::TextStyle::Body.resolve(ui.style());
+                                let header_color = ui.visuals().text_color();
+                                let draw_header = |ui: &mut egui::Ui, width: f32, text: &str| {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(width, 18.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().text(
+                                        egui::pos2(rect.left() + 8.0, rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        text,
+                                        header_font.clone(),
+                                        header_color,
+                                    );
+                                };
+                                draw_header(
+                                    ui,
+                                    CONTEXT_MENU_INDEX_COL_WIDTH,
+                                    &t!("context_menu.column_index"),
+                                );
+                                draw_header(
+                                    ui,
+                                    CONTEXT_MENU_LABEL_COL_WIDTH,
+                                    &t!("context_menu.column_label"),
+                                );
+                                draw_header(
+                                    ui,
+                                    CONTEXT_MENU_ENABLED_COL_WIDTH,
+                                    &t!("context_menu.column_enabled"),
+                                );
+                                ui.end_row();
+
+                                for row_idx in 0..draft.items.len() {
+                                    let selected = app.context_menu_selected_row == Some(row_idx);
+                                    let zebra_fill = if row_idx % 2 == 0 {
+                                        ui.visuals().faint_bg_color.gamma_multiply(0.18)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    };
+                                    let cell_fill = if selected {
+                                        ui.visuals().selection.bg_fill
+                                    } else {
+                                        zebra_fill
+                                    };
+                                    let text_color = if selected {
+                                        ui.visuals().selection.stroke.color
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
+                                    let font = egui::TextStyle::Body.resolve(ui.style());
+                                    let draw_cell = |ui: &mut egui::Ui,
+                                                     width: f32,
+                                                     text: &str,
+                                                     fill: Color32,
+                                                     color: Color32|
+                                     -> bool {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(width, 24.0),
+                                            egui::Sense::click(),
+                                        );
+                                        ui.painter().rect_filled(rect, 0.0, fill);
+                                        ui.painter().text(
+                                            egui::pos2(rect.left() + 8.0, rect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            text,
+                                            font.clone(),
+                                            color,
+                                        );
+                                        response.clicked()
+                                    };
+
+                                    let label =
+                                        localized_context_menu_entry_label(&draft.items[row_idx]);
+                                    let index_clicked = draw_cell(
+                                        ui,
+                                        CONTEXT_MENU_INDEX_COL_WIDTH,
+                                        &(row_idx + 1).to_string(),
+                                        cell_fill,
+                                        text_color,
+                                    );
+                                    let label_clicked = draw_cell(
+                                        ui,
+                                        CONTEXT_MENU_LABEL_COL_WIDTH,
+                                        &label,
+                                        cell_fill,
+                                        text_color,
+                                    );
+                                    let enabled_clicked = ui
+                                        .allocate_ui_with_layout(
+                                            egui::vec2(CONTEXT_MENU_ENABLED_COL_WIDTH, 24.0),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.painter().rect_filled(
+                                                    ui.max_rect(),
+                                                    0.0,
+                                                    cell_fill,
+                                                );
+                                                ui.checkbox(&mut draft.items[row_idx].enabled, "")
+                                                    .clicked()
+                                            },
+                                        )
+                                        .inner;
+                                    if index_clicked || label_clicked || enabled_clicked {
+                                        app.context_menu_selected_row = Some(row_idx);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            },
+        );
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if styled_button(ui, t!("context_menu.add"), &app.cached_palette).clicked() {
+                app.context_menu_edit_target = None;
+                app.context_menu_edit_draft = EditableContextMenuEntry::default();
+                app.context_menu_edit_dialog_open = true;
+            }
+            let can_delete = app
+                .context_menu_selected_row
+                .and_then(|idx| draft.items.get(idx))
+                .is_some_and(can_delete_context_menu_entry);
+            if ui
+                .add_enabled(
+                    can_delete,
+                    styled_button_widget(t!("context_menu.delete"), &app.cached_palette),
+                )
+                .clicked()
+            {
+                row_to_delete = app.context_menu_selected_row;
+            }
+            let can_modify = app
+                .context_menu_selected_row
+                .and_then(|idx| draft.items.get(idx))
+                .is_some_and(|entry| entry.kind != ContextMenuItemKind::Builtin);
+            if ui
+                .add_enabled(
+                    can_modify,
+                    styled_button_widget(t!("context_menu.modify"), &app.cached_palette),
+                )
+                .clicked()
+            {
+                if let Some(idx) = app.context_menu_selected_row
+                    && let Some(entry) = draft.items.get(idx)
+                {
+                    app.context_menu_edit_target = Some(idx);
+                    app.context_menu_edit_draft = editable_context_menu_entry_from_entry(entry);
+                    app.context_menu_edit_dialog_open = true;
+                }
+            }
+            if styled_button(ui, t!("context_menu.restore_defaults"), &app.cached_palette).clicked()
+            {
+                draft = default_context_menu_config_file();
+                app.context_menu_selected_row = None;
+                should_apply = true;
+            }
+            if styled_button(ui, t!("context_menu.apply"), &app.cached_palette).clicked() {
+                should_apply = true;
+            }
+        });
+    });
+
+    if let Some(idx) = row_to_delete
+        && idx < draft.items.len()
+        && can_delete_context_menu_entry(&draft.items[idx])
+    {
+        draft.items.remove(idx);
+        app.context_menu_selected_row = if draft.items.is_empty() {
+            None
+        } else {
+            Some(idx.min(draft.items.len() - 1))
+        };
+        should_apply = true;
+    }
+
+    if let Some(movement) = move_selected
+        && let Some(idx) = app.context_menu_selected_row
+        && idx < draft.items.len()
+    {
+        let new_idx = match movement {
+            ContextMenuMove::Up => idx.saturating_sub(1),
+            ContextMenuMove::Down => (idx + 1).min(draft.items.len() - 1),
+            ContextMenuMove::Top => 0,
+            ContextMenuMove::Bottom => draft.items.len() - 1,
+        };
+        if new_idx != idx {
+            let entry = draft.items.remove(idx);
+            draft.items.insert(new_idx, entry);
+            app.context_menu_selected_row = Some(new_idx);
+            should_apply = true;
+        }
+    }
+
+    if app.context_menu_edit_dialog_open {
+        edit_result = draw_context_menu_edit_dialog(app, ctx);
+    }
+
+    if let Some(entry) = edit_result {
+        if let Some(idx) = app.context_menu_edit_target {
+            if idx < draft.items.len() && draft.items[idx].kind != ContextMenuItemKind::Builtin {
+                draft.items[idx] = entry;
+                app.context_menu_selected_row = Some(idx);
+            }
+        } else {
+            let insert_at = app
+                .context_menu_selected_row
+                .map(|idx| (idx + 1).min(draft.items.len()))
+                .unwrap_or(draft.items.len());
+            draft.items.insert(insert_at, entry);
+            app.context_menu_selected_row = Some(insert_at);
+        }
+        app.context_menu_edit_dialog_open = false;
+        app.context_menu_edit_target = None;
+        app.context_menu_edit_draft = EditableContextMenuEntry::default();
+        should_apply = true;
+    }
+
+    let validated = crate::context_menu::rebuild_runtime_state(&draft);
+    app.context_menu_draft_config = validated.config.clone();
+    if should_apply {
+        app.context_menu_runtime = validated;
+        app.context_menu_apply_success_at = Some(Instant::now());
+        app.queue_context_menu_save();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ContextMenuMove {
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
+fn handle_context_menu_tab_shortcuts(
+    app: &ImageViewerApp,
+    ctx: &Context,
+    row_to_delete: &mut Option<usize>,
+    move_selected: &mut Option<ContextMenuMove>,
+) {
+    if app.settings_tab != SettingsTab::ContextMenu || app.context_menu_edit_dialog_open {
+        return;
+    }
+    ctx.input(|i| {
+        if i.key_pressed(egui::Key::W) {
+            *move_selected = Some(ContextMenuMove::Up);
+        } else if i.key_pressed(egui::Key::S) {
+            *move_selected = Some(ContextMenuMove::Down);
+        } else if i.key_pressed(egui::Key::A) {
+            *move_selected = Some(ContextMenuMove::Top);
+        } else if i.key_pressed(egui::Key::D) {
+            *move_selected = Some(ContextMenuMove::Bottom);
+        } else if i.key_pressed(egui::Key::Delete) {
+            *row_to_delete = app.context_menu_selected_row;
+        }
+    });
+}
+
+fn can_delete_context_menu_entry(entry: &ContextMenuEntry) -> bool {
+    entry.kind != ContextMenuItemKind::Builtin
+}
+
+fn localized_context_menu_entry_label(entry: &ContextMenuEntry) -> String {
+    match entry.kind {
+        ContextMenuItemKind::Builtin => entry
+            .builtin_id
+            .as_deref()
+            .and_then(builtin_descriptor)
+            .map(|desc| t!(desc.label_key).to_string())
+            .unwrap_or_else(|| t!("context_menu.unknown_builtin").to_string()),
+        ContextMenuItemKind::Separator => t!("context_menu.separator").to_string(),
+        ContextMenuItemKind::Custom => entry.label.clone(),
+    }
+}
+
+fn editable_context_menu_entry_from_entry(entry: &ContextMenuEntry) -> EditableContextMenuEntry {
+    match entry.kind {
+        ContextMenuItemKind::Separator => EditableContextMenuEntry {
+            kind: EditableContextMenuEntryKind::Separator,
+            label: String::new(),
+            command: ContextMenuCommand::Executable {
+                path: String::new(),
+            },
+        },
+        ContextMenuItemKind::Custom => EditableContextMenuEntry {
+            kind: EditableContextMenuEntryKind::Custom,
+            label: entry.label.clone(),
+            command: entry
+                .command
+                .clone()
+                .unwrap_or(ContextMenuCommand::Executable {
+                    path: String::new(),
+                }),
+        },
+        ContextMenuItemKind::Builtin => EditableContextMenuEntry::default(),
+    }
+}
+
+fn draw_context_menu_edit_dialog(
+    app: &mut ImageViewerApp,
+    ctx: &Context,
+) -> Option<ContextMenuEntry> {
+    let mut result = None;
+    let dialog_size = egui::vec2(520.0, 300.0);
+    let viewport_size = ctx.input(|i| {
+        i.viewport()
+            .inner_rect
+            .map(|r| r.size())
+            .unwrap_or_else(|| egui::vec2(1024.0, 720.0))
+    });
+    let default_pos = egui::pos2(
+        ((viewport_size.x - dialog_size.x) * 0.5).max(0.0),
+        ((viewport_size.y - dialog_size.y) * 0.5).max(0.0),
+    );
+    let title = if app.context_menu_edit_target.is_some() {
+        t!("context_menu.modify")
+    } else {
+        t!("context_menu.add")
+    };
+
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(default_pos)
+        .default_size(dialog_size)
+        .show(ctx, |ui| {
+            ui.set_min_width(480.0);
+            ui.label(t!("context_menu.item_type"));
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut app.context_menu_edit_draft.kind,
+                    EditableContextMenuEntryKind::Separator,
+                    t!("context_menu.type_separator"),
+                );
+                ui.radio_value(
+                    &mut app.context_menu_edit_draft.kind,
+                    EditableContextMenuEntryKind::Custom,
+                    t!("context_menu.type_custom"),
+                );
+            });
+
+            let is_custom =
+                app.context_menu_edit_draft.kind == EditableContextMenuEntryKind::Custom;
+            ui.add_enabled_ui(is_custom, |ui| {
+                ui.add_space(8.0);
+                ui.label(t!("context_menu.action_name"));
+                ui.text_edit_singleline(&mut app.context_menu_edit_draft.label);
+                ui.add_space(8.0);
+                ui.label(t!("context_menu.action_kind"));
+                let mut use_exe = matches!(
+                    app.context_menu_edit_draft.command,
+                    ContextMenuCommand::Executable { .. }
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .radio_value(&mut use_exe, true, t!("context_menu.action_executable"))
+                        .clicked()
+                    {
+                        app.context_menu_edit_draft.command = ContextMenuCommand::Executable {
+                            path: String::new(),
+                        };
+                    }
+                    if ui
+                        .radio_value(&mut use_exe, false, t!("context_menu.action_command_line"))
+                        .clicked()
+                    {
+                        app.context_menu_edit_draft.command = ContextMenuCommand::CommandLine {
+                            template: crate::context_menu::model::CommandTemplate::new(
+                                String::new(),
+                            ),
+                        };
+                    }
+                });
+                ui.add_space(6.0);
+                match &mut app.context_menu_edit_draft.command {
+                    ContextMenuCommand::Executable { path } => {
+                        ui.label(t!("context_menu.exe_path"));
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(path)
+                                    .desired_width((ui.available_width() - 86.0).max(120.0)),
+                            );
+                            if styled_button(ui, t!("context_menu.browse"), &app.cached_palette)
+                                .clicked()
+                            {
+                                if let Some(selected) = rfd::FileDialog::new()
+                                    .add_filter("Executable", &["exe"])
+                                    .pick_file()
+                                {
+                                    *path = selected.to_string_lossy().to_string();
+                                }
+                            }
+                        });
+                    }
+                    ContextMenuCommand::CommandLine { template } => {
+                        ui.label(t!("context_menu.command_line"));
+                        ui.text_edit_singleline(&mut template.template);
+                        ui.add(egui::Label::new(t!("context_menu.command_line_hint")).wrap());
+                    }
+                }
+            });
+
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let valid =
+                    context_menu_edit_draft_to_entry(&app.context_menu_edit_draft).is_some();
+                if ui
+                    .add_enabled(
+                        valid,
+                        styled_button_widget(t!("btn.ok"), &app.cached_palette),
+                    )
+                    .clicked()
+                {
+                    result = context_menu_edit_draft_to_entry(&app.context_menu_edit_draft);
+                }
+                if styled_button(ui, t!("btn.cancel"), &app.cached_palette).clicked() {
+                    app.context_menu_edit_dialog_open = false;
+                    app.context_menu_edit_target = None;
+                    app.context_menu_edit_draft = EditableContextMenuEntry::default();
+                }
+            });
+        });
+
+    result
+}
+
+fn context_menu_edit_draft_to_entry(draft: &EditableContextMenuEntry) -> Option<ContextMenuEntry> {
+    match draft.kind {
+        EditableContextMenuEntryKind::Separator => Some(ContextMenuEntry::separator()),
+        EditableContextMenuEntryKind::Custom => {
+            let label = draft.label.trim();
+            if label.is_empty() || !draft.command.is_valid() {
+                return None;
+            }
+            Some(ContextMenuEntry {
+                kind: ContextMenuItemKind::Custom,
+                enabled: true,
+                builtin_id: None,
+                label: label.to_string(),
+                command: Some(draft.command.clone()),
+            })
+        }
+    }
 }
 
 fn draw_hotkeys_tab_status(

@@ -132,6 +132,41 @@ impl ImageViewerApp {
             }
         };
 
+        let context_menu_runtime = match crate::context_menu::load_runtime_context_menu_state() {
+            Ok(state) => state,
+            Err(e) => {
+                log::error!("[context_menu] failed to load context menu config: {}", e);
+                crate::context_menu::rebuild_runtime_state(
+                    &crate::context_menu::model::default_context_menu_config_file(),
+                )
+            }
+        };
+        let context_menu_draft_config = context_menu_runtime.config.clone();
+        let (context_menu_save_tx, context_menu_save_rx) =
+            crossbeam_channel::unbounded::<crate::context_menu::model::ContextMenuConfigFile>();
+        let (context_menu_save_error_tx, context_menu_save_error_rx) =
+            crossbeam_channel::unbounded::<String>();
+        let context_menu_saver_res = std::thread::Builder::new()
+            .name("context-menu-saver".to_string())
+            .spawn(move || {
+                while let Ok(mut cfg) = context_menu_save_rx.recv() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    while let Ok(newer) = context_menu_save_rx.try_recv() {
+                        cfg = newer;
+                    }
+                    if let Err(e) = crate::context_menu::io::save_context_menu_file(&cfg) {
+                        let _ = context_menu_save_error_tx.send(e);
+                    }
+                }
+            });
+        let context_menu_saver_handle = match context_menu_saver_res {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                log::error!("[Core] Failed to spawn context-menu-saver thread: {}", e);
+                None
+            }
+        };
+
         let (budget_fwd, budget_bwd) = compute_preload_budgets();
 
         // ── GPU Limits ───────────────────────────────────────────────────────
@@ -452,6 +487,18 @@ impl ImageViewerApp {
             hotkeys_add_row_capture_active: false,
             hotkeys_add_row_captured_key: None,
             hotkeys_add_row_need_key_hint: false,
+            context_menu_runtime,
+            context_menu_draft_config,
+            context_menu_save_error_rx,
+            context_menu_save_tx,
+            context_menu_saver_handle,
+            last_context_menu_save_error: None,
+            context_menu_apply_success_at: None,
+            context_menu_selected_row: None,
+            context_menu_edit_dialog_open: false,
+            context_menu_edit_target: None,
+            context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry::default(
+            ),
             refresh_scan_in_progress: false,
             refresh_scan_slideshow_was_playing: false,
             refresh_anchor_path: None,
@@ -508,5 +555,11 @@ impl ImageViewerApp {
         let _ = self
             .hotkeys_save_tx
             .send(self.hotkeys_runtime.config.clone());
+    }
+
+    pub(crate) fn queue_context_menu_save(&self) {
+        let _ = self
+            .context_menu_save_tx
+            .send(self.context_menu_runtime.config.clone());
     }
 }
