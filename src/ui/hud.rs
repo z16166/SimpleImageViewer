@@ -72,6 +72,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         total: app.image_files.len(),
         zoom_pct: 0,
         res: (0, 0),
+        file_size_bytes: 0,
         mode: String::new(),
         current_track: app.audio.get_current_track(),
         metadata: app.audio.get_metadata(),

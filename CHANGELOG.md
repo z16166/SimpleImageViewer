@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.0] - 2026-06-06
+
+### Added
+- **Custom context menu**: A new **Context Menu** tab in Settings lets you reorder built-in actions, add separators, and define custom menu items that launch an executable or a full command line with `%1` as the current image path. Built-in items cover all current-image operations; defaults match the previous hardcoded menu.
+- **OSD file size**: The bottom-left on-screen display now shows the current image file size (bytes, KB, MB, or GB).
+- **Ctrl+0 zoom reset**: **Ctrl+0** resets zoom to 100%, alongside the existing `*` shortcut (Chrome-style).
+
+### Changed
+- **Log file location**: When file logging is enabled, logs are written to the OS temporary directory instead of the settings folder.
+
+### Fixed
+- **Context menu apply/load validation**: Applying or loading a configuration with no enabled menu items (separators excluded) is rejected or falls back to defaults so the runtime menu cannot become empty.
+- **Context menu upgrade merge**: New built-in menu items from a newer app version are merged into existing saved configurations.
+- **Hotkey config upgrade**: Upgrading from hotkeys config version 1 automatically adds **Ctrl+0** to zoom reset without overwriting your other bindings.
+- **Hotkey text input**: Keyboard layouts that report shortcuts as text events (for example `+`, digits, and letters) reuse the same key parser as saved hotkey strings.
+- **Custom command quoting**: Executable paths that are already wrapped in quotes but contain internal quote characters are escaped correctly when building the command line.
+- **Context menu settings UX**: Apply only commits on **Apply**; drag-and-drop reordering; keyboard navigation and shortcuts; fixed table headers; non-intrusive help dialog; and other layout and interaction refinements from the settings tab.
+- **Simplified Chinese UI**: Translated the context menu **Action name** label that was still shown in English.
+
 ## [2.3.6] - 2026-06-06
 
 ### Fixed

@@ -222,11 +222,17 @@ impl ImageViewerApp {
                     }
 
                     if res_w > 0 {
+                        let file_size_bytes = self
+                            .file_byte_len_by_index
+                            .get(self.current_index)
+                            .copied()
+                            .unwrap_or(0);
                         let current_state = crate::ui::osd::OsdState {
                             index: self.current_index,
                             total: self.image_files.len(),
                             zoom_pct,
                             res: (res_w, res_h),
+                            file_size_bytes,
                             mode: mode_tag.to_string(),
                             current_track: self.audio.get_current_track(),
                             metadata: self.audio.get_metadata(),

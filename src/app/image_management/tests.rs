@@ -704,6 +704,11 @@ fn make_test_app() -> ImageViewerApp {
     let hotkeys_runtime = crate::hotkeys::rebuild_runtime_state(&hotkeys_draft_config);
     let (hotkeys_save_tx, _hotkeys_save_rx) = crossbeam_channel::unbounded();
     let (_hotkeys_save_error_tx, hotkeys_save_error_rx) = crossbeam_channel::unbounded();
+    let context_menu_draft_config = crate::context_menu::model::default_context_menu_config_file();
+    let context_menu_runtime =
+        crate::context_menu::rebuild_runtime_state(&context_menu_draft_config);
+    let (context_menu_save_tx, _context_menu_save_rx) = crossbeam_channel::unbounded();
+    let (_context_menu_save_error_tx, context_menu_save_error_rx) = crossbeam_channel::unbounded();
 
     #[cfg(target_os = "linux")]
     let requested_vulkan_hdr_metadata = eframe::egui_wgpu::RequestedVulkanHdrMetadata::new();
@@ -835,6 +840,21 @@ fn make_test_app() -> ImageViewerApp {
         hotkeys_add_row_capture_active: false,
         hotkeys_add_row_captured_key: None,
         hotkeys_add_row_need_key_hint: false,
+        context_menu_runtime,
+        context_menu_draft_config,
+        context_menu_save_error_rx,
+        context_menu_save_tx,
+        context_menu_saver_handle: None,
+        last_context_menu_save_error: None,
+        context_menu_apply_success_at: None,
+        context_menu_apply_error: None,
+        context_menu_selected_row: None,
+        context_menu_scroll_to_selected: false,
+        context_menu_drag_row: None,
+        context_menu_help_open: false,
+        context_menu_edit_dialog_open: false,
+        context_menu_edit_target: None,
+        context_menu_edit_draft: crate::context_menu::model::EditableContextMenuEntry::default(),
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,

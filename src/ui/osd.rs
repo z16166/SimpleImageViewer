@@ -65,6 +65,7 @@ pub struct OsdState {
     pub total: usize,
     pub zoom_pct: u32,
     pub res: (u32, u32),
+    pub file_size_bytes: u64,
     pub mode: String,
     pub current_track: Option<String>,
     pub metadata: Option<String>,
@@ -104,11 +105,13 @@ impl OsdRenderer {
         save_error: &Option<(String, Instant)>,
     ) {
         if self.last_state.as_ref() != Some(state) {
+            let file_size_text = format_file_size(state.file_size_bytes);
             let main = format!(
-                "{} / {}    {}    {}%    {}×{}    [{}]",
+                "{} / {}    {}    {}    {}%    {}×{}    [{}]",
                 state.index + 1,
                 state.total,
                 file_name,
+                file_size_text,
                 state.zoom_pct,
                 state.res.0,
                 state.res.1,
@@ -313,5 +316,33 @@ impl OsdRenderer {
             FontId::proportional(crate::constants::LOADING_HINT_TEXT_SIZE),
             palette.text_muted,
         );
+    }
+}
+
+pub fn format_file_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    if bytes < 1024 {
+        format!("{bytes} bytes")
+    } else if (bytes as f64) < MB {
+        format!("{:.1} KB", bytes as f64 / KB)
+    } else if (bytes as f64) < GB {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else {
+        format!("{:.1} GB", bytes as f64 / GB)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_file_size;
+
+    #[test]
+    fn formats_file_sizes_with_binary_units() {
+        assert_eq!(format_file_size(42), "42 bytes");
+        assert_eq!(format_file_size(1536), "1.5 KB");
+        assert_eq!(format_file_size(2 * 1024 * 1024), "2.0 MB");
+        assert_eq!(format_file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 }

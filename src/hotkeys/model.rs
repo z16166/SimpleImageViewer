@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const HOTKEYS_FILE_NAME: &str = "siv_hotkeys.yaml";
-pub const HOTKEYS_FILE_VERSION: u32 = 1;
+pub const HOTKEYS_FILE_VERSION: u32 = 2;
 
 pub const MOD_CTRL: u8 = 1;
 pub const MOD_SHIFT: u8 = 2;
@@ -433,10 +433,16 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
                 key: HotkeyLogicalKey::Egui(egui::Key::Minus),
             },
         ],
-        HotkeyActionId::ZoomReset => &[KeyChord {
-            modifiers: 0,
-            key: HotkeyLogicalKey::Text("*"),
-        }],
+        HotkeyActionId::ZoomReset => &[
+            KeyChord {
+                modifiers: 0,
+                key: HotkeyLogicalKey::Text("*"),
+            },
+            KeyChord {
+                modifiers: MOD_CTRL,
+                key: HotkeyLogicalKey::Egui(egui::Key::Num0),
+            },
+        ],
         HotkeyActionId::ToggleSettings => &[KeyChord {
             modifiers: 0,
             key: HotkeyLogicalKey::Egui(egui::Key::F1),
@@ -541,6 +547,7 @@ pub fn parse_logical_key_name(value: &str) -> Option<HotkeyLogicalKey> {
         "plus" | "+" => Some(HotkeyLogicalKey::Text("+")),
         "minus" | "dash" | "-" => Some(HotkeyLogicalKey::Text("-")),
         "asterisk" | "*" => Some(HotkeyLogicalKey::Text("*")),
+        "zero" => Some(HotkeyLogicalKey::Egui(egui::Key::Num0)),
         _ => egui::Key::from_name(trimmed).map(HotkeyLogicalKey::Egui),
     }
 }
