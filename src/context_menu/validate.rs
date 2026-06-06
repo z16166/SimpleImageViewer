@@ -69,10 +69,20 @@ pub fn validate_context_menu_config(config: &ContextMenuConfigFile) -> ContextMe
         }
     }
 
+    if !has_enabled_action_items(&items) {
+        items = crate::context_menu::model::default_context_menu_config_file().items;
+    }
+
     ContextMenuValidationOutput {
         config: ContextMenuConfigFile {
             version: CONTEXT_MENU_FILE_VERSION,
             items,
         },
     }
+}
+
+pub fn has_enabled_action_items(items: &[ContextMenuEntry]) -> bool {
+    items
+        .iter()
+        .any(|item| item.kind != ContextMenuItemKind::Separator && item.enabled)
 }

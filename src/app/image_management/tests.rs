@@ -847,6 +847,7 @@ fn make_test_app() -> ImageViewerApp {
         context_menu_saver_handle: None,
         last_context_menu_save_error: None,
         context_menu_apply_success_at: None,
+        context_menu_apply_error: None,
         context_menu_selected_row: None,
         context_menu_scroll_to_selected: false,
         context_menu_drag_row: None,

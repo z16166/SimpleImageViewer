@@ -115,6 +115,50 @@ mod tests {
     }
 
     #[test]
+    fn validation_merges_new_builtin_actions_from_newer_exe() {
+        let cfg = ContextMenuConfigFile {
+            version: 1,
+            items: vec![ContextMenuEntry::builtin("copy_path", true)],
+        };
+
+        let validated = validate_context_menu_config(&cfg);
+        for desc in builtin_descriptors() {
+            assert!(
+                validated
+                    .config
+                    .items
+                    .iter()
+                    .any(|item| item.builtin_id.as_deref() == Some(desc.id)),
+                "missing builtin {}",
+                desc.id
+            );
+        }
+    }
+
+    #[test]
+    fn validation_falls_back_to_defaults_when_no_action_is_enabled() {
+        let mut cfg = default_context_menu_config_file();
+        for item in &mut cfg.items {
+            if item.kind != ContextMenuItemKind::Separator {
+                item.enabled = false;
+            }
+        }
+
+        let validated = validate_context_menu_config(&cfg);
+        assert!(
+            crate::context_menu::validate::has_enabled_action_items(&validated.config.items),
+            "validated config must contain at least one visible action"
+        );
+        assert!(
+            validated
+                .config
+                .items
+                .iter()
+                .any(|item| item.builtin_id.as_deref() == Some("copy_path") && item.enabled)
+        );
+    }
+
+    #[test]
     fn validation_drops_invalid_custom_actions_but_keeps_separators() {
         let cfg = ContextMenuConfigFile {
             version: 1,

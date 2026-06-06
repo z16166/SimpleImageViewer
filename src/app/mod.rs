@@ -617,6 +617,7 @@ pub struct ImageViewerApp {
     pub(crate) context_menu_saver_handle: Option<std::thread::JoinHandle<()>>,
     pub(crate) last_context_menu_save_error: Option<(String, Instant)>,
     pub(crate) context_menu_apply_success_at: Option<Instant>,
+    pub(crate) context_menu_apply_error: Option<String>,
     pub(crate) context_menu_selected_row: Option<usize>,
     pub(crate) context_menu_scroll_to_selected: bool,
     pub(crate) context_menu_drag_row: Option<usize>,

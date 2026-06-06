@@ -51,9 +51,10 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
             enabled: source.enabled,
             comment: source.comment.clone(),
         };
+        let source_keys = merged_source_keys_for_version(config.version, action_id, source);
 
         if source.enabled {
-            for key_text in &source.keys {
+            for key_text in &source_keys {
                 if key_text.trim().is_empty() {
                     normalized_entry.keys.push(String::new());
                     continue;
@@ -145,6 +146,24 @@ pub fn validate_hotkey_config(config: &HotkeyConfigFile) -> ValidationOutput {
         runtime_bindings,
         warnings,
         conflicts,
+    }
+}
+
+fn merged_source_keys_for_version(
+    version: u32,
+    action_id: HotkeyActionId,
+    source: &HotkeyBindingEntry,
+) -> Vec<String> {
+    let mut keys = source.keys.clone();
+    if version < 2 && action_id == HotkeyActionId::ZoomReset {
+        push_missing_key(&mut keys, "Ctrl+0");
+    }
+    keys
+}
+
+fn push_missing_key(keys: &mut Vec<String>, key: &str) {
+    if !keys.iter().any(|it| it.trim().eq_ignore_ascii_case(key)) {
+        keys.push(key.to_string());
     }
 }
 
@@ -396,6 +415,64 @@ mod tests {
 
         assert!(rotate_cw.keys.iter().any(|key| key == "Alt+WheelDown"));
         assert!(rotate_ccw.keys.iter().any(|key| key == "Alt+WheelUp"));
+    }
+
+    #[test]
+    fn default_zoom_reset_includes_ctrl_zero() {
+        let out = validate_hotkey_config(&default_hotkey_config_file());
+        let zoom_reset = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "zoom_reset")
+            .expect("zoom_reset binding exists");
+
+        assert!(zoom_reset.keys.iter().any(|key| key == "Ctrl+0"));
+        assert!(crate::hotkeys::model::KeyChord::parse("Ctrl+0").is_some());
+    }
+
+    #[test]
+    fn legacy_config_merges_new_default_zoom_reset_key() {
+        let config = HotkeyConfigFile {
+            version: 1,
+            bindings: vec![HotkeyBindingEntry {
+                action_id: "zoom_reset".to_string(),
+                keys: vec!["Asterisk".to_string()],
+                enabled: true,
+                comment: String::new(),
+            }],
+        };
+
+        let out = validate_hotkey_config(&config);
+        let zoom_reset = out
+            .normalized
+            .bindings
+            .iter()
+            .find(|it| it.action_id == "zoom_reset")
+            .expect("zoom_reset binding exists");
+
+        assert!(zoom_reset.keys.iter().any(|key| key == "Asterisk"));
+        assert!(zoom_reset.keys.iter().any(|key| key == "Ctrl+0"));
+        assert!(out.runtime_bindings.iter().any(|binding| {
+            binding.action_id == HotkeyActionId::ZoomReset
+                && binding.chord.display_string() == "Ctrl+0"
+        }));
+    }
+
+    #[test]
+    fn custom_digit_and_letter_hotkeys_parse_through_egui_keys() {
+        use crate::hotkeys::model::{HotkeyLogicalKey, KeyChord, MOD_ALT, MOD_SHIFT};
+        use eframe::egui::Key;
+
+        let ctrl_one = KeyChord::parse("Ctrl+1").expect("Ctrl+1 parses");
+        let alt_nine = KeyChord::parse("Alt+9").expect("Alt+9 parses");
+        let shift_m = KeyChord::parse("Shift+M").expect("Shift+M parses");
+
+        assert_eq!(ctrl_one.key, HotkeyLogicalKey::Egui(Key::Num1));
+        assert_eq!(alt_nine.modifiers, MOD_ALT);
+        assert_eq!(alt_nine.key, HotkeyLogicalKey::Egui(Key::Num9));
+        assert_eq!(shift_m.modifiers, MOD_SHIFT);
+        assert_eq!(shift_m.key, HotkeyLogicalKey::Egui(Key::M));
     }
 
     #[test]

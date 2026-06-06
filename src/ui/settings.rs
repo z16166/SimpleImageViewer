@@ -564,6 +564,14 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
                     .strong(),
             );
         }
+        if let Some(error) = &app.context_menu_apply_error {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(error)
+                    .color(ui.visuals().error_fg_color)
+                    .strong(),
+            );
+        }
 
         let footer_h = 58.0;
         let available_h = (ui.available_height() - footer_h).max(120.0);
@@ -707,6 +715,7 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
                                     }
                                     if enabled_clicked {
                                         draft_changed = true;
+                                        app.context_menu_apply_error = None;
                                     }
                                     if row_clicked || enabled_clicked || row_resp.clicked() {
                                         app.context_menu_selected_row = Some(row_idx);
@@ -786,6 +795,7 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
                 draft = default_context_menu_config_file();
                 app.context_menu_selected_row = None;
                 app.context_menu_apply_success_at = None;
+                app.context_menu_apply_error = None;
                 draft_changed |= action.draft_changed;
                 apply_clicked |= action.apply_clicked;
                 ui.ctx().request_repaint();
@@ -864,11 +874,18 @@ fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, ctx: &Cont
     app.context_menu_draft_config = validated.config.clone();
     if draft_changed {
         app.context_menu_apply_success_at = None;
+        app.context_menu_apply_error = None;
     }
     if apply_clicked {
-        app.context_menu_runtime = validated;
-        app.context_menu_apply_success_at = Some(Instant::now());
-        app.queue_context_menu_save();
+        if crate::context_menu::validate::has_enabled_action_items(&draft.items) {
+            app.context_menu_runtime = validated;
+            app.context_menu_apply_success_at = Some(Instant::now());
+            app.context_menu_apply_error = None;
+            app.queue_context_menu_save();
+        } else {
+            app.context_menu_apply_success_at = None;
+            app.context_menu_apply_error = Some(t!("context_menu.empty_block_apply").to_string());
+        }
     }
 }
 

@@ -142,12 +142,7 @@ impl ImageViewerApp {
         let current_mods = get_modifiers_mask(i.modifiers);
         for ev in &i.events {
             if let egui::Event::Text(text) = ev {
-                let logical = match text.as_str() {
-                    "+" => Some(HotkeyLogicalKey::Text("+")),
-                    "-" => Some(HotkeyLogicalKey::Text("-")),
-                    "*" => Some(HotkeyLogicalKey::Text("*")),
-                    _ => None,
-                };
+                let logical = text_event_to_hotkey_logical_key(text);
                 if let Some(logical) = logical {
                     let chord = KeyChord {
                         modifiers: current_mods,
@@ -584,7 +579,9 @@ impl ImageViewerApp {
         let path = self.image_files[self.current_index].clone();
         let mut drew_action = false;
         let mut pending_separator = false;
-        for item in self.context_menu_runtime.config.items.clone() {
+        let item_count = self.context_menu_runtime.config.items.len();
+        for idx in 0..item_count {
+            let item = &self.context_menu_runtime.config.items[idx];
             match item.kind {
                 crate::context_menu::model::ContextMenuItemKind::Separator => {
                     if drew_action {
@@ -629,7 +626,8 @@ impl ImageViewerApp {
                         ui.separator();
                         pending_separator = false;
                     }
-                    if ui.button(item.label.clone()).clicked() {
+                    if ui.button(item.label.as_str()).clicked() {
+                        let item = self.context_menu_runtime.config.items[idx].clone();
                         self.run_custom_context_menu_action(&item, &path);
                         self.context_menu_pos = None;
                     }
@@ -954,10 +952,18 @@ fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAction {
     }
 }
 
+fn text_event_to_hotkey_logical_key(text: &str) -> Option<HotkeyLogicalKey> {
+    crate::hotkeys::model::parse_logical_key_name(text)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AutoSwitchStep, HOTKEY_MAP, app_action_from_hotkey_action_id, auto_switch_step};
-    use crate::hotkeys::model::keychord_from_legacy_binding;
+    use super::{
+        AutoSwitchStep, HOTKEY_MAP, app_action_from_hotkey_action_id, auto_switch_step,
+        text_event_to_hotkey_logical_key,
+    };
+    use crate::hotkeys::model::{HotkeyLogicalKey, keychord_from_legacy_binding};
+    use eframe::egui::Key;
     use std::collections::HashSet;
 
     #[test]
@@ -1015,5 +1021,21 @@ mod tests {
         for desc in crate::hotkeys::model::all_action_descriptors() {
             let _app_action = app_action_from_hotkey_action_id(desc.id);
         }
+    }
+
+    #[test]
+    fn text_event_mapping_reuses_hotkey_key_parser() {
+        assert_eq!(
+            text_event_to_hotkey_logical_key("+"),
+            Some(HotkeyLogicalKey::Text("+"))
+        );
+        assert_eq!(
+            text_event_to_hotkey_logical_key("1"),
+            Some(HotkeyLogicalKey::Egui(Key::Num1))
+        );
+        assert_eq!(
+            text_event_to_hotkey_logical_key("M"),
+            Some(HotkeyLogicalKey::Egui(Key::M))
+        );
     }
 }
