@@ -1499,6 +1499,12 @@ struct ViewportCommandPayload {
     old_inner_size: winit::dpi::PhysicalSize<u32>,
 }
 
+fn contains_fullscreen_true_command(commands: &[egui::viewport::ViewportCommand]) -> bool {
+    commands
+        .iter()
+        .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)))
+}
+
 fn process_deferred_viewport_commands(
     egui_ctx: &egui::Context,
     glutin: &RefCell<GlutinWindowContext>,
@@ -1535,7 +1541,11 @@ fn process_deferred_viewport_commands(
 
     // Check if any payload contains a transition command before we consume payload.commands
     let mut has_transition_cmd = false;
+    let mut needs_reveal_after_fullscreen = Vec::new();
     for payload in &payloads {
+        if contains_fullscreen_true_command(&payload.commands) {
+            needs_reveal_after_fullscreen.push(payload.viewport_id);
+        }
         if payload.commands.iter().any(|cmd| {
             matches!(
                 cmd,
@@ -1569,6 +1579,13 @@ fn process_deferred_viewport_commands(
         for payload in payloads {
             let new_inner_size = payload.window.inner_size();
             let resized = new_inner_size != payload.old_inner_size;
+            if needs_reveal_after_fullscreen.contains(&payload.viewport_id)
+                && payload.window.fullscreen().is_some()
+                && payload.window.is_visible() == Some(false)
+            {
+                payload.window.set_visible(true);
+                egui_ctx.request_repaint_of(payload.viewport_id);
+            }
 
             if let Some(viewport) = viewports.get_mut(&payload.viewport_id) {
                 viewport.info = payload.info;
