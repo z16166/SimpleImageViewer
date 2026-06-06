@@ -989,3 +989,38 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     assert_eq!(app.current_image_res, Some((2048, 1536)));
     assert!(app.loader.is_loading(1, app.generation));
 }
+
+#[test]
+fn test_resolve_initial_position_during_and_after_scan() {
+    let mut app = make_test_app();
+    let initial_path = PathBuf::from("img2.jpg");
+    app.initial_image = Some(initial_path.clone());
+    app.image_files = vec![
+        PathBuf::from("img0.jpg"),
+        PathBuf::from("img1.jpg"),
+        PathBuf::from("img2.jpg"),
+    ];
+    app.settings.resume_last_image = true;
+    app.settings.last_viewed_image = Some(PathBuf::from("img1.jpg"));
+
+    // Case 1: scanning is true (first batch)
+    app.scanning = true;
+    app.resolve_initial_position();
+    // It should find the path in the unsorted/initial files and set current_index
+    assert_eq!(app.current_index, 2);
+    // But initial_image should not be consumed yet because scanning is true
+    assert_eq!(app.initial_image, Some(initial_path.clone()));
+
+    // Case 2: scanning is false (Done)
+    app.scanning = false;
+    app.resolve_initial_position();
+    // It should still set current_index to the found path
+    assert_eq!(app.current_index, 2);
+    // And now initial_image should be consumed (set to None)
+    assert!(app.initial_image.is_none());
+
+    // Case 3: subsequent calls after scanning is done
+    app.resolve_initial_position();
+    // Since initial_image was consumed, it should fall back to resume_last_image (img1.jpg)
+    assert_eq!(app.current_index, 1);
+}

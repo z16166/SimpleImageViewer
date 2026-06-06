@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.5] - 2026-06-06
+
+### Fixed
+- **Gallery launch and file drop**: Fixed an issue where launching the viewer by double-clicking a photo in the system gallery or dropping a file onto the window would open the last viewed image instead of the targeted one.
+
 ## [2.3.4] - 2026-06-05
 
 ### Fixed
