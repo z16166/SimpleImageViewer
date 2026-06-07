@@ -574,6 +574,9 @@ pub struct ImageViewerApp {
     // Preload byte budgets (computed at startup from system RAM)
     pub(crate) preload_budget_forward: u64,
     pub(crate) preload_budget_backward: u64,
+    /// Reused for preload memory guard checks so navigation does not rebuild
+    /// sysinfo's system snapshot state on every preload scheduling pass.
+    pub(crate) preload_memory_sys: sysinfo::System,
 
     // Custom right-click context menu (bypasses egui's context_menu which
     // cannot re-open on consecutive right-clicks)
@@ -934,7 +937,6 @@ impl eframe::App for ImageViewerApp {
         #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
         crate::take_and_join_dx12_cache_validate_thread();
 
-        #[cfg(target_os = "windows")]
         crate::shutdown_logger();
         #[cfg(target_os = "windows")]
         std::process::exit(0);

@@ -36,6 +36,9 @@ const MI_OPTION_PAGE_RECLAIM_ON_FREE: ffi::mi_option_t = 37;
 const MI_OPTION_PAGE_FULL_RETAIN: ffi::mi_option_t = 38;
 
 const IMAGE_VIEWER_MIMALLOC_SETTINGS: &[MimallocOptionSetting] = &[
+    // Large image decode/upload bursts allocate many short-lived buffers.
+    // Avoid eager OS commit so address-space reservations do not immediately
+    // turn into committed working set.
     MimallocOptionSetting {
         option: MI_OPTION_EAGER_COMMIT,
         value: 0,
@@ -44,6 +47,9 @@ const IMAGE_VIEWER_MIMALLOC_SETTINGS: &[MimallocOptionSetting] = &[
         option: MI_OPTION_ARENA_EAGER_COMMIT,
         value: 0,
     },
+    // Prefer returning unused pages to the OS quickly after a navigation burst.
+    // A 100ms delay is short enough to reduce post-flip high-water memory, but
+    // avoids forcing synchronous collection in the hot path.
     MimallocOptionSetting {
         option: MI_OPTION_PURGE_DECOMMITS,
         value: 1,
@@ -56,10 +62,15 @@ const IMAGE_VIEWER_MIMALLOC_SETTINGS: &[MimallocOptionSetting] = &[
         option: MI_OPTION_PURGE_DELAY,
         value: 100,
     },
+    // Keep arena purge thresholds aggressive for this workload; image viewers
+    // prefer lower retained memory over maximum allocator cache reuse.
     MimallocOptionSetting {
         option: MI_OPTION_ARENA_PURGE_MULT,
         value: 1,
     },
+    // Do not retain fully free pages just in case another image needs them.
+    // Background preloading already limits concurrency, so allocator retention
+    // is more harmful than useful after large file flips.
     MimallocOptionSetting {
         option: MI_OPTION_PAGE_RECLAIM_ON_FREE,
         value: 0,

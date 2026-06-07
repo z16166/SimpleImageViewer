@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.1] - 2026-06-08
+
+### Added
+- **Diagnostic logging controls**: File logging and log level can be enabled with environment variables, and detailed startup/preload diagnostics are gated behind local-only features.
+
+### Fixed
+- **Large image memory pressure**: Reduced CPU/GPU memory spikes while rapidly browsing large JPEG, TIFF, PSD/PSB, RAW, and HDR images by throttling background texture uploads, evicting stale preloaded textures sooner, and tuning mimalloc to return burst allocations more promptly.
+- **Large tiled image preloading**: Nearby oversized images can now preload lightweight tiled previews without being blocked by full-RGBA decode estimates, greatly reducing `loading...` flashes when browsing giant Hubble-style images.
+- **Transition smoothness**: Background texture uploads are deferred during active transition animations so page flip, ripple, and curtain transitions remain smooth.
+- **Crash handling**: Windows crash dialogs are more visible, and GPU out-of-memory reports from wgpu are logged instead of immediately taking the default fatal panic path.
+
 ## [2.4.0] - 2026-06-06
 
 ### Added

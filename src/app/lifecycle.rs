@@ -455,6 +455,10 @@ impl ImageViewerApp {
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,
             preload_budget_backward: budget_bwd,
+            preload_memory_sys: sysinfo::System::new_with_specifics(
+                sysinfo::RefreshKind::nothing()
+                    .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+            ),
             file_op_rx,
             file_op_tx,
             lightweight_file_op_tx,

@@ -171,10 +171,15 @@ enum PreloadBudgetDecision {
 const LARGE_FILE_TILED_PRELOAD_CANDIDATE_BYTES: u64 = 64 * 1024 * 1024;
 const NEAR_BUDGET_PRELOAD_NUMERATOR: u64 = 3;
 const NEAR_BUDGET_PRELOAD_DENOMINATOR: u64 = 2;
+const PRELOAD_DECODE_SIZE_MULTIPLIER: u64 = 12;
 
 fn estimate_preload_decode_bytes(file_size: u64) -> u64 {
     if file_size > 0 {
-        file_size.saturating_mul(12)
+        // Compressed JPEG/HEIC/TIFF/PSD sources routinely expand by an order of
+        // magnitude once represented as RGBA. 12x is intentionally conservative:
+        // it avoids the old "one large compressed file becomes several full
+        // decoded frames" memory spike while still admitting small nearby images.
+        file_size.saturating_mul(PRELOAD_DECODE_SIZE_MULTIPLIER)
     } else {
         0
     }
@@ -185,6 +190,12 @@ fn should_request_oversized_preload_candidate(
     candidate_bytes: u64,
     budget: u64,
 ) -> bool {
+    // Oversized candidates are usually skipped so background preloading cannot
+    // decode several full RGBA images at once. Two cases are still worth probing:
+    // 1. "near budget" files (<= 1.5x) where the estimate is only slightly over;
+    // 2. very large files, which often become disk-backed tiled sources and only
+    //    need a lightweight bootstrap preview. Each accepted oversized candidate
+    //    is charged as a full budget slot by `preload_direction`.
     let near_budget_limit = budget
         .saturating_mul(NEAR_BUDGET_PRELOAD_NUMERATOR)
         .saturating_div(NEAR_BUDGET_PRELOAD_DENOMINATOR);

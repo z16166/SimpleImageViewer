@@ -60,10 +60,10 @@ impl ImageViewerApp {
             return;
         }
 
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
-        let available_memory_mb = sys.available_memory() / (1024 * 1024);
-        let total_memory_mb = sys.total_memory() / (1024 * 1024);
+        self.preload_memory_sys
+            .refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
+        let available_memory_mb = self.preload_memory_sys.available_memory() / (1024 * 1024);
+        let total_memory_mb = self.preload_memory_sys.total_memory() / (1024 * 1024);
         let memory_guard_threshold_mb =
             background_preload_memory_guard_threshold_mb(total_memory_mb);
         if should_skip_background_preloads_for_memory(available_memory_mb, total_memory_mb) {
