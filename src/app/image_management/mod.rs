@@ -96,6 +96,58 @@ fn should_cache_tiled_hdr_preview(
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
+const SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 32 * 1024 * 1024;
+
+fn decoded_rgba_bytes(width: u32, height: u32) -> usize {
+    width as usize * height as usize * 4
+}
+
+fn should_upload_sdr_this_frame(
+    is_current: bool,
+    uploaded_bytes: usize,
+    candidate_bytes: usize,
+    max_bytes: usize,
+) -> bool {
+    is_current || uploaded_bytes == 0 || uploaded_bytes.saturating_add(candidate_bytes) <= max_bytes
+}
+
+const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
+
+fn should_skip_background_preloads_for_memory(available_memory_mb: u64) -> bool {
+    available_memory_mb < MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreloadBudgetDecision {
+    Request,
+    SkipCandidate,
+    StopDirection,
+}
+
+fn estimate_preload_decode_bytes(file_size: u64) -> u64 {
+    if file_size > 0 {
+        file_size.saturating_mul(12)
+    } else {
+        0
+    }
+}
+
+fn decide_preload_for_budget(
+    count: usize,
+    new_bytes: u64,
+    candidate_bytes: u64,
+    budget: u64,
+) -> PreloadBudgetDecision {
+    if candidate_bytes == 0 || new_bytes.saturating_add(candidate_bytes) <= budget {
+        return PreloadBudgetDecision::Request;
+    }
+    if count == 0 {
+        PreloadBudgetDecision::SkipCandidate
+    } else {
+        PreloadBudgetDecision::StopDirection
+    }
+}
+
 fn cache_hdr_tiled_preview_state(
     idx: usize,
     current_index: usize,
@@ -334,6 +386,7 @@ enum ImageInstallPlan<'a> {
     Tiled {
         source: Arc<dyn crate::loader::TiledImageSource>,
         hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+        sdr_preview: Option<&'a DecodedImage>,
         hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
         hdr_sdr_fallback: bool,
         ultra_hdr_capacity_sensitive: bool,
@@ -411,6 +464,7 @@ impl<'a> ImageInstallPlan<'a> {
                 Self::Tiled {
                     source: Arc::clone(source),
                     hdr_source,
+                    sdr_preview: load_result.preview_bundle.sdr(),
                     hdr_preview,
                     hdr_sdr_fallback,
                     ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
@@ -424,6 +478,19 @@ impl<'a> ImageInstallPlan<'a> {
                 },
                 _ => unreachable!("animated render shape is only emitted by animated image data"),
             },
+        }
+    }
+
+    fn estimated_sdr_upload_bytes(&self) -> usize {
+        match self {
+            Self::StaticSdr { decoded }
+            | Self::StaticHdr {
+                fallback: decoded, ..
+            } => decoded_rgba_bytes(decoded.width, decoded.height),
+            Self::Tiled { sdr_preview, .. } => sdr_preview
+                .map(|preview| decoded_rgba_bytes(preview.width, preview.height))
+                .unwrap_or(0),
+            Self::Animated { .. } | Self::HdrAnimated { .. } | Self::Error { .. } => 0,
         }
     }
 }

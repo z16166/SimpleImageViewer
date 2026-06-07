@@ -309,6 +309,37 @@ fn log_env_info() -> String {
     final_desc
 }
 
+#[cfg(target_os = "windows")]
+fn show_crash_dialog(title: &str, message: &str) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TASKMODAL, MB_TOPMOST, MessageBoxW,
+    };
+    use windows::core::HSTRING;
+
+    let title = HSTRING::from(title);
+    let message = HSTRING::from(message);
+    // The panic hook can run while the egui window is unresponsive or tearing
+    // down, so use a task-modal topmost box without relying on a parent HWND.
+    let _ = unsafe {
+        MessageBoxW(
+            HWND::default(),
+            &message,
+            &title,
+            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND | MB_TASKMODAL,
+        )
+    };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_crash_dialog(title: &str, message: &str) {
+    rfd::MessageDialog::new()
+        .set_title(title)
+        .set_description(message)
+        .set_level(rfd::MessageLevel::Error)
+        .show();
+}
+
 /// Set up a global panic hook to capture and report crashes across all threads.
 /// Decoder paths that use `catch_exr_panic` increment a thread-local so this hook skips
 /// dialog/exit — otherwise `process::exit(1)` would run before `catch_unwind` can handle the panic.
@@ -387,13 +418,7 @@ fn setup_panic_hook() {
             );
         }
 
-        // No `set_parent`: the crash hook can run when no egui window exists.
-        // Use rfd for a system native dialog
-        rfd::MessageDialog::new()
-            .set_title(&title)
-            .set_description(&msg)
-            .set_level(rfd::MessageLevel::Error)
-            .show();
+        show_crash_dialog(&title, &msg);
 
         // Critical: After showing the crash dialog, the application must terminate.
         // Otherwise, the window may hang or enter an unstable state.

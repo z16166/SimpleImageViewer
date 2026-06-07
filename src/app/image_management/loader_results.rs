@@ -176,6 +176,7 @@ impl ImageViewerApp {
         //     back via repush() so it is the first thing processed next frame.
         const GLOBAL_UPLOAD_QUOTA: usize = 3;
         let mut uploads_this_frame: usize = 0;
+        let mut sdr_upload_bytes_this_frame: usize = 0;
 
         while let Some(output) = self.loader.poll() {
             match output {
@@ -203,6 +204,22 @@ impl ImageViewerApp {
                         continue;
                     }
 
+                    let estimated_sdr_upload_bytes =
+                        ImageInstallPlan::from_load_result(&load_result)
+                            .estimated_sdr_upload_bytes();
+                    if estimated_sdr_upload_bytes > 0
+                        && !should_upload_sdr_this_frame(
+                            is_current,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+                        )
+                    {
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
                     // DESIGN: The current image ALWAYS bypasses the upload quota.
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
                         self.loader.repush(LoaderOutput::Image(load_result));
@@ -224,6 +241,8 @@ impl ImageViewerApp {
                         );
                     }
                     uploads_this_frame += 1;
+                    sdr_upload_bytes_this_frame =
+                        sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
 
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
@@ -284,6 +303,22 @@ impl ImageViewerApp {
                         );
                         continue;
                     }
+                    let estimated_sdr_upload_bytes =
+                        update.fallback.as_ref().map_or(0, |fallback| {
+                            decoded_rgba_bytes(fallback.width, fallback.height)
+                        });
+                    if estimated_sdr_upload_bytes > 0
+                        && !should_upload_sdr_this_frame(
+                            is_current,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+                        )
+                    {
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
@@ -293,6 +328,8 @@ impl ImageViewerApp {
                         .remove(&update.index);
                     self.handle_hdr_sdr_fallback_update(update, ctx);
                     uploads_this_frame += 1;
+                    sdr_upload_bytes_this_frame =
+                        sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
                         is_current,
@@ -424,7 +461,6 @@ impl ImageViewerApp {
     ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
         let generation = load_result.generation;
-        let preview_bundle = load_result.preview_bundle.clone();
 
         if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
             log::info!(
@@ -460,6 +496,7 @@ impl ImageViewerApp {
             ImageInstallPlan::Tiled {
                 source,
                 hdr_source,
+                sdr_preview,
                 hdr_preview,
                 hdr_sdr_fallback,
                 ultra_hdr_capacity_sensitive,
@@ -469,7 +506,7 @@ impl ImageViewerApp {
                     generation,
                     source,
                     hdr_source,
-                    preview_bundle.sdr(),
+                    sdr_preview,
                     hdr_preview,
                     hdr_sdr_fallback,
                     ultra_hdr_capacity_sensitive,

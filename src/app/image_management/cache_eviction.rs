@@ -309,12 +309,34 @@ impl ImageViewerApp {
             .collect();
         distant_indices.extend(distant_tiled_hdr);
 
+        // Gather distant uploaded SDR/static preview textures as well. These can be
+        // produced by background preload without a matching TileManager/HDR cache entry,
+        // so relying only on prefetched_tiles/HDR cleanup leaves stale GPU textures alive
+        // until the texture cache reaches its capacity.
+        let distant_textures: Vec<usize> = self
+            .texture_cache
+            .textures
+            .keys()
+            .copied()
+            .filter(|&idx| !within_window(idx))
+            .collect();
+        distant_indices.extend(distant_textures);
+
+        let distant_animations: Vec<usize> = self
+            .animation_cache
+            .keys()
+            .copied()
+            .filter(|&idx| !within_window(idx))
+            .collect();
+        distant_indices.extend(distant_animations);
+
         // Deduplicate the combined list of indices to evict
         distant_indices.sort_unstable();
         distant_indices.dedup();
 
         for idx in distant_indices {
             self.texture_cache.remove(idx);
+            self.animation_cache.remove(&idx);
             self.remove_hdr_image_index(idx);
         }
     }

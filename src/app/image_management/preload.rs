@@ -37,6 +37,18 @@ impl ImageViewerApp {
             return;
         }
 
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let available_memory_mb = sys.available_memory() / (1024 * 1024);
+        if should_skip_background_preloads_for_memory(available_memory_mb) {
+            log::warn!(
+                "[Preload] Skipping background preloads because available memory is low: {} MB",
+                available_memory_mb
+            );
+            self.clear_preloaded_assets_for_capacity_change();
+            return;
+        }
+
         // Determine the "primary" and "secondary" directions.
         // Primary gets the larger budget; secondary gets the smaller one.
         let (primary_max, primary_budget, secondary_max, secondary_budget) = if forward {
@@ -81,7 +93,7 @@ impl ImageViewerApp {
     }
 
     /// Preload images from a list of candidate indices, respecting count and byte limits.
-    /// Rule 1: Always preload at least 1 non-tiled image (guaranteed minimum).
+    /// Rule 1: Background preload candidates must fit the decoded-byte budget.
     /// Rule 2: Stop if count >= max_count OR cumulative NEW file size >= budget.
     /// Tiled-candidate images are skipped entirely (they use on-demand tile loading).
     /// Already-cached images occupy a count slot (preventing over-reach) but
@@ -110,19 +122,13 @@ impl ImageViewerApp {
 
             let file_size = self.file_byte_len_by_index.get(idx).copied().unwrap_or(0);
 
-            // After the guaranteed first image, enforce the byte budget.
             // Sizes come from the scanner thread; unknown (0) skips the byte gate.
             // Compressed on-disk size understates decoded RGBA footprint (HEIC/JPEG often 10–20×).
-            let decode_budget_bytes = if file_size > 0 {
-                file_size.saturating_mul(12)
-            } else {
-                0
-            };
-            if count > 0
-                && decode_budget_bytes > 0
-                && new_bytes.saturating_add(decode_budget_bytes) > budget
-            {
-                break;
+            let decode_budget_bytes = estimate_preload_decode_bytes(file_size);
+            match decide_preload_for_budget(count, new_bytes, decode_budget_bytes, budget) {
+                PreloadBudgetDecision::Request => {}
+                PreloadBudgetDecision::SkipCandidate => continue,
+                PreloadBudgetDecision::StopDirection => break,
             }
 
             self.loader.request_load(
