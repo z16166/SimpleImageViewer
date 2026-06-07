@@ -229,6 +229,19 @@ fn sdr_upload_budget_allows_one_large_background_image_per_frame() {
 }
 
 #[test]
+fn background_uploads_defer_while_transition_is_animating() {
+    assert!(should_defer_background_upload_during_transition(
+        false, true
+    ));
+    assert!(!should_defer_background_upload_during_transition(
+        true, true
+    ));
+    assert!(!should_defer_background_upload_during_transition(
+        false, false
+    ));
+}
+
+#[test]
 fn background_preload_memory_guard_uses_adaptive_reserve() {
     assert_eq!(background_preload_memory_guard_threshold_mb(4 * 1024), 1024);
     assert_eq!(

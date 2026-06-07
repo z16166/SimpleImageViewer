@@ -97,10 +97,18 @@ impl ImageViewerApp {
     /// Process results from the background ImageLoader.
     pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
         self.flush_deferred_sdr_upload_for_current(ctx);
+        let is_transitioning = self.transition_start.is_some();
 
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
-        if let Some(ref mut pending) = self.pending_anim_frames {
+        let defer_pending_animation_upload =
+            self.pending_anim_frames.as_ref().is_some_and(|pending| {
+                should_defer_background_upload_during_transition(
+                    pending.image_index == self.current_index,
+                    is_transitioning,
+                )
+            });
+        if !defer_pending_animation_upload && let Some(ref mut pending) = self.pending_anim_frames {
             let mut uploaded = 0;
             while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
                 let i = pending.next_frame;
@@ -206,6 +214,15 @@ impl ImageViewerApp {
                         continue;
                     }
 
+                    if should_defer_background_upload_during_transition(
+                        is_current,
+                        is_transitioning,
+                    ) {
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
                     let install_plan = ImageInstallPlan::from_load_result(&load_result);
                     let estimated_sdr_upload_bytes = install_plan.estimated_sdr_upload_bytes();
                     if estimated_sdr_upload_bytes > 0
@@ -271,6 +288,14 @@ impl ImageViewerApp {
 
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
+                    if should_defer_background_upload_during_transition(
+                        preview_is_current,
+                        is_transitioning,
+                    ) {
+                        self.loader.repush(LoaderOutput::Preview(preview_update));
+                        ctx.request_repaint();
+                        break;
+                    }
                     if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
@@ -308,6 +333,14 @@ impl ImageViewerApp {
                         update.fallback.as_ref().map_or(0, |fallback| {
                             decoded_rgba_bytes(fallback.width, fallback.height)
                         });
+                    if should_defer_background_upload_during_transition(
+                        is_current,
+                        is_transitioning,
+                    ) {
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
                     if estimated_sdr_upload_bytes > 0
                         && !should_upload_sdr_this_frame(
                             is_current,

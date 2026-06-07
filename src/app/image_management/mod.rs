@@ -122,6 +122,13 @@ fn should_upload_sdr_this_frame(
     is_current || uploaded_bytes == 0 || uploaded_bytes.saturating_add(candidate_bytes) <= max_bytes
 }
 
+fn should_defer_background_upload_during_transition(
+    is_current: bool,
+    is_transitioning: bool,
+) -> bool {
+    is_transitioning && !is_current
+}
+
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
 const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
 const BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR: u64 = 5;
