@@ -37,7 +37,7 @@ jwalk = "0.8"
 crossbeam-channel = "0.5"
 rayon = "1.10"
 log = "0.4"
-flexi_logger = "0.29"
+flexi_logger = { version = "0.29", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 font-kit = "0.14"
@@ -87,6 +87,8 @@ default = ["openexr-core", "hdr-modern-formats"]
 legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 # Diagnostic tools for tiled rendering (green borders and OSD stats)
 tile-debug = []
+# Detailed startup timing logs for local diagnostics. Keep disabled for consumer builds.
+startup-timing = []
 # Official OpenEXRCore C backend for EXR decoding.
 openexr-core = []
 avif-native = ["dep:libavif-sys"]

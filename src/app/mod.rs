@@ -935,6 +935,8 @@ impl eframe::App for ImageViewerApp {
         crate::take_and_join_dx12_cache_validate_thread();
 
         #[cfg(target_os = "windows")]
+        crate::shutdown_logger();
+        #[cfg(target_os = "windows")]
         std::process::exit(0);
     }
 
