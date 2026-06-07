@@ -32,6 +32,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "preload-debug")]
+macro_rules! preload_debug {
+    ($($arg:tt)*) => {
+        log::info!($($arg)*);
+    };
+}
+
+#[cfg(not(feature = "preload-debug"))]
+macro_rules! preload_debug {
+    ($($arg:tt)*) => {};
+}
+
 mod cache_eviction;
 mod directory;
 mod hdr_state;
@@ -156,12 +168,29 @@ enum PreloadBudgetDecision {
     StopDirection,
 }
 
+const LARGE_FILE_TILED_PRELOAD_CANDIDATE_BYTES: u64 = 64 * 1024 * 1024;
+const NEAR_BUDGET_PRELOAD_NUMERATOR: u64 = 3;
+const NEAR_BUDGET_PRELOAD_DENOMINATOR: u64 = 2;
+
 fn estimate_preload_decode_bytes(file_size: u64) -> u64 {
     if file_size > 0 {
         file_size.saturating_mul(12)
     } else {
         0
     }
+}
+
+fn should_request_oversized_preload_candidate(
+    file_size: u64,
+    candidate_bytes: u64,
+    budget: u64,
+) -> bool {
+    let near_budget_limit = budget
+        .saturating_mul(NEAR_BUDGET_PRELOAD_NUMERATOR)
+        .saturating_div(NEAR_BUDGET_PRELOAD_DENOMINATOR);
+    candidate_bytes > budget
+        && (candidate_bytes <= near_budget_limit
+            || file_size >= LARGE_FILE_TILED_PRELOAD_CANDIDATE_BYTES)
 }
 
 fn decide_preload_for_budget(
@@ -173,7 +202,7 @@ fn decide_preload_for_budget(
     if candidate_bytes == 0 || new_bytes.saturating_add(candidate_bytes) <= budget {
         return PreloadBudgetDecision::Request;
     }
-    if count == 0 {
+    if count == 0 || new_bytes == 0 {
         PreloadBudgetDecision::SkipCandidate
     } else {
         PreloadBudgetDecision::StopDirection

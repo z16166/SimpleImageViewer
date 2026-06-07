@@ -108,6 +108,16 @@ impl ImageViewerApp {
                     is_transitioning,
                 )
             });
+        #[cfg(feature = "preload-debug")]
+        if defer_pending_animation_upload && let Some(pending) = self.pending_anim_frames.as_ref() {
+            preload_debug!(
+                "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
+                pending.image_index,
+                self.current_index,
+                pending.next_frame,
+                pending.frames.len()
+            );
+        }
         if !defer_pending_animation_upload && let Some(ref mut pending) = self.pending_anim_frames {
             let mut uploaded = 0;
             while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
@@ -218,6 +228,12 @@ impl ImageViewerApp {
                         is_current,
                         is_transitioning,
                     ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=transition",
+                            idx,
+                            self.current_index,
+                            generation
+                        );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
                         break;
@@ -233,6 +249,15 @@ impl ImageViewerApp {
                             sdr_upload_budget_bytes_this_frame,
                         )
                     {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            idx,
+                            self.current_index,
+                            generation,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame
+                        );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
                         break;
@@ -240,11 +265,29 @@ impl ImageViewerApp {
 
                     // DESIGN: The current image ALWAYS bypasses the upload quota.
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            idx,
+                            self.current_index,
+                            generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
                         break;
                     }
 
+                    preload_debug!(
+                        "[PreloadDebug] install image: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        idx,
+                        self.current_index,
+                        generation,
+                        is_current,
+                        estimated_sdr_upload_bytes,
+                        uploads_this_frame,
+                        sdr_upload_bytes_this_frame
+                    );
                     self.loader.finish_image_request(idx, generation);
                     if let Some((requeue_idx, requeue_gen, requeue_path)) =
                         self.handle_image_load_result(&load_result, install_plan, ctx)
@@ -292,15 +335,37 @@ impl ImageViewerApp {
                         preview_is_current,
                         is_transitioning,
                     ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=transition",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation
+                        );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
                         break;
                     }
                     if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
                         break;
                     }
+                    preload_debug!(
+                        "[PreloadDebug] install preview: idx={} current={} gen={} is_current={} uploads_before={}",
+                        preview_update.index,
+                        self.current_index,
+                        preview_update.generation,
+                        preview_is_current,
+                        uploads_this_frame
+                    );
                     self.handle_preview_update(preview_update, ctx);
                     uploads_this_frame += 1;
                 }
@@ -337,6 +402,12 @@ impl ImageViewerApp {
                         is_current,
                         is_transitioning,
                     ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=transition",
+                            update.index,
+                            self.current_index,
+                            update.generation
+                        );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
                         break;
@@ -349,15 +420,42 @@ impl ImageViewerApp {
                             sdr_upload_budget_bytes_this_frame,
                         )
                     {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame
+                        );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
                         break;
                     }
                     if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
                         break;
                     }
+                    preload_debug!(
+                        "[PreloadDebug] install hdr_sdr_fallback: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        update.index,
+                        self.current_index,
+                        update.generation,
+                        is_current,
+                        estimated_sdr_upload_bytes,
+                        uploads_this_frame,
+                        sdr_upload_bytes_this_frame
+                    );
                     self.hdr_in_flight_fallback_refinements
                         .remove(&update.index);
                     self.handle_hdr_sdr_fallback_update(update, ctx);

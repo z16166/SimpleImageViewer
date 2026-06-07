@@ -285,6 +285,14 @@ fn preload_budget_stops_after_budget_is_exhausted() {
 }
 
 #[test]
+fn preload_budget_skips_first_new_oversized_even_after_existing_cached_items() {
+    assert_eq!(
+        decide_preload_for_budget(2, 0, 600 * 1024 * 1024, 100 * 1024 * 1024),
+        PreloadBudgetDecision::SkipCandidate
+    );
+}
+
+#[test]
 fn preload_budget_requests_unknown_or_fitting_candidate() {
     assert_eq!(
         decide_preload_for_budget(0, 0, 0, 100 * 1024 * 1024),
@@ -297,6 +305,26 @@ fn preload_budget_requests_unknown_or_fitting_candidate() {
 }
 
 #[test]
+fn oversized_preload_candidate_allows_near_budget_or_large_file() {
+    let budget = 100 * 1024 * 1024;
+    assert!(should_request_oversized_preload_candidate(
+        1 * 1024 * 1024,
+        150 * 1024 * 1024,
+        budget
+    ));
+    assert!(should_request_oversized_preload_candidate(
+        100 * 1024 * 1024,
+        600 * 1024 * 1024,
+        budget
+    ));
+    assert!(!should_request_oversized_preload_candidate(
+        1 * 1024 * 1024,
+        151 * 1024 * 1024,
+        budget
+    ));
+}
+
+#[test]
 fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
     let mut app = make_test_app();
     app.generation = 7;
@@ -305,12 +333,29 @@ fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
         PathBuf::from("huge.jpg"),
         PathBuf::from("small.jpg"),
     ];
-    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
+    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1 * 1024 * 1024];
 
-    app.preload_direction(vec![1, 2], 1, 32 * 1024 * 1024);
+    app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
 
     assert!(!app.loader.is_loading(1, app.generation));
     assert!(app.loader.is_loading(2, app.generation));
+}
+
+#[test]
+fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
+    let mut app = make_test_app();
+    app.generation = 7;
+    app.image_files = vec![
+        PathBuf::from("current.jpg"),
+        PathBuf::from("huge.tif"),
+        PathBuf::from("small.jpg"),
+    ];
+    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
+
+    app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
+
+    assert!(app.loader.is_loading(1, app.generation));
+    assert!(!app.loader.is_loading(2, app.generation));
 }
 
 #[test]

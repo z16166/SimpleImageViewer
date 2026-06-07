@@ -89,6 +89,8 @@ legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 tile-debug = []
 # Detailed startup timing logs for local diagnostics. Keep disabled for consumer builds.
 startup-timing = []
+# Detailed preload/upload scheduling diagnostics for local performance investigations.
+preload-debug = []
 # Official OpenEXRCore C backend for EXR decoding.
 openexr-core = []
 avif-native = ["dep:libavif-sys"]
