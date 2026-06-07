@@ -60,10 +60,11 @@ wgpu = { version = "29", default-features = false, features = [
     "parking_lot",
 ] }
 memmap2 = "0.9"
-mimalloc = "0.1.48"
-# Pin embedded mimalloc C to 3.1.x: libmimalloc-sys 0.1.47+ bundles 3.3.x which crashes on
-# Windows ARM64 (mimalloc#1277). Unify with explicit dep so 0.1.48 does not pull 0.1.47.
-libmimalloc-sys = "=0.1.44"
+mimalloc = { version = "0.1.48", features = ["extended", "v3"] }
+# Pin embedded mimalloc C to the libmimalloc-sys 0.1.44 bundled v3.1.5:
+# libmimalloc-sys 0.1.47+ bundles 3.3.x which crashes on Windows ARM64 (mimalloc#1277).
+# The explicit dependency unifies the sys crate so mimalloc 0.1.48 does not pull a newer sys.
+libmimalloc-sys = { version = "=0.1.44", features = ["extended", "v3"] }
 moka = { version = "0.12.15", features = ["sync"] }
 pollster = "0.4.0"
 libraw-sys = { path = "libraries/libraw-sys" }

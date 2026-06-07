@@ -24,6 +24,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 rust_i18n::i18n!("locales");
 
+mod allocator_tuning;
 mod app;
 use eframe::egui;
 use std::time::Instant;
@@ -679,6 +680,8 @@ pub(crate) fn take_and_join_dx12_cache_validate_thread() {
 }
 
 fn main() -> eframe::Result {
+    allocator_tuning::configure_mimalloc_for_image_viewer();
+
     #[cfg(target_os = "windows")]
     {
         #[cfg(feature = "legacy_win7")]
@@ -725,6 +728,10 @@ fn main() -> eframe::Result {
 
     let mut settings = settings::Settings::load();
     init_logging(&settings);
+    log::info!(
+        "mimalloc version: {} (image-viewer memory policy applied)",
+        allocator_tuning::mimalloc_version()
+    );
     startup_log_phase(&mut prev, startup_t0, "seh + Settings::load + init_logging");
 
     let env_info = log_env_info();
