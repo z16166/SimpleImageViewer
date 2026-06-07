@@ -183,6 +183,22 @@ fn sdr_upload_budget_counts_decoded_rgba_bytes() {
 }
 
 #[test]
+fn sdr_upload_budget_scales_with_hardware_tier() {
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::Low),
+        16 * 1024 * 1024
+    );
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::Medium),
+        32 * 1024 * 1024
+    );
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::High),
+        64 * 1024 * 1024
+    );
+}
+
+#[test]
 fn sdr_upload_budget_allows_current_image_regardless_of_budget() {
     assert!(should_upload_sdr_this_frame(
         true,
@@ -213,9 +229,21 @@ fn sdr_upload_budget_allows_one_large_background_image_per_frame() {
 }
 
 #[test]
-fn background_preload_memory_guard_trips_below_one_gb_available() {
-    assert!(should_skip_background_preloads_for_memory(1023));
-    assert!(!should_skip_background_preloads_for_memory(1024));
+fn background_preload_memory_guard_uses_adaptive_reserve() {
+    assert_eq!(background_preload_memory_guard_threshold_mb(4 * 1024), 1024);
+    assert_eq!(
+        background_preload_memory_guard_threshold_mb(16 * 1024),
+        3276
+    );
+    assert_eq!(
+        background_preload_memory_guard_threshold_mb(64 * 1024),
+        4096
+    );
+
+    assert!(should_skip_background_preloads_for_memory(1023, 4 * 1024));
+    assert!(!should_skip_background_preloads_for_memory(1024, 4 * 1024));
+    assert!(should_skip_background_preloads_for_memory(4095, 64 * 1024));
+    assert!(!should_skip_background_preloads_for_memory(4096, 64 * 1024));
 }
 
 #[test]

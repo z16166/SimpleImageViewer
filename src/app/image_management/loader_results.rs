@@ -177,6 +177,8 @@ impl ImageViewerApp {
         const GLOBAL_UPLOAD_QUOTA: usize = 3;
         let mut uploads_this_frame: usize = 0;
         let mut sdr_upload_bytes_this_frame: usize = 0;
+        let sdr_upload_budget_bytes_this_frame =
+            sdr_upload_budget_bytes_per_frame(self.hardware_tier);
 
         while let Some(output) = self.loader.poll() {
             match output {
@@ -204,15 +206,14 @@ impl ImageViewerApp {
                         continue;
                     }
 
-                    let estimated_sdr_upload_bytes =
-                        ImageInstallPlan::from_load_result(&load_result)
-                            .estimated_sdr_upload_bytes();
+                    let install_plan = ImageInstallPlan::from_load_result(&load_result);
+                    let estimated_sdr_upload_bytes = install_plan.estimated_sdr_upload_bytes();
                     if estimated_sdr_upload_bytes > 0
                         && !should_upload_sdr_this_frame(
                             is_current,
                             sdr_upload_bytes_this_frame,
                             estimated_sdr_upload_bytes,
-                            SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+                            sdr_upload_budget_bytes_this_frame,
                         )
                     {
                         self.loader.repush(LoaderOutput::Image(load_result));
@@ -229,7 +230,7 @@ impl ImageViewerApp {
 
                     self.loader.finish_image_request(idx, generation);
                     if let Some((requeue_idx, requeue_gen, requeue_path)) =
-                        self.handle_image_load_result(load_result, ctx)
+                        self.handle_image_load_result(&load_result, install_plan, ctx)
                     {
                         // The slot was just freed by finish_image_request above; it is now safe to
                         // re-queue.  The loader holds the current (correct) HDR capacity.
@@ -312,7 +313,7 @@ impl ImageViewerApp {
                             is_current,
                             sdr_upload_bytes_this_frame,
                             estimated_sdr_upload_bytes,
-                            SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+                            sdr_upload_budget_bytes_this_frame,
                         )
                     {
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
@@ -454,9 +455,10 @@ impl ImageViewerApp {
     /// Returns `Some((idx, generation, path))` when the result was stale (wrong HDR capacity) and
     /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
     /// slot.
-    pub(crate) fn handle_image_load_result(
+    fn handle_image_load_result(
         &mut self,
-        load_result: LoadResult,
+        load_result: &LoadResult,
+        install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
     ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
@@ -475,7 +477,7 @@ impl ImageViewerApp {
             return None;
         }
 
-        match ImageInstallPlan::from_load_result(&load_result) {
+        match install_plan {
             ImageInstallPlan::StaticSdr { decoded } => {
                 self.install_static_sdr_image(idx, decoded, ctx);
             }

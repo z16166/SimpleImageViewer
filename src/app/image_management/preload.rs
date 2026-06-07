@@ -38,12 +38,17 @@ impl ImageViewerApp {
         }
 
         let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
+        sys.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_ram());
         let available_memory_mb = sys.available_memory() / (1024 * 1024);
-        if should_skip_background_preloads_for_memory(available_memory_mb) {
+        let total_memory_mb = sys.total_memory() / (1024 * 1024);
+        let memory_guard_threshold_mb =
+            background_preload_memory_guard_threshold_mb(total_memory_mb);
+        if should_skip_background_preloads_for_memory(available_memory_mb, total_memory_mb) {
             log::warn!(
-                "[Preload] Skipping background preloads because available memory is low: {} MB",
-                available_memory_mb
+                "[Preload] Skipping background preloads because available memory is low: {} MB available below {} MB reserve (total {} MB)",
+                available_memory_mb,
+                memory_guard_threshold_mb,
+                total_memory_mb
             );
             self.clear_preloaded_assets_for_capacity_change();
             return;

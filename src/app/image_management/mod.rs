@@ -96,7 +96,18 @@ fn should_cache_tiled_hdr_preview(
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
 }
 
-const SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 32 * 1024 * 1024;
+const BYTES_PER_MIB: usize = 1024 * 1024;
+const LOW_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 16 * BYTES_PER_MIB;
+const MEDIUM_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 32 * BYTES_PER_MIB;
+const HIGH_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 64 * BYTES_PER_MIB;
+
+fn sdr_upload_budget_bytes_per_frame(hardware_tier: crate::app::HardwareTier) -> usize {
+    match hardware_tier {
+        crate::app::HardwareTier::Low => LOW_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+        crate::app::HardwareTier::Medium => MEDIUM_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+        crate::app::HardwareTier::High => HIGH_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+    }
+}
 
 fn decoded_rgba_bytes(width: u32, height: u32) -> usize {
     width as usize * height as usize * 4
@@ -112,9 +123,23 @@ fn should_upload_sdr_this_frame(
 }
 
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
+const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
+const BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR: u64 = 5;
 
-fn should_skip_background_preloads_for_memory(available_memory_mb: u64) -> bool {
-    available_memory_mb < MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB
+fn background_preload_memory_guard_threshold_mb(total_memory_mb: u64) -> u64 {
+    let proportional_reserve =
+        total_memory_mb.saturating_div(BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR);
+    proportional_reserve.clamp(
+        MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB,
+        MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB,
+    )
+}
+
+fn should_skip_background_preloads_for_memory(
+    available_memory_mb: u64,
+    total_memory_mb: u64,
+) -> bool {
+    available_memory_mb < background_preload_memory_guard_threshold_mb(total_memory_mb)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
