@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file.
 - **Large image memory pressure**: Reduced CPU/GPU memory spikes while rapidly browsing large JPEG, TIFF, PSD/PSB, RAW, and HDR images by throttling background texture uploads, evicting stale preloaded textures sooner, and tuning mimalloc to return burst allocations more promptly.
 - **Large tiled image preloading**: Nearby oversized images can now preload lightweight tiled previews without being blocked by full-RGBA decode estimates, greatly reducing `loading...` flashes when browsing giant Hubble-style images.
 - **Transition smoothness**: Background texture uploads are deferred during active transition animations so page flip, ripple, and curtain transitions remain smooth.
+- **HDR/AVIF page flips**: Fixed a brief black flash that could appear when flipping between HDR AVIF photos and standard images, including when changing direction at the ends of a folder.
+- **Large-image page flips**: Page Flip transitions between very tall and very wide tiled images now preserve the outgoing image's shape and use the correct direction when wrapping around a folder.
+- **Loading indicator polish**: The `loading...` message is now shown only when there is truly nothing useful to display, so normal image-to-image navigation feels cleaner and faster.
 - **Crash handling**: Windows crash dialogs are more visible, and GPU out-of-memory reports from wgpu are logged instead of immediately taking the default fatal panic path.
 - **RAW scene-linear HDR**: LibRaw 16-bit output is unpacked row-by-row using each buffer's stride, so padded rows no longer corrupt HDR pixels. Tiled RAW refinement always applies the resolved orientation flip before `develop()`.
 

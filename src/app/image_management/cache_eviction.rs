@@ -48,6 +48,7 @@ impl ImageViewerApp {
         self.current_image_res = None;
         self.prev_texture = None;
         self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
         self.transition_start = None;
         self.prefetch_prev_generation = None;
         crate::tile_cache::PIXEL_CACHE.lock().clear();
@@ -218,6 +219,7 @@ impl ImageViewerApp {
 
         self.prev_texture = None;
         self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;

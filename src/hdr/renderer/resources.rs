@@ -50,6 +50,7 @@ pub(crate) struct HdrImageBinding {
 
     pub(super) bind_group: Option<wgpu::BindGroup>,
     pub(super) last_use: std::time::Instant,
+    pub(super) keep_resident: bool,
 }
 
 pub(crate) struct HdrCallbackResources {

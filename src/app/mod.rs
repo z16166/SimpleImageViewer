@@ -31,7 +31,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, Context, Pos2, Vec2};
+use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
@@ -519,8 +519,15 @@ pub struct ImageViewerApp {
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
     pub(crate) prev_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) prev_transition_rect: Option<Rect>,
     pub(crate) transition_start: Option<Instant>,
+    /// Set when a transition animation completes; used to defer HDR SDR refinement uploads
+    /// for the current image until the static frame has settled (avoids end-of-flip flash).
+    pub(crate) transition_settled_at: Option<Instant>,
+    /// One extra geometric-transition frame at t=1.0 before clearing `transition_start`.
+    pub(crate) transition_end_hold: bool,
     pub(crate) pending_transition_target: Option<usize>,
+    pub(crate) last_background_upload_at: Option<Instant>,
     pub(crate) is_next: bool,
     pub(crate) active_transition: TransitionStyle,
 
@@ -814,7 +821,7 @@ impl ImageViewerApp {
                 if self.settings.auto_switch {
                     self.settings.auto_switch = false;
                 }
-                self.navigate_to(pos);
+                self.navigate_to(pos, ctx);
             } else {
                 self.initial_image = Some(path.clone());
                 if no_recursive {
@@ -1269,6 +1276,11 @@ impl eframe::App for ImageViewerApp {
 
         self.process_scan_results();
         self.process_music_scan_results();
+        // Upload deferred CPU pixels for the outgoing frame before navigation captures
+        // `prev_texture` (preloaded neighbors often skip GPU upload until display).
+        self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
+        self.check_auto_switch(ctx);
+        self.handle_keyboard(ctx);
         self.process_loaded_images(ctx);
         self.process_file_op_results();
 
@@ -1278,9 +1290,6 @@ impl eframe::App for ImageViewerApp {
             log::warn!("[UI] Audio stall detected by watchdog, triggering full restart");
             self.force_restart_audio();
         }
-
-        self.check_auto_switch();
-        self.handle_keyboard(ctx);
 
         // Sync currently playing track path and CUE track for persistence
         if self.settings.play_music {

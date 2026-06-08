@@ -40,6 +40,7 @@ impl ImageViewerApp {
         self.animation = None;
         self.prev_texture = None;
         self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
         self.transition_start = None;
         self.tile_manager = None;
         self.prefetched_tiles.clear();
@@ -188,6 +189,7 @@ impl ImageViewerApp {
         // Clear transition/pending state that references old indices.
         self.prev_texture = None;
         self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;

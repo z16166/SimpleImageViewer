@@ -14,6 +14,14 @@ use crate::ui::utils::draw_empty_hint;
 use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Vec2};
 use rust_i18n::t;
 
+fn should_show_loading_hint(
+    res_w: u32,
+    has_current_drawable: bool,
+    has_pending_hold_frame: bool,
+) -> bool {
+    res_w == 0 && !has_current_drawable && !has_pending_hold_frame
+}
+
 impl ImageViewerApp {
     pub(crate) fn draw_image_canvas_ui(&mut self, ui: &mut egui::Ui) {
         // Block canvas mouse interaction when a modal dialog is open.
@@ -35,6 +43,7 @@ impl ImageViewerApp {
                     Sense::click_and_drag()
                 };
                 let canvas_resp = ui.allocate_rect(screen_rect, sense);
+                self.flush_deferred_sdr_upload_for_index(self.current_index, ui.ctx());
                 let pointer_hotkey_action = if !any_modal_open && canvas_resp.hovered() {
                     self.map_pointer_button_to_action(ui.ctx())
                 } else {
@@ -114,6 +123,8 @@ impl ImageViewerApp {
                     return;
                 }
 
+                self.prepare_display_frame(ui.ctx());
+
                 // ── Error message ─────────────────────────────────────────────
                 if let Some(ref err) = self.error_message {
                     if self.show_settings && self.is_font_error {
@@ -154,23 +165,23 @@ impl ImageViewerApp {
                     let sdr_fallback_is_placeholder = self
                         .hdr_placeholder_fallback_indices
                         .contains(&self.current_index);
-                    if should_dispatch_standard_draw(
+                    if should_draw_pending_navigation_hold_frame(
+                        self.transition_start,
+                        self.pending_transition_target,
+                        self.current_index,
+                        self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+                    ) {
+                        // Target index is current but transition has not started yet: keep drawing
+                        // the outgoing frame instead of flashing one static frame of the new image.
+                        self.draw_pending_navigation_hold_frame(ui, screen_rect);
+                        ui.ctx().request_repaint();
+                    } else if should_dispatch_standard_draw(
                         texture.is_some(),
                         has_hdr_plane,
                         sdr_fallback_is_placeholder,
                     ) {
                         // Standard / animated path → standard.rs
                         self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
-                    } else if should_draw_pending_navigation_hold_frame(
-                        self.transition_start,
-                        self.pending_transition_target,
-                        self.current_index,
-                        self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
-                    ) {
-                        // Navigation target is not ready yet: keep drawing the outgoing frame
-                        // (HDR plane when available) instead of a dim SDR fallback-only hold.
-                        self.draw_pending_navigation_hold_frame(ui, screen_rect);
-                        ui.ctx().request_repaint();
                     }
                 }
 
@@ -252,7 +263,20 @@ impl ImageViewerApp {
                         );
                     }
 
-                    if res_w == 0 {
+                    let has_current_drawable = self.tiled_canvas_matches_current_index()
+                        || self.texture_cache.contains(self.current_index)
+                        || self.current_hdr_image.as_ref().is_some_and(|current| {
+                            current.image_for_index(self.current_index).is_some()
+                        })
+                        || self.hdr_image_cache.contains_key(&self.current_index);
+                    let has_pending_hold_frame = should_draw_pending_navigation_hold_frame(
+                        self.transition_start,
+                        self.pending_transition_target,
+                        self.current_index,
+                        self.prev_texture.is_some() || self.prev_hdr_image.is_some(),
+                    );
+                    if should_show_loading_hint(res_w, has_current_drawable, has_pending_hold_frame)
+                    {
                         self.osd
                             .render_loading_hint(ui, screen_rect, &self.cached_palette);
                     }
@@ -302,5 +326,18 @@ impl ImageViewerApp {
                     .wrap(),
                 );
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loading_hint_only_shows_when_nothing_is_drawable() {
+        assert!(should_show_loading_hint(0, false, false));
+        assert!(!should_show_loading_hint(1, false, false));
+        assert!(!should_show_loading_hint(0, true, false));
+        assert!(!should_show_loading_hint(0, false, true));
     }
 }

@@ -16,6 +16,26 @@
 
 use super::*;
 
+/// GPU bindings for static HDR image planes (AVIF/JXL ISO gain-map, etc.).
+/// Page-flip transitions need prev + current + several preloaded neighbors resident at once.
+const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
+/// Do not evict bindings touched within this window (covers one transition frame).
+const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
+    std::time::Duration::from_millis(50);
+/// A keep-resident binding that has not been prepared again by this point is no longer on screen.
+const HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+pub(super) fn hdr_image_binding_is_eviction_candidate(
+    keep_resident: bool,
+    last_use: std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    let age = now.duration_since(last_use);
+    age > HDR_IMAGE_BINDING_EVICTION_PROTECT
+        && (!keep_resident || age > HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER)
+}
+
 pub(crate) struct HdrImagePlaneCallback {
     pub(super) image: Arc<HdrImageBuffer>,
     pub(super) tone_map: HdrToneMapSettings,
@@ -25,6 +45,8 @@ pub(crate) struct HdrImagePlaneCallback {
     pub(super) alpha: f32,
     pub(super) uv_rect: egui::Rect,
     pub(super) ripple: Option<(egui::Pos2, f32, f32, u32)>,
+    /// When true, the GPU binding for this image is not evicted from the LRU cache.
+    pub(super) keep_resident: bool,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -159,6 +181,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         encoded_primary_source_ptr: None,
                         bind_group: None,
                         last_use: std::time::Instant::now(),
+                        keep_resident: false,
                     };
                     resources.image_bindings.insert(image_key, binding);
                 }
@@ -173,6 +196,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
         binding.last_use = std::time::Instant::now();
+        binding.keep_resident = self.keep_resident;
 
         let needs_jpeg_compose = iso_deferred.is_some()
             && (binding.baked_jpeg_image_key != Some(image_key)
@@ -212,7 +236,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 ));
                 binding.baked_jpeg_image_key = Some(image_key);
                 binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                binding.bind_group = None;
+                // First compose: no bind_group yet — skip paint until GPU work completes.
+                if binding.bind_group.is_none() {
+                    return compose_command_buffers;
+                }
             }
         }
 
@@ -263,21 +290,20 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     }
                     binding.baked_apple_image_key = Some(image_key);
                     binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                    binding.bind_group = None;
+                    if binding.bind_group.is_none() {
+                        return compose_command_buffers;
+                    }
                 }
             }
         }
 
-        let apple_gpu_composed =
-            apple_deferred.is_some() && binding.baked_apple_image_key == Some(image_key);
-        let jpeg_gpu_composed =
-            iso_deferred.is_some() && binding.baked_jpeg_image_key == Some(image_key);
+        let apple_gpu_composed = apple_deferred.is_some()
+            && binding.baked_apple_image_key == Some(image_key)
+            && binding.baked_apple_weight_bits == Some(target_capacity_bits);
+        let jpeg_gpu_composed = iso_deferred.is_some()
+            && binding.baked_jpeg_image_key == Some(image_key)
+            && binding.baked_jpeg_weight_bits == Some(target_capacity_bits);
         let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
-
-        if (apple_deferred.is_some() || iso_deferred.is_some()) && !deferred_gpu_composed {
-            binding.bind_group = None;
-            return compose_command_buffers;
-        }
 
         let uniform = image_tone_map_uniform(
             &self.image,
@@ -311,17 +337,26 @@ impl CallbackTrait for HdrImagePlaneCallback {
             ));
         }
 
-        while resources.image_bindings.len() > 3 {
-            if let Some(oldest_key) = resources
+        while resources.image_bindings.len() > MAX_HDR_IMAGE_PLANE_BINDINGS {
+            let now = std::time::Instant::now();
+            let Some(oldest_key) = resources
                 .image_bindings
                 .iter()
-                .min_by_key(|(_, b)| b.last_use)
-                .map(|(&k, _)| k)
-            {
-                resources.image_bindings.remove(&oldest_key);
-            } else {
+                .filter(|(_, binding)| {
+                    hdr_image_binding_is_eviction_candidate(
+                        binding.keep_resident,
+                        binding.last_use,
+                        now,
+                    )
+                })
+                .min_by_key(|(_, binding)| binding.last_use)
+                .map(|(&key, _)| key)
+            else {
+                // Every binding was used this frame (typical during page-flip); allow a
+                // temporary overflow rather than evicting prev/current mid-transition.
                 break;
-            }
+            };
+            resources.image_bindings.remove(&oldest_key);
         }
 
         compose_command_buffers

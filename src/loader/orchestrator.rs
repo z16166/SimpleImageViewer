@@ -1208,6 +1208,11 @@ impl ImageLoader {
         self.local_queue.push_front(output);
     }
 
+    /// Push a deferred result behind already-queued items.
+    pub fn repush_back(&mut self, output: LoaderOutput) {
+        self.local_queue.push_back(output);
+    }
+
     /// Clear all pending tile requests from the queue.
     /// Called on zoom change to discard tiles from stale zoom levels.
     pub fn flush_tile_queue(&self) {

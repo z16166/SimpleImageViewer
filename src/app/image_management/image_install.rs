@@ -58,25 +58,46 @@ impl ImageViewerApp {
         }
     }
 
-    pub(super) fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
-        if !self.deferred_sdr_uploads.contains_key(&self.current_index) {
+    pub(crate) fn flush_deferred_sdr_upload_for_index(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) {
+        if !self.deferred_sdr_uploads.contains_key(&index) {
             return;
         }
-        if self.texture_cache.contains(self.current_index) {
-            self.deferred_sdr_uploads.remove(&self.current_index);
+        let hdr_fallback_upload = self.hdr_sdr_fallback_indices.contains(&index);
+        let active_hdr_plane_displays_current = index == self.current_index
+            && self.effective_hdr_display_output().is_some()
+            && self
+                .current_hdr_image
+                .as_ref()
+                .is_some_and(|current| current.image_for_index(index).is_some());
+        if active_hdr_plane_displays_current {
             return;
         }
-        let Some(decoded) = self.deferred_sdr_uploads.remove(&self.current_index) else {
+        if self.texture_cache.contains(index) && !hdr_fallback_upload {
+            self.deferred_sdr_uploads.remove(&index);
+            return;
+        }
+        let Some(decoded) = self.deferred_sdr_uploads.remove(&index) else {
             return;
         };
-        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&index);
         let texture_name = if is_hdr_fallback {
-            format!("img_hdr_fallback_{}", self.current_index)
+            format!("img_hdr_fallback_{index}")
         } else {
-            format!("img_{}", self.current_index)
+            format!("img_{index}")
         };
-        self.upload_static_sdr_texture(self.current_index, &decoded, texture_name, ctx);
-        self.current_image_res = Some((decoded.width, decoded.height));
+        self.upload_static_sdr_texture(index, &decoded, texture_name, ctx);
+        if index == self.current_index {
+            self.current_image_res = Some((decoded.width, decoded.height));
+        }
+    }
+
+    pub(super) fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
+        let index = self.current_index;
+        self.flush_deferred_sdr_upload_for_index(index, ctx);
     }
 
     pub(super) fn clear_current_animation_for_index(&mut self, idx: usize) {
@@ -125,12 +146,15 @@ impl ImageViewerApp {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        self.queue_or_upload_static_sdr_texture(
-            idx,
-            fallback,
-            format!("img_hdr_fallback_{idx}"),
-            ctx,
-        );
+        let current_hdr_placeholder = idx == self.current_index && sdr_fallback_is_placeholder;
+        if !current_hdr_placeholder {
+            self.queue_or_upload_static_sdr_texture(
+                idx,
+                fallback,
+                format!("img_hdr_fallback_{idx}"),
+                ctx,
+            );
+        }
 
         if idx == self.current_index {
             self.current_image_res = Some((hdr.width, hdr.height));
@@ -165,8 +189,20 @@ impl ImageViewerApp {
         let Some(fallback_image) = update.fallback else {
             return;
         };
+        let active_hdr_plane_displays_current = idx == self.current_index
+            && self.effective_hdr_display_output().is_some()
+            && self
+                .current_hdr_image
+                .as_ref()
+                .is_some_and(|current| current.image_for_index(idx).is_some());
         self.hdr_sdr_fallback_indices.insert(idx);
         self.hdr_placeholder_fallback_indices.remove(&idx);
+        if active_hdr_plane_displays_current {
+            // The float HDR plane is the displayed source; applying the refined SDR fallback here
+            // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
+            self.deferred_sdr_uploads.insert(idx, fallback_image);
+            return;
+        }
         self.queue_or_upload_static_sdr_texture(
             idx,
             &fallback_image,

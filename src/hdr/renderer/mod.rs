@@ -202,6 +202,7 @@ pub fn hdr_image_plane_callback(
         alpha,
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         None,
+        false,
     )
 }
 
@@ -215,6 +216,7 @@ pub fn hdr_image_plane_callback_with_uv(
     alpha: f32,
     uv_rect: egui::Rect,
     ripple: Option<(egui::Pos2, f32, f32, u32)>,
+    keep_resident: bool,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -227,6 +229,7 @@ pub fn hdr_image_plane_callback_with_uv(
             alpha,
             uv_rect,
             ripple,
+            keep_resident,
         },
     ))
 }
