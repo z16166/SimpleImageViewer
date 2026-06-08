@@ -399,14 +399,16 @@ fn log_env_info() -> String {
         format!("{} [{}] (RAM: {:.2} GB)", os_name, os_version, memory_gb)
     });
 
-    startup_info!(
+    // Always emit when logging is enabled (SIV_LOG_LEVEL / SIV_LOG_FILE), even without
+    // the local-only startup-timing feature, so support can collect OS/RAM context.
+    log::info!(
         "Simple Image Viewer v{} | Environment: {}",
         env!("CARGO_PKG_VERSION"),
         final_desc
     );
 
     #[cfg(feature = "legacy_win7")]
-    startup_info!("Build Type: Windows 7 Legacy Compatibility Edition (x64)");
+    log::info!("Build Type: Windows 7 Legacy Compatibility Edition (x64)");
 
     final_desc
 }
