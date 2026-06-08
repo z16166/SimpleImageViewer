@@ -313,7 +313,8 @@ mod tests {
         let tone = crate::hdr::types::HdrToneMapSettings::default();
         let sdr = crate::libtiff_loader::load_via_libtiff(path, 1.0, tone.clone())
             .expect("libtiff sdr load");
-        let hdr = crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
+        let hdr =
+            crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
         if let crate::loader::ImageData::Static(d) = &sdr {
             eprintln!("libtiff cap=1 Static {}x{}", d.width, d.height);
         }

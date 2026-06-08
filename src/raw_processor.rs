@@ -176,26 +176,22 @@ impl RawProcessor {
     ///
     /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
     /// until demosaic; prefer CFA bounds when output size clearly matches the thumb only.
-    pub fn developed_output_dimensions(&self, embedded: Option<&crate::loader::DecodedImage>) -> (u32, u32) {
+    pub fn developed_output_dimensions(
+        &self,
+        embedded: Option<&crate::loader::DecodedImage>,
+    ) -> (u32, u32) {
         let iw = self.width();
         let ih = self.height();
         let rw = self.raw_width();
         let rh = self.raw_height();
 
         if let Some(p) = embedded {
-            if p.width == iw
-                && p.height == ih
-                && ((rw > iw && rw > 0) || (rh > ih && rh > 0))
-            {
+            if p.width == iw && p.height == ih && ((rw > iw && rw > 0) || (rh > ih && rh > 0)) {
                 return (rw.max(iw), rh.max(ih));
             }
         }
 
-        if iw > 0 && ih > 0 {
-            (iw, ih)
-        } else {
-            (rw, rh)
-        }
+        if iw > 0 && ih > 0 { (iw, ih) } else { (rw, rh) }
     }
 
     pub fn unpack(&mut self) -> Result<(), String> {

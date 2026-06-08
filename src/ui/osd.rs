@@ -43,13 +43,7 @@ fn layout_width(ui: &egui::Ui, text: &str) -> f32 {
         .x
 }
 
-fn truncate_into(
-    ui: &egui::Ui,
-    dst: &mut String,
-    src: &str,
-    max_width: f32,
-    scratch: &mut String,
-) {
+fn truncate_into(ui: &egui::Ui, dst: &mut String, src: &str, max_width: f32, scratch: &mut String) {
     dst.clear();
     if max_width <= 0.0 {
         dst.push('…');
@@ -253,7 +247,13 @@ impl OsdRenderer {
             raw: String::new(),
             hdr: String::new(),
         };
-        truncate_into(ui, &mut lines.main, &self.cached_hud, max_width, &mut self.measure_scratch);
+        truncate_into(
+            ui,
+            &mut lines.main,
+            &self.cached_hud,
+            max_width,
+            &mut self.measure_scratch,
+        );
         if self.has_raw_line {
             truncate_into(
                 ui,
@@ -277,7 +277,10 @@ impl OsdRenderer {
     }
 
     fn sync_save_error(&mut self, save_error: &Option<(String, Instant)>) {
-        let message = save_error.as_ref().map(|(msg, _)| msg.as_str()).unwrap_or("");
+        let message = save_error
+            .as_ref()
+            .map(|(msg, _)| msg.as_str())
+            .unwrap_or("");
         if message == self.last_save_error_message {
             return;
         }
