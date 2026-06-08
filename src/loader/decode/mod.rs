@@ -26,6 +26,7 @@ mod jpeg;
 mod modern;
 mod raster;
 mod raw;
+mod tiff_raw_sniff;
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
@@ -127,6 +128,23 @@ pub(crate) fn load_image_file(
             );
         }
         if ext == "tif" || ext == "tiff" {
+            if tiff_raw_sniff::tiff_may_be_camera_raw(path)
+                && crate::raw_processor::probe_libraw_can_open(path)
+            {
+                log::info!(
+                    "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
+                    file_name
+                );
+                return load_raw(
+                    index,
+                    generation,
+                    path,
+                    refine_tx.clone(),
+                    high_quality,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                );
+            }
             return load_primary_with_detection_fallback(
                 path,
                 file_name,

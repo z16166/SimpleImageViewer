@@ -486,10 +486,30 @@ pub fn is_raw_extension(ext: &str) -> bool {
     RAW_EXTENSIONS.contains(&lower.as_str())
 }
 
+/// LibRaw identifies camera RAW by file content, not extension. Some vendors (e.g. Kodak DCS)
+/// store RAW in `.tif` containers; probe before the generic TIFF decoder so we demosaic IFD0
+/// instead of showing a tiny embedded RGB preview IFD.
+pub fn probe_libraw_can_open(path: &Path) -> bool {
+    let mut processor = match RawProcessor::new() {
+        Some(p) => p,
+        None => return false,
+    };
+    if processor.open(path).is_err() {
+        return false;
+    }
+    let w = processor.width();
+    let h = processor.height();
+    w > 0 && h > 0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RawDisplayMode, raw_scene_linear_metadata};
+    use super::{
+        RawDisplayMode, RawProcessor, is_raw_extension, probe_libraw_can_open,
+        raw_scene_linear_metadata,
+    };
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
+    use std::path::Path;
 
     #[test]
     fn raw_scene_linear_metadata_enters_hdr_pipeline_as_linear_scene_data() {
@@ -504,6 +524,45 @@ mod tests {
         let mode = RawDisplayMode::SdrDeveloped;
 
         assert_eq!(mode, RawDisplayMode::SdrDeveloped);
+    }
+
+    #[test]
+    fn tif_extension_is_not_treated_as_raw_by_extension_alone() {
+        assert!(!is_raw_extension("tif"));
+        assert!(!is_raw_extension("tiff"));
+    }
+
+    #[test]
+    fn probe_libraw_can_open_false_for_missing_file() {
+        assert!(!probe_libraw_can_open(Path::new(
+            "definitely_missing_kodak_dcs460d.tif"
+        )));
+    }
+
+    /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF` on the test machine.
+    #[test]
+    #[ignore]
+    fn probe_libraw_can_open_kodak_dcs460d_tif() {
+        let path = Path::new(r"F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF");
+        if !path.is_file() {
+            eprintln!(
+                "skip: Kodak DCS460D sample not present at {}",
+                path.display()
+            );
+            return;
+        }
+        assert!(
+            probe_libraw_can_open(path),
+            "LibRaw should recognize Kodak DCS460D TIFF container as camera RAW"
+        );
+        let mut processor = RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        assert!(
+            processor.width() > 256 && processor.height() > 256,
+            "expected full sensor dimensions, got {}x{}",
+            processor.width(),
+            processor.height()
+        );
     }
 }
 
