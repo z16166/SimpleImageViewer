@@ -31,7 +31,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, Context, Pos2, Vec2};
+use eframe::egui::{self, Context, Pos2, Rect, Vec2};
 
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
@@ -519,6 +519,7 @@ pub struct ImageViewerApp {
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
     pub(crate) prev_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
+    pub(crate) prev_transition_rect: Option<Rect>,
     pub(crate) transition_start: Option<Instant>,
     /// Set when a transition animation completes; used to defer HDR SDR refinement uploads
     /// for the current image until the static frame has settled (avoids end-of-flip flash).

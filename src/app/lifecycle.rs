@@ -435,6 +435,7 @@ impl ImageViewerApp {
             current_image_res: None,
             prev_texture: None,
             prev_hdr_image: None,
+            prev_transition_rect: None,
             transition_start: None,
             transition_settled_at: None,
             transition_end_hold: false,

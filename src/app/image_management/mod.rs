@@ -148,6 +148,9 @@ fn should_defer_background_upload_during_transition(
     if is_transitioning {
         return true;
     }
+    // Keep neighbor/background uploads quiet for roughly one user-visible beat after the
+    // static frame settles. The 1s window covers slow HDR fallback/preview arrivals observed
+    // immediately after page-flip without making preloading feel disabled after navigation.
     const POST_TRANSITION_BACKGROUND_HOLD: std::time::Duration =
         std::time::Duration::from_millis(1000);
     transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_BACKGROUND_HOLD)
@@ -169,6 +172,9 @@ fn should_yield_background_result_for_post_transition_refinement(
     if is_current || !current_refinement_pending {
         return false;
     }
+    // Give the current image's own refinement a short priority lane after transition settle.
+    // 500ms is long enough for the queued current refinement to surface on busy folders, but
+    // short enough that neighboring previews resume before the next deliberate navigation.
     const POST_TRANSITION_REFINEMENT_PRIORITY: std::time::Duration =
         std::time::Duration::from_millis(500);
     transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_PRIORITY)
@@ -178,6 +184,9 @@ fn background_upload_quota_after_transition(
     default_quota: usize,
     transition_settled_at: Option<std::time::Instant>,
 ) -> usize {
+    // For the first few seconds after a transition, allow only one background GPU upload per
+    // frame. This drains nearby preloads steadily while avoiding the burst that originally
+    // caused visible hitches on large HDR/JPEG/RAW folders.
     const POST_TRANSITION_THROTTLE: std::time::Duration = std::time::Duration::from_millis(3000);
     if transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_THROTTLE) {
         1
@@ -194,6 +203,9 @@ fn should_space_background_upload_after_transition(
     if is_current {
         return false;
     }
+    // Pair the 3s throttle window with a 250ms minimum gap between non-current uploads. That
+    // spreads large texture uploads across many frames (~4/s) instead of letting a single quiet
+    // frame trigger another burst right after the animation.
     const POST_TRANSITION_SPACING_WINDOW: std::time::Duration =
         std::time::Duration::from_millis(3000);
     const POST_TRANSITION_BACKGROUND_UPLOAD_SPACING: std::time::Duration =
@@ -466,6 +478,10 @@ fn navigation_is_forward(current_index: usize, target_index: usize, total: usize
     let forward_steps = (target_index + total - current_index) % total;
     let backward_steps = (current_index + total - target_index) % total;
     forward_steps <= backward_steps
+}
+
+fn transition_direction_is_next(current_index: usize, target_index: usize, total: usize) -> bool {
+    navigation_is_forward(current_index, target_index, total)
 }
 
 fn source_key_matches_index(

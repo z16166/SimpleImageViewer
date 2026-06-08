@@ -93,6 +93,9 @@ impl ImageViewerApp {
         if self.transition_start.is_some() {
             return true;
         }
+        // Keep prev/current HDR image-plane bindings pinned for one extra frame after the
+        // transition is declared settled. 50ms covers a normal 60Hz/120Hz frame handoff without
+        // keeping abandoned bindings resident long enough to fight the LRU cache.
         const POST_TRANSITION_BINDING_HOLD: std::time::Duration =
             std::time::Duration::from_millis(50);
         self.transition_settled_at
@@ -215,6 +218,7 @@ impl ImageViewerApp {
                 self.transition_start = None;
                 self.prev_texture = None;
                 self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
             }
             tp = crate::app::rendering::transitions::TransitionParams::default();
         }
@@ -480,10 +484,12 @@ impl ImageViewerApp {
         };
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
             if let Some((target_format, hdr_output_mode)) = hdr_draw {
-                let p_dest = override_dest.unwrap_or_else(|| {
-                    let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
-                    self.compute_display_rect(p_size, screen_rect)
-                });
+                let p_dest = override_dest
+                    .or(self.prev_transition_rect)
+                    .unwrap_or_else(|| {
+                        let p_size = Vec2::new(prev_hdr.width as f32, prev_hdr.height as f32);
+                        self.compute_display_rect(p_size, screen_rect)
+                    });
                 let p_final_dest = Rect::from_center_size(
                     p_dest.center() + tp.prev_offset,
                     p_dest.size() * tp.prev_scale,
@@ -505,10 +511,12 @@ impl ImageViewerApp {
         }
 
         if let Some(ref prev) = self.prev_texture {
-            let p_dest = override_dest.unwrap_or_else(|| {
-                let p_size = prev.size_vec2();
-                self.compute_display_rect(p_size, screen_rect)
-            });
+            let p_dest = override_dest
+                .or(self.prev_transition_rect)
+                .unwrap_or_else(|| {
+                    let p_size = prev.size_vec2();
+                    self.compute_display_rect(p_size, screen_rect)
+                });
             let p_final_dest = Rect::from_center_size(
                 p_dest.center() + tp.prev_offset,
                 p_dest.size() * tp.prev_scale,
@@ -720,7 +728,9 @@ impl ImageViewerApp {
                 .map(|h| Vec2::new(h.width as f32, h.height as f32))
                 .or_else(|| self.prev_texture.as_ref().map(|t| t.size_vec2()))
                 .expect("either prev_hdr_image or prev_texture must be Some");
-            let p_dest = self.compute_display_rect(p_size, screen_rect);
+            let p_dest = self
+                .prev_transition_rect
+                .unwrap_or_else(|| self.compute_display_rect(p_size, screen_rect));
             let union_rect = p_dest.union(final_dest);
 
             let elapsed = self
@@ -850,16 +860,15 @@ impl ImageViewerApp {
             .as_ref()
             .map(|h| Vec2::new(h.width as f32, h.height as f32))
             .or_else(|| self.prev_texture.as_ref().map(|t| t.size_vec2()));
-        let p_dest = prev_size
-            .map(|size| self.compute_display_rect(size, screen_rect))
-            .unwrap_or(final_dest);
-        let union_rect = if prev_size.is_some() {
-            p_dest.union(final_dest)
-        } else {
-            final_dest
-        };
         let has_prev = self.prev_texture.is_some() || self.prev_hdr_image.is_some();
-        (p_dest, union_rect, has_prev)
+        resolve_transition_prev_layout(
+            screen_rect,
+            final_dest,
+            prev_size,
+            self.prev_transition_rect,
+            has_prev,
+            |size, rect| self.compute_display_rect(size, rect),
+        )
     }
 
     /// Draw the outgoing frame clipped to `clip`, preferring the HDR float plane when available.
@@ -1242,6 +1251,25 @@ fn pending_navigation_hold_params() -> crate::app::rendering::transitions::Trans
     }
 }
 
+fn resolve_transition_prev_layout(
+    screen_rect: Rect,
+    final_dest: Rect,
+    prev_size: Option<Vec2>,
+    captured_prev_dest: Option<Rect>,
+    has_prev: bool,
+    compute_display_rect: impl FnOnce(Vec2, Rect) -> Rect,
+) -> (Rect, Rect, bool) {
+    let p_dest = captured_prev_dest
+        .or_else(|| prev_size.map(|size| compute_display_rect(size, screen_rect)))
+        .unwrap_or(final_dest);
+    let union_rect = if has_prev {
+        p_dest.union(final_dest)
+    } else {
+        final_dest
+    };
+    (p_dest, union_rect, has_prev)
+}
+
 fn curtain_hdr_transition_rotation(rotation: i32) -> i32 {
     rotation
 }
@@ -1393,6 +1421,27 @@ mod tests {
     #[test]
     fn hdr_curtain_transition_uses_image_rotation() {
         assert_eq!(curtain_hdr_transition_rotation(3), 3);
+    }
+
+    #[test]
+    fn transition_prev_layout_uses_captured_outgoing_rect_for_tiled_previews() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1024.0, 512.0));
+        let wide_new_dest = Rect::from_center_size(screen.center(), Vec2::new(1024.0, 96.0));
+        let captured_tall_old_dest =
+            Rect::from_center_size(screen.center(), Vec2::new(48.0, 512.0));
+
+        let (prev_dest, _, has_prev) = resolve_transition_prev_layout(
+            screen,
+            wide_new_dest,
+            Some(Vec2::new(512.0, 48.0)),
+            Some(captured_tall_old_dest),
+            true,
+            |size, rect| Rect::from_center_size(rect.center(), size),
+        );
+
+        assert!(has_prev);
+        assert_eq!(prev_dest, captured_tall_old_dest);
+        assert!(prev_dest.height() > prev_dest.width());
     }
 
     #[test]

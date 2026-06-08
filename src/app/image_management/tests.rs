@@ -776,6 +776,12 @@ fn navigation_direction_matches_wrap_aware_next_prev_behavior() {
 }
 
 #[test]
+fn transition_direction_reuses_wrap_aware_navigation_direction() {
+    assert!(transition_direction_is_next(9, 0, 10));
+    assert!(!transition_direction_is_next(0, 9, 10));
+}
+
+#[test]
 fn image_file_size_pairs_keep_known_sizes_and_fill_missing_sizes() {
     let paths = vec![
         PathBuf::from("a.jpg"),
@@ -1165,6 +1171,7 @@ fn make_test_app() -> ImageViewerApp {
         current_image_res: None,
         prev_texture: None,
         prev_hdr_image: None,
+        prev_transition_rect: None,
         transition_start: None,
         transition_settled_at: None,
         transition_end_hold: false,

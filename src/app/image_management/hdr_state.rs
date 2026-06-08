@@ -226,6 +226,7 @@ impl ImageViewerApp {
         self.pending_anim_frames = None;
         self.prev_texture = None;
         self.prev_hdr_image = None;
+        self.prev_transition_rect = None;
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;

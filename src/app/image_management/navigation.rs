@@ -72,6 +72,32 @@ impl ImageViewerApp {
         (texture, hdr)
     }
 
+    fn transition_source_rect_for_index(
+        &self,
+        index: usize,
+        texture: Option<&egui::TextureHandle>,
+        hdr: Option<&Arc<crate::hdr::types::HdrImageBuffer>>,
+        screen_rect: egui::Rect,
+    ) -> Option<egui::Rect> {
+        let source_size = if index == self.current_index {
+            self.tile_manager
+                .as_ref()
+                .filter(|tm| tm.image_index == index)
+                .map(|tm| Vec2::new(tm.full_width as f32, tm.full_height as f32))
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.texture_cache
+                .get_original_res(index)
+                .map(|(w, h)| Vec2::new(w as f32, h as f32))
+        })
+        .or_else(|| hdr.map(|image| Vec2::new(image.width as f32, image.height as f32)))
+        .or_else(|| texture.map(|texture| texture.size_vec2()));
+
+        source_size.map(|size| self.compute_plane_layout(size, screen_rect).dest)
+    }
+
     pub(crate) fn reload_current(&mut self) {
         if self.image_files.is_empty() {
             return;
@@ -104,6 +130,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.current_image_res = None;
         self.animation = None;
+        self.prev_transition_rect = None;
 
         let path = self.image_files[self.current_index].clone();
         self.loader.request_load(
@@ -135,6 +162,12 @@ impl ImageViewerApp {
 
         let outgoing_index = self.current_index;
         let (source_tex, source_hdr) = self.capture_transition_source_at_index(outgoing_index, ctx);
+        let source_rect = self.transition_source_rect_for_index(
+            outgoing_index,
+            source_tex.as_ref(),
+            source_hdr.as_ref(),
+            ctx.input(|i| i.content_rect()),
+        );
 
         // Setup transition if enabled. We defer transition start until the target
         // texture is actually ready to draw, avoiding black/stale-frame flashes.
@@ -155,9 +188,13 @@ impl ImageViewerApp {
             // an earlier navigation.
             self.prev_texture = source_tex;
             self.prev_hdr_image = source_hdr;
+            self.prev_transition_rect = source_rect;
             // Handle wrap-around logic for direction
-            self.is_next = target_index > self.current_index
-                || (target_index == 0 && self.current_index == self.image_files.len() - 1);
+            self.is_next = transition_direction_is_next(
+                self.current_index,
+                target_index,
+                self.image_files.len(),
+            );
             self.transition_start = None;
             let source_has_texture = self.prev_texture.is_some() || self.prev_hdr_image.is_some();
             let target_has_texture = self.texture_cache.contains(target_index);
@@ -186,6 +223,7 @@ impl ImageViewerApp {
                 // transition state from previous navigation.
                 self.prev_texture = None;
                 self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
                 self.pending_transition_target = None;
                 self.transition_start = None;
             }
@@ -201,6 +239,7 @@ impl ImageViewerApp {
             self.transition_start = None;
             self.prev_texture = source_tex;
             self.prev_hdr_image = source_hdr;
+            self.prev_transition_rect = source_rect;
             self.pending_transition_target = if !target_is_render_ready(
                 target_has_texture,
                 target_has_hdr_plane,
@@ -216,6 +255,7 @@ impl ImageViewerApp {
             ) {
                 self.prev_texture = None;
                 self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
                 self.pending_transition_target = None;
                 self.transition_start = None;
             }

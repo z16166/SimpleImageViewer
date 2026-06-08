@@ -290,14 +290,22 @@ impl ImageViewerApp {
                     }
                 }
             } else if self.transition_end_hold {
+                // The t=1.0 hold frame has been drawn. Only now do we mark the transition as
+                // settled and release the outgoing frame. Starting the post-transition timers here
+                // intentionally shifts them by one frame (~8-16ms) so background uploads cannot
+                // begin on the same frame that bridges animated and static rendering.
                 self.transition_end_hold = false;
                 self.transition_start = None;
                 self.transition_settled_at = Some(std::time::Instant::now());
                 self.prev_texture = None;
                 self.prev_hdr_image = None;
+                self.prev_transition_rect = None;
             } else {
                 // Hold one frame at t=1.0 on the geometric path so the last animated
-                // frame matches the first static HDR draw (avoids end-of-flip flash).
+                // frame matches the first static HDR draw (avoids end-of-flip flash). Alpha
+                // transitions end with the new image fully opaque; Slide/Push end with both
+                // offsets reset; PageFlip/Ripple/Curtain already render their final geometry via
+                // custom paths, so they only need `is_animating` and `t=1.0` preserved.
                 self.transition_end_hold = true;
                 p.is_animating = true;
                 p.t = 1.0;
