@@ -66,6 +66,7 @@ btn.open_release_page: "Open release page"
 # Labels / Checkboxes
 label.recursive_scan: "Recursive scan"
 label.enable_preload: "Preload image"
+label.skip_raw_if_jpeg_exists: "Skip RAW when matching JPG/JPEG exists"
 label.resume_last: "Resume from last viewed image"
 label.fullscreen: "Fullscreen (covers taskbar)"
 label.show_osd: "Show OSD"

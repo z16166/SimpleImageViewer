@@ -32,7 +32,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Update checks** — checks GitHub Releases in the background at most once per day. Windows portable builds can install verified updates automatically; macOS and Linux builds notify you and open the download page.
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode, and `F5` to refresh the image list without losing your zoom/rotation or playing animations
-- **Custom hotkeys** — remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks from the settings panel
+- **Custom hotkeys** — rebind navigation, zoom, rotation, slideshow, printing, and other actions from **Settings > Hotkeys**; supports keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks. The defaults are listed in **Controls** below and can be changed at any time
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
 - **Modal Dialogs** — metadata and settings dialogs now behave as true modals; background interactions are blocked with a visual dimmer for a focused experience
@@ -47,6 +47,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **5-Button Control Bar** — compact UI bar (⏮ ⏪ ▶/⏸ ⏩ ⏭) in the settings panel for physical music files and logical CUE tracks.
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
+- **Skip paired RAW files** — optional Library setting to hide RAW files when a matching JPG/JPEG exists in the same folder (e.g. Sony RAW+JPEG per shot), so browsing stays fast without heavy RAW decoding
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
 - **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, **Page Flip**, **Ripple (Water)**, **Curtain**, and a **Random** mode.
 - **Customizable Duration**: Fluid animations with adjustable duration (50ms - 2000ms).
@@ -60,7 +61,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Jump to image** — press `G` to open a *Go to image…* dialog and jump directly to any index
 - **Smart Format Detection** — automatically identifies the true image format even if the file extension is mismatched (e.g., a JPEG file incorrectly named as `.png`), ensuring robust loading for mislabeled files.
 - **File Deletion** — press `Delete` to move the current image to the Recycle Bin/Trash, or `Shift + Delete` to permanently remove it (no confirmation dialog for speed)
-- **Context Menu** — right-click to copy the image's absolute path, copy the actual file to clipboard, view EXIF metadata, set as desktop wallpaper, **Rotate 90° CW/CCW**, or **Print** (Full or Visible Area) directly
+- **Context menu** — right-click for built-in actions such as copy path, copy file, view EXIF/XMP, set wallpaper, rotate, and print
+- **Custom context menu** — in **Settings > Context Menu**, reorder built-in items, add separators, show or hide entries, and add custom actions that launch an executable or a full command line (`%1` = current image path)
 - **Multi-Language Support (i18n)** — UI automatically adapts to system language (English, Simplified Chinese, Traditional Chinese - Taiwan & Hong Kong) with fallback support, and can be manually overridden in the settings panel.
 - **Advanced Crash Resilience & Diagnostics** — built-in global exception monitoring that captures localized diagnostic reports and automated clipboard support for simplified troubleshooting. Provides persistent crash logging even in fatal scenarios.
 
@@ -76,7 +78,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Home` | First image |
 | `End` | Last image |
 | `+` / `=` / `-` | Zoom in / out |
-| `*` (or `Numpad *`) | Reset zoom & pan |
+| `*` (or `Numpad *`) / `Ctrl + 0` | Reset zoom & pan |
 | `Ctrl + Mouse wheel` | Zoom |
 | `Mouse wheel` | Next / Previous image |
 | `Space` | Pause / Resume slideshow |
@@ -96,18 +98,21 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
 | `Alt+F4` | Quit (Windows) |
 
+*Default shortcuts above can be remapped in **Settings > Hotkeys**.*
+
 ---
 
 ## Settings Panel (`F1`)
 
 | Setting | Description |
 |---|---|
-| **Directory** | Browse button to pick image folder, recursive scan toggle, preload toggle, and resume viewing toggle |
+| **Library** | Browse button to pick image folder, recursive scan toggle, preload toggle, skip paired RAW when matching JPG/JPEG exists, and resume viewing toggle |
 | **Display** | Full-screen toggle, scale-mode selector, and OSD info visibility toggle |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop or random-order playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
 | **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |
-| **Hotkeys** | Customize keyboard, mouse wheel, and modifier-assisted mouse button bindings |
+| **Hotkeys** | Remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button bindings for major viewer actions |
+| **Context Menu** | Customize the right-click menu: reorder built-in items, add separators, enable or disable entries, and add custom commands (`%1` = current image path) |
 | **Language** | Manually switch between English, Simplified Chinese, and Traditional Chinese |
 | **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
 | **Updates** | Enable/disable update checks, run a manual check, and configure HTTP/SOCKS5 proxy settings for release checks and downloads |

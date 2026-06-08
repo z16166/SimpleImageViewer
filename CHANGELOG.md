@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.3] - 2026-06-09
+
+### Added
+- **Skip paired RAW files**: New Library setting lets you hide RAW files when a matching JPG/JPEG is in the same folder—handy for cameras that save both per shot (e.g. Sony RAW+JPEG), so browsing stays fast without heavy RAW decoding.
+
 ## [2.4.2] - 2026-06-08
 
 ### Changed

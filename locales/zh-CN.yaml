@@ -66,6 +66,7 @@ btn.open_release_page: "打开发布页面"
 # Labels / Checkboxes
 label.recursive_scan: "递归扫描子目录"
 label.enable_preload: "预加载图片"
+label.skip_raw_if_jpeg_exists: "存在同名 JPG/JPEG 时跳过 RAW"
 label.resume_last: "从上次查看的图片继续"
 label.fullscreen: "全屏（覆盖任务栏）"
 label.show_osd: "显示 OSD"

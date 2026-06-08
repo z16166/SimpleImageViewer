@@ -98,6 +98,8 @@ pub struct Settings {
     pub last_image_dir: Option<PathBuf>,
     #[serde(default = "default_true")]
     pub preload: bool,
+    #[serde(default)]
+    pub skip_raw_if_jpeg_exists: bool,
 
     // Session resumption
     #[serde(default)]
@@ -268,6 +270,7 @@ impl Default for Settings {
             font_family: default_font_family(),
             font_size: default_font_size(),
             preload: true,
+            skip_raw_if_jpeg_exists: false,
             resume_last_image: false,
             last_viewed_image: None,
             show_osd: true,

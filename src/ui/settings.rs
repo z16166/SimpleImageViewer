@@ -2019,6 +2019,20 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
 
         if themed_labeled_toggle(
             ui,
+            &mut app.settings.skip_raw_if_jpeg_exists,
+            t!("label.skip_raw_if_jpeg_exists"),
+            &palette,
+        )
+        .changed()
+        {
+            if let Some(dir) = app.settings.last_image_dir.clone() {
+                app.load_directory(dir);
+            }
+            app.queue_save();
+        }
+
+        if themed_labeled_toggle(
+            ui,
             &mut app.settings.resume_last_image,
             t!("label.resume_last"),
             &palette,

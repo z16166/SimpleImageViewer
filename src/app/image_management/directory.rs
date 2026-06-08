@@ -76,7 +76,13 @@ impl ImageViewerApp {
 
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
-        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
+        scanner::scan_directory(
+            dir,
+            self.settings.recursive,
+            self.settings.skip_raw_if_jpeg_exists,
+            tx,
+            cancel,
+        );
     }
 
     /// Refresh the image file list for the current directory (bound to F5).
@@ -233,7 +239,13 @@ impl ImageViewerApp {
         self.scan_cancel = Some(Arc::clone(&cancel));
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
-        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
+        scanner::scan_directory(
+            dir,
+            self.settings.recursive,
+            self.settings.skip_raw_if_jpeg_exists,
+            tx,
+            cancel,
+        );
     }
 
     pub(crate) fn finish_refresh_scan_state(&mut self) {
