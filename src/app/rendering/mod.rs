@@ -35,6 +35,7 @@ impl ImageViewerApp {
                     Sense::click_and_drag()
                 };
                 let canvas_resp = ui.allocate_rect(screen_rect, sense);
+                self.flush_deferred_sdr_upload_for_index(self.current_index, ui.ctx());
                 let pointer_hotkey_action = if !any_modal_open && canvas_resp.hovered() {
                     self.map_pointer_button_to_action(ui.ctx())
                 } else {

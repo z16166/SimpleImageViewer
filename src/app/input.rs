@@ -224,8 +224,8 @@ impl ImageViewerApp {
                 let now = ctx.input(|i| i.time);
                 if now - self.last_mouse_wheel_nav > 0.2 {
                     match wheel_match.action {
-                        AppAction::Next => self.navigate_next(),
-                        AppAction::Prev => self.navigate_prev(),
+                        AppAction::Next => self.navigate_next(ctx),
+                        AppAction::Prev => self.navigate_prev(ctx),
                         _ => unreachable!(),
                     }
                     self.last_mouse_wheel_nav = now;
@@ -316,7 +316,7 @@ impl ImageViewerApp {
                 };
                 if allow {
                     self.last_keyboard_nav = Some(now);
-                    self.navigate_next();
+                    self.navigate_next(ctx);
                 }
             }
             AppAction::Prev => {
@@ -327,11 +327,11 @@ impl ImageViewerApp {
                 };
                 if allow {
                     self.last_keyboard_nav = Some(now);
-                    self.navigate_prev();
+                    self.navigate_prev(ctx);
                 }
             }
-            AppAction::First => self.navigate_first(),
-            AppAction::Last => self.navigate_last(),
+            AppAction::First => self.navigate_first(ctx),
+            AppAction::Last => self.navigate_last(ctx),
             AppAction::ZoomIn => {
                 self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
                 self.invalidate_tile_requests_for_view_change();
@@ -412,7 +412,7 @@ impl ImageViewerApp {
     // Auto-switch
     // ------------------------------------------------------------------
 
-    pub(crate) fn check_auto_switch(&mut self) {
+    pub(crate) fn check_auto_switch(&mut self, ctx: &egui::Context) {
         if self.refresh_scan_in_progress
             || !self.settings.auto_switch
             || self.slideshow_paused
@@ -434,7 +434,7 @@ impl ImageViewerApp {
                 AutoSwitchStep::Stop => {
                     // Loop disabled: stop auto-switch at the last image.
                 }
-                AutoSwitchStep::NavigateTo(idx) => self.navigate_to(idx),
+                AutoSwitchStep::NavigateTo(idx) => self.navigate_to(idx, ctx),
                 AutoSwitchStep::ShuffleToFirst => self.shuffle_slideshow_order_to_first(),
             }
         }
@@ -514,13 +514,13 @@ impl ImageViewerApp {
     fn handle_modal_action(
         &mut self,
         action: crate::ui::dialogs::modal_state::ModalAction,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
     ) {
         use crate::ui::dialogs::confirm::ConfirmTag;
         use crate::ui::dialogs::modal_state::ModalAction;
         match action {
             ModalAction::GotoIndex(idx) => {
-                self.navigate_to(idx);
+                self.navigate_to(idx, ctx);
             }
             ModalAction::SetWallpaper { mode, target } => {
                 if !self.image_files.is_empty() {

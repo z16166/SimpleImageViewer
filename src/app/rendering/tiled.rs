@@ -656,16 +656,25 @@ impl ImageViewerApp {
         }
 
         // Draw the previous image underneath for crossfade effect if we are animating
-        // and have a valid previous alpha.
-        if tp.is_animating && prev_alpha_eff > 0.0 && plane_backend == PlaneBackendKind::Hdr {
+        // and have a valid previous alpha. When the outgoing frame is HDR but the new tiled
+        // target is SDR-only, `draw_prev_image_underneath` resolves HDR plane params itself.
+        if tp.is_animating
+            && prev_alpha_eff > 0.0
+            && (self.prev_hdr_image.is_some() || self.prev_texture.is_some())
+        {
             let prev_tp = prev_transition_params_for_tiled_draw(tp, prev_alpha_eff);
+            let (target_format, hdr_output_mode) = if plane_backend == PlaneBackendKind::Hdr {
+                (render_plan.target_format, Some(render_plan.output_mode))
+            } else {
+                (None, None)
+            };
             self.draw_prev_image_underneath(
                 ui,
                 screen_rect,
                 &prev_tp,
                 rotation,
-                render_plan.target_format,
-                Some(render_plan.output_mode),
+                target_format,
+                hdr_output_mode,
                 Some(hdr_image_plane_rect(&layout)),
             );
         }

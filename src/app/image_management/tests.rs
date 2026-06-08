@@ -552,6 +552,24 @@ fn transition_source_hdr_selection_reuses_previous_when_current_unusable() {
 }
 
 #[test]
+fn transition_source_hdr_prefers_current_even_when_placeholder_fallback() {
+    let dummy_hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![0.0; 4]),
+    });
+
+    let res = select_transition_source_hdr(Some(Arc::clone(&dummy_hdr)), true, None);
+    assert!(res.is_some());
+    assert_eq!(res.unwrap().width, 1);
+}
+
+#[test]
 fn transition_source_hdr_happy_path_returns_current() {
     let dummy_hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
         width: 1,
@@ -1222,7 +1240,7 @@ fn navigate_to_tiled_preview_without_tile_manager_triggers_load() {
     assert!(!app.prefetched_tiles.contains_key(&1));
     assert!(!app.hdr_tiled_source_cache.contains_key(&1));
 
-    app.navigate_to(1);
+    app.navigate_to(1, &ctx);
 
     assert_eq!(app.current_image_res, Some((2048, 1536)));
     assert!(app.loader.is_loading(1, app.generation));

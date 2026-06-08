@@ -814,7 +814,7 @@ impl ImageViewerApp {
                 if self.settings.auto_switch {
                     self.settings.auto_switch = false;
                 }
-                self.navigate_to(pos);
+                self.navigate_to(pos, ctx);
             } else {
                 self.initial_image = Some(path.clone());
                 if no_recursive {
@@ -1269,7 +1269,10 @@ impl eframe::App for ImageViewerApp {
 
         self.process_scan_results();
         self.process_music_scan_results();
-        self.check_auto_switch();
+        // Upload deferred CPU pixels for the outgoing frame before navigation captures
+        // `prev_texture` (preloaded neighbors often skip GPU upload until display).
+        self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
+        self.check_auto_switch(ctx);
         self.handle_keyboard(ctx);
         self.process_loaded_images(ctx);
         self.process_file_op_results();

@@ -58,25 +58,36 @@ impl ImageViewerApp {
         }
     }
 
-    pub(super) fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
-        if !self.deferred_sdr_uploads.contains_key(&self.current_index) {
+    pub(crate) fn flush_deferred_sdr_upload_for_index(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) {
+        if !self.deferred_sdr_uploads.contains_key(&index) {
             return;
         }
-        if self.texture_cache.contains(self.current_index) {
-            self.deferred_sdr_uploads.remove(&self.current_index);
+        if self.texture_cache.contains(index) {
+            self.deferred_sdr_uploads.remove(&index);
             return;
         }
-        let Some(decoded) = self.deferred_sdr_uploads.remove(&self.current_index) else {
+        let Some(decoded) = self.deferred_sdr_uploads.remove(&index) else {
             return;
         };
-        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&self.current_index);
+        let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&index);
         let texture_name = if is_hdr_fallback {
-            format!("img_hdr_fallback_{}", self.current_index)
+            format!("img_hdr_fallback_{index}")
         } else {
-            format!("img_{}", self.current_index)
+            format!("img_{index}")
         };
-        self.upload_static_sdr_texture(self.current_index, &decoded, texture_name, ctx);
-        self.current_image_res = Some((decoded.width, decoded.height));
+        self.upload_static_sdr_texture(index, &decoded, texture_name, ctx);
+        if index == self.current_index {
+            self.current_image_res = Some((decoded.width, decoded.height));
+        }
+    }
+
+    pub(super) fn flush_deferred_sdr_upload_for_current(&mut self, ctx: &egui::Context) {
+        let index = self.current_index;
+        self.flush_deferred_sdr_upload_for_index(index, ctx);
     }
 
     pub(super) fn clear_current_animation_for_index(&mut self, idx: usize) {

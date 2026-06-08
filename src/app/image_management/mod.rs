@@ -409,6 +409,11 @@ fn select_transition_source_hdr(
     current_has_placeholder_fallback: bool,
     previous_transition_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
 ) -> Option<Arc<crate::hdr::types::HdrImageBuffer>> {
+    // HDR float planes are always authoritative for the outgoing frame. The placeholder flag
+    // only applies to the companion SDR fallback texture.
+    if current_hdr_image.is_some() {
+        return current_hdr_image;
+    }
     select_transition_source(
         current_hdr_image,
         current_has_placeholder_fallback,
