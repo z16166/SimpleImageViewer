@@ -74,11 +74,13 @@ pub struct OsdState {
     pub total_duration_ms: u64,
     pub cue_markers: Vec<u64>,
     pub hdr_status: Option<String>,
+    pub raw_status: Option<String>,
 }
 
 pub struct OsdRenderer {
     cached_hud: Option<String>,
     cached_hdr_line: Option<String>,
+    cached_raw_line: Option<String>,
     last_state: Option<OsdState>,
 }
 
@@ -87,6 +89,7 @@ impl OsdRenderer {
         Self {
             cached_hud: None,
             cached_hdr_line: None,
+            cached_raw_line: None,
             last_state: None,
         }
     }
@@ -118,8 +121,10 @@ impl OsdRenderer {
                 state.mode,
             );
             let hdr = state.hdr_status.clone();
+            let raw = state.raw_status.clone();
             self.cached_hud = Some(main);
             self.cached_hdr_line = hdr;
+            self.cached_raw_line = raw;
             self.last_state = Some(state.clone());
         }
 
@@ -144,14 +149,25 @@ impl OsdRenderer {
                 palette.osd_text,
             );
 
+            let mut line_offset = crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+
+            if let Some(raw) = &self.cached_raw_line {
+                let raw_trunc = truncate_to_width(ui, raw, font.clone(), max_w);
+                let raw_pos = base_pos + Vec2::new(0.0, -line_offset);
+                ui.painter().text(
+                    raw_pos,
+                    Align2::LEFT_BOTTOM,
+                    raw_trunc,
+                    font.clone(),
+                    palette.osd_text,
+                );
+                line_offset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+            }
+
             if let Some(hdr) = &self.cached_hdr_line {
                 let hdr_line = format!("[{hdr}]");
                 let hdr_trunc = truncate_to_width(ui, &hdr_line, font.clone(), max_w);
-                let hdr_pos = base_pos
-                    + Vec2::new(
-                        0.0,
-                        -(crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP),
-                    );
+                let hdr_pos = base_pos + Vec2::new(0.0, -line_offset);
                 ui.painter().text(
                     hdr_pos,
                     Align2::LEFT_BOTTOM,
@@ -164,11 +180,13 @@ impl OsdRenderer {
 
         // Display persistence error if active.
         if let Some((err, _)) = save_error {
-            let err_offset_y = if self.cached_hdr_line.is_some() {
-                crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE
-            } else {
-                crate::constants::OSD_ERROR_OFFSET
-            };
+            let mut err_offset_y = crate::constants::OSD_ERROR_OFFSET;
+            if self.cached_raw_line.is_some() {
+                err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
+            }
+            if self.cached_hdr_line.is_some() {
+                err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
+            }
             let err_pos =
                 screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -err_offset_y);
             ui.painter().text(

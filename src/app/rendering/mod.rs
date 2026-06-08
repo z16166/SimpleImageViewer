@@ -248,6 +248,7 @@ impl ImageViewerApp {
                             total_duration_ms: self.audio.get_duration_ms(),
                             cue_markers: self.audio.get_cue_markers(),
                             hdr_status: self.current_hdr_osd_tag(),
+                            raw_status: self.current_raw_osd_tag(),
                         };
                         let fname = self.image_files[self.current_index]
                             .file_name()

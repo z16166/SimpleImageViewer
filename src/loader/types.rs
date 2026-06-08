@@ -20,6 +20,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::raw_osd::RawOsdInfo;
+
 pub type SourceKey = u64;
 
 /// Best-effort key used to drop stale async loader results after navigation.
@@ -423,6 +425,8 @@ pub struct LoadResult {
     pub sdr_fallback_is_placeholder: bool,
     /// The HDR capacity of the display when this load was processed, used to detect capacity mismatch.
     pub target_hdr_capacity: f32,
+    /// RAW-only OSD metadata (embedded preview, sensor grid, active pixel source).
+    pub raw_osd: Option<RawOsdInfo>,
 }
 
 /// Refined full-resolution SDR RGBA8 for a static HDR image that initially loaded with a

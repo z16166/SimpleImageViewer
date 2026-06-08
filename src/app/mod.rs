@@ -515,6 +515,8 @@ pub struct ImageViewerApp {
 
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
+    /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
+    pub(crate) raw_osd_by_index: std::collections::HashMap<usize, crate::loader::RawOsdInfo>,
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
@@ -748,6 +750,9 @@ impl ImageViewerApp {
         if self.settings.show_osd {
             inset += crate::constants::OSD_TEXT_SIZE;
             if self.current_hdr_osd_tag().is_some() {
+                inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+            }
+            if self.current_raw_osd_tag().is_some() {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
             if self.last_save_error.is_some() {

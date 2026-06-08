@@ -128,6 +128,14 @@ hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 osd.mode.static: "静态"
 osd.mode.tiled: "分块"
 
+raw.osd.embedded: "内嵌 %{size}"
+raw.osd.no_embedded: "内嵌 —"
+raw.osd.sensor: "传感 %{size}"
+raw.osd.render.embedded: "→内嵌 %{size}"
+raw.osd.render.full: "→全解 %{size}"
+raw.osd.render.hq: "→HQ %{size}"
+raw.osd.render.hq_bootstrap: "→内嵌* %{size}"
+
 # Scale mode
 scale.fit: "适应窗口"
 scale.original: "原始尺寸"

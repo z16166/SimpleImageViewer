@@ -81,6 +81,7 @@ pub fn draw(app: &mut ImageViewerApp, ctx: &Context) {
         total_duration_ms: app.audio.get_duration_ms(),
         cue_markers: app.audio.get_cue_markers(),
         hdr_status: None,
+        raw_status: None,
     };
 
     // HUD position

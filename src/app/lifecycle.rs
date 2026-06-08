@@ -433,6 +433,7 @@ impl ImageViewerApp {
             music_scan_cancel: None,
             music_scan_path: None,
             current_image_res: None,
+            raw_osd_by_index: std::collections::HashMap::new(),
             prev_texture: None,
             prev_hdr_image: None,
             prev_transition_rect: None,

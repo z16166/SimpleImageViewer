@@ -129,6 +129,15 @@ hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 osd.mode.static: "STATIC"
 osd.mode.tiled: "TILED"
 
+# RAW OSD (embedded preview / sensor / active pixel source)
+raw.osd.embedded: "Emb %{size}"
+raw.osd.no_embedded: "Emb —"
+raw.osd.sensor: "Sen %{size}"
+raw.osd.render.embedded: "→Emb %{size}"
+raw.osd.render.full: "→Full %{size}"
+raw.osd.render.hq: "→HQ %{size}"
+raw.osd.render.hq_bootstrap: "→Emb* %{size}"
+
 # Scale mode
 scale.fit: "Fit to Window"
 scale.original: "Original Size"

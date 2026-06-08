@@ -74,6 +74,12 @@ impl ImageViewerApp {
         )
     }
 
+    pub(crate) fn current_raw_osd_tag(&self) -> Option<String> {
+        self.raw_osd_by_index
+            .get(&self.current_index)
+            .and_then(|info| info.format_osd_line())
+    }
+
     fn current_hdr_color_space(&self) -> Option<HdrColorSpace> {
         if let Some(source) = self
             .current_hdr_tiled_image

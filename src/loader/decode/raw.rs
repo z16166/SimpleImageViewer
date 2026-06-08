@@ -30,9 +30,10 @@ use crate::loader::preview_caps::{
 };
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
-    DecodedImage, ImageData, RefinementRequest, hdr_display_requests_sdr_preview,
+    DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
     hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
+use crate::loader::raw_osd::{RawOsdContext, RawOsdInfo};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -131,7 +132,8 @@ fn develop_full_resolution(
     final_lr_flip: i32,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+    osd_ctx: &RawOsdContext,
+) -> Result<RawLoadOutput, String> {
     if area < threshold
         && width <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
         && height <= crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE
@@ -160,14 +162,19 @@ fn develop_full_resolution(
                         path
                     );
                 } else {
+                    let hw = hdr.width;
+                    let hh = hdr.height;
                     let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
                         &hdr,
                         hdr_target_capacity,
                         &hdr_tone_map,
                     )?;
                     let fallback =
-                        DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-                    return Ok(make_hdr_image_data(hdr, fallback));
+                        DecodedImage::from_arc(hw, hh, fallback_pixels);
+                    return Ok(RawLoadOutput {
+                        image: make_hdr_image_data(hdr, fallback),
+                        osd: osd_ctx.full_develop(hw, hh),
+                    });
                 }
             } else {
                 log::error!(
@@ -178,7 +185,13 @@ fn develop_full_resolution(
         }
 
         match processor.develop() {
-            Ok(img) => return Ok(make_image_data(DecodedImage::from(img.to_rgba8()))),
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                return Ok(RawLoadOutput {
+                    image: make_image_data(DecodedImage::from(rgba.clone())),
+                    osd: osd_ctx.full_develop(rgba.width(), rgba.height()),
+                });
+            }
             Err(e) => {
                 log::error!(
                     "[Loader] LibRaw develop failed for {:?}: {}. Falling through to tiled fallback.",
@@ -214,7 +227,10 @@ fn develop_full_resolution(
         height,
         area as f64 / 1_000_000.0
     );
-    Ok(ImageData::Tiled(source))
+    Ok(RawLoadOutput {
+        image: ImageData::Tiled(source),
+        osd: osd_ctx.full_develop(width, height),
+    })
 }
 
 /// Demosaic once, then downscale to monitor HQ cap. Used when HQ mode needs better pixels
@@ -230,7 +246,8 @@ fn develop_hq_preview(
     _path: &PathBuf,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+    osd_ctx: &RawOsdContext,
+) -> Result<RawLoadOutput, String> {
     crate::preload_debug!(
         "[PreloadDebug][RAW] sync HqDevelop path={:?} limit={} hdr={}",
         _path.file_name().unwrap_or_default(),
@@ -248,13 +265,34 @@ fn develop_hq_preview(
             &hdr_tone_map,
         )?;
         let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-        return Ok(make_hdr_image_data(hdr, fallback));
+        let osd = if hdr.width.abs_diff(osd_ctx.sensor_size().0) <= 2
+            && hdr.height.abs_diff(osd_ctx.sensor_size().1) <= 2
+        {
+            osd_ctx.full_develop(hdr.width, hdr.height)
+        } else {
+            osd_ctx.hq_develop(hdr.width, hdr.height)
+        };
+        return Ok(RawLoadOutput {
+            image: make_hdr_image_data(hdr, fallback),
+            osd,
+        });
     }
 
     let img = processor.develop()?;
     let (logical_w, logical_h) = processor.developed_output_dimensions(None);
     let finalized = finalize_raw_hq_developed_image(img, logical_w, logical_h);
-    Ok(make_image_data(DecodedImage::from(finalized.to_rgba8())))
+    let rgba = finalized.to_rgba8();
+    let (pw, ph) = (rgba.width(), rgba.height());
+    let osd = if pw.abs_diff(osd_ctx.sensor_size().0) <= 2 && ph.abs_diff(osd_ctx.sensor_size().1) <= 2
+    {
+        osd_ctx.full_develop(pw, ph)
+    } else {
+        osd_ctx.hq_develop(pw, ph)
+    };
+    Ok(RawLoadOutput {
+        image: make_image_data(DecodedImage::from(rgba)),
+        osd,
+    })
 }
 
 fn load_raw_with_embedded_bootstrap(
@@ -266,13 +304,17 @@ fn load_raw_with_embedded_bootstrap(
     final_lr_flip: i32,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+    osd_ctx: &RawOsdContext,
+) -> Result<RawLoadOutput, String> {
     let use_hdr = !hdr_display_requests_sdr_preview(hdr_target_capacity);
     let hdr_buffer_slot = if use_hdr {
         Some(Arc::new(PLRwLock::new(None)))
     } else {
         None
     };
+
+    let bootstrap_w = preview.width;
+    let bootstrap_h = preview.height;
 
     let source = Arc::new(RawImageSource::new(
         path.clone(),
@@ -302,13 +344,19 @@ fn load_raw_with_embedded_bootstrap(
             width,
             height,
         )) as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
-        return Ok(ImageData::HdrTiled {
-            hdr: hdr_source,
-            fallback: source,
+        return Ok(RawLoadOutput {
+            image: ImageData::HdrTiled {
+                hdr: hdr_source,
+                fallback: source,
+            },
+            osd: osd_ctx.hq_bootstrap_dims(bootstrap_w, bootstrap_h),
         });
     }
 
-    Ok(ImageData::Tiled(source))
+    Ok(RawLoadOutput {
+        image: ImageData::Tiled(source),
+        osd: osd_ctx.hq_bootstrap_dims(bootstrap_w, bootstrap_h),
+    })
 }
 
 pub(crate) fn load_raw(
@@ -319,7 +367,7 @@ pub(crate) fn load_raw(
     high_quality: bool,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
-) -> Result<ImageData, String> {
+) -> Result<RawLoadOutput, String> {
     let mut processor =
         RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
     if let Err(e) = processor.open(path) {
@@ -329,9 +377,17 @@ pub(crate) fn load_raw(
             e
         );
         #[cfg(target_os = "windows")]
-        return crate::wic::load_via_wic(path, high_quality, None);
+        return crate::wic::load_via_wic(path, high_quality, None).map(|image| RawLoadOutput {
+            image,
+            osd: RawOsdInfo::empty(),
+        });
         #[cfg(target_os = "macos")]
-        return crate::macos_image_io::load_via_image_io(path, high_quality, None);
+        return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(|image| {
+            RawLoadOutput {
+                image,
+                osd: RawOsdInfo::empty(),
+            }
+        });
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         return Err(format!(
             "LibRaw failed and no platform fallback available: {}",
@@ -369,6 +425,7 @@ pub(crate) fn load_raw(
     let (width, height) = processor.developed_output_dimensions(preview_opt.as_ref());
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+    let osd_ctx = RawOsdContext::new((width, height), preview_opt.as_ref());
 
     if !high_quality {
         if let Some(p) = preview_opt {
@@ -388,7 +445,10 @@ pub(crate) fn load_raw(
                 width,
                 height
             );
-            return Ok(make_image_data(p));
+            return Ok(RawLoadOutput {
+                image: make_image_data(p.clone()),
+                osd: osd_ctx.embedded_render(&p),
+            });
         }
         crate::preload_debug!(
             "[PreloadDebug][RAW] path={:?} mode=performance no_embedded output={}x{} → full develop",
@@ -407,6 +467,7 @@ pub(crate) fn load_raw(
             final_lr_flip,
             hdr_target_capacity,
             hdr_tone_map,
+            &osd_ctx,
         );
     }
 
@@ -430,7 +491,10 @@ pub(crate) fn load_raw(
                 width,
                 height
             );
-            return Ok(make_image_data(p.clone()));
+            return Ok(RawLoadOutput {
+                image: make_image_data(p.clone()),
+                osd: osd_ctx.embedded_render(p),
+            });
         }
         crate::preload_debug!(
             "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=false → TiledBootstrap+Refine",
@@ -461,6 +525,7 @@ pub(crate) fn load_raw(
             final_lr_flip,
             hdr_target_capacity,
             hdr_tone_map,
+            &osd_ctx,
         );
     }
 
@@ -476,6 +541,7 @@ pub(crate) fn load_raw(
         path,
         hdr_target_capacity,
         hdr_tone_map,
+        &osd_ctx,
     )
 }
 
@@ -578,7 +644,7 @@ mod tests {
         )
         .expect("load_raw hq");
 
-        match result {
+        match result.image {
             ImageData::HdrTiled { fallback, .. } | ImageData::Tiled(fallback) => {
                 assert_eq!(fallback.width(), 3040);
                 assert_eq!(fallback.height(), 2024);
@@ -617,7 +683,7 @@ mod tests {
         )
         .expect("load_raw perf");
 
-        match result {
+        match result.image {
             ImageData::Static(img) => {
                 assert_eq!(img.width, 640);
                 assert_eq!(img.height, 424);
@@ -692,7 +758,7 @@ mod tests {
                     HdrToneMapSettings::default(),
                 )
                 .expect("load_raw");
-                match result {
+                match result.image {
                     ImageData::Static(img) => {
                         eprintln!("{name} {label}: Static {}x{}", img.width, img.height);
                     }
@@ -747,7 +813,7 @@ mod tests {
         )
         .expect("load_raw hq hdr");
 
-        match result {
+        match result.image {
             ImageData::HdrTiled { hdr, fallback } => {
                 assert_eq!(fallback.width(), 3684);
                 assert_eq!(fallback.height(), 2760);

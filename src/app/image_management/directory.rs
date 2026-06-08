@@ -46,6 +46,7 @@ impl ImageViewerApp {
         self.prefetched_tiles.clear();
         crate::tile_cache::PIXEL_CACHE.lock().clear();
         self.current_image_res = None;
+        self.raw_osd_by_index.clear();
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         // Match `navigate_to` / file-open semantics: prior folder's manual zoom and rotation

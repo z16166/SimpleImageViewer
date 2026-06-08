@@ -22,6 +22,7 @@ mod metadata;
 mod orchestrator;
 mod orientation;
 mod preview_caps;
+mod raw_osd;
 mod texture_cache;
 mod tiled_sources;
 mod types;
@@ -32,6 +33,7 @@ pub use orchestrator::ImageLoader;
 pub use preview_caps::{
     MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side, refresh_hq_preview_monitor_cap,
 };
+pub use raw_osd::{RawLoadOutput, RawOsdInfo};
 pub use texture_cache::TextureCache;
 pub use types::*;
 
