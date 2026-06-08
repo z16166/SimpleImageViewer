@@ -58,7 +58,7 @@ impl ImageViewerApp {
         )
     }
 
-    pub(crate) fn current_hdr_osd_tag(&self) -> Option<String> {
+    pub(crate) fn compute_hdr_osd_tag(&self) -> Option<String> {
         let render_path = self.current_hdr_render_path()?;
         let monitor_label = self
             .effective_hdr_monitor_selection()
@@ -74,10 +74,17 @@ impl ImageViewerApp {
         )
     }
 
-    pub(crate) fn current_raw_osd_tag(&self) -> Option<String> {
-        self.raw_osd_by_index
+    pub(crate) fn invalidate_osd(&mut self) {
+        let raw = self
+            .raw_osd_by_index
             .get(&self.current_index)
-            .and_then(|info| info.format_osd_line())
+            .and_then(|info| info.osd_line.clone());
+        let hdr = self.compute_hdr_osd_tag();
+        self.osd.set_supplemental_lines(raw, hdr);
+    }
+
+    pub(crate) fn reset_osd_image_cache(&mut self) {
+        self.osd.invalidate();
     }
 
     fn current_hdr_color_space(&self) -> Option<HdrColorSpace> {

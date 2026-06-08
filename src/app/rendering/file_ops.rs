@@ -208,6 +208,7 @@ impl ImageViewerApp {
         }
 
         // Force HUD update
-        self.osd.invalidate();
+        self.invalidate_osd();
+        self.reset_osd_image_cache();
     }
 }

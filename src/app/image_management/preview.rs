@@ -114,7 +114,7 @@ impl ImageViewerApp {
                 if let Some(osd) = self.raw_osd_by_index.get_mut(&update.index) {
                     osd.apply_hq_refine_preview(preview.width, preview.height);
                     if update.index == self.current_index {
-                        self.osd.invalidate();
+                        self.invalidate_osd();
                     }
                 }
                 // 1. Update current TileManager

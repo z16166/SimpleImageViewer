@@ -1172,6 +1172,8 @@ fn make_test_app() -> ImageViewerApp {
         scan_cancel: None,
         current_image_res: None,
         raw_osd_by_index: std::collections::HashMap::new(),
+        current_osd_file_name: String::new(),
+        cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
         prev_texture: None,
         prev_hdr_image: None,
         prev_transition_rect: None,

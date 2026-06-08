@@ -296,6 +296,7 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 app.refresh_ultra_hdr_decode_capacity(ui.ctx());
             }
             app.queue_save();
+            app.invalidate_osd();
             ui.ctx().request_repaint();
         }
     });

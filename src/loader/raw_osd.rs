@@ -48,6 +48,8 @@ pub struct RawOsdInfo {
     /// Embedded preview from `unpack_thumb`, when present.
     pub embedded_preview: Option<(u32, u32)>,
     pub render_pixels: RawRenderPixels,
+    /// Pre-formatted OSD line; built when this struct is created or updated.
+    pub(crate) osd_line: Option<String>,
 }
 
 pub(crate) struct RawOsdContext {
@@ -75,7 +77,9 @@ impl RawOsdContext {
                 width: preview.width,
                 height: preview.height,
             },
+            osd_line: None,
         }
+        .with_osd_line()
     }
 
     pub(crate) fn hq_bootstrap_dims(&self, width: u32, height: u32) -> RawOsdInfo {
@@ -83,7 +87,9 @@ impl RawOsdContext {
             sensor_size: self.sensor_size,
             embedded_preview: self.embedded_preview,
             render_pixels: RawRenderPixels::HqBootstrap { width, height },
+            osd_line: None,
         }
+        .with_osd_line()
     }
 
     pub(crate) fn full_develop(&self, width: u32, height: u32) -> RawOsdInfo {
@@ -91,7 +97,9 @@ impl RawOsdContext {
             sensor_size: self.sensor_size,
             embedded_preview: self.embedded_preview,
             render_pixels: RawRenderPixels::FullDevelop { width, height },
+            osd_line: None,
         }
+        .with_osd_line()
     }
 
     pub(crate) fn hq_develop(&self, width: u32, height: u32) -> RawOsdInfo {
@@ -99,11 +107,22 @@ impl RawOsdContext {
             sensor_size: self.sensor_size,
             embedded_preview: self.embedded_preview,
             render_pixels: RawRenderPixels::HqDevelop { width, height },
+            osd_line: None,
         }
+        .with_osd_line()
     }
 }
 
 impl RawOsdInfo {
+    pub(crate) fn with_osd_line(mut self) -> Self {
+        self.osd_line = Self::compose_osd_line(
+            self.sensor_size,
+            self.embedded_preview,
+            self.render_pixels,
+        );
+        self
+    }
+
     /// Update after async/sync HQ refinement replaces the bootstrap buffer.
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
         const TOL: u32 = 2;
@@ -113,19 +132,28 @@ impl RawOsdInfo {
         } else {
             self.render_pixels = RawRenderPixels::HqDevelop { width, height };
         }
+        self.osd_line = Self::compose_osd_line(
+            self.sensor_size,
+            self.embedded_preview,
+            self.render_pixels,
+        );
     }
 
-    pub fn format_osd_line(&self) -> Option<String> {
-        if self.sensor_size.0 == 0 || self.sensor_size.1 == 0 {
+    fn compose_osd_line(
+        sensor_size: (u32, u32),
+        embedded_preview: Option<(u32, u32)>,
+        render_pixels: RawRenderPixels,
+    ) -> Option<String> {
+        if sensor_size.0 == 0 || sensor_size.1 == 0 {
             return None;
         }
-        let embedded = match self.embedded_preview {
+        let embedded = match embedded_preview {
             Some((w, h)) => t!("raw.osd.embedded", size = format_dims(w, h)).to_string(),
             None => t!("raw.osd.no_embedded").to_string(),
         };
-        let (sw, sh) = self.sensor_size;
+        let (sw, sh) = sensor_size;
         let sensor = t!("raw.osd.sensor", size = format_dims(sw, sh)).to_string();
-        let render = match self.render_pixels {
+        let render = match render_pixels {
             RawRenderPixels::Embedded { width, height } => {
                 t!("raw.osd.render.embedded", size = format_dims(width, height)).to_string()
             }
@@ -152,6 +180,7 @@ impl RawOsdInfo {
                 width: 0,
                 height: 0,
             },
+            osd_line: None,
         }
     }
 }
@@ -173,6 +202,7 @@ mod tests {
                 width: 1920,
                 height: 1280,
             },
+            osd_line: None,
         };
         info.apply_hq_refine_preview(2048, 1365);
         assert_eq!(
@@ -193,6 +223,7 @@ mod tests {
                 width: 1600,
                 height: 1200,
             },
+            osd_line: None,
         };
         info.apply_hq_refine_preview(3684, 2760);
         assert_eq!(

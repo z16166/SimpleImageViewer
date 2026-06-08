@@ -832,7 +832,7 @@ impl ImageViewerApp {
             if osd.sensor_size.0 > 0 {
                 self.raw_osd_by_index.insert(idx, osd.clone());
                 if idx == self.current_index {
-                    self.osd.invalidate();
+                    self.invalidate_osd();
                 }
             }
         } else {

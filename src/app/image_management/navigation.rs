@@ -302,6 +302,7 @@ impl ImageViewerApp {
             &mut self.prefetched_tiles,
         );
         self.current_index = target_index;
+        self.refresh_current_osd_file_name();
         self.current_hdr_image = self
             .first_cached_hdr_still_for_index(self.current_index)
             .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
@@ -336,6 +337,8 @@ impl ImageViewerApp {
         self.error_message = None;
         self.is_font_error = false;
         ctx.request_repaint();
+        self.invalidate_osd();
+        self.reset_osd_image_cache();
         // Close any open EXIF/XMP modal — it shows data for the previous image
         if matches!(
             self.active_modal,

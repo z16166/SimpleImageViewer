@@ -210,13 +210,13 @@ impl ImageViewerApp {
 
                     let mut res_w = 0u32;
                     let mut res_h = 0u32;
-                    let mut mode_tag = t!("osd.mode.static").to_string();
+                    let mut osd_mode = crate::ui::osd::ImageOsdMode::Static;
 
                     if self.tiled_canvas_matches_current_index() {
                         if let Some(tm) = &self.tile_manager {
                             res_w = tm.full_width;
                             res_h = tm.full_height;
-                            mode_tag = t!("osd.mode.tiled").to_string();
+                            osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
                         }
                     } else if let Some((w, h)) = self.current_image_res {
                         res_w = w;
@@ -224,7 +224,7 @@ impl ImageViewerApp {
                         let threshold = crate::tile_cache::TILED_THRESHOLD
                             .load(std::sync::atomic::Ordering::Relaxed);
                         if w as u64 * h as u64 > threshold {
-                            mode_tag = t!("osd.mode.tiled").to_string();
+                            osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
                         }
                     }
 
@@ -234,31 +234,20 @@ impl ImageViewerApp {
                             .get(self.current_index)
                             .copied()
                             .unwrap_or(0);
-                        let current_state = crate::ui::osd::OsdState {
+                        let frame = crate::ui::osd::ImageOsdFrame {
                             index: self.current_index,
                             total: self.image_files.len(),
                             zoom_pct,
                             res: (res_w, res_h),
                             file_size_bytes,
-                            mode: mode_tag.to_string(),
-                            current_track: self.audio.get_current_track(),
-                            metadata: self.audio.get_metadata(),
-                            current_cue_track: self.audio.get_current_cue_track(),
-                            current_pos_ms: self.audio.get_pos_ms(),
-                            total_duration_ms: self.audio.get_duration_ms(),
-                            cue_markers: self.audio.get_cue_markers(),
-                            hdr_status: self.current_hdr_osd_tag(),
-                            raw_status: self.current_raw_osd_tag(),
+                            mode: osd_mode,
                         };
-                        let fname = self.image_files[self.current_index]
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-                        self.osd.render(
+                        let fname = self.current_osd_file_name.as_str();
+                        self.osd.render_image(
                             ui,
                             screen_rect,
-                            &current_state,
-                            &fname,
+                            frame,
+                            fname,
                             &self.cached_palette,
                             &self.last_save_error,
                         );
@@ -290,7 +279,7 @@ impl ImageViewerApp {
                                     -crate::constants::OSD_MARGIN,
                                 ),
                             Align2::RIGHT_BOTTOM,
-                            t!("hint.keyboard").to_string(),
+                            self.cached_keyboard_hint.as_str(),
                             FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE),
                             self.cached_palette.osd_hint,
                         );

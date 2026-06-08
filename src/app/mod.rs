@@ -517,6 +517,9 @@ pub struct ImageViewerApp {
     pub(crate) current_image_res: Option<(u32, u32)>,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_osd_by_index: std::collections::HashMap<usize, crate::loader::RawOsdInfo>,
+    /// File name shown in the image OSD for [`Self::current_index`].
+    pub(crate) current_osd_file_name: String,
+    pub(crate) cached_keyboard_hint: String,
 
     // Transition state
     pub(crate) prev_texture: Option<egui::TextureHandle>,
@@ -744,15 +747,24 @@ impl ImageViewerApp {
         )
     }
 
+    pub(crate) fn refresh_current_osd_file_name(&mut self) {
+        self.current_osd_file_name = self
+            .image_files
+            .get(self.current_index)
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+
     /// Bottom inset for the on-canvas hotkeys issue overlay so it sits above the OSD stack.
     pub(crate) fn hotkeys_issue_bottom_inset(&self) -> f32 {
         let mut inset = crate::constants::OSD_MARGIN;
         if self.settings.show_osd {
             inset += crate::constants::OSD_TEXT_SIZE;
-            if self.current_hdr_osd_tag().is_some() {
+            if self.osd.has_hdr_line() {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
-            if self.current_raw_osd_tag().is_some() {
+            if self.osd.has_raw_line() {
                 inset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
             }
             if self.last_save_error.is_some() {
@@ -1114,7 +1126,8 @@ impl eframe::App for ImageViewerApp {
         // Just restored from minimized state: force a clean UI refresh
         if self.last_minimized {
             self.last_minimized = false;
-            self.osd.invalidate(); // Invalidate HUD cache to force total redraw
+            self.reset_osd_image_cache();
+            self.invalidate_osd();
             ctx.request_repaint();
         }
 
