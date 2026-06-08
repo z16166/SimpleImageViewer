@@ -45,8 +45,6 @@ fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h:
     preview_px * 10 >= sensor_px * 8 || axis_cover
 }
 
-/// Embedded LibRaw thumbnails are display-referred SDR JPEGs. Skip them when HDR headroom is
-/// requested so Rule 1 can produce scene-linear float buffers (e.g. Nikon NEF ~3872×2592 thumbs).
 fn should_finalize_with_embedded_preview(
     preview: &DecodedImage,
     raw_w: u32,
@@ -231,7 +229,8 @@ pub(crate) fn load_raw(
                         hdr_target_capacity,
                         &hdr_tone_map,
                     )?;
-                    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                    let fallback =
+                        DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
                     return Ok(make_hdr_image_data(hdr, fallback));
                 }
             } else {

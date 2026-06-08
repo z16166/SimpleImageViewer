@@ -67,4 +67,5 @@ extern "C" {
         ip->imgdata.params.gamm[0] = power;
         ip->imgdata.params.gamm[1] = slope;
     }
+
 }

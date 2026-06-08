@@ -28,6 +28,35 @@ pub enum RawDisplayMode {
 }
 
 #[allow(dead_code)]
+pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
+    rgb16_bytes: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    bytes_per_pixel: usize,
+) -> Result<Vec<f32>, String> {
+    let tight_row_bytes = width as usize * bytes_per_pixel;
+    let mut rgba_f32 =
+        Vec::with_capacity(width as usize * height as usize * crate::constants::RGBA_CHANNELS);
+    for y in 0..height as usize {
+        let row_off = y * row_stride;
+        let row_end = row_off + tight_row_bytes;
+        let row = rgb16_bytes
+            .get(row_off..row_end)
+            .ok_or_else(|| rust_i18n::t!("error.buffer_size_mismatch").to_string())?;
+        for px in row.chunks_exact(bytes_per_pixel) {
+            if bytes_per_pixel < 6 {
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
+            }
+            rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
+            rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
+            rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
+            rgba_f32.push(1.0);
+        }
+    }
+    Ok(rgba_f32)
+}
+
 pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
     crate::hdr::types::HdrImageMetadata {
         transfer_function: crate::hdr::types::HdrTransferFunction::Linear,
@@ -170,15 +199,12 @@ impl RawProcessor {
         }
 
         unsafe {
-            // Set output parameters for better colors via custom shims
-            // (Using siv_ prefix to avoid symbol collisions with native LibRaw API)
             ffi::libraw_set_output_bps(self.data, 8);
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
-            ffi::siv_libraw_set_use_camera_matrix(self.data, 1); // Use hardware color matrix if available
-            ffi::libraw_set_no_auto_bright(self.data, 0); // 0 means ENABLE auto-bright
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
+            ffi::libraw_set_no_auto_bright(self.data, 0);
             ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
 
-            // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {
                 return Err(rust_i18n::t!("error.libraw_process", code = ret).to_string());
@@ -254,8 +280,8 @@ impl RawProcessor {
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
             ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
             ffi::siv_libraw_set_output_color(self.data, 1); // sRGB primaries, with linear gamma below.
-            ffi::libraw_set_no_auto_bright(self.data, 1);
-            ffi::siv_libraw_set_auto_bright_thr(self.data, 0.0);
+            ffi::libraw_set_no_auto_bright(self.data, 0);
+            ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
             ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
 
             let ret = ffi::libraw_dcraw_process(self.data);
@@ -292,22 +318,32 @@ impl RawProcessor {
             let height = img.height as u32;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
-            let expected_min =
-                width as usize * height as usize * crate::constants::RGB_CHANNELS * 2;
-            if data_ptr.is_null() || data_len < expected_min {
+            let colors = img.colors as usize;
+            let bytes_per_sample = (img.bits as usize) / 8;
+            let bytes_per_pixel = colors * bytes_per_sample;
+            let tight_row_bytes = width as usize * bytes_per_pixel;
+            let tight_size = tight_row_bytes * height as usize;
+            if data_ptr.is_null() || data_len < tight_size || bytes_per_pixel == 0 {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
-            let rgb16_bytes = std::slice::from_raw_parts(data_ptr, expected_min);
-            let mut rgba_f32 = Vec::with_capacity(
-                width as usize * height as usize * crate::constants::RGBA_CHANNELS,
-            );
-            for px in rgb16_bytes.chunks_exact(crate::constants::RGB_CHANNELS * 2) {
-                rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
-                rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
-                rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
-                rgba_f32.push(1.0);
+            let row_stride = if height > 0 {
+                data_len / height as usize
+            } else {
+                tight_row_bytes
+            };
+            if row_stride < tight_row_bytes {
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
+
+            let rgb16_bytes = std::slice::from_raw_parts(data_ptr, data_len);
+            let rgba_f32 = unpack_libraw_rgb16_rows_to_rgba_f32(
+                rgb16_bytes,
+                width,
+                height,
+                row_stride,
+                bytes_per_pixel,
+            )?;
 
             let metadata = raw_scene_linear_metadata();
             Ok(crate::hdr::types::HdrImageBuffer {
@@ -506,12 +542,30 @@ pub fn probe_libraw_can_open(path: &Path) -> bool {
 mod tests {
     use super::{
         RawDisplayMode, RawProcessor, is_raw_extension, probe_libraw_can_open,
-        raw_scene_linear_metadata,
+        raw_scene_linear_metadata, unpack_libraw_rgb16_rows_to_rgba_f32,
     };
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
     use std::path::Path;
 
     #[test]
+    fn unpack_libraw_rgb16_respects_row_stride_padding() {
+        // Two RGB pixels per row; LibRaw pads each row to 16 bytes (12 + 4).
+        let mut data = vec![0_u8; 32];
+        for row in 0..2 {
+            let base = row * 16;
+            data[base] = 0xFF;
+            data[base + 1] = 0xFF; // R
+            data[base + 8] = 0xFF;
+            data[base + 9] = 0xFF; // G of pixel 2
+        }
+        let rgba = unpack_libraw_rgb16_rows_to_rgba_f32(&data, 2, 2, 16, 6).expect("unpack");
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        assert!((rgba[0] - 1.0).abs() < 0.01); // row0 px0 R
+        assert!((rgba[5] - 1.0).abs() < 0.01); // row0 px1 G
+        assert!((rgba[8] - 1.0).abs() < 0.01); // row1 px0 R (after stride skip)
+        assert!((rgba[13] - 1.0).abs() < 0.01); // row1 px1 G
+    }
+
     fn raw_scene_linear_metadata_enters_hdr_pipeline_as_linear_scene_data() {
         let metadata = raw_scene_linear_metadata();
 

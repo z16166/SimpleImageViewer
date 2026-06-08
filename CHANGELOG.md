@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - **Large tiled image preloading**: Nearby oversized images can now preload lightweight tiled previews without being blocked by full-RGBA decode estimates, greatly reducing `loading...` flashes when browsing giant Hubble-style images.
 - **Transition smoothness**: Background texture uploads are deferred during active transition animations so page flip, ripple, and curtain transitions remain smooth.
 - **Crash handling**: Windows crash dialogs are more visible, and GPU out-of-memory reports from wgpu are logged instead of immediately taking the default fatal panic path.
+- **RAW scene-linear HDR**: LibRaw 16-bit output is unpacked row-by-row using each buffer's stride, so padded rows no longer corrupt HDR pixels. Tiled RAW refinement always applies the resolved orientation flip before `develop()`.
 
 ## [2.4.0] - 2026-06-06
 

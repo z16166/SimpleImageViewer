@@ -518,9 +518,8 @@ impl ImageLoader {
                         }
                     }
 
-                    if let Some(flip) = req.orientation_override {
-                        processor.set_user_flip(flip);
-                    }
+                    let user_flip = req.orientation_override.unwrap_or(0);
+                    processor.set_user_flip(user_flip);
 
                     match processor.develop() {
                         Ok(full_img) => {
