@@ -114,6 +114,8 @@ impl ImageViewerApp {
                     return;
                 }
 
+                self.prepare_display_frame(ui.ctx());
+
                 // ── Error message ─────────────────────────────────────────────
                 if let Some(ref err) = self.error_message {
                     if self.show_settings && self.is_font_error {

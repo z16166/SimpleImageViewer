@@ -1269,6 +1269,8 @@ impl eframe::App for ImageViewerApp {
 
         self.process_scan_results();
         self.process_music_scan_results();
+        self.check_auto_switch();
+        self.handle_keyboard(ctx);
         self.process_loaded_images(ctx);
         self.process_file_op_results();
 
@@ -1278,9 +1280,6 @@ impl eframe::App for ImageViewerApp {
             log::warn!("[UI] Audio stall detected by watchdog, triggering full restart");
             self.force_restart_audio();
         }
-
-        self.check_auto_switch();
-        self.handle_keyboard(ctx);
 
         // Sync currently playing track path and CUE track for persistence
         if self.settings.play_music {
