@@ -311,12 +311,7 @@ jobs:
       - name: Install pkg-config (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          choco install pkgconfiglite -y --no-progress
-          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
-          $exe = (Get-Command pkg-config -ErrorAction Stop).Source
-          Write-Host "Using PKG_CONFIG=$exe"
-          Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG=$exe"
+        run: ./scripts/ci/install-pkg-config-windows.ps1
 
       - name: Install vcpkg dependencies
         if: runner.os != 'Linux'
@@ -569,12 +564,7 @@ jobs:
 
       - name: Install pkg-config (Windows)
         shell: pwsh
-        run: |
-          choco install pkgconfiglite -y --no-progress
-          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
-          $exe = (Get-Command pkg-config -ErrorAction Stop).Source
-          Write-Host "Using PKG_CONFIG=$exe"
-          Add-Content -Path $env:GITHUB_ENV -Value "PKG_CONFIG=$exe"
+        run: ./scripts/ci/install-pkg-config-windows.ps1
 
       - name: Install vcpkg dependencies
         shell: bash
