@@ -1829,6 +1829,7 @@ pub(crate) fn apply_orientation_buffer_f32(
 }
 
 /// IFD0 tags for diagnostics (tests / support).
+#[cfg(test)]
 pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
     let mut ctx = Box::new(TiffMmapContext {

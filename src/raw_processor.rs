@@ -566,6 +566,7 @@ mod tests {
         assert!((rgba[13] - 1.0).abs() < 0.01); // row1 px1 G
     }
 
+    #[test]
     fn raw_scene_linear_metadata_enters_hdr_pipeline_as_linear_scene_data() {
         let metadata = raw_scene_linear_metadata();
 
