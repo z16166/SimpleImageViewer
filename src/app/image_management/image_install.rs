@@ -123,6 +123,19 @@ impl ImageViewerApp {
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
         }
+        if self
+            .image_files
+            .get(idx)
+            .is_some_and(|p| crate::preload_debug::path_is_raw(p))
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] install_static_sdr idx={} current={} size={}x{}",
+                idx,
+                idx == self.current_index,
+                decoded.width,
+                decoded.height
+            );
+        }
     }
 
     pub(super) fn install_static_hdr_image(
@@ -247,6 +260,7 @@ impl ImageViewerApp {
         );
         self.attach_initial_preview_if_needed(ctx, idx, &mut tm, sdr_preview);
 
+        let _hdr_plane_active = hdr_source.is_some();
         if idx == self.current_index {
             if let Some(hdr_source) = hdr_source {
                 self.current_hdr_tiled_image =
@@ -260,6 +274,19 @@ impl ImageViewerApp {
             source.request_refinement(idx, self.generation);
         } else {
             self.prefetched_tiles.insert(idx, tm);
+        }
+
+        if crate::preload_debug::path_is_raw(&self.image_files[idx]) {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] install_tiled idx={} gen={} current={} logical={}x{} hdr={} sdr_preview={}",
+                idx,
+                generation,
+                idx == self.current_index,
+                source.width(),
+                source.height(),
+                _hdr_plane_active,
+                sdr_preview.map(|p| format!("{}x{}", p.width, p.height)).unwrap_or_else(|| "none".into())
+            );
         }
     }
 

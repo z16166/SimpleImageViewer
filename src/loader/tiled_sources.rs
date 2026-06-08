@@ -183,6 +183,105 @@ impl TiledImageSource for MemoryImageSource {
 }
 
 // ---------------------------------------------------------------------------
+// RAW HDR tiled source (scene-linear buffer filled by async HQ demosaic)
+// ---------------------------------------------------------------------------
+
+pub(crate) struct RawHdrRefiningSource {
+    buffer: Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>,
+    logical_width: u32,
+    logical_height: u32,
+}
+
+impl RawHdrRefiningSource {
+    pub(crate) fn new(
+        buffer: Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>,
+        logical_width: u32,
+        logical_height: u32,
+    ) -> Self {
+        Self {
+            buffer,
+            logical_width,
+            logical_height,
+        }
+    }
+}
+
+impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
+    fn source_kind(&self) -> crate::hdr::tiled::HdrTiledSourceKind {
+        crate::hdr::tiled::HdrTiledSourceKind::InMemory
+    }
+
+    fn width(&self) -> u32 {
+        self.logical_width
+    }
+
+    fn height(&self) -> u32 {
+        self.logical_height
+    }
+
+    fn color_space(&self) -> crate::hdr::types::HdrColorSpace {
+        crate::hdr::types::HdrColorSpace::LinearSrgb
+    }
+
+    fn metadata(&self) -> crate::hdr::types::HdrImageMetadata {
+        crate::raw_processor::raw_scene_linear_metadata()
+    }
+
+    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<crate::hdr::types::HdrImageBuffer, String> {
+        let guard = self.buffer.read();
+        let image = guard
+            .as_ref()
+            .ok_or_else(|| "RAW HDR buffer not yet refined".to_string())?;
+        crate::hdr::tiled::downsample_hdr_image_nearest(image, max_w, max_h)
+    }
+
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
+        let preview = self.generate_hdr_preview(max_w, max_h)?;
+        let pixels = crate::hdr::decode::hdr_to_sdr_rgba8(&preview, 0.0)?;
+        let image = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+            preview.width,
+            preview.height,
+            pixels,
+        )
+        .ok_or_else(|| "Failed to create RAW HDR SDR preview buffer".to_string())?;
+        Ok((image.width(), image.height(), image.into_raw()))
+    }
+
+    fn extract_tile_rgba32f_arc(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Arc<crate::hdr::tiled::HdrTileBuffer>, String> {
+        let guard = self.buffer.read();
+        let image = guard
+            .as_ref()
+            .ok_or_else(|| "RAW HDR buffer not yet refined".to_string())?;
+        crate::hdr::tiled::validate_tile_bounds(image.width, image.height, x, y, width, height)?;
+
+        let mut tile = Vec::with_capacity((width as usize) * (height as usize) * 4);
+        let source_stride = image.width as usize * 4;
+        let row_len = width as usize * 4;
+        let start_x = x as usize * 4;
+
+        for row in y..(y + height) {
+            let start = row as usize * source_stride + start_x;
+            let end = start + row_len;
+            tile.extend_from_slice(&image.rgba_f32[start..end]);
+        }
+
+        Ok(Arc::new(crate::hdr::tiled::HdrTileBuffer::new_with_metadata(
+            width,
+            height,
+            image.color_space,
+            image.metadata.clone(),
+            Arc::new(tile),
+        )))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RAW Image Support (LibRaw)
 // ---------------------------------------------------------------------------
 
@@ -191,15 +290,16 @@ pub(crate) struct RawImageSource {
     /// True RAW sensor dimensions (not thumbnail dimensions).
     width: u32,
     height: u32,
-    /// Initially holds the system preview at its ORIGINAL resolution (NOT upscaled).
-    /// The refinement worker replaces this with the full-res LibRaw demosaiced image.
-    /// extract_tile() dynamically maps coordinates between RAW space and preview space.
+    /// Initially holds the embedded preview at its ORIGINAL resolution (NOT upscaled).
+    /// After HQ refinement, holds a demosaiced preview capped at [`hq_preview_max_side`].
     developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
-    /// Channel to send refinement requests. Kept here so `request_refinement()` can
-    /// be called later (only when the image becomes active) instead of eagerly in the
-    /// constructor, preventing prefetched images from spawning ~400MB develop tasks.
     refine_tx: Sender<RefinementRequest>,
     orientation_override: i32,
+    /// When false, [`Self::request_refinement`] is a no-op (performance mode uses embedded only).
+    needs_refinement: bool,
+    hdr_target_capacity: f32,
+    hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
+    hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
 }
 
 impl RawImageSource {
@@ -210,6 +310,10 @@ impl RawImageSource {
         raw_height: u32,
         refine_tx: Sender<RefinementRequest>,
         orientation_override: i32,
+        needs_refinement: bool,
+        hdr_target_capacity: f32,
+        hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
+        hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
     ) -> Result<Self, String> {
         // IMPORTANT: Store preview at its ORIGINAL resolution — NO upscaling!
         // Previously this called resize_exact(raw_width, raw_height) which allocated
@@ -239,6 +343,10 @@ impl RawImageSource {
             developed_image,
             refine_tx,
             orientation_override,
+            needs_refinement,
+            hdr_target_capacity,
+            hdr_tone_map,
+            hdr_developed_image,
         })
     }
 }
@@ -289,7 +397,7 @@ impl TiledImageSource for RawImageSource {
                     .min(ih.saturating_sub(py))
                     .max(1);
                 let crop = img.crop_imm(px, py, pw, ph);
-                let resized = crop.resize_exact(w, h, image::imageops::FilterType::Triangle);
+                let resized = crop.resize_exact(w, h, image::imageops::FilterType::Lanczos3);
                 Arc::new(resized.into_rgba8().into_raw())
             }
         } else {
@@ -326,8 +434,28 @@ impl TiledImageSource for RawImageSource {
     }
 
     fn request_refinement(&self, index: usize, generation: u64) {
-        log::info!(
-            "[RawImageSource] Triggering refinement for index={}, gen={}",
+        if !self.needs_refinement {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] refine_skip idx={} gen={} reason=needs_refinement_false path={}",
+                index,
+                generation,
+                self.path.display()
+            );
+            log::debug!(
+                "[RawImageSource] Skipping refinement for {:?} (performance mode / embedded-only)",
+                self.path.file_name().unwrap_or_default()
+            );
+            return;
+        }
+        crate::preload_debug!(
+            "[PreloadDebug][RAW] refine_queue idx={} gen={} hdr_cap={:.3} path={}",
+            index,
+            generation,
+            self.hdr_target_capacity,
+            self.path.display()
+        );
+        log::debug!(
+            "[RawImageSource] Triggering HQ refinement for index={}, gen={}",
             index,
             generation
         );
@@ -337,7 +465,16 @@ impl TiledImageSource for RawImageSource {
             generation,
             source_key: source_key_for_path(&self.path),
             orientation_override: Some(self.orientation_override),
+            logical_width: self.width,
+            logical_height: self.height,
             developed_image: self.developed_image.clone(),
+            hdr_developed_image: self.hdr_developed_image.clone(),
+            hdr_target_capacity: self.hdr_target_capacity,
+            hdr_tone_map: self.hdr_tone_map,
         });
+    }
+
+    fn defers_loader_hq_preview(&self) -> bool {
+        self.needs_refinement
     }
 }

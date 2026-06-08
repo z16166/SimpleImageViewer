@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.4.1"
+version = "2.4.2"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -89,7 +89,8 @@ legacy_win7 = ["wgpu/gles", "wgpu/angle"]
 tile-debug = []
 # Detailed startup timing logs for local diagnostics. Keep disabled for consumer builds.
 startup-timing = []
-# Detailed preload/upload scheduling diagnostics for local performance investigations.
+# Detailed preload/upload scheduling and RAW load-path diagnostics.
+# Build with this feature, then run with SIV_LOG_LEVEL=info (optional SIV_LOG_FILE=1).
 preload-debug = []
 # Official OpenEXRCore C backend for EXR decoding.
 openexr-core = []

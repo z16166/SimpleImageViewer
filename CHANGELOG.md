@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.2] - 2026-06-08
+
+### Changed
+- **RAW preview setting clarity**: Renamed and expanded the **High-Quality RAW preview** option in Settings (all languages) so it clearly explains performance mode (embedded previews only) versus demosaic mode (~2048/4096 on HDR-capable displays).
+
+### Fixed
+- **RAW quality mode behavior**: The RAW preview quality toggle now controls loading as intended—performance mode keeps camera embedded previews; high-quality mode demosaics when the embedded preview is too small.
+- **RAW on HDR displays**: High-quality RAW files on HDR monitors now route through the HDR rendering pipeline after demosaic completes, instead of staying on the SDR path.
+- **RAW refinement sharpness**: Fixed high-quality RAW previews that could look sharp at first and then turn softer after refinement finished, especially on common ~10MP cameras.
+- **Small embedded RAW thumbnails**: Cameras that ship tiny embedded previews (for example some Epson and Fuji RAW files) no longer skip demosaic incorrectly in high-quality mode.
+- **RAW setting refresh**: Switching RAW preview quality now clears stale preloaded neighbors so arrow-key browsing shows the correct preview type immediately.
+
 ## [2.4.1] - 2026-06-08
 
 ### Added

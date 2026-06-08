@@ -32,18 +32,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "preload-debug")]
-macro_rules! preload_debug {
-    ($($arg:tt)*) => {
-        log::info!($($arg)*);
-    };
-}
-
-#[cfg(not(feature = "preload-debug"))]
-macro_rules! preload_debug {
-    ($($arg:tt)*) => {};
-}
-
 mod cache_eviction;
 mod directory;
 mod hdr_state;
@@ -52,6 +40,7 @@ mod loader_results;
 mod navigation;
 mod preload;
 mod preview;
+
 fn has_startup_target(
     initial_image: Option<&PathBuf>,
     resume_last_image: bool,

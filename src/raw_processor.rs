@@ -162,14 +162,40 @@ impl RawProcessor {
         unsafe { ffi::siv_libraw_set_user_flip(self.data, flip) }
     }
 
-    #[allow(dead_code)]
+    /// CFA / sensor width from LibRaw (`raw_width`). May exceed [`Self::width`] when margins exist.
     pub fn raw_width(&self) -> u32 {
         unsafe { ffi::libraw_get_raw_width(self.data) as u32 }
     }
 
-    #[allow(dead_code)]
+    /// CFA / sensor height from LibRaw (`raw_height`). May exceed [`Self::height`] when margins exist.
     pub fn raw_height(&self) -> u32 {
         unsafe { ffi::libraw_get_raw_height(self.data) as u32 }
+    }
+
+    /// Best-effort developed output dimensions for tiling and HQ size checks.
+    ///
+    /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
+    /// until demosaic; prefer CFA bounds when output size clearly matches the thumb only.
+    pub fn developed_output_dimensions(&self, embedded: Option<&crate::loader::DecodedImage>) -> (u32, u32) {
+        let iw = self.width();
+        let ih = self.height();
+        let rw = self.raw_width();
+        let rh = self.raw_height();
+
+        if let Some(p) = embedded {
+            if p.width == iw
+                && p.height == ih
+                && ((rw > iw && rw > 0) || (rh > ih && rh > 0))
+            {
+                return (rw.max(iw), rh.max(ih));
+            }
+        }
+
+        if iw > 0 && ih > 0 {
+            (iw, ih)
+        } else {
+            (rw, rh)
+        }
     }
 
     pub fn unpack(&mut self) -> Result<(), String> {

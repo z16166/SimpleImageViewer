@@ -103,34 +103,23 @@ impl ImageViewerApp {
             return;
         }
 
-        // Only trigger reload if the current file is a RAW format, as the setting only affects RAW.
-        let is_raw = self
-            .image_files
-            .get(self.current_index)
-            .and_then(|p| p.extension())
-            .and_then(|e| e.to_str())
-            .map(|ext| crate::raw_processor::is_raw_extension(ext))
-            .unwrap_or(false);
-
-        if !is_raw {
+        let has_any_raw = self.image_files.iter().any(|path| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| crate::raw_processor::is_raw_extension(ext))
+        });
+        if !has_any_raw {
             return;
         }
 
-        self.generation = self.generation.wrapping_add(1);
-        self.loader.set_generation(self.generation);
+        self.invalidate_all_raw_image_caches();
 
-        // Cancel all ongoing background tasks (like heavy RAW development)
-        // to immediately free up resources for the new loading request.
-        self.loader.cancel_all();
-
-        // Clear current image from all relevant caches to force a fresh reload from disk
-        self.texture_cache.remove(self.current_index);
-        self.remove_hdr_image_index(self.current_index);
-        self.prefetched_tiles.remove(&self.current_index);
-        self.tile_manager = None;
-        self.current_image_res = None;
-        self.animation = None;
-        self.prev_transition_rect = None;
+        crate::preload_debug!(
+            "[PreloadDebug][RAW] setting_reload raw_hq={} current_idx={} gen={}",
+            self.settings.raw_high_quality,
+            self.current_index,
+            self.generation
+        );
 
         let path = self.image_files[self.current_index].clone();
         self.loader.request_load(
@@ -140,8 +129,53 @@ impl ImageViewerApp {
             self.settings.raw_high_quality,
         );
 
-        // Re-schedule preloads to update nearby images with the new setting as well
+        // Re-schedule preloads so nearby RAW files pick up the new mode too.
         self.schedule_preloads(true);
+    }
+
+    /// Drop every cached/prefetched RAW decode so a [`Settings::raw_high_quality`] toggle cannot
+    /// leave neighbor images stuck in the previous performance/HQ pipeline.
+    fn invalidate_all_raw_image_caches(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.loader.set_generation(self.generation);
+        self.loader.cancel_all();
+
+        let raw_indices: Vec<usize> = self
+            .image_files
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, path)| {
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .filter(|ext| crate::raw_processor::is_raw_extension(ext))
+                    .map(|_| idx)
+            })
+            .collect();
+
+        let _raw_index_count = raw_indices.len();
+        for idx in raw_indices {
+            self.texture_cache.remove(idx);
+            self.remove_hdr_image_index(idx);
+            self.prefetched_tiles.remove(&idx);
+            self.deferred_sdr_uploads.remove(&idx);
+            crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+        }
+
+        self.tile_manager = None;
+        self.current_image_res = None;
+        self.animation = None;
+        self.prev_transition_rect = None;
+        self.prev_texture = None;
+        self.prev_hdr_image = None;
+        self.transition_start = None;
+        self.pending_transition_target = None;
+        self.prefetch_prev_generation = None;
+
+        crate::preload_debug!(
+            "[PreloadDebug][RAW] invalidate_all_raw_caches cleared {} raw indices gen={}",
+            _raw_index_count,
+            self.generation
+        );
     }
 
     pub(crate) fn navigate_to(&mut self, new_index: usize, ctx: &egui::Context) {
@@ -354,6 +388,15 @@ impl ImageViewerApp {
 
             self.tile_manager = Some(tm);
 
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] navigate prefetch_tile_hit idx={} gen={} raw_hq={} logical={}",
+                self.current_index,
+                self.generation,
+                self.settings.raw_high_quality,
+                self.current_image_res
+                    .map(|(w, h)| format!("{w}x{h}"))
+                    .unwrap_or_default()
+            );
             log::debug!(
                 "[App] Cache Hit: Restored prefetched TileManager for index {} (prefetch_gen={} → current_gen={})",
                 self.current_index,
@@ -361,6 +404,13 @@ impl ImageViewerApp {
                 self.generation
             );
         } else if self.has_loaded_asset(self.current_index) {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
+                self.current_index,
+                self.settings.raw_high_quality,
+                self.texture_cache.is_preview_placeholder(self.current_index),
+                self.tile_manager.is_some()
+            );
             // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
             self.prefetch_prev_generation = None;
             self.generation = self.generation.wrapping_add(1);
@@ -398,6 +448,11 @@ impl ImageViewerApp {
                 self.current_image_res = Some((decoded.width, decoded.height));
             }
         } else {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
+                self.current_index,
+                self.settings.raw_high_quality
+            );
             // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
             // so handle_preview_update doesn't erroneously accept stale old-gen results.
             self.prefetch_prev_generation = None;
