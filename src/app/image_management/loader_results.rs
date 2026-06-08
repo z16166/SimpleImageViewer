@@ -828,6 +828,17 @@ impl ImageViewerApp {
             return None;
         }
 
+        if let Some(osd) = &load_result.raw_osd {
+            if osd.sensor_size.0 > 0 {
+                self.raw_osd_by_index.insert(idx, osd.clone());
+                if idx == self.current_index {
+                    self.invalidate_osd();
+                }
+            }
+        } else {
+            self.raw_osd_by_index.remove(&idx);
+        }
+
         match install_plan {
             ImageInstallPlan::StaticSdr { decoded } => {
                 self.install_static_sdr_image(idx, decoded, ctx);

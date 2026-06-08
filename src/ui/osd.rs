@@ -21,44 +21,99 @@ use eframe::egui::{
 use rust_i18n::t;
 use std::time::Instant;
 
-/// Match `hint.keyboard` in `rendering/mod.rs` (FontId::proportional(13.0)).
-const OSD_KEYBOARD_HINT_FONT_PX: f32 = 13.0;
+const OSD_FONT: FontId = FontId::proportional(crate::constants::OSD_TEXT_SIZE);
+const OSD_ERROR_FONT: FontId = FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE);
+const LOADING_HINT_FONT: FontId = FontId::proportional(crate::constants::LOADING_HINT_TEXT_SIZE);
 
-fn text_width(ui: &egui::Ui, text: &str, font_id: FontId) -> f32 {
+/// Zoom shown on the OSD is bucketed so wheel-zoom does not rebuild strings every frame.
+const OSD_ZOOM_BUCKET_PCT: u32 = 5;
+
+pub fn quantize_osd_zoom_pct(zoom_pct: u32) -> u32 {
+    if zoom_pct == 0 {
+        return 0;
+    }
+    ((zoom_pct + OSD_ZOOM_BUCKET_PCT / 2) / OSD_ZOOM_BUCKET_PCT * OSD_ZOOM_BUCKET_PCT)
+        .max(OSD_ZOOM_BUCKET_PCT)
+}
+
+fn layout_width(ui: &egui::Ui, text: &str) -> f32 {
     ui.painter()
-        .layout_no_wrap(text.to_owned(), font_id, Color32::PLACEHOLDER)
+        .layout_no_wrap(text.to_owned(), OSD_FONT, Color32::PLACEHOLDER)
         .size()
         .x
 }
 
-fn truncate_to_width(ui: &egui::Ui, text: &str, font_id: FontId, max_width: f32) -> String {
-    let ellipsis = "…";
+fn truncate_into(
+    ui: &egui::Ui,
+    dst: &mut String,
+    src: &str,
+    max_width: f32,
+    scratch: &mut String,
+) {
+    dst.clear();
     if max_width <= 0.0 {
-        return ellipsis.to_string();
+        dst.push('…');
+        return;
     }
-    if text_width(ui, text, font_id.clone()) <= max_width {
-        return text.to_string();
+    if layout_width(ui, src) <= max_width {
+        dst.push_str(src);
+        return;
     }
-    let n = text.chars().count();
+    const ELLIPSIS: char = '…';
+    let n = src.chars().count();
     let mut lo = 0usize;
     let mut hi = n;
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
-        let prefix: String = text.chars().take(mid).collect();
-        let candidate = format!("{prefix}{ellipsis}");
-        if text_width(ui, &candidate, font_id.clone()) <= max_width {
+        scratch.clear();
+        for ch in src.chars().take(mid) {
+            scratch.push(ch);
+        }
+        scratch.push(ELLIPSIS);
+        if layout_width(ui, scratch) <= max_width {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
     if lo == 0 {
-        return ellipsis.to_string();
+        dst.push(ELLIPSIS);
+        return;
     }
-    format!("{}{ellipsis}", text.chars().take(lo).collect::<String>())
+    for ch in src.chars().take(lo) {
+        dst.push(ch);
+    }
+    dst.push(ELLIPSIS);
 }
 
-/// Parameters that affect the OSD status text.
+/// Static vs tiled path tag for the main image OSD line.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ImageOsdMode {
+    Static,
+    Tiled,
+}
+
+/// Per-frame image OSD inputs (Copy — no heap allocs on the hot path).
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct ImageOsdFrame {
+    pub index: usize,
+    pub total: usize,
+    pub zoom_pct: u32,
+    pub res: (u32, u32),
+    pub file_size_bytes: u64,
+    pub mode: ImageOsdMode,
+}
+
+impl ImageOsdFrame {
+    pub fn cache_key(self) -> Self {
+        Self {
+            zoom_pct: quantize_osd_zoom_pct(self.zoom_pct),
+            ..self
+        }
+    }
+}
+
+/// Parameters that affect the music HUD.
 #[derive(PartialEq, Clone)]
 pub struct OsdState {
     pub index: usize,
@@ -73,109 +128,236 @@ pub struct OsdState {
     pub current_pos_ms: u64,
     pub total_duration_ms: u64,
     pub cue_markers: Vec<u64>,
-    pub hdr_status: Option<String>,
+}
+
+struct LayoutLines {
+    width_px: u32,
+    main: String,
+    raw: String,
+    hdr: String,
 }
 
 pub struct OsdRenderer {
-    cached_hud: Option<String>,
-    cached_hdr_line: Option<String>,
-    last_state: Option<OsdState>,
+    cached_hud: String,
+    cached_hdr_line_display: String,
+    cached_raw_line: String,
+    has_raw_line: bool,
+    has_hdr_line: bool,
+    layout: Option<LayoutLines>,
+    layout_content_stamp: u64,
+    layout_built_stamp: u64,
+    measure_scratch: String,
+    last_hud_key: Option<ImageOsdFrame>,
+    last_hud_file_name: String,
+    cached_loading_hint: String,
+    cached_save_error: String,
+    last_save_error_message: String,
+    last_music_state: Option<OsdState>,
 }
 
 impl OsdRenderer {
     pub fn new() -> Self {
         Self {
-            cached_hud: None,
-            cached_hdr_line: None,
-            last_state: None,
+            cached_hud: String::new(),
+            cached_hdr_line_display: String::new(),
+            cached_raw_line: String::new(),
+            has_raw_line: false,
+            has_hdr_line: false,
+            layout: None,
+            layout_content_stamp: 0,
+            layout_built_stamp: 0,
+            measure_scratch: String::new(),
+            last_hud_key: None,
+            last_hud_file_name: String::new(),
+            cached_loading_hint: t!("status.loading").to_string(),
+            cached_save_error: String::new(),
+            last_save_error_message: String::new(),
+            last_music_state: None,
         }
     }
 
-    pub fn invalidate(&mut self) {
-        self.last_state = None;
+    pub fn has_raw_line(&self) -> bool {
+        self.has_raw_line
     }
 
-    pub fn render(
+    pub fn has_hdr_line(&self) -> bool {
+        self.has_hdr_line
+    }
+
+    fn bump_content(&mut self) {
+        self.layout_content_stamp = self.layout_content_stamp.wrapping_add(1);
+    }
+
+    /// RAW/HDR supplemental lines — updated when loader or HDR settings change, not each frame.
+    pub fn set_supplemental_lines(&mut self, raw: Option<String>, hdr: Option<String>) {
+        self.has_raw_line = raw.is_some();
+        self.cached_raw_line = raw.unwrap_or_default();
+        self.has_hdr_line = hdr.is_some();
+        self.cached_hdr_line_display.clear();
+        if let Some(hdr) = hdr {
+            self.cached_hdr_line_display.push('[');
+            self.cached_hdr_line_display.push_str(&hdr);
+            self.cached_hdr_line_display.push(']');
+        }
+        self.bump_content();
+    }
+
+    pub fn invalidate(&mut self) {
+        self.last_hud_key = None;
+        self.last_hud_file_name.clear();
+        self.last_music_state = None;
+        self.bump_content();
+    }
+
+    fn rebuild_hud_if_needed(&mut self, frame: ImageOsdFrame, file_name: &str) {
+        let key = frame.cache_key();
+        if self.last_hud_key == Some(key) && self.last_hud_file_name == file_name {
+            return;
+        }
+        let mode_label = match key.mode {
+            ImageOsdMode::Static => t!("osd.mode.static"),
+            ImageOsdMode::Tiled => t!("osd.mode.tiled"),
+        };
+        let file_size_text = format_file_size(key.file_size_bytes);
+        self.cached_hud.clear();
+        use std::fmt::Write as _;
+        let _ = write!(
+            self.cached_hud,
+            "{} / {}    {}    {}    {}%    {}×{}    [{}]",
+            key.index + 1,
+            key.total,
+            file_name,
+            file_size_text,
+            key.zoom_pct,
+            key.res.0,
+            key.res.1,
+            mode_label,
+        );
+        self.last_hud_key = Some(key);
+        self.last_hud_file_name.clear();
+        self.last_hud_file_name.push_str(file_name);
+        self.bump_content();
+    }
+
+    fn ensure_layout(&mut self, ui: &egui::Ui, max_width: f32) {
+        let width_px = max_width.max(0.0) as u32;
+        if self.layout_built_stamp == self.layout_content_stamp
+            && self.layout.as_ref().is_some_and(|l| l.width_px == width_px)
+        {
+            return;
+        }
+
+        let mut lines = LayoutLines {
+            width_px,
+            main: String::new(),
+            raw: String::new(),
+            hdr: String::new(),
+        };
+        truncate_into(ui, &mut lines.main, &self.cached_hud, max_width, &mut self.measure_scratch);
+        if self.has_raw_line {
+            truncate_into(
+                ui,
+                &mut lines.raw,
+                &self.cached_raw_line,
+                max_width,
+                &mut self.measure_scratch,
+            );
+        }
+        if self.has_hdr_line {
+            truncate_into(
+                ui,
+                &mut lines.hdr,
+                &self.cached_hdr_line_display,
+                max_width,
+                &mut self.measure_scratch,
+            );
+        }
+        self.layout = Some(lines);
+        self.layout_built_stamp = self.layout_content_stamp;
+    }
+
+    fn sync_save_error(&mut self, save_error: &Option<(String, Instant)>) {
+        let message = save_error.as_ref().map(|(msg, _)| msg.as_str()).unwrap_or("");
+        if message == self.last_save_error_message {
+            return;
+        }
+        self.last_save_error_message.clear();
+        self.last_save_error_message.push_str(message);
+        self.cached_save_error.clear();
+        if !message.is_empty() {
+            self.cached_save_error = t!("error.settings_save_failed", error = message).to_string();
+        }
+    }
+
+    pub fn render_image(
         &mut self,
         ui: &mut egui::Ui,
         screen_rect: egui::Rect,
-        state: &OsdState,
+        frame: ImageOsdFrame,
         file_name: &str,
         palette: &ThemePalette,
         save_error: &Option<(String, Instant)>,
     ) {
-        if self.last_state.as_ref() != Some(state) {
-            let file_size_text = format_file_size(state.file_size_bytes);
-            let main = format!(
-                "{} / {}    {}    {}    {}%    {}×{}    [{}]",
-                state.index + 1,
-                state.total,
-                file_name,
-                file_size_text,
-                state.zoom_pct,
-                state.res.0,
-                state.res.1,
-                state.mode,
-            );
-            let hdr = state.hdr_status.clone();
-            self.cached_hud = Some(main);
-            self.cached_hdr_line = hdr;
-            self.last_state = Some(state.clone());
-        }
+        self.rebuild_hud_if_needed(frame, file_name);
+        self.sync_save_error(save_error);
 
-        let font = FontId::proportional(crate::constants::OSD_TEXT_SIZE);
-        let hint_font = FontId::proportional(OSD_KEYBOARD_HINT_FONT_PX);
-        let hint_w = text_width(ui, &t!("hint.keyboard").to_string(), hint_font);
-        let max_w = (screen_rect.width()
-            - crate::constants::OSD_MARGIN * 2.0
-            - hint_w
-            - crate::constants::OSD_HINT_GAP)
-            .max(64.0);
+        let max_w = (screen_rect.width() - crate::constants::OSD_MARGIN * 2.0).max(64.0);
+        self.ensure_layout(ui, max_w);
 
-        if let Some(main) = &self.cached_hud {
-            let main_trunc = truncate_to_width(ui, main, font.clone(), max_w);
-            let base_pos = screen_rect.left_bottom()
-                + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
+        let Some(layout) = self.layout.as_ref() else {
+            return;
+        };
+
+        let base_pos = screen_rect.left_bottom()
+            + Vec2::new(crate::constants::OSD_MARGIN, -crate::constants::OSD_MARGIN);
+        ui.painter().text(
+            base_pos,
+            Align2::LEFT_BOTTOM,
+            layout.main.as_str(),
+            OSD_FONT,
+            palette.osd_text,
+        );
+
+        let mut line_offset = crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
+
+        if self.has_raw_line {
+            let raw_pos = base_pos + Vec2::new(0.0, -line_offset);
             ui.painter().text(
-                base_pos,
+                raw_pos,
                 Align2::LEFT_BOTTOM,
-                main_trunc,
-                font.clone(),
+                layout.raw.as_str(),
+                OSD_FONT,
                 palette.osd_text,
             );
-
-            if let Some(hdr) = &self.cached_hdr_line {
-                let hdr_line = format!("[{hdr}]");
-                let hdr_trunc = truncate_to_width(ui, &hdr_line, font.clone(), max_w);
-                let hdr_pos = base_pos
-                    + Vec2::new(
-                        0.0,
-                        -(crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP),
-                    );
-                ui.painter().text(
-                    hdr_pos,
-                    Align2::LEFT_BOTTOM,
-                    hdr_trunc,
-                    font,
-                    palette.osd_text,
-                );
-            }
+            line_offset += crate::constants::OSD_TEXT_SIZE + crate::constants::OSD_HDR_LINE_GAP;
         }
 
-        // Display persistence error if active.
-        if let Some((err, _)) = save_error {
-            let err_offset_y = if self.cached_hdr_line.is_some() {
-                crate::constants::OSD_ERROR_OFFSET + crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE
-            } else {
-                crate::constants::OSD_ERROR_OFFSET
-            };
+        if self.has_hdr_line {
+            let hdr_pos = base_pos + Vec2::new(0.0, -line_offset);
+            ui.painter().text(
+                hdr_pos,
+                Align2::LEFT_BOTTOM,
+                layout.hdr.as_str(),
+                OSD_FONT,
+                palette.osd_text,
+            );
+        }
+
+        if !self.cached_save_error.is_empty() {
+            let mut err_offset_y = crate::constants::OSD_ERROR_OFFSET;
+            if self.has_raw_line {
+                err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
+            }
+            if self.has_hdr_line {
+                err_offset_y += crate::constants::OSD_ERROR_EXTRA_WHEN_HDR_LINE;
+            }
             let err_pos =
                 screen_rect.left_bottom() + Vec2::new(crate::constants::OSD_MARGIN, -err_offset_y);
             ui.painter().text(
                 err_pos,
                 Align2::LEFT_BOTTOM,
-                t!("error.settings_save_failed", error = err).to_string(),
-                FontId::proportional(crate::constants::OSD_ERROR_TEXT_SIZE),
+                self.cached_save_error.as_str(),
+                OSD_ERROR_FONT,
                 Color32::from_rgb(255, 100, 100),
             );
         }
@@ -193,11 +375,8 @@ impl OsdRenderer {
             return egui::Rect::NOTHING;
         }
 
-        // Use the rect provided by the parent Area/UI, NOT a hard-coded screen position.
-        // This allows the HUD to be repositioned by dragging the Area.
         let hud_rect = ui.max_rect();
 
-        // Premium glassmorphism background
         ui.painter().add(egui::Shape::rect_filled(
             hud_rect,
             CornerRadius::same(8),
@@ -227,8 +406,6 @@ impl OsdRenderer {
                         text.to_string()
                     };
 
-                    // Force high contrast: use accent2 but ensure it's readable against the dark hud background.
-                    // In light themes, accent2 might be dark, so we brighten it or use white.
                     ui.label(
                         RichText::new(format!("♪ {}", short_text))
                             .color(
@@ -236,7 +413,7 @@ impl OsdRenderer {
                                     .accent2
                                     .linear_multiply(crate::constants::MUSIC_HUD_CONTRAST_BOOST)
                                     .to_opaque(),
-                            ) // Boost contrast for dark HUD
+                            )
                             .small()
                             .strong(),
                     );
@@ -244,7 +421,6 @@ impl OsdRenderer {
 
                 ui.add_space(2.0);
 
-                // Progress Slider row
                 ui.horizontal(|ui| {
                     let mut pos = state.current_pos_ms as f32 / 1000.0;
                     let total = state.total_duration_ms as f32 / 1000.0;
@@ -262,7 +438,6 @@ impl OsdRenderer {
                             .trailing_fill(true),
                     );
 
-                    // Draw CUE Markers on the slider track
                     if state.total_duration_ms > 0 && !state.cue_markers.is_empty() {
                         let painter = ui.painter();
                         let slider_rect = resp.rect;
@@ -312,8 +487,8 @@ impl OsdRenderer {
         ui.painter().text(
             screen_rect.center() - Vec2::new(0.0, 20.0),
             Align2::CENTER_BOTTOM,
-            t!("status.loading").to_string(),
-            FontId::proportional(crate::constants::LOADING_HINT_TEXT_SIZE),
+            self.cached_loading_hint.as_str(),
+            LOADING_HINT_FONT,
             palette.text_muted,
         );
     }
@@ -336,7 +511,7 @@ pub fn format_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_file_size;
+    use super::{format_file_size, quantize_osd_zoom_pct};
 
     #[test]
     fn formats_file_sizes_with_binary_units() {
@@ -344,5 +519,13 @@ mod tests {
         assert_eq!(format_file_size(1536), "1.5 KB");
         assert_eq!(format_file_size(2 * 1024 * 1024), "2.0 MB");
         assert_eq!(format_file_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    #[test]
+    fn quantize_osd_zoom_pct_buckets_to_five_percent() {
+        assert_eq!(quantize_osd_zoom_pct(0), 0);
+        assert_eq!(quantize_osd_zoom_pct(102), 100);
+        assert_eq!(quantize_osd_zoom_pct(103), 105);
+        assert_eq!(quantize_osd_zoom_pct(153), 155);
     }
 }

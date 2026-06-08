@@ -93,6 +93,7 @@ fn load_result_exposes_unified_preview_bundle_without_compat_fields() {
         ultra_hdr_capacity_sensitive: false,
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
+        raw_osd: None,
     };
 
     assert_eq!(result.preview_bundle.stage(), PreviewStage::Initial);

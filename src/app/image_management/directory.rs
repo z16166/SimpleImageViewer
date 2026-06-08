@@ -46,6 +46,9 @@ impl ImageViewerApp {
         self.prefetched_tiles.clear();
         crate::tile_cache::PIXEL_CACHE.lock().clear();
         self.current_image_res = None;
+        self.raw_osd_by_index.clear();
+        self.current_osd_file_name.clear();
+        self.osd.set_supplemental_lines(None, None);
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         // Match `navigate_to` / file-open semantics: prior folder's manual zoom and rotation
@@ -370,6 +373,8 @@ impl ImageViewerApp {
                                     // Re-resolve position after global sort.
                                     self.resolve_initial_position();
                                 }
+
+                                self.refresh_current_osd_file_name();
 
                                 let count = self.image_files.len();
                                 self.status_message =

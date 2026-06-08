@@ -67,6 +67,8 @@ pub(crate) fn load_image_file(
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
+    let mut raw_osd_info: Option<crate::loader::RawOsdInfo> = None;
+
     let result = (|| -> Result<ImageData, String> {
         let ext = path
             .extension()
@@ -111,7 +113,7 @@ pub(crate) fn load_image_file(
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
 
         if is_raw {
-            return load_raw(
+            let out = load_raw(
                 index,
                 generation,
                 path,
@@ -119,7 +121,11 @@ pub(crate) fn load_image_file(
                 high_quality,
                 hdr_target_capacity,
                 hdr_tone_map,
-            );
+            )?;
+            if out.osd.sensor_size.0 > 0 {
+                raw_osd_info = Some(out.osd);
+            }
+            return Ok(out.image);
         }
 
         if ext == "jpg" || ext == "jpeg" {
@@ -148,7 +154,13 @@ pub(crate) fn load_image_file(
                     high_quality,
                     hdr_target_capacity,
                     hdr_tone_map,
-                );
+                )
+                .map(|out| {
+                    if out.osd.sensor_size.0 > 0 {
+                        raw_osd_info = Some(out.osd);
+                    }
+                    out.image
+                });
             }
             return load_primary_with_detection_fallback(
                 path,
@@ -416,6 +428,7 @@ pub(crate) fn load_image_file(
         preview_bundle,
         sdr_fallback_is_placeholder,
         target_hdr_capacity: hdr_target_capacity,
+        raw_osd: raw_osd_info,
     }
 }
 fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {

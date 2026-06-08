@@ -75,7 +75,7 @@ label.random_slideshow_order: "隨機順序"
 label.play_music: "播放背景音樂"
 label.show_music_osd: "顯示音樂懸浮窗"
 label.raw_high_quality: "RAW 高品質預覽（demosaic）"
-hint.raw_high_quality: "勾選：內建預覽不夠大時 demosaic 出約 2048/4096 預覽（高 CPU，HDR 螢幕走 HDR 管線）。不勾選：一律用內建預覽，不 demosaic（省 CPU）。"
+hint.raw_high_quality: "勾選：內建預覽不夠大時按感測器全解析度 demosaic（高 CPU，HDR 螢幕走 HDR 管線）。不勾選：一律用內建預覽，不 demosaic（省 CPU）。"
 label.scale_mode: "縮放模式"
 label.no_dir: "未選擇目錄"
 label.no_music: "未選擇支援的檔案或資料夾"
@@ -127,6 +127,13 @@ hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 
 osd.mode.static: "靜態"
 osd.mode.tiled: "分塊"
+
+raw.osd.embedded: "內嵌 %{size}"
+raw.osd.no_embedded: "內嵌 —"
+raw.osd.sensor: "感測 %{size}"
+raw.osd.render.embedded: "→內嵌 %{size}"
+raw.osd.render.full: "→全解 %{size}"
+raw.osd.render.hq_bootstrap: "→內嵌* %{size}"
 
 # Scale mode
 scale.fit: "適應視窗"

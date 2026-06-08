@@ -75,7 +75,7 @@ label.random_slideshow_order: "Random order"
 label.play_music: "Play music"
 label.show_music_osd: "Show music overlay"
 label.raw_high_quality: "High-Quality RAW preview (demosaic)"
-hint.raw_high_quality: "On: demosaic to ~2048/4096 when the embedded preview is too small (high CPU; HDR pipeline on HDR displays). Off: always use embedded previews, no demosaic (saves CPU)."
+hint.raw_high_quality: "On: demosaic at full sensor resolution when the embedded preview is too small (high CPU; HDR pipeline on HDR displays). Off: always use embedded previews, no demosaic (saves CPU)."
 label.scale_mode: "Scale Mode"
 label.no_dir: "No directory selected"
 label.no_music: "No supported file/folder"
@@ -128,6 +128,14 @@ hdr.osd.jpeg_r_cap: " · R %{capacity}x"
 # OSD (on-screen display) mode tag for large-image path
 osd.mode.static: "STATIC"
 osd.mode.tiled: "TILED"
+
+# RAW OSD (embedded preview / sensor / active pixel source)
+raw.osd.embedded: "Embedded %{size}"
+raw.osd.no_embedded: "Embedded —"
+raw.osd.sensor: "Sensor %{size}"
+raw.osd.render.embedded: "→Embedded %{size}"
+raw.osd.render.full: "→Full %{size}"
+raw.osd.render.hq_bootstrap: "→Embedded* %{size}"
 
 # Scale mode
 scale.fit: "Fit to Window"

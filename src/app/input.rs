@@ -286,6 +286,7 @@ impl ImageViewerApp {
         *slot = (*slot + delta_ev).clamp(-8.0, 8.0);
         self.sync_hdr_tone_map_settings();
         self.queue_save();
+        self.invalidate_osd();
         ctx.request_repaint();
     }
 

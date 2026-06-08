@@ -60,11 +60,6 @@ pub fn refresh_hq_preview_monitor_cap(ctx: &eframe::egui::Context) {
     }
 }
 
-/// Below this developed pixel count, HQ RAW refinement keeps the full demosaic resolution even
-/// when it exceeds [`hq_preview_max_side`]. Avoids limit downscale followed by logical upsample
-/// blur (e.g. Canon S90 3684×2760 with a 2048 monitor HQ cap).
-const HQ_RAW_KEEP_FULL_DEVELOP_PIXELS: u64 = 20_000_000;
-
 /// Skip [`finalize_raw_hq_developed_image`] Lanczos align when develop output is within this
 /// many pixels of the logical sensor grid (common LibRaw crop vs EXIF output size).
 const HQ_RAW_LOGICAL_ALIGN_TOLERANCE_PX: u32 = 2;
@@ -78,11 +73,11 @@ fn raw_develop_dimensions_need_logical_align(
     rw.abs_diff(logical_w) > HQ_RAW_LOGICAL_ALIGN_TOLERANCE_PX
         || rh.abs_diff(logical_h) > HQ_RAW_LOGICAL_ALIGN_TOLERANCE_PX
 }
-/// Fit a demosaiced RAW preview to the tiled logical grid and HQ size policy.
+
+/// Align a demosaiced RAW preview to the tiled logical grid when LibRaw output differs slightly.
 ///
-/// Large sensors may be downscaled to [`hq_preview_max_side`]; smaller bodies keep full develop
-/// resolution. When the buffer still differs from logical sensor dimensions, resample once with
-/// Lanczos3 so tile extraction can direct-crop without per-tile upscaling.
+/// HQ refinement keeps the full develop resolution; only resample when dimensions mismatch the
+/// sensor grid so tile extraction can direct-crop without per-tile upscaling.
 pub(crate) fn finalize_raw_hq_developed_image(
     img: image::DynamicImage,
     logical_w: u32,
@@ -91,47 +86,24 @@ pub(crate) fn finalize_raw_hq_developed_image(
     use image::GenericImageView;
     use image::imageops::FilterType;
 
-    let limit = hq_preview_max_side();
-    let (iw, ih) = img.dimensions();
-    let long = iw.max(ih);
-    let develop_pixels = iw as u64 * ih as u64;
-
-    let mut result = img;
-    let keep_full_develop = develop_pixels <= HQ_RAW_KEEP_FULL_DEVELOP_PIXELS;
-
-    if !keep_full_develop && long > limit {
-        result = result.resize(limit, limit, FilterType::Lanczos3);
-    }
-
-    let (rw, rh) = result.dimensions();
+    let (rw, rh) = img.dimensions();
     if raw_develop_dimensions_need_logical_align(rw, rh, logical_w, logical_h) {
-        result = result.resize_exact(logical_w, logical_h, FilterType::Lanczos3);
+        img.resize_exact(logical_w, logical_h, FilterType::Lanczos3)
+    } else {
+        img
     }
-    result
 }
 
-/// Same pixel-count policy as [`finalize_raw_hq_developed_image`] for scene-linear RAW HDR.
+/// Scene-linear RAW HDR after demosaic — kept at full develop resolution.
 ///
-/// Does **not** resize the float buffer to `logical_w`×`logical_h`: tile coordinates use
-/// [`RawHdrRefiningSource`] logical dimensions, and [`RawImageSource::extract_tile`] scales
-/// when develop output differs by more than a few pixels. Avoids an extra float resample pass;
-/// SDR fallback planes follow the same rule via `finalize_raw_hq_developed_image`.
+/// Tile coordinates use [`RawHdrRefiningSource`] logical dimensions; [`RawImageSource::extract_tile`]
+/// scales when develop output differs by more than a few pixels.
 pub(crate) fn finalize_raw_hq_hdr_buffer(
     hdr: crate::hdr::types::HdrImageBuffer,
-    logical_w: u32,
-    logical_h: u32,
+    _logical_w: u32,
+    _logical_h: u32,
 ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
-    let _ = (logical_w, logical_h);
-    let limit = hq_preview_max_side();
-    let long = hdr.width.max(hdr.height);
-    let develop_pixels = hdr.width as u64 * hdr.height as u64;
-    let keep_full_develop = develop_pixels <= HQ_RAW_KEEP_FULL_DEVELOP_PIXELS;
-
-    if keep_full_develop || long <= limit {
-        Ok(hdr)
-    } else {
-        crate::hdr::tiled::downsample_hdr_image_nearest(&hdr, limit, limit)
-    }
+    Ok(hdr)
 }
 
 /// HQ preview / refine max side: `min` of hardware tier ([`PREVIEW_LIMIT`]), monitor-based cap

@@ -913,6 +913,7 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         ultra_hdr_capacity_sensitive: true,
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
+        raw_osd: None,
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
     assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
@@ -939,6 +940,7 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         ultra_hdr_capacity_sensitive: false,
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
+        raw_osd: None,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
 }
@@ -1169,6 +1171,9 @@ fn make_test_app() -> ImageViewerApp {
         scan_rx: None,
         scan_cancel: None,
         current_image_res: None,
+        raw_osd_by_index: std::collections::HashMap::new(),
+        current_osd_file_name: String::new(),
+        cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
         prev_texture: None,
         prev_hdr_image: None,
         prev_transition_rect: None,
