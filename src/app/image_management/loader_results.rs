@@ -497,6 +497,19 @@ impl ImageViewerApp {
 
                 LoaderOutput::Refined(idx, gen_id) => {
                     // Metadata-only notification — no load_texture call here.
+                    if self
+                        .image_files
+                        .get(idx)
+                        .is_some_and(|p| crate::preload_debug::path_is_raw(p))
+                    {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] refined_notify idx={} gen={} current={} app_gen={}",
+                            idx,
+                            gen_id,
+                            idx == self.current_index,
+                            self.generation
+                        );
+                    }
                     self.handle_refined_notification(idx, gen_id, ctx);
                 }
 
@@ -720,7 +733,7 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         if idx == self.current_index && gen_id == self.generation {
-            log::info!("[App] Refined image notification for index={}", idx);
+            log::debug!("[App] Refined image notification for index={}", idx);
 
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
 
@@ -728,11 +741,19 @@ impl ImageViewerApp {
             self.loader.set_generation(self.generation);
 
             if let Some(tm) = &mut self.tile_manager {
-                log::info!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
+                log::debug!("[App] Refined: Tiled mode — forcing tile upgrade to high definition");
                 tm.generation = self.generation;
                 tm.pending_tiles.clear();
                 self.texture_cache.remove(idx);
-                self.remove_hdr_image_index(idx);
+                let preserve_hdr_tiled = self.hdr_tiled_source_cache.contains_key(&idx);
+                if !preserve_hdr_tiled {
+                    self.remove_hdr_image_index(idx);
+                } else if idx == self.current_index {
+                    if let Some(source) = self.hdr_tiled_source_cache.get(&idx).cloned() {
+                        self.current_hdr_tiled_image =
+                            Some(crate::app::CurrentHdrTiledImage::new(idx, source));
+                    }
+                }
             } else {
                 log::warn!(
                     "[App] Refined: Static mode encountered unexpectedly. Attempting to reload."
@@ -762,7 +783,7 @@ impl ImageViewerApp {
             // it's a stale result from a previous visit. We MUST NOT evict the
             // CURRENT texture cache, otherwise the screen will flicker or go blank.
             if idx == self.current_index {
-                log::info!(
+                log::debug!(
                     "[App] Refined: ignoring stale background update for current index {} (gen {} vs current {})",
                     idx,
                     gen_id,
@@ -771,7 +792,7 @@ impl ImageViewerApp {
                 return;
             }
 
-            log::info!(
+            log::debug!(
                 "[App] Refined: background update for index {} (not current). Invalidating caches.",
                 idx
             );

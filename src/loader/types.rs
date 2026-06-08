@@ -139,6 +139,12 @@ pub trait TiledImageSource: Send + Sync {
     /// Trigger background refinement to replace preview data with full-quality pixels.
     /// Default no-op; only RAW sources need background demosaicing.
     fn request_refinement(&self, _index: usize, _generation: u64) {}
+
+    /// When true, the loader must not spawn a second HQ preview from [`Self::generate_preview`]
+    /// because an async RAW demosaic worker owns HQ refinement (embedded bootstrap path).
+    fn defers_loader_hq_preview(&self) -> bool {
+        false
+    }
 }
 
 /// A single frame of an animated image. RGBA8 lives in a shared [`Arc`] so frame lists and
@@ -520,5 +526,11 @@ pub struct RefinementRequest {
     pub generation: u64,
     pub source_key: SourceKey,
     pub orientation_override: Option<i32>,
+    pub logical_width: u32,
+    pub logical_height: u32,
     pub developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
+    /// Shared with [`crate::loader::tiled_sources::RawHdrRefiningSource`] on HDR displays.
+    pub hdr_developed_image: Option<Arc<PLRwLock<Option<crate::hdr::types::HdrImageBuffer>>>>,
+    pub hdr_target_capacity: f32,
+    pub hdr_tone_map: crate::hdr::types::HdrToneMapSettings,
 }
