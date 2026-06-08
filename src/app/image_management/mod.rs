@@ -32,6 +32,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "preload-debug")]
+macro_rules! preload_debug {
+    ($($arg:tt)*) => {
+        log::info!($($arg)*);
+    };
+}
+
+#[cfg(not(feature = "preload-debug"))]
+macro_rules! preload_debug {
+    ($($arg:tt)*) => {};
+}
+
 mod cache_eviction;
 mod directory;
 mod hdr_state;
@@ -94,6 +106,118 @@ fn should_cache_tiled_hdr_preview(
     preview_max_side: u32,
 ) -> bool {
     cached_preview_max_side.map_or(true, |cached_max| preview_max_side > cached_max)
+}
+
+const BYTES_PER_MIB: usize = 1024 * 1024;
+const LOW_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 16 * BYTES_PER_MIB;
+const MEDIUM_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 32 * BYTES_PER_MIB;
+const HIGH_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME: usize = 64 * BYTES_PER_MIB;
+
+fn sdr_upload_budget_bytes_per_frame(hardware_tier: crate::app::HardwareTier) -> usize {
+    match hardware_tier {
+        crate::app::HardwareTier::Low => LOW_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+        crate::app::HardwareTier::Medium => MEDIUM_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+        crate::app::HardwareTier::High => HIGH_TIER_SDR_UPLOAD_BUDGET_BYTES_PER_FRAME,
+    }
+}
+
+fn decoded_rgba_bytes(width: u32, height: u32) -> usize {
+    width as usize * height as usize * 4
+}
+
+fn should_upload_sdr_this_frame(
+    is_current: bool,
+    uploaded_bytes: usize,
+    candidate_bytes: usize,
+    max_bytes: usize,
+) -> bool {
+    is_current || uploaded_bytes == 0 || uploaded_bytes.saturating_add(candidate_bytes) <= max_bytes
+}
+
+fn should_defer_background_upload_during_transition(
+    is_current: bool,
+    is_transitioning: bool,
+) -> bool {
+    is_transitioning && !is_current
+}
+
+const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
+const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
+const BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR: u64 = 5;
+
+fn background_preload_memory_guard_threshold_mb(total_memory_mb: u64) -> u64 {
+    let proportional_reserve =
+        total_memory_mb.saturating_div(BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR);
+    proportional_reserve.clamp(
+        MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB,
+        MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB,
+    )
+}
+
+fn should_skip_background_preloads_for_memory(
+    available_memory_mb: u64,
+    total_memory_mb: u64,
+) -> bool {
+    available_memory_mb < background_preload_memory_guard_threshold_mb(total_memory_mb)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreloadBudgetDecision {
+    Request,
+    SkipCandidate,
+    StopDirection,
+}
+
+const LARGE_FILE_TILED_PRELOAD_CANDIDATE_BYTES: u64 = 64 * 1024 * 1024;
+const NEAR_BUDGET_PRELOAD_NUMERATOR: u64 = 3;
+const NEAR_BUDGET_PRELOAD_DENOMINATOR: u64 = 2;
+const PRELOAD_DECODE_SIZE_MULTIPLIER: u64 = 12;
+
+fn estimate_preload_decode_bytes(file_size: u64) -> u64 {
+    if file_size > 0 {
+        // Compressed JPEG/HEIC/TIFF/PSD sources routinely expand by an order of
+        // magnitude once represented as RGBA. 12x is intentionally conservative:
+        // it avoids the old "one large compressed file becomes several full
+        // decoded frames" memory spike while still admitting small nearby images.
+        file_size.saturating_mul(PRELOAD_DECODE_SIZE_MULTIPLIER)
+    } else {
+        0
+    }
+}
+
+fn should_request_oversized_preload_candidate(
+    file_size: u64,
+    candidate_bytes: u64,
+    budget: u64,
+) -> bool {
+    // Oversized candidates are usually skipped so background preloading cannot
+    // decode several full RGBA images at once. Two cases are still worth probing:
+    // 1. "near budget" files (<= 1.5x) where the estimate is only slightly over;
+    // 2. very large files, which often become disk-backed tiled sources and only
+    //    need a lightweight bootstrap preview. Each accepted oversized candidate
+    //    is charged as a full budget slot by `preload_direction`.
+    let near_budget_limit = budget
+        .saturating_mul(NEAR_BUDGET_PRELOAD_NUMERATOR)
+        .saturating_div(NEAR_BUDGET_PRELOAD_DENOMINATOR);
+    candidate_bytes > budget
+        && (candidate_bytes <= near_budget_limit
+            || file_size >= LARGE_FILE_TILED_PRELOAD_CANDIDATE_BYTES)
+}
+
+fn decide_preload_for_budget(
+    count: usize,
+    new_bytes: u64,
+    candidate_bytes: u64,
+    budget: u64,
+) -> PreloadBudgetDecision {
+    if candidate_bytes == 0 || new_bytes.saturating_add(candidate_bytes) <= budget {
+        return PreloadBudgetDecision::Request;
+    }
+    if count == 0 || new_bytes == 0 {
+        PreloadBudgetDecision::SkipCandidate
+    } else {
+        PreloadBudgetDecision::StopDirection
+    }
 }
 
 fn cache_hdr_tiled_preview_state(
@@ -334,6 +458,7 @@ enum ImageInstallPlan<'a> {
     Tiled {
         source: Arc<dyn crate::loader::TiledImageSource>,
         hdr_source: Option<Arc<dyn crate::hdr::tiled::HdrTiledSource>>,
+        sdr_preview: Option<&'a DecodedImage>,
         hdr_preview: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
         hdr_sdr_fallback: bool,
         ultra_hdr_capacity_sensitive: bool,
@@ -411,6 +536,7 @@ impl<'a> ImageInstallPlan<'a> {
                 Self::Tiled {
                     source: Arc::clone(source),
                     hdr_source,
+                    sdr_preview: load_result.preview_bundle.sdr(),
                     hdr_preview,
                     hdr_sdr_fallback,
                     ultra_hdr_capacity_sensitive: load_result.ultra_hdr_capacity_sensitive,
@@ -424,6 +550,19 @@ impl<'a> ImageInstallPlan<'a> {
                 },
                 _ => unreachable!("animated render shape is only emitted by animated image data"),
             },
+        }
+    }
+
+    fn estimated_sdr_upload_bytes(&self) -> usize {
+        match self {
+            Self::StaticSdr { decoded }
+            | Self::StaticHdr {
+                fallback: decoded, ..
+            } => decoded_rgba_bytes(decoded.width, decoded.height),
+            Self::Tiled { sdr_preview, .. } => sdr_preview
+                .map(|preview| decoded_rgba_bytes(preview.width, preview.height))
+                .unwrap_or(0),
+            Self::Animated { .. } | Self::HdrAnimated { .. } | Self::Error { .. } => 0,
         }
     }
 }

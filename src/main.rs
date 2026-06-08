@@ -24,9 +24,21 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 rust_i18n::i18n!("locales");
 
+mod allocator_tuning;
 mod app;
 use eframe::egui;
+use parking_lot::Mutex;
 use std::time::Instant;
+
+macro_rules! startup_info {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "startup-timing")]
+        {
+            log::info!($($arg)*);
+        }
+    };
+}
+
 mod audio;
 mod constants;
 mod context_menu;
@@ -102,13 +114,71 @@ fn load_icon_from_build_rgba() -> egui::IconData {
     }
 }
 
-fn init_logging(settings: &crate::settings::Settings) {
+#[cfg(feature = "startup-timing")]
+type StartupPhases = Vec<StartupPhase>;
+
+#[cfg(not(feature = "startup-timing"))]
+type StartupPhases = ();
+
+const LOG_LEVEL_ENV: &str = "SIV_LOG_LEVEL";
+const LOG_FILE_ENV: &str = "SIV_LOG_FILE";
+
+static LOGGER_HANDLE: Mutex<Option<flexi_logger::LoggerHandle>> = Mutex::new(None);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoggingConfig {
+    level: String,
+    enable_file: bool,
+}
+
+fn parse_env_bool(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn logging_config_from_env(log_level: Option<&str>, log_file: Option<&str>) -> LoggingConfig {
+    LoggingConfig {
+        level: log_level
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("off")
+            .to_string(),
+        enable_file: parse_env_bool(log_file),
+    }
+}
+
+fn logging_config() -> LoggingConfig {
+    let level = std::env::var(LOG_LEVEL_ENV).ok();
+    let file = std::env::var(LOG_FILE_ENV).ok();
+    logging_config_from_env(level.as_deref(), file.as_deref())
+}
+
+fn init_logging() -> StartupPhases {
+    #[cfg(feature = "startup-timing")]
+    let t0 = Instant::now();
+    #[cfg(feature = "startup-timing")]
+    let mut prev = t0;
+    #[cfg(feature = "startup-timing")]
+    let mut phases = Vec::new();
+
     let log_dir = std::env::temp_dir();
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(&mut phases, &mut prev, t0, "init_logging: temp_dir");
 
-    let logger = flexi_logger::Logger::try_with_env_or_str(&settings.log_level)
+    let logging = logging_config();
+    let logger = flexi_logger::Logger::try_with_env_or_str(&logging.level)
         .expect("Failed to initialize logger");
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut phases,
+        &mut prev,
+        t0,
+        "init_logging: try_with_env_or_str",
+    );
 
-    let logger = if settings.enable_log_file {
+    let logger = if logging.enable_file {
         logger.log_to_file(
             flexi_logger::FileSpec::default()
                 .directory(log_dir)
@@ -117,24 +187,56 @@ fn init_logging(settings: &crate::settings::Settings) {
     } else {
         logger
     };
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(&mut phases, &mut prev, t0, "init_logging: log_to_file");
 
     #[cfg(windows)]
     let logger = logger.use_windows_line_ending();
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut phases,
+        &mut prev,
+        t0,
+        "init_logging: windows_line_ending",
+    );
 
-    let logger = logger
-        .write_mode(flexi_logger::WriteMode::BufferAndFlush)
-        .rotate(
-            flexi_logger::Criterion::Size(crate::constants::LOG_FILE_SIZE_LIMIT),
-            flexi_logger::Naming::Numbers,
-            flexi_logger::Cleanup::KeepLogFiles(3),
-        );
+    let logger = logger.write_mode(flexi_logger::WriteMode::Async).rotate(
+        flexi_logger::Criterion::Size(crate::constants::LOG_FILE_SIZE_LIMIT),
+        flexi_logger::Naming::Numbers,
+        flexi_logger::Cleanup::KeepLogFiles(3),
+    );
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut phases,
+        &mut prev,
+        t0,
+        "init_logging: write_mode + rotate",
+    );
 
     #[cfg(debug_assertions)]
     let logger = logger.duplicate_to_stderr(flexi_logger::Duplicate::All);
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut phases,
+        &mut prev,
+        t0,
+        "init_logging: duplicate_to_stderr",
+    );
 
-    // Start the logger. The returned handle can be dropped as we don't
-    // need to reconfigure the logger dynamically.
-    let _ = logger.start();
+    let handle = logger.start().expect("Failed to start logger");
+    LOGGER_HANDLE.lock().replace(handle);
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(&mut phases, &mut prev, t0, "init_logging: start");
+
+    #[cfg(not(feature = "startup-timing"))]
+    let phases = ();
+    phases
+}
+
+pub(crate) fn shutdown_logger() {
+    if let Some(handle) = LOGGER_HANDLE.lock().take() {
+        handle.shutdown();
+    }
 }
 
 fn log_env_info() -> String {
@@ -297,6 +399,8 @@ fn log_env_info() -> String {
         format!("{} [{}] (RAM: {:.2} GB)", os_name, os_version, memory_gb)
     });
 
+    // Always emit when logging is enabled (SIV_LOG_LEVEL / SIV_LOG_FILE), even without
+    // the local-only startup-timing feature, so support can collect OS/RAM context.
     log::info!(
         "Simple Image Viewer v{} | Environment: {}",
         env!("CARGO_PKG_VERSION"),
@@ -307,6 +411,37 @@ fn log_env_info() -> String {
     log::info!("Build Type: Windows 7 Legacy Compatibility Edition (x64)");
 
     final_desc
+}
+
+#[cfg(target_os = "windows")]
+fn show_crash_dialog(title: &str, message: &str) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TASKMODAL, MB_TOPMOST, MessageBoxW,
+    };
+    use windows::core::HSTRING;
+
+    let title = HSTRING::from(title);
+    let message = HSTRING::from(message);
+    // The panic hook can run while the egui window is unresponsive or tearing
+    // down, so use a task-modal topmost box without relying on a parent HWND.
+    let _ = unsafe {
+        MessageBoxW(
+            HWND::default(),
+            &message,
+            &title,
+            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND | MB_TASKMODAL,
+        )
+    };
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_crash_dialog(title: &str, message: &str) {
+    rfd::MessageDialog::new()
+        .set_title(title)
+        .set_description(message)
+        .set_level(rfd::MessageLevel::Error)
+        .show();
 }
 
 /// Set up a global panic hook to capture and report crashes across all threads.
@@ -387,21 +522,17 @@ fn setup_panic_hook() {
             );
         }
 
-        // No `set_parent`: the crash hook can run when no egui window exists.
-        // Use rfd for a system native dialog
-        rfd::MessageDialog::new()
-            .set_title(&title)
-            .set_description(&msg)
-            .set_level(rfd::MessageLevel::Error)
-            .show();
+        show_crash_dialog(&title, &msg);
 
         // Critical: After showing the crash dialog, the application must terminate.
         // Otherwise, the window may hang or enter an unstable state.
+        shutdown_logger();
         std::process::exit(1);
     }));
 }
 
 /// Field-diagnostic timings for cold start (look for `[startup]` in logs).
+#[cfg(feature = "startup-timing")]
 fn startup_log_phase(prev: &mut Instant, t0: Instant, label: &'static str) {
     let now = Instant::now();
     log::info!(
@@ -410,8 +541,72 @@ fn startup_log_phase(prev: &mut Instant, t0: Instant, label: &'static str) {
         now.duration_since(*prev).as_millis(),
         now.duration_since(t0).as_millis()
     );
-    *prev = now;
+    // Advance after the log call so slow logger I/O is not charged to the next phase.
+    *prev = Instant::now();
 }
+
+#[cfg(not(feature = "startup-timing"))]
+fn startup_log_phase(_prev: &mut Instant, _t0: Instant, _label: &'static str) {}
+
+#[cfg(feature = "startup-timing")]
+struct StartupPhase {
+    label: &'static str,
+    delta_ms: u128,
+    total_ms: u128,
+}
+
+#[cfg(feature = "startup-timing")]
+fn startup_capture_phase(
+    phases: &mut Vec<StartupPhase>,
+    prev: &mut Instant,
+    t0: Instant,
+    label: &'static str,
+) {
+    let now = Instant::now();
+    phases.push(startup_phase_at(prev, t0, label, now));
+}
+
+#[cfg(feature = "startup-timing")]
+fn startup_phase_at(
+    prev: &mut Instant,
+    t0: Instant,
+    label: &'static str,
+    now: Instant,
+) -> StartupPhase {
+    let phase = StartupPhase {
+        label,
+        delta_ms: now.duration_since(*prev).as_millis(),
+        total_ms: now.duration_since(t0).as_millis(),
+    };
+    *prev = now;
+    phase
+}
+
+#[cfg(feature = "startup-timing")]
+fn startup_reset_after_diagnostics(prev: &mut Instant) {
+    // Diagnostic log replay can be slow; never charge that I/O to the next startup phase.
+    *prev = Instant::now();
+}
+
+#[cfg(feature = "startup-timing")]
+fn startup_log_captured_phase(phase: &StartupPhase) {
+    log::info!(
+        "[startup] {:42} +{:5} ms   total {:6} ms",
+        phase.label,
+        phase.delta_ms,
+        phase.total_ms
+    );
+}
+
+#[cfg(feature = "startup-timing")]
+fn startup_log_captured_phases(phases: &[StartupPhase]) {
+    for phase in phases {
+        startup_log_captured_phase(phase);
+    }
+}
+
+#[cfg(not(feature = "startup-timing"))]
+fn startup_log_captured_phases(_phases: &StartupPhases) {}
 
 /// Backends used for Windows wgpu adapter enumeration at startup.
 ///
@@ -446,7 +641,7 @@ fn apply_windows_arm64_default_wgpu_backends(
         return;
     }
     wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
-    log::info!(
+    startup_info!(
         "[startup] Windows ARM64: wgpu backends {:?} (OpenGL/WGL disabled)",
         wgpu_setup.instance_descriptor.backends
     );
@@ -455,6 +650,7 @@ fn apply_windows_arm64_default_wgpu_backends(
 /// Result of the Windows-only wgpu adapter pre-probe (see `spawn_dx12_preprobe_thread`).
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 #[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "startup-timing"), allow(dead_code))]
 struct Dx12PreprobeOutcome {
     has_real_dx12: bool,
     enumerate_ms: u128,
@@ -467,7 +663,7 @@ fn dx12_preprobe_outcome() -> Dx12PreprobeOutcome {
     let instance =
         eframe::wgpu::Instance::new(eframe::wgpu::InstanceDescriptor::new_without_display_handle());
     let probe_backends = windows_wgpu_probe_backends();
-    log::info!(
+    startup_info!(
         "[startup] wgpu dx12 preprobe: enumerate backends {:?}",
         probe_backends
     );
@@ -498,22 +694,22 @@ fn apply_dx12_preprobe_to_wgpu_setup(
 ) {
     if force_dx12 {
         if from_yaml_cache {
-            log::info!(
+            startup_info!(
                 "[startup] wgpu preprobe cache: force_dx12=true — DX12 + HighPerformance (edit siv_wgpu_preprobe_cache.yaml if wrong)"
             );
         } else {
-            log::info!(
+            startup_info!(
                 "Detected DX12 compatible hardware (Discrete/Integrated). Forcing DX12 backend."
             );
         }
         wgpu_setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
         wgpu_setup.power_preference = eframe::wgpu::PowerPreference::HighPerformance;
     } else if from_yaml_cache {
-        log::info!(
+        startup_info!(
             "[startup] wgpu preprobe cache: force_dx12=false — default backend selection (edit siv_wgpu_preprobe_cache.yaml if wrong)"
         );
     } else {
-        log::info!(
+        startup_info!(
             "No real DX12 GPU found (only CPU, Virtual, or Other available). Falling back to default selection."
         );
     }
@@ -600,7 +796,7 @@ fn spawn_dx12_cache_validate_thread(
                     );
                 }
             } else {
-                log::info!(
+                startup_info!(
                     "[startup] wgpu preprobe: background validate agrees with yaml (force_dx12={}, {} ms, {} adapters)",
                     outcome.has_real_dx12,
                     outcome.enumerate_ms,
@@ -654,6 +850,8 @@ pub(crate) fn take_and_join_dx12_cache_validate_thread() {
 }
 
 fn main() -> eframe::Result {
+    allocator_tuning::configure_mimalloc_for_image_viewer();
+
     #[cfg(target_os = "windows")]
     {
         #[cfg(feature = "legacy_win7")]
@@ -684,12 +882,15 @@ fn main() -> eframe::Result {
     let no_recursive = initial_image.is_some();
     if ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
         // We Successfully forwarded to another instance, exit.
+        shutdown_logger();
         std::process::exit(0);
     }
 
     // 3. Primary Instance Initialization
     let startup_t0 = Instant::now();
     let mut prev = startup_t0;
+    #[cfg(feature = "startup-timing")]
+    let mut startup_prelog_phases = Vec::new();
 
     // Install the Windows SEH exception filter as early as possible.
     // This catches native crashes (ACCESS_VIOLATION, STACK_OVERFLOW, etc.)
@@ -697,10 +898,42 @@ fn main() -> eframe::Result {
     // silent exit with no diagnostic output.
     #[cfg(target_os = "windows")]
     seh_handler::install();
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut startup_prelog_phases,
+        &mut prev,
+        startup_t0,
+        "seh_handler::install",
+    );
 
     let mut settings = settings::Settings::load();
-    init_logging(&settings);
-    startup_log_phase(&mut prev, startup_t0, "seh + Settings::load + init_logging");
+    #[cfg(feature = "startup-timing")]
+    startup_capture_phase(
+        &mut startup_prelog_phases,
+        &mut prev,
+        startup_t0,
+        "Settings::load",
+    );
+
+    let init_logging_phases = init_logging();
+    #[cfg(feature = "startup-timing")]
+    let init_logging_phase =
+        startup_phase_at(&mut prev, startup_t0, "init_logging", Instant::now());
+    #[cfg(feature = "startup-timing")]
+    startup_log_captured_phases(&startup_prelog_phases);
+    startup_log_captured_phases(&init_logging_phases);
+    #[cfg(feature = "startup-timing")]
+    startup_log_captured_phase(&init_logging_phase);
+    #[cfg(feature = "startup-timing")]
+    startup_reset_after_diagnostics(&mut prev);
+    #[cfg(not(feature = "startup-timing"))]
+    startup_log_phase(&mut prev, startup_t0, "init_logging");
+
+    let mimalloc_startup_label = match allocator_tuning::mimalloc_version() {
+        315 => "mimalloc version 315 + image policy",
+        _ => "mimalloc version unexpected + image policy",
+    };
+    startup_log_phase(&mut prev, startup_t0, mimalloc_startup_label);
 
     let env_info = log_env_info();
     startup_log_phase(&mut prev, startup_t0, "log_env_info");
@@ -800,7 +1033,7 @@ fn main() -> eframe::Result {
     apply_windows_arm64_default_wgpu_backends(&mut wgpu_setup);
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
         let info = adapter.get_info();
-        log::info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
+        startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
         if info.backend == eframe::wgpu::Backend::Gl {
             log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
         }
@@ -818,8 +1051,8 @@ fn main() -> eframe::Result {
         // the device will be created safely with that lower limit.
         let hw_max_texture = adapter.limits().max_texture_dimension_2d;
         let adapter_limits = adapter.limits();
-        log::info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
-        log::info!(
+        startup_info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
+        startup_info!(
             "GPU max_storage_buffer_binding_size: {}",
             adapter_limits.max_storage_buffer_binding_size
         );
@@ -841,7 +1074,7 @@ fn main() -> eframe::Result {
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     if let Some(ref cache) = cached_preprobe {
         apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, cache.force_dx12, true);
-        log::info!(
+        startup_info!(
             "[startup] wgpu preprobe: applied cache {} (main thread will not wait; background thread validates)",
             wgpu_preprobe_cache::cache_path().display()
         );
@@ -852,13 +1085,14 @@ fn main() -> eframe::Result {
         );
     }
 
+    #[cfg(feature = "startup-timing")]
     let hdr_spawn_start = Instant::now();
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
             settings.hdr_native_surface_enabled_effective(),
             settings.window_spawn_top_left_for_hdr(),
         );
-    log::info!(
+    startup_info!(
         "[startup] hdr spawn-monitor / native surface preset: {} ms",
         hdr_spawn_start.elapsed().as_millis()
     );
@@ -872,17 +1106,20 @@ fn main() -> eframe::Result {
         crate::hdr::surface::initial_monitor_selection_from_environment_probe(
             &hdr_environment_probe,
         );
-    for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
-        settings.hdr_native_surface_enabled_effective(),
-        preferred_hdr_target_format,
-    ) {
-        log::info!("{diagnostic}");
+    #[cfg(feature = "startup-timing")]
+    {
+        for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
+            settings.hdr_native_surface_enabled_effective(),
+            preferred_hdr_target_format,
+        ) {
+            startup_info!("{diagnostic}");
+        }
     }
-    log::info!("[HDR] environment_probe={hdr_environment_probe:?}");
+    startup_info!("[HDR] environment_probe={hdr_environment_probe:?}");
 
     #[cfg(target_os = "linux")]
     {
-        log::info!(
+        startup_info!(
             "[HDR] linux session: wayland={} platform_eligible={} native_surface_request_effective={}",
             crate::hdr::platform::is_wayland_session(),
             crate::hdr::platform::linux_native_hdr_platform_eligible(),
@@ -918,10 +1155,12 @@ fn main() -> eframe::Result {
 
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
+        #[cfg(feature = "startup-timing")]
         let recv_wait = Instant::now();
         let maybe_outcome = dx12_preprobe_rx
             .recv()
             .expect("wgpu dx12 preprobe thread exited without sending a result");
+        #[cfg(feature = "startup-timing")]
         let main_wait_ms = recv_wait.elapsed().as_millis();
 
         if let Some(outcome) = maybe_outcome {
@@ -934,12 +1173,12 @@ fn main() -> eframe::Result {
                     e
                 );
             } else {
-                log::info!(
+                startup_info!(
                     "[startup] wgpu preprobe: wrote cache {}",
                     wgpu_preprobe_cache::cache_path().display()
                 );
             }
-            log::info!(
+            startup_info!(
                 "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
                 outcome.enumerate_ms,
                 outcome.adapter_count,
@@ -1023,6 +1262,7 @@ fn main() -> eframe::Result {
     // cleanup blocks indefinitely on Windows once the event loop is gone.
     // Settings are already persisted in on_exit(), so this is safe.
     if result.is_ok() {
+        shutdown_logger();
         std::process::exit(0);
     }
 
@@ -1080,8 +1320,56 @@ fn main() -> eframe::Result {
             .set_level(rfd::MessageLevel::Error)
             .show();
 
+        shutdown_logger();
         return Err(e);
     }
 
+    shutdown_logger();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{logging_config_from_env, parse_env_bool};
+
+    #[test]
+    fn logging_env_defaults_to_no_file_and_off_level() {
+        let config = logging_config_from_env(None, None);
+
+        assert_eq!(config.level, "off");
+        assert!(!config.enable_file);
+    }
+
+    #[test]
+    fn logging_env_uses_explicit_level_and_file_flag() {
+        let config = logging_config_from_env(Some("debug"), Some("1"));
+
+        assert_eq!(config.level, "debug");
+        assert!(config.enable_file);
+    }
+
+    #[test]
+    fn logging_env_treats_blank_level_as_off() {
+        let config = logging_config_from_env(Some("   "), Some("false"));
+
+        assert_eq!(config.level, "off");
+        assert!(!config.enable_file);
+    }
+
+    #[test]
+    fn log_file_env_accepts_common_true_values_only() {
+        for value in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(parse_env_bool(Some(value)), "{value}");
+        }
+        for value in [
+            None,
+            Some("0"),
+            Some("false"),
+            Some("no"),
+            Some("off"),
+            Some(""),
+        ] {
+            assert!(!parse_env_bool(value), "{value:?}");
+        }
+    }
 }

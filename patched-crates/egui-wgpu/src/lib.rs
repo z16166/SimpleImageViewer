@@ -210,6 +210,7 @@ impl RenderState {
                         .request_device(&(*device_descriptor)(&adapter))
                         .await?
                 };
+                install_uncaptured_error_handler(&device);
 
                 (adapter, device, queue)
             }
@@ -218,7 +219,10 @@ impl RenderState {
                 adapter,
                 device,
                 queue,
-            }) => (adapter, device, queue),
+            }) => {
+                install_uncaptured_error_handler(&device);
+                (adapter, device, queue)
+            }
         };
 
         log_adapter_info(&adapter.get_info());
@@ -250,6 +254,18 @@ impl RenderState {
             renderer: Arc::new(RwLock::new(renderer)),
         })
     }
+}
+
+fn install_uncaptured_error_handler(device: &wgpu::Device) {
+    device.on_uncaptured_error(Arc::new(|error| match error {
+        wgpu::Error::OutOfMemory { source } => {
+            log::error!("wgpu reported an out-of-memory error; skipping fatal panic: {source}");
+        }
+        other => {
+            log::error!("Handling uncaptured wgpu error as fatal: {other}");
+            panic!("wgpu error: {other}\n");
+        }
+    }));
 }
 
 fn describe_adapters(adapters: &[wgpu::Adapter]) -> String {

@@ -248,6 +248,7 @@ pub fn desired_target_format_for_active_monitor(
     })
 }
 
+#[cfg(feature = "startup-timing")]
 pub fn native_hdr_surface_request_diagnostics(
     native_surface_enabled: bool,
     preferred_target_format: Option<wgpu::TextureFormat>,
@@ -523,6 +524,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "startup-timing")]
     #[test]
     fn native_hdr_request_diagnostics_include_preference_and_format() {
         assert_eq!(

@@ -28,6 +28,35 @@ pub enum RawDisplayMode {
 }
 
 #[allow(dead_code)]
+pub(crate) fn unpack_libraw_rgb16_rows_to_rgba_f32(
+    rgb16_bytes: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    bytes_per_pixel: usize,
+) -> Result<Vec<f32>, String> {
+    let tight_row_bytes = width as usize * bytes_per_pixel;
+    let mut rgba_f32 =
+        Vec::with_capacity(width as usize * height as usize * crate::constants::RGBA_CHANNELS);
+    for y in 0..height as usize {
+        let row_off = y * row_stride;
+        let row_end = row_off + tight_row_bytes;
+        let row = rgb16_bytes
+            .get(row_off..row_end)
+            .ok_or_else(|| rust_i18n::t!("error.buffer_size_mismatch").to_string())?;
+        for px in row.chunks_exact(bytes_per_pixel) {
+            if bytes_per_pixel < 6 {
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
+            }
+            rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
+            rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
+            rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
+            rgba_f32.push(1.0);
+        }
+    }
+    Ok(rgba_f32)
+}
+
 pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
     crate::hdr::types::HdrImageMetadata {
         transfer_function: crate::hdr::types::HdrTransferFunction::Linear,
@@ -170,15 +199,12 @@ impl RawProcessor {
         }
 
         unsafe {
-            // Set output parameters for better colors via custom shims
-            // (Using siv_ prefix to avoid symbol collisions with native LibRaw API)
             ffi::libraw_set_output_bps(self.data, 8);
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
-            ffi::siv_libraw_set_use_camera_matrix(self.data, 1); // Use hardware color matrix if available
-            ffi::libraw_set_no_auto_bright(self.data, 0); // 0 means ENABLE auto-bright
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
+            ffi::libraw_set_no_auto_bright(self.data, 0);
             ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
 
-            // Standard development
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {
                 return Err(rust_i18n::t!("error.libraw_process", code = ret).to_string());
@@ -254,8 +280,8 @@ impl RawProcessor {
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
             ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
             ffi::siv_libraw_set_output_color(self.data, 1); // sRGB primaries, with linear gamma below.
-            ffi::libraw_set_no_auto_bright(self.data, 1);
-            ffi::siv_libraw_set_auto_bright_thr(self.data, 0.0);
+            ffi::libraw_set_no_auto_bright(self.data, 0);
+            ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
             ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
 
             let ret = ffi::libraw_dcraw_process(self.data);
@@ -292,22 +318,32 @@ impl RawProcessor {
             let height = img.height as u32;
             let data_ptr = img.data.as_ptr();
             let data_len = img.data_size as usize;
-            let expected_min =
-                width as usize * height as usize * crate::constants::RGB_CHANNELS * 2;
-            if data_ptr.is_null() || data_len < expected_min {
+            let colors = img.colors as usize;
+            let bytes_per_sample = (img.bits as usize) / 8;
+            let bytes_per_pixel = colors * bytes_per_sample;
+            let tight_row_bytes = width as usize * bytes_per_pixel;
+            let tight_size = tight_row_bytes * height as usize;
+            if data_ptr.is_null() || data_len < tight_size || bytes_per_pixel == 0 {
                 return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
 
-            let rgb16_bytes = std::slice::from_raw_parts(data_ptr, expected_min);
-            let mut rgba_f32 = Vec::with_capacity(
-                width as usize * height as usize * crate::constants::RGBA_CHANNELS,
-            );
-            for px in rgb16_bytes.chunks_exact(crate::constants::RGB_CHANNELS * 2) {
-                rgba_f32.push(u16::from_ne_bytes([px[0], px[1]]) as f32 / 65535.0);
-                rgba_f32.push(u16::from_ne_bytes([px[2], px[3]]) as f32 / 65535.0);
-                rgba_f32.push(u16::from_ne_bytes([px[4], px[5]]) as f32 / 65535.0);
-                rgba_f32.push(1.0);
+            let row_stride = if height > 0 {
+                data_len / height as usize
+            } else {
+                tight_row_bytes
+            };
+            if row_stride < tight_row_bytes {
+                return Err(rust_i18n::t!("error.buffer_size_mismatch").to_string());
             }
+
+            let rgb16_bytes = std::slice::from_raw_parts(data_ptr, data_len);
+            let rgba_f32 = unpack_libraw_rgb16_rows_to_rgba_f32(
+                rgb16_bytes,
+                width,
+                height,
+                row_stride,
+                bytes_per_pixel,
+            )?;
 
             let metadata = raw_scene_linear_metadata();
             Ok(crate::hdr::types::HdrImageBuffer {
@@ -486,10 +522,49 @@ pub fn is_raw_extension(ext: &str) -> bool {
     RAW_EXTENSIONS.contains(&lower.as_str())
 }
 
+/// LibRaw identifies camera RAW by file content, not extension. Some vendors (e.g. Kodak DCS)
+/// store RAW in `.tif` containers; probe before the generic TIFF decoder so we demosaic IFD0
+/// instead of showing a tiny embedded RGB preview IFD.
+pub fn probe_libraw_can_open(path: &Path) -> bool {
+    let mut processor = match RawProcessor::new() {
+        Some(p) => p,
+        None => return false,
+    };
+    if processor.open(path).is_err() {
+        return false;
+    }
+    let w = processor.width();
+    let h = processor.height();
+    w > 0 && h > 0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RawDisplayMode, raw_scene_linear_metadata};
+    use super::{
+        RawDisplayMode, RawProcessor, is_raw_extension, probe_libraw_can_open,
+        raw_scene_linear_metadata, unpack_libraw_rgb16_rows_to_rgba_f32,
+    };
     use crate::hdr::types::{HdrReference, HdrTransferFunction};
+    use std::path::Path;
+
+    #[test]
+    fn unpack_libraw_rgb16_respects_row_stride_padding() {
+        // Two RGB pixels per row; LibRaw pads each row to 16 bytes (12 + 4).
+        let mut data = vec![0_u8; 32];
+        for row in 0..2 {
+            let base = row * 16;
+            data[base] = 0xFF;
+            data[base + 1] = 0xFF; // R
+            data[base + 8] = 0xFF;
+            data[base + 9] = 0xFF; // G of pixel 2
+        }
+        let rgba = unpack_libraw_rgb16_rows_to_rgba_f32(&data, 2, 2, 16, 6).expect("unpack");
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        assert!((rgba[0] - 1.0).abs() < 0.01); // row0 px0 R
+        assert!((rgba[5] - 1.0).abs() < 0.01); // row0 px1 G
+        assert!((rgba[8] - 1.0).abs() < 0.01); // row1 px0 R (after stride skip)
+        assert!((rgba[13] - 1.0).abs() < 0.01); // row1 px1 G
+    }
 
     #[test]
     fn raw_scene_linear_metadata_enters_hdr_pipeline_as_linear_scene_data() {
@@ -504,6 +579,155 @@ mod tests {
         let mode = RawDisplayMode::SdrDeveloped;
 
         assert_eq!(mode, RawDisplayMode::SdrDeveloped);
+    }
+
+    #[test]
+    fn tif_extension_is_not_treated_as_raw_by_extension_alone() {
+        assert!(!is_raw_extension("tif"));
+        assert!(!is_raw_extension("tiff"));
+    }
+
+    #[test]
+    fn probe_libraw_can_open_false_for_missing_file() {
+        assert!(!probe_libraw_can_open(Path::new(
+            "definitely_missing_kodak_dcs460d.tif"
+        )));
+    }
+
+    fn luminance_stats_rgba8(pixels: &[u8]) -> (f64, f64, f64, u8) {
+        let mut r_sum = 0u64;
+        let mut g_sum = 0u64;
+        let mut b_sum = 0u64;
+        let mut max = 0u8;
+        let mut n = 0u64;
+        for chunk in pixels.chunks_exact(4) {
+            r_sum += chunk[0] as u64;
+            g_sum += chunk[1] as u64;
+            b_sum += chunk[2] as u64;
+            max = max.max(chunk[0]).max(chunk[1]).max(chunk[2]);
+            n += 1;
+        }
+        if n == 0 {
+            return (0.0, 0.0, 0.0, 0);
+        }
+        (
+            r_sum as f64 / n as f64,
+            g_sum as f64 / n as f64,
+            b_sum as f64 / n as f64,
+            max,
+        )
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_legacy_raw_hdr_paths() {
+        let samples = [
+            ("aptus75", Path::new(r"F:\win7\raws\leaf\RAW_APTUS_75.MOS")),
+            (
+                "aptus22",
+                Path::new(r"F:\win7\raws\leaf\aptus22\RAW_LEAF_APTUS_22.MOS"),
+            ),
+            (
+                "mamiya_zd",
+                Path::new(r"F:\win7\raws\mamiya\zd\RAW_MAMIYA_ZD.MEF"),
+            ),
+            (
+                "nikon1_v1",
+                Path::new(r"F:\win7\raws\nikon\RAW_NIKON1_V1.NEF"),
+            ),
+        ];
+        for (label, path) in samples {
+            if !path.is_file() {
+                eprintln!("skip {label}: {}", path.display());
+                continue;
+            }
+            let mut processor = RawProcessor::new().expect("libraw init");
+            processor.open(path).expect("libraw open");
+            let w = processor.width();
+            let h = processor.height();
+            eprintln!(
+                "{label}: libraw {w}x{h} ({:.1} MP)",
+                (w as f64 * h as f64) / 1e6
+            );
+
+            let mut thumb_processor = RawProcessor::new().expect("libraw init");
+            thumb_processor.open(path).expect("libraw open");
+            if let Ok(thumb) = thumb_processor.unpack_thumb() {
+                let (r, g, b, max) = luminance_stats_rgba8(thumb.rgba());
+                eprintln!(
+                    "{label}: unpack_thumb {}x{} avg=({r:.1},{g:.1},{b:.1}) max={max}",
+                    thumb.width, thumb.height
+                );
+            } else {
+                eprintln!("{label}: unpack_thumb failed");
+            }
+
+            let sdr = processor.develop().expect("develop");
+            let rgba = sdr.to_rgba8();
+            let (r, g, b, max) = luminance_stats_rgba8(rgba.as_raw());
+            eprintln!(
+                "{label}: develop avg=({r:.1},{g:.1},{b:.1}) max={max} size={}x{}",
+                rgba.width(),
+                rgba.height()
+            );
+            assert!(max > 0, "{label}: develop produced all-black image");
+
+            let mut hdr_processor = RawProcessor::new().expect("libraw init");
+            hdr_processor.open(path).expect("libraw open");
+            let hdr = hdr_processor
+                .develop_scene_linear_hdr()
+                .expect("develop_scene_linear_hdr");
+            let mut max_l = 0.0f32;
+            for px in hdr.rgba_f32.chunks_exact(4) {
+                let l = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+                max_l = max_l.max(l);
+            }
+            eprintln!("{label}: scene_linear max_l={max_l:.6}");
+
+            for cap in [1.0_f32, 4.0_f32] {
+                let mut tone_processor = RawProcessor::new().expect("libraw init");
+                tone_processor.open(path).expect("libraw open");
+                let hdr = tone_processor
+                    .develop_scene_linear_hdr()
+                    .expect("develop_scene_linear_hdr");
+                let fallback = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    cap,
+                    &crate::hdr::types::HdrToneMapSettings::default(),
+                )
+                .expect("sdr fallback");
+                let (r, g, b, max) = luminance_stats_rgba8(fallback.as_ref());
+                eprintln!("{label}: sdr_fallback cap={cap} avg=({r:.1},{g:.1},{b:.1}) max={max}");
+                assert!(max > 0, "{label}: sdr_fallback cap={cap} must not be black");
+            }
+            assert!(max_l > 0.0, "{label}: scene linear HDR is all zero");
+        }
+    }
+
+    /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF` on the test machine.
+    #[test]
+    #[ignore]
+    fn probe_libraw_can_open_kodak_dcs460d_tif() {
+        let path = Path::new(r"F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF");
+        if !path.is_file() {
+            eprintln!(
+                "skip: Kodak DCS460D sample not present at {}",
+                path.display()
+            );
+            return;
+        }
+        assert!(
+            probe_libraw_can_open(path),
+            "LibRaw should recognize Kodak DCS460D TIFF container as camera RAW"
+        );
+        let mut processor = RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        assert!(
+            processor.width() > 256 && processor.height() > 256,
+            "expected full sensor dimensions, got {}x{}",
+            processor.width(),
+            processor.height()
+        );
     }
 }
 

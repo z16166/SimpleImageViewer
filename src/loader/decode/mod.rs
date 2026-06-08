@@ -26,6 +26,9 @@ mod jpeg;
 mod modern;
 mod raster;
 mod raw;
+mod tiff_raw_sniff;
+
+pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;
@@ -36,7 +39,10 @@ use super::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PreviewBundle, PreviewStage,
     RefinementRequest, source_key_for_path,
 };
-use super::{extract_exif_thumbnail, hdr_display_requests_sdr_preview};
+use super::{
+    extract_exif_thumbnail, hdr_display_requests_sdr_preview,
+    hdr_sdr_fallback_is_placeholder_for_load,
+};
 
 use assemble::{make_hdr_image_data, make_image_data};
 use detect::{load_primary_with_detection_fallback, recover_via_platform_and_content_detection};
@@ -127,6 +133,23 @@ pub(crate) fn load_image_file(
             );
         }
         if ext == "tif" || ext == "tiff" {
+            if tiff_raw_sniff::tiff_may_be_camera_raw(path)
+                && crate::raw_processor::probe_libraw_can_open(path)
+            {
+                log::info!(
+                    "[{}] TIFF IFD0 looks like camera RAW and LibRaw opened it; using RAW pipeline",
+                    file_name
+                );
+                return load_raw(
+                    index,
+                    generation,
+                    path,
+                    refine_tx.clone(),
+                    high_quality,
+                    hdr_target_capacity,
+                    hdr_tone_map,
+                );
+            }
             return load_primary_with_detection_fallback(
                 path,
                 file_name,
@@ -376,10 +399,13 @@ pub(crate) fn load_image_file(
     let preview_bundle =
         PreviewBundle::from_planes(PreviewStage::Initial, preview.clone(), hdr_preview.clone());
 
-    let sdr_fallback_is_placeholder = matches!(
-        &final_result,
-        Ok(ImageData::Hdr { .. } | ImageData::HdrAnimated(_))
-    ) && !hdr_display_requests_sdr_preview(hdr_target_capacity);
+    let sdr_fallback_is_placeholder = match &final_result {
+        Ok(ImageData::Hdr { hdr, .. }) => {
+            hdr_sdr_fallback_is_placeholder_for_load(hdr, hdr_target_capacity)
+        }
+        Ok(ImageData::HdrAnimated(_)) => !hdr_display_requests_sdr_preview(hdr_target_capacity),
+        _ => false,
+    };
 
     LoadResult {
         index,

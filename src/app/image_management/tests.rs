@@ -178,6 +178,187 @@ fn tiled_bootstrap_preview_replaces_only_missing_or_smaller_cached_preview() {
 }
 
 #[test]
+fn sdr_upload_budget_counts_decoded_rgba_bytes() {
+    assert_eq!(decoded_rgba_bytes(1024, 512), 1024 * 512 * 4);
+}
+
+#[test]
+fn sdr_upload_budget_scales_with_hardware_tier() {
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::Low),
+        16 * 1024 * 1024
+    );
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::Medium),
+        32 * 1024 * 1024
+    );
+    assert_eq!(
+        sdr_upload_budget_bytes_per_frame(HardwareTier::High),
+        64 * 1024 * 1024
+    );
+}
+
+#[test]
+fn sdr_upload_budget_allows_current_image_regardless_of_budget() {
+    assert!(should_upload_sdr_this_frame(
+        true,
+        64 * 1024 * 1024,
+        64 * 1024 * 1024,
+        32 * 1024 * 1024
+    ));
+}
+
+#[test]
+fn sdr_upload_budget_defers_background_image_that_would_exceed_budget() {
+    assert!(!should_upload_sdr_this_frame(
+        false,
+        24 * 1024 * 1024,
+        16 * 1024 * 1024,
+        32 * 1024 * 1024
+    ));
+}
+
+#[test]
+fn sdr_upload_budget_allows_one_large_background_image_per_frame() {
+    assert!(should_upload_sdr_this_frame(
+        false,
+        0,
+        64 * 1024 * 1024,
+        32 * 1024 * 1024
+    ));
+}
+
+#[test]
+fn background_uploads_defer_while_transition_is_animating() {
+    assert!(should_defer_background_upload_during_transition(
+        false, true
+    ));
+    assert!(!should_defer_background_upload_during_transition(
+        true, true
+    ));
+    assert!(!should_defer_background_upload_during_transition(
+        false, false
+    ));
+}
+
+#[test]
+fn background_preload_memory_guard_uses_adaptive_reserve() {
+    assert_eq!(background_preload_memory_guard_threshold_mb(4 * 1024), 1024);
+    assert_eq!(
+        background_preload_memory_guard_threshold_mb(16 * 1024),
+        3276
+    );
+    assert_eq!(
+        background_preload_memory_guard_threshold_mb(64 * 1024),
+        4096
+    );
+
+    assert!(should_skip_background_preloads_for_memory(1023, 4 * 1024));
+    assert!(!should_skip_background_preloads_for_memory(1024, 4 * 1024));
+    assert!(should_skip_background_preloads_for_memory(4095, 64 * 1024));
+    assert!(!should_skip_background_preloads_for_memory(4096, 64 * 1024));
+}
+
+#[test]
+fn preload_decode_budget_estimates_compressed_images_conservatively() {
+    assert_eq!(
+        estimate_preload_decode_bytes(10 * 1024 * 1024),
+        120 * 1024 * 1024
+    );
+    assert_eq!(estimate_preload_decode_bytes(0), 0);
+}
+
+#[test]
+fn preload_budget_skips_first_oversized_background_candidate() {
+    assert_eq!(
+        decide_preload_for_budget(0, 0, 600 * 1024 * 1024, 100 * 1024 * 1024),
+        PreloadBudgetDecision::SkipCandidate
+    );
+}
+
+#[test]
+fn preload_budget_stops_after_budget_is_exhausted() {
+    assert_eq!(
+        decide_preload_for_budget(1, 80 * 1024 * 1024, 40 * 1024 * 1024, 100 * 1024 * 1024),
+        PreloadBudgetDecision::StopDirection
+    );
+}
+
+#[test]
+fn preload_budget_skips_first_new_oversized_even_after_existing_cached_items() {
+    assert_eq!(
+        decide_preload_for_budget(2, 0, 600 * 1024 * 1024, 100 * 1024 * 1024),
+        PreloadBudgetDecision::SkipCandidate
+    );
+}
+
+#[test]
+fn preload_budget_requests_unknown_or_fitting_candidate() {
+    assert_eq!(
+        decide_preload_for_budget(0, 0, 0, 100 * 1024 * 1024),
+        PreloadBudgetDecision::Request
+    );
+    assert_eq!(
+        decide_preload_for_budget(1, 40 * 1024 * 1024, 32 * 1024 * 1024, 100 * 1024 * 1024),
+        PreloadBudgetDecision::Request
+    );
+}
+
+#[test]
+fn oversized_preload_candidate_allows_near_budget_or_large_file() {
+    let budget = 100 * 1024 * 1024;
+    assert!(should_request_oversized_preload_candidate(
+        1 * 1024 * 1024,
+        150 * 1024 * 1024,
+        budget
+    ));
+    assert!(should_request_oversized_preload_candidate(
+        100 * 1024 * 1024,
+        600 * 1024 * 1024,
+        budget
+    ));
+    assert!(!should_request_oversized_preload_candidate(
+        1 * 1024 * 1024,
+        151 * 1024 * 1024,
+        budget
+    ));
+}
+
+#[test]
+fn preload_direction_skips_oversized_first_candidate_and_tries_next() {
+    let mut app = make_test_app();
+    app.generation = 7;
+    app.image_files = vec![
+        PathBuf::from("current.jpg"),
+        PathBuf::from("huge.jpg"),
+        PathBuf::from("small.jpg"),
+    ];
+    app.file_byte_len_by_index = vec![1, 10 * 1024 * 1024, 1 * 1024 * 1024];
+
+    app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
+
+    assert!(!app.loader.is_loading(1, app.generation));
+    assert!(app.loader.is_loading(2, app.generation));
+}
+
+#[test]
+fn preload_direction_requests_large_oversized_candidate_for_tiled_probe() {
+    let mut app = make_test_app();
+    app.generation = 7;
+    app.image_files = vec![
+        PathBuf::from("current.jpg"),
+        PathBuf::from("huge.tif"),
+        PathBuf::from("small.jpg"),
+    ];
+    app.file_byte_len_by_index = vec![1, 100 * 1024 * 1024, 1 * 1024 * 1024];
+
+    app.preload_direction("test", vec![1, 2], 1, 32 * 1024 * 1024);
+
+    assert!(app.loader.is_loading(1, app.generation));
+    assert!(!app.loader.is_loading(2, app.generation));
+}
+
+#[test]
 fn tiled_hdr_preview_replaces_only_missing_or_smaller_cached_preview() {
     assert!(should_cache_tiled_hdr_preview(None, 1024));
     assert!(should_cache_tiled_hdr_preview(Some(1024), 4096));
@@ -819,6 +1000,10 @@ fn make_test_app() -> ImageViewerApp {
         saver_handle: None,
         preload_budget_forward: 100 * 1024 * 1024,
         preload_budget_backward: 100 * 1024 * 1024,
+        preload_memory_sys: sysinfo::System::new_with_specifics(
+            sysinfo::RefreshKind::nothing()
+                .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+        ),
         context_menu_pos: None,
         current_rotation: 0,
         tile_upload_quota: 32,
@@ -983,6 +1168,39 @@ fn evict_distant_prefetch_caches_evicts_all_distant_prefetched_tiled_and_hdr_res
     assert!(!app.hdr_tiled_source_cache.contains_key(&3));
     assert!(!app.hdr_sdr_fallback_indices.contains(&3));
     assert!(!app.texture_cache.contains(3));
+}
+
+#[test]
+fn evict_distant_prefetch_caches_evicts_stale_uploaded_static_textures() {
+    use eframe::egui;
+
+    let mut app = make_test_app();
+    app.image_files = vec![
+        PathBuf::from("img0.jpg"),
+        PathBuf::from("img1.jpg"),
+        PathBuf::from("img2.jpg"),
+        PathBuf::from("img3.jpg"),
+        PathBuf::from("img4.jpg"),
+        PathBuf::from("img5.jpg"),
+        PathBuf::from("img6.jpg"),
+    ];
+    app.current_index = 0;
+
+    let ctx = egui::Context::default();
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 255]);
+    let stale = ctx.load_texture(
+        "stale_tex",
+        color_image.clone(),
+        egui::TextureOptions::LINEAR,
+    );
+    let nearby = ctx.load_texture("nearby_tex", color_image, egui::TextureOptions::LINEAR);
+    app.texture_cache.insert(3, stale, 1024, 768, false, 0, 7);
+    app.texture_cache.insert(1, nearby, 1024, 768, false, 0, 7);
+
+    app.evict_distant_prefetch_caches();
+
+    assert!(!app.texture_cache.contains(3));
+    assert!(app.texture_cache.contains(1));
 }
 
 #[test]

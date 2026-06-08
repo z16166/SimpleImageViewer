@@ -97,10 +97,28 @@ impl ImageViewerApp {
     /// Process results from the background ImageLoader.
     pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
         self.flush_deferred_sdr_upload_for_current(ctx);
+        let is_transitioning = self.transition_start.is_some();
 
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
-        if let Some(ref mut pending) = self.pending_anim_frames {
+        let defer_pending_animation_upload =
+            self.pending_anim_frames.as_ref().is_some_and(|pending| {
+                should_defer_background_upload_during_transition(
+                    pending.image_index == self.current_index,
+                    is_transitioning,
+                )
+            });
+        #[cfg(feature = "preload-debug")]
+        if defer_pending_animation_upload && let Some(pending) = self.pending_anim_frames.as_ref() {
+            preload_debug!(
+                "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
+                pending.image_index,
+                self.current_index,
+                pending.next_frame,
+                pending.frames.len()
+            );
+        }
+        if !defer_pending_animation_upload && let Some(ref mut pending) = self.pending_anim_frames {
             let mut uploaded = 0;
             while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
                 let i = pending.next_frame;
@@ -176,6 +194,9 @@ impl ImageViewerApp {
         //     back via repush() so it is the first thing processed next frame.
         const GLOBAL_UPLOAD_QUOTA: usize = 3;
         let mut uploads_this_frame: usize = 0;
+        let mut sdr_upload_bytes_this_frame: usize = 0;
+        let sdr_upload_budget_bytes_this_frame =
+            sdr_upload_budget_bytes_per_frame(self.hardware_tier);
 
         while let Some(output) = self.loader.poll() {
             match output {
@@ -203,16 +224,73 @@ impl ImageViewerApp {
                         continue;
                     }
 
-                    // DESIGN: The current image ALWAYS bypasses the upload quota.
-                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    if should_defer_background_upload_during_transition(
+                        is_current,
+                        is_transitioning,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=transition",
+                            idx,
+                            self.current_index,
+                            generation
+                        );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
                         break;
                     }
 
+                    let install_plan = ImageInstallPlan::from_load_result(&load_result);
+                    let estimated_sdr_upload_bytes = install_plan.estimated_sdr_upload_bytes();
+                    if estimated_sdr_upload_bytes > 0
+                        && !should_upload_sdr_this_frame(
+                            is_current,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame,
+                        )
+                    {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            idx,
+                            self.current_index,
+                            generation,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame
+                        );
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
+                    // DESIGN: The current image ALWAYS bypasses the upload quota.
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            idx,
+                            self.current_index,
+                            generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
+                    }
+
+                    preload_debug!(
+                        "[PreloadDebug] install image: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        idx,
+                        self.current_index,
+                        generation,
+                        is_current,
+                        estimated_sdr_upload_bytes,
+                        uploads_this_frame,
+                        sdr_upload_bytes_this_frame
+                    );
                     self.loader.finish_image_request(idx, generation);
                     if let Some((requeue_idx, requeue_gen, requeue_path)) =
-                        self.handle_image_load_result(load_result, ctx)
+                        self.handle_image_load_result(&load_result, install_plan, ctx)
                     {
                         // The slot was just freed by finish_image_request above; it is now safe to
                         // re-queue.  The loader holds the current (correct) HDR capacity.
@@ -224,6 +302,8 @@ impl ImageViewerApp {
                         );
                     }
                     uploads_this_frame += 1;
+                    sdr_upload_bytes_this_frame =
+                        sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
 
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
@@ -251,11 +331,41 @@ impl ImageViewerApp {
 
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
-                    if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    if should_defer_background_upload_during_transition(
+                        preview_is_current,
+                        is_transitioning,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=transition",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation
+                        );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
                         break;
                     }
+                    if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
+                        self.loader.repush(LoaderOutput::Preview(preview_update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    preload_debug!(
+                        "[PreloadDebug] install preview: idx={} current={} gen={} is_current={} uploads_before={}",
+                        preview_update.index,
+                        self.current_index,
+                        preview_update.generation,
+                        preview_is_current,
+                        uploads_this_frame
+                    );
                     self.handle_preview_update(preview_update, ctx);
                     uploads_this_frame += 1;
                 }
@@ -284,15 +394,74 @@ impl ImageViewerApp {
                         );
                         continue;
                     }
-                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    let estimated_sdr_upload_bytes =
+                        update.fallback.as_ref().map_or(0, |fallback| {
+                            decoded_rgba_bytes(fallback.width, fallback.height)
+                        });
+                    if should_defer_background_upload_during_transition(
+                        is_current,
+                        is_transitioning,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=transition",
+                            update.index,
+                            self.current_index,
+                            update.generation
+                        );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
                         break;
                     }
+                    if estimated_sdr_upload_bytes > 0
+                        && !should_upload_sdr_this_frame(
+                            is_current,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame,
+                        )
+                    {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                            sdr_upload_bytes_this_frame,
+                            estimated_sdr_upload_bytes,
+                            sdr_upload_budget_bytes_this_frame
+                        );
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                            uploads_this_frame,
+                            GLOBAL_UPLOAD_QUOTA
+                        );
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint();
+                        break;
+                    }
+                    preload_debug!(
+                        "[PreloadDebug] install hdr_sdr_fallback: idx={} current={} gen={} is_current={} estimated_sdr_upload_bytes={} uploads_before={} uploaded_bytes_before={}",
+                        update.index,
+                        self.current_index,
+                        update.generation,
+                        is_current,
+                        estimated_sdr_upload_bytes,
+                        uploads_this_frame,
+                        sdr_upload_bytes_this_frame
+                    );
                     self.hdr_in_flight_fallback_refinements
                         .remove(&update.index);
                     self.handle_hdr_sdr_fallback_update(update, ctx);
                     uploads_this_frame += 1;
+                    sdr_upload_bytes_this_frame =
+                        sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
                     if should_request_repaint_for_asset_update(
                         AssetUpdateKind::ImageLoaded,
                         is_current,
@@ -417,14 +586,14 @@ impl ImageViewerApp {
     /// Returns `Some((idx, generation, path))` when the result was stale (wrong HDR capacity) and
     /// the caller must re-queue **after** calling `finish_image_request` to clear the loading-map
     /// slot.
-    pub(crate) fn handle_image_load_result(
+    fn handle_image_load_result(
         &mut self,
-        load_result: LoadResult,
+        load_result: &LoadResult,
+        install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
     ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
         let generation = load_result.generation;
-        let preview_bundle = load_result.preview_bundle.clone();
 
         if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
             log::info!(
@@ -439,7 +608,7 @@ impl ImageViewerApp {
             return None;
         }
 
-        match ImageInstallPlan::from_load_result(&load_result) {
+        match install_plan {
             ImageInstallPlan::StaticSdr { decoded } => {
                 self.install_static_sdr_image(idx, decoded, ctx);
             }
@@ -460,6 +629,7 @@ impl ImageViewerApp {
             ImageInstallPlan::Tiled {
                 source,
                 hdr_source,
+                sdr_preview,
                 hdr_preview,
                 hdr_sdr_fallback,
                 ultra_hdr_capacity_sensitive,
@@ -469,7 +639,7 @@ impl ImageViewerApp {
                     generation,
                     source,
                     hdr_source,
-                    preview_bundle.sdr(),
+                    sdr_preview,
                     hdr_preview,
                     hdr_sdr_fallback,
                     ultra_hdr_capacity_sensitive,

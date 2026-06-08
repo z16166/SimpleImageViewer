@@ -75,7 +75,38 @@ pub(crate) fn should_dispatch_standard_draw(
     has_current_hdr_image || (has_sdr_texture && !sdr_fallback_is_placeholder)
 }
 
+/// Hold the outgoing frame while the navigation target is still decoding (transition style
+/// `None`). Requires a saved previous texture and/or HDR buffer.
+pub(crate) fn should_draw_pending_navigation_hold_frame(
+    transition_start: Option<std::time::Instant>,
+    pending_transition_target: Option<usize>,
+    current_index: usize,
+    has_prev_frame: bool,
+) -> bool {
+    transition_start.is_none() && pending_transition_target == Some(current_index) && has_prev_frame
+}
+
 impl ImageViewerApp {
+    /// While the navigation target is not render-ready and transitions are disabled, keep drawing
+    /// the outgoing image. HDR sources must use the float plane — drawing only the SDR fallback
+    /// texture looks noticeably darker on HDR displays.
+    pub(crate) fn draw_pending_navigation_hold_frame(&self, ui: &mut egui::Ui, screen_rect: Rect) {
+        let tp = crate::app::rendering::transitions::TransitionParams::default();
+        let hdr_output_mode = crate::hdr::monitor::effective_render_output_mode(
+            self.hdr_target_format,
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
+        self.draw_prev_image_underneath(
+            ui,
+            screen_rect,
+            &tp,
+            self.current_rotation,
+            self.hdr_target_format,
+            Some(hdr_output_mode),
+            None,
+        );
+    }
+
     /// Draw the standard (non-tiled) image rendering path, including transition animations.
     ///
     /// Called from `draw_image_canvas_ui` when there is an active texture in `texture_cache`.
@@ -909,6 +940,34 @@ mod tests {
             ),
             TransitionStyle::Ripple,
             true
+        ));
+    }
+
+    #[test]
+    fn pending_navigation_hold_frame_waits_for_target_without_transition_animation() {
+        assert!(should_draw_pending_navigation_hold_frame(
+            None,
+            Some(3),
+            3,
+            true
+        ));
+        assert!(!should_draw_pending_navigation_hold_frame(
+            Some(std::time::Instant::now()),
+            Some(3),
+            3,
+            true
+        ));
+        assert!(!should_draw_pending_navigation_hold_frame(
+            None,
+            Some(4),
+            3,
+            true
+        ));
+        assert!(!should_draw_pending_navigation_hold_frame(
+            None,
+            Some(3),
+            3,
+            false
         ));
     }
 

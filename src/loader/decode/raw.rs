@@ -18,14 +18,42 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::tiled_sources::RawImageSource;
-use crate::loader::{DecodedImage, ImageData, RefinementRequest};
-use crate::loader::{hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side};
+use crate::loader::{
+    DecodedImage, ImageData, RefinementRequest, hdr_display_requests_sdr_preview,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder,
+};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::assemble::{make_hdr_image_data, make_image_data};
+
+/// True when an embedded/platform preview is large enough to substitute for a full demosaic.
+fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h: u32) -> bool {
+    let pw = preview.width as u64;
+    let ph = preview.height as u64;
+    let rw = raw_w as u64;
+    let rh = raw_h as u64;
+    if rw == 0 || rh == 0 {
+        return false;
+    }
+    let sensor_px = rw * rh;
+    let preview_px = pw * ph;
+    // Orientation may swap axes; accept either mapping.
+    let axis_cover = (pw >= rw && ph >= rh) || (pw >= rh && ph >= rw);
+    preview_px * 10 >= sensor_px * 8 || axis_cover
+}
+
+fn should_finalize_with_embedded_preview(
+    preview: &DecodedImage,
+    raw_w: u32,
+    raw_h: u32,
+    hdr_target_capacity: f32,
+) -> bool {
+    raw_embedded_preview_covers_sensor(preview, raw_w, raw_h)
+        && hdr_display_requests_sdr_preview(hdr_target_capacity)
+}
 
 pub(crate) fn load_raw(
     _index: usize,
@@ -91,66 +119,37 @@ pub(crate) fn load_raw(
     };
     processor.set_user_flip(final_lr_flip);
 
-    // --- Performance Optimization: Try to use embedded preview to avoid expensive demosaicing ---
-    let mut preview_opt = {
-        // Step 1: Try platform-native loaders (WIC/ImageIO).
-        // We pass Some(final_orientation) to force the system loader to respect our authoritative choice.
-        #[cfg(target_os = "windows")]
-        let res = {
-            // WIC requires COM on this thread (`ComGuard` — see `decode` module docs).
-            crate::wic::load_via_wic(path, high_quality, Some(final_orientation))
-        };
-        #[cfg(target_os = "macos")]
-        let res =
-            crate::macos_image_io::load_via_image_io(path, high_quality, Some(final_orientation));
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let res: Result<ImageData, String> = Err("Unsupported".to_string());
+    // --- Fast preview: LibRaw embedded thumb only ---
+    // Never use WIC/ImageIO once LibRaw opened the file: Leaf/Mamiya MOS and similar legacy RAW
+    // often decode to a misleading ~4096px bitmap (black or far too dark) while LibRaw develop()
+    // is correct. Platform decoders remain Rule-2 fallbacks when LibRaw cannot open the file.
+    let mut preview_opt = None;
 
-        match res {
-            Ok(ImageData::Static(img)) => Some(img),
-            Ok(ImageData::Tiled(source)) => {
-                let lim = hq_preview_max_side();
-                let (pw, ph, p) = source.generate_preview(lim, lim);
-                Some(DecodedImage::new(pw, ph, p))
-            }
-            Ok(ImageData::HdrTiled { fallback, .. }) => {
-                let lim = hq_preview_max_side();
-                let (pw, ph, p) = fallback.generate_preview(lim, lim);
-                Some(DecodedImage::new(pw, ph, p))
-            }
-            _ => {
-                // Step 2: Fallback to LibRaw's native thumbnail extraction if platform loader failed.
-                // We use the same final_orientation to ensure perfect consistency.
-                if let Ok(mut p) = processor.unpack_thumb() {
-                    if final_orientation > 1 {
-                        let pixels = p.take_rgba_owned();
-                        if let Some(rgba) = image::RgbaImage::from_raw(p.width, p.height, pixels) {
-                            let mut img = image::DynamicImage::ImageRgba8(rgba);
-                            match final_orientation {
-                                2 => img = img.fliph(),
-                                3 => img = img.rotate180(),
-                                4 => img = img.flipv(),
-                                5 => img = img.fliph().rotate270(),
-                                6 => img = img.rotate90(),
-                                7 => img = img.fliph().rotate90(),
-                                8 => img = img.rotate270(),
-                                _ => {}
-                            }
-                            let rgba_rotated = img.to_rgba8();
-                            p.set_rgba_buffer(
-                                rgba_rotated.width(),
-                                rgba_rotated.height(),
-                                rgba_rotated.into_raw(),
-                            );
-                        }
-                    }
-                    Some(p)
-                } else {
-                    None
+    if let Ok(mut p) = processor.unpack_thumb() {
+        if final_orientation > 1 {
+            let pixels = p.take_rgba_owned();
+            if let Some(rgba) = image::RgbaImage::from_raw(p.width, p.height, pixels) {
+                let mut img = image::DynamicImage::ImageRgba8(rgba);
+                match final_orientation {
+                    2 => img = img.fliph(),
+                    3 => img = img.rotate180(),
+                    4 => img = img.flipv(),
+                    5 => img = img.fliph().rotate270(),
+                    6 => img = img.rotate90(),
+                    7 => img = img.fliph().rotate90(),
+                    8 => img = img.rotate270(),
+                    _ => {}
                 }
+                let rgba_rotated = img.to_rgba8();
+                p.set_rgba_buffer(
+                    rgba_rotated.width(),
+                    rgba_rotated.height(),
+                    rgba_rotated.into_raw(),
+                );
             }
         }
-    };
+        preview_opt = Some(p);
+    }
 
     // Sanitize: A zero-dimension image will cause a validation error in wgpu (Dimension X is zero).
     if let Some(ref p) = preview_opt {
@@ -164,21 +163,36 @@ pub(crate) fn load_raw(
     }
 
     if let Some(p) = preview_opt.clone() {
-        let hq_lim = hq_preview_max_side();
-        let is_hq = p.width >= hq_lim || p.height >= hq_lim;
-        // If !high_quality (performance mode), we use any preview to save energy/fans.
-        // If high_quality is true, we only use it if it's large enough (HQ).
-        if !high_quality || is_hq {
+        if should_finalize_with_embedded_preview(&p, width, height, hdr_target_capacity) {
             log::debug!(
-                "[Loader] Using embedded preview for {:?} ({}x{}, HQ={})",
+                "[Loader] Using full-resolution embedded preview for {:?} ({}x{})",
                 path,
                 p.width,
-                p.height,
-                is_hq
+                p.height
             );
             return Ok(make_image_data(p));
         }
-        // If we reach here, high_quality is true but preview is not HQ, so we fall through to develop.
+        if raw_embedded_preview_covers_sensor(&p, width, height)
+            && !hdr_display_requests_sdr_preview(hdr_target_capacity)
+        {
+            log::debug!(
+                "[Loader] Embedded preview {:?} is {}x{} (sensor {}x{}); demosaicing for scene-linear HDR",
+                path.file_name().unwrap_or_default(),
+                p.width,
+                p.height,
+                width,
+                height
+            );
+        } else if !high_quality {
+            log::debug!(
+                "[Loader] Embedded preview {:?} is {}x{} (sensor {}x{}); demosaicing instead of platform decode",
+                path.file_name().unwrap_or_default(),
+                p.width,
+                p.height,
+                width,
+                height
+            );
+        }
     }
 
     // 2. Rule 1: High-Performance Synchronous Development for Small Images (< 64MP).
@@ -193,34 +207,51 @@ pub(crate) fn load_raw(
             area as f64 / 1_000_000.0
         );
 
-        if let Ok(hdr) = processor.develop_scene_linear_hdr() {
-            let warnings = processor.process_warnings();
-            if warnings != 0 {
-                log::info!(
-                    "[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding with native pixels.",
-                    warnings,
-                    path
-                );
-            }
+        if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
+            if let Ok(hdr) = processor.develop_scene_linear_hdr() {
+                let warnings = processor.process_warnings();
+                if warnings != 0 {
+                    log::info!(
+                        "[Loader] LibRaw reported informational warnings (0x{:x}) for {:?}, proceeding with native pixels.",
+                        warnings,
+                        path
+                    );
+                }
 
-            if hdr.width == 0 || hdr.height == 0 {
+                if hdr.width == 0 || hdr.height == 0 {
+                    log::error!(
+                        "[Loader] LibRaw developed a zero-dimension HDR image for {:?}. Falling through.",
+                        path
+                    );
+                } else {
+                    let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                        &hdr,
+                        hdr_target_capacity,
+                        &hdr_tone_map,
+                    )?;
+                    let fallback =
+                        DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                    return Ok(make_hdr_image_data(hdr, fallback));
+                }
+            } else {
                 log::error!(
-                    "[Loader] LibRaw developed a zero-dimension image for {:?}. Falling through to Rule 2.",
+                    "[Loader] Rule 1 RAW scene-linear HDR develop failed for {:?}. Falling back to SDR develop.",
                     path
                 );
-            } else {
-                let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                    &hdr,
-                    hdr_target_capacity,
-                    &hdr_tone_map,
-                )?;
-                let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-                return Ok(make_hdr_image_data(hdr, fallback));
             }
-        } else {
-            log::error!(
-                "[Loader] Failed to develop Rule 1 RAW HDR pixels. Falling through to Rule 2."
-            );
+        }
+
+        match processor.develop() {
+            Ok(img) => {
+                return Ok(make_image_data(DecodedImage::from(img.to_rgba8())));
+            }
+            Err(e) => {
+                log::error!(
+                    "[Loader] Rule 1 LibRaw develop failed for {:?}: {}. Falling through to Rule 2.",
+                    path,
+                    e
+                );
+            }
         }
     }
 
@@ -251,4 +282,35 @@ pub(crate) fn load_raw(
         area as f64 / 1_000_000.0
     );
     Ok(ImageData::Tiled(source))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::DecodedImage;
+
+    #[test]
+    fn nikon1_embedded_thumb_covers_sensor_but_not_used_for_hdr_finalize() {
+        // RAW_NIKON1_V1.NEF: LibRaw thumb 3872×2592 vs sensor 3904×2604.
+        let thumb = DecodedImage::new(3872, 2592, vec![0; 3872 * 2592 * 4]);
+        assert!(raw_embedded_preview_covers_sensor(&thumb, 3904, 2604));
+        assert!(should_finalize_with_embedded_preview(
+            &thumb, 3904, 2604, 1.0
+        ));
+        assert!(!should_finalize_with_embedded_preview(
+            &thumb, 3904, 2604, 4.0
+        ));
+    }
+
+    #[test]
+    fn raw_embedded_preview_covers_sensor_requires_near_full_resolution() {
+        let misleading_wic = DecodedImage::new(4096, 3067, vec![0; 4096 * 3067 * 4]);
+        assert!(!raw_embedded_preview_covers_sensor(
+            &misleading_wic,
+            4992,
+            6666
+        ));
+        let full = DecodedImage::new(4992, 6666, vec![0; 4992 * 6666 * 4]);
+        assert!(raw_embedded_preview_covers_sensor(&full, 4992, 6666));
+    }
 }
