@@ -607,19 +607,9 @@ impl ImageViewerApp {
         } else {
             new_clip.max.x = clip_x;
         }
-        self.draw_hdr_image_plane_clipped(
-            ui,
-            new_clip,
-            final_dest,
-            hdr_image,
-            tone_map,
-            target_format,
-            hdr_output_mode,
-            rotation,
-            alpha,
-            None,
-        );
 
+        // Draw outgoing first so its HDR GPU binding is prepared (and LRU-protected) before
+        // the incoming image upload can evict it from the small plane cache.
         if has_prev {
             let mut old_clip = union_rect;
             if self.is_next {
@@ -636,7 +626,22 @@ impl ImageViewerApp {
                 1.0,
                 Some((target_format, hdr_output_mode)),
             );
+        }
 
+        self.draw_hdr_image_plane_clipped(
+            ui,
+            new_clip,
+            final_dest,
+            hdr_image,
+            tone_map,
+            target_format,
+            hdr_output_mode,
+            rotation,
+            alpha,
+            None,
+        );
+
+        if has_prev {
             let shadow_width = 40.0;
             let shadow_alpha = (1.0 - ease_in_out) * 0.4;
             let shadow_rect = if self.is_next {
@@ -984,6 +989,24 @@ impl ImageViewerApp {
             new_clip.max.x = clip_x;
         }
 
+        if has_prev {
+            let mut old_clip = union_rect;
+            if self.is_next {
+                old_clip.max.x = clip_x;
+            } else {
+                old_clip.min.x = clip_x;
+            }
+            self.draw_outgoing_transition_frame_clipped(
+                ui,
+                screen_rect,
+                old_clip,
+                p_dest,
+                rotation,
+                1.0,
+                None,
+            );
+        }
+
         let mut mesh = egui::Mesh::with_texture(texture.id());
         mesh.add_rect_with_uv(
             unrotated_final_dest,
@@ -1002,22 +1025,6 @@ impl ImageViewerApp {
             .add(egui::Shape::mesh(mesh));
 
         if has_prev {
-            let mut old_clip = union_rect;
-            if self.is_next {
-                old_clip.max.x = clip_x;
-            } else {
-                old_clip.min.x = clip_x;
-            }
-            self.draw_outgoing_transition_frame_clipped(
-                ui,
-                screen_rect,
-                old_clip,
-                p_dest,
-                rotation,
-                1.0,
-                None,
-            );
-
             let shadow_width = 40.0;
             let shadow_alpha = (1.0 - ease_in_out) * 0.4;
             let shadow_rect = if self.is_next {
