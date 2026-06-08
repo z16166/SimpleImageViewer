@@ -233,7 +233,7 @@ fn background_uploads_defer_while_transition_is_animating() {
     assert!(should_defer_background_upload_during_transition(
         false, true
     ));
-    assert!(!should_defer_background_upload_during_transition(
+    assert!(should_defer_background_upload_during_transition(
         true, true
     ));
     assert!(!should_defer_background_upload_during_transition(

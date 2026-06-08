@@ -226,7 +226,7 @@ impl ImageViewerApp {
             && render_plan.backend == PlaneBackendKind::Hdr
         {
             if let (Some(hdr_image), Some(target_format)) =
-                (hdr_image.clone(), self.hdr_target_format)
+                (hdr_image.clone(), render_plan.target_format)
             {
                 if self.active_transition == TransitionStyle::Ripple {
                     // 1. Compute ripple state
@@ -322,7 +322,13 @@ impl ImageViewerApp {
         // is the correct visual source — see `should_route_through_hdr_plane`.
         if should_route_through_hdr_plane(&render_plan) {
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
-                if tp.is_animating {
+                let geometric_transition = matches!(
+                    self.active_transition,
+                    TransitionStyle::PageFlip | TransitionStyle::Curtain | TransitionStyle::Ripple
+                );
+                if tp.is_animating && geometric_transition {
+                    // Dedicated clipped HDR paths above handle these styles.
+                } else if tp.is_animating {
                     self.draw_prev_image_underneath(
                         ui,
                         screen_rect,
@@ -333,22 +339,32 @@ impl ImageViewerApp {
                         None,
                     );
                     ui.ctx().request_repaint();
+                    self.draw_hdr_image_plane_clipped(
+                        ui,
+                        screen_rect,
+                        hdr_image_plane_rect(&final_layout),
+                        hdr_image,
+                        self.hdr_renderer.tone_map,
+                        target_format,
+                        render_plan.output_mode,
+                        rotation,
+                        tp.alpha,
+                        None,
+                    );
+                } else {
+                    self.draw_hdr_image_plane_clipped(
+                        ui,
+                        screen_rect,
+                        hdr_image_plane_rect(&final_layout),
+                        hdr_image,
+                        self.hdr_renderer.tone_map,
+                        target_format,
+                        render_plan.output_mode,
+                        rotation,
+                        tp.alpha,
+                        None,
+                    );
                 }
-
-                // HDR images draw through egui-wgpu so the float buffer reaches the shader.
-                // The SDR fallback texture stays cached for non-wgpu paths and transitions.
-                self.draw_hdr_image_plane_clipped(
-                    ui,
-                    screen_rect,
-                    hdr_image_plane_rect(&final_layout),
-                    hdr_image,
-                    self.hdr_renderer.tone_map,
-                    target_format,
-                    render_plan.output_mode,
-                    rotation,
-                    tp.alpha,
-                    None,
-                );
                 return;
             }
         }
@@ -612,7 +628,13 @@ impl ImageViewerApp {
                 old_clip.min.x = clip_x;
             }
             self.draw_outgoing_transition_frame_clipped(
-                ui, screen_rect, old_clip, p_dest, rotation, 1.0,
+                ui,
+                screen_rect,
+                old_clip,
+                p_dest,
+                rotation,
+                1.0,
+                Some((target_format, hdr_output_mode)),
             );
 
             let shadow_width = 40.0;
@@ -821,9 +843,11 @@ impl ImageViewerApp {
         p_dest: Rect,
         rotation: i32,
         alpha: f32,
+        hdr_output: Option<(wgpu::TextureFormat, HdrRenderOutputMode)>,
     ) {
         if let Some(prev_hdr) = self.prev_hdr_image.as_ref() {
-            if let Some((target_format, hdr_output_mode)) = self.effective_hdr_display_output() {
+            let hdr_draw = hdr_output.or_else(|| self.effective_hdr_display_output());
+            if let Some((target_format, hdr_output_mode)) = hdr_draw {
                 self.draw_hdr_image_plane_clipped(
                     ui,
                     clip,
@@ -985,7 +1009,13 @@ impl ImageViewerApp {
                 old_clip.min.x = clip_x;
             }
             self.draw_outgoing_transition_frame_clipped(
-                ui, screen_rect, old_clip, p_dest, rotation, 1.0,
+                ui,
+                screen_rect,
+                old_clip,
+                p_dest,
+                rotation,
+                1.0,
+                None,
             );
 
             let shadow_width = 40.0;
@@ -1064,6 +1094,7 @@ impl ImageViewerApp {
                 p_dest.translate(Vec2::new(-shift, 0.0)),
                 0,
                 1.0,
+                None,
             );
             self.draw_outgoing_transition_frame_clipped(
                 ui,
@@ -1072,6 +1103,7 @@ impl ImageViewerApp {
                 p_dest.translate(Vec2::new(shift, 0.0)),
                 0,
                 1.0,
+                None,
             );
             Self::draw_curtain_split_shadows(ui, union_rect, center_x, shift, ease);
         }

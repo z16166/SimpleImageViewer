@@ -135,10 +135,13 @@ fn should_upload_sdr_this_frame(
 }
 
 fn should_defer_background_upload_during_transition(
-    is_current: bool,
+    _is_current: bool,
     is_transitioning: bool,
 ) -> bool {
-    is_transitioning && !is_current
+    // Defer all background GPU uploads while a transition is active, including SDR fallback
+    // refinement for the current index. Mid-transition uploads can flash dim SDR pixels over HDR
+    // page-flip geometry (common with AVIF ISO gain-map sources).
+    is_transitioning
 }
 
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
@@ -573,6 +576,9 @@ impl<'a> ImageInstallPlan<'a> {
 }
 impl ImageViewerApp {
     pub(crate) fn trigger_current_hdr_fallback_refinement_if_needed(&mut self) {
+        if self.transition_start.is_some() {
+            return;
+        }
         if self
             .hdr_placeholder_fallback_indices
             .contains(&self.current_index)

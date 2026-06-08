@@ -275,7 +275,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
 
         if (apple_deferred.is_some() || iso_deferred.is_some()) && !deferred_gpu_composed {
-            binding.bind_group = None;
+            // Keep the previous bind group (if any) so AVIF/ISO gain-map compose does not flash a
+            // blank frame while the first GPU bake is in flight.
             return compose_command_buffers;
         }
 
