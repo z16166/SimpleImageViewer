@@ -87,12 +87,32 @@ pub(crate) fn should_draw_pending_navigation_hold_frame(
 }
 
 impl ImageViewerApp {
+    /// Pin HDR GPU bindings while a transition is active so prev/current planes are not evicted
+    /// mid-animation (re-upload + ISO compose would flash a full frame).
+    pub(crate) fn hdr_plane_keep_resident(&self) -> bool {
+        if self.transition_start.is_some() {
+            return true;
+        }
+        const POST_TRANSITION_BINDING_HOLD: std::time::Duration =
+            std::time::Duration::from_millis(50);
+        self.transition_settled_at
+            .is_some_and(|t| t.elapsed() < POST_TRANSITION_BINDING_HOLD)
+    }
+
     /// While the navigation target is not render-ready and transitions are disabled, keep drawing
     /// the outgoing image. HDR sources must use the float plane — drawing only the SDR fallback
     /// texture looks noticeably darker on HDR displays.
     pub(crate) fn draw_pending_navigation_hold_frame(&self, ui: &mut egui::Ui, screen_rect: Rect) {
-        let tp = crate::app::rendering::transitions::TransitionParams::default();
-        self.draw_prev_image_underneath(ui, screen_rect, &tp, self.current_rotation, None, None, None);
+        let tp = pending_navigation_hold_params();
+        self.draw_prev_image_underneath(
+            ui,
+            screen_rect,
+            &tp,
+            self.current_rotation,
+            None,
+            None,
+            None,
+        );
     }
 
     /// HDR float-plane draw params for the outgoing frame during cross-format transitions.
@@ -312,6 +332,13 @@ impl ImageViewerApp {
                     return;
                 }
             }
+            if tp.is_animating {
+                // HDR plane expected but not drawable this frame — hold the outgoing frame instead
+                // of falling through to the SDR page-flip path (full-frame brightness flash).
+                self.draw_pending_navigation_hold_frame(ui, screen_rect);
+                ui.ctx().request_repaint();
+                return;
+            }
         }
 
         // Static HDR images draw through egui-wgpu so the float buffer reaches the shader.
@@ -375,6 +402,7 @@ impl ImageViewerApp {
                 self.active_transition,
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             )
+            && render_plan.backend == PlaneBackendKind::Sdr
             && texture.is_some()
         {
             let texture = texture.as_ref().expect("checked above");
@@ -389,13 +417,9 @@ impl ImageViewerApp {
                     angle,
                     tp.alpha,
                 ),
-                TransitionStyle::Curtain => self.draw_curtain_transition(
-                    ui,
-                    screen_rect,
-                    texture,
-                    final_dest,
-                    tp.alpha,
-                ),
+                TransitionStyle::Curtain => {
+                    self.draw_curtain_transition(ui, screen_rect, texture, final_dest, tp.alpha)
+                }
                 TransitionStyle::Ripple => self.draw_ripple_transition(
                     ui,
                     screen_rect,
@@ -531,6 +555,7 @@ impl ImageViewerApp {
                 ui,
                 screen_rect,
                 final_dest,
+                rotation,
                 hdr_image,
                 tone_map,
                 target_format,
@@ -570,6 +595,7 @@ impl ImageViewerApp {
                 rotation_steps: rotation as u32,
                 alpha,
                 ripple,
+                keep_resident: self.hdr_plane_keep_resident(),
             },
         );
     }
@@ -680,6 +706,7 @@ impl ImageViewerApp {
         ui: &mut egui::Ui,
         screen_rect: Rect,
         final_dest: Rect,
+        rotation: i32,
         hdr_image: Arc<HdrImageBuffer>,
         tone_map: HdrToneMapSettings,
         target_format: wgpu::TextureFormat,
@@ -720,7 +747,7 @@ impl ImageViewerApp {
                 tone_map,
                 target_format,
                 hdr_output_mode,
-                0,
+                curtain_hdr_transition_rotation(rotation),
                 alpha,
                 None,
             );
@@ -743,7 +770,7 @@ impl ImageViewerApp {
                     self.hdr_renderer.tone_map,
                     target_format,
                     hdr_output_mode,
-                    0,
+                    curtain_hdr_transition_rotation(rotation),
                     alpha,
                     None,
                 );
@@ -755,7 +782,7 @@ impl ImageViewerApp {
                     self.hdr_renderer.tone_map,
                     target_format,
                     hdr_output_mode,
-                    0,
+                    curtain_hdr_transition_rotation(rotation),
                     alpha,
                     None,
                 );
@@ -817,11 +844,7 @@ impl ImageViewerApp {
     }
 
     /// Outgoing-frame layout for complex transitions whose destination is an SDR texture.
-    fn transition_prev_layout(
-        &self,
-        screen_rect: Rect,
-        final_dest: Rect,
-    ) -> (Rect, Rect, bool) {
+    fn transition_prev_layout(&self, screen_rect: Rect, final_dest: Rect) -> (Rect, Rect, bool) {
         let prev_size = self
             .prev_hdr_image
             .as_ref()
@@ -843,7 +866,7 @@ impl ImageViewerApp {
     fn draw_outgoing_transition_frame_clipped(
         &self,
         ui: &mut egui::Ui,
-        screen_rect: Rect,
+        _screen_rect: Rect,
         clip: Rect,
         p_dest: Rect,
         rotation: i32,
@@ -924,7 +947,13 @@ impl ImageViewerApp {
         }
     }
 
-    fn draw_curtain_split_shadows(ui: &egui::Ui, union_rect: Rect, center_x: f32, shift: f32, ease: f32) {
+    fn draw_curtain_split_shadows(
+        ui: &egui::Ui,
+        union_rect: Rect,
+        center_x: f32,
+        shift: f32,
+        ease: f32,
+    ) {
         let shadow_w = 30.0;
         let shadow_alpha = (1.0 - ease) * 0.45;
         let shadow_color = Color32::from_black_alpha((shadow_alpha * 255.0) as u8);
@@ -1206,6 +1235,17 @@ impl ImageViewerApp {
     }
 }
 
+fn pending_navigation_hold_params() -> crate::app::rendering::transitions::TransitionParams {
+    crate::app::rendering::transitions::TransitionParams {
+        prev_alpha: 1.0,
+        ..crate::app::rendering::transitions::TransitionParams::default()
+    }
+}
+
+fn curtain_hdr_transition_rotation(rotation: i32) -> i32 {
+    rotation
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,6 +1265,14 @@ mod tests {
         assert!(!should_dispatch_standard_draw(true, false, true));
         assert!(should_dispatch_standard_draw(false, true, true));
         assert!(!should_dispatch_standard_draw(false, false, false));
+    }
+
+    #[test]
+    fn pending_navigation_hold_draws_previous_frame_opaque() {
+        let params = pending_navigation_hold_params();
+        assert_eq!(params.prev_alpha, 1.0);
+        assert_eq!(params.prev_scale, 1.0);
+        assert_eq!(params.prev_offset, Vec2::ZERO);
     }
 
     #[test]
@@ -1340,6 +1388,11 @@ mod tests {
             TransitionStyle::Ripple,
             true
         ));
+    }
+
+    #[test]
+    fn hdr_curtain_transition_uses_image_rotation() {
+        assert_eq!(curtain_hdr_transition_rotation(3), 3);
     }
 
     #[test]

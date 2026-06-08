@@ -36,6 +36,7 @@ pub(crate) enum PlaneDrawSource {
         rotation_steps: u32,
         alpha: f32,
         ripple: Option<(egui::Pos2, f32, f32, u32)>,
+        keep_resident: bool,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
@@ -78,6 +79,7 @@ pub(crate) fn draw_plane(
             rotation_steps,
             alpha,
             ripple,
+            keep_resident,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -93,6 +95,7 @@ pub(crate) fn draw_plane(
                     alpha,
                     uv_subrect(uv, uv_rect),
                     ripple,
+                    keep_resident,
                 ));
         }
         PlaneDrawSource::HdrTile {

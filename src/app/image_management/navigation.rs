@@ -18,16 +18,10 @@ use super::*;
 
 impl ImageViewerApp {
     /// Current animation frame texture when the outgoing index is an animated image.
-    fn transition_animation_texture_for_index(
-        &self,
-        index: usize,
-    ) -> Option<egui::TextureHandle> {
+    fn transition_animation_texture_for_index(&self, index: usize) -> Option<egui::TextureHandle> {
         if let Some(animation) = self.animation.as_ref() {
             if animation.image_index == index {
-                return animation
-                    .textures
-                    .get(animation.current_frame)
-                    .cloned();
+                return animation.textures.get(animation.current_frame).cloned();
             }
         }
         self.animation_cache
@@ -46,7 +40,17 @@ impl ImageViewerApp {
     ) {
         self.flush_deferred_sdr_upload_for_index(index, ctx);
 
-        let hdr = self.first_cached_hdr_or_tiled_preview_for_index(index);
+        // Prefer the HDR buffer already on screen (`current_hdr_image`) so the outgoing
+        // transition plane reuses the same GPU binding instead of re-uploading/re-composing.
+        let hdr = if index == self.current_index {
+            self.current_hdr_image
+                .as_ref()
+                .and_then(|current| current.image_for_index(index))
+                .cloned()
+        } else {
+            None
+        }
+        .or_else(|| self.first_cached_hdr_or_tiled_preview_for_index(index));
         let placeholder = self.hdr_placeholder_fallback_indices.contains(&index);
 
         let mut texture = self
@@ -57,7 +61,11 @@ impl ImageViewerApp {
 
         // When the HDR float plane is available, avoid using the dim placeholder SDR fallback
         // as the outgoing transition source.
-        if placeholder && hdr.is_some() {
+        if should_drop_placeholder_sdr_transition_source(
+            placeholder,
+            hdr.is_some(),
+            self.effective_hdr_display_output().is_some(),
+        ) {
             texture = None;
         }
 
@@ -119,12 +127,14 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
+        self.transition_settled_at = None;
+        self.transition_end_hold = false;
+        self.last_background_upload_at = None;
         let preload_forward =
             navigation_is_forward(previous_index, target_index, self.image_files.len());
 
         let outgoing_index = self.current_index;
-        let (source_tex, source_hdr) =
-            self.capture_transition_source_at_index(outgoing_index, ctx);
+        let (source_tex, source_hdr) = self.capture_transition_source_at_index(outgoing_index, ctx);
 
         // Setup transition if enabled. We defer transition start until the target
         // texture is actually ready to draw, avoiding black/stale-frame flashes.
@@ -156,14 +166,12 @@ impl ImageViewerApp {
             let target_placeholder_only = self
                 .hdr_placeholder_fallback_indices
                 .contains(&target_index);
-            if should_start_transition_immediately(
-                target_is_render_ready(
-                    target_has_texture,
-                    target_has_hdr_plane,
-                    target_placeholder_only,
-                ),
-                source_has_texture,
-            ) {
+            let target_render_ready = target_is_render_ready(
+                target_has_texture,
+                target_has_hdr_plane,
+                target_placeholder_only,
+            );
+            if should_start_transition_immediately(target_render_ready, source_has_texture) {
                 self.transition_start =
                     Some(now - transition_preroll_duration(self.settings.transition_ms));
                 self.pending_transition_target = None;
@@ -253,6 +261,7 @@ impl ImageViewerApp {
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.is_font_error = false;
+        ctx.request_repaint();
         // Close any open EXIF/XMP modal — it shows data for the previous image
         if matches!(
             self.active_modal,
@@ -378,6 +387,7 @@ impl ImageViewerApp {
         self.loader
             .discard_pending_stale_outputs(self.generation, also_keep);
         self.trigger_current_hdr_fallback_refinement_if_needed();
+        self.try_start_pending_transition_if_ready();
     }
 
     pub(crate) fn navigate_next(&mut self, ctx: &egui::Context) {

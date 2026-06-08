@@ -728,6 +728,7 @@ impl ImageViewerApp {
                         rotation_steps: rotation as u32,
                         alpha: tile_alpha,
                         ripple: None,
+                        keep_resident: self.hdr_plane_keep_resident(),
                     },
                 );
             }

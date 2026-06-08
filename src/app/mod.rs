@@ -520,7 +520,13 @@ pub struct ImageViewerApp {
     pub(crate) prev_texture: Option<egui::TextureHandle>,
     pub(crate) prev_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) transition_start: Option<Instant>,
+    /// Set when a transition animation completes; used to defer HDR SDR refinement uploads
+    /// for the current image until the static frame has settled (avoids end-of-flip flash).
+    pub(crate) transition_settled_at: Option<Instant>,
+    /// One extra geometric-transition frame at t=1.0 before clearing `transition_start`.
+    pub(crate) transition_end_hold: bool,
     pub(crate) pending_transition_target: Option<usize>,
+    pub(crate) last_background_upload_at: Option<Instant>,
     pub(crate) is_next: bool,
     pub(crate) active_transition: TransitionStyle,
 

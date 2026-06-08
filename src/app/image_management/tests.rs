@@ -231,13 +231,41 @@ fn sdr_upload_budget_allows_one_large_background_image_per_frame() {
 #[test]
 fn background_uploads_defer_while_transition_is_animating() {
     assert!(should_defer_background_upload_during_transition(
-        false, true
-    ));
-    assert!(should_defer_background_upload_during_transition(
-        true, true
+        false, true, None,
     ));
     assert!(!should_defer_background_upload_during_transition(
-        false, false
+        true, true, None,
+    ));
+    assert!(!should_defer_background_upload_during_transition(
+        false, false, None,
+    ));
+    assert!(should_defer_background_upload_during_transition(
+        false,
+        false,
+        Some(std::time::Instant::now()),
+    ));
+    assert!(should_defer_background_upload_during_transition(
+        false,
+        false,
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(500)),
+    ));
+}
+
+#[test]
+fn refinement_uploads_defer_for_current_index_while_transition_is_animating() {
+    assert!(should_defer_refinement_during_transition(true));
+    assert!(!should_defer_refinement_during_transition(false));
+}
+
+#[test]
+fn hdr_sdr_fallback_defers_during_transition_and_until_settle_window_for_current() {
+    assert!(should_defer_hdr_sdr_fallback_install(true, true, None));
+    assert!(!should_defer_hdr_sdr_fallback_install(false, true, None));
+    assert!(!should_defer_hdr_sdr_fallback_install(true, false, None));
+    assert!(should_defer_hdr_sdr_fallback_install(
+        true,
+        false,
+        Some(std::time::Instant::now()),
     ));
 }
 
@@ -490,6 +518,152 @@ fn pending_transition_starts_only_when_target_texture_is_ready() {
     assert!(!can_start_pending_transition(Some(7), 6, true));
     assert!(!can_start_pending_transition(Some(7), 7, false));
     assert!(can_start_pending_transition(Some(7), 7, true));
+}
+
+#[test]
+fn pending_transition_yields_background_results_until_current_is_ready() {
+    assert!(should_yield_background_result_for_pending_transition(
+        false,
+        Some(7),
+        7,
+    ));
+    assert!(!should_yield_background_result_for_pending_transition(
+        true,
+        Some(7),
+        7,
+    ));
+    assert!(!should_yield_background_result_for_pending_transition(
+        false,
+        Some(8),
+        7,
+    ));
+    assert!(!should_yield_background_result_for_pending_transition(
+        false, None, 7,
+    ));
+}
+
+#[test]
+fn post_transition_yields_background_results_until_current_refinement_runs() {
+    assert!(
+        should_yield_background_result_for_post_transition_refinement(
+            false,
+            Some(std::time::Instant::now()),
+            true,
+        )
+    );
+    assert!(
+        !should_yield_background_result_for_post_transition_refinement(
+            true,
+            Some(std::time::Instant::now()),
+            true,
+        )
+    );
+    assert!(
+        !should_yield_background_result_for_post_transition_refinement(
+            false,
+            Some(std::time::Instant::now()),
+            false,
+        )
+    );
+    assert!(!should_yield_background_result_for_post_transition_refinement(false, None, true,));
+}
+
+#[test]
+fn post_transition_background_upload_quota_is_throttled() {
+    assert_eq!(background_upload_quota_after_transition(3, None), 3);
+    assert_eq!(
+        background_upload_quota_after_transition(3, Some(std::time::Instant::now())),
+        1,
+    );
+}
+
+#[test]
+fn post_transition_background_uploads_are_spaced() {
+    let settled = std::time::Instant::now();
+    let last_upload = std::time::Instant::now();
+    assert!(should_space_background_upload_after_transition(
+        false,
+        Some(settled),
+        Some(last_upload),
+    ));
+    assert!(!should_space_background_upload_after_transition(
+        true,
+        Some(settled),
+        Some(last_upload),
+    ));
+    assert!(!should_space_background_upload_after_transition(
+        false,
+        None,
+        Some(last_upload),
+    ));
+}
+
+#[test]
+fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
+    let result = crate::loader::PreviewResult {
+        index: 1,
+        generation: 0,
+        source_key: source_key_for_path(&PathBuf::from("preview.avif")),
+        preview_bundle: PreviewBundle::refined(),
+        error: None,
+    };
+
+    assert!(!preview_result_has_sdr_upload(&result));
+}
+
+#[test]
+fn current_preview_updates_are_not_deferred_during_transition() {
+    assert!(!should_defer_preview_update_during_transition(true, true));
+    assert!(should_defer_preview_update_during_transition(false, true));
+    assert!(!should_defer_preview_update_during_transition(false, false));
+}
+
+#[test]
+fn current_hdr_plane_ignores_refined_sdr_fallback_install() {
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("current.avif")];
+    app.current_index = 0;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Rgba16Float);
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![1.0, 1.0, 1.0, 1.0]),
+    });
+    app.current_hdr_image = Some(crate::app::CurrentHdrImage::new(0, Arc::clone(&hdr)));
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_sdr_fallback_indices.insert(0);
+    app.hdr_placeholder_fallback_indices.insert(0);
+
+    let update = crate::loader::HdrSdrFallbackResult {
+        index: 0,
+        generation: app.generation,
+        source_key: source_key_for_path(&app.image_files[0]),
+        fallback: Some(DecodedImage::new(1, 1, vec![255, 255, 255, 255])),
+    };
+
+    app.handle_hdr_sdr_fallback_update(update, &egui::Context::default());
+
+    assert!(!app.hdr_placeholder_fallback_indices.contains(&0));
+    assert!(app.hdr_sdr_fallback_indices.contains(&0));
+    assert!(app.deferred_sdr_uploads.contains_key(&0));
+}
+
+#[test]
+fn placeholder_sdr_transition_source_is_kept_when_hdr_output_is_unavailable() {
+    assert!(!should_drop_placeholder_sdr_transition_source(
+        true, true, false
+    ));
+    assert!(should_drop_placeholder_sdr_transition_source(
+        true, true, true
+    ));
+    assert!(!should_drop_placeholder_sdr_transition_source(
+        false, true, true
+    ));
 }
 
 #[test]
@@ -992,7 +1166,10 @@ fn make_test_app() -> ImageViewerApp {
         prev_texture: None,
         prev_hdr_image: None,
         transition_start: None,
+        transition_settled_at: None,
+        transition_end_hold: false,
         pending_transition_target: None,
+        last_background_upload_at: None,
         is_next: true,
         active_transition: TransitionStyle::None,
         osd: crate::ui::osd::OsdRenderer::new(),

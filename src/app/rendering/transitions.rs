@@ -289,10 +289,41 @@ impl ImageViewerApp {
                         p.is_animating = false;
                     }
                 }
-            } else {
+            } else if self.transition_end_hold {
+                self.transition_end_hold = false;
                 self.transition_start = None;
+                self.transition_settled_at = Some(std::time::Instant::now());
                 self.prev_texture = None;
                 self.prev_hdr_image = None;
+            } else {
+                // Hold one frame at t=1.0 on the geometric path so the last animated
+                // frame matches the first static HDR draw (avoids end-of-flip flash).
+                self.transition_end_hold = true;
+                p.is_animating = true;
+                p.t = 1.0;
+                match self.active_transition {
+                    TransitionStyle::Fade => {
+                        p.alpha = 1.0;
+                        p.prev_alpha = 0.0;
+                    }
+                    TransitionStyle::ZoomFade => {
+                        p.alpha = 1.0;
+                        p.scale = 1.0;
+                        p.prev_alpha = 0.0;
+                        p.prev_scale = 1.0;
+                    }
+                    TransitionStyle::Slide | TransitionStyle::Push => {
+                        p.offset = Vec2::ZERO;
+                        p.prev_offset = Vec2::ZERO;
+                        p.prev_alpha = 1.0;
+                    }
+                    TransitionStyle::PageFlip
+                    | TransitionStyle::Ripple
+                    | TransitionStyle::Curtain => {}
+                    _ => {
+                        p.is_animating = false;
+                    }
+                }
             }
         }
         p
@@ -347,7 +378,6 @@ impl ImageViewerApp {
 
         ui.ctx().request_repaint();
     }
-
 }
 
 #[cfg(test)]

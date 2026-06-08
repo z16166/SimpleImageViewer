@@ -106,6 +106,7 @@ impl ImageViewerApp {
                 should_defer_background_upload_during_transition(
                     pending.image_index == self.current_index,
                     is_transitioning,
+                    self.transition_settled_at,
                 )
             });
         #[cfg(feature = "preload-debug")]
@@ -193,10 +194,18 @@ impl ImageViewerApp {
         //   - When quota is reached, the polled-but-unprocessed item is pushed
         //     back via repush() so it is the first thing processed next frame.
         const GLOBAL_UPLOAD_QUOTA: usize = 3;
+        let background_upload_quota = background_upload_quota_after_transition(
+            GLOBAL_UPLOAD_QUOTA,
+            self.transition_settled_at,
+        );
         let mut uploads_this_frame: usize = 0;
         let mut sdr_upload_bytes_this_frame: usize = 0;
         let sdr_upload_budget_bytes_this_frame =
             sdr_upload_budget_bytes_per_frame(self.hardware_tier);
+        let mut yielded_background_outputs = Vec::new();
+        let mut current_refinement_pending = self
+            .hdr_in_flight_fallback_refinements
+            .contains(&self.current_index);
 
         while let Some(output) = self.loader.poll() {
             match output {
@@ -224,15 +233,50 @@ impl ImageViewerApp {
                         continue;
                     }
 
+                    if should_yield_background_result_for_pending_transition(
+                        is_current,
+                        self.pending_transition_target,
+                        self.current_index,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield image install: idx={} current={} gen={} reason=pending_transition_target",
+                            idx,
+                            self.current_index,
+                            generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::Image(load_result));
+                        continue;
+                    }
+                    if should_yield_background_result_for_post_transition_refinement(
+                        is_current,
+                        self.transition_settled_at,
+                        current_refinement_pending,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield image install: idx={} current={} gen={} reason=current_refinement_pending",
+                            idx,
+                            self.current_index,
+                            generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::Image(load_result));
+                        continue;
+                    }
+
                     if should_defer_background_upload_during_transition(
                         is_current,
                         is_transitioning,
+                        self.transition_settled_at,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=transition",
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason={}",
                             idx,
                             self.current_index,
-                            generation
+                            generation,
+                            if is_transitioning {
+                                "transition"
+                            } else {
+                                "post_transition_settle"
+                            }
                         );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
@@ -264,17 +308,34 @@ impl ImageViewerApp {
                     }
 
                     // DESIGN: The current image ALWAYS bypasses the upload quota.
-                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    if !is_current && uploads_this_frame >= background_upload_quota {
                         preload_debug!(
                             "[PreloadDebug] defer image install: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             idx,
                             self.current_index,
                             generation,
                             uploads_this_frame,
-                            GLOBAL_UPLOAD_QUOTA
+                            background_upload_quota
                         );
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
+                        break;
+                    }
+                    if estimated_sdr_upload_bytes > 0
+                        && should_space_background_upload_after_transition(
+                            is_current,
+                            self.transition_settled_at,
+                            self.last_background_upload_at,
+                        )
+                    {
+                        preload_debug!(
+                            "[PreloadDebug] defer image install: idx={} current={} gen={} reason=post_transition_spacing",
+                            idx,
+                            self.current_index,
+                            generation,
+                        );
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         break;
                     }
 
@@ -302,6 +363,9 @@ impl ImageViewerApp {
                         );
                     }
                     uploads_this_frame += 1;
+                    if !is_current && estimated_sdr_upload_bytes > 0 {
+                        self.last_background_upload_at = Some(Instant::now());
+                    }
                     sdr_upload_bytes_this_frame =
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
 
@@ -329,9 +393,39 @@ impl ImageViewerApp {
                         continue;
                     }
 
+                    if should_yield_background_result_for_pending_transition(
+                        preview_is_current,
+                        self.pending_transition_target,
+                        self.current_index,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield preview update: idx={} current={} gen={} reason=pending_transition_target",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
+                        continue;
+                    }
+                    if should_yield_background_result_for_post_transition_refinement(
+                        preview_is_current,
+                        self.transition_settled_at,
+                        current_refinement_pending,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield preview update: idx={} current={} gen={} reason=current_refinement_pending",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::Preview(preview_update));
+                        continue;
+                    }
+
                     // DESIGN: Mirror the Image bypass — the current image's HQ preview
                     // also skips the quota.
-                    if should_defer_background_upload_during_transition(
+                    let preview_has_sdr_upload = preview_result_has_sdr_upload(&preview_update);
+                    if should_defer_preview_update_during_transition(
                         preview_is_current,
                         is_transitioning,
                     ) {
@@ -345,17 +439,37 @@ impl ImageViewerApp {
                         ctx.request_repaint();
                         break;
                     }
-                    if !preview_is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    if preview_has_sdr_upload
+                        && !preview_is_current
+                        && uploads_this_frame >= background_upload_quota
+                    {
                         preload_debug!(
                             "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             preview_update.index,
                             self.current_index,
                             preview_update.generation,
                             uploads_this_frame,
-                            GLOBAL_UPLOAD_QUOTA
+                            background_upload_quota
                         );
                         self.loader.repush(LoaderOutput::Preview(preview_update));
                         ctx.request_repaint();
+                        break;
+                    }
+                    if preview_has_sdr_upload
+                        && should_space_background_upload_after_transition(
+                            preview_is_current,
+                            self.transition_settled_at,
+                            self.last_background_upload_at,
+                        )
+                    {
+                        preload_debug!(
+                            "[PreloadDebug] defer preview update: idx={} current={} gen={} reason=post_transition_spacing",
+                            preview_update.index,
+                            self.current_index,
+                            preview_update.generation,
+                        );
+                        self.loader.repush(LoaderOutput::Preview(preview_update));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         break;
                     }
                     preload_debug!(
@@ -367,7 +481,12 @@ impl ImageViewerApp {
                         uploads_this_frame
                     );
                     self.handle_preview_update(preview_update, ctx);
-                    uploads_this_frame += 1;
+                    if preview_has_sdr_upload {
+                        uploads_this_frame += 1;
+                        if !preview_is_current {
+                            self.last_background_upload_at = Some(Instant::now());
+                        }
+                    }
                 }
 
                 LoaderOutput::Tile(tile_result) => {
@@ -394,19 +513,53 @@ impl ImageViewerApp {
                         );
                         continue;
                     }
+                    if should_yield_background_result_for_pending_transition(
+                        is_current,
+                        self.pending_transition_target,
+                        self.current_index,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} gen={} reason=pending_transition_target",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
+                        continue;
+                    }
+                    if should_yield_background_result_for_post_transition_refinement(
+                        is_current,
+                        self.transition_settled_at,
+                        current_refinement_pending,
+                    ) {
+                        preload_debug!(
+                            "[PreloadDebug] yield hdr_sdr_fallback: idx={} current={} gen={} reason=current_refinement_pending",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                        );
+                        yielded_background_outputs.push(LoaderOutput::HdrSdrFallback(update));
+                        continue;
+                    }
                     let estimated_sdr_upload_bytes =
                         update.fallback.as_ref().map_or(0, |fallback| {
                             decoded_rgba_bytes(fallback.width, fallback.height)
                         });
-                    if should_defer_background_upload_during_transition(
+                    if should_defer_hdr_sdr_fallback_install(
                         is_current,
                         is_transitioning,
+                        self.transition_settled_at,
                     ) {
                         preload_debug!(
-                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=transition",
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason={}",
                             update.index,
                             self.current_index,
-                            update.generation
+                            update.generation,
+                            if is_transitioning {
+                                "transition"
+                            } else {
+                                "post_transition_settle"
+                            }
                         );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
@@ -433,17 +586,34 @@ impl ImageViewerApp {
                         ctx.request_repaint();
                         break;
                     }
-                    if !is_current && uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+                    if !is_current && uploads_this_frame >= background_upload_quota {
                         preload_debug!(
                             "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             update.index,
                             self.current_index,
                             update.generation,
                             uploads_this_frame,
-                            GLOBAL_UPLOAD_QUOTA
+                            background_upload_quota
                         );
                         self.loader.repush(LoaderOutput::HdrSdrFallback(update));
                         ctx.request_repaint();
+                        break;
+                    }
+                    if estimated_sdr_upload_bytes > 0
+                        && should_space_background_upload_after_transition(
+                            is_current,
+                            self.transition_settled_at,
+                            self.last_background_upload_at,
+                        )
+                    {
+                        preload_debug!(
+                            "[PreloadDebug] defer hdr_sdr_fallback: idx={} current={} gen={} reason=post_transition_spacing",
+                            update.index,
+                            self.current_index,
+                            update.generation,
+                        );
+                        self.loader.repush(LoaderOutput::HdrSdrFallback(update));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
                         break;
                     }
                     preload_debug!(
@@ -458,8 +628,14 @@ impl ImageViewerApp {
                     );
                     self.hdr_in_flight_fallback_refinements
                         .remove(&update.index);
+                    if is_current {
+                        current_refinement_pending = false;
+                    }
                     self.handle_hdr_sdr_fallback_update(update, ctx);
                     uploads_this_frame += 1;
+                    if !is_current && estimated_sdr_upload_bytes > 0 {
+                        self.last_background_upload_at = Some(Instant::now());
+                    }
                     sdr_upload_bytes_this_frame =
                         sdr_upload_bytes_this_frame.saturating_add(estimated_sdr_upload_bytes);
                     if should_request_repaint_for_asset_update(
@@ -473,12 +649,15 @@ impl ImageViewerApp {
             }
 
             // Secondary quota check after each processed item.
-            if uploads_this_frame >= GLOBAL_UPLOAD_QUOTA {
+            if uploads_this_frame >= background_upload_quota {
                 ctx.request_repaint();
                 break;
             }
         }
 
+        for output in yielded_background_outputs {
+            self.loader.repush_back(output);
+        }
         self.try_start_pending_transition_if_ready();
     }
 
@@ -508,7 +687,7 @@ impl ImageViewerApp {
         self.try_start_pending_transition_if_ready();
     }
 
-    fn try_start_pending_transition_if_ready(&mut self) {
+    pub(crate) fn try_start_pending_transition_if_ready(&mut self) {
         // Run after loader output processing (or deferred GPU upload) so we don't render one
         // static frame between "texture became ready" and "transition started".
         if !can_start_pending_transition(

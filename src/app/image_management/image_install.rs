@@ -66,7 +66,17 @@ impl ImageViewerApp {
         if !self.deferred_sdr_uploads.contains_key(&index) {
             return;
         }
-        if self.texture_cache.contains(index) {
+        let hdr_fallback_upload = self.hdr_sdr_fallback_indices.contains(&index);
+        let active_hdr_plane_displays_current = index == self.current_index
+            && self.effective_hdr_display_output().is_some()
+            && self
+                .current_hdr_image
+                .as_ref()
+                .is_some_and(|current| current.image_for_index(index).is_some());
+        if active_hdr_plane_displays_current {
+            return;
+        }
+        if self.texture_cache.contains(index) && !hdr_fallback_upload {
             self.deferred_sdr_uploads.remove(&index);
             return;
         }
@@ -136,12 +146,15 @@ impl ImageViewerApp {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        self.queue_or_upload_static_sdr_texture(
-            idx,
-            fallback,
-            format!("img_hdr_fallback_{idx}"),
-            ctx,
-        );
+        let current_hdr_placeholder = idx == self.current_index && sdr_fallback_is_placeholder;
+        if !current_hdr_placeholder {
+            self.queue_or_upload_static_sdr_texture(
+                idx,
+                fallback,
+                format!("img_hdr_fallback_{idx}"),
+                ctx,
+            );
+        }
 
         if idx == self.current_index {
             self.current_image_res = Some((hdr.width, hdr.height));
@@ -176,8 +189,20 @@ impl ImageViewerApp {
         let Some(fallback_image) = update.fallback else {
             return;
         };
+        let active_hdr_plane_displays_current = idx == self.current_index
+            && self.effective_hdr_display_output().is_some()
+            && self
+                .current_hdr_image
+                .as_ref()
+                .is_some_and(|current| current.image_for_index(idx).is_some());
         self.hdr_sdr_fallback_indices.insert(idx);
         self.hdr_placeholder_fallback_indices.remove(&idx);
+        if active_hdr_plane_displays_current {
+            // The float HDR plane is the displayed source; applying the refined SDR fallback here
+            // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
+            self.deferred_sdr_uploads.insert(idx, fallback_image);
+            return;
+        }
         self.queue_or_upload_static_sdr_texture(
             idx,
             &fallback_image,

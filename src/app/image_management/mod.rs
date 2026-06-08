@@ -135,13 +135,119 @@ fn should_upload_sdr_this_frame(
 }
 
 fn should_defer_background_upload_during_transition(
-    _is_current: bool,
+    is_current: bool,
     is_transitioning: bool,
+    transition_settled_at: Option<std::time::Instant>,
 ) -> bool {
-    // Defer all background GPU uploads while a transition is active, including SDR fallback
-    // refinement for the current index. Mid-transition uploads can flash dim SDR pixels over HDR
-    // page-flip geometry (common with AVIF ISO gain-map sources).
+    // Neighbor preloads can wait, but the navigation target (current index) must install during
+    // the transition so GPU bindings are warm before the last frame — otherwise the transition
+    // end flashes while deferred SDR/HDR uploads land (see fox.png 13→14 in preload logs).
+    if is_current {
+        return false;
+    }
+    if is_transitioning {
+        return true;
+    }
+    const POST_TRANSITION_BACKGROUND_HOLD: std::time::Duration =
+        std::time::Duration::from_millis(1000);
+    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_BACKGROUND_HOLD)
+}
+
+fn should_yield_background_result_for_pending_transition(
+    is_current: bool,
+    pending_transition_target: Option<usize>,
+    current_index: usize,
+) -> bool {
+    !is_current && pending_transition_target == Some(current_index)
+}
+
+fn should_yield_background_result_for_post_transition_refinement(
+    is_current: bool,
+    transition_settled_at: Option<std::time::Instant>,
+    current_refinement_pending: bool,
+) -> bool {
+    if is_current || !current_refinement_pending {
+        return false;
+    }
+    const POST_TRANSITION_REFINEMENT_PRIORITY: std::time::Duration =
+        std::time::Duration::from_millis(500);
+    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_PRIORITY)
+}
+
+fn background_upload_quota_after_transition(
+    default_quota: usize,
+    transition_settled_at: Option<std::time::Instant>,
+) -> usize {
+    const POST_TRANSITION_THROTTLE: std::time::Duration = std::time::Duration::from_millis(3000);
+    if transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_THROTTLE) {
+        1
+    } else {
+        default_quota
+    }
+}
+
+fn should_space_background_upload_after_transition(
+    is_current: bool,
+    transition_settled_at: Option<std::time::Instant>,
+    last_background_upload_at: Option<std::time::Instant>,
+) -> bool {
+    if is_current {
+        return false;
+    }
+    const POST_TRANSITION_SPACING_WINDOW: std::time::Duration =
+        std::time::Duration::from_millis(3000);
+    const POST_TRANSITION_BACKGROUND_UPLOAD_SPACING: std::time::Duration =
+        std::time::Duration::from_millis(250);
+    transition_settled_at.is_some_and(|settled| {
+        settled.elapsed() < POST_TRANSITION_SPACING_WINDOW
+            && last_background_upload_at
+                .is_some_and(|last| last.elapsed() < POST_TRANSITION_BACKGROUND_UPLOAD_SPACING)
+    })
+}
+
+#[cfg(test)]
+fn should_defer_refinement_during_transition(is_transitioning: bool) -> bool {
+    // Refined SDR fallbacks and HQ preview swaps for the current image still wait until the
+    // transition finishes; those mid-animation updates can flash dim SDR over HDR page-flip.
     is_transitioning
+}
+
+fn should_defer_preview_update_during_transition(is_current: bool, is_transitioning: bool) -> bool {
+    // Current tiled preview upgrades improve the image already being drawn and should not be
+    // held behind the same background-upload gate used for neighboring previews.
+    !is_current && is_transitioning
+}
+
+fn preview_result_has_sdr_upload(update: &crate::loader::PreviewResult) -> bool {
+    update.preview_bundle.sdr().is_some()
+}
+
+fn should_drop_placeholder_sdr_transition_source(
+    placeholder: bool,
+    has_hdr: bool,
+    hdr_output_available: bool,
+) -> bool {
+    placeholder && has_hdr && hdr_output_available
+}
+
+/// Hold off refined SDR fallback GPU uploads for the navigation target briefly after the
+/// transition animation ends. Applying them on the same frame as `transition_start` clears
+/// re-uploads the 8-bit cache and retriggers ISO/Apple HDR compose (see preload logs:
+/// `install hdr_sdr_fallback` immediately after the last defer loop).
+pub(crate) fn should_defer_hdr_sdr_fallback_install(
+    is_current: bool,
+    is_transitioning: bool,
+    transition_settled_at: Option<std::time::Instant>,
+) -> bool {
+    if !is_current {
+        return false;
+    }
+    if is_transitioning {
+        return true;
+    }
+    const POST_TRANSITION_REFINEMENT_HOLD: std::time::Duration =
+        std::time::Duration::from_millis(50);
+    transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_HOLD)
 }
 
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
@@ -383,6 +489,7 @@ fn output_mode_crosses_hdr_sdr_boundary(
     output_mode_is_hdr(previous) != output_mode_is_hdr(next)
 }
 
+#[cfg(test)]
 fn select_transition_source<T: Clone>(
     current: Option<T>,
     current_has_placeholder_fallback: bool,
@@ -395,6 +502,7 @@ fn select_transition_source<T: Clone>(
     }
 }
 
+#[cfg(test)]
 fn select_transition_source_texture(
     current_source_texture: Option<egui::TextureHandle>,
     current_has_placeholder_fallback: bool,
@@ -407,6 +515,7 @@ fn select_transition_source_texture(
     )
 }
 
+#[cfg(test)]
 fn select_transition_source_hdr(
     current_hdr_image: Option<Arc<crate::hdr::types::HdrImageBuffer>>,
     current_has_placeholder_fallback: bool,

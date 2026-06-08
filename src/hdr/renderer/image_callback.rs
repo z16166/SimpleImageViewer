@@ -20,7 +20,21 @@ use super::*;
 /// Page-flip transitions need prev + current + several preloaded neighbors resident at once.
 const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
 /// Do not evict bindings touched within this window (covers one transition frame).
-const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration = std::time::Duration::from_millis(50);
+const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
+    std::time::Duration::from_millis(50);
+/// A keep-resident binding that has not been prepared again by this point is no longer on screen.
+const HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+pub(super) fn hdr_image_binding_is_eviction_candidate(
+    keep_resident: bool,
+    last_use: std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    let age = now.duration_since(last_use);
+    age > HDR_IMAGE_BINDING_EVICTION_PROTECT
+        && (!keep_resident || age > HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER)
+}
 
 pub(crate) struct HdrImagePlaneCallback {
     pub(super) image: Arc<HdrImageBuffer>,
@@ -31,6 +45,8 @@ pub(crate) struct HdrImagePlaneCallback {
     pub(super) alpha: f32,
     pub(super) uv_rect: egui::Rect,
     pub(super) ripple: Option<(egui::Pos2, f32, f32, u32)>,
+    /// When true, the GPU binding for this image is not evicted from the LRU cache.
+    pub(super) keep_resident: bool,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -165,6 +181,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         encoded_primary_source_ptr: None,
                         bind_group: None,
                         last_use: std::time::Instant::now(),
+                        keep_resident: false,
                     };
                     resources.image_bindings.insert(image_key, binding);
                 }
@@ -179,6 +196,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         };
         binding.last_use = std::time::Instant::now();
+        binding.keep_resident = self.keep_resident;
 
         let needs_jpeg_compose = iso_deferred.is_some()
             && (binding.baked_jpeg_image_key != Some(image_key)
@@ -218,6 +236,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 ));
                 binding.baked_jpeg_image_key = Some(image_key);
                 binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                // First compose: no bind_group yet — skip paint until GPU work completes.
+                if binding.bind_group.is_none() {
+                    return compose_command_buffers;
+                }
             }
         }
 
@@ -268,6 +290,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     }
                     binding.baked_apple_image_key = Some(image_key);
                     binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                    if binding.bind_group.is_none() {
+                        return compose_command_buffers;
+                    }
                 }
             }
         }
@@ -279,12 +304,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
             && binding.baked_jpeg_image_key == Some(image_key)
             && binding.baked_jpeg_weight_bits == Some(target_capacity_bits);
         let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
-
-        if (apple_deferred.is_some() || iso_deferred.is_some()) && !deferred_gpu_composed {
-            // Keep the previous bind group (if any) so AVIF/ISO gain-map compose does not flash a
-            // blank frame while the first GPU bake is in flight.
-            return compose_command_buffers;
-        }
 
         let uniform = image_tone_map_uniform(
             &self.image,
@@ -324,7 +343,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 .image_bindings
                 .iter()
                 .filter(|(_, binding)| {
-                    now.duration_since(binding.last_use) > HDR_IMAGE_BINDING_EVICTION_PROTECT
+                    hdr_image_binding_is_eviction_candidate(
+                        binding.keep_resident,
+                        binding.last_use,
+                        now,
+                    )
                 })
                 .min_by_key(|(_, binding)| binding.last_use)
                 .map(|(&key, _)| key)

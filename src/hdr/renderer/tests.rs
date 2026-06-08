@@ -18,6 +18,7 @@ use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
 use super::upload::{validate_rgba8_upload_layout, validate_tile_upload_layout};
 use super::*;
+use crate::hdr::renderer::image_callback::hdr_image_binding_is_eviction_candidate;
 use crate::hdr::tiled::HdrTileBuffer;
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
@@ -34,6 +35,19 @@ fn renderer_starts_without_uploaded_image_state() {
         HDR_IMAGE_PLANE_TEXTURE_FORMAT,
         wgpu::TextureFormat::Rgba32Float
     );
+}
+
+#[test]
+fn keep_resident_binding_expires_when_not_refreshed() {
+    let last_use = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(250))
+        .expect("instant arithmetic");
+
+    assert!(hdr_image_binding_is_eviction_candidate(
+        true,
+        last_use,
+        std::time::Instant::now(),
+    ));
 }
 
 #[test]
@@ -860,6 +874,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             alpha: 1.0,
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
+            keep_resident: false,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -911,6 +926,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             alpha: 1.0,
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
+            keep_resident: false,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
