@@ -130,13 +130,13 @@ osd.mode.static: "STATIC"
 osd.mode.tiled: "TILED"
 
 # RAW OSD (embedded preview / sensor / active pixel source)
-raw.osd.embedded: "Emb %{size}"
-raw.osd.no_embedded: "Emb —"
-raw.osd.sensor: "Sen %{size}"
-raw.osd.render.embedded: "→Emb %{size}"
+raw.osd.embedded: "Embedded %{size}"
+raw.osd.no_embedded: "Embedded —"
+raw.osd.sensor: "Sensor %{size}"
+raw.osd.render.embedded: "→Embedded %{size}"
 raw.osd.render.full: "→Full %{size}"
 raw.osd.render.hq: "→HQ %{size}"
-raw.osd.render.hq_bootstrap: "→Emb* %{size}"
+raw.osd.render.hq_bootstrap: "→Embedded* %{size}"
 
 # Scale mode
 scale.fit: "Fit to Window"

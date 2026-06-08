@@ -141,8 +141,6 @@ pub const SETTINGS_WINDOW_MIN_HEIGHT: f32 = SETTINGS_WINDOW_MIN_WIDTH / GOLDEN_R
 
 /// Margin for standard OSD elements.
 pub const OSD_MARGIN: f32 = 12.0;
-/// Gap between measured right-side keyboard hint and the left OSD block.
-pub const OSD_HINT_GAP: f32 = 16.0;
 /// Pixels between main OSD line and optional HDR line (above main, toward image).
 pub const OSD_HDR_LINE_GAP: f32 = 3.0;
 /// Text size for OSD status information.
