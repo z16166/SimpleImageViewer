@@ -228,11 +228,7 @@ fn read_ascii_value(
         bytes.get(offset..offset + len)?.to_vec()
     };
 
-    Some(
-        String::from_utf8_lossy(&raw)
-            .trim_matches('\0')
-            .to_string(),
-    )
+    Some(String::from_utf8_lossy(&raw).trim_matches('\0').to_string())
 }
 
 fn camera_make_or_model_suggests_raw(make: Option<&str>, model: Option<&str>) -> bool {
@@ -296,10 +292,47 @@ mod tests {
     fn sniff_accepts_kodak_make_at_offset() {
         // Make string lives after IFD; value field holds offset 26.
         let tiff: &[u8] = &[
-            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 15, 1, 2, 0, 6, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0,
-            0, b'K', b'o', b'd', b'a', b'k', 0,
+            b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 15, 1, 2, 0, 6, 0, 0, 0, 26, 0, 0, 0, 0, 0, 0, 0,
+            b'K', b'o', b'd', b'a', b'k', 0,
         ];
         assert!(sniff_tiff_may_be_camera_raw(tiff));
+    }
+
+    /// Requires `F:\win7\raws\nikon\RAW_NIKON_D800_L.TIFF`.
+    #[test]
+    #[ignore]
+    fn probe_nikon_d800_tiff_routing() {
+        let path = Path::new(r"F:\win7\raws\nikon\RAW_NIKON_D800_L.TIFF");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let sniff = tiff_may_be_camera_raw(path);
+        let probe = crate::raw_processor::probe_libraw_can_open(path);
+        eprintln!("sniff={sniff} libraw_probe={probe}");
+        let tone = crate::hdr::types::HdrToneMapSettings::default();
+        let sdr = crate::libtiff_loader::load_via_libtiff(path, 1.0, tone.clone())
+            .expect("libtiff sdr load");
+        let hdr = crate::libtiff_loader::load_via_libtiff(path, 4.0, tone).expect("libtiff hdr load");
+        if let crate::loader::ImageData::Static(d) = &sdr {
+            eprintln!("libtiff cap=1 Static {}x{}", d.width, d.height);
+        }
+        match &hdr {
+            crate::loader::ImageData::Hdr { hdr, .. } => {
+                eprintln!("libtiff cap=4 HDR {}x{}", hdr.width, hdr.height);
+            }
+            crate::loader::ImageData::Static(d) => {
+                eprintln!("libtiff cap=4 Static {}x{} (still SDR)", d.width, d.height);
+            }
+            _ => eprintln!("libtiff cap=4 other variant"),
+        }
+        if let Ok(tags) = crate::libtiff_loader::peek_tiff_tags(path) {
+            eprintln!("{tags}");
+        }
+        assert!(
+            matches!(hdr, crate::loader::ImageData::Hdr { .. }),
+            "Nikon D800 camera TIFF should load as HDR when headroom > 1"
+        );
     }
 
     /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF`.

@@ -37,10 +37,15 @@ pub use types::*;
 
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, hdr_to_sdr_with_user_tone,
+    hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hdr_to_sdr_with_user_tone,
 };
 pub(crate) use metadata::extract_exif_thumbnail;
 pub(crate) use orientation::{
     apply_exif_orientation_to_hdr_pair, apply_exif_orientation_to_image_data,
     hdr_gain_map_decode_capacity,
 };
+
+pub(crate) fn tiff_may_be_camera_raw(path: &std::path::Path) -> bool {
+    decode::tiff_may_be_camera_raw(path)
+}

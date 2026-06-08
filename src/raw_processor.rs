@@ -539,6 +539,116 @@ mod tests {
         )));
     }
 
+    fn luminance_stats_rgba8(pixels: &[u8]) -> (f64, f64, f64, u8) {
+        let mut r_sum = 0u64;
+        let mut g_sum = 0u64;
+        let mut b_sum = 0u64;
+        let mut max = 0u8;
+        let mut n = 0u64;
+        for chunk in pixels.chunks_exact(4) {
+            r_sum += chunk[0] as u64;
+            g_sum += chunk[1] as u64;
+            b_sum += chunk[2] as u64;
+            max = max.max(chunk[0]).max(chunk[1]).max(chunk[2]);
+            n += 1;
+        }
+        if n == 0 {
+            return (0.0, 0.0, 0.0, 0);
+        }
+        (
+            r_sum as f64 / n as f64,
+            g_sum as f64 / n as f64,
+            b_sum as f64 / n as f64,
+            max,
+        )
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_legacy_raw_hdr_paths() {
+        let samples = [
+            ("aptus75", Path::new(r"F:\win7\raws\leaf\RAW_APTUS_75.MOS")),
+            (
+                "aptus22",
+                Path::new(r"F:\win7\raws\leaf\aptus22\RAW_LEAF_APTUS_22.MOS"),
+            ),
+            (
+                "mamiya_zd",
+                Path::new(r"F:\win7\raws\mamiya\zd\RAW_MAMIYA_ZD.MEF"),
+            ),
+            (
+                "nikon1_v1",
+                Path::new(r"F:\win7\raws\nikon\RAW_NIKON1_V1.NEF"),
+            ),
+        ];
+        for (label, path) in samples {
+            if !path.is_file() {
+                eprintln!("skip {label}: {}", path.display());
+                continue;
+            }
+            let mut processor = RawProcessor::new().expect("libraw init");
+            processor.open(path).expect("libraw open");
+            let w = processor.width();
+            let h = processor.height();
+            eprintln!(
+                "{label}: libraw {w}x{h} ({:.1} MP)",
+                (w as f64 * h as f64) / 1e6
+            );
+
+            let mut thumb_processor = RawProcessor::new().expect("libraw init");
+            thumb_processor.open(path).expect("libraw open");
+            if let Ok(thumb) = thumb_processor.unpack_thumb() {
+                let (r, g, b, max) = luminance_stats_rgba8(thumb.rgba());
+                eprintln!(
+                    "{label}: unpack_thumb {}x{} avg=({r:.1},{g:.1},{b:.1}) max={max}",
+                    thumb.width, thumb.height
+                );
+            } else {
+                eprintln!("{label}: unpack_thumb failed");
+            }
+
+            let sdr = processor.develop().expect("develop");
+            let rgba = sdr.to_rgba8();
+            let (r, g, b, max) = luminance_stats_rgba8(rgba.as_raw());
+            eprintln!(
+                "{label}: develop avg=({r:.1},{g:.1},{b:.1}) max={max} size={}x{}",
+                rgba.width(),
+                rgba.height()
+            );
+            assert!(max > 0, "{label}: develop produced all-black image");
+
+            let mut hdr_processor = RawProcessor::new().expect("libraw init");
+            hdr_processor.open(path).expect("libraw open");
+            let hdr = hdr_processor
+                .develop_scene_linear_hdr()
+                .expect("develop_scene_linear_hdr");
+            let mut max_l = 0.0f32;
+            for px in hdr.rgba_f32.chunks_exact(4) {
+                let l = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+                max_l = max_l.max(l);
+            }
+            eprintln!("{label}: scene_linear max_l={max_l:.6}");
+
+            for cap in [1.0_f32, 4.0_f32] {
+                let mut tone_processor = RawProcessor::new().expect("libraw init");
+                tone_processor.open(path).expect("libraw open");
+                let hdr = tone_processor
+                    .develop_scene_linear_hdr()
+                    .expect("develop_scene_linear_hdr");
+                let fallback = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                    &hdr,
+                    cap,
+                    &crate::hdr::types::HdrToneMapSettings::default(),
+                )
+                .expect("sdr fallback");
+                let (r, g, b, max) = luminance_stats_rgba8(fallback.as_ref());
+                eprintln!("{label}: sdr_fallback cap={cap} avg=({r:.1},{g:.1},{b:.1}) max={max}");
+                assert!(max > 0, "{label}: sdr_fallback cap={cap} must not be black");
+            }
+            assert!(max_l > 0.0, "{label}: scene linear HDR is all zero");
+        }
+    }
+
     /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF` on the test machine.
     #[test]
     #[ignore]

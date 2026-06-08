@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
+use crate::hdr::types::{HdrImageBuffer, HdrReference, HdrToneMapSettings, HdrTransferFunction};
 
 #[inline]
 pub(crate) fn hdr_to_sdr_with_user_tone(
@@ -55,6 +55,35 @@ pub(crate) fn cheap_hdr_sdr_placeholder_rgba8(width: u32, height: u32) -> Result
     Ok(out)
 }
 
+pub(crate) fn libraw_scene_linear_needs_eager_sdr_fallback(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata.gain_map.is_none()
+        && hdr.metadata.transfer_function == HdrTransferFunction::Linear
+        && hdr.metadata.reference == HdrReference::SceneLinear
+}
+
+/// True when the loader attached a black SDR placeholder instead of a tone-mapped fallback.
+pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
+    hdr: &HdrImageBuffer,
+    hdr_target_capacity: f32,
+) -> bool {
+    if hdr_display_requests_sdr_preview(hdr_target_capacity) {
+        return false;
+    }
+    if libraw_scene_linear_needs_eager_sdr_fallback(hdr) {
+        return false;
+    }
+    if hdr
+        .metadata
+        .gain_map
+        .as_ref()
+        .and_then(|g| g.iso_deferred.as_ref())
+        .is_some()
+    {
+        return false;
+    }
+    true
+}
+
 pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
@@ -72,7 +101,9 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
             )?));
         }
     }
-    if hdr_display_requests_sdr_preview(hdr_target_capacity) {
+    if hdr_display_requests_sdr_preview(hdr_target_capacity)
+        || libraw_scene_linear_needs_eager_sdr_fallback(hdr)
+    {
         Ok(Arc::new(hdr_to_sdr_with_user_tone(hdr, tone)?))
     } else {
         Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
@@ -172,6 +203,40 @@ mod tests {
             .expect("ISO deferred fallback should use baseline SDR");
 
         assert_eq!(out, iso_sdr);
+    }
+
+    #[test]
+    fn libraw_scene_linear_load_is_not_sdr_placeholder_at_hdr_headroom() {
+        let metadata = crate::raw_processor::raw_scene_linear_metadata();
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
+        };
+        assert!(!hdr_sdr_fallback_is_placeholder_for_load(&hdr, 4.0));
+    }
+
+    #[test]
+    fn sdr_fallback_tone_maps_libraw_scene_linear_instead_of_black_placeholder() {
+        let metadata = crate::raw_processor::raw_scene_linear_metadata();
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(vec![2.0, 2.0, 2.0, 1.0]),
+        };
+        let out =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 4.0, &HdrToneMapSettings::default())
+                .expect("fallback");
+        assert!(
+            out[0] > 0 || out[1] > 0 || out[2] > 0,
+            "LibRaw scene-linear HDR must not use a black SDR placeholder at HDR headroom > 1"
+        );
     }
 
     #[test]
