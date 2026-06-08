@@ -247,7 +247,7 @@ fn develop_hq_preview(
     osd_ctx: &RawOsdContext,
 ) -> Result<RawLoadOutput, String> {
     crate::preload_debug!(
-        "[PreloadDebug][RAW] sync HqDevelop path={:?} limit={} hdr={}",
+        "[PreloadDebug][RAW] sync HQ develop path={:?} limit={} hdr={}",
         _path.file_name().unwrap_or_default(),
         hq_preview_max_side(),
         !hdr_display_requests_sdr_preview(hdr_target_capacity)
@@ -263,13 +263,7 @@ fn develop_hq_preview(
             &hdr_tone_map,
         )?;
         let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-        let osd = if hdr.width.abs_diff(osd_ctx.sensor_size().0) <= 2
-            && hdr.height.abs_diff(osd_ctx.sensor_size().1) <= 2
-        {
-            osd_ctx.full_develop(hdr.width, hdr.height)
-        } else {
-            osd_ctx.hq_develop(hdr.width, hdr.height)
-        };
+        let osd = osd_ctx.full_develop(hdr.width, hdr.height);
         return Ok(RawLoadOutput {
             image: make_hdr_image_data(hdr, fallback),
             osd,
@@ -281,12 +275,7 @@ fn develop_hq_preview(
     let finalized = finalize_raw_hq_developed_image(img, logical_w, logical_h);
     let rgba = finalized.to_rgba8();
     let (pw, ph) = (rgba.width(), rgba.height());
-    let osd = if pw.abs_diff(osd_ctx.sensor_size().0) <= 2 && ph.abs_diff(osd_ctx.sensor_size().1) <= 2
-    {
-        osd_ctx.full_develop(pw, ph)
-    } else {
-        osd_ctx.hq_develop(pw, ph)
-    };
+    let osd = osd_ctx.full_develop(pw, ph);
     Ok(RawLoadOutput {
         image: make_image_data(DecodedImage::from(rgba)),
         osd,
@@ -528,7 +517,7 @@ pub(crate) fn load_raw(
     }
 
     crate::preload_debug!(
-        "[PreloadDebug][RAW] path={:?} mode=hq no_embedded output={}x{} hq_side={} → sync HqDevelop",
+        "[PreloadDebug][RAW] path={:?} mode=hq no_embedded output={}x{} hq_side={} → sync HQ develop",
         path.file_name().unwrap_or_default(),
         width,
         height,
@@ -884,7 +873,7 @@ mod tests {
         assert_eq!(
             (finalized_rgba.width(), finalized_rgba.height()),
             (3684, 2760),
-            "HQ refine must keep full develop for 10MP Canon S90"
+            "HQ refine must keep full develop resolution for Canon S90"
         );
     }
 

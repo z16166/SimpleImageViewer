@@ -32,10 +32,8 @@ pub struct RawLoadOutput {
 pub enum RawRenderPixels {
     /// Camera/file embedded JPEG (performance mode or HQ when thumb is large enough).
     Embedded { width: u32, height: u32 },
-    /// Full demosaic at sensor resolution (no embedded preview, or ≤20 MP HQ keep-full policy).
+    /// Full demosaic output (HQ refine or no usable embedded preview).
     FullDevelop { width: u32, height: u32 },
-    /// Demosaic downscaled below sensor resolution (legacy / tests only).
-    HqDevelop { width: u32, height: u32 },
     /// HQ demosaic queued; tiles still map the embedded bootstrap preview.
     HqBootstrap { width: u32, height: u32 },
 }
@@ -63,10 +61,6 @@ impl RawOsdContext {
             sensor_size,
             embedded_preview: embedded.map(|p| (p.width, p.height)),
         }
-    }
-
-    pub(crate) fn sensor_size(&self) -> (u32, u32) {
-        self.sensor_size
     }
 
     pub(crate) fn embedded_render(&self, preview: &DecodedImage) -> RawOsdInfo {
@@ -101,16 +95,6 @@ impl RawOsdContext {
         }
         .with_osd_line()
     }
-
-    pub(crate) fn hq_develop(&self, width: u32, height: u32) -> RawOsdInfo {
-        RawOsdInfo {
-            sensor_size: self.sensor_size,
-            embedded_preview: self.embedded_preview,
-            render_pixels: RawRenderPixels::HqDevelop { width, height },
-            osd_line: None,
-        }
-        .with_osd_line()
-    }
 }
 
 impl RawOsdInfo {
@@ -125,13 +109,7 @@ impl RawOsdInfo {
 
     /// Update after async/sync HQ refinement replaces the bootstrap buffer.
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
-        const TOL: u32 = 2;
-        if width.abs_diff(self.sensor_size.0) <= TOL && height.abs_diff(self.sensor_size.1) <= TOL
-        {
-            self.render_pixels = RawRenderPixels::FullDevelop { width, height };
-        } else {
-            self.render_pixels = RawRenderPixels::HqDevelop { width, height };
-        }
+        self.render_pixels = RawRenderPixels::FullDevelop { width, height };
         self.osd_line = Self::compose_osd_line(
             self.sensor_size,
             self.embedded_preview,
@@ -159,9 +137,6 @@ impl RawOsdInfo {
             }
             RawRenderPixels::FullDevelop { width, height } => {
                 t!("raw.osd.render.full", size = format_dims(width, height)).to_string()
-            }
-            RawRenderPixels::HqDevelop { width, height } => {
-                t!("raw.osd.render.hq", size = format_dims(width, height)).to_string()
             }
             RawRenderPixels::HqBootstrap { width, height } => t!(
                 "raw.osd.render.hq_bootstrap",
@@ -194,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hq_refine_promotes_bootstrap_to_hq_develop() {
+    fn hq_refine_promotes_bootstrap_to_full_develop() {
         let mut info = RawOsdInfo {
             sensor_size: (6000, 4000),
             embedded_preview: Some((1920, 1280)),
@@ -204,12 +179,12 @@ mod tests {
             },
             osd_line: None,
         };
-        info.apply_hq_refine_preview(2048, 1365);
+        info.apply_hq_refine_preview(6000, 4000);
         assert_eq!(
             info.render_pixels,
-            RawRenderPixels::HqDevelop {
-                width: 2048,
-                height: 1365
+            RawRenderPixels::FullDevelop {
+                width: 6000,
+                height: 4000
             }
         );
     }
