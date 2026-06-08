@@ -34,7 +34,7 @@ pub enum RawRenderPixels {
     Embedded { width: u32, height: u32 },
     /// Full demosaic at sensor resolution (no embedded preview, or ≤20 MP HQ keep-full policy).
     FullDevelop { width: u32, height: u32 },
-    /// Demosaic downscaled to monitor/hardware HQ cap (2048 / 4096 long edge).
+    /// Demosaic downscaled below sensor resolution (legacy / tests only).
     HqDevelop { width: u32, height: u32 },
     /// HQ demosaic queued; tiles still map the embedded bootstrap preview.
     HqBootstrap { width: u32, height: u32 },

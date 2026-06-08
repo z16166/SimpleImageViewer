@@ -291,7 +291,7 @@ pub(crate) struct RawImageSource {
     width: u32,
     height: u32,
     /// Initially holds the embedded preview at its ORIGINAL resolution (NOT upscaled).
-    /// After HQ refinement, holds a demosaiced preview capped at [`hq_preview_max_side`].
+    /// After HQ refinement, holds the full demosaiced preview at develop resolution.
     developed_image: Arc<PLRwLock<Option<DynamicImage>>>,
     refine_tx: Sender<RefinementRequest>,
     orientation_override: i32,

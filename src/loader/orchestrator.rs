@@ -516,7 +516,7 @@ impl ImageLoader {
                         req.path.display()
                     );
 
-                    // 2. Perform HQ demosaic (capped at monitor preview side).
+                    // 2. Perform HQ demosaic at full develop resolution.
                     let limit = hq_preview_max_side();
                     let use_hdr = !hdr_display_requests_sdr_preview(req.hdr_target_capacity);
                     log::debug!(

@@ -20,9 +20,8 @@
 //! - **Off:** use embedded previews whenever present (SDR pipeline on all displays).
 //!   Full develop only when the file has no embedded preview; on HDR displays that
 //!   develop result uses the HDR pipeline.
-//! - **On:** use embedded previews when they meet HQ size requirements; otherwise
-//!   demosaic and downscale to [`hq_preview_max_side`] (2048/4096 depending on monitor).
-//!   Developed pixels use the HDR pipeline on HDR displays.
+//! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
+//!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::preview_caps::{
@@ -233,13 +232,12 @@ fn develop_full_resolution(
     })
 }
 
-/// Demosaic once, then downscale to monitor HQ cap. Used when HQ mode needs better pixels
+/// Demosaic once at full sensor resolution. Used when HQ mode needs better pixels
 /// than the embedded preview provides, or when HQ mode has no embedded preview at all.
 ///
 /// Intentionally **does not** check [`crate::tile_cache::TILED_THRESHOLD`]: HQ without an
-/// embedded bootstrap is a rare sync path where quality beats loader latency. Demosaic still
-/// runs at full sensor resolution; only the stored preview is capped. Very large sensors may
-/// block the loader thread for several seconds — prefer [`load_raw_with_embedded_bootstrap`]
+/// embedded bootstrap is a rare sync path where quality beats loader latency. Very large sensors
+/// may block the loader thread for several seconds — prefer [`load_raw_with_embedded_bootstrap`]
 /// when an embedded thumb exists.
 fn develop_hq_preview(
     processor: &mut RawProcessor,
@@ -845,6 +843,18 @@ mod tests {
     }
 
     #[test]
+    fn finalize_hq_develop_keeps_large_sensor_despite_monitor_cap() {
+        use crate::loader::preview_caps::finalize_raw_hq_developed_image;
+        use image::{DynamicImage, GenericImageView, RgbaImage};
+
+        crate::loader::MONITOR_PREVIEW_CAP.store(2048, std::sync::atomic::Ordering::Relaxed);
+        let rgba = RgbaImage::from_pixel(5536, 3692, image::Rgba([128, 128, 128, 255]));
+        let img = DynamicImage::ImageRgba8(rgba);
+        let result = finalize_raw_hq_developed_image(img, 5536, 3692);
+        assert_eq!(result.dimensions(), (5536, 3692));
+    }
+
+    #[test]
     fn canon_s90_cr2_develop_dimensions_when_file_present() {
         let path = PathBuf::from(r"F:\win7\raws\canon\RAW_CANON_S90.CR2");
         if !path.is_file() {
@@ -857,21 +867,16 @@ mod tests {
         let thumb = processor.unpack_thumb().expect("thumb");
         let (out_w, out_h) = processor.developed_output_dimensions(Some(&thumb));
         let sdr = processor.develop().expect("develop");
-        let limit = hq_preview_max_side();
-        let old_scaled = sdr.thumbnail(limit, limit).to_rgba8();
         let finalized =
             crate::loader::preview_caps::finalize_raw_hq_developed_image(sdr, out_w, out_h);
         let finalized_rgba = finalized.to_rgba8();
 
         eprintln!(
-            "canon_s90 thumb={}x{} logical={}x{} hq_side={} old_scaled={}x{} finalized={}x{}",
+            "canon_s90 thumb={}x{} logical={}x{} finalized={}x{}",
             thumb.width,
             thumb.height,
             out_w,
             out_h,
-            limit,
-            old_scaled.width(),
-            old_scaled.height(),
             finalized_rgba.width(),
             finalized_rgba.height()
         );
