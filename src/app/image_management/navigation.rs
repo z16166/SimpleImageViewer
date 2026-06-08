@@ -411,7 +411,8 @@ impl ImageViewerApp {
                 "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
                 self.current_index,
                 self.settings.raw_high_quality,
-                self.texture_cache.is_preview_placeholder(self.current_index),
+                self.texture_cache
+                    .is_preview_placeholder(self.current_index),
                 self.tile_manager.is_some()
             );
             // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
@@ -544,5 +545,8 @@ impl ImageViewerApp {
             self.settings.raw_high_quality,
         );
         self.schedule_preloads(true);
+        self.refresh_current_osd_file_name();
+        self.invalidate_osd();
+        self.reset_osd_image_cache();
     }
 }

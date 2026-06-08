@@ -99,22 +99,16 @@ impl RawOsdContext {
 
 impl RawOsdInfo {
     pub(crate) fn with_osd_line(mut self) -> Self {
-        self.osd_line = Self::compose_osd_line(
-            self.sensor_size,
-            self.embedded_preview,
-            self.render_pixels,
-        );
+        self.osd_line =
+            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
         self
     }
 
     /// Update after async/sync HQ refinement replaces the bootstrap buffer.
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
-        self.osd_line = Self::compose_osd_line(
-            self.sensor_size,
-            self.embedded_preview,
-            self.render_pixels,
-        );
+        self.osd_line =
+            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
     }
 
     fn compose_osd_line(

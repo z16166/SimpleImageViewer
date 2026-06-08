@@ -140,6 +140,34 @@ pub(crate) fn collect_ultra_hdr_capacity_sensitive_indices(
     indices.into_iter().collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HdrOsdStateSnapshot {
+    output_mode: crate::hdr::types::HdrOutputMode,
+    native_presentation_enabled: bool,
+    target_format: Option<wgpu::TextureFormat>,
+}
+
+impl HdrOsdStateSnapshot {
+    pub(crate) fn new(
+        output_mode: crate::hdr::types::HdrOutputMode,
+        native_presentation_enabled: bool,
+        target_format: Option<wgpu::TextureFormat>,
+    ) -> Self {
+        Self {
+            output_mode,
+            native_presentation_enabled,
+            target_format,
+        }
+    }
+}
+
+pub(crate) fn hdr_osd_state_changed(
+    previous: HdrOsdStateSnapshot,
+    next: HdrOsdStateSnapshot,
+) -> bool {
+    previous != next
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UltraHdrCapacityRefresh {
     pub(crate) indices_to_invalidate: Vec<usize>,
@@ -1155,6 +1183,11 @@ impl eframe::App for ImageViewerApp {
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         self.hdr_monitor_state
             .refresh_from_viewport(ctx, now, hdr_content_visible);
+        let previous_hdr_osd_state = HdrOsdStateSnapshot::new(
+            self.hdr_capabilities.output_mode,
+            self.hdr_capabilities.native_presentation_enabled,
+            self.hdr_target_format,
+        );
         let output_mode = crate::hdr::monitor::effective_capability_output_mode(
             self.hdr_target_format,
             self.effective_hdr_monitor_selection().as_ref(),
@@ -1228,6 +1261,14 @@ impl eframe::App for ImageViewerApp {
         self.hdr_capabilities.available =
             output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
+        let next_hdr_osd_state = HdrOsdStateSnapshot::new(
+            self.hdr_capabilities.output_mode,
+            self.hdr_capabilities.native_presentation_enabled,
+            self.hdr_target_format,
+        );
+        if hdr_osd_state_changed(previous_hdr_osd_state, next_hdr_osd_state) {
+            self.invalidate_osd();
+        }
         self.refresh_ultra_hdr_decode_capacity(ctx);
         crate::loader::refresh_hq_preview_monitor_cap(ctx);
         self.sync_linux_vulkan_hdr_metadata();

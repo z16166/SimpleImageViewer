@@ -1266,7 +1266,9 @@ fn decode_uint16_rgb_scene_linear_rgba32f(
         spp = 3;
     }
     if !matches!(spp, 3 | 4) {
-        return Err(format!("16-bit RGB TIFF: expected SamplesPerPixel 3 or 4, got {spp}"));
+        return Err(format!(
+            "16-bit RGB TIFF: expected SamplesPerPixel 3 or 4, got {spp}"
+        ));
     }
 
     let scanline_size = unsafe { lib::TIFFScanlineSize(tif) };
@@ -1297,7 +1299,9 @@ fn decode_uint16_rgb_scene_linear_rgba32f(
         let mut actual_max = f64::MIN;
         for y in 0..height {
             if unsafe { lib::TIFFReadScanline(tif, buf.as_mut_ptr() as *mut c_void, y, 0) } <= 0 {
-                return Err(format!("16-bit RGB TIFF: scan failed at row {y} (min/max pass)"));
+                return Err(format!(
+                    "16-bit RGB TIFF: scan failed at row {y} (min/max pass)"
+                ));
             }
             for x in 0..width as usize {
                 let base = x * spp as usize;
@@ -1832,10 +1836,7 @@ pub(crate) fn apply_orientation_buffer_f32(
 #[cfg(test)]
 pub fn peek_tiff_tags(path: &Path) -> Result<String, String> {
     let mmap = Arc::new(crate::mmap_util::map_file(path)?);
-    let mut ctx = Box::new(TiffMmapContext {
-        mmap,
-        offset: 0,
-    });
+    let mut ctx = Box::new(TiffMmapContext { mmap, offset: 0 });
     unsafe {
         let c_path = CString::new(path.to_str().unwrap_or("image.tif"))
             .map_err(|_| "Invalid path".to_string())?;
@@ -2039,13 +2040,13 @@ pub fn load_via_libtiff(
                         },
                         rgba_f32: Arc::new(rgba_f32),
                     };
-                    let fallback_pixels = crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
-                        &hdr,
-                        hdr_target_capacity,
-                        &tone_map,
-                    )?;
-                    let fallback =
-                        DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+                    let fallback_pixels =
+                        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                            &hdr,
+                            hdr_target_capacity,
+                            &tone_map,
+                        )?;
+                    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
                     return Ok(ImageData::Hdr { hdr, fallback });
                 }
                 Err(err) => {

@@ -1253,6 +1253,50 @@ fn make_test_app() -> ImageViewerApp {
     }
 }
 
+#[test]
+fn relocate_index_keyed_cache_moves_raw_osd_info() {
+    let mut app = make_test_app();
+    app.raw_osd_by_index
+        .insert(2, crate::loader::RawOsdInfo::empty());
+
+    app.relocate_index_keyed_cache(2, 0);
+
+    assert!(!app.raw_osd_by_index.contains_key(&2));
+    assert!(app.raw_osd_by_index.contains_key(&0));
+}
+
+#[test]
+fn install_current_tiled_hdr_image_refreshes_hdr_osd_line() {
+    let mut app = make_test_app();
+    app.image_files = vec![PathBuf::from("hdr_tiled.avif")];
+    app.current_index = 0;
+    app.hdr_capabilities = crate::hdr::capabilities::HdrCapabilities::sdr("test");
+    app.hdr_capabilities.available = true;
+    app.hdr_capabilities.output_mode = crate::hdr::types::HdrOutputMode::WindowsScRgb;
+    app.hdr_capabilities.native_presentation_enabled = true;
+    app.hdr_target_format = Some(wgpu::TextureFormat::Rgba16Float);
+
+    let source = Arc::new(DummyHdrTiledSource {
+        width: 4096,
+        height: 4096,
+    });
+    let ctx = eframe::egui::Context::default();
+
+    app.install_tiled_image(
+        0,
+        app.generation,
+        Arc::clone(&source) as Arc<dyn crate::loader::TiledImageSource>,
+        Some(Arc::clone(&source) as Arc<dyn crate::hdr::tiled::HdrTiledSource>),
+        None,
+        None,
+        true,
+        false,
+        &ctx,
+    );
+
+    assert!(app.osd.has_hdr_line());
+}
+
 struct DummyHdrTiledSource {
     width: u32,
     height: u32,

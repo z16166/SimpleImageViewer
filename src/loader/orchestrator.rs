@@ -18,7 +18,9 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
-use crate::loader::preview_caps::{finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer, REFINEMENT_POOL};
+use crate::loader::preview_caps::{
+    REFINEMENT_POOL, finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer,
+};
 use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
     RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,

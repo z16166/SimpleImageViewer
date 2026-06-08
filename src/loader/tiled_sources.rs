@@ -227,7 +227,11 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
         crate::raw_processor::raw_scene_linear_metadata()
     }
 
-    fn generate_hdr_preview(&self, max_w: u32, max_h: u32) -> Result<crate::hdr::types::HdrImageBuffer, String> {
+    fn generate_hdr_preview(
+        &self,
+        max_w: u32,
+        max_h: u32,
+    ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
         let guard = self.buffer.read();
         let image = guard
             .as_ref()
@@ -271,13 +275,15 @@ impl crate::hdr::tiled::HdrTiledSource for RawHdrRefiningSource {
             tile.extend_from_slice(&image.rgba_f32[start..end]);
         }
 
-        Ok(Arc::new(crate::hdr::tiled::HdrTileBuffer::new_with_metadata(
-            width,
-            height,
-            image.color_space,
-            image.metadata.clone(),
-            Arc::new(tile),
-        )))
+        Ok(Arc::new(
+            crate::hdr::tiled::HdrTileBuffer::new_with_metadata(
+                width,
+                height,
+                image.color_space,
+                image.metadata.clone(),
+                Arc::new(tile),
+            ),
+        ))
     }
 }
 

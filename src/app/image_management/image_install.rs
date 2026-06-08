@@ -122,6 +122,7 @@ impl ImageViewerApp {
             self.current_image_res = Some((decoded.width, decoded.height));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            self.invalidate_osd();
         }
         if self
             .image_files
@@ -174,6 +175,7 @@ impl ImageViewerApp {
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            self.invalidate_osd();
 
             if sdr_fallback_is_placeholder {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
@@ -272,6 +274,7 @@ impl ImageViewerApp {
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
             source.request_refinement(idx, self.generation);
+            self.invalidate_osd();
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
@@ -285,7 +288,9 @@ impl ImageViewerApp {
                 source.width(),
                 source.height(),
                 _hdr_plane_active,
-                sdr_preview.map(|p| format!("{}x{}", p.width, p.height)).unwrap_or_else(|| "none".into())
+                sdr_preview
+                    .map(|p| format!("{}x{}", p.width, p.height))
+                    .unwrap_or_else(|| "none".into())
             );
         }
     }
@@ -365,6 +370,7 @@ impl ImageViewerApp {
                 ));
                 self.tile_manager = None;
                 self.clear_current_animation_for_index(idx);
+                self.invalidate_osd();
             }
         }
 

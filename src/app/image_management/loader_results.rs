@@ -165,6 +165,7 @@ impl ImageViewerApp {
                         current_frame: 0,
                         frame_start: Instant::now(),
                     });
+                    self.invalidate_osd();
                 }
                 self.animation_cache.insert(idx, playback);
                 self.pending_anim_frames = None;
@@ -836,7 +837,9 @@ impl ImageViewerApp {
                 }
             }
         } else {
-            self.raw_osd_by_index.remove(&idx);
+            if self.raw_osd_by_index.remove(&idx).is_some() && idx == self.current_index {
+                self.invalidate_osd();
+            }
         }
 
         match install_plan {

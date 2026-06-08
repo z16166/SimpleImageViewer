@@ -48,7 +48,12 @@ pub(crate) fn summarize_image_data(data: &crate::loader::ImageData) -> String {
         ImageData::Tiled(source) => format!("Tiled {}x{}", source.width(), source.height()),
         ImageData::Animated(frames) => {
             if let Some(first) = frames.first() {
-                format!("Animated {}x{} frames={}", first.width, first.height, frames.len())
+                format!(
+                    "Animated {}x{} frames={}",
+                    first.width,
+                    first.height,
+                    frames.len()
+                )
             } else {
                 "Animated empty".to_string()
             }

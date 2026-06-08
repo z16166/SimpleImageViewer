@@ -27,12 +27,12 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::preview_caps::{
     finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer, hq_preview_max_side,
 };
+use crate::loader::raw_osd::{RawOsdContext, RawOsdInfo};
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
     hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
-use crate::loader::raw_osd::{RawOsdContext, RawOsdInfo};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -61,7 +61,11 @@ fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h:
 ///
 /// Requires either monitor HQ cap (2048/4096) or a near-full sensor JPEG — tiny thumbs like
 /// Epson ERF 640×424 must not pass just because LibRaw reported matching `iwidth`/`iheight`.
-fn raw_embedded_preview_meets_hq_requirement(preview: &DecodedImage, raw_w: u32, raw_h: u32) -> bool {
+fn raw_embedded_preview_meets_hq_requirement(
+    preview: &DecodedImage,
+    raw_w: u32,
+    raw_h: u32,
+) -> bool {
     let hq_side = hq_preview_max_side();
     let preview_long = preview.width.max(preview.height);
     if preview_long >= hq_side {
@@ -168,8 +172,7 @@ fn develop_full_resolution(
                         hdr_target_capacity,
                         &hdr_tone_map,
                     )?;
-                    let fallback =
-                        DecodedImage::from_arc(hw, hh, fallback_pixels);
+                    let fallback = DecodedImage::from_arc(hw, hh, fallback_pixels);
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
                         osd: osd_ctx.full_develop(hw, hh),
@@ -257,11 +260,8 @@ fn develop_hq_preview(
         let hdr = processor.develop_scene_linear_hdr()?;
         let (logical_w, logical_h) = processor.developed_output_dimensions(None);
         let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
-        let fallback_pixels = hdr_sdr_fallback_rgba8_eager_or_placeholder(
-            &hdr,
-            hdr_target_capacity,
-            &hdr_tone_map,
-        )?;
+        let fallback_pixels =
+            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
         let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
         let osd = osd_ctx.full_develop(hdr.width, hdr.height);
         return Ok(RawLoadOutput {
@@ -326,11 +326,8 @@ fn load_raw_with_embedded_bootstrap(
 
     if use_hdr {
         let hdr_slot = hdr_buffer_slot.expect("hdr slot when use_hdr");
-        let hdr_source = Arc::new(RawHdrRefiningSource::new(
-            hdr_slot,
-            width,
-            height,
-        )) as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
+        let hdr_source = Arc::new(RawHdrRefiningSource::new(hdr_slot, width, height))
+            as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
         return Ok(RawLoadOutput {
             image: ImageData::HdrTiled {
                 hdr: hdr_source,
@@ -544,14 +541,18 @@ mod tests {
     fn nikon1_embedded_thumb_covers_sensor() {
         let thumb = DecodedImage::new(3872, 2592, vec![0; 3872 * 2592 * 4]);
         assert!(raw_embedded_preview_covers_sensor(&thumb, 3904, 2604));
-        assert!(raw_embedded_preview_meets_hq_requirement(&thumb, 3904, 2604));
+        assert!(raw_embedded_preview_meets_hq_requirement(
+            &thumb, 3904, 2604
+        ));
     }
 
     #[test]
     fn performance_mode_uses_small_embedded_on_hdr_display_capacity() {
         let thumb = DecodedImage::new(1616, 1080, vec![0; 1616 * 1080 * 4]);
         assert!(!raw_embedded_preview_covers_sensor(&thumb, 6000, 4000));
-        assert!(!raw_embedded_preview_meets_hq_requirement(&thumb, 6000, 4000));
+        assert!(!raw_embedded_preview_meets_hq_requirement(
+            &thumb, 6000, 4000
+        ));
         // Performance path returns embedded regardless of HDR capacity — verified by load_raw
         // integration; size helpers document the HQ vs performance distinction here.
     }
@@ -561,7 +562,9 @@ mod tests {
         // Epson R-D1 style: 640×424 embedded JPEG vs ~2240×1680 developed output.
         let thumb = DecodedImage::new(640, 424, vec![0; 640 * 424 * 4]);
         assert!(!raw_embedded_preview_covers_sensor(&thumb, 2240, 1680));
-        assert!(!raw_embedded_preview_meets_hq_requirement(&thumb, 2240, 1680));
+        assert!(!raw_embedded_preview_meets_hq_requirement(
+            &thumb, 2240, 1680
+        ));
     }
 
     #[test]
@@ -635,7 +638,11 @@ mod tests {
             ImageData::HdrTiled { fallback, .. } | ImageData::Tiled(fallback) => {
                 assert_eq!(fallback.width(), 3040);
                 assert_eq!(fallback.height(), 2024);
-                eprintln!("HQ load: tiled bootstrap {}x{}", fallback.width(), fallback.height());
+                eprintln!(
+                    "HQ load: tiled bootstrap {}x{}",
+                    fallback.width(),
+                    fallback.height()
+                );
             }
             other => panic!(
                 "expected tiled HQ bootstrap, got {:?}",
@@ -766,10 +773,7 @@ mod tests {
                     ImageData::Hdr { fallback, hdr } => {
                         eprintln!(
                             "{name} {label}: Hdr {}x{} fallback {}x{}",
-                            hdr.width,
-                            hdr.height,
-                            fallback.width,
-                            fallback.height
+                            hdr.width, hdr.height, fallback.width, fallback.height
                         );
                     }
                     _ => eprintln!("{name} {label}: other"),
