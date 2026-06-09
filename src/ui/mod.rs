@@ -19,5 +19,4 @@ pub mod hud;
 pub mod osd;
 pub mod osd_param;
 pub mod settings;
-mod settings_appearance;
 pub mod utils;

@@ -109,28 +109,28 @@ fn view_form_grid(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg>
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            appearance_grid_label(ui, t!("label.interface_size"));
-            appearance_grid_control(ui, row_h, |ui| {
+            super::grid_label(ui, t!("label.interface_size"));
+            super::grid_control(ui, row_h, |ui| {
                 msgs.extend(view_font_size_slider(app, ui));
             });
             ui.end_row();
 
-            appearance_grid_label(ui, t!("label.interface_font"));
-            appearance_grid_control(ui, row_h, |ui| {
+            super::grid_label(ui, t!("label.interface_font"));
+            super::grid_control(ui, row_h, |ui| {
                 ui.push_id("font_selection_area", |ui| {
                     msgs.extend(view_font_family_combo(app, ui));
                 });
             });
             ui.end_row();
 
-            appearance_grid_label(ui, t!("section.language"));
-            appearance_grid_control(ui, row_h, |ui| {
+            super::grid_label(ui, t!("section.language"));
+            super::grid_control(ui, row_h, |ui| {
                 msgs.extend(view_language_combo(app, ui));
             });
             ui.end_row();
 
-            appearance_grid_label(ui, t!("section.theme"));
-            appearance_grid_control(ui, row_h, |ui| {
+            super::grid_label(ui, t!("section.theme"));
+            super::grid_control(ui, row_h, |ui| {
                 msgs.extend(view_theme_combo(app, ui));
             });
             ui.end_row();
@@ -142,10 +142,11 @@ fn view_form_grid(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg>
 fn view_font_size_slider(app: &ImageViewerApp, ui: &mut egui::Ui) -> Vec<AppearanceMsg> {
     let mut out = Vec::new();
     let mut current = app.temp_font_size.unwrap_or(app.settings.font_size);
-    let resp = add_elastic_slider(
+    let resp = super::add_slider(
         ui,
         SLIDER_VALUE_WIDTH,
         egui::Slider::new(&mut current, 12.0..=32.0).step_by(1.0),
+        super::SliderTrackMode::Elastic,
     );
     if resp.dragged() {
         out.push(AppearanceMsg::FontSizePreview(current));
@@ -261,35 +262,3 @@ fn theme_options() -> [(AppTheme, String); 3] {
     ]
 }
 
-fn appearance_grid_label(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(0.0, ui.spacing().interact_size.y),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.label(text);
-        },
-    );
-}
-
-fn appearance_grid_control(ui: &mut egui::Ui, row_h: f32, add_control: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), row_h),
-        egui::Layout::left_to_right(egui::Align::Center),
-        add_control,
-    );
-}
-
-fn add_elastic_slider(
-    ui: &mut egui::Ui,
-    value_width: f32,
-    slider: egui::Slider<'_>,
-) -> egui::Response {
-    ui.scope(|ui| {
-        let track_width =
-            (ui.available_width() - value_width - ui.spacing().item_spacing.x).max(40.0);
-        ui.spacing_mut().slider_width = track_width;
-        ui.spacing_mut().interact_size.x = value_width;
-        ui.add(slider)
-    })
-    .inner
-}
