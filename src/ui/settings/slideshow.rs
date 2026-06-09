@@ -113,46 +113,38 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
-                let item_spacing = ui.spacing().item_spacing.x;
-
                 ui.label(t!("hdr.exposure_ev"));
-                let track_w =
-                    (ui.available_width() - HDR_SLIDER_VALUE_WIDTH - item_spacing).max(40.0);
-                super::add_fixed_slider(
+                super::add_slider(
                     ui,
-                    track_w,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(exposure_slot, -8.0..=8.0)
                         .step_by(0.1)
                         .suffix(" EV"),
+                    super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(hint);
                 ui.end_row();
 
                 ui.label(t!("hdr.sdr_white_nits"));
-                let track_w =
-                    (ui.available_width() - HDR_SLIDER_VALUE_WIDTH - item_spacing).max(40.0);
-                super::add_fixed_slider(
+                super::add_slider(
                     ui,
-                    track_w,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(&mut app.settings.hdr_sdr_white_nits, 80.0..=400.0)
                         .step_by(1.0)
                         .suffix(" nits"),
+                    super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(t!("hdr.sdr_white_hint"));
                 ui.end_row();
 
                 ui.label(t!("hdr.max_display_nits"));
-                let track_w =
-                    (ui.available_width() - HDR_SLIDER_VALUE_WIDTH - item_spacing).max(40.0);
-                super::add_fixed_slider(
+                super::add_slider(
                     ui,
-                    track_w,
                     HDR_SLIDER_VALUE_WIDTH,
                     egui::Slider::new(&mut app.settings.hdr_max_display_nits, 100.0..=10_000.0)
                         .logarithmic(true)
                         .suffix(" nits"),
+                    super::SliderTrackMode::Elastic,
                 )
                 .on_hover_text(t!("hdr.max_display_hint"));
                 ui.end_row();
@@ -257,15 +249,11 @@ fn draw_transitions_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 
                 if app.settings.transition_style != TransitionStyle::None {
                     ui.label(t!("label.duration"));
-                    let item_spacing = ui.spacing().item_spacing.x;
-                    let avail = ui.available_width();
-                    let value_w = TRANSITIONS_SLIDER_VALUE_WIDTH;
-                    let track_w = (avail - value_w - item_spacing).max(40.0);
-                    super::add_fixed_slider(
+                    super::add_slider(
                         ui,
-                        track_w,
-                        value_w,
+                        TRANSITIONS_SLIDER_VALUE_WIDTH,
                         egui::Slider::new(&mut app.settings.transition_ms, 50..=2000).suffix("ms"),
+                        super::SliderTrackMode::Elastic,
                     );
                     ui.end_row();
                 }

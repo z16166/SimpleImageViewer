@@ -238,13 +238,26 @@ fn draw_settings_tabs(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     });
 }
 
-pub(super) fn add_fixed_slider(
+pub(super) enum SliderTrackMode {
+    /// Caller-specified track width (e.g. grid rows that size the slider outside `add_slider`).
+    #[allow(dead_code)]
+    Fixed(f32),
+    Elastic,
+}
+
+pub(super) fn add_slider(
     ui: &mut egui::Ui,
-    track_width: f32,
     value_width: f32,
     slider: egui::Slider<'_>,
+    track_mode: SliderTrackMode,
 ) -> egui::Response {
     ui.scope(|ui| {
+        let track_width = match track_mode {
+            SliderTrackMode::Fixed(width) => width,
+            SliderTrackMode::Elastic => {
+                (ui.available_width() - value_width - ui.spacing().item_spacing.x).max(40.0)
+            }
+        };
         ui.spacing_mut().slider_width = track_width;
         ui.spacing_mut().interact_size.x = value_width;
         ui.add(slider)
@@ -259,6 +272,14 @@ pub(super) fn grid_label(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) {
         |ui| {
             ui.label(text);
         },
+    );
+}
+
+pub(super) fn grid_control(ui: &mut egui::Ui, row_h: f32, add_control: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add_control,
     );
 }
 

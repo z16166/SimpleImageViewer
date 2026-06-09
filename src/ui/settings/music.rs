@@ -405,17 +405,13 @@ pub(super) fn draw_music_tab(
                                     .color(app.cached_palette.text_muted),
                             );
                             let old_vol = app.settings.volume;
-                            let track_w = (ui.available_width()
-                                - MUSIC_SLIDER_VALUE_WIDTH
-                                - ui.spacing().item_spacing.x)
-                                .max(40.0);
-                            let resp = super::add_fixed_slider(
+                            let resp = super::add_slider(
                                 ui,
-                                track_w,
                                 MUSIC_SLIDER_VALUE_WIDTH,
                                 egui::Slider::new(&mut app.settings.volume, 0.0..=1.0)
                                     .show_value(true)
                                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                                super::SliderTrackMode::Elastic,
                             );
                             if (old_vol - app.settings.volume).abs() > 0.001 {
                                 app.audio.set_volume(app.settings.volume);

@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::ImageViewerApp;
-use crate::ui::utils::styled_button;
+use crate::ui::utils::{settings_card_styled, styled_button, SettingsCardStyle};
 use eframe::egui::{self, Margin, RichText};
 use rust_i18n::t;
 
@@ -45,81 +45,69 @@ pub(super) fn draw_system_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
 #[cfg(target_os = "windows")]
 fn draw_windows_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     let palette = app.cached_palette.clone();
-    system_settings_card(ui, &palette, t!("section.system_windows"), |ui| {
-        ui.label(RichText::new(t!("win.register_hint")).color(palette.text_muted));
-        ui.add_space(8.0);
+    settings_card_styled(
+        ui,
+        &palette,
+        t!("section.system_windows"),
+        SettingsCardStyle {
+            inner_margin: Margin {
+                left: 10,
+                right: 10,
+                top: 8,
+                bottom: 16,
+            },
+            pin_content_min_width: true,
+        },
+        |ui| {
+            ui.label(RichText::new(t!("win.register_hint")).color(palette.text_muted));
+            ui.add_space(8.0);
 
-        let row_w = ui.available_width();
-        let button_h = ui.spacing().interact_size.y;
-        let row_h = button_h + 10.0;
-        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::hover());
+            let row_w = ui.available_width();
+            let button_h = ui.spacing().interact_size.y;
+            let row_h = button_h + 10.0;
+            let (row_rect, _) =
+                ui.allocate_exact_size(egui::vec2(row_w, row_h), egui::Sense::hover());
 
-        let buttons_w_id = egui::Id::new("system_tab_button_group_width");
-        let measured_w: f32 = ui.ctx().data(|d| d.get_temp(buttons_w_id).unwrap_or(0.0));
-        let group_w = if measured_w > 0.0 {
-            measured_w.min(row_w)
-        } else {
-            row_w.min(320.0)
-        };
-        let group_x = row_rect.left() + ((row_w - group_w) / 2.0).max(0.0);
-        let group_y = row_rect.center().y - button_h / 2.0;
-        let group_rect =
-            egui::Rect::from_min_size(egui::pos2(group_x, group_y), egui::vec2(group_w, button_h));
-        let mut group_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(group_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-        );
+            let buttons_w_id = egui::Id::new("system_tab_button_group_width");
+            let measured_w: f32 = ui.ctx().data(|d| d.get_temp(buttons_w_id).unwrap_or(0.0));
+            let group_w = if measured_w > 0.0 {
+                measured_w.min(row_w)
+            } else {
+                row_w.min(320.0)
+            };
+            let group_x = row_rect.left() + ((row_w - group_w) / 2.0).max(0.0);
+            let group_y = row_rect.center().y - button_h / 2.0;
+            let group_rect = egui::Rect::from_min_size(
+                egui::pos2(group_x, group_y),
+                egui::vec2(group_w, button_h),
+            );
+            let mut group_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(group_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
 
-        let r1 = styled_button(&mut group_ui, t!("win.assoc_formats"), &palette);
-        if r1.clicked() {
-            if let Ok(reg) = crate::formats::get_registry().read() {
-                let formats = reg.formats.clone();
-                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::FileAssoc(
-                    crate::ui::dialogs::file_assoc::State::new(formats),
+            let r1 = styled_button(&mut group_ui, t!("win.assoc_formats"), &palette);
+            if r1.clicked() {
+                if let Ok(reg) = crate::formats::get_registry().read() {
+                    let formats = reg.formats.clone();
+                    app.active_modal =
+                        Some(crate::ui::dialogs::modal_state::ActiveModal::FileAssoc(
+                            crate::ui::dialogs::file_assoc::State::new(formats),
+                        ));
+                }
+            }
+            let r2 = styled_button(&mut group_ui, t!("win.remove_assoc"), &palette);
+            if r2.clicked() {
+                app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                    crate::ui::dialogs::confirm::State::remove_file_assoc(
+                        t!("win.confirm_remove_title"),
+                        t!("win.confirm_remove_msg"),
+                    ),
                 ));
             }
-        }
-        let r2 = styled_button(&mut group_ui, t!("win.remove_assoc"), &palette);
-        if r2.clicked() {
-            app.active_modal = Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
-                crate::ui::dialogs::confirm::State::remove_file_assoc(
-                    t!("win.confirm_remove_title"),
-                    t!("win.confirm_remove_msg"),
-                ),
-            ));
-        }
-        let actual_w = r2.rect.right() - r1.rect.left();
-        ui.ctx().data_mut(|d| d.insert_temp(buttons_w_id, actual_w));
-    });
-}
-
-#[cfg(target_os = "windows")]
-fn system_settings_card<R>(
-    ui: &mut egui::Ui,
-    palette: &crate::theme::ThemePalette,
-    title: impl Into<String>,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    egui::Frame::new()
-        .fill(
-            palette
-                .widget_bg
-                .gamma_multiply(if palette.is_dark { 0.55 } else { 0.9 }),
-        )
-        .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
-        .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(Margin {
-            left: 10,
-            right: 10,
-            top: 8,
-            bottom: 16,
-        })
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(title).color(palette.accent2).strong());
-            ui.add_space(6.0);
-            add_contents(ui)
-        })
-        .inner
+            let actual_w = r2.rect.right() - r1.rect.left();
+            ui.ctx().data_mut(|d| d.insert_temp(buttons_w_id, actual_w));
+        },
+    );
 }

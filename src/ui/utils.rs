@@ -436,10 +436,37 @@ pub fn themed_checkbox(ui: &mut egui::Ui, value: &mut bool, palette: &ThemePalet
     response
 }
 
+/// Layout options for [`settings_card_styled`]. Defaults match the standard settings tab cards.
+#[derive(Clone, Copy)]
+pub struct SettingsCardStyle {
+    pub inner_margin: egui::Margin,
+    /// Pin content to the card width (used by the centered Windows system tab card).
+    pub pin_content_min_width: bool,
+}
+
+impl Default for SettingsCardStyle {
+    fn default() -> Self {
+        Self {
+            inner_margin: egui::Margin::symmetric(10, 8),
+            pin_content_min_width: false,
+        }
+    }
+}
+
 pub fn settings_card<R>(
     ui: &mut egui::Ui,
     palette: &ThemePalette,
     title: impl Into<String>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    settings_card_styled(ui, palette, title, SettingsCardStyle::default(), add_contents)
+}
+
+pub fn settings_card_styled<R>(
+    ui: &mut egui::Ui,
+    palette: &ThemePalette,
+    title: impl Into<String>,
+    style: SettingsCardStyle,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     egui::Frame::new()
@@ -450,8 +477,11 @@ pub fn settings_card<R>(
         )
         .stroke(egui::Stroke::new(1.0_f32, palette.widget_border))
         .corner_radius(egui::CornerRadius::same(4))
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .inner_margin(style.inner_margin)
         .show(ui, |ui| {
+            if style.pin_content_min_width {
+                ui.set_min_width(ui.available_width());
+            }
             ui.label(RichText::new(title).color(palette.accent2).strong());
             ui.add_space(6.0);
             add_contents(ui)
