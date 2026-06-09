@@ -105,7 +105,7 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
     let mut hdr_image_cache = HashMap::new();
     hdr_image_cache.insert(0, Arc::clone(&static_hdr));
     assert_eq!(
-        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), None, 0)
+        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), &HashMap::new(), 0)
             .map(|b| b.rgba_f32[0]),
         Some(1.0)
     );
@@ -124,7 +124,7 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         },
     );
     assert_eq!(
-        first_cached_hdr_still_for_index(&hdr_image_cache, &animation_cache, None, 1)
+        first_cached_hdr_still_for_index(&hdr_image_cache, &animation_cache, &HashMap::new(), 1)
             .map(|b| b.rgba_f32[0]),
         Some(2.0)
     );
@@ -137,13 +137,15 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
         delays: Vec::new(),
         next_frame: 0,
     };
+    let mut pending_map = HashMap::new();
+    pending_map.insert(2, pending);
     assert_eq!(
-        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), Some(&pending), 2)
+        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), &pending_map, 2)
             .map(|b| b.rgba_f32[0]),
         Some(3.0)
     );
     assert!(
-        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), Some(&pending), 9)
+        first_cached_hdr_still_for_index(&hdr_image_cache, &HashMap::new(), &pending_map, 9)
             .is_none()
     );
 }
@@ -1017,7 +1019,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
         first_cached_hdr_or_tiled_preview_for_index(
             &hdr_image_cache,
             &HashMap::new(),
-            None,
+            &HashMap::new(),
             &hdr_tiled_preview_cache,
             None,
             0
@@ -1031,7 +1033,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
         first_cached_hdr_or_tiled_preview_for_index(
             &hdr_image_cache,
             &HashMap::new(),
-            None,
+            &HashMap::new(),
             &hdr_tiled_preview_cache,
             None,
             0
@@ -1046,7 +1048,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
         first_cached_hdr_or_tiled_preview_for_index(
             &hdr_image_cache,
             &HashMap::new(),
-            None,
+            &HashMap::new(),
             &hdr_tiled_preview_cache,
             None,
             0
@@ -1064,7 +1066,7 @@ fn first_cached_hdr_or_tiled_preview_selection_rules() {
         first_cached_hdr_or_tiled_preview_for_index(
             &hdr_image_cache,
             &HashMap::new(),
-            None,
+            &HashMap::new(),
             &hdr_tiled_preview_cache,
             Some(&current_image),
             0
@@ -1198,7 +1200,7 @@ fn make_test_app() -> ImageViewerApp {
         cached_palette: ThemePalette::dark(),
         is_printing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         print_status_rx: None,
-        pending_anim_frames: None,
+        pending_anim_frames: HashMap::new(),
         file_op_rx,
         file_op_tx,
         lightweight_file_op_tx,

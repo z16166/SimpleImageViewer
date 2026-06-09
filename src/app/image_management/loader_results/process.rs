@@ -24,75 +24,80 @@ impl ImageViewerApp {
 
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
-        let defer_pending_animation_upload =
-            self.pending_anim_frames.as_ref().is_some_and(|pending| {
-                should_defer_background_upload_during_transition(
-                    pending.image_index == self.current_index,
-                    is_transitioning,
-                    self.transition_settled_at,
-                )
-            });
+        let pending_idx =
+            super::super::prefetch_animation_upload_index(&self.pending_anim_frames, self.current_index);
+        let defer_pending_animation_upload = pending_idx.is_some_and(|idx| {
+            should_defer_background_upload_during_transition(
+                idx == self.current_index,
+                is_transitioning,
+                self.transition_settled_at,
+            )
+        });
         #[cfg(feature = "preload-debug")]
-        if defer_pending_animation_upload && let Some(pending) = self.pending_anim_frames.as_ref() {
-            preload_debug!(
-                "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
-                pending.image_index,
-                self.current_index,
-                pending.next_frame,
-                pending.frames.len()
-            );
-        }
-        if !defer_pending_animation_upload && let Some(ref mut pending) = self.pending_anim_frames {
-            let mut uploaded = 0;
-            while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
-                let i = pending.next_frame;
-                let frame = &pending.frames[i];
-                let color_image = ColorImage::from_rgba_unmultiplied(
-                    [frame.width as usize, frame.height as usize],
-                    frame.rgba(),
+        if defer_pending_animation_upload && let Some(idx) = pending_idx {
+            if let Some(pending) = self.pending_anim_frames.get(&idx) {
+                preload_debug!(
+                    "[PreloadDebug] defer pending animation upload: idx={} current={} next_frame={} total_frames={} reason=transition",
+                    pending.image_index,
+                    self.current_index,
+                    pending.next_frame,
+                    pending.frames.len()
                 );
-                let name = format!("anim_{}_{}", pending.image_index, i);
-                let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
-                pending.textures.push(handle);
-                pending.delays.push(frame.delay);
-                pending.next_frame += 1;
-                uploaded += 1;
+            }
+        }
+        if !defer_pending_animation_upload && let Some(pending_idx) = pending_idx {
+            let mut uploaded = 0;
+            let mut finished = false;
+            if let Some(pending) = self.pending_anim_frames.get_mut(&pending_idx) {
+                while pending.next_frame < pending.frames.len() && uploaded < ANIM_UPLOAD_QUOTA {
+                    let i = pending.next_frame;
+                    let frame = &pending.frames[i];
+                    let color_image = ColorImage::from_rgba_unmultiplied(
+                        [frame.width as usize, frame.height as usize],
+                        frame.rgba(),
+                    );
+                    let name = format!("anim_{}_{}", pending.image_index, i);
+                    let handle = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                    pending.textures.push(handle);
+                    pending.delays.push(frame.delay);
+                    pending.next_frame += 1;
+                    uploaded += 1;
+                }
+                finished = pending.next_frame >= pending.frames.len();
             }
 
-            // Check if all frames have been uploaded
-            if pending.next_frame >= pending.frames.len() {
-                let idx = pending.image_index;
+            if finished {
+                if let Some(pending) = self.pending_anim_frames.remove(&pending_idx) {
+                    let idx = pending.image_index;
 
-                // Build the final AnimationPlayback from the now-complete upload
-                let playback = AnimationPlayback {
-                    image_index: idx,
-                    textures: std::mem::take(&mut pending.textures),
-                    hdr_frames: pending.hdr_frames.clone(),
-                    delays: std::mem::take(&mut pending.delays),
-                    current_frame: 0,
-                    frame_start: Instant::now(),
-                };
-
-                if idx == self.current_index {
-                    if let Some(hdr_frames) = &playback.hdr_frames {
-                        if let Some(hdr) = hdr_frames.first() {
-                            self.current_hdr_image =
-                                Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
-                        }
-                    }
-                    self.animation = Some(AnimationPlayback {
-                        image_index: playback.image_index,
-                        textures: playback.textures.clone(),
-                        hdr_frames: playback.hdr_frames.clone(),
-                        delays: playback.delays.clone(),
+                    let playback = AnimationPlayback {
+                        image_index: idx,
+                        textures: pending.textures,
+                        hdr_frames: pending.hdr_frames.clone(),
+                        delays: pending.delays,
                         current_frame: 0,
                         frame_start: Instant::now(),
-                    });
+                    };
+
+                    if idx == self.current_index {
+                        if let Some(hdr_frames) = &playback.hdr_frames {
+                            if let Some(hdr) = hdr_frames.first() {
+                                self.current_hdr_image =
+                                    Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(hdr)));
+                            }
+                        }
+                        self.animation = Some(AnimationPlayback {
+                            image_index: playback.image_index,
+                            textures: playback.textures.clone(),
+                            hdr_frames: playback.hdr_frames.clone(),
+                            delays: playback.delays.clone(),
+                            current_frame: 0,
+                            frame_start: Instant::now(),
+                        });
+                    }
+                    self.animation_cache.insert(idx, playback);
                 }
-                self.animation_cache.insert(idx, playback);
-                self.pending_anim_frames = None;
-            } else {
-                // More frames remain — ask for another repaint
+            } else if self.pending_anim_frames.contains_key(&pending_idx) {
                 ctx.request_repaint();
             }
         }

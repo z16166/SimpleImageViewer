@@ -9,6 +9,7 @@ use crate::ui::utils::{
 };
 use eframe::egui::{self, Vec2};
 use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -460,7 +461,7 @@ impl ImageViewerApp {
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),
             print_status_rx: None,
-            pending_anim_frames: None,
+            pending_anim_frames: HashMap::new(),
             last_mouse_wheel_nav: 0.0,
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,

@@ -68,7 +68,7 @@ impl ImageViewerApp {
         first_cached_hdr_still_for_index(
             &self.hdr_image_cache,
             &self.animation_cache,
-            self.pending_anim_frames.as_ref(),
+            &self.pending_anim_frames,
             index,
         )
     }
@@ -85,7 +85,7 @@ impl ImageViewerApp {
         first_cached_hdr_or_tiled_preview_for_index(
             &self.hdr_image_cache,
             &self.animation_cache,
-            self.pending_anim_frames.as_ref(),
+            &self.pending_anim_frames,
             &self.hdr_tiled_preview_cache,
             self.current_hdr_tiled_preview.as_ref(),
             index,
@@ -223,7 +223,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.animation = None;
-        self.pending_anim_frames = None;
+        self.pending_anim_frames.remove(&idx);
         self.prev_texture = None;
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;

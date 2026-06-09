@@ -309,25 +309,24 @@ impl ImageViewerApp {
             }
         }
 
-        let cur = self.current_index;
-        let n = self.image_files.len();
-        let is_in_range = n > 0
-            && (idx == cur
-                || idx == (cur + 1) % n
-                || (cur > 0 && idx == cur - 1)
-                || (cur == 0 && idx == n - 1));
-
-        if is_in_range {
-            self.pending_anim_frames = Some(PendingAnimUpload {
+        self.pending_anim_frames.insert(
+            idx,
+            PendingAnimUpload {
                 image_index: idx,
                 hdr_frames: None,
                 frames: frames.to_vec(),
                 textures: Vec::new(),
                 delays: Vec::new(),
                 next_frame: 0,
-            });
-            ctx.request_repaint();
-        }
+            },
+        );
+        crate::preload_debug!(
+            "[PreloadDebug] queue animation upload: idx={} current={} frames={}",
+            idx,
+            self.current_index,
+            frames.len()
+        );
+        ctx.request_repaint();
     }
 
     pub(super) fn install_hdr_animated_image(
@@ -384,25 +383,24 @@ impl ImageViewerApp {
             })
             .collect();
 
-        let cur = self.current_index;
-        let n = self.image_files.len();
-        let is_in_range = n > 0
-            && (idx == cur
-                || idx == (cur + 1) % n
-                || (cur > 0 && idx == cur - 1)
-                || (cur == 0 && idx == n - 1));
-
-        if is_in_range {
-            self.pending_anim_frames = Some(PendingAnimUpload {
+        self.pending_anim_frames.insert(
+            idx,
+            PendingAnimUpload {
                 image_index: idx,
                 hdr_frames: Some(hdr_frames),
                 frames: sdr_frames,
                 textures: Vec::new(),
                 delays: Vec::new(),
                 next_frame: 0,
-            });
-            ctx.request_repaint();
-        }
+            },
+        );
+        crate::preload_debug!(
+            "[PreloadDebug] queue hdr animation upload: idx={} current={} frames={}",
+            idx,
+            self.current_index,
+            frames.len()
+        );
+        ctx.request_repaint();
     }
 
     pub(super) fn install_image_error(&mut self, idx: usize, error: &str) {

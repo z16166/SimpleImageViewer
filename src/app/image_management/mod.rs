@@ -760,7 +760,7 @@ fn should_schedule_first_batch_preload(
 fn first_cached_hdr_still_for_index(
     hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     animation_cache: &HashMap<usize, AnimationPlayback>,
-    pending_anim_frames: Option<&PendingAnimUpload>,
+    pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
     index: usize,
 ) -> Option<Arc<crate::hdr::types::HdrImageBuffer>> {
     if let Some(image) = hdr_image_cache.get(&index) {
@@ -771,10 +771,7 @@ fn first_cached_hdr_still_for_index(
             return Some(Arc::clone(frame));
         }
     }
-    pending_anim_frames.and_then(|pending| {
-        if pending.image_index != index {
-            return None;
-        }
+    pending_anim_frames.get(&index).and_then(|pending| {
         pending
             .hdr_frames
             .as_ref()
@@ -796,7 +793,7 @@ fn first_cached_hdr_still_for_index(
 fn first_cached_hdr_or_tiled_preview_for_index(
     hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     animation_cache: &HashMap<usize, AnimationPlayback>,
-    pending_anim_frames: Option<&PendingAnimUpload>,
+    pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
     hdr_tiled_preview_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     current_hdr_tiled_preview: Option<&crate::app::CurrentHdrImage>,
     index: usize,
@@ -808,6 +805,38 @@ fn first_cached_hdr_or_tiled_preview_for_index(
                 .and_then(|curr| curr.image_for_index(index))
                 .cloned()
         })
+}
+
+fn prefetch_animation_upload_index(
+    pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
+    current_index: usize,
+) -> Option<usize> {
+    if pending_anim_frames.contains_key(&current_index) {
+        Some(current_index)
+    } else {
+        pending_anim_frames.keys().next().copied()
+    }
+}
+
+/// True when a preloaded GIF/WebP/APNG has only its first-frame SDR texture cached.
+pub(super) fn needs_stale_animated_first_frame_reload(
+    image_files: &[PathBuf],
+    current_index: usize,
+    animation_cache: &HashMap<usize, AnimationPlayback>,
+    pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
+    has_sdr_texture: bool,
+) -> bool {
+    if animation_cache.contains_key(&current_index) || pending_anim_frames.contains_key(&current_index)
+    {
+        return false;
+    }
+    let Some(path) = image_files.get(current_index) else {
+        return false;
+    };
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    crate::loader::is_maybe_animated(ext) && has_sdr_texture
 }
 
 fn find_index_for_path_impl(image_files: &[PathBuf], path: &std::path::Path) -> Option<usize> {

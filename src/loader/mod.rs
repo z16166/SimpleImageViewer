@@ -51,3 +51,5 @@ pub(crate) use orientation::{
 pub(crate) fn tiff_may_be_camera_raw(path: &std::path::Path) -> bool {
     decode::tiff_may_be_camera_raw(path)
 }
+
+pub(crate) use decode::is_maybe_animated;

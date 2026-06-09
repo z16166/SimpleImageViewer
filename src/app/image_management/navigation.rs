@@ -366,6 +366,14 @@ impl ImageViewerApp {
             });
         }
 
+        let needs_animation_reload = needs_stale_animated_first_frame_reload(
+            &self.image_files,
+            self.current_index,
+            &self.animation_cache,
+            &self.pending_anim_frames,
+            self.texture_cache.contains(self.current_index),
+        );
+
         // Check if we have a prefetched TileManager ready to use!
         if let Some(mut tm) = self.prefetched_tiles.remove(&self.current_index) {
             // We successfully hit the cache!
@@ -403,6 +411,20 @@ impl ImageViewerApp {
                 self.current_index,
                 prefetch_gen,
                 self.generation
+            );
+        } else if needs_animation_reload {
+            crate::preload_debug!(
+                "[PreloadDebug] navigate animation_reload idx={} reason=first_frame_only_preload",
+                self.current_index
+            );
+            self.prefetch_prev_generation = None;
+            self.generation = self.generation.wrapping_add(1);
+            self.loader.set_generation(self.generation);
+            self.loader.request_load(
+                self.current_index,
+                self.generation,
+                self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
             );
         } else if self.has_loaded_asset(self.current_index) {
             crate::preload_debug!(

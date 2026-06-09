@@ -449,7 +449,7 @@ pub struct ImageViewerApp {
     pub print_status_rx: Option<crossbeam_channel::Receiver<Option<String>>>,
 
     // Deferred animation frame uploads (throttled to avoid GPU stalls)
-    pub(crate) pending_anim_frames: Option<PendingAnimUpload>,
+    pub(crate) pending_anim_frames: HashMap<usize, PendingAnimUpload>,
 
     // Async file operations (deletion, etc.)
     pub(crate) file_op_rx: Receiver<FileOpResult>,
