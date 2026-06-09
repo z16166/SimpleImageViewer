@@ -116,7 +116,7 @@ impl ImageViewerApp {
         } else {
             // CRITICAL: Drop all resources holding the file BEFORE attempting to delete it.
             // On Windows, WIC's IStream and memmap2 will keep the file locked if we don't drop them.
-            self.current_image_res = None;
+            self.set_current_image_resolution(None);
             self.tile_manager = None;
             self.animation = None;
             self.texture_cache.clear_all();
@@ -159,9 +159,9 @@ impl ImageViewerApp {
         self.prefetched_tiles.clear();
 
         if self.image_files.is_empty() {
-            self.current_index = 0;
+            self.set_current_index(0);
             self.status_message = t!("status.no_images_left").to_string();
-            self.current_image_res = None;
+            self.set_current_image_resolution(None);
             self.animation = None;
             self.current_hdr_image = None;
             self.prev_texture = None;
@@ -173,7 +173,7 @@ impl ImageViewerApp {
         } else {
             // Adjust current_index if we were at the last element
             if self.current_index >= self.image_files.len() {
-                self.current_index = self.image_files.len() - 1;
+                self.set_current_index(self.image_files.len() - 1);
             }
 
             // Reset state for new image
@@ -183,7 +183,7 @@ impl ImageViewerApp {
             self.prev_transition_rect = None;
             self.transition_start = None;
             self.current_rotation = 0;
-            self.zoom_factor = 1.0;
+            self.set_zoom_factor(1.0);
             self.pan_offset = Vec2::ZERO;
             // Close any open EXIF/XMP modal since we've moved to a new image
             if matches!(
@@ -207,8 +207,7 @@ impl ImageViewerApp {
             self.schedule_preloads(true);
         }
 
-        // Force HUD update
-        self.invalidate_osd();
-        self.reset_osd_image_cache();
+        // Force HUD layout refresh after file list mutation.
+        self.invalidate_view_text_layout();
     }
 }

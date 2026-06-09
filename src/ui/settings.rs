@@ -22,6 +22,7 @@ use crate::context_menu::model::{
 use crate::hotkeys::model::{
     HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file,
 };
+use crate::settings::PairedRawJpegHandling;
 use crate::ui::utils::{
     middle_truncate, path_display_box, settings_card, styled_button, styled_button_widget,
     themed_labeled_toggle,
@@ -36,6 +37,7 @@ const ABOUT_ICON_BYTES: &[u8] = include_bytes!("../../assets/icon.png");
 const HDR_SLIDER_VALUE_WIDTH: f32 = 90.0;
 const TRANSITIONS_SLIDER_VALUE_WIDTH: f32 = 72.0;
 const MUSIC_SLIDER_VALUE_WIDTH: f32 = 60.0;
+const PAIRED_RAW_JPEG_COMBO_WIDTH: f32 = 180.0;
 const SETTINGS_TAB_SIDEBAR_WIDTH: f32 = 124.0;
 const SETTINGS_TAB_ITEM_HEIGHT: f32 = 34.0;
 const HOTKEYS_INDEX_COL_WIDTH: f32 = 48.0;
@@ -296,7 +298,6 @@ fn draw_hdr_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 app.refresh_ultra_hdr_decode_capacity(ui.ctx());
             }
             app.queue_save();
-            app.invalidate_osd();
             ui.ctx().request_repaint();
         }
     });
@@ -2014,6 +2015,40 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
         )
         .changed()
         {
+            app.queue_save();
+        }
+
+        let old_pair_handling = app.settings.paired_raw_jpeg_handling;
+        ui.horizontal(|ui| {
+            ui.label(t!("label.paired_raw_jpeg_handling"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("paired_raw_jpeg_handling_combo")
+                    .width(PAIRED_RAW_JPEG_COMBO_WIDTH)
+                    .selected_text(app.settings.paired_raw_jpeg_handling.label())
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(PAIRED_RAW_JPEG_COMBO_WIDTH);
+                        ui.selectable_value(
+                            &mut app.settings.paired_raw_jpeg_handling,
+                            PairedRawJpegHandling::ShowBoth,
+                            PairedRawJpegHandling::ShowBoth.label(),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.paired_raw_jpeg_handling,
+                            PairedRawJpegHandling::SkipRaw,
+                            PairedRawJpegHandling::SkipRaw.label(),
+                        );
+                        ui.selectable_value(
+                            &mut app.settings.paired_raw_jpeg_handling,
+                            PairedRawJpegHandling::SkipJpeg,
+                            PairedRawJpegHandling::SkipJpeg.label(),
+                        );
+                    });
+            });
+        });
+        if old_pair_handling != app.settings.paired_raw_jpeg_handling {
+            if let Some(dir) = app.settings.last_image_dir.clone() {
+                app.load_directory(dir);
+            }
             app.queue_save();
         }
 

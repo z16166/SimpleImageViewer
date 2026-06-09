@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.3] - 2026-06-09
+
+### Added
+- **Camera RAW+JPEG pair handling**: New Library setting lets you show both files, hide RAW files, or hide JPG/JPEG files when a camera saves both formats for the same shot.
+
+### Changed
+- **OSD state updates**: Refactored the bottom-left OSD to use tracked viewer state and event-driven updates, reducing manual refresh calls and avoiding unnecessary per-frame string allocation.
+- **Folder scanning efficiency**: Reduced temporary allocations while batching scan results and matching RAW/JPEG sidecars.
+
+### Fixed
+- **RAW/JPEG sidecar matching**: Paired RAW and JPG/JPEG files are matched even when their file stems use different ASCII casing, such as `IMG001.ARW` with `img001.JPG`.
+
 ## [2.4.2] - 2026-06-08
 
 ### Changed

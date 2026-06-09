@@ -111,12 +111,7 @@ impl ImageViewerApp {
         let preview = update.preview_bundle.sdr().cloned();
         match (preview, update.error) {
             (Some(preview), _) => {
-                if let Some(osd) = self.raw_osd_by_index.get_mut(&update.index) {
-                    osd.apply_hq_refine_preview(preview.width, preview.height);
-                    if update.index == self.current_index {
-                        self.invalidate_osd();
-                    }
-                }
+                self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index

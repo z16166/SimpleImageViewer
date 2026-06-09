@@ -259,7 +259,7 @@ impl ImageViewerApp {
             return;
         }
         let old_zoom = self.zoom_factor;
-        self.zoom_factor = (self.zoom_factor * factor).clamp(0.05, 20.0);
+        self.set_zoom_factor((self.zoom_factor * factor).clamp(0.05, 20.0));
         let ratio = self.zoom_factor / old_zoom;
 
         if let Some(mouse) = mouse_pos {
@@ -286,7 +286,6 @@ impl ImageViewerApp {
         *slot = (*slot + delta_ev).clamp(-8.0, 8.0);
         self.sync_hdr_tone_map_settings();
         self.queue_save();
-        self.invalidate_osd();
         ctx.request_repaint();
     }
 
@@ -334,15 +333,15 @@ impl ImageViewerApp {
             AppAction::First => self.navigate_first(ctx),
             AppAction::Last => self.navigate_last(ctx),
             AppAction::ZoomIn => {
-                self.zoom_factor = (self.zoom_factor * 1.1).min(20.0);
+                self.set_zoom_factor((self.zoom_factor * 1.1).min(20.0));
                 self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomOut => {
-                self.zoom_factor = (self.zoom_factor / 1.1).max(0.05);
+                self.set_zoom_factor((self.zoom_factor / 1.1).max(0.05));
                 self.invalidate_tile_requests_for_view_change();
             }
             AppAction::ZoomReset => {
-                self.zoom_factor = 1.0;
+                self.set_zoom_factor(1.0);
                 self.pan_offset = Vec2::ZERO;
                 self.invalidate_tile_requests_for_view_change();
             }
@@ -354,7 +353,7 @@ impl ImageViewerApp {
             }
             AppAction::ToggleScaleMode => {
                 self.settings.scale_mode = self.settings.scale_mode.toggled();
-                self.zoom_factor = 1.0;
+                self.set_zoom_factor(1.0);
                 self.pan_offset = Vec2::ZERO;
                 self.queue_save();
             }

@@ -361,6 +361,7 @@ impl ImageViewerApp {
             get_system_font_families()
         };
 
+        let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
         let mut app = Self {
             save_tx,
             initial_image,
@@ -433,8 +434,10 @@ impl ImageViewerApp {
             music_scan_cancel: None,
             music_scan_path: None,
             current_image_res: None,
-            raw_osd_by_index: std::collections::HashMap::new(),
-            current_osd_file_name: String::new(),
+            raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
+            image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
+            last_hdr_view_status: None,
+            current_file_name: String::new(),
             cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
             prev_texture: None,
             prev_hdr_image: None,
@@ -446,7 +449,7 @@ impl ImageViewerApp {
             last_background_upload_at: None,
             is_next: true,
             active_transition: settings.transition_style,
-            osd: crate::ui::osd::OsdRenderer::new(),
+            osd: crate::ui::osd::OsdRenderer::new(osd_event_rx),
             last_minimized: false,
             last_frame_time: Instant::now(),
             ipc_rx,

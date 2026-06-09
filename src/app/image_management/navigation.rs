@@ -162,7 +162,7 @@ impl ImageViewerApp {
         }
 
         self.tile_manager = None;
-        self.current_image_res = None;
+        self.set_current_image_resolution(None);
         self.animation = None;
         self.prev_transition_rect = None;
         self.prev_texture = None;
@@ -301,8 +301,8 @@ impl ImageViewerApp {
             &mut self.tile_manager,
             &mut self.prefetched_tiles,
         );
-        self.current_index = target_index;
-        self.refresh_current_osd_file_name();
+        self.set_current_index(target_index);
+        self.refresh_current_file_name();
         self.current_hdr_image = self
             .first_cached_hdr_still_for_index(self.current_index)
             .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
@@ -317,28 +317,26 @@ impl ImageViewerApp {
             .cloned()
             .map(|image| crate::app::CurrentHdrImage::new(self.current_index, image));
         self.current_rotation = 0;
-        self.zoom_factor = 1.0;
+        self.set_zoom_factor(1.0);
         self.pan_offset = Vec2::ZERO;
         self.animation = None;
 
         // Update resolution if already in cache (for immediate low-res display)
         if self.texture_cache.contains(self.current_index) {
             if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
-                self.current_image_res = Some((w, h));
+                self.set_current_image_resolution(Some((w, h)));
             } else if let Some(texture) = self.texture_cache.get(self.current_index) {
                 let size = texture.size();
-                self.current_image_res = Some((size[0] as u32, size[1] as u32));
+                self.set_current_image_resolution(Some((size[0] as u32, size[1] as u32)));
             }
         } else {
-            self.current_image_res = None;
+            self.set_current_image_resolution(None);
         }
 
         self.last_switch_time = Instant::now();
         self.error_message = None;
         self.is_font_error = false;
         ctx.request_repaint();
-        self.invalidate_osd();
-        self.reset_osd_image_cache();
         // Close any open EXIF/XMP modal — it shows data for the previous image
         if matches!(
             self.active_modal,
@@ -381,7 +379,7 @@ impl ImageViewerApp {
             self.prefetch_prev_generation = Some(prefetch_gen);
 
             tm.generation = self.generation;
-            self.current_image_res = Some((tm.full_width, tm.full_height));
+            self.set_current_image_resolution(Some((tm.full_width, tm.full_height)));
 
             // Trigger deferred refinement for RAW sources (LibRaw demosaic).
             // HDR tiled sources: in-flight prefetch tasks carry `prefetch_gen` and will be
@@ -426,7 +424,7 @@ impl ImageViewerApp {
                 // Defensive fallback for any tiled preview (SDR or HDR with missing source cache)
                 // that doesn't have a TileManager installed.
                 if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
-                    self.current_image_res = Some((w, h));
+                    self.set_current_image_resolution(Some((w, h)));
                 }
                 self.loader.request_load(
                     self.current_index,
@@ -435,9 +433,9 @@ impl ImageViewerApp {
                     self.settings.raw_high_quality,
                 );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
-                self.current_image_res = Some((hdr.width, hdr.height));
+                self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
-                self.current_image_res = Some((src.width(), src.height()));
+                self.set_current_image_resolution(Some((src.width(), src.height())));
                 // Defensive fallback: if it is a tiled HDR image but the TileManager is missing,
                 // trigger a request_load to rebuild the TileManager.
                 if self.tile_manager.is_none() {
@@ -449,7 +447,7 @@ impl ImageViewerApp {
                     );
                 }
             } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
-                self.current_image_res = Some((decoded.width, decoded.height));
+                self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             }
         } else {
             crate::preload_debug!(
@@ -529,9 +527,9 @@ impl ImageViewerApp {
         self.shuffle_current_image_list_preserving_pairs();
         self.clear_index_keyed_state_after_list_reorder();
 
-        self.current_index = 0;
+        self.set_current_index(0);
         self.current_rotation = 0;
-        self.zoom_factor = 1.0;
+        self.set_zoom_factor(1.0);
         self.pan_offset = Vec2::ZERO;
         self.error_message = None;
         self.is_font_error = false;
@@ -545,8 +543,6 @@ impl ImageViewerApp {
             self.settings.raw_high_quality,
         );
         self.schedule_preloads(true);
-        self.refresh_current_osd_file_name();
-        self.invalidate_osd();
-        self.reset_osd_image_cache();
+        self.refresh_current_file_name();
     }
 }

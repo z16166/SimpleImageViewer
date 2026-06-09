@@ -33,7 +33,7 @@ impl ImageViewerApp {
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
-        self.current_index = 0;
+        self.set_current_index(0);
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
         self.animation_cache.clear();
@@ -45,16 +45,16 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.prefetched_tiles.clear();
         crate::tile_cache::PIXEL_CACHE.lock().clear();
-        self.current_image_res = None;
-        self.raw_osd_by_index.clear();
-        self.current_osd_file_name.clear();
-        self.osd.set_supplemental_lines(None, None);
+        self.set_current_image_resolution(None);
+        self.raw_metadata.clear();
+        self.current_file_name.clear();
+        self.osd.invalidate();
         self.loader.cancel_all();
         self.pan_offset = Vec2::ZERO;
         // Match `navigate_to` / file-open semantics: prior folder's manual zoom and rotation
         // must not carry over (fit scale is multiplied by `zoom_factor`, so a leftover ~7.5×
         // reads as ~232% OSD instead of ~31% on a fresh directory).
-        self.zoom_factor = 1.0;
+        self.set_zoom_factor(1.0);
         self.current_rotation = 0;
         self.error_message = None;
         self.is_font_error = false;
@@ -76,7 +76,13 @@ impl ImageViewerApp {
 
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
-        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
+        scanner::scan_directory(
+            dir,
+            self.settings.recursive,
+            self.settings.paired_raw_jpeg_handling,
+            tx,
+            cancel,
+        );
     }
 
     /// Refresh the image file list for the current directory (bound to F5).
@@ -212,7 +218,7 @@ impl ImageViewerApp {
         // ------------------------------------------------------------------
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
-        self.current_index = 0;
+        self.set_current_index(0);
         self.error_message = None;
         self.is_font_error = false;
         self.scanning = true;
@@ -233,7 +239,13 @@ impl ImageViewerApp {
         self.scan_cancel = Some(Arc::clone(&cancel));
         let (tx, rx) = crossbeam_channel::unbounded();
         self.scan_rx = Some(rx);
-        scanner::scan_directory(dir, self.settings.recursive, tx, cancel);
+        scanner::scan_directory(
+            dir,
+            self.settings.recursive,
+            self.settings.paired_raw_jpeg_handling,
+            tx,
+            cancel,
+        );
     }
 
     pub(crate) fn finish_refresh_scan_state(&mut self) {
@@ -336,13 +348,13 @@ impl ImageViewerApp {
                                             self.clear_index_keyed_state_after_list_reorder_except_index(new_idx);
                                             self.invalidate_random_slideshow_order();
 
-                                            self.current_index = new_idx;
+                                            self.set_current_index(new_idx);
                                         } else {
                                             // Anchor file was deleted or not found in the new list:
                                             // wipe all index-keyed states completely and fall back to index 0.
                                             self.clear_index_keyed_state_after_list_reorder();
                                             self.invalidate_random_slideshow_order();
-                                            self.current_index = 0;
+                                            self.set_current_index(0);
 
                                             // Request loading of the fallback index 0 file
                                             let fallback_path = self.image_files[0].clone();
@@ -366,7 +378,7 @@ impl ImageViewerApp {
                                     self.invalidate_random_slideshow_order();
 
                                     // Regular new-directory scan: reset pan/zoom/rotation.
-                                    self.zoom_factor = 1.0;
+                                    self.set_zoom_factor(1.0);
                                     self.pan_offset = Vec2::ZERO;
                                     self.current_rotation = 0;
 
@@ -374,7 +386,7 @@ impl ImageViewerApp {
                                     self.resolve_initial_position();
                                 }
 
-                                self.refresh_current_osd_file_name();
+                                self.refresh_current_file_name();
 
                                 let count = self.image_files.len();
                                 self.status_message =
@@ -431,7 +443,7 @@ impl ImageViewerApp {
     pub(crate) fn resolve_initial_position(&mut self) {
         if let Some(ref path) = self.initial_image {
             if let Some(pos) = self.find_index_for_path(path) {
-                self.current_index = pos;
+                self.set_current_index(pos);
             }
             if !self.scanning {
                 self.initial_image = None;
@@ -439,7 +451,7 @@ impl ImageViewerApp {
         } else if self.settings.resume_last_image {
             if let Some(last_path) = &self.settings.last_viewed_image {
                 if let Some(pos) = self.find_index_for_path(last_path) {
-                    self.current_index = pos;
+                    self.set_current_index(pos);
                 }
             }
         }

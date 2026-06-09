@@ -45,8 +45,8 @@ impl ImageViewerApp {
         self.animation_cache.clear();
         self.pending_anim_frames = None;
         self.tile_manager = None;
-        self.current_image_res = None;
-        self.raw_osd_by_index.clear();
+        self.set_current_image_resolution(None);
+        self.raw_metadata.clear();
         self.prev_texture = None;
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
@@ -91,9 +91,7 @@ impl ImageViewerApp {
         if let Some(upload) = self.deferred_sdr_uploads.remove(&from) {
             self.deferred_sdr_uploads.insert(to, upload);
         }
-        if let Some(raw_osd) = self.raw_osd_by_index.remove(&from) {
-            self.raw_osd_by_index.insert(to, raw_osd);
-        }
+        self.raw_metadata.relocate_index(from, to);
 
         // 5. Prefetched tiles / animations
         if let Some(mut tiles) = self.prefetched_tiles.remove(&from) {
@@ -199,7 +197,8 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.deferred_sdr_uploads
             .retain(|&idx, _| idx == except_idx);
-        self.raw_osd_by_index.retain(|&idx, _| idx == except_idx);
+        self.raw_metadata
+            .retain_only_indices(|idx| idx == except_idx);
         self.ultra_hdr_capacity_sensitive_indices
             .retain(|&idx| idx == except_idx);
 

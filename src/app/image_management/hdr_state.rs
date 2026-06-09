@@ -127,7 +127,6 @@ impl ImageViewerApp {
         self.loader.set_hdr_target_capacity(next_capacity);
         self.loader
             .set_hdr_tone_map_settings(self.effective_hdr_tone_map_settings());
-        self.invalidate_osd();
         log::info!(
             "[HDR] ultra_hdr_decode_capacity changed {:.3} -> {:.3}; output_mode {:?} -> {:?}",
             previous_capacity,
@@ -190,9 +189,8 @@ impl ImageViewerApp {
             self.generation = self.generation.wrapping_add(1);
             self.loader.set_generation(self.generation);
             self.tile_manager = None;
-            self.current_image_res = None;
+            self.set_current_image_resolution(None);
             self.animation = None;
-            self.invalidate_osd();
             self.loader.request_load(
                 self.current_index,
                 self.generation,
@@ -223,7 +221,7 @@ impl ImageViewerApp {
         crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
         self.remove_hdr_image_index(idx);
         self.tile_manager = None;
-        self.current_image_res = None;
+        self.set_current_image_resolution(None);
         self.animation = None;
         self.pending_anim_frames = None;
         self.prev_texture = None;
@@ -232,8 +230,6 @@ impl ImageViewerApp {
         self.transition_start = None;
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;
-        self.invalidate_osd();
-
         self.loader.request_load(
             idx,
             self.generation,
