@@ -208,46 +208,13 @@ impl ImageViewerApp {
                     let zoom_pct =
                         (effective_scale * self.cached_pixels_per_point * 100.0).round() as u32;
 
-                    let mut res_w = 0u32;
-                    let mut res_h = 0u32;
-                    let mut osd_mode = crate::ui::osd::ImageOsdMode::Static;
-
-                    if self.tiled_canvas_matches_current_index() {
-                        if let Some(tm) = &self.tile_manager {
-                            res_w = tm.full_width;
-                            res_h = tm.full_height;
-                            osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
-                        }
-                    } else if let Some((w, h)) = self.current_image_res {
-                        res_w = w;
-                        res_h = h;
-                        let threshold = crate::tile_cache::TILED_THRESHOLD
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if w as u64 * h as u64 > threshold {
-                            osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
-                        }
-                    }
-
-                    if res_w > 0 {
-                        let file_size_bytes = self
-                            .file_byte_len_by_index
-                            .get(self.current_index)
-                            .copied()
-                            .unwrap_or(0);
-                        let frame = crate::ui::osd::ImageOsdFrame {
-                            index: self.current_index,
-                            total: self.image_files.len(),
-                            zoom_pct,
-                            res: (res_w, res_h),
-                            file_size_bytes,
-                            mode: osd_mode,
-                        };
-                        let fname = self.current_osd_file_name.as_str();
+                    let image_frame = self.current_image_frame_status(zoom_pct);
+                    let res_w = image_frame.as_ref().map_or(0, |frame| frame.res.0);
+                    if let Some(frame) = image_frame.as_ref() {
+                        self.update_view_status_for_paint(&frame);
                         self.osd.render_image(
                             ui,
                             screen_rect,
-                            frame,
-                            fname,
                             &self.cached_palette,
                             &self.last_save_error,
                         );

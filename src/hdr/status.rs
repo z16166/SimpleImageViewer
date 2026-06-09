@@ -14,7 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::capabilities::HdrCapabilities;
 use super::types::{HdrColorSpace, HdrOutputMode};
 use rust_i18n::t;
 
@@ -25,11 +24,12 @@ pub enum HdrRenderPath {
     SdrFallback,
 }
 
-pub fn hdr_osd_tag(
+pub fn hdr_osd_tag_from_parts(
     is_hdr_source: bool,
     render_path: HdrRenderPath,
     color_space: Option<HdrColorSpace>,
-    capabilities: &HdrCapabilities,
+    output_mode: HdrOutputMode,
+    native_presentation_enabled: bool,
     ultra_hdr_decode_capacity: Option<f32>,
     monitor_label: Option<&str>,
     exposure_ev: f32,
@@ -40,7 +40,7 @@ pub fn hdr_osd_tag(
 
     let render = hdr_render_path_label(render_path);
     let color = color_space.map(hdr_color_space_label);
-    let output = hdr_output_label(capabilities);
+    let output = hdr_output_label_from_parts(output_mode, native_presentation_enabled);
 
     let mut parts = match color {
         Some(color) => t!(
@@ -83,9 +83,12 @@ fn hdr_render_path_label(render_path: HdrRenderPath) -> String {
     }
 }
 
-pub fn hdr_output_label(capabilities: &HdrCapabilities) -> String {
-    if capabilities.native_presentation_enabled {
-        match capabilities.output_mode {
+pub fn hdr_output_label_from_parts(
+    output_mode: HdrOutputMode,
+    native_presentation_enabled: bool,
+) -> String {
+    if native_presentation_enabled {
+        match output_mode {
             HdrOutputMode::WindowsScRgb => t!("hdr.output.windows_scrgb").to_string(),
             HdrOutputMode::MacOsEdr => t!("hdr.output.macos_edr").to_string(),
             HdrOutputMode::WaylandHdr => t!("hdr.output.wayland_hdr").to_string(),
@@ -110,9 +113,8 @@ fn hdr_color_space_label(color_space: HdrColorSpace) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::hdr::capabilities::HdrCapabilities;
-    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
-    use crate::hdr::types::HdrColorSpace;
+    use crate::hdr::status::{HdrRenderPath, hdr_osd_tag_from_parts};
+    use crate::hdr::types::{HdrColorSpace, HdrOutputMode};
     use rust_i18n::t;
 
     #[test]
@@ -127,11 +129,12 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatImagePlane,
             None,
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             0.0,
@@ -152,11 +155,12 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatTilePlane,
             None,
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             0.0,
@@ -179,11 +183,12 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatTilePlane,
             Some(HdrColorSpace::Rec2020Linear),
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             0.0,
@@ -207,11 +212,12 @@ mod tests {
         .to_string();
         expected.push_str(&t!("hdr.osd.jpeg_r_cap", capacity = "5.50"));
         expected.push_str(" | DISPLAY1 · +0.0 EV");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatImagePlane,
             Some(HdrColorSpace::Rec2020Linear),
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             Some(5.5),
             Some("DISPLAY1"),
             0.0,
@@ -234,11 +240,12 @@ mod tests {
         )
         .to_string();
         expected.push_str(" · +0.0 EV");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatImagePlane,
             Some(HdrColorSpace::Unknown),
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             0.0,
@@ -249,11 +256,12 @@ mod tests {
 
     #[test]
     fn hdr_osd_tag_formats_exposure_suffix() {
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             true,
             HdrRenderPath::FloatImagePlane,
             None,
-            &HdrCapabilities::sdr("native HDR output not enabled"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             3.0,
@@ -265,11 +273,12 @@ mod tests {
     #[test]
     fn hdr_osd_tag_is_hidden_for_non_hdr_images() {
         rust_i18n::set_locale("en");
-        let tag = hdr_osd_tag(
+        let tag = hdr_osd_tag_from_parts(
             false,
             HdrRenderPath::SdrFallback,
             Some(HdrColorSpace::LinearSrgb),
-            &HdrCapabilities::sdr("not an HDR image"),
+            HdrOutputMode::SdrToneMapped,
+            false,
             None,
             None,
             99.0,

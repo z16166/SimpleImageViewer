@@ -133,19 +133,19 @@ fn native_output_uses_monitor_peak_luminance_for_ultra_hdr_capacity() {
 
 #[test]
 fn hdr_osd_state_change_tracks_native_output_fields() {
-    let sdr = crate::app::HdrOsdStateSnapshot::new(
+    let sdr = crate::app::HdrOutputStateSnapshot::new(
         crate::hdr::types::HdrOutputMode::SdrToneMapped,
         false,
         Some(wgpu::TextureFormat::Bgra8Unorm),
     );
-    let hdr = crate::app::HdrOsdStateSnapshot::new(
+    let hdr = crate::app::HdrOutputStateSnapshot::new(
         crate::hdr::types::HdrOutputMode::WindowsScRgb,
         true,
         Some(wgpu::TextureFormat::Rgba16Float),
     );
 
-    assert!(crate::app::hdr_osd_state_changed(sdr, hdr));
-    assert!(!crate::app::hdr_osd_state_changed(hdr, hdr));
+    assert!(crate::app::hdr_output_state_changed(sdr, hdr));
+    assert!(!crate::app::hdr_output_state_changed(hdr, hdr));
 }
 
 #[test]

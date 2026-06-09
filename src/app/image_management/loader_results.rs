@@ -40,7 +40,7 @@ impl ImageViewerApp {
 
                         // Restore viewer state to ensure consistency.
                         // We jump back to the file that failed to delete to ensure the index is valid.
-                        self.current_index = original_idx;
+                        self.set_current_index(original_idx);
                         self.generation = self.generation.wrapping_add(1);
                         self.loader.set_generation(self.generation);
                         self.status_message =
@@ -165,7 +165,6 @@ impl ImageViewerApp {
                         current_frame: 0,
                         frame_start: Instant::now(),
                     });
-                    self.invalidate_osd();
                 }
                 self.animation_cache.insert(idx, playback);
                 self.pending_anim_frames = None;
@@ -831,15 +830,10 @@ impl ImageViewerApp {
 
         if let Some(osd) = &load_result.raw_osd {
             if osd.sensor_size.0 > 0 {
-                self.raw_osd_by_index.insert(idx, osd.clone());
-                if idx == self.current_index {
-                    self.invalidate_osd();
-                }
+                self.set_raw_metadata_for_index(idx, Some(osd.clone()), ctx);
             }
         } else {
-            if self.raw_osd_by_index.remove(&idx).is_some() && idx == self.current_index {
-                self.invalidate_osd();
-            }
+            self.set_raw_metadata_for_index(idx, None, ctx);
         }
 
         match install_plan {

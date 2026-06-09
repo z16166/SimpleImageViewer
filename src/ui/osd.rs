@@ -19,6 +19,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, RichText, Stroke, StrokeKind, Vec2,
 };
 use rust_i18n::t;
+use std::sync::Arc;
 use std::time::Instant;
 
 const OSD_FONT: FontId = FontId::proportional(crate::constants::OSD_TEXT_SIZE);
@@ -107,6 +108,205 @@ impl ImageOsdFrame {
     }
 }
 
+/// HDR inputs that determine the supplemental OSD line.
+#[derive(Copy, Clone, PartialEq)]
+pub struct HdrOsdFrame<'a> {
+    pub render_path: Option<crate::hdr::status::HdrRenderPath>,
+    pub color_space: Option<crate::hdr::types::HdrColorSpace>,
+    pub output_mode: crate::hdr::types::HdrOutputMode,
+    pub native_presentation_enabled: bool,
+    pub ultra_hdr_decode_capacity: Option<f32>,
+    pub monitor_label: Option<&'a str>,
+    pub exposure_ev: f32,
+}
+
+impl Default for HdrOsdFrame<'_> {
+    fn default() -> Self {
+        Self {
+            render_path: None,
+            color_space: None,
+            output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            monitor_label: None,
+            exposure_ev: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum OsdEvent {
+    CurrentIndex(usize),
+    TotalImages(usize),
+    ZoomPct(u32),
+    ImageResolution((u32, u32)),
+    FileSizeBytes(u64),
+    ImageMode(ImageOsdMode),
+    FileName(Arc<str>),
+    RawLine(Option<Arc<str>>),
+    HdrRenderPath(Option<crate::hdr::status::HdrRenderPath>),
+    HdrColorSpace(Option<crate::hdr::types::HdrColorSpace>),
+    HdrOutputMode(crate::hdr::types::HdrOutputMode),
+    HdrNativePresentationEnabled(bool),
+    UltraHdrDecodeCapacity(Option<f32>),
+    HdrMonitorLabel(Option<Arc<str>>),
+    HdrExposureEv(f32),
+}
+
+impl OsdEvent {
+    pub fn current_index(value: &usize) -> Self {
+        Self::CurrentIndex(*value)
+    }
+
+    pub fn total_images(value: &usize) -> Self {
+        Self::TotalImages(*value)
+    }
+
+    pub fn zoom_pct(value: &u32) -> Self {
+        Self::ZoomPct(*value)
+    }
+
+    pub fn image_resolution(value: &(u32, u32)) -> Self {
+        Self::ImageResolution(*value)
+    }
+
+    pub fn file_size_bytes(value: &u64) -> Self {
+        Self::FileSizeBytes(*value)
+    }
+
+    pub fn image_mode(value: &ImageOsdMode) -> Self {
+        Self::ImageMode(*value)
+    }
+
+    pub fn file_name(value: &String) -> Self {
+        Self::FileName(Arc::from(value.as_str()))
+    }
+
+    pub fn raw_line(value: &Option<String>) -> Self {
+        Self::RawLine(value.as_deref().map(Arc::from))
+    }
+
+    pub fn hdr_render_path(value: &Option<crate::hdr::status::HdrRenderPath>) -> Self {
+        Self::HdrRenderPath(*value)
+    }
+
+    pub fn hdr_color_space(value: &Option<crate::hdr::types::HdrColorSpace>) -> Self {
+        Self::HdrColorSpace(*value)
+    }
+
+    pub fn hdr_output_mode(value: &crate::hdr::types::HdrOutputMode) -> Self {
+        Self::HdrOutputMode(*value)
+    }
+
+    pub fn hdr_native_presentation_enabled(value: &bool) -> Self {
+        Self::HdrNativePresentationEnabled(*value)
+    }
+
+    pub fn ultra_hdr_decode_capacity(value: &Option<f32>) -> Self {
+        Self::UltraHdrDecodeCapacity(*value)
+    }
+
+    pub fn hdr_monitor_label(value: &Option<String>) -> Self {
+        Self::HdrMonitorLabel(value.as_deref().map(Arc::from))
+    }
+
+    pub fn hdr_exposure_ev(value: &f32) -> Self {
+        Self::HdrExposureEv(*value)
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct SupplementalOsdInputs {
+    current_index: usize,
+    total_images: usize,
+    zoom_pct: u32,
+    image_resolution: (u32, u32),
+    file_size_bytes: u64,
+    image_mode: ImageOsdMode,
+    file_name: Arc<str>,
+    raw_line: Option<Arc<str>>,
+    hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
+    hdr_color_space: Option<crate::hdr::types::HdrColorSpace>,
+    hdr_output_mode: crate::hdr::types::HdrOutputMode,
+    hdr_native_presentation_enabled: bool,
+    ultra_hdr_decode_capacity: Option<f32>,
+    hdr_monitor_label: Option<Arc<str>>,
+    hdr_exposure_ev: f32,
+}
+
+impl Default for SupplementalOsdInputs {
+    fn default() -> Self {
+        Self {
+            current_index: 0,
+            total_images: 0,
+            zoom_pct: 0,
+            image_resolution: (0, 0),
+            file_size_bytes: 0,
+            image_mode: ImageOsdMode::Static,
+            file_name: Arc::from(""),
+            raw_line: None,
+            hdr_render_path: None,
+            hdr_color_space: None,
+            hdr_output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+            hdr_native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: None,
+            hdr_monitor_label: None,
+            hdr_exposure_ev: 0.0,
+        }
+    }
+}
+
+impl SupplementalOsdInputs {
+    fn hdr_line(hdr: &HdrOsdFrame<'_>) -> Option<String> {
+        let render_path = hdr.render_path?;
+        crate::hdr::status::hdr_osd_tag_from_parts(
+            true,
+            render_path,
+            hdr.color_space,
+            hdr.output_mode,
+            hdr.native_presentation_enabled,
+            hdr.ultra_hdr_decode_capacity,
+            hdr.monitor_label,
+            hdr.exposure_ev,
+        )
+    }
+
+    fn hdr_line_from_state(&self) -> Option<String> {
+        let hdr = HdrOsdFrame {
+            render_path: self.hdr_render_path,
+            color_space: self.hdr_color_space,
+            output_mode: self.hdr_output_mode,
+            native_presentation_enabled: self.hdr_native_presentation_enabled,
+            ultra_hdr_decode_capacity: self.ultra_hdr_decode_capacity,
+            monitor_label: self.hdr_monitor_label.as_deref(),
+            exposure_ev: self.hdr_exposure_ev,
+        };
+        Self::hdr_line(&hdr)
+    }
+
+    fn apply_event(&mut self, event: OsdEvent) {
+        match event {
+            OsdEvent::CurrentIndex(value) => self.current_index = value,
+            OsdEvent::TotalImages(value) => self.total_images = value,
+            OsdEvent::ZoomPct(value) => self.zoom_pct = value,
+            OsdEvent::ImageResolution(value) => self.image_resolution = value,
+            OsdEvent::FileSizeBytes(value) => self.file_size_bytes = value,
+            OsdEvent::ImageMode(value) => self.image_mode = value,
+            OsdEvent::FileName(value) => self.file_name = value,
+            OsdEvent::RawLine(value) => self.raw_line = value,
+            OsdEvent::HdrRenderPath(value) => self.hdr_render_path = value,
+            OsdEvent::HdrColorSpace(value) => self.hdr_color_space = value,
+            OsdEvent::HdrOutputMode(value) => self.hdr_output_mode = value,
+            OsdEvent::HdrNativePresentationEnabled(value) => {
+                self.hdr_native_presentation_enabled = value;
+            }
+            OsdEvent::UltraHdrDecodeCapacity(value) => self.ultra_hdr_decode_capacity = value,
+            OsdEvent::HdrMonitorLabel(value) => self.hdr_monitor_label = value,
+            OsdEvent::HdrExposureEv(value) => self.hdr_exposure_ev = value,
+        }
+    }
+}
+
 /// Parameters that affect the music HUD.
 #[derive(PartialEq, Clone)]
 pub struct OsdState {
@@ -132,6 +332,7 @@ struct LayoutLines {
 }
 
 pub struct OsdRenderer {
+    osd_event_rx: crossbeam_channel::Receiver<OsdEvent>,
     cached_hud: String,
     cached_hdr_line_display: String,
     cached_raw_line: String,
@@ -141,17 +342,17 @@ pub struct OsdRenderer {
     layout_content_stamp: u64,
     layout_built_stamp: u64,
     measure_scratch: String,
-    last_hud_key: Option<ImageOsdFrame>,
-    last_hud_file_name: String,
     cached_loading_hint: String,
     cached_save_error: String,
     last_save_error_message: String,
     last_music_state: Option<OsdState>,
+    supplemental_state: SupplementalOsdInputs,
 }
 
 impl OsdRenderer {
-    pub fn new() -> Self {
+    pub fn new(osd_event_rx: crossbeam_channel::Receiver<OsdEvent>) -> Self {
         Self {
+            osd_event_rx,
             cached_hud: String::new(),
             cached_hdr_line_display: String::new(),
             cached_raw_line: String::new(),
@@ -161,12 +362,11 @@ impl OsdRenderer {
             layout_content_stamp: 0,
             layout_built_stamp: 0,
             measure_scratch: String::new(),
-            last_hud_key: None,
-            last_hud_file_name: String::new(),
             cached_loading_hint: t!("status.loading").to_string(),
             cached_save_error: String::new(),
             last_save_error_message: String::new(),
             last_music_state: None,
+            supplemental_state: SupplementalOsdInputs::default(),
         }
     }
 
@@ -182,10 +382,25 @@ impl OsdRenderer {
         self.layout_content_stamp = self.layout_content_stamp.wrapping_add(1);
     }
 
-    /// RAW/HDR supplemental lines — updated when loader or HDR settings change, not each frame.
-    pub fn set_supplemental_lines(&mut self, raw: Option<String>, hdr: Option<String>) {
-        self.has_raw_line = raw.is_some();
-        self.cached_raw_line = raw.unwrap_or_default();
+    /// RAW/HDR supplemental lines are derived from a compact input snapshot.
+    /// Callers update source state; this method handles dirty checking and cache rebuilds.
+    pub fn sync_events(&mut self) {
+        let mut changed = false;
+        for event in self.osd_event_rx.try_iter() {
+            self.supplemental_state.apply_event(event);
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+
+        self.rebuild_hud_from_state();
+        self.has_raw_line = self.supplemental_state.raw_line.is_some();
+        self.cached_raw_line.clear();
+        if let Some(raw) = self.supplemental_state.raw_line.as_deref() {
+            self.cached_raw_line.push_str(raw);
+        }
+        let hdr = self.supplemental_state.hdr_line_from_state();
         self.has_hdr_line = hdr.is_some();
         self.cached_hdr_line_display.clear();
         if let Some(hdr) = hdr {
@@ -197,39 +412,30 @@ impl OsdRenderer {
     }
 
     pub fn invalidate(&mut self) {
-        self.last_hud_key = None;
-        self.last_hud_file_name.clear();
         self.last_music_state = None;
         self.bump_content();
     }
 
-    fn rebuild_hud_if_needed(&mut self, frame: ImageOsdFrame, file_name: &str) {
-        let key = frame.cache_key();
-        if self.last_hud_key == Some(key) && self.last_hud_file_name == file_name {
-            return;
-        }
-        let mode_label = match key.mode {
+    fn rebuild_hud_from_state(&mut self) {
+        let mode_label = match self.supplemental_state.image_mode {
             ImageOsdMode::Static => t!("osd.mode.static"),
             ImageOsdMode::Tiled => t!("osd.mode.tiled"),
         };
-        let file_size_text = format_file_size(key.file_size_bytes);
+        let file_size_text = format_file_size(self.supplemental_state.file_size_bytes);
         self.cached_hud.clear();
         use std::fmt::Write as _;
         let _ = write!(
             self.cached_hud,
             "{} / {}    {}    {}    {}%    {}×{}    [{}]",
-            key.index + 1,
-            key.total,
-            file_name,
+            self.supplemental_state.current_index + 1,
+            self.supplemental_state.total_images,
+            self.supplemental_state.file_name,
             file_size_text,
-            key.zoom_pct,
-            key.res.0,
-            key.res.1,
+            self.supplemental_state.zoom_pct,
+            self.supplemental_state.image_resolution.0,
+            self.supplemental_state.image_resolution.1,
             mode_label,
         );
-        self.last_hud_key = Some(key);
-        self.last_hud_file_name.clear();
-        self.last_hud_file_name.push_str(file_name);
         self.bump_content();
     }
 
@@ -296,12 +502,9 @@ impl OsdRenderer {
         &mut self,
         ui: &mut egui::Ui,
         screen_rect: egui::Rect,
-        frame: ImageOsdFrame,
-        file_name: &str,
         palette: &ThemePalette,
         save_error: &Option<(String, Instant)>,
     ) {
-        self.rebuild_hud_if_needed(frame, file_name);
         self.sync_save_error(save_error);
 
         let max_w = (screen_rect.width() - crate::constants::OSD_MARGIN * 2.0).max(64.0);
@@ -514,7 +717,13 @@ pub fn format_file_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_file_size, quantize_osd_zoom_pct};
+    use super::{
+        HdrOsdFrame, ImageOsdFrame, ImageOsdMode, OsdEvent, OsdRenderer, format_file_size,
+        quantize_osd_zoom_pct,
+    };
+    use crate::hdr::status::HdrRenderPath;
+    use crate::hdr::types::{HdrColorSpace, HdrOutputMode};
+    use std::sync::Arc;
 
     #[test]
     fn formats_file_sizes_with_binary_units() {
@@ -530,5 +739,66 @@ mod tests {
         assert_eq!(quantize_osd_zoom_pct(102), 100);
         assert_eq!(quantize_osd_zoom_pct(103), 105);
         assert_eq!(quantize_osd_zoom_pct(153), 155);
+    }
+
+    #[test]
+    fn supplemental_inputs_rebuild_only_when_derived_state_changes() {
+        rust_i18n::set_locale("en");
+        let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
+        let mut osd = OsdRenderer::new(osd_event_rx);
+        let hdr = HdrOsdFrame {
+            render_path: Some(HdrRenderPath::FloatImagePlane),
+            color_space: Some(HdrColorSpace::Rec2020Linear),
+            output_mode: HdrOutputMode::SdrToneMapped,
+            native_presentation_enabled: false,
+            ultra_hdr_decode_capacity: Some(1.25),
+            monitor_label: Some("DISPLAY1"),
+            exposure_ev: 0.0,
+        };
+        let image = ImageOsdFrame {
+            index: 3,
+            total: 9,
+            zoom_pct: 102,
+            res: (4000, 3000),
+            file_size_bytes: 1536,
+            mode: ImageOsdMode::Static,
+        };
+
+        let _ = osd_event_tx.send(OsdEvent::CurrentIndex(3));
+        let _ = osd_event_tx.send(OsdEvent::TotalImages(image.total));
+        let _ = osd_event_tx.send(OsdEvent::ZoomPct(image.cache_key().zoom_pct));
+        let _ = osd_event_tx.send(OsdEvent::ImageResolution(image.res));
+        let _ = osd_event_tx.send(OsdEvent::FileSizeBytes(image.file_size_bytes));
+        let _ = osd_event_tx.send(OsdEvent::ImageMode(image.mode));
+        let _ = osd_event_tx.send(OsdEvent::FileName(Arc::from("image.jpg")));
+        let _ = osd_event_tx.send(OsdEvent::RawLine(Some(Arc::from("RAW line"))));
+        let _ = osd_event_tx.send(OsdEvent::HdrRenderPath(hdr.render_path));
+        let _ = osd_event_tx.send(OsdEvent::HdrColorSpace(hdr.color_space));
+        let _ = osd_event_tx.send(OsdEvent::HdrOutputMode(hdr.output_mode));
+        let _ = osd_event_tx.send(OsdEvent::HdrNativePresentationEnabled(
+            hdr.native_presentation_enabled,
+        ));
+        let _ = osd_event_tx.send(OsdEvent::UltraHdrDecodeCapacity(
+            hdr.ultra_hdr_decode_capacity,
+        ));
+        let _ = osd_event_tx.send(OsdEvent::HdrMonitorLabel(hdr.monitor_label.map(Arc::from)));
+        let _ = osd_event_tx.send(OsdEvent::HdrExposureEv(hdr.exposure_ev));
+        osd.sync_events();
+        let first_stamp = osd.layout_content_stamp;
+        assert!(osd.cached_hud.contains("4 / 9"));
+        assert!(osd.cached_hud.contains("image.jpg"));
+        assert!(osd.cached_hud.contains("100%"));
+        assert!(osd.has_raw_line());
+        assert!(osd.has_hdr_line());
+        assert_eq!(osd.cached_raw_line, "RAW line");
+        assert!(osd.cached_hdr_line_display.contains("+0.0 EV"));
+
+        osd.sync_events();
+        assert_eq!(osd.layout_content_stamp, first_stamp);
+
+        let _ = osd_event_tx.send(OsdEvent::HdrExposureEv(1.5));
+        osd.sync_events();
+        assert!(osd.layout_content_stamp > first_stamp);
+        assert!(osd.cached_hdr_line_display.contains("+1.5 EV"));
     }
 }

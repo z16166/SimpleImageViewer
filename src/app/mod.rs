@@ -23,6 +23,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod media;
 pub(crate) mod rendering;
 pub(crate) mod rfd_parent;
+pub(crate) mod view_status;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -141,13 +142,13 @@ pub(crate) fn collect_ultra_hdr_capacity_sensitive_indices(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HdrOsdStateSnapshot {
+pub(crate) struct HdrOutputStateSnapshot {
     output_mode: crate::hdr::types::HdrOutputMode,
     native_presentation_enabled: bool,
     target_format: Option<wgpu::TextureFormat>,
 }
 
-impl HdrOsdStateSnapshot {
+impl HdrOutputStateSnapshot {
     pub(crate) fn new(
         output_mode: crate::hdr::types::HdrOutputMode,
         native_presentation_enabled: bool,
@@ -161,9 +162,9 @@ impl HdrOsdStateSnapshot {
     }
 }
 
-pub(crate) fn hdr_osd_state_changed(
-    previous: HdrOsdStateSnapshot,
-    next: HdrOsdStateSnapshot,
+pub(crate) fn hdr_output_state_changed(
+    previous: HdrOutputStateSnapshot,
+    next: HdrOutputStateSnapshot,
 ) -> bool {
     previous != next
 }
@@ -544,9 +545,11 @@ pub struct ImageViewerApp {
     // Current image resolution (used by wallpaper dialog and OSD)
     pub(crate) current_image_res: Option<(u32, u32)>,
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
-    pub(crate) raw_osd_by_index: std::collections::HashMap<usize, crate::loader::RawOsdInfo>,
+    pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
+    pub(crate) image_status: crate::app::view_status::ImageViewStatus,
+    pub(crate) last_hdr_view_status: Option<crate::app::view_status::HdrViewStatusSnapshot>,
     /// File name shown in the image OSD for [`Self::current_index`].
-    pub(crate) current_osd_file_name: String,
+    pub(crate) current_file_name: String,
     pub(crate) cached_keyboard_hint: String,
 
     // Transition state
@@ -775,13 +778,43 @@ impl ImageViewerApp {
         )
     }
 
-    pub(crate) fn refresh_current_osd_file_name(&mut self) {
-        self.current_osd_file_name = self
+    pub(crate) fn refresh_current_file_name(&mut self) {
+        let next = self
             .image_files
             .get(self.current_index)
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if self.current_file_name != next {
+            self.current_file_name = next;
+            self.image_status
+                .set_file_name(self.current_file_name.as_str());
+            self.invalidate_view_text_layout();
+        }
+    }
+
+    pub(crate) fn set_current_index(&mut self, current_index: usize) {
+        if self.current_index == current_index {
+            return;
+        }
+        self.current_index = current_index;
+        self.image_status.set_current_index(current_index);
+        self.raw_metadata.set_current_index(current_index);
+    }
+
+    pub(crate) fn set_current_image_resolution(&mut self, resolution: Option<(u32, u32)>) {
+        if self.current_image_res == resolution {
+            return;
+        }
+        self.current_image_res = resolution;
+        self.image_status.set_image_resolution(resolution);
+    }
+
+    pub(crate) fn set_zoom_factor(&mut self, zoom_factor: f32) {
+        if (self.zoom_factor - zoom_factor).abs() <= f32::EPSILON {
+            return;
+        }
+        self.zoom_factor = zoom_factor;
     }
 
     /// Bottom inset for the on-canvas hotkeys issue overlay so it sits above the OSD stack.
@@ -1154,8 +1187,7 @@ impl eframe::App for ImageViewerApp {
         // Just restored from minimized state: force a clean UI refresh
         if self.last_minimized {
             self.last_minimized = false;
-            self.reset_osd_image_cache();
-            self.invalidate_osd();
+            self.invalidate_view_text_layout();
             ctx.request_repaint();
         }
 
@@ -1183,7 +1215,7 @@ impl eframe::App for ImageViewerApp {
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         self.hdr_monitor_state
             .refresh_from_viewport(ctx, now, hdr_content_visible);
-        let previous_hdr_osd_state = HdrOsdStateSnapshot::new(
+        let previous_hdr_output_state = HdrOutputStateSnapshot::new(
             self.hdr_capabilities.output_mode,
             self.hdr_capabilities.native_presentation_enabled,
             self.hdr_target_format,
@@ -1261,13 +1293,13 @@ impl eframe::App for ImageViewerApp {
         self.hdr_capabilities.available =
             output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
-        let next_hdr_osd_state = HdrOsdStateSnapshot::new(
+        let next_hdr_output_state = HdrOutputStateSnapshot::new(
             self.hdr_capabilities.output_mode,
             self.hdr_capabilities.native_presentation_enabled,
             self.hdr_target_format,
         );
-        if hdr_osd_state_changed(previous_hdr_osd_state, next_hdr_osd_state) {
-            self.invalidate_osd();
+        if hdr_output_state_changed(previous_hdr_output_state, next_hdr_output_state) {
+            self.refresh_hdr_view_status();
         }
         self.refresh_ultra_hdr_decode_capacity(ctx);
         crate::loader::refresh_hq_preview_monitor_cap(ctx);

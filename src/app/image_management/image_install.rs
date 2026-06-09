@@ -91,7 +91,7 @@ impl ImageViewerApp {
         };
         self.upload_static_sdr_texture(index, &decoded, texture_name, ctx);
         if index == self.current_index {
-            self.current_image_res = Some((decoded.width, decoded.height));
+            self.set_current_image_resolution(Some((decoded.width, decoded.height)));
         }
     }
 
@@ -119,10 +119,9 @@ impl ImageViewerApp {
         self.remove_hdr_image_index(idx);
         self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
-            self.current_image_res = Some((decoded.width, decoded.height));
+            self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
-            self.invalidate_osd();
         }
         if self
             .image_files
@@ -171,12 +170,11 @@ impl ImageViewerApp {
         }
 
         if idx == self.current_index {
-            self.current_image_res = Some((hdr.width, hdr.height));
+            self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
+            self.refresh_hdr_view_status();
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
-            self.invalidate_osd();
-
             if sdr_fallback_is_placeholder {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
                     let source_key = source_key_for_path(&self.image_files[idx]);
@@ -267,14 +265,14 @@ impl ImageViewerApp {
             if let Some(hdr_source) = hdr_source {
                 self.current_hdr_tiled_image =
                     Some(crate::app::CurrentHdrTiledImage::new(idx, hdr_source));
+                self.refresh_hdr_view_status();
             }
-            self.current_image_res = Some((source.width(), source.height()));
+            self.set_current_image_resolution(Some((source.width(), source.height())));
             crate::tile_cache::set_tile_size_for_image(source.width(), source.height());
             self.tile_manager = Some(tm);
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
             source.request_refinement(idx, self.generation);
-            self.invalidate_osd();
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
@@ -306,7 +304,7 @@ impl ImageViewerApp {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
             self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
             if idx == self.current_index {
-                self.current_image_res = Some((first.width, first.height));
+                self.set_current_image_resolution(Some((first.width, first.height)));
                 self.tile_manager = None;
             }
         }
@@ -363,14 +361,14 @@ impl ImageViewerApp {
                 ctx,
             );
             if idx == self.current_index {
-                self.current_image_res = Some((first.width(), first.height()));
+                self.set_current_image_resolution(Some((first.width(), first.height())));
                 self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(
                     idx,
                     Arc::clone(&hdr_frames[0]),
                 ));
+                self.refresh_hdr_view_status();
                 self.tile_manager = None;
                 self.clear_current_animation_for_index(idx);
-                self.invalidate_osd();
             }
         }
 

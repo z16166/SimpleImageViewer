@@ -540,8 +540,9 @@ pub const RAW_EXTENSIONS: &[&str] = &[
 ];
 
 pub fn is_raw_extension(ext: &str) -> bool {
-    let lower = ext.to_lowercase();
-    RAW_EXTENSIONS.contains(&lower.as_str())
+    RAW_EXTENSIONS
+        .iter()
+        .any(|raw_ext| raw_ext.eq_ignore_ascii_case(ext))
 }
 
 /// LibRaw identifies camera RAW by file content, not extension. Some vendors (e.g. Kodak DCS)

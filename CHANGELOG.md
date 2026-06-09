@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Skip paired RAW files**: New Library setting lets you hide RAW files when a matching JPG/JPEG is in the same folder—handy for cameras that save both per shot (e.g. Sony RAW+JPEG), so browsing stays fast without heavy RAW decoding.
 
+### Changed
+- **OSD state updates**: Refactored the bottom-left OSD to use tracked viewer state and event-driven updates, reducing manual refresh calls and avoiding unnecessary per-frame string allocation.
+- **Folder scanning efficiency**: Reduced temporary allocations while batching scan results and matching RAW/JPEG sidecars.
+
+### Fixed
+- **RAW/JPEG sidecar matching**: RAW files are now hidden even when the matching JPEG uses different ASCII casing in the file stem, such as `IMG001.ARW` with `img001.JPG`.
+
 ## [2.4.2] - 2026-06-08
 
 ### Changed

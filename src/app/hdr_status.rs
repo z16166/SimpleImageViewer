@@ -17,10 +17,49 @@
 use crate::app::rendering::plan::{RenderShape, build_render_plan_for_state};
 use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::{ImageViewerApp, TransitionStyle};
-use crate::hdr::status::{HdrRenderPath, hdr_osd_tag};
+use crate::hdr::status::HdrRenderPath;
 use crate::hdr::types::HdrColorSpace;
+use crate::ui::osd::{HdrOsdFrame, ImageOsdFrame};
+use eframe::egui;
 
 impl ImageViewerApp {
+    pub(crate) fn set_raw_metadata_for_index(
+        &mut self,
+        index: usize,
+        raw_metadata: Option<crate::loader::RawOsdInfo>,
+        ctx: &egui::Context,
+    ) -> bool {
+        let changed = match raw_metadata {
+            Some(raw_metadata) => {
+                self.raw_metadata.insert_or_update(index, raw_metadata);
+                true
+            }
+            None => self.raw_metadata.remove(index),
+        };
+        if index == self.current_index {
+            self.osd.sync_events();
+            ctx.request_repaint();
+        }
+        changed
+    }
+
+    pub(crate) fn apply_raw_hq_refine_preview(
+        &mut self,
+        index: usize,
+        width: u32,
+        height: u32,
+        ctx: &egui::Context,
+    ) -> bool {
+        let changed = self
+            .raw_metadata
+            .apply_hq_refine_preview(index, width, height);
+        if changed && index == self.current_index {
+            self.osd.sync_events();
+            ctx.request_repaint();
+        }
+        changed
+    }
+
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
         // Treat per-index HDR caches (`hdr_image_cache` / `hdr_tiled_source_cache`) like the active
         // float planes: `navigate_to`/`CurrentHdr*` can transiently diverge while the UI still
@@ -58,33 +97,100 @@ impl ImageViewerApp {
         )
     }
 
-    pub(crate) fn compute_hdr_osd_tag(&self) -> Option<String> {
-        let render_path = self.current_hdr_render_path()?;
-        let monitor_label = self
-            .effective_hdr_monitor_selection()
-            .map(|selection| selection.label);
-        hdr_osd_tag(
-            true,
-            render_path,
-            self.current_hdr_color_space(),
-            &self.hdr_capabilities,
-            Some(self.ultra_hdr_decode_capacity),
-            monitor_label.as_deref(),
-            self.effective_hdr_tone_map_settings().exposure_ev,
-        )
+    pub(crate) fn update_view_status_for_paint(&mut self, image: &ImageOsdFrame) {
+        let file_name = self.current_file_name.as_str();
+        self.raw_metadata.set_current_index(self.current_index);
+        let monitor_selection = self.effective_hdr_monitor_selection();
+        let hdr = HdrOsdFrame {
+            render_path: self.current_hdr_render_path(),
+            color_space: self.current_hdr_color_space(),
+            output_mode: self.hdr_capabilities.output_mode,
+            native_presentation_enabled: self.hdr_capabilities.native_presentation_enabled,
+            ultra_hdr_decode_capacity: Some(self.ultra_hdr_decode_capacity),
+            monitor_label: monitor_selection
+                .as_ref()
+                .map(|selection| selection.label.as_str()),
+            exposure_ev: self.effective_hdr_tone_map_settings().exposure_ev,
+        };
+        self.image_status.set_image_frame(image, file_name);
+        self.set_hdr_view_status_if_changed(&hdr);
+        self.osd.sync_events();
     }
 
-    pub(crate) fn invalidate_osd(&mut self) {
-        let raw = self
-            .raw_osd_by_index
-            .get(&self.current_index)
-            .and_then(|info| info.osd_line.clone());
-        let hdr = self.compute_hdr_osd_tag();
-        self.osd.set_supplemental_lines(raw, hdr);
+    pub(crate) fn refresh_hdr_view_status(&mut self) {
+        let monitor_selection = self.effective_hdr_monitor_selection();
+        let hdr = HdrOsdFrame {
+            render_path: self.current_hdr_render_path(),
+            color_space: self.current_hdr_color_space(),
+            output_mode: self.hdr_capabilities.output_mode,
+            native_presentation_enabled: self.hdr_capabilities.native_presentation_enabled,
+            ultra_hdr_decode_capacity: Some(self.ultra_hdr_decode_capacity),
+            monitor_label: monitor_selection
+                .as_ref()
+                .map(|selection| selection.label.as_str()),
+            exposure_ev: self.effective_hdr_tone_map_settings().exposure_ev,
+        };
+        self.set_hdr_view_status_if_changed(&hdr);
+        self.osd.sync_events();
     }
 
-    pub(crate) fn reset_osd_image_cache(&mut self) {
+    fn set_hdr_view_status_if_changed(&mut self, hdr: &HdrOsdFrame<'_>) {
+        if self
+            .last_hdr_view_status
+            .as_ref()
+            .is_some_and(|last| last.matches_frame(hdr))
+        {
+            return;
+        }
+        let key = crate::app::view_status::HdrViewStatusSnapshot::capture(hdr);
+        self.last_hdr_view_status = Some(key);
+        self.image_status.set_hdr_frame(hdr);
+    }
+
+    pub(crate) fn invalidate_view_text_layout(&mut self) {
         self.osd.invalidate();
+    }
+
+    pub(crate) fn current_image_frame_status(
+        &self,
+        zoom_pct: u32,
+    ) -> Option<crate::ui::osd::ImageOsdFrame> {
+        let mut res_w = 0u32;
+        let mut res_h = 0u32;
+        let mut osd_mode = crate::ui::osd::ImageOsdMode::Static;
+
+        if self.tiled_canvas_matches_current_index() {
+            if let Some(tm) = &self.tile_manager {
+                res_w = tm.full_width;
+                res_h = tm.full_height;
+                osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
+            }
+        } else if let Some((w, h)) = self.current_image_res {
+            res_w = w;
+            res_h = h;
+            let threshold =
+                crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
+            if w as u64 * h as u64 > threshold {
+                osd_mode = crate::ui::osd::ImageOsdMode::Tiled;
+            }
+        }
+
+        if res_w == 0 {
+            return None;
+        }
+        let file_size_bytes = self
+            .file_byte_len_by_index
+            .get(self.current_index)
+            .copied()
+            .unwrap_or(0);
+        Some(crate::ui::osd::ImageOsdFrame {
+            index: self.current_index,
+            total: self.image_files.len(),
+            zoom_pct,
+            res: (res_w, res_h),
+            file_size_bytes,
+            mode: osd_mode,
+        })
     }
 
     fn current_hdr_color_space(&self) -> Option<HdrColorSpace> {

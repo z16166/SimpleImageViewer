@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crossbeam_channel::Sender;
-use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -92,6 +92,7 @@ pub fn scan_directory(
     std::thread::spawn(move || {
         if recursive {
             let mut files: Vec<(PathBuf, u64)> = Vec::new();
+            let mut batch: Vec<(PathBuf, u64)> = Vec::with_capacity(BATCH_SIZE);
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
@@ -115,13 +116,26 @@ pub fn scan_directory(
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
                         if let Some(len) = validated_byte_len_if_file(&path) {
-                            files.push((path, len));
+                            if skip_raw_if_jpeg_exists {
+                                files.push((path, len));
+                            } else {
+                                batch.push((path, len));
+                                if batch.len() >= BATCH_SIZE {
+                                    send_scan_batch(&mut batch, &tx);
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            send_scanned_files(files, skip_raw_if_jpeg_exists, &tx);
+            if skip_raw_if_jpeg_exists {
+                // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
+                // batches before the scan finishes could expose a RAW file whose JPEG appears later.
+                send_scanned_files(files, skip_raw_if_jpeg_exists, &tx);
+            } else {
+                send_scan_batch(&mut batch, &tx);
+            }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
             let mut files: Vec<(PathBuf, u64)> = Vec::new();
             for e in entries.flatten() {
@@ -150,6 +164,15 @@ pub fn scan_directory(
     });
 }
 
+fn send_scan_batch(batch: &mut Vec<(PathBuf, u64)>, tx: &Sender<ScanMessage>) {
+    if batch.is_empty() {
+        return;
+    }
+    batch.sort_by(|a, b| a.0.cmp(&b.0));
+    let _ = tx.send(ScanMessage::Batch(std::mem::take(batch)));
+    batch.reserve(BATCH_SIZE);
+}
+
 fn send_scanned_files(
     mut files: Vec<(PathBuf, u64)>,
     skip_raw_if_jpeg_exists: bool,
@@ -159,34 +182,55 @@ fn send_scanned_files(
         filter_raw_files_with_matching_jpeg(&mut files);
     }
 
+    // Keep global ordering stable across batches. This holds all paths until the scan finishes,
+    // which costs more memory than sorting per batch, but per-batch sorting is not globally sorted.
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    for batch in files.chunks(BATCH_SIZE) {
-        let _ = tx.send(ScanMessage::Batch(batch.to_vec()));
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    for file in files {
+        batch.push(file);
+        if batch.len() >= BATCH_SIZE {
+            let _ = tx.send(ScanMessage::Batch(std::mem::take(&mut batch)));
+            batch.reserve(BATCH_SIZE);
+        }
+    }
+    if !batch.is_empty() {
+        let _ = tx.send(ScanMessage::Batch(batch));
     }
 }
 
 fn filter_raw_files_with_matching_jpeg(files: &mut Vec<(PathBuf, u64)>) {
-    let jpeg_stems: HashSet<PathBuf> = files
-        .iter()
-        .filter_map(|(path, _)| jpeg_stem_key(path))
-        .collect();
+    let jpeg_stems = jpeg_stems_by_parent(files);
 
-    files.retain(|(path, _)| {
-        !is_raw_path(path)
-            || raw_stem_key(path).is_none_or(|stem_key| !jpeg_stems.contains(&stem_key))
-    });
+    files.retain(|(path, _)| !is_raw_path(path) || !has_matching_jpeg_stem(path, &jpeg_stems));
 }
 
-fn jpeg_stem_key(path: &Path) -> Option<PathBuf> {
+fn jpeg_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+    let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
+    for key in files.iter().filter_map(|(path, _)| jpeg_stem_key(path)) {
+        by_parent
+            .entry(key.parent)
+            .or_default()
+            .insert(key.stem_lower);
+    }
+    by_parent
+}
+
+fn jpeg_stem_key(path: &Path) -> Option<StemKey> {
     let ext = path.extension()?.to_str()?;
     if !ext.eq_ignore_ascii_case("jpg") && !ext.eq_ignore_ascii_case("jpeg") {
         return None;
     }
-    stem_key(path)
+    owned_stem_key(path)
 }
 
-fn raw_stem_key(path: &Path) -> Option<PathBuf> {
-    is_raw_path(path).then(|| stem_key(path)).flatten()
+fn has_matching_jpeg_stem(path: &Path, jpeg_stems: &HashMap<PathBuf, HashSet<OsString>>) -> bool {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let Some(stem_lower) = path.file_stem().map(OsStr::to_ascii_lowercase) else {
+        return false;
+    };
+    jpeg_stems
+        .get(parent)
+        .is_some_and(|stems| stems.contains(&stem_lower))
 }
 
 fn is_raw_path(path: &Path) -> bool {
@@ -195,10 +239,19 @@ fn is_raw_path(path: &Path) -> bool {
         .is_some_and(crate::raw_processor::is_raw_extension)
 }
 
-fn stem_key(path: &Path) -> Option<PathBuf> {
-    let mut key = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    key.push(path.file_stem()?);
-    Some(key)
+#[derive(Debug, Eq, Hash, PartialEq)]
+struct StemKey {
+    parent: PathBuf,
+    stem_lower: OsString,
+}
+
+fn owned_stem_key(path: &Path) -> Option<StemKey> {
+    Some(StemKey {
+        // Include the parent directory so recursive scans only pair files from the same folder.
+        parent: path.parent().map(Path::to_path_buf).unwrap_or_default(),
+        // Camera sidecars commonly differ only by ASCII case (e.g. IMG001.ARW/img001.JPG).
+        stem_lower: path.file_stem()?.to_ascii_lowercase(),
+    })
 }
 
 #[cfg(test)]
@@ -270,6 +323,15 @@ mod tests {
         }
         files.sort();
         files
+    }
+
+    #[test]
+    fn skips_raw_files_when_matching_jpeg_stem_differs_by_case() {
+        let dir = TempScanDir::new();
+        dir.touch("IMG001.ARW");
+        dir.touch("img001.JPG");
+
+        assert_eq!(scan_names(dir.path(), true), vec!["img001.JPG"]);
     }
 
     #[test]

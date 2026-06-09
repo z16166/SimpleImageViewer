@@ -1096,6 +1096,7 @@ fn make_test_app() -> ImageViewerApp {
     #[cfg(target_os = "linux")]
     let last_vulkan_hdr_metadata = None;
 
+    let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
     ImageViewerApp {
         settings: Settings::default(),
         image_files: Vec::new(),
@@ -1171,8 +1172,10 @@ fn make_test_app() -> ImageViewerApp {
         scan_rx: None,
         scan_cancel: None,
         current_image_res: None,
-        raw_osd_by_index: std::collections::HashMap::new(),
-        current_osd_file_name: String::new(),
+        raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
+        image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
+        last_hdr_view_status: None,
+        current_file_name: String::new(),
         cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
         prev_texture: None,
         prev_hdr_image: None,
@@ -1184,7 +1187,7 @@ fn make_test_app() -> ImageViewerApp {
         last_background_upload_at: None,
         is_next: true,
         active_transition: TransitionStyle::None,
-        osd: crate::ui::osd::OsdRenderer::new(),
+        osd: crate::ui::osd::OsdRenderer::new(osd_event_rx),
         last_minimized: false,
         last_frame_time: Instant::now(),
         ipc_rx,
@@ -1256,13 +1259,13 @@ fn make_test_app() -> ImageViewerApp {
 #[test]
 fn relocate_index_keyed_cache_moves_raw_osd_info() {
     let mut app = make_test_app();
-    app.raw_osd_by_index
-        .insert(2, crate::loader::RawOsdInfo::empty());
+    app.raw_metadata
+        .insert_or_update(2, crate::loader::RawOsdInfo::empty());
 
     app.relocate_index_keyed_cache(2, 0);
 
-    assert!(!app.raw_osd_by_index.contains_key(&2));
-    assert!(app.raw_osd_by_index.contains_key(&0));
+    assert!(!app.raw_metadata.contains_key(2));
+    assert!(app.raw_metadata.contains_key(0));
 }
 
 #[test]
