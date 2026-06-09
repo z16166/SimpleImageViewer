@@ -131,12 +131,12 @@ impl OpenExrCoreDecodedChunkCache {
     }
 
     #[cfg(test)]
-    fn hit_count(&self) -> usize {
+    pub(crate) fn hit_count(&self) -> usize {
         self.hits
     }
 
     #[cfg(test)]
-    fn miss_count(&self) -> usize {
+    pub(crate) fn miss_count(&self) -> usize {
         self.misses
     }
 

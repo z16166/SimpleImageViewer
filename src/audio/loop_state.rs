@@ -681,7 +681,7 @@ impl AudioLoopState {
         true
     }
 
-    fn take_next_playable_path(&mut self) -> Option<(PathBuf, bool)> {
+    pub(crate) fn take_next_playable_path(&mut self) -> Option<(PathBuf, bool)> {
         if !self.injected_playlist.is_empty() {
             return self.injected_playlist.pop_front().map(|path| (path, true));
         }
@@ -714,7 +714,7 @@ impl AudioLoopState {
         None
     }
 
-    fn take_prev_playable_path(&mut self) -> Option<(PathBuf, bool)> {
+    pub(crate) fn take_prev_playable_path(&mut self) -> Option<(PathBuf, bool)> {
         if self.base_playlist.is_empty() {
             return None;
         }
@@ -756,7 +756,7 @@ impl AudioLoopState {
     ///   injected entry while still keeping the current one as the next forward item.
     /// - `suppress_injected_history_once` prevents this synthetic rewind transition from
     ///   immediately re-recording duplicate history on the next `feed_next_file`.
-    fn rewind_injected_one_step(&mut self) -> bool {
+    pub(crate) fn rewind_injected_one_step(&mut self) -> bool {
         if !self.current_from_injected {
             return false;
         }

@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 
 /// True when an embedded preview is large enough to substitute for a full demosaic.
-fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h: u32) -> bool {
+pub(crate) fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h: u32) -> bool {
     let pw = preview.width as u64;
     let ph = preview.height as u64;
     let rw = raw_w as u64;

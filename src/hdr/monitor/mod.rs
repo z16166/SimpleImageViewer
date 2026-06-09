@@ -35,3 +35,22 @@ pub use effective::{
     effective_monitor_selection, effective_render_output_mode,
 };
 
+#[cfg(test)]
+pub(crate) use std::time::{Duration, Instant};
+#[cfg(test)]
+pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;
+#[cfg(test)]
+pub(crate) use crate::hdr::types::HdrOutputMode;
+#[cfg(test)]
+pub(crate) use effective::active_monitor_hdr_status;
+#[cfg(test)]
+pub(crate) use macos::macos_edr_selection_from_values;
+#[cfg(test)]
+pub(crate) use types::{HdrMonitorSignature, HDR_MONITOR_PROBE_INTERVAL};
+#[cfg(all(test, target_os = "windows"))]
+pub(crate) use windows::dxgi_output_hdr_active;
+#[cfg(all(test, target_os = "windows"))]
+pub(crate) use ::windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
+};
+

@@ -54,6 +54,123 @@ const M_CTRL: u8 = 1;
 const M_SHIFT: u8 = 2;
 const M_ALT: u8 = 4;
 
+#[cfg(test)]
+const HOTKEY_MAP: &[HotkeyBinding] = &[
+    // --- Group 1: High Priority (Complex Modifiers) ---
+    HotkeyBinding {
+        modifiers: M_SHIFT,
+        key: egui::Key::Delete,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowLeft,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowRight,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowUp,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::ArrowDown,
+    },
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::P,
+    },
+    #[cfg(not(target_os = "windows"))]
+    HotkeyBinding {
+        modifiers: M_CTRL,
+        key: egui::Key::Q,
+    },
+    // --- Group 2: Simple Navigation / Control ---
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowRight,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowDown,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::PageDown,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowLeft,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::ArrowUp,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::PageUp,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Home,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::End,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Space,
+    },
+    // --- Group 3: Functional Keys ---
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Tab,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F1,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F11,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::F,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Z,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::G,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Delete,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Escape,
+    },
+    // Zoom
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Plus,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Equals,
+    },
+    HotkeyBinding {
+        modifiers: M_NONE,
+        key: egui::Key::Minus,
+    },
+];
+
 pub(super) fn get_modifiers_mask(m: egui::Modifiers) -> u8 {
     let mut mask = 0;
     if m.ctrl || m.command {

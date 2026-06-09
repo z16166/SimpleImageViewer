@@ -31,3 +31,10 @@ pub use load::load_via_libtiff;
 pub(crate) use orientation::apply_orientation_buffer;
 #[cfg(test)]
 pub use load::peek_tiff_tags;
+
+#[cfg(test)]
+pub(crate) use constants::*;
+#[cfg(test)]
+pub(crate) use decode::{tiff_ieee_scene_linear_eligible, tiff_uint16_rgb_scene_linear_eligible};
+#[cfg(test)]
+pub(crate) use libtiff_viewer as lib;

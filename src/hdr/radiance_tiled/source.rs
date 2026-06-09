@@ -39,6 +39,9 @@ pub struct RadianceHdrTiledImageSource {
     height: u32,
     raster: RadianceRasterLayout,
     params: crate::hdr::decode::RadianceHeaderParams,
+    #[cfg(test)]
+    pub(crate) scanline_offsets: Vec<usize>,
+    #[cfg(not(test))]
     scanline_offsets: Vec<usize>,
     tile_cache: Mutex<HdrTileCache>,
 }

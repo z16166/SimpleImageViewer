@@ -22,8 +22,17 @@ use super::effective::active_monitor_hdr_status;
 use super::types::{HdrMonitorSelection, HdrMonitorSignature, HDR_MONITOR_PROBE_INTERVAL};
 #[derive(Debug)]
 pub struct HdrMonitorState {
+    #[cfg(test)]
+    pub(crate) last_signature: Option<HdrMonitorSignature>,
+    #[cfg(not(test))]
     last_signature: Option<HdrMonitorSignature>,
+    #[cfg(test)]
+    pub(crate) last_probe_at: Option<Instant>,
+    #[cfg(not(test))]
     last_probe_at: Option<Instant>,
+    #[cfg(test)]
+    pub(crate) selection: Option<HdrMonitorSelection>,
+    #[cfg(not(test))]
     selection: Option<HdrMonitorSelection>,
     /// Sticky flag so we only `warn!` on the first failure in a streak of
     /// consecutive failures (avoid log spam at 1.33 Hz). Cleared the moment
@@ -126,7 +135,7 @@ impl HdrMonitorState {
         self.selection.as_ref()
     }
 
-    fn should_probe(
+    pub(crate) fn should_probe(
         &self,
         signature: HdrMonitorSignature,
         now: Instant,
@@ -140,7 +149,7 @@ impl HdrMonitorState {
         )
     }
 
-    fn should_probe_for_platform(
+    pub(crate) fn should_probe_for_platform(
         &self,
         signature: HdrMonitorSignature,
         now: Instant,

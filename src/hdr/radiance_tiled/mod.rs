@@ -25,3 +25,8 @@ mod tests;
 
 pub(crate) use header::decode_radiance_rgba32f_from_mmap;
 pub use source::RadianceHdrTiledImageSource;
+
+#[cfg(test)]
+pub(crate) use header::parse_radiance_dimensions_line;
+#[cfg(test)]
+pub(crate) use layout::RadianceRasterLayout;

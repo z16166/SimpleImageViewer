@@ -66,17 +66,17 @@ impl HdrTiledImageSource {
     }
 
     #[cfg(test)]
-    fn cached_tile_count(&self) -> usize {
+    pub(crate) fn cached_tile_count(&self) -> usize {
         self.tile_cache.lock().len()
     }
 
     #[cfg(test)]
-    fn cached_tile_bytes(&self) -> usize {
+    pub(crate) fn cached_tile_bytes(&self) -> usize {
         self.tile_cache.lock().current_bytes()
     }
 
     #[cfg(test)]
-    fn cache_budget_bytes(&self) -> usize {
+    pub(crate) fn cache_budget_bytes(&self) -> usize {
         self.tile_cache.lock().max_bytes()
     }
 }

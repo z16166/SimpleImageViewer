@@ -51,7 +51,7 @@ use core::arch::aarch64::*;
 use core::arch::x86_64::*;
 
 /// Minimum row width before the SIMD kernel runs (scalar tail handles the remainder).
-const SIMD_PIXELS_PER_STEP: u32 = 4;
+pub(crate) const SIMD_PIXELS_PER_STEP: u32 = 4;
 
 const SRGB_LINEAR_SEGMENT_END: f32 = 0.04045;
 const SRGB_DIVISOR: f32 = 12.92;
@@ -72,7 +72,7 @@ const DISPLAY_P3_TO_LINEAR_SRGB: [[f32; 3]; 3] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComposeFastPath {
+pub(crate) enum ComposeFastPath {
     SrgbLinearSrgb,
     SrgbDisplayP3,
     Bt709LinearSrgb,
@@ -84,12 +84,12 @@ enum ComposeFastPath {
 
 pub(crate) struct GainRowLinear {
     /// Encoded bilinear samples for one row (reused each row).
-    encoded: Vec<f32>,
-    rgb: Vec<f32>,
+    pub(crate) encoded: Vec<f32>,
+    pub(crate) rgb: Vec<f32>,
 }
 
 impl GainRowLinear {
-    fn ensure_capacity(&mut self, width: usize) {
+    pub(crate) fn ensure_capacity(&mut self, width: usize) {
         let needed = width * 3;
         if self.encoded.len() < needed {
             self.encoded.resize(needed, 0.0);
@@ -189,7 +189,7 @@ fn sample_gain_map_row_nonlinear(
     }
 }
 
-fn precompute_gain_row_linear(
+pub(crate) fn precompute_gain_row_linear(
     gain_rgba: &[u8],
     gain_w: u32,
     gain_h: u32,
@@ -212,7 +212,7 @@ fn precompute_gain_row_linear(
     bt709_linearize_gain_row(&out.encoded, &mut out.rgb, width);
 }
 
-fn classify_fast_path(
+pub(crate) fn classify_fast_path(
     color_space: HdrColorSpace,
     transfer: HdrTransferFunction,
     metadata: &HdrImageMetadata,
@@ -301,7 +301,7 @@ fn compose_pixel_scalar(
     row_out[idx + 3] = a;
 }
 
-fn compose_row_scalar(
+pub(crate) fn compose_row_scalar(
     row_in: &[f32],
     row_out: &mut [f32],
     width: u32,
@@ -440,7 +440,8 @@ const SHUF_SSE_ALL_LANE3: i32 = 0xFF;
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m128) {
+#[cfg(target_arch = "x86_64")]
+pub(crate) unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m128) {
     unsafe {
         let v0 = _mm_loadu_ps(src);
         let v1 = _mm_loadu_ps(src.add(4));
@@ -475,7 +476,8 @@ unsafe fn load_rgb_interleaved4_sse41(src: *const f32) -> (__m128, __m128, __m12
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn store_rgb_interleaved4_sse41(dst: *mut f32, r: __m128, g: __m128, b: __m128) {
+#[cfg(target_arch = "x86_64")]
+pub(crate) unsafe fn store_rgb_interleaved4_sse41(dst: *mut f32, r: __m128, g: __m128, b: __m128) {
     unsafe {
         let rg_lo = _mm_unpacklo_ps(r, g);
         let v0 = _mm_blend_ps(
@@ -602,7 +604,7 @@ unsafe fn apply_transfer4_sse41(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse4.1")]
-unsafe fn compose_row_sse41(
+pub(crate) unsafe fn compose_row_sse41(
     row_in: &[f32],
     row_out: &mut [f32],
     width: u32,
@@ -897,7 +899,7 @@ unsafe fn apply_transfer4_neon(
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn compose_row_neon(
+pub(crate) unsafe fn compose_row_neon(
     row_in: &[f32],
     row_out: &mut [f32],
     width: u32,

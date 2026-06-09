@@ -22,3 +22,8 @@ mod tests;
 
 pub(crate) use compose::compose_apple_gain_map_pixels;
 pub(crate) use core::GainRowLinear;
+
+#[cfg(test)]
+pub(crate) use core::{compose_row_scalar, precompute_gain_row_linear};
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) use core::{load_rgb_interleaved4_sse41, store_rgb_interleaved4_sse41};

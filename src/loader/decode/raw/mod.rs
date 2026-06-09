@@ -32,3 +32,10 @@ mod preview;
 mod tests;
 
 pub(crate) use load::load_raw;
+
+#[cfg(test)]
+pub(crate) use preview::{raw_embedded_preview_covers_sensor, raw_embedded_preview_meets_hq_requirement};
+#[cfg(test)]
+pub(crate) use crate::loader::preview_caps::hq_preview_max_side;
+#[cfg(test)]
+pub(crate) use crate::raw_processor::RawProcessor;

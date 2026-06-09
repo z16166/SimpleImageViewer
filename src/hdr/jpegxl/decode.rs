@@ -132,7 +132,7 @@ pub(crate) fn decode_jxl_hdr_with_target_capacity(
 /// criterion is `reference_image.npy + reference.icc` compared via
 /// `lcms2.convert_pixels` (see `libjxl/conformance/scripts/conformance.py`,
 /// `CompareNPY`).
-fn jxl_sdr_grade_fallback_rgba8(
+pub(crate) fn jxl_sdr_grade_fallback_rgba8(
     rgba_f32: &[f32],
     color_space: HdrColorSpace,
     metadata: &HdrImageMetadata,
@@ -199,7 +199,7 @@ pub(crate) fn srgb_unit_to_u8(value: f32) -> u8 {
 /// (the "K" in CMYK). Returns `None` when the source has no K plane or when
 /// libjxl rejects the channel-info call.
 #[cfg(feature = "jpegxl")]
-fn jxl_find_black_extra_channel_index(
+pub(crate) fn jxl_find_black_extra_channel_index(
     decoder: *mut libjxl_sys::JxlDecoder,
     info: &libjxl_sys::JxlBasicInfo,
 ) -> Option<u32> {

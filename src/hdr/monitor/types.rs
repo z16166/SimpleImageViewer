@@ -19,8 +19,8 @@ use eframe::egui;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HdrMonitorSignature {
     pub(crate) outer_rect: Option<[i32; 4]>,
-    monitor_size: Option<[i32; 2]>,
-    native_pixels_per_point_milli: Option<i32>,
+    pub(crate) monitor_size: Option<[i32; 2]>,
+    pub(crate) native_pixels_per_point_milli: Option<i32>,
 }
 
 impl HdrMonitorSignature {

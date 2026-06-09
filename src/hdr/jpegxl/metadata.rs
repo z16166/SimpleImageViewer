@@ -201,7 +201,7 @@ fn icc_read_s15fixed16(bytes: &[u8], offset: usize) -> Option<f32> {
 ///
 /// Returns `None` if the tag is missing or malformed (caller falls back).
 #[cfg(feature = "jpegxl")]
-fn icc_trc_kind(icc: &[u8]) -> Option<HdrTransferFunction> {
+pub(crate) fn icc_trc_kind(icc: &[u8]) -> Option<HdrTransferFunction> {
     let off = icc_find_tag_element_offset(icc, b"rTRC")?;
     if off + 12 > icc.len() {
         return None;
@@ -508,7 +508,7 @@ fn chromaticities_close_to_bt709_srgb(color: &libjxl_sys::JxlColorEncoding) -> b
 /// RGB primaries; the encoding's `transfer_function` describes the **coded** image, not raw
 /// nonlinear samples in the float buffer (see libjxl decoder API / examples).
 #[cfg(feature = "jpegxl")]
-fn hdr_metadata_from_jxl_float_decode(color: &libjxl_sys::JxlColorEncoding) -> HdrImageMetadata {
+pub(crate) fn hdr_metadata_from_jxl_float_decode(color: &libjxl_sys::JxlColorEncoding) -> HdrImageMetadata {
     let cicp_primaries = jxl_cicp_color_primaries_from_encoding(color);
     // libjxl's `JxlTransferFunction` is a signed `c_int` enum but the values
     // we care about (1, 4, 8, 13, 16, 18, 65535=GAMMA) all fit unsigned u16.

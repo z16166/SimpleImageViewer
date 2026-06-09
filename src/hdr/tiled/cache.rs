@@ -37,7 +37,7 @@ pub(crate) fn configure_hdr_tile_cache_budget_from_system_memory() {
     );
 }
 
-fn hdr_tile_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
+pub(crate) fn hdr_tile_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
     (total_memory_bytes / 16).clamp(
         DEFAULT_HDR_TILE_CACHE_MAX_BYTES,
         MAX_HDR_TILE_CACHE_MAX_BYTES,
@@ -45,7 +45,7 @@ fn hdr_tile_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
 }
 
 #[cfg(test)]
-fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
+pub(crate) fn set_global_hdr_tile_cache_max_bytes_for_tests(max_bytes: usize) {
     HDR_TILE_CACHE_MAX_BYTES.store(max_bytes, Ordering::Relaxed);
 }
 
@@ -128,7 +128,7 @@ impl HdrTileCache {
     }
 
     #[cfg(test)]
-    fn max_bytes(&self) -> usize {
+    pub(crate) fn max_bytes(&self) -> usize {
         self.max_bytes
     }
 }

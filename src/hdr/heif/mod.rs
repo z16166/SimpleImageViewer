@@ -34,9 +34,27 @@ mod ycbcr;
 mod tests;
 
 pub(crate) use brand::is_heif_brand;
+#[cfg(feature = "heif-native")]
+pub(crate) use brand::heif_nclx_to_metadata;
 
 #[cfg(feature = "heif-native")]
 pub(crate) use load::load_heif_hdr;
+#[cfg(feature = "heif-native")]
+pub(crate) use metadata::{
+    HeifAuxiliaryClassification, apply_heif_transfer_depth_heuristics,
+    apply_heif_unknown_transfer_bt709_primaries_fallback, classify_heif_auxiliary_type,
+    heif_metadata_without_embedded_colour_info,
+};
+#[cfg(feature = "heif-native")]
+pub(crate) use gain_map::{
+    EXIF_ORIENTATION_NORMAL, EXIF_ORIENTATION_ROTATE_180, EXIF_ORIENTATION_ROTATE_90_CCW,
+    EXIF_ORIENTATION_ROTATE_90_CW, align_apple_gain_map_to_primary_display_orientation,
+};
+#[cfg(feature = "heif-native")]
+pub(crate) use ycbcr::{
+    HeifYcbcrMatrix, heif_ycbcr_matrix_from_nclx, studio_digital_sample_to_normalized,
+    ycbcr_linear_to_rgb,
+};
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{
     decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag,

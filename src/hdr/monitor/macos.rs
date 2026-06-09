@@ -16,7 +16,7 @@
 
 use super::types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn macos_edr_selection_from_values(
+pub(crate) fn macos_edr_selection_from_values(
     label: String,
     current_edr_capacity: f32,
     potential_edr_capacity: f32,

@@ -493,7 +493,7 @@ pub(crate) fn configured_decoded_chunk_cache_max_bytes() -> usize {
     decoded_chunk_cache_budget_for_memory(sys.total_memory() as usize)
 }
 
-fn decoded_chunk_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
+pub(crate) fn decoded_chunk_cache_budget_for_memory(total_memory_bytes: usize) -> usize {
     (total_memory_bytes / 16).clamp(
         DEFAULT_DECODED_CHUNK_CACHE_BYTES,
         MAX_DECODED_CHUNK_CACHE_BYTES,

@@ -70,7 +70,7 @@ fn is_supported_audio_or_playlist(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn canonical_or_clone(path: &Path) -> PathBuf {
+pub(crate) fn canonical_or_clone(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -115,7 +115,7 @@ fn normalize_playlist_candidate(m3u_parent: &Path, raw_entry: &str) -> Option<Pa
     }
 }
 
-fn parse_m3u_entries(m3u_path: &Path) -> Vec<PathBuf> {
+pub(crate) fn parse_m3u_entries(m3u_path: &Path) -> Vec<PathBuf> {
     let content = match read_text_file_with_fallback(m3u_path) {
         Some(c) => c,
         None => return Vec::new(),

@@ -111,7 +111,7 @@ fn parse_axis_size_token(
 }
 
 /// Four fields: `±Axis size ±Axis size` in any order (`-Y 1024 +X 2048` or `+X 2048 -Y 1024`, etc.).
-fn parse_radiance_dimensions_line(line: &str) -> Result<RadianceRasterLayout, String> {
+pub(crate) fn parse_radiance_dimensions_line(line: &str) -> Result<RadianceRasterLayout, String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() != 4 {
         return Err(format!(

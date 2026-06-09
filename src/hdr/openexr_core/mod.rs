@@ -26,3 +26,10 @@ pub(crate) const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
 pub(crate) use chromaticities::deep_scanline_flatten_rgba_via_imf;
 pub(crate) use read_context::OpenExrCoreReadContext;
 pub(crate) use types::OpenExrCoreChannelInfo;
+
+#[cfg(test)]
+pub(crate) use channels::*;
+#[cfg(test)]
+pub(crate) use chromaticities::*;
+#[cfg(test)]
+pub(crate) use types::*;

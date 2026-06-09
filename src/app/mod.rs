@@ -53,3 +53,10 @@ pub(crate) use crate::theme::AppTheme;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use hotkeys_ui::build_hotkeys_issue_message;
+#[cfg(test)]
+pub(crate) use preload::collect_ultra_hdr_capacity_sensitive_indices;
+#[cfg(test)]
+pub(crate) use types::{HdrOutputStateSnapshot, UltraHdrCapacityRefresh, hdr_output_state_changed};

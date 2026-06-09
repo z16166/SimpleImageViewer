@@ -28,3 +28,8 @@ mod tests;
 
 pub use player::AudioPlayer;
 pub use playlist::collect_music_files;
+
+#[cfg(test)]
+pub(crate) use loop_state::AudioLoopState;
+#[cfg(test)]
+pub(crate) use playlist::{canonical_or_clone, parse_m3u_entries};

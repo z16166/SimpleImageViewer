@@ -16,9 +16,9 @@
 
 #![cfg(feature = "avif-native")]
 
-const AVIF_TRANSFORM_IROT_FLAG: libavif_sys::avifTransformFlags = 1 << 2;
+pub(crate) const AVIF_TRANSFORM_IROT_FLAG: libavif_sys::avifTransformFlags = 1 << 2;
 #[cfg(feature = "avif-native")]
-const AVIF_TRANSFORM_IMIR_FLAG: libavif_sys::avifTransformFlags = 1 << 3;
+pub(crate) const AVIF_TRANSFORM_IMIR_FLAG: libavif_sys::avifTransformFlags = 1 << 3;
 
 pub(crate) fn avif_irot_imir_to_exif_orientation(
     transform_flags: libavif_sys::avifTransformFlags,

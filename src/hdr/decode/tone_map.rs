@@ -281,7 +281,7 @@ fn xyz_to_linear_srgb(xyz: [f32; 3]) -> [f32; 3] {
 
 /// Plain **display‑referred linear sRGB** (after transfer + gamut matrices) → 8-bit sRGB codes,
 /// matching typical browser unmanaged sRGB pipelines (Chrome-like for HEIC stills).
-fn encode_linear_display_referred_srgb8(
+pub(crate) fn encode_linear_display_referred_srgb8(
     linear_srgb: [f32; 3],
     exposure_scale: f32,
     peak_scale: f32,
@@ -306,7 +306,7 @@ fn should_use_iec61966_tone_map_fallback(buffer: &HdrImageBuffer, tf: HdrTransfe
     use_direct_srgb_sdr_fallback(&buffer.metadata, tf)
 }
 
-fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
+pub(crate) fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
     let mut out = [0_u8; 3];
     for i in 0..3 {
         let exposed = clamp_hdr_tone_map_input(

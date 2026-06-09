@@ -30,6 +30,8 @@ pub(crate) use cache::{
     configured_hdr_tile_cache_max_bytes, configure_hdr_tile_cache_budget_from_system_memory,
     HdrTileCache,
 };
+#[cfg(test)]
+pub(crate) use cache::set_global_hdr_tile_cache_max_bytes_for_tests;
 pub(crate) use globals::HDR_TILE_CACHE_MAX_BYTES;
 pub(crate) use kind::{HdrTiledSource, HdrTiledSourceKind};
 pub(crate) use preview::{
@@ -38,3 +40,6 @@ pub(crate) use preview::{
 };
 pub(crate) use source::HdrTiledImageSource;
 pub(crate) use validate::validate_tile_bounds;
+
+#[cfg(test)]
+pub(crate) use cache::hdr_tile_cache_budget_for_memory;
