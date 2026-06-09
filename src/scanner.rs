@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::settings::PairedRawJpegHandling;
+
 /// Lightweight check using only the file extension.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
     crate::formats::is_supported_extension(ext)
@@ -85,7 +87,7 @@ const BATCH_SIZE: usize = 200;
 pub fn scan_directory(
     dir: PathBuf,
     recursive: bool,
-    skip_raw_if_jpeg_exists: bool,
+    paired_raw_jpeg_handling: PairedRawJpegHandling,
     tx: Sender<ScanMessage>,
     cancel: Arc<AtomicBool>,
 ) {
@@ -116,7 +118,7 @@ pub fn scan_directory(
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
                         if let Some(len) = validated_byte_len_if_file(&path) {
-                            if skip_raw_if_jpeg_exists {
+                            if paired_raw_jpeg_handling.needs_pair_index() {
                                 files.push((path, len));
                             } else {
                                 batch.push((path, len));
@@ -129,10 +131,11 @@ pub fn scan_directory(
                 }
             }
 
-            if skip_raw_if_jpeg_exists {
+            if paired_raw_jpeg_handling.needs_pair_index() {
                 // RAW/JPEG pairing needs a complete same-directory stem index. Sending recursive
-                // batches before the scan finishes could expose a RAW file whose JPEG appears later.
-                send_scanned_files(files, skip_raw_if_jpeg_exists, &tx);
+                // batches before the scan finishes could expose a file that should be skipped
+                // because its pair appears later.
+                send_scanned_files(files, paired_raw_jpeg_handling, &tx);
             } else {
                 send_scan_batch(&mut batch, &tx);
             }
@@ -157,7 +160,7 @@ pub fn scan_directory(
                     }
                 }
             }
-            send_scanned_files(files, skip_raw_if_jpeg_exists, &tx);
+            send_scanned_files(files, paired_raw_jpeg_handling, &tx);
         }
 
         let _ = tx.send(ScanMessage::Done);
@@ -175,11 +178,11 @@ fn send_scan_batch(batch: &mut Vec<(PathBuf, u64)>, tx: &Sender<ScanMessage>) {
 
 fn send_scanned_files(
     mut files: Vec<(PathBuf, u64)>,
-    skip_raw_if_jpeg_exists: bool,
+    paired_raw_jpeg_handling: PairedRawJpegHandling,
     tx: &Sender<ScanMessage>,
 ) {
-    if skip_raw_if_jpeg_exists {
-        filter_raw_files_with_matching_jpeg(&mut files);
+    if paired_raw_jpeg_handling.needs_pair_index() {
+        filter_raw_jpeg_pairs(&mut files, paired_raw_jpeg_handling);
     }
 
     // Keep global ordering stable across batches. This holds all paths until the scan finishes,
@@ -198,10 +201,18 @@ fn send_scanned_files(
     }
 }
 
-fn filter_raw_files_with_matching_jpeg(files: &mut Vec<(PathBuf, u64)>) {
-    let jpeg_stems = jpeg_stems_by_parent(files);
-
-    files.retain(|(path, _)| !is_raw_path(path) || !has_matching_jpeg_stem(path, &jpeg_stems));
+fn filter_raw_jpeg_pairs(files: &mut Vec<(PathBuf, u64)>, handling: PairedRawJpegHandling) {
+    match handling {
+        PairedRawJpegHandling::ShowBoth => {}
+        PairedRawJpegHandling::SkipRaw => {
+            let jpeg_stems = jpeg_stems_by_parent(files);
+            files.retain(|(path, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
+        }
+        PairedRawJpegHandling::SkipJpeg => {
+            let raw_stems = raw_stems_by_parent(files);
+            files.retain(|(path, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
+        }
+    }
 }
 
 fn jpeg_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
@@ -216,21 +227,41 @@ fn jpeg_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<Os
 }
 
 fn jpeg_stem_key(path: &Path) -> Option<StemKey> {
-    let ext = path.extension()?.to_str()?;
-    if !ext.eq_ignore_ascii_case("jpg") && !ext.eq_ignore_ascii_case("jpeg") {
+    if !is_jpeg_path(path) {
         return None;
     }
     owned_stem_key(path)
 }
 
-fn has_matching_jpeg_stem(path: &Path, jpeg_stems: &HashMap<PathBuf, HashSet<OsString>>) -> bool {
+fn raw_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+    let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
+    for key in files.iter().filter_map(|(path, _)| raw_stem_key(path)) {
+        by_parent
+            .entry(key.parent)
+            .or_default()
+            .insert(key.stem_lower);
+    }
+    by_parent
+}
+
+fn raw_stem_key(path: &Path) -> Option<StemKey> {
+    is_raw_path(path).then(|| owned_stem_key(path)).flatten()
+}
+
+fn has_matching_stem(path: &Path, stems: &HashMap<PathBuf, HashSet<OsString>>) -> bool {
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let Some(stem_lower) = path.file_stem().map(OsStr::to_ascii_lowercase) else {
         return false;
     };
-    jpeg_stems
+    stems
         .get(parent)
         .is_some_and(|stems| stems.contains(&stem_lower))
+}
+
+fn is_jpeg_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg"))
 }
 
 fn is_raw_path(path: &Path) -> bool {
@@ -257,6 +288,7 @@ fn owned_stem_key(path: &Path) -> Option<StemKey> {
 #[cfg(test)]
 mod tests {
     use super::{ScanMessage, scan_directory};
+    use crate::settings::PairedRawJpegHandling;
     use crossbeam_channel::unbounded;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -269,17 +301,22 @@ mod tests {
 
     impl TempScanDir {
         fn new() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "simple_image_viewer_scanner_test_{}_{}",
-                std::process::id(),
-                unique
-            ));
-            std::fs::create_dir(&path).expect("create temp scan directory");
-            Self { path }
+            for attempt in 0..100 {
+                let unique = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("system time")
+                    .as_nanos();
+                let path = std::env::temp_dir().join(format!(
+                    "simple_image_viewer_scanner_test_{}_{}_{}",
+                    std::process::id(),
+                    unique,
+                    attempt
+                ));
+                if std::fs::create_dir(&path).is_ok() {
+                    return Self { path };
+                }
+            }
+            panic!("create temp scan directory");
         }
 
         fn touch(&self, name: &str) {
@@ -297,12 +334,12 @@ mod tests {
         }
     }
 
-    fn scan_names(dir: &Path, skip_raw_if_jpeg_exists: bool) -> Vec<String> {
+    fn scan_names(dir: &Path, paired_raw_jpeg_handling: PairedRawJpegHandling) -> Vec<String> {
         let (tx, rx) = unbounded();
         scan_directory(
             dir.to_path_buf(),
             false,
-            skip_raw_if_jpeg_exists,
+            paired_raw_jpeg_handling,
             tx,
             Arc::new(AtomicBool::new(false)),
         );
@@ -331,11 +368,14 @@ mod tests {
         dir.touch("IMG001.ARW");
         dir.touch("img001.JPG");
 
-        assert_eq!(scan_names(dir.path(), true), vec!["img001.JPG"]);
+        assert_eq!(
+            scan_names(dir.path(), PairedRawJpegHandling::SkipRaw),
+            vec!["img001.JPG"]
+        );
     }
 
     #[test]
-    fn skips_raw_files_when_matching_jpeg_exists() {
+    fn paired_raw_jpeg_handling_can_skip_raw_files() {
         let dir = TempScanDir::new();
         dir.touch("DSC08268.ARW");
         dir.touch("DSC08268.JPG");
@@ -345,7 +385,7 @@ mod tests {
         dir.touch("JPEG_ONLY.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), true),
+            scan_names(dir.path(), PairedRawJpegHandling::SkipRaw),
             vec![
                 "DSC08268.JPG",
                 "DSC08269.JPEG",
@@ -356,13 +396,34 @@ mod tests {
     }
 
     #[test]
-    fn keeps_paired_raw_files_when_filter_is_disabled() {
+    fn paired_raw_jpeg_handling_can_skip_jpeg_files() {
+        let dir = TempScanDir::new();
+        dir.touch("DSC08268.ARW");
+        dir.touch("DSC08268.JPG");
+        dir.touch("DSC08269.arw");
+        dir.touch("DSC08269.JPEG");
+        dir.touch("RAW_ONLY.ARW");
+        dir.touch("JPEG_ONLY.JPG");
+
+        assert_eq!(
+            scan_names(dir.path(), PairedRawJpegHandling::SkipJpeg),
+            vec![
+                "DSC08268.ARW",
+                "DSC08269.arw",
+                "JPEG_ONLY.JPG",
+                "RAW_ONLY.ARW"
+            ]
+        );
+    }
+
+    #[test]
+    fn paired_raw_jpeg_handling_keeps_both_by_default() {
         let dir = TempScanDir::new();
         dir.touch("DSC08268.ARW");
         dir.touch("DSC08268.JPG");
 
         assert_eq!(
-            scan_names(dir.path(), false),
+            scan_names(dir.path(), PairedRawJpegHandling::ShowBoth),
             vec!["DSC08268.ARW", "DSC08268.JPG"]
         );
     }

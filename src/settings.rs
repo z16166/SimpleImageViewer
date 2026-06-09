@@ -41,6 +41,26 @@ impl ScaleMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairedRawJpegHandling {
+    ShowBoth,
+    SkipRaw,
+    SkipJpeg,
+}
+
+impl Default for PairedRawJpegHandling {
+    fn default() -> Self {
+        Self::ShowBoth
+    }
+}
+
+impl PairedRawJpegHandling {
+    pub fn needs_pair_index(self) -> bool {
+        !matches!(self, Self::ShowBoth)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TransitionStyle
 // ---------------------------------------------------------------------------
@@ -99,7 +119,7 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub preload: bool,
     #[serde(default)]
-    pub skip_raw_if_jpeg_exists: bool,
+    pub paired_raw_jpeg_handling: PairedRawJpegHandling,
 
     // Session resumption
     #[serde(default)]
@@ -270,7 +290,7 @@ impl Default for Settings {
             font_family: default_font_family(),
             font_size: default_font_size(),
             preload: true,
-            skip_raw_if_jpeg_exists: false,
+            paired_raw_jpeg_handling: PairedRawJpegHandling::ShowBoth,
             resume_last_image: false,
             last_viewed_image: None,
             show_osd: true,
@@ -594,7 +614,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{PairedRawJpegHandling, Settings};
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {
@@ -609,6 +629,27 @@ mod tests {
         assert_eq!(
             settings.hdr_max_display_nits,
             crate::hdr::types::DEFAULT_MAX_DISPLAY_NITS
+        );
+    }
+
+    #[test]
+    fn paired_raw_jpeg_handling_defaults_to_show_both() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert_eq!(
+            settings.paired_raw_jpeg_handling,
+            PairedRawJpegHandling::ShowBoth
+        );
+    }
+
+    #[test]
+    fn paired_raw_jpeg_handling_deserializes_skip_jpeg() {
+        let settings: Settings = serde_yaml::from_str("paired_raw_jpeg_handling: skip_jpeg")
+            .expect("deserialize paired handling");
+
+        assert_eq!(
+            settings.paired_raw_jpeg_handling,
+            PairedRawJpegHandling::SkipJpeg
         );
     }
 

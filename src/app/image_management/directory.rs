@@ -79,7 +79,7 @@ impl ImageViewerApp {
         scanner::scan_directory(
             dir,
             self.settings.recursive,
-            self.settings.skip_raw_if_jpeg_exists,
+            self.settings.paired_raw_jpeg_handling,
             tx,
             cancel,
         );
@@ -242,7 +242,7 @@ impl ImageViewerApp {
         scanner::scan_directory(
             dir,
             self.settings.recursive,
-            self.settings.skip_raw_if_jpeg_exists,
+            self.settings.paired_raw_jpeg_handling,
             tx,
             cancel,
         );

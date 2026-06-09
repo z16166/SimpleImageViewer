@@ -22,6 +22,7 @@ use crate::context_menu::model::{
 use crate::hotkeys::model::{
     HotkeyActionId, KeyChord, action_id_to_str, default_hotkey_config_file,
 };
+use crate::settings::PairedRawJpegHandling;
 use crate::ui::utils::{
     middle_truncate, path_display_box, settings_card, styled_button, styled_button_widget,
     themed_labeled_toggle,
@@ -2016,14 +2017,30 @@ fn draw_library_controls(app: &mut ImageViewerApp, ui: &mut egui::Ui, open_dir: 
             app.queue_save();
         }
 
-        if themed_labeled_toggle(
-            ui,
-            &mut app.settings.skip_raw_if_jpeg_exists,
-            t!("label.skip_raw_if_jpeg_exists"),
-            &palette,
-        )
-        .changed()
-        {
+        let old_pair_handling = app.settings.paired_raw_jpeg_handling;
+        ui.horizontal(|ui| {
+            ui.label(t!("label.paired_raw_jpeg_handling"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.vertical(|ui| {
+                    ui.radio_value(
+                        &mut app.settings.paired_raw_jpeg_handling,
+                        PairedRawJpegHandling::ShowBoth,
+                        t!("paired_raw_jpeg.show_both"),
+                    );
+                    ui.radio_value(
+                        &mut app.settings.paired_raw_jpeg_handling,
+                        PairedRawJpegHandling::SkipRaw,
+                        t!("paired_raw_jpeg.skip_raw"),
+                    );
+                    ui.radio_value(
+                        &mut app.settings.paired_raw_jpeg_handling,
+                        PairedRawJpegHandling::SkipJpeg,
+                        t!("paired_raw_jpeg.skip_jpeg"),
+                    );
+                });
+            });
+        });
+        if old_pair_handling != app.settings.paired_raw_jpeg_handling {
             if let Some(dir) = app.settings.last_image_dir.clone() {
                 app.load_directory(dir);
             }
