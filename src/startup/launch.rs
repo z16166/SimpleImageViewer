@@ -24,6 +24,13 @@ use super::phases::{
     startup_log_captured_phases,
     startup_log_phase,
 };
+#[cfg(feature = "startup-timing")]
+use super::phases::{
+    startup_capture_phase,
+    startup_log_captured_phase,
+    startup_phase_at,
+    startup_reset_after_diagnostics,
+};
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 use super::wgpu::{

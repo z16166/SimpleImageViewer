@@ -17,6 +17,10 @@
 use parking_lot::Mutex;
 
 use super::phases::StartupPhases;
+#[cfg(feature = "startup-timing")]
+use super::phases::startup_capture_phase;
+#[cfg(feature = "startup-timing")]
+use std::time::Instant;
 
 const LOG_LEVEL_ENV: &str = "SIV_LOG_LEVEL";
 const LOG_FILE_ENV: &str = "SIV_LOG_FILE";
