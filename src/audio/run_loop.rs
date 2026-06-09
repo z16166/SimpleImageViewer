@@ -16,6 +16,7 @@
 use super::loop_state::{AudioLoopState, AudioSlots};
 use super::player::{AudioCommand, AudioError};
 use super::slots::{set_current_track, set_metadata};
+use super::wasapi::{wasapi_monitor_init, wasapi_monitor_uninit, wasapi_poll_device_lost};
 
 use crossbeam_channel;
 use parking_lot::Mutex;
@@ -24,13 +25,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-
-#[cfg(windows)]
-unsafe extern "C" {
-    fn wasapi_monitor_init();
-    fn wasapi_monitor_uninit();
-    fn wasapi_poll_device_lost() -> bool;
-}
 
 pub(crate) fn run_audio_loop(
     rx: crossbeam_channel::Receiver<AudioCommand>,
@@ -87,7 +81,7 @@ pub(crate) fn run_audio_loop(
             Ok(AudioCommand::Pause) => st.handle_pause(),
             Ok(AudioCommand::Play) => st.handle_play(&slots),
             Ok(AudioCommand::Seek(pos)) => st.handle_seek(pos, &slots),
-            Ok(AudioCommand::SetDevice(_)) => st.handle_set_device(&slots),
+            Ok(AudioCommand::SetDevice) => st.handle_set_device(&slots),
             Ok(AudioCommand::NextFile) => st.handle_next_file(&slots),
             Ok(AudioCommand::PrevFile) => st.handle_prev_file(&slots),
             Ok(AudioCommand::NextTrack) => st.handle_next_track(&slots),

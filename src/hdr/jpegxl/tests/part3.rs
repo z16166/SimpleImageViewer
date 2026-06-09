@@ -542,6 +542,3 @@ fn diagnose_conformance_pair(name: &str, jxl_path: &std::path::Path, ref_path: &
         buckets,
     );
 }
-
-#[cfg(feature = "jpegxl")]
-#[test]

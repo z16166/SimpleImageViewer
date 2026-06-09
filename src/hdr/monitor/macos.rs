@@ -174,12 +174,3 @@ unsafe fn ns_string_to_string(value: ObjcId) -> Option<String> {
     let text = unsafe { std::ffi::CStr::from_ptr(ptr.cast()).to_string_lossy() };
     Some(text.into_owned())
 }
-
-#[cfg(target_os = "windows")]
-fn monitor_device_name(name: &[u16; 32]) -> String {
-    let len = name
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(name.len());
-    String::from_utf16_lossy(&name[..len])
-}

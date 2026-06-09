@@ -18,7 +18,6 @@ use super::tiled_source::WicTiledSource;
 
 use super::com::ComGuard;
 use super::imports::*;
-use windows::core::*;
 
 pub fn load_via_wic(
     path: &std::path::Path,

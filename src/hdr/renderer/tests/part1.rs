@@ -413,5 +413,3 @@ fn render_output_diagnostics_distinguish_native_hdr_and_sdr_tone_mapping() {
         ]
     );
 }
-
-#[test]

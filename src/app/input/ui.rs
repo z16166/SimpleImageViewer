@@ -3,7 +3,7 @@ use crate::app::ImageViewerApp;
 use crate::ui::dialogs::modal_state::{ActiveModal, ModalResult};
 use crate::ui::utils::copy_file_to_clipboard;
 use crate::ui::{hud as ui_hud, settings as ui_settings};
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use rust_i18n::t;
 
 impl ImageViewerApp {

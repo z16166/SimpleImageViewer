@@ -13,25 +13,16 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::session::{append_heif_unci_build_hint, append_mini_format_read_hint};
+use super::session::append_heif_unci_build_hint;
 use super::metadata::heif_sample_bit_depth;
 use super::ycbcr::hdr_buffer_from_ycbcr;
 
 
-use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
-};
+use crate::hdr::types::HdrImageMetadata;
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
-#[cfg(feature = "heif-native")]
-use std::ffi::CStr;
-#[cfg(feature = "heif-native")]
-use std::path::Path;
+use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 #[cfg(feature = "heif-native")]
 use std::sync::Arc;
-#[cfg(feature = "heif-native")]
-use std::sync::OnceLock;
 
 /// Decode the primary HEIF tile to HDR float RGBA. Tries interleaved 16-bit RGBA first, then other
 /// interleaved layouts, YCbCr (`4:2:2` / `4:4:4` / `4:2:0`), planar RGB, and 8-bit interleaved fallbacks.

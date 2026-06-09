@@ -23,14 +23,6 @@ pub(crate) const SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE: u32 = 1024;
 pub(crate) const SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET: u32 = 192;
 pub(crate) const SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET: u32 = 0;
 
-pub(crate) use chromaticities::{
-    chromaticities_looks_like_aces_ap0, deep_scanline_flatten_rgba_via_imf,
-    extract_rgba32f_tile_from_flat_buffer, hdr_color_space_from_chromaticities_xy,
-    imf_exr_chromaticities_from_path, is_luminance_chroma_scanline_part,
-    openexr_luminance_weights_from_chromaticities_xy, rgba_input_scanline_flatten_rgba_via_imf,
-};
+pub(crate) use chromaticities::deep_scanline_flatten_rgba_via_imf;
 pub(crate) use read_context::OpenExrCoreReadContext;
-pub(crate) use types::{
-    OpenExrCoreChannelInfo, OpenExrCorePartInfo, OpenExrCoreRgbaTile,
-    OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache, OpenExrCoreDecodedChunkKey,
-};
+pub(crate) use types::OpenExrCoreChannelInfo;

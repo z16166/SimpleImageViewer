@@ -15,15 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::buffer::HdrTileBuffer;
-use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use rayon::prelude::*;
 
 use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

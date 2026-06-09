@@ -31,7 +31,6 @@ use std::ffi::CString;
 
 use super::constants::*;
 use libtiff_viewer as lib;
-use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
@@ -42,7 +41,7 @@ use super::mmap::{
     tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
 };
 use super::orientation::{apply_orientation_buffer, apply_orientation_buffer_f32};
-use crate::loader::{DecodedImage, ImageData, TiledImageSource};
+use crate::loader::{DecodedImage, ImageData};
 
 /// IFD0 tags for diagnostics (tests / support).
 #[cfg(test)]

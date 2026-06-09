@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CString, c_void};
 use std::path::Path;
 use std::ptr;
 
@@ -16,7 +16,7 @@ use memmap2::Mmap;
 use openexr_core_sys as sys;
 
 use super::channels::validate_tile_bounds;
-use super::types::{OpenExrCorePartInfo, OpenExrCoreRgbaTile};
+use super::types::OpenExrCorePartInfo;
 
 fn imf_mmap_for_path(path: &Path) -> Result<Mmap, String> {
     crate::mmap_util::map_file(path)

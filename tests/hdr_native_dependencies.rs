@@ -59,7 +59,7 @@ fn native_hdr_codec_wrapper_crates_have_build_scripts() {
 
 #[test]
 fn native_hdr_backends_are_wired_past_initial_stubs() {
-    let hdr_dir = repo_root().join("src").join("hdr");
+    let _hdr_dir = repo_root().join("src").join("hdr");
     let avif = read_hdr_module("avif");
     let heif = read_hdr_module("heif");
     let jxl = read_hdr_module("jpegxl");

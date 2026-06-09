@@ -1,18 +1,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::constants::*;
 use libtiff_viewer as lib;
-use std::ffi::CStr;
 use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::Arc;
 
 use super::handle::TiffHandle;
-use super::mmap::{
-    TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
-    tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
-};
-use super::orientation::{apply_orientation_buffer, apply_orientation_buffer_f32};
-use crate::loader::{DecodedImage, ImageData, TiledImageSource};
+use crate::loader::TiledImageSource;
 
 use memmap2::Mmap;
 use parking_lot::Mutex;
@@ -273,25 +265,17 @@ impl TiledImageSource for LibTiffScanlineSource {
 }
 
 // TIFF Photometric Interpretations
-const PHOTO_MINISWHITE: u16 = 0; // 0 is pure white, max is pure black (common in legacy faxes/scans)
-const PHOTO_MINISBLACK: u16 = 1; // 0 is pure black, max is pure white (modern standard grayscale)
 const PHOTO_RGB: u16 = 2;
 const PHOTO_PALETTE: u16 = 3;
 const PHOTO_SEPARATED: u16 = 5;
-const PHOTO_LOGL: u16 = 32844;
-const PHOTO_LOGLUV: u16 = 32845;
 
 // TIFF Sample Formats
 const FORMAT_UINT: u16 = 1;
-const FORMAT_INT: u16 = 2;
 const FORMAT_IEEEFP: u16 = 3;
 
 // TIFF Planar Configurations
 const CONFIG_CONTIG: u16 = 1; // Contiguous / Chunky format (e.g., RGBRGBRGB...)
 const CONFIG_SEPARATE: u16 = 2; // Planar format (e.g., RRR... GGG... BBB...)
-
-// TIFF Compressions
-const COMPRESSION_THUNDERSCAN: u16 = 32809;
 
 pub(crate) unsafe fn manual_decode_scanline(
     tif: *mut lib::TIFF,

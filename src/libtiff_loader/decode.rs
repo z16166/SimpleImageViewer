@@ -20,18 +20,11 @@ use crate::hdr::types::{
 
 use super::constants::*;
 use libtiff_viewer as lib;
-use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::handle::TiffHandle;
-use super::mmap::{
-    TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
-    tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
-};
-use super::orientation::{apply_orientation_buffer, apply_orientation_buffer_f32};
-use crate::loader::{DecodedImage, ImageData, TiledImageSource};
+use crate::loader::{DecodedImage, ImageData};
 
 pub(crate) fn get_raw_value(buf: &[u8], idx: usize, bps: u16, format: u16) -> f64 {
     match (bps, format) {

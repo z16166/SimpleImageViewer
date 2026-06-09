@@ -17,15 +17,9 @@
 use super::layout::{RadianceRasterLayout, RadianceScanAxis, RadianceScanSign, Rgbe8Pixel};
 use super::rle::{read_scanline, skip_scanline};
 
-use parking_lot::Mutex;
-use std::io::{BufRead, Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, Cursor};
 use std::sync::Arc;
 
-use crate::hdr::tiled::{
-    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
-};
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 pub(crate) fn build_radiance_scanline_offsets(

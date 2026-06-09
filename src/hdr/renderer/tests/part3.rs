@@ -138,3 +138,4 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             assert!(resources.image_bindings.contains_key(&key));
         }
     }
+}

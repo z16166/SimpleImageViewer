@@ -14,20 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod constants;
-mod decode;
-mod handle;
-mod load;
-mod mmap;
-mod orientation;
-mod scanline;
-mod thumbnail;
-mod tiled;
+use std::time::Duration;
 
-#[cfg(test)]
-mod tests;
+pub(crate) const AUDIO_HW_POS_ZERO_GRACE: Duration = Duration::from_millis(500);
 
-pub use load::load_via_libtiff;
-pub(crate) use orientation::apply_orientation_buffer;
-#[cfg(test)]
-pub use load::peek_tiff_tags;
+#[cfg(windows)]
+unsafe extern "C" {
+    pub(crate) fn wasapi_monitor_init();
+    pub(crate) fn wasapi_monitor_uninit();
+    pub(crate) fn wasapi_is_device_available() -> bool;
+    pub(crate) fn wasapi_poll_device_lost() -> bool;
+}
+
+#[cfg(not(windows))]
+pub(crate) unsafe fn wasapi_monitor_init() {}
+
+#[cfg(not(windows))]
+pub(crate) unsafe fn wasapi_monitor_uninit() {}
+
+#[cfg(not(windows))]
+pub(crate) unsafe fn wasapi_is_device_available() -> bool {
+    true
+}
+
+#[cfg(not(windows))]
+pub(crate) unsafe fn wasapi_poll_device_lost() -> bool {
+    false
+}

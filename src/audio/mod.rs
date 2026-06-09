@@ -15,14 +15,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 mod cue;
 mod loop_state;
+mod norm;
 mod player;
 mod playlist;
 mod run_loop;
 mod slots;
 mod sources;
+mod wasapi;
 
 #[cfg(test)]
 mod tests;
 
-pub use player::{AudioCommand, AudioError, AudioPlayer};
+pub use player::AudioPlayer;
 pub use playlist::collect_music_files;

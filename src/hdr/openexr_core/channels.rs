@@ -8,15 +8,13 @@
 
 #![allow(dead_code)]
 
-use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 use std::sync::Arc;
 
 use openexr_core_sys as sys;
 
 use super::types::{
-    ChannelRole, OpenExrCoreChannelInfo, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache,
+    ChannelRole, OpenExrCoreChannelInfo, OpenExrCoreDecodedChunk,
     OpenExrCoreDecodedChunkKey,
 };
 use super::read_context::OpenExrCoreReadContext;

@@ -25,12 +25,11 @@ use super::helpers::{
     tiled_plane_threshold_for_backend,
 };
 use super::{BURST_UPLOAD_MAX_512, BURST_UPLOAD_MULT, FALLBACK_PREVIEW_SCALE};
-use crate::app::rendering::geometry::PlaneLayout;
-use crate::app::rendering::plan::{RenderPlan, RenderShape};
+use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::app::{ImageViewerApp, TransitionStyle};
+use crate::app::ImageViewerApp;
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashSet;

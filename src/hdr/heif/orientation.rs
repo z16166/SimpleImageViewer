@@ -18,18 +18,10 @@ use super::session::{
 };
 
 
-use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
-};
-#[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
 use std::path::Path;
-#[cfg(feature = "heif-native")]
-use std::sync::Arc;
 #[cfg(feature = "heif-native")]
 use std::sync::OnceLock;
 

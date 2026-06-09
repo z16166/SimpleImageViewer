@@ -1,7 +1,7 @@
 use super::{AppAction, app_action_from_hotkey_action_id};
 use crate::app::ImageViewerApp;
 use crate::hotkeys::model::KeyChord;
-use eframe::egui::{self, Context, Event};
+use eframe::egui::{Context, Event};
 
 impl ImageViewerApp {
     pub(crate) fn map_pointer_button_to_action(&self, ctx: &Context) -> Option<AppAction> {

@@ -261,3 +261,4 @@ fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
             );
         }
     }
+}

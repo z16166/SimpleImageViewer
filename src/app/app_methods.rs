@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use rust_i18n::t;
 
 use crate::ui::dialogs::modal_state::ActiveModal;

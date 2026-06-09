@@ -5,8 +5,8 @@ use super::icon::load_icon;
 use super::logging::{init_logging, log_env_info, shutdown_logger};
 use super::panic::setup_panic_hook;
 use super::phases::{
-    startup_capture_phase, startup_log_captured_phase, startup_log_captured_phases,
-    startup_log_phase, startup_phase_at, startup_reset_after_diagnostics,
+    startup_log_captured_phases,
+    startup_log_phase,
 };
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]

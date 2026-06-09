@@ -20,7 +20,7 @@ use super::tile_decode::{decode_radiance_hdr_preview, decode_radiance_sdr_previe
 
 
 use parking_lot::Mutex;
-use std::io::{BufRead, Cursor, Read};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ use crate::hdr::tiled::{
     HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
     configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
 };
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata};
 
 #[derive(Debug)]
 pub struct RadianceHdrTiledImageSource {

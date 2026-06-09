@@ -24,8 +24,11 @@ mod tests {
         should_dispatch_standard_draw, should_draw_pending_navigation_hold_frame,
         should_draw_static_hdr_immediately, should_route_through_hdr_plane,
     };
-mod tests {
     use crate::app::rendering::plan::{RenderPlan, RenderShape};
+    use crate::app::rendering::plane::PlaneBackendKind;
+    use crate::app::TransitionStyle;
+    use crate::hdr::types::HdrRenderOutputMode;
+    use eframe::egui::{Pos2, Rect, Vec2};
 
     fn static_plan(
         has_hdr_plane: bool,
@@ -239,3 +242,4 @@ mod tests {
             false, None, 7
         ));
     }
+}

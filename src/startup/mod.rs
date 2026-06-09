@@ -27,6 +27,4 @@ pub use launch::run;
 pub(crate) use logging::shutdown_logger;
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-pub(crate) use wgpu::{
-    register_dx12_cache_validate_join_for_exit, take_and_join_dx12_cache_validate_thread,
-};
+pub(crate) use wgpu::take_and_join_dx12_cache_validate_thread;

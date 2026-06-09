@@ -26,14 +26,10 @@ use super::develop::{develop_full_resolution, develop_hq_preview};
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::preview_caps::{
-    finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer, hq_preview_max_side,
-};
 use crate::loader::raw_osd::{RawOsdContext, RawOsdInfo};
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
@@ -41,7 +37,7 @@ use parking_lot::RwLock as PLRwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
+use crate::loader::decode::assemble::make_image_data;
 fn load_raw_with_embedded_bootstrap(
     path: PathBuf,
     preview: DecodedImage,

@@ -17,20 +17,15 @@ use super::brand::heif_nclx_to_metadata;
 use super::gain_map::HeifAuxiliaryImageHandle;
 
 
-use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
+use crate::hdr::types::HdrGainMapMetadata;
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
-use std::path::Path;
-#[cfg(feature = "heif-native")]
 use std::sync::Arc;
-#[cfg(feature = "heif-native")]
-use std::sync::OnceLock;
 
 pub(crate) fn read_heif_metadata(handle: *const libheif_sys::heif_image_handle) -> HdrImageMetadata {
     let mut nclx_ptr = std::ptr::null_mut();

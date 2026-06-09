@@ -17,23 +17,12 @@ use super::decode::decode_primary_heif_to_hdr;
 use super::gain_map::{decode_heif_gain_map, heif_has_apple_hdr_gain_map_auxiliary};
 use super::metadata::{inspect_heif_gain_map_auxiliaries, read_heif_metadata, refine_heif_transfer_for_primary_bit_depth};
 use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
-use super::session::{HeifCtxGuard, HeifPrimaryGuard, open_heif_primary_from_bytes};
+use super::session::open_heif_primary_from_bytes;
 
 
-use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
-};
+use crate::hdr::types::HdrColorProfile;
 #[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
-#[cfg(feature = "heif-native")]
-use std::ffi::CStr;
-#[cfg(feature = "heif-native")]
-use std::path::Path;
-#[cfg(feature = "heif-native")]
-use std::sync::Arc;
-#[cfg(feature = "heif-native")]
-use std::sync::OnceLock;
+use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
 
 #[cfg(feature = "heif-native")]
 pub(crate) fn load_heif_hdr(

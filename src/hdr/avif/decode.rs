@@ -40,6 +40,7 @@ pub(crate) fn libavif_result_to_string(result: libavif_sys::avifResult) -> Strin
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn decode_avif_hdr(path: &std::path::Path) -> Result<HdrImageBuffer, String> {
     let mmap =
         crate::mmap_util::map_file(path).map_err(|err| format!("Failed to read AVIF: {err}"))?;

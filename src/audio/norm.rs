@@ -14,20 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod constants;
-mod decode;
-mod handle;
-mod load;
-mod mmap;
-mod orientation;
-mod scanline;
-mod thumbnail;
-mod tiled;
-
-#[cfg(test)]
-mod tests;
-
-pub use load::load_via_libtiff;
-pub(crate) use orientation::apply_orientation_buffer;
-#[cfg(test)]
-pub use load::peek_tiff_tags;
+pub(crate) const NORM_I8: f32 = 128.0;
+pub(crate) const NORM_I16: f32 = 32768.0;
+pub(crate) const NORM_I24: f32 = 8388608.0;
+pub(crate) const NORM_I32: f32 = 2147483648.0;

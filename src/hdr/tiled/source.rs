@@ -15,16 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::buffer::HdrTileBuffer;
 use super::cache::{HdrTileCache, configured_hdr_tile_cache_max_bytes};
-use super::globals::{
-    DEFAULT_HDR_TILE_CACHE_MAX_BYTES, HDR_TILE_CACHE_MAX_BYTES, HdrTileCacheKey,
-    MAX_HDR_TILE_CACHE_MAX_BYTES,
-};
 use super::kind::{HdrTiledSource, HdrTiledSourceKind};
 use super::preview::downsample_hdr_image_nearest;
 use super::validate::{validate_rgba32f_len, validate_tile_bounds};

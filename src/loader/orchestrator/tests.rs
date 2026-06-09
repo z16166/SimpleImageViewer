@@ -105,4 +105,4 @@ use super::*;
         assert_eq!(r.generation, 1);
         assert_eq!(r.source_key, 12345);
         assert!(r.fallback.is_none());
-    
+    }

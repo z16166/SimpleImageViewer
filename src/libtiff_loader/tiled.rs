@@ -1,18 +1,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::constants::*;
 use libtiff_viewer as lib;
-use std::ffi::CStr;
-use std::os::raw::c_void;
-use std::path::Path;
 use std::sync::Arc;
 
 use super::handle::TiffHandle;
-use super::mmap::{
-    TiffMmapContext, tiff_close_proc, tiff_map_proc, tiff_read_proc, tiff_seek_proc,
-    tiff_size_proc, tiff_unmap_proc, tiff_write_proc,
-};
-use super::orientation::{apply_orientation_buffer, apply_orientation_buffer_f32};
-use crate::loader::{DecodedImage, ImageData, TiledImageSource};
+use crate::loader::TiledImageSource;
 
 use memmap2::Mmap;
 use parking_lot::Mutex;
@@ -20,7 +11,6 @@ use std::path::PathBuf;
 
 use super::handle::create_tiff_handle;
 use super::thumbnail::extract_embedded_thumbnail;
-use super::decode::{get_raw_value, process_scanline_contig, process_scanline_separate};
 
 pub struct LibTiffTiledSource {
     pub(crate) path: PathBuf,

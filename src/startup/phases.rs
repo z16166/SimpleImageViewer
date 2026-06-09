@@ -52,6 +52,7 @@ pub fn startup_capture_phase(
 }
 
 #[cfg(not(feature = "startup-timing"))]
+#[allow(dead_code)]
 pub fn startup_capture_phase(
     _phases: &mut StartupPhases,
     _prev: &mut Instant,
@@ -77,6 +78,7 @@ pub fn startup_phase_at(
 }
 
 #[cfg(not(feature = "startup-timing"))]
+#[allow(dead_code)]
 pub fn startup_phase_at(_prev: &mut Instant, _t0: Instant, _label: &'static str, _now: Instant) {}
 
 #[cfg(feature = "startup-timing")]
@@ -86,6 +88,7 @@ pub fn startup_reset_after_diagnostics(prev: &mut Instant) {
 }
 
 #[cfg(not(feature = "startup-timing"))]
+#[allow(dead_code)]
 pub fn startup_reset_after_diagnostics(_prev: &mut Instant) {}
 
 #[cfg(feature = "startup-timing")]
@@ -99,6 +102,7 @@ pub fn startup_log_captured_phase(phase: &StartupPhase) {
 }
 
 #[cfg(not(feature = "startup-timing"))]
+#[allow(dead_code)]
 pub fn startup_log_captured_phase(_phase: &()) {}
 
 #[cfg(feature = "startup-timing")]

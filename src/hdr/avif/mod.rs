@@ -33,17 +33,9 @@ pub(crate) use brand::is_avif_brand;
 pub(crate) use metadata::avif_cicp_to_metadata;
 
 #[cfg(feature = "avif-native")]
-pub(crate) use decode::{
-    decode_avif_hdr, decode_avif_hdr_bytes, decode_avif_hdr_bytes_with_target_capacity,
-    decode_avif_hdr_with_target_capacity,
-};
+pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(feature = "avif-native")]
-pub(crate) use gain_map::avif_gain_map_to_metadata;
-#[cfg(feature = "avif-native")]
-pub(crate) use orientation::{
-    avif_irot_imir_to_exif_orientation, avif_transforms_to_exif_orientation,
-    libavif_probe_exif_orientation_from_bytes, libavif_probe_exif_orientation_from_path,
-};
+pub(crate) use orientation::libavif_probe_exif_orientation_from_path;
 #[cfg(feature = "avif-native")]
 pub(crate) use sequence::try_decode_avif_image_sequence_hdr;
 

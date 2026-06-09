@@ -15,19 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::Path;
-use std::sync::Arc;
 
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
 
-use image::{ImageReader, Limits};
-
-use crate::hdr::tiled::HdrTiledSource;
-
-use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
-    HdrToneMapSettings, HdrTransferFunction,
-};
+use crate::hdr::types::HdrImageBuffer;
 pub(crate) fn decode_radiance_hdr_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let mmap = crate::mmap_util::map_file(path)?;
     let img = crate::hdr::radiance_tiled::decode_radiance_rgba32f_from_mmap(&mmap, None)?;

@@ -47,14 +47,6 @@ pub(crate) fn should_draw_static_hdr_immediately(
     false
 }
 
-fn should_clear_transition_state_after_static_hdr_draw(
-    static_hdr_draw: bool,
-    pending_transition_target: Option<usize>,
-    current_index: usize,
-) -> bool {
-    static_hdr_draw && pending_transition_target != Some(current_index)
-}
-
 pub(crate) fn should_dispatch_standard_draw(
     has_sdr_texture: bool,
     has_current_hdr_image: bool,

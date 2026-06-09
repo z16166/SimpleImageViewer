@@ -14,18 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::path::Path;
-use std::sync::Arc;
 
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
 
-use image::{ImageReader, Limits};
 
-use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
-    HdrToneMapSettings, HdrTransferFunction,
-};
 
 pub(crate) const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
 pub(crate) const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;

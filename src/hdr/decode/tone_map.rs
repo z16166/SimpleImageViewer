@@ -19,18 +19,12 @@ use super::constants::{
     MAX_HDR_FALLBACK_TOTAL_BYTES, MAX_HDR_TONE_MAP_INPUT,
 };
 
-use std::path::Path;
-use std::sync::Arc;
 
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
 
-use image::{ImageReader, Limits};
-
-use crate::hdr::tiled::HdrTiledSource;
-
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,
 };
 pub fn hdr_to_sdr_rgba8(buffer: &HdrImageBuffer, exposure_ev: f32) -> Result<Vec<u8>, String> {

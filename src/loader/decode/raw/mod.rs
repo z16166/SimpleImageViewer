@@ -23,7 +23,6 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
 
-use crate::hdr::types::HdrToneMapSettings;
 
 mod develop;
 mod load;

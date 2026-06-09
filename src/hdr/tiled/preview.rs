@@ -13,22 +13,13 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
-use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::Ordering;
+use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::buffer::HdrTileBuffer;
-use super::cache::{HdrTileCache, configured_hdr_tile_cache_max_bytes};
-use super::globals::{
-    DEFAULT_HDR_TILE_CACHE_MAX_BYTES, HDR_TILE_CACHE_MAX_BYTES, HdrTileCacheKey,
-    MAX_HDR_TILE_CACHE_MAX_BYTES,
-};
-use super::kind::{HdrTiledSource, HdrTiledSourceKind};
-use super::validate::{validate_rgba32f_len, validate_tile_bounds};
+use super::kind::HdrTiledSource;
+use super::validate::validate_rgba32f_len;
 
 
 pub(crate) fn downsample_hdr_image_nearest(
@@ -160,9 +151,5 @@ pub(crate) fn preview_sample_coord(
     }
     ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
         as u32
-}
-
-const fn initial_hdr_tile_cache_max_bytes() -> usize {
-    DEFAULT_HDR_TILE_CACHE_MAX_BYTES
 }
 

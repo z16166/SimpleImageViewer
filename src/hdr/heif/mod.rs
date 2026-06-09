@@ -33,23 +33,12 @@ mod ycbcr;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use brand::{heif_nclx_to_metadata, is_heif_brand};
+pub(crate) use brand::is_heif_brand;
 
 #[cfg(feature = "heif-native")]
-pub(crate) use gain_map::align_apple_gain_map_to_primary_display_orientation;
-#[cfg(feature = "heif-native")]
-pub(crate) use load::{decode_heif_hdr, decode_heif_hdr_bytes, load_heif_hdr};
-#[cfg(feature = "heif-native")]
-pub(crate) use metadata::{
-    classify_heif_auxiliary_type, HeifAuxiliaryClassification, HeifAuxiliaryEvidence,
-    apply_heif_unknown_transfer_bt709_primaries_fallback,
-};
+pub(crate) use load::load_heif_hdr;
 #[cfg(feature = "heif-native")]
 pub(crate) use orientation::{
-    HeifDecodeOptionsIgnoredGeometryOwned, decoded_pixels_match_swapped_ispe,
-    heif_exif_orientation_from_raw_handle, libheif_exif_orientation_tag,
-    libheif_manual_geometry_exif_orientation_from_bytes,
+    decoded_pixels_match_swapped_ispe, libheif_exif_orientation_tag,
     libheif_manual_geometry_exif_orientation_from_path,
-    libheif_primary_decode_should_ignore_embedded_geometry,
-    libheif_primary_geometric_mirror_rotation_only,
 };

@@ -22,4 +22,3 @@ mod types;
 mod tests;
 
 pub use types::ImageLoader;
-pub(crate) use types::TileInFlightKey;

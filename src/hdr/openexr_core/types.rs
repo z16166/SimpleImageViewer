@@ -8,7 +8,6 @@
 
 #![allow(dead_code)]
 
-use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 

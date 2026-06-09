@@ -1,7 +1,6 @@
 use parking_lot::Mutex;
-use std::time::Instant;
 
-use super::phases::{startup_capture_phase, StartupPhases};
+use super::phases::StartupPhases;
 
 const LOG_LEVEL_ENV: &str = "SIV_LOG_LEVEL";
 const LOG_FILE_ENV: &str = "SIV_LOG_FILE";

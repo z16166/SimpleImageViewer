@@ -14,17 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-
-use rayon::prelude::*;
-
-use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, IsoDeferredTileContext,
-};
-
 pub(crate) fn validate_rgba32f_len(width: u32, height: u32, actual_len: usize) -> Result<(), String> {
     let expected_len = width
         .checked_mul(height)

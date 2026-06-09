@@ -15,9 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::imports::*;
-use windows::Win32::Graphics::Imaging::*;
-use windows::Win32::System::Com::*;
-use windows::core::*;
 
 use super::com::ComGuard;
 /// A tiled source for Windows Imaging Component (WIC) decoders.

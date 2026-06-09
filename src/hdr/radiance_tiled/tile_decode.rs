@@ -14,20 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::header::{build_radiance_scanline_offsets, read_radiance_header, validate_scanline_offsets};
+use super::header::validate_scanline_offsets;
 use super::layout::RadianceRasterLayout;
 use super::rle::read_scanline;
 use super::layout::{Rgbe8Pixel, inner_range_covering_coord_inclusive, outer_range_covering_coord_inclusive};
 
-use parking_lot::Mutex;
-use std::io::{BufRead, Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::hdr::tiled::{
-    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
-};
+use crate::hdr::tiled::validate_tile_bounds;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 pub(crate) fn decode_radiance_tile_window(

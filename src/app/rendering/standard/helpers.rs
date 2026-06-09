@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::app::rendering::transitions::TransitionParams;
-use eframe::egui::{Pos2, Rect, Vec2};
+use eframe::egui::{Rect, Vec2};
 
 pub(super) fn should_clear_transition_state_after_static_hdr_draw(
     static_hdr_draw: bool,

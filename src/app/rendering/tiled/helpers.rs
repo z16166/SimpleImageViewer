@@ -5,8 +5,8 @@ use crate::app::rendering::transitions::TransitionParams;
 use crate::app::TransitionStyle;
 use crate::hdr::tiled::HdrTiledSource;
 use crate::loader::{TileDecodeSource, TilePixelKind};
-use crate::tile_cache::{PendingTileKey, TileCoord, TileManager, TileStatus};
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
+use eframe::egui::{self, Pos2, Rect, Vec2};
 use std::collections::HashSet;
 use std::sync::Arc;
 

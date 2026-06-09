@@ -17,18 +17,11 @@
 //! Worker pool, deferred loads, refinement channels, tile queue orchestration ([`ImageLoader`]).
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::decode::load_image_file;
-use crate::loader::preview_caps::{
-    REFINEMENT_POOL, finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer,
-};
 use crate::loader::{
-    DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
-    RefinementRequest, TileDecodeSource, TilePixelKind, TileResult,
-    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hq_preview_max_side, source_key_for_path,
+    LoaderOutput,
+    RefinementRequest, TileDecodeSource, TilePixelKind,
 };
-use crate::raw_processor::RawProcessor;
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
@@ -41,7 +34,6 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TileInFlightKey {

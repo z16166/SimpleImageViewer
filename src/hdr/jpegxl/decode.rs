@@ -23,17 +23,15 @@ use super::metadata::{
 };
 use super::runner::JxlResizableRunnerPtr;
 
-#[cfg(feature = "jpegxl")]
-use crate::hdr::gain_map::GainMapMetadata;
 use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
+    HdrColorProfile, HdrImageMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "jpegxl")]
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "jpegxl")]
 use crate::{
     constants::{
-        DEFAULT_ANIMATION_DELAY_MS, JXL_PROBE_ITERATION_CAP, MAX_ICC_TAG_COUNT,
+        DEFAULT_ANIMATION_DELAY_MS,
         MIN_ANIMATION_DELAY_THRESHOLD_MS,
     },
     loader::{AnimationFrame, DecodedImage, ImageData},

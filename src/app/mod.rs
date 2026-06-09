@@ -35,23 +35,20 @@ mod types;
 pub use types::{FileOpResult, HardwareTier, ImageViewerApp};
 
 pub(crate) use types::{
-    AnimationPlayback, CachedWindowPlacement, CurrentHdrImage, CurrentHdrTiledImage,
-    HdrOutputStateSnapshot, LightweightFileOpJob, PendingAnimUpload, SettingsTab,
-    UltraHdrCapacityRefresh,
+    AnimationPlayback, CurrentHdrImage, CurrentHdrTiledImage, LightweightFileOpJob, PendingAnimUpload, SettingsTab,
 };
-pub(crate) use types::hdr_output_state_changed;
 
 pub(crate) use preload::{
     CACHE_SIZE, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD,
-    capacity_refresh_should_reschedule_preloads, collect_ultra_hdr_capacity_sensitive_indices,
+    capacity_refresh_should_reschedule_preloads,
     compute_preload_budgets, memory_aware_tile_cache_budgets_mb, plan_ultra_hdr_capacity_refresh,
     ultra_hdr_decode_capacity_for_output_mode,
 };
 
-pub(crate) use hotkeys_ui::{build_hotkeys_issue_message, localized_hotkey_warning};
+pub(crate) use hotkeys_ui::localized_hotkey_warning;
 pub(crate) use metadata_extract::{extract_exif, extract_xmp};
 
-pub(crate) use crate::settings::{ScaleMode, Settings, TransitionStyle};
+pub(crate) use crate::settings::{ScaleMode, TransitionStyle};
 pub(crate) use crate::theme::AppTheme;
 
 #[cfg(test)]

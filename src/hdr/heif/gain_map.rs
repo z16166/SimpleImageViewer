@@ -15,24 +15,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::RawHeifImage;
 use super::metadata::{HeifAuxiliaryClassification, list_heif_auxiliary_evidence};
-use super::orientation::{heif_exif_orientation_from_raw_handle, libheif_exif_orientation_tag};
-use super::session::HeifPrimaryGuard;
+use super::orientation::heif_exif_orientation_from_raw_handle;
 
 
-use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
-};
-#[cfg(feature = "heif-native")]
-use crate::hdr::types::{HdrGainMapMetadata, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
-#[cfg(feature = "heif-native")]
-use std::ffi::CStr;
-#[cfg(feature = "heif-native")]
-use std::path::Path;
-#[cfg(feature = "heif-native")]
-use std::sync::Arc;
-#[cfg(feature = "heif-native")]
-use std::sync::OnceLock;
 
 
 #[cfg(feature = "heif-native")]

@@ -463,10 +463,3 @@ fn conformance_bench_oriented_brg_sdr_fallback_mean_not_washed_when_sample_prese
         "no shadow pixels in SDR fallback ⇒ contrast collapsed"
     );
 }
-
-/// Pixel-level comparison between our SDR fallback and the conformance `ref.png`. They MUST
-/// match closely (≤ a few code values mean diff, mostly identical channels) — `ref.png` is the
-/// libjxl conformance reference SDR rendering of `input.jxl`. Any larger drift means our
-/// `jxl_sdr_grade_fallback_rgba8` is NOT producing what the reference says.
-#[cfg(feature = "jpegxl")]
-#[test]

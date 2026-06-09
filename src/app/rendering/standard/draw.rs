@@ -19,7 +19,7 @@ use super::helpers::{
 };
 use super::{should_draw_static_hdr_immediately, should_route_through_hdr_plane};
 use crate::app::rendering::geometry::PlaneLayout;
-use crate::app::rendering::plan::{RenderPlan, RenderShape};
+use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{PlaneBackendKind, draw_sdr_texture_plane, hdr_image_plane_rect};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;

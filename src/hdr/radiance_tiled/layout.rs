@@ -14,17 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use parking_lot::Mutex;
-use std::io::{BufRead, Cursor, Read};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use crate::hdr::tiled::{
-    HdrTileBuffer, HdrTileCache, HdrTiledSource, HdrTiledSourceKind,
-    configured_hdr_tile_cache_max_bytes, validate_tile_bounds,
-};
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
-
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Rgbe8Pixel {
     pub(crate) rgb: [u8; 3],

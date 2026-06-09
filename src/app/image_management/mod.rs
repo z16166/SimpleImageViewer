@@ -568,7 +568,7 @@ pub(crate) fn hdr_load_result_capacity_is_stale(
             > HDR_CAPACITY_STALE_EPSILON
 }
 
-enum ImageInstallPlan<'a> {
+pub(crate) enum ImageInstallPlan<'a> {
     StaticSdr {
         decoded: &'a DecodedImage,
     },

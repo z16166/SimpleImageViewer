@@ -13,23 +13,15 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
+use super::super::norm::{NORM_I8, NORM_I16, NORM_I24, NORM_I32};
+
 use crate::constants::{
-    AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, AUDIO_RECOVERY_COOLDOWN,
-    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE, is_supported_music_extension,
+    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE,
 };
-use crate::scanner::is_offline;
-use crossbeam_channel::Sender;
-use parking_lot::Mutex;
-use std::collections::{HashSet, VecDeque};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-
-use lofty::prelude::*;
-use lofty::read_from_path;
-use rodio::Source;
+use std::time::Duration;
 use std::ffi::c_void;
 use std::num::NonZero;
 #[cfg(target_os = "windows")]
@@ -37,48 +29,6 @@ use std::os::windows::ffi::OsStrExt;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use monkey_sdk_sys::*;
-
-use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::conv::FromSample;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::core::units::Time;
-
-// --- Audio Normalization Constants ---
-const NORM_I8: f32 = 128.0;
-const NORM_I16: f32 = 32768.0;
-const NORM_I24: f32 = 8388608.0;
-const NORM_I32: f32 = 2147483648.0;
-const AUDIO_HW_POS_ZERO_GRACE: Duration = Duration::from_millis(500);
-
-#[cfg(windows)]
-unsafe extern "C" {
-    fn wasapi_monitor_init();
-    fn wasapi_monitor_uninit();
-    fn wasapi_is_device_available() -> bool;
-    fn wasapi_poll_device_lost() -> bool;
-}
-
-#[cfg(not(windows))]
-#[allow(dead_code)]
-unsafe fn wasapi_monitor_init() {}
-#[cfg(not(windows))]
-#[allow(dead_code)]
-unsafe fn wasapi_monitor_uninit() {}
-#[cfg(not(windows))]
-#[allow(dead_code)]
-unsafe fn wasapi_is_device_available() -> bool {
-    true
-}
-#[cfg(not(windows))]
-#[allow(dead_code)]
-unsafe fn wasapi_poll_device_lost() -> bool {
-    false
-}
 
 // ---------------------------------------------------------------------------
 // Custom APE Source using official Monkey's Audio SDK (Native)

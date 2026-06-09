@@ -23,13 +23,11 @@ mod runner;
 mod tests;
 
 pub(crate) use probe::{
-    is_jxl_header, jxl_color_encoding_to_metadata, libjxl_probe_orientation_from_bytes,
+    is_jxl_header,
     libjxl_probe_orientation_from_path,
 };
 #[cfg(feature = "jpegxl")]
 pub(crate) use decode::{
-    decode_jxl_bytes_to_image_data, decode_jxl_hdr, decode_jxl_hdr_bytes,
-    decode_jxl_hdr_bytes_with_target_capacity, decode_jxl_hdr_with_target_capacity, load_jxl_hdr,
     load_jxl_hdr_with_target_capacity, srgb_unit_to_u8,
 };
 #[cfg(feature = "jpegxl")]

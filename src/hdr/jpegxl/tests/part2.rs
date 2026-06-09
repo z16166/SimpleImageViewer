@@ -673,14 +673,3 @@ fn conformance_cmyk_layers_naive_composition_models_are_all_wrong_when_sample_pr
         }
     }
 }
-
-/// End-to-end regression: the live decode pipeline now applies the embedded
-/// CMYK ICC profile through lcms2 (`apply_cmyk_to_srgb_via_lcms`) when a
-/// `JXL_CHANNEL_BLACK` extra channel is present. The resulting SDR fallback
-/// for `cmyk_layers/input.jxl` must reproduce the conformance `ref.png`
-/// (which djxl rendered with the same CMS pipeline) to within ~5 code
-/// values mean signed diff. Without ICC-managed conversion the K plane is
-/// dropped (missing "black" word) and process colors render flat (lime
-/// instead of teal background).
-#[cfg(feature = "jpegxl")]
-#[test]

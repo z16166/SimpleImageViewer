@@ -19,8 +19,7 @@ use std::sync::Arc;
 use crate::hdr::renderer::HdrRenderOutputMode;
 
 use super::helpers::resolve_transition_prev_layout;
-use crate::app::rendering::transitions;
-use crate::app::{ImageViewerApp, TransitionStyle};
+use crate::app::ImageViewerApp;
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 
 impl ImageViewerApp {

@@ -17,7 +17,6 @@
 use super::helpers::curtain_hdr_transition_rotation;
 use crate::app::rendering::geometry::PlaneLayout;
 use crate::app::rendering::plane::{PlaneDrawSource, draw_plane};
-use crate::app::rendering::transitions::TransitionParams;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};

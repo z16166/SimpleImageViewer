@@ -1,5 +1,5 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
+use super::types::HdrMonitorSelection;
 use super::windows::windows_active_monitor_hdr_status;
 #[cfg(target_os = "macos")]
 use super::macos::macos_active_monitor_hdr_status;

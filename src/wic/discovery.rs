@@ -17,7 +17,6 @@
 use super::imports::get_wic_factory;
 use super::imports::*;
 use windows::Win32::Graphics::Imaging::*;
-use windows::Win32::System::Com::*;
 use windows::core::*;
 
 use super::com::ComGuard;

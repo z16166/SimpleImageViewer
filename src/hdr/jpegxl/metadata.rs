@@ -28,19 +28,9 @@ use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "jpegxl")]
-use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
-#[cfg(feature = "jpegxl")]
-use crate::{
-    constants::{
-        DEFAULT_ANIMATION_DELAY_MS, JXL_PROBE_ITERATION_CAP, MAX_ICC_TAG_COUNT,
-        MIN_ANIMATION_DELAY_THRESHOLD_MS,
-    },
-    loader::{AnimationFrame, DecodedImage, ImageData},
-};
+use crate::constants::MAX_ICC_TAG_COUNT;
 #[cfg(feature = "jpegxl")]
 use std::sync::Arc;
-#[cfg(feature = "jpegxl")]
-use std::time::Duration;
 #[cfg(feature = "jpegxl")]
 pub(crate) fn ensure_jxl_success(status: libjxl_sys::JxlDecoderStatus, action: &str) -> Result<(), String> {
     if status == libjxl_sys::JXL_DEC_SUCCESS {

@@ -21,23 +21,10 @@ use std::io::{BufRead, Cursor};
 
 use image::{ImageReader, Limits};
 
-use crate::hdr::tiled::HdrTiledSource;
-
+use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
-    HdrToneMapSettings, HdrTransferFunction,
+    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
 };
-
-const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
-const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;
-const HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR: u64 =
-    HDR_RGBA32F_BYTES_PER_PIXEL + SDR_RGBA8_BYTES_PER_PIXEL;
-const MAX_HDR_FALLBACK_PIXELS: u64 = 8192 * 8192;
-const MAX_HDR_FALLBACK_DECODE_BYTES: u64 = MAX_HDR_FALLBACK_PIXELS * HDR_RGBA32F_BYTES_PER_PIXEL;
-const MAX_HDR_FALLBACK_TOTAL_BYTES: u64 =
-    MAX_HDR_FALLBACK_PIXELS * HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR;
-const MAX_HDR_TONE_MAP_INPUT: f32 = f32::MAX;
-const INVERSE_DISPLAY_GAMMA: f32 = 1.0 / 2.2;
 
 pub fn is_hdr_candidate_ext(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("exr")

@@ -415,5 +415,3 @@ fn gain_map_metadata_parses_hdr_capacity_bounds() {
     assert!((metadata.hdr_capacity_min - 2.0_f32.powf(1.25)).abs() < 0.001);
     assert!((metadata.hdr_capacity_max - 2.0_f32.powf(4.5)).abs() < 0.001);
 }
-
-#[test]

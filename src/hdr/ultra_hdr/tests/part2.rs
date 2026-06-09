@@ -478,3 +478,4 @@ fn write_iso_common_denominator_metadata(
         out.extend_from_slice(&offset_sdr.to_be_bytes());
         out.extend_from_slice(&offset_hdr.to_be_bytes());
     }
+}

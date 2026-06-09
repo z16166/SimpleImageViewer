@@ -9,14 +9,9 @@
 #![allow(dead_code)]
 
 use parking_lot::{Condvar, Mutex};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use std::time::Instant;
 
 use openexr_core_sys as sys;
@@ -24,22 +19,18 @@ use openexr_core_sys as sys;
 use super::channels::{
     OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming, OpenExrCoreDecodedChunkFetch,
     OpenExrCoreTileGrid, DecodePipelineGuard, assign_channel_roles, budgeted_scanline_preview_source_y,
-    channel_sample_f32, channel_sample_f32_filtered, compression_name, configured_decoded_chunk_cache_max_bytes,
+    channel_sample_f32, channel_sample_f32_filtered, configured_decoded_chunk_cache_max_bytes,
     copy_channels, copy_decoded_chunk_to_tile, decode_pipeline_channels, decoded_chunk_key, exr_result,
-    extent_from_window_axis, sample_decoded_scanline_chunk_into_preview, sampled_channel_flat_index,
+    extent_from_window_axis, sample_decoded_scanline_chunk_into_preview,
     scanline_preview_decode_parallelism, scanline_preview_dimensions,
-    scanline_preview_source_row_budget, storage_name, validate_tile_bounds,
+    scanline_preview_source_row_budget, validate_tile_bounds,
 };
 use super::chromaticities::{
-    deep_scanline_flatten_rgba_via_imf, extract_rgba32f_tile_from_flat_buffer,
-    hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path,
-    is_luminance_chroma_scanline_part, openexr_luminance_weights_from_chromaticities_xy,
-    rgba_input_scanline_flatten_rgba_via_imf,
+    hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path, openexr_luminance_weights_from_chromaticities_xy,
 };
 use super::mmap::{ExrMmapCookieGuard, openexr_memory_map_initializer};
 use super::types::{
-    ChannelRole, OpenExrCoreChannelInfo, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache,
-    OpenExrCoreDecodedChunkKey, OpenExrCorePartInfo, OpenExrCoreRgbaTile,
+    ChannelRole, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache, OpenExrCorePartInfo, OpenExrCoreRgbaTile,
 };
 
 

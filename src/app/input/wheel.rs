@@ -1,9 +1,9 @@
 use super::{AppAction, app_action_from_hotkey_action_id};
 use crate::app::ImageViewerApp;
-use crate::hotkeys::model::{HotkeyActionId, KeyChord};
+use crate::hotkeys::model::KeyChord;
 use eframe::egui::{self, Context, Event, MouseWheelUnit};
 
-struct WheelHotkeyMatch {
+pub(crate) struct WheelHotkeyMatch {
     action: AppAction,
     normalized_delta_y: f32,
 }

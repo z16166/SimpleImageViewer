@@ -27,14 +27,11 @@ mod wayland;
 #[cfg(test)]
 mod tests;
 
-pub use types::{HdrMonitorSelection, HdrMonitorSignature, HdrNativeSurfaceEncoding};
+pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 pub use state::HdrMonitorState;
-pub use probe::{spawn_monitor_hdr_status, SpawnMonitorHdrProbe};
+pub use probe::spawn_monitor_hdr_status;
 pub use effective::{
-    active_monitor_hdr_status, effective_capability_output_mode,
+    effective_capability_output_mode,
     effective_monitor_selection, effective_render_output_mode,
 };
-pub use windows::any_active_output_supports_hdr;
 
-#[cfg(target_os = "windows")]
-pub(crate) use windows::dxgi_output_hdr_active;
