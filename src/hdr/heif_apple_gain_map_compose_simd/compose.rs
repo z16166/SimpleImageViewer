@@ -17,9 +17,11 @@
 //! for RGB-interleaved gain rows (aarch64 already uses `vld3q_f32` / `vst3q_f32`).
 
 use super::core::{
-    classify_fast_path, compose_row_scalar, compose_row_sse41, precompute_gain_row_linear,
-    ComposeFastPath, GainRowLinear, SIMD_PIXELS_PER_STEP,
+    classify_fast_path, compose_row_scalar, precompute_gain_row_linear, ComposeFastPath,
+    GainRowLinear, SIMD_PIXELS_PER_STEP,
 };
+#[cfg(target_arch = "x86_64")]
+use super::core::compose_row_sse41;
 #[cfg(target_arch = "aarch64")]
 use super::core::compose_row_neon;
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
@@ -92,6 +94,7 @@ fn compose_row(
         return;
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     compose_row_scalar(
         row_in,
         row_out,

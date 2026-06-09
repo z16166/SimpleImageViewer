@@ -43,7 +43,6 @@ use crate::hdr::decode::{
     linear_primary_to_linear_srgb,
 };
 use crate::hdr::types::{HdrColorProfile, HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
-use rayon::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -655,14 +654,16 @@ pub(crate) unsafe fn compose_row_sse41(
 #[target_feature(enable = "neon")]
 unsafe fn pow4_neon(base: float32x4_t, exponent: f32) -> float32x4_t {
     let mut lanes = [0.0_f32; 4];
-    vst1q_f32(lanes.as_mut_ptr(), base);
+    unsafe {
+        vst1q_f32(lanes.as_mut_ptr(), base);
+    }
     let result: [f32; 4] = [
         lanes[0].powf(exponent),
         lanes[1].powf(exponent),
         lanes[2].powf(exponent),
         lanes[3].powf(exponent),
     ];
-    vld1q_f32(result.as_ptr())
+    unsafe { vld1q_f32(result.as_ptr()) }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -678,7 +679,7 @@ unsafe fn srgb_to_linear4_neon(v: float32x4_t) -> float32x4_t {
         vaddq_f32(clamped, vdupq_n_f32(SRGB_OFFSET)),
         vdupq_n_f32(SRGB_SCALE),
     );
-    let high = pow4_neon(adjusted, SRGB_GAMMA);
+    let high = unsafe { pow4_neon(adjusted, SRGB_GAMMA) };
     vbslq_f32(low_mask, low, high)
 }
 
@@ -695,7 +696,7 @@ unsafe fn bt709_to_linear4_neon(v: float32x4_t) -> float32x4_t {
         vaddq_f32(clamped, vdupq_n_f32(BT709_OFFSET)),
         vdupq_n_f32(BT709_SCALE),
     );
-    let high = pow4_neon(adjusted, BT709_GAMMA);
+    let high = unsafe { pow4_neon(adjusted, BT709_GAMMA) };
     vbslq_f32(low_mask, low, high)
 }
 

@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod exif_mapping_tests {
-    use super::exif_display_to_physical_pixel;
+    use crate::macos_image_io::exif_display_to_physical_pixel;
 
     /// `exif_display_to_physical_pixel` must invert the forward map in `apply_orientation_buffer`.
     #[test]
