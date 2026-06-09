@@ -14,9 +14,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#[cfg(target_os = "windows")]
 use crate::app::ImageViewerApp;
+#[cfg(target_os = "windows")]
 use crate::ui::utils::{settings_card_styled, styled_button, SettingsCardStyle};
+#[cfg(target_os = "windows")]
 use eframe::egui::{self, Margin, RichText};
+#[cfg(target_os = "windows")]
 use rust_i18n::t;
 
 #[cfg(target_os = "windows")]

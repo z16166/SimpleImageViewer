@@ -40,6 +40,7 @@ pub(crate) enum SettingsTab {
     Appearance,
     Hotkeys,
     ContextMenu,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     System,
     About,
 }

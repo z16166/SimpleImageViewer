@@ -36,8 +36,3 @@ pub(crate) unsafe fn wasapi_monitor_uninit() {}
 pub(crate) unsafe fn wasapi_is_device_available() -> bool {
     true
 }
-
-#[cfg(not(windows))]
-pub(crate) unsafe fn wasapi_poll_device_lost() -> bool {
-    false
-}

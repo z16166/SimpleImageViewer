@@ -28,7 +28,9 @@ use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_req
 use crate::hdr::types::HdrToneMapSettings;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
-use crate::loader::raw_osd::{RawOsdContext, RawOsdInfo};
+use crate::loader::raw_osd::RawOsdContext;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use crate::loader::raw_osd::RawOsdInfo;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,

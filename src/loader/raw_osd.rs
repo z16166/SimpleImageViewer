@@ -141,6 +141,7 @@ impl RawOsdInfo {
         Some(format!("{embedded}·{sensor}·{render}"))
     }
 
+    #[cfg(any(test, target_os = "windows", target_os = "macos"))]
     pub(crate) fn empty() -> Self {
         Self {
             sensor_size: (0, 0),
