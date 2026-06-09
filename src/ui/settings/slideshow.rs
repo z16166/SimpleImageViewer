@@ -276,7 +276,7 @@ pub(super) fn draw_hdr_settings_if_available(app: &mut ImageViewerApp, ui: &mut 
             draw_hdr_section(app, ui);
         } else {
             ui.label(
-                RichText::new(t!("hdr.wayland_only_hint")).color(app.cached_palette.text_muted),
+                egui::RichText::new(t!("hdr.wayland_only_hint")).color(app.cached_palette.text_muted),
             );
         }
     }

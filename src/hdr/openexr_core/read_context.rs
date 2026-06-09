@@ -25,6 +25,8 @@ use super::channels::{
     scanline_preview_decode_parallelism, scanline_preview_dimensions,
     scanline_preview_source_row_budget, validate_tile_bounds,
 };
+#[cfg(feature = "tile-debug")]
+use super::channels::{compression_name, storage_name};
 use super::chromaticities::{
     hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path, openexr_luminance_weights_from_chromaticities_xy,
 };

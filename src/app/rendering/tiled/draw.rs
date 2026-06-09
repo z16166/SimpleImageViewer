@@ -24,6 +24,8 @@ use super::helpers::{
     tile_request_priority, tile_visits_for_backend, tiled_lookahead_padding,
     tiled_plane_threshold_for_backend,
 };
+#[cfg(feature = "tile-debug")]
+use super::helpers::draw_tile_debug_border;
 use super::{BURST_UPLOAD_MAX_512, BURST_UPLOAD_MULT, FALLBACK_PREVIEW_SCALE};
 use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{

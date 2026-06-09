@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#[cfg(target_os = "windows")]
 use super::windows::{dxgi_output_hdr_active, finite_positive_luminance, monitor_device_name};
 #[derive(Debug, Clone)]
 pub struct SpawnMonitorHdrProbe {
@@ -167,7 +168,7 @@ pub fn spawn_monitor_hdr_status(
     saved_window_top_left: Option<[i32; 2]>,
 ) -> Result<SpawnMonitorHdrProbe, String> {
     if crate::hdr::platform::linux_native_hdr_platform_eligible() {
-        wayland::spawn_monitor_hdr_status(saved_window_top_left)
+        super::wayland::spawn_monitor_hdr_status(saved_window_top_left)
     } else {
         Err("HDR probing requires a Wayland session".to_string())
     }

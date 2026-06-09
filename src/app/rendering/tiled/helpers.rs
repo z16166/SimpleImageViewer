@@ -124,26 +124,26 @@ pub(crate) fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot
         let p4 = pivot + r * (rect.left_bottom() - pivot);
         ui.painter().line_segment(
             [p1, p2],
-            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 255, 0)),
         );
         ui.painter().line_segment(
             [p2, p3],
-            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 255, 0)),
         );
         ui.painter().line_segment(
             [p3, p4],
-            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 255, 0)),
         );
         ui.painter().line_segment(
             [p4, p1],
-            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 255, 0)),
         );
     } else {
         ui.painter().rect(
             rect,
             0.0,
-            Color32::TRANSPARENT,
-            egui::Stroke::new(1.0, Color32::from_rgb(0, 255, 0)),
+            egui::Color32::TRANSPARENT,
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 255, 0)),
             egui::StrokeKind::Inside,
         );
     }

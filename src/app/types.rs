@@ -311,7 +311,7 @@ pub struct ImageViewerApp {
     #[cfg(target_os = "linux")]
     pub(crate) requested_vulkan_hdr_metadata: eframe::egui_wgpu::RequestedVulkanHdrMetadata,
     #[cfg(target_os = "linux")]
-    last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
+    pub(crate) last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
     /// Dedupes swap-chain format mismatch diagnostics while a hot-swap is pending.
     pub(crate) last_logged_swap_chain_format_request: Option<wgpu::TextureFormat>,
     pub(crate) rgb10a2_pq_encode_requested: bool,
