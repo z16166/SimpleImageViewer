@@ -25,7 +25,7 @@
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::preview_caps::{
-    finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer,
+    finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer, hq_preview_max_side,
 };
 use crate::loader::raw_osd::RawOsdContext;
 use crate::loader::tiled_sources::RawImageSource;
