@@ -261,3 +261,63 @@ pub(crate) fn attach_iso_deferred_tile_metadata(
     });
     image_metadata
 }
+
+/// CPU compose when GPU ISO gain-map compose in [`crate::hdr::renderer::jpeg_compose_gpu`] is unavailable.
+pub(crate) fn compose_iso_deferred_cpu_pixels(
+    width: u32,
+    height: u32,
+    deferred: &IsoGainMapGpuSource,
+    target_hdr_capacity: f32,
+) -> Vec<f32> {
+    use crate::hdr::gain_map::{append_hdr_pixel_from_sdr_and_gain, sample_gain_map_rgb};
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let sdr_index = (y as usize * width as usize + x as usize) * 4;
+            let gain_value = sample_gain_map_rgb(
+                deferred.gain_rgba.as_slice(),
+                deferred.gain_width,
+                deferred.gain_height,
+                x,
+                y,
+                width,
+                height,
+            );
+            append_hdr_pixel_from_sdr_and_gain(
+                &mut rgba_f32,
+                &deferred.sdr_rgba[sdr_index..sdr_index + 4],
+                gain_value,
+                deferred.metadata,
+                target_hdr_capacity,
+            );
+        }
+    }
+    rgba_f32
+}
+
+/// CPU compose for a deferred ISO gain-map tile region.
+pub(crate) fn compose_iso_deferred_tile_cpu_pixels(
+    deferred: &IsoGainMapGpuSource,
+    tile_ctx: &crate::hdr::types::IsoDeferredTileContext,
+    tile_width: u32,
+    tile_height: u32,
+    target_hdr_capacity: f32,
+) -> Vec<f32> {
+    crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
+        tile_width,
+        tile_height,
+        tile_ctx.origin_x,
+        tile_ctx.origin_y,
+        tile_ctx.physical_width,
+        tile_ctx.physical_height,
+        tile_ctx.orientation,
+        deferred.sdr_rgba.as_slice(),
+        deferred.gain_rgba.as_slice(),
+        deferred.gain_width,
+        deferred.gain_height,
+        deferred.metadata,
+        target_hdr_capacity,
+        crate::hdr::ultra_hdr::display_to_physical_pixel,
+    )
+}

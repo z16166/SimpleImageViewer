@@ -211,34 +211,58 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let mut compose_command_buffers = Vec::new();
         if needs_jpeg_compose {
             if let Some(deferred) = iso_deferred {
-                let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
-                let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
-                let display_storage = binding
-                    .uploaded_display_storage_view
-                    .as_ref()
-                    .expect("jpeg display storage view");
-                let uniform_buf = binding
-                    .jpeg_compose_uniform_buffer
-                    .as_ref()
-                    .expect("jpeg compose uniform buffer");
-                compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
-                    device,
-                    queue,
-                    &resources.jpeg_compose_bind_group_layout,
-                    &resources.jpeg_compose_pipeline,
-                    &self.image,
-                    deferred,
-                    &self.tone_map,
-                    sdr_view,
-                    gain_view,
-                    display_storage,
-                    uniform_buf,
-                ));
-                binding.baked_jpeg_image_key = Some(image_key);
-                binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                // First compose: no bind_group yet — skip paint until GPU work completes.
-                if binding.bind_group.is_none() {
-                    return compose_command_buffers;
+                if let (Some(compose_layout), Some(compose_pipeline)) = (
+                    resources.jpeg_compose_bind_group_layout.as_ref(),
+                    resources.jpeg_compose_pipeline.as_ref(),
+                ) {
+                    let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
+                    let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
+                    let display_storage = binding
+                        .uploaded_display_storage_view
+                        .as_ref()
+                        .expect("jpeg display storage view");
+                    let uniform_buf = binding
+                        .jpeg_compose_uniform_buffer
+                        .as_ref()
+                        .expect("jpeg compose uniform buffer");
+                    compose_command_buffers.push(jpeg_compose_gpu::encode_compose_compute_pass(
+                        device,
+                        queue,
+                        compose_layout,
+                        compose_pipeline,
+                        &self.image,
+                        deferred,
+                        &self.tone_map,
+                        sdr_view,
+                        gain_view,
+                        display_storage,
+                        uniform_buf,
+                    ));
+                    binding.baked_jpeg_image_key = Some(image_key);
+                    binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                    if binding.bind_group.is_none() {
+                        return compose_command_buffers;
+                    }
+                } else {
+                    let composed = crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+                        self.image.width,
+                        self.image.height,
+                        deferred,
+                        self.tone_map.target_hdr_capacity(),
+                    );
+                    if let Err(err) = write_rgba32f_to_texture(
+                        queue,
+                        &binding.uploaded_texture,
+                        self.image.width,
+                        self.image.height,
+                        &composed,
+                    ) {
+                        log::warn!("[HDR] ISO CPU compose upload failed: {err}");
+                        binding.bind_group = None;
+                    } else {
+                        binding.baked_jpeg_image_key = Some(image_key);
+                        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                    }
                 }
             }
         }
@@ -246,52 +270,86 @@ impl CallbackTrait for HdrImagePlaneCallback {
         #[cfg(feature = "heif-native")]
         if needs_apple_compose {
             if let Some(deferred) = apple_deferred {
-                let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
-                let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
-                let max_binding = device.limits().max_storage_buffer_binding_size;
-                if let Err(err) = apple_compose_gpu::ensure_encoded_primary_buffer(
-                    device,
-                    binding,
-                    self.image.width,
-                    max_binding,
+                if let (Some(compose_layout), Some(compose_pipeline)) = (
+                    resources.compose_bind_group_layout.as_ref(),
+                    resources.compose_pipeline.as_ref(),
                 ) {
-                    log::warn!("[HDR] Apple GPU compose primary buffer allocation failed: {err}");
-                    binding.bind_group = None;
-                } else {
-                    let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
-                    let display_storage = binding
-                        .uploaded_display_storage_view
-                        .as_ref()
-                        .expect("display storage view");
-                    let encoded_primary_buffer = binding
-                        .encoded_primary_buffer
-                        .as_ref()
-                        .expect("encoded primary buffer");
-                    let compose_tone_map_buf = binding
-                        .compose_tone_map_buffer
-                        .as_ref()
-                        .expect("apple compose tone map buffer");
-                    compose_command_buffers.push(apple_compose_gpu::encode_compose_compute_pass(
+                    let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
+                    let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
+                    let max_binding = device.limits().max_storage_buffer_binding_size;
+                    if let Err(err) = apple_compose_gpu::ensure_encoded_primary_buffer(
                         device,
-                        queue,
-                        &resources.compose_bind_group_layout,
-                        &resources.compose_pipeline,
-                        &self.image,
-                        deferred,
-                        &self.tone_map,
-                        encoded_primary_buffer,
-                        gain_view,
-                        display_storage,
-                        upload_primary,
-                        compose_tone_map_buf,
-                    ));
-                    if upload_primary {
-                        binding.encoded_primary_source_ptr = Some(primary_ptr);
+                        binding,
+                        self.image.width,
+                        max_binding,
+                    ) {
+                        log::warn!(
+                            "[HDR] Apple GPU compose primary buffer allocation failed: {err}"
+                        );
+                        binding.bind_group = None;
+                    } else {
+                        let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                        let display_storage = binding
+                            .uploaded_display_storage_view
+                            .as_ref()
+                            .expect("display storage view");
+                        let encoded_primary_buffer = binding
+                            .encoded_primary_buffer
+                            .as_ref()
+                            .expect("encoded primary buffer");
+                        let compose_tone_map_buf = binding
+                            .compose_tone_map_buffer
+                            .as_ref()
+                            .expect("apple compose tone map buffer");
+                        compose_command_buffers.push(
+                            apple_compose_gpu::encode_compose_compute_pass(
+                                device,
+                                queue,
+                                compose_layout,
+                                compose_pipeline,
+                                &self.image,
+                                deferred,
+                                &self.tone_map,
+                                encoded_primary_buffer,
+                                gain_view,
+                                display_storage,
+                                upload_primary,
+                                compose_tone_map_buf,
+                            ),
+                        );
+                        if upload_primary {
+                            binding.encoded_primary_source_ptr = Some(primary_ptr);
+                        }
+                        binding.baked_apple_image_key = Some(image_key);
+                        binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                        if binding.bind_group.is_none() {
+                            return compose_command_buffers;
+                        }
                     }
-                    binding.baked_apple_image_key = Some(image_key);
-                    binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                    if binding.bind_group.is_none() {
-                        return compose_command_buffers;
+                } else {
+                    match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
+                        &self.image,
+                        self.tone_map.target_hdr_capacity(),
+                    ) {
+                        Ok(composed) => {
+                            if let Err(err) = write_rgba32f_to_texture(
+                                queue,
+                                &binding.uploaded_texture,
+                                self.image.width,
+                                self.image.height,
+                                &composed,
+                            ) {
+                                log::warn!("[HDR] Apple CPU compose upload failed: {err}");
+                                binding.bind_group = None;
+                            } else {
+                                binding.baked_apple_image_key = Some(image_key);
+                                binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("[HDR] Apple CPU compose failed: {err}");
+                            binding.bind_group = None;
+                        }
                     }
                 }
             }

@@ -21,6 +21,7 @@ mod core;
 mod tests;
 
 pub(crate) use compose::compose_apple_gain_map_pixels;
+#[cfg(test)]
 pub(crate) use core::GainRowLinear;
 
 #[cfg(test)]

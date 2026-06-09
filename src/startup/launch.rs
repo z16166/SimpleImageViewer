@@ -245,6 +245,18 @@ pub fn run() -> eframe::Result {
             "GPU max_storage_buffer_binding_size: {}",
             adapter_limits.max_storage_buffer_binding_size
         );
+        crate::startup_info!(
+            "GPU max_storage_buffers_per_shader_stage: {}",
+            adapter_limits.max_storage_buffers_per_shader_stage
+        );
+        crate::startup_info!(
+            "GPU max_storage_textures_per_shader_stage: {}",
+            adapter_limits.max_storage_textures_per_shader_stage
+        );
+        crate::startup_info!(
+            "GPU max_compute_invocations_per_workgroup: {}",
+            adapter_limits.max_compute_invocations_per_workgroup
+        );
 
         eframe::wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
@@ -252,6 +264,19 @@ pub fn run() -> eframe::Result {
                 max_texture_dimension_2d: hw_max_texture,
                 max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
                 max_buffer_size: adapter_limits.max_buffer_size,
+                max_storage_buffers_per_shader_stage: adapter_limits
+                    .max_storage_buffers_per_shader_stage,
+                max_storage_textures_per_shader_stage: adapter_limits
+                    .max_storage_textures_per_shader_stage,
+                max_compute_workgroup_storage_size: adapter_limits
+                    .max_compute_workgroup_storage_size,
+                max_compute_invocations_per_workgroup: adapter_limits
+                    .max_compute_invocations_per_workgroup,
+                max_compute_workgroup_size_x: adapter_limits.max_compute_workgroup_size_x,
+                max_compute_workgroup_size_y: adapter_limits.max_compute_workgroup_size_y,
+                max_compute_workgroup_size_z: adapter_limits.max_compute_workgroup_size_z,
+                max_compute_workgroups_per_dimension: adapter_limits
+                    .max_compute_workgroups_per_dimension,
                 ..base_limits
             },
             ..Default::default()

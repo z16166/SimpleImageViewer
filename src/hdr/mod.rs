@@ -25,7 +25,7 @@ pub(crate) mod gain_map;
 pub mod heif;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map;
-#[cfg(all(feature = "heif-native", test))]
+#[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map_compose_simd;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map_gpu;

@@ -113,12 +113,10 @@ impl CallbackTrait for HdrTilePlaneCallback {
                 != Some(target_capacity_bits);
 
             if needs_compose {
-                let Some(sdr_view) = resources.jpeg_tiled_sdr_view.as_ref() else {
-                    return Vec::new();
-                };
-                let Some(gain_view) = resources.jpeg_tiled_gain_view.as_ref() else {
-                    return Vec::new();
-                };
+                let gpu_compose_ready = resources.jpeg_compose_bind_group_layout.is_some()
+                    && resources.jpeg_compose_pipeline.is_some()
+                    && resources.jpeg_compose_tile_pipeline.is_some()
+                    && resources.jpeg_compose_uniform_buffer.is_some();
 
                 let reused_compose =
                     resources
@@ -132,32 +130,12 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             )
                         });
 
-                if let Some((_hdr_view, display_storage)) = reused_compose {
-                    let compose_command = jpeg_compose_gpu::encode_tile_compose_compute_pass(
-                        device,
-                        queue,
-                        resources,
-                        deferred,
-                        &ctx,
-                        self.tile.width,
-                        self.tile.height,
-                        &self.tone_map,
-                        sdr_view,
-                        gain_view,
-                        &display_storage,
-                    );
-                    if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
-                        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                        if let Some(buffer) = binding.tone_map_buffer.as_ref() {
-                            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
-                        }
-                    }
-                    return vec![compose_command];
-                }
-
-                match create_empty_rgba32f_texture(device, self.tile.width, self.tile.height) {
-                    Ok(uploaded) => {
-                        let Some(display_storage) = uploaded.storage_view.as_ref() else {
+                if let Some((hdr_view, display_storage)) = reused_compose {
+                    if gpu_compose_ready {
+                        let Some(sdr_view) = resources.jpeg_tiled_sdr_view.as_ref() else {
+                            return Vec::new();
+                        };
+                        let Some(gain_view) = resources.jpeg_tiled_gain_view.as_ref() else {
                             return Vec::new();
                         };
                         let compose_command = jpeg_compose_gpu::encode_tile_compose_compute_pass(
@@ -171,8 +149,142 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             &self.tone_map,
                             sdr_view,
                             gain_view,
-                            display_storage,
+                            &display_storage,
                         );
+                        if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                            binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                            if let Some(buffer) = binding.tone_map_buffer.as_ref() {
+                                queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+                            }
+                        }
+                        return vec![compose_command];
+                    }
+
+                    if let Some(binding) = resources.tile_bindings.binding_mut(tile_key) {
+                        let Some(texture) = binding._texture.as_ref() else {
+                            resources.tile_bindings.remove(tile_key);
+                            return Vec::new();
+                        };
+                        let composed =
+                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
+                                deferred,
+                                &ctx,
+                                self.tile.width,
+                                self.tile.height,
+                                self.tone_map.target_hdr_capacity(),
+                            );
+                        if let Err(err) = write_rgba32f_to_texture(
+                            queue,
+                            texture,
+                            self.tile.width,
+                            self.tile.height,
+                            &composed,
+                        ) {
+                            log::warn!("[HDR] ISO tile CPU compose upload failed: {err}");
+                            resources.tile_bindings.remove(tile_key);
+                            return Vec::new();
+                        }
+                        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                        if let Some(buffer) = binding.tone_map_buffer.as_ref() {
+                            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&uniform));
+                        }
+                    }
+                    let _ = hdr_view;
+                    return Vec::new();
+                }
+
+                let Some(sdr_view) = resources.jpeg_tiled_sdr_view.as_ref() else {
+                    return Vec::new();
+                };
+                let Some(gain_view) = resources.jpeg_tiled_gain_view.as_ref() else {
+                    return Vec::new();
+                };
+
+                match create_empty_rgba32f_texture(device, self.tile.width, self.tile.height) {
+                    Ok(uploaded) => {
+                        if gpu_compose_ready {
+                            let Some(display_storage) = uploaded.storage_view.as_ref() else {
+                                return Vec::new();
+                            };
+                            let compose_command =
+                                jpeg_compose_gpu::encode_tile_compose_compute_pass(
+                                    device,
+                                    queue,
+                                    resources,
+                                    deferred,
+                                    &ctx,
+                                    self.tile.width,
+                                    self.tile.height,
+                                    &self.tone_map,
+                                    sdr_view,
+                                    gain_view,
+                                    display_storage,
+                                );
+                            if !resources.image_bindings.is_empty() {
+                                resources.image_bindings.clear();
+                            }
+                            let tone_map_buffer =
+                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some(
+                                        "simple-image-viewer-hdr-tile-plane-tone-map-buffer",
+                                    ),
+                                    contents: bytemuck::bytes_of(&uniform),
+                                    usage: wgpu::BufferUsages::UNIFORM
+                                        | wgpu::BufferUsages::COPY_DST,
+                                });
+                            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("simple-image-viewer-hdr-tile-plane-bind-group"),
+                                layout: &resources.bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &uploaded.view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &resources.dummy_gain_view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: tone_map_buffer.as_entire_binding(),
+                                    },
+                                ],
+                            });
+                            resources.tile_bindings.insert(
+                                tile_key,
+                                uploaded.texture,
+                                uploaded.view,
+                                uploaded.storage_view,
+                                tone_map_buffer,
+                                bind_group,
+                                Some(target_capacity_bits),
+                            );
+                            return vec![compose_command];
+                        }
+
+                        let composed =
+                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
+                                deferred,
+                                &ctx,
+                                self.tile.width,
+                                self.tile.height,
+                                self.tone_map.target_hdr_capacity(),
+                            );
+                        if let Err(err) = write_rgba32f_to_texture(
+                            queue,
+                            &uploaded.texture,
+                            self.tile.width,
+                            self.tile.height,
+                            &composed,
+                        ) {
+                            log::warn!("[HDR] ISO tile CPU compose upload failed: {err}");
+                            resources.tile_bindings.remove(tile_key);
+                            return Vec::new();
+                        }
                         if !resources.image_bindings.is_empty() {
                             resources.image_bindings.clear();
                         }
@@ -211,7 +323,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             bind_group,
                             Some(target_capacity_bits),
                         );
-                        return vec![compose_command];
+                        return Vec::new();
                     }
                     Err(err) => {
                         log::warn!("[HDR] Skipping JPEG deferred tile compose: {err}");

@@ -24,7 +24,6 @@
 
 use crate::hdr::gain_map::validate_gain_map_rgba_len;
 use crate::hdr::heif_apple_gain_map::apple_gain_map_display_weight;
-#[cfg(test)]
 use crate::hdr::heif_apple_gain_map_compose_simd::compose_apple_gain_map_pixels;
 use crate::hdr::types::{
     AppleHeicGainMapGpuSource, HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata,
@@ -62,13 +61,13 @@ pub(crate) fn apple_heic_compose_effective_color_space(
     }
 }
 
-/// CPU reference compose for unit tests (production uses GPU strip compose in `apple_compose_gpu`).
-#[cfg(test)]
-pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
+/// CPU compose when GPU strip compose in [`crate::hdr::renderer::apple_compose_gpu`] is unavailable.
+pub(crate) fn compose_apple_heic_deferred_cpu_pixels(
     image: &HdrImageBuffer,
     hdr_target_capacity: f32,
-) -> Option<Vec<f32>> {
-    let deferred = apple_heic_deferred_from_metadata(&image.metadata)?;
+) -> Result<Vec<f32>, String> {
+    let deferred = apple_heic_deferred_from_metadata(&image.metadata)
+        .ok_or_else(|| "Apple HEIC deferred metadata missing".to_string())?;
     let weight = apple_gain_map_display_weight(hdr_target_capacity, deferred.stops);
     let pixel_count = image.width as usize * image.height as usize * 4;
     let mut composed = vec![0.0_f32; pixel_count];
@@ -87,7 +86,15 @@ pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
         weight,
         false,
     );
-    Some(composed)
+    Ok(composed)
+}
+
+#[cfg(test)]
+pub(crate) fn compose_apple_heic_deferred_to_scene_linear(
+    image: &HdrImageBuffer,
+    hdr_target_capacity: f32,
+) -> Option<Vec<f32>> {
+    compose_apple_heic_deferred_cpu_pixels(image, hdr_target_capacity).ok()
 }
 
 /// Build deferred GPU planes from a pre-compose primary buffer and decoded gain-map RGBA8.
