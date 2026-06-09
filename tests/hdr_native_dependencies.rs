@@ -60,9 +60,9 @@ fn native_hdr_codec_wrapper_crates_have_build_scripts() {
 #[test]
 fn native_hdr_backends_are_wired_past_initial_stubs() {
     let hdr_dir = repo_root().join("src").join("hdr");
-    let avif = fs::read_to_string(hdr_dir.join("avif.rs")).expect("read avif backend");
-    let heif = fs::read_to_string(hdr_dir.join("heif.rs")).expect("read heif backend");
-    let jxl = fs::read_to_string(hdr_dir.join("jpegxl.rs")).expect("read jpegxl backend");
+    let avif = read_hdr_module("avif");
+    let heif = read_hdr_module("heif");
+    let jxl = read_hdr_module("jpegxl");
     let loader = read_loader_source();
     let raw = fs::read_to_string(repo_root().join("src").join("raw_processor.rs"))
         .expect("read raw processor");
@@ -107,9 +107,9 @@ fn native_hdr_backends_are_wired_past_initial_stubs() {
 fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     let hdr_dir = repo_root().join("src").join("hdr");
     let gain_map = fs::read_to_string(hdr_dir.join("gain_map.rs")).expect("read gain_map module");
-    let avif = fs::read_to_string(hdr_dir.join("avif.rs")).expect("read avif backend");
-    let heif = fs::read_to_string(hdr_dir.join("heif.rs")).expect("read heif backend");
-    let jxl = fs::read_to_string(hdr_dir.join("jpegxl.rs")).expect("read jpegxl backend");
+    let avif = read_hdr_module("avif");
+    let heif = read_hdr_module("heif");
+    let jxl = read_hdr_module("jpegxl");
     let loader = read_loader_source();
 
     assert!(gain_map.contains("parse_iso_gain_map_metadata"));
@@ -127,6 +127,22 @@ fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     assert!(heif.contains("tmap"));
     assert!(loader.contains("load_avif_with_target_capacity"));
     assert!(loader.contains("load_jxl_with_target_capacity"));
+}
+
+
+fn read_hdr_module(name: &str) -> String {
+    let dir = repo_root().join("src").join("hdr").join(name);
+    if dir.is_dir() {
+        let mut out = String::new();
+        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
+            if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs") {
+                out.push_str(&fs::read_to_string(entry.path()).unwrap());
+            }
+        }
+        return out;
+    }
+    fs::read_to_string(repo_root().join("src").join("hdr").join(format!("{name}.rs")))
+        .unwrap_or_default()
 }
 
 fn read_loader_source() -> String {

@@ -38,7 +38,10 @@ pub(crate) mod jxl_gain_map_deferred;
 pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod mpf;
-pub(crate) mod openexr_core_backend;
+pub(crate) mod openexr_core;
+pub(crate) mod openexr_core_backend {
+    pub(crate) use super::openexr_core::*;
+}
 pub mod platform;
 pub mod radiance_tiled;
 pub mod renderer;
