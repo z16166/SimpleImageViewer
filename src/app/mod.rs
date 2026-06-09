@@ -49,6 +49,8 @@ pub(crate) use hotkeys_ui::localized_hotkey_warning;
 pub(crate) use metadata_extract::{extract_exif, extract_xmp};
 
 pub(crate) use crate::settings::{ScaleMode, TransitionStyle};
+#[allow(unused_imports)]
+pub(crate) use crate::settings::Settings;
 pub(crate) use crate::theme::AppTheme;
 
 #[cfg(test)]

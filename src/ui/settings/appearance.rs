@@ -33,7 +33,7 @@ enum AppearanceMsg {
     ThemeChanged(AppTheme),
 }
 
-pub fn draw(app: &mut ImageViewerApp, ui: &mut egui::Ui, egui_ctx: &Context) {
+pub(super) fn draw(app: &mut ImageViewerApp, ui: &mut egui::Ui, egui_ctx: &Context) {
     for msg in view(app, ui) {
         update(app, egui_ctx, msg);
     }

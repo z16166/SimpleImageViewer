@@ -14,16 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod discovery;
-mod ffi;
-mod load;
-mod orientation;
-mod stride_decoder;
-mod strip_cache;
-mod tiled;
+mod implementation;
 
-pub use discovery::discover_imageio_codecs;
-pub use load::load_via_image_io;
+pub use implementation::{discover_imageio_codecs, load_via_image_io};
+
+#[cfg(test)]
+pub(crate) use implementation::exif_display_to_physical_pixel;
 
 #[cfg(test)]
 mod tests;

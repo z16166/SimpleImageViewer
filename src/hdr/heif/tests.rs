@@ -14,10 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#[cfg(feature = "heif-native")]
 use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
 #[cfg(feature = "heif-native")]
 use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
-use crate::hdr::heif::{heif_nclx_to_metadata, is_heif_brand};
+#[cfg(feature = "heif-native")]
+use crate::hdr::heif::heif_nclx_to_metadata;
+use crate::hdr::heif::is_heif_brand;
+#[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
 
 #[cfg(feature = "heif-native")]
@@ -26,6 +30,7 @@ use super::{
     EXIF_ORIENTATION_ROTATE_180,
 };
 
+#[cfg(feature = "heif-native")]
 #[test]
 fn heif_nclx_bt709_family_primaries_1_prefers_srgb_for_browser_still_parity() {
     let bt709 = heif_nclx_to_metadata(1, H273_TRANSFER_ITU_BT709, 1, true);
@@ -48,6 +53,7 @@ fn heif_brand_detection_accepts_heic_family_and_generic_heif() {
     assert!(!is_heif_brand(b"avif"));
 }
 
+#[cfg(feature = "heif-native")]
 #[test]
 fn heif_nclx_pq_maps_to_display_referred_metadata() {
     let metadata = heif_nclx_to_metadata(9, 16, 9, false);

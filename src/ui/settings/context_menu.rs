@@ -183,7 +183,7 @@ pub(super) fn draw_context_menu_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui,
                                         index_resp.drag_stopped() || label_resp.drag_stopped();
                                     let row_rect = index_rect.union(label_rect);
                                     let scroll_rect = row_rect.union(enabled_rect);
-                                    let full_row_rect = scroll_rect.expand2(egui::vec2(0.0, 0.0));
+                                    let full_row_rect = scroll_rect;
                                     ui.painter().rect_filled(full_row_rect, 0.0, cell_fill);
                                     if app.context_menu_drag_row == Some(row_idx) {
                                         ui.painter().rect_stroke(

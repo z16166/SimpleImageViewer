@@ -1,3 +1,19 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use super::should_draw_tiled_preview_transition;
 use crate::app::rendering::plan::RenderPlan;
 use crate::app::rendering::plane::PlaneBackendKind;
@@ -64,7 +80,7 @@ pub(crate) fn prev_transition_params_for_tiled_draw(
     }
 }
 
-fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
+pub(crate) fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     let rot = egui::emath::Rot2::from_angle(angle);
     let corners = [
         rect.left_top(),
@@ -86,7 +102,7 @@ fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> Rect {
     Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
 }
 
-fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps: i32) -> Rect {
+pub(crate) fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps: i32) -> Rect {
     let rotation_steps = rotation_steps.rem_euclid(4);
     if rotation_steps == 0 {
         tile_screen_rect
@@ -133,7 +149,7 @@ pub(crate) fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot
     }
 }
 
-fn should_schedule_tile_request(
+pub(crate) fn should_schedule_tile_request(
     is_cached: bool,
     pending_count: usize,
     pending_cap: usize,
@@ -148,7 +164,7 @@ fn should_schedule_tile_request(
         && (is_primary_visible || pending_count < pending_cap)
 }
 
-fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind {
+pub(crate) fn tile_pixel_kind_for_backend(plane_backend: PlaneBackendKind) -> TilePixelKind {
     match plane_backend {
         PlaneBackendKind::Sdr => TilePixelKind::Sdr,
         PlaneBackendKind::Hdr => TilePixelKind::Hdr,
@@ -173,7 +189,7 @@ pub(crate) fn tile_decode_source_for_backend(
     }
 }
 
-fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
+pub(crate) fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 2 } else { 1 };
     if visible_count > 1000 {
         24 / scale
@@ -186,11 +202,11 @@ fn tile_request_pending_cap(visible_count: usize, tile_size: u32) -> usize {
     }
 }
 
-fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
+pub(crate) fn tile_request_hard_pending_cap(tile_size: u32) -> usize {
     if tile_size >= 1024 { 96 } else { 192 }
 }
 
-fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
+pub(crate) fn tile_request_frame_schedule_cap(worker_threads: usize, tile_size: u32) -> usize {
     let scale = if tile_size >= 1024 { 1 } else { 2 };
     worker_threads.max(1) * scale
 }
@@ -212,7 +228,7 @@ impl TileRequestBudget {
         }
     }
 
-    fn should_schedule(
+    pub(crate) fn should_schedule(
         &self,
         is_cached: bool,
         pending_count: usize,
@@ -229,7 +245,7 @@ impl TileRequestBudget {
         )
     }
 
-    fn record_scheduled(&mut self) {
+    pub(crate) fn record_scheduled(&mut self) {
         self.scheduled_this_frame += 1;
     }
 
@@ -250,17 +266,17 @@ impl TileRequestBudget {
     }
 
     #[cfg(test)]
-    fn pending_cap(&self) -> usize {
+    pub(crate) fn pending_cap(&self) -> usize {
         self.pending_cap
     }
 
     #[cfg(test)]
-    fn hard_pending_cap(&self) -> usize {
+    pub(crate) fn hard_pending_cap(&self) -> usize {
         self.hard_pending_cap
     }
 
     #[cfg(test)]
-    fn frame_schedule_cap(&self) -> usize {
+    pub(crate) fn frame_schedule_cap(&self) -> usize {
         self.frame_schedule_cap
     }
 }
@@ -277,7 +293,7 @@ pub(crate) fn hdr_tile_cache_key_for_coord(
     (tile_x, tile_y, tile_w, tile_h)
 }
 
-fn prioritize_tile_visits(
+pub(crate) fn prioritize_tile_visits(
     primary_visible: &[(TileCoord, Rect, Rect)],
     padded_visible: &[(TileCoord, Rect, Rect)],
 ) -> Vec<(TileCoord, Rect, Rect)> {
@@ -338,7 +354,7 @@ pub(crate) fn should_draw_tiled_preview_for_backend(
     tile_plane_kind_for_backend(plane_backend) == preview_kind
 }
 
-fn should_draw_tiled_tile_plane_for_backend(
+pub(crate) fn should_draw_tiled_tile_plane_for_backend(
     plane_backend: PlaneBackendKind,
     tile_plane_kind: TiledPlaneKind,
     has_cached_tile: bool,
@@ -369,7 +385,7 @@ pub(crate) fn has_pending_visible_tiles_for_backend(
         .any(|key| key.pixel_kind == TilePixelKind::Hdr && visible_coords.contains(&key.coord))
 }
 
-fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
+pub(crate) fn tiled_plane_threshold(preview_scale: f32, fit_scale: f32, tile_size: u32) -> f32 {
     if preview_scale >= fit_scale {
         (preview_scale * PREVIEW_QUALITY_THRESHOLD).max(fit_scale * FIT_SCALE_BUFFER)
     } else {
@@ -508,7 +524,7 @@ pub(crate) fn draw_hdr_plane_tile_visit(
 }
 
 #[cfg(test)]
-fn tile_kind_uses_shared_schedule_policy(
+pub(crate) fn tile_kind_uses_shared_schedule_policy(
     _pixel_kind: TilePixelKind,
     is_cached: bool,
     pending_count: usize,

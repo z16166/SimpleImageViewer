@@ -19,6 +19,12 @@ use crate::settings::TransitionStyle;
 mod draw;
 mod helpers;
 
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(crate) use helpers::*;
+
 pub(crate) const FALLBACK_PREVIEW_SCALE: f32 = 0.1;
 pub(super) const PREVIEW_QUALITY_THRESHOLD: f32 = 1.2;
 pub(super) const FIT_SCALE_BUFFER: f32 = 1.05;

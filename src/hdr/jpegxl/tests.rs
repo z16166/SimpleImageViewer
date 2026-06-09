@@ -16,14 +16,17 @@
 
 #[cfg(feature = "jpegxl")]
 use crate::hdr::jpegxl::read_jxl_gain_map_bundle;
+#[cfg(feature = "jpegxl")]
 use crate::hdr::jpegxl::{
     JXL_TRANSFER_FUNCTION_HLG, JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ,
     JXL_TRANSFER_FUNCTION_SRGB, is_jxl_header, jxl_color_encoding_to_metadata,
 };
 #[cfg(feature = "jpegxl")]
 use crate::hdr::types::HdrColorSpace;
+#[cfg(feature = "jpegxl")]
 use crate::hdr::types::{HdrImageMetadata, HdrReference, HdrTransferFunction};
 
+#[cfg(feature = "jpegxl")]
 #[test]
 fn jxl_header_detection_accepts_codestream_and_container() {
     assert!(is_jxl_header(&[0xff, 0x0a, 0x00, 0x00]));
@@ -33,6 +36,7 @@ fn jxl_header_detection_accepts_codestream_and_container() {
     assert!(!is_jxl_header(b"\x89PNG"));
 }
 
+#[cfg(feature = "jpegxl")]
 #[test]
 fn jxl_pq_metadata_is_display_referred_with_intensity_target() {
     let metadata = jxl_color_encoding_to_metadata(9, JXL_TRANSFER_FUNCTION_PQ, Some(4000.0));
@@ -42,6 +46,7 @@ fn jxl_pq_metadata_is_display_referred_with_intensity_target() {
     assert_eq!(metadata.luminance.mastering_max_nits, Some(4000.0));
 }
 
+#[cfg(feature = "jpegxl")]
 #[test]
 fn jxl_linear_transfer_maps_for_float_decoder_output() {
     let metadata = jxl_color_encoding_to_metadata(9, JXL_TRANSFER_FUNCTION_LINEAR, Some(1000.0));
