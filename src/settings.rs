@@ -59,6 +59,14 @@ impl PairedRawJpegHandling {
     pub fn needs_pair_index(self) -> bool {
         !matches!(self, Self::ShowBoth)
     }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::ShowBoth => rust_i18n::t!("paired_raw_jpeg.show_both").to_string(),
+            Self::SkipRaw => rust_i18n::t!("paired_raw_jpeg.skip_raw").to_string(),
+            Self::SkipJpeg => rust_i18n::t!("paired_raw_jpeg.skip_jpeg").to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

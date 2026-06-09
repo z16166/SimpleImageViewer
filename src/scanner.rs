@@ -245,7 +245,10 @@ fn raw_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsS
 }
 
 fn raw_stem_key(path: &Path) -> Option<StemKey> {
-    is_raw_path(path).then(|| owned_stem_key(path)).flatten()
+    if !is_raw_path(path) {
+        return None;
+    }
+    owned_stem_key(path)
 }
 
 fn has_matching_stem(path: &Path, stems: &HashMap<PathBuf, HashSet<OsString>>) -> bool {
