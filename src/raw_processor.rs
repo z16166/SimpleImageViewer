@@ -281,7 +281,9 @@ impl RawProcessor {
             ];
             let slice = std::slice::from_raw_parts(data_ptr, expected_min);
 
-            crate::simd_swizzle::interleave_rgb_packed_to_rgba_packed(slice, &mut rgba);
+            simple_image_viewer::simd_swizzle::interleave_rgb_packed_to_rgba_packed(
+                slice, &mut rgba,
+            );
 
             let rgba_img = image::RgbaImage::from_raw(width, height, rgba)
                 .ok_or_else(|| rust_i18n::t!("error.rgb_image_create_failed").to_string())?;

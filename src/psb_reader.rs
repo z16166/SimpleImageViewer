@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 // SIMD architecture-specific imports are handled within submodules
 
-use crate::simd_swizzle;
+use simple_image_viewer::simd_swizzle;
 
 /// Decoded PSB composite image (Full in-memory).
 #[allow(dead_code)]
