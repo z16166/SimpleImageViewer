@@ -116,6 +116,12 @@ if [[ -z "${_toolstd_a}" || "${_toolstd_a}" == libstdc++.a || ! -f "${_toolstd_a
   exit 1
 fi
 echo "Toolchain libstdc++.a: ${_toolstd_a}"
+_toolgomp_a="$("${CXX}" -print-file-name=libgomp.a)"
+if [[ -z "${_toolgomp_a}" || "${_toolgomp_a}" == libgomp.a || ! -f "${_toolgomp_a}" ]]; then
+  echo "::error::${CXX} -print-file-name=libgomp.a must resolve to an existing file (got: ${_toolgomp_a:-empty}). libgomp.a ships with gcc-toolset-15-gcc; libraw-sys adds its directory to the link path."
+  exit 1
+fi
+echo "Toolchain libgomp.a: ${_toolgomp_a}"
 if ! command -v ld.lld >/dev/null 2>&1; then
   echo "::error::ld.lld not on PATH after installing lld; LLD wrapper uses g++ -fuse-ld=lld (.cargo/g++-lld-wrap.sh)."
   exit 1

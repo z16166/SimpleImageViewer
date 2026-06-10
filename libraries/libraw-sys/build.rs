@@ -1,10 +1,7 @@
 /// Final-link OpenMP runtime used by LibRaw (`raw_r`) when built with `openmp` feature.
 fn emit_openmp_link_args(target_os: &str) {
     match target_os {
-        "linux" => {
-            // Match release policy: no DT_NEEDED libgomp.so (static libgcc/libstdc++ already).
-            println!("cargo:rustc-link-lib=static=gomp");
-        }
+        "linux" => link_linux_libgomp_static(),
         "windows" => {
             // MSVC OpenMP import lib; runtime is vcomp140.dll (or arch-matched vcomp*.dll).
             println!("cargo:rustc-link-lib=dylib=vcomp");
@@ -21,6 +18,55 @@ fn emit_openmp_link_args(target_os: &str) {
         }
         _ => {}
     }
+}
+
+/// `rustc-link-lib=static=gomp` needs `libgomp.a` on a `-L` path (toolchain dir, not vcpkg).
+fn link_linux_libgomp_static() {
+    use std::path::Path;
+
+    println!("cargo:rerun-if-env-changed=CXX");
+
+    let cxx = std::env::var("CXX").unwrap_or_else(|_| "g++".to_string());
+    let output = std::process::Command::new(&cxx)
+        .arg("-print-file-name=libgomp.a")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!("libraw-sys (linux): failed to run `{cxx} -print-file-name=libgomp.a`: {e}")
+        });
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "libraw-sys (linux): `{cxx} -print-file-name=libgomp.a` failed with {}: {stderr}",
+            output.status
+        );
+    }
+
+    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path_str.is_empty() || path_str == "libgomp.a" {
+        panic!(
+            "libraw-sys (linux): `{cxx}` did not resolve libgomp.a (got {path_str:?}). \
+             Enable gcc-toolset OpenMP (libgomp.a ships with the gcc C++ driver) or set CXX."
+        );
+    }
+
+    let libgomp = Path::new(&path_str);
+    if !libgomp.is_file() {
+        panic!(
+            "libraw-sys (linux): libgomp.a not found at {} (from `{cxx} -print-file-name=libgomp.a`)",
+            libgomp.display()
+        );
+    }
+
+    let Some(dir) = libgomp.parent() else {
+        panic!(
+            "libraw-sys (linux): no directory for libgomp path {}",
+            libgomp.display()
+        );
+    };
+
+    println!("cargo:rustc-link-search=native={}", dir.display());
+    println!("cargo:rustc-link-lib=static=gomp");
 }
 
 fn main() {
