@@ -1,0 +1,153 @@
+// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Copyright (C) 2024-2026 Simple Image Viewer Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
+use std::sync::Arc;
+
+use rayon::prelude::*;
+
+use super::kind::HdrTiledSource;
+use super::validate::validate_rgba32f_len;
+
+pub(crate) fn downsample_hdr_image_nearest(
+    image: &HdrImageBuffer,
+    max_w: u32,
+    max_h: u32,
+) -> Result<HdrImageBuffer, String> {
+    validate_rgba32f_len(image.width, image.height, image.rgba_f32.len())?;
+    let (width, height) = preview_dimensions(image.width, image.height, max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("HDR preview dimensions must be non-zero".to_string());
+    }
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        let src_y = preview_sample_coord(y, height, image.height) as usize;
+        for x in 0..width {
+            let src_x = preview_sample_coord(x, width, image.width) as usize;
+            let offset = (src_y * image.width as usize + src_x) * 4;
+            rgba_f32.extend_from_slice(&image.rgba_f32[offset..offset + 4]);
+        }
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: image.color_space,
+        metadata: image.metadata.clone(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+pub(crate) fn hdr_preview_from_tiled_source_nearest<S: HdrTiledSource + ?Sized>(
+    source: &S,
+    max_w: u32,
+    max_h: u32,
+) -> Result<HdrImageBuffer, String> {
+    let (width, height) = preview_dimensions(source.width(), source.height(), max_w, max_h);
+    if width == 0 || height == 0 {
+        return Err("HDR tiled preview dimensions must be non-zero".to_string());
+    }
+
+    let rows = (0..height)
+        .into_par_iter()
+        .map(|preview_y| sample_tiled_preview_row(source, preview_y, width, height))
+        .collect::<Vec<_>>();
+
+    let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in rows {
+        rgba_f32.extend(row?);
+    }
+
+    Ok(HdrImageBuffer {
+        width,
+        height,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: source.color_space(),
+        metadata: source.metadata(),
+        rgba_f32: Arc::new(rgba_f32),
+    })
+}
+
+fn sample_tiled_preview_row<S: HdrTiledSource + ?Sized>(
+    source: &S,
+    preview_y: u32,
+    preview_width: u32,
+    preview_height: u32,
+) -> Result<Vec<f32>, String> {
+    let src_y = preview_sample_coord(preview_y, preview_height, source.height());
+    let row = source.extract_tile_rgba32f_arc(0, src_y, source.width(), 1)?;
+    let mut rgba_f32 = Vec::with_capacity(preview_width as usize * 4);
+    for preview_x in 0..preview_width {
+        let src_x = preview_sample_coord(preview_x, preview_width, source.width()) as usize;
+        let offset = src_x * 4;
+        rgba_f32.extend_from_slice(&row.rgba_f32[offset..offset + 4]);
+    }
+    Ok(rgba_f32)
+}
+
+pub(crate) fn sdr_preview_from_hdr_preview(
+    preview: &HdrImageBuffer,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut pixels = crate::hdr::decode::hdr_to_sdr_rgba8(preview, 0.0)?;
+    make_visible_preview_opaque_if_alpha_is_empty(&mut pixels);
+    let image = image::RgbaImage::from_raw(preview.width, preview.height, pixels)
+        .ok_or_else(|| "Failed to build SDR preview image from HDR preview".to_string())?;
+    Ok((image.width(), image.height(), image.into_raw()))
+}
+
+fn make_visible_preview_opaque_if_alpha_is_empty(pixels: &mut [u8]) {
+    if pixels.chunks_exact(4).any(|pixel| pixel[3] != 0) {
+        return;
+    }
+
+    let has_visible_rgb = pixels
+        .chunks_exact(4)
+        .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0);
+    if !has_visible_rgb {
+        return;
+    }
+
+    for pixel in pixels.chunks_exact_mut(4) {
+        if pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0 {
+            pixel[3] = u8::MAX;
+        }
+    }
+}
+
+pub(crate) fn preview_dimensions(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if width == 0 || height == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+    let scale = (max_w as f32 / width as f32)
+        .min(max_h as f32 / height as f32)
+        .min(1.0);
+    let preview_width = ((width as f32 * scale).round() as u32).clamp(1, max_w);
+    let preview_height = ((height as f32 * scale).round() as u32).clamp(1, max_h);
+    (preview_width, preview_height)
+}
+
+pub(crate) fn preview_sample_coord(
+    preview_coord: u32,
+    preview_extent: u32,
+    source_extent: u32,
+) -> u32 {
+    if preview_extent <= 1 {
+        return 0;
+    }
+    ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
+        as u32
+}

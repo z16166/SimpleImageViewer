@@ -15,6 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn make_temp_dir(name: &str) -> PathBuf {

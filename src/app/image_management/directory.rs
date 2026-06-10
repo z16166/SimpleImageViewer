@@ -203,8 +203,7 @@ impl ImageViewerApp {
         self.pending_transition_target = None;
         self.prefetch_prev_generation = None;
 
-        // Pending animation upload is tied to a specific index; drop it.
-        self.pending_anim_frames = None;
+        self.pending_anim_frames.retain(|&idx, _| idx == keep);
 
         // Keep self.tile_manager — it is keyed by image_index, and
         // tiled_canvas_matches_current_index() guards its usage, so it will

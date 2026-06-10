@@ -125,7 +125,7 @@ fn pack_rows_for_texture_copy_borrows_when_already_aligned() {
 
 #[test]
 fn pack_rows_rgba32f_round_trip_preserves_data() {
-    // bytes_per_pixel=16 → unpadded row = width * 16 bytes.
+    // bytes_per_pixel=16 ->unpadded row = width * 16 bytes.
     // Test widths that are / are not multiples of 16 (alignment boundary).
     for &(width, height) in &[(13, 7), (16, 4), (17, 11), (64, 64), (4033, 3)] {
         let pixel_count = width as usize * height as usize * 4;
@@ -758,16 +758,16 @@ fn native_hdr_encoders_share_exposed_linear_rgb() {
 
 #[test]
 fn native_hdr_shader_outputs_linear_scrgb_without_gamma_encoding() {
-    // scRGB native HDR is linear; γ2.2 inflates shadows and destroys SDR contrast on
+    // scRGB native HDR is linear; 纬2.2 inflates shadows and destroys SDR contrast on
     // physically SDR displays advertising HDR support (conformance `bench_oriented_brg`).
     assert!(HDR_IMAGE_PLANE_SHADER.contains("fn encode_native_hdr"));
     assert!(
         !HDR_IMAGE_PLANE_SHADER.contains("let sdr_base ="),
-        "encode_native_hdr must not γ-encode for scRGB output"
+        "encode_native_hdr must not 纬-encode for scRGB output"
     );
     assert!(
         !HDR_IMAGE_PLANE_SHADER.contains("return max(sdr_base, exposed);"),
-        "encode_native_hdr must return exposed linear value, no γ-blend"
+        "encode_native_hdr must return exposed linear value, no 纬-blend"
     );
 }
 

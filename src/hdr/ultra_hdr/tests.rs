@@ -689,7 +689,7 @@ fn hdr_capacity_scales_gain_map_application() {
         gamma: [1.0; 3],
         offset_sdr: [0.0; 3],
         offset_hdr: [0.0; 3],
-        // Ratios 2^0 .. 2^2 so log₂ headroom interpolates like libavif `avifGetGainMapWeight`.
+        // Ratios 2^0 .. 2^2 so log鈧?headroom interpolates like libavif `avifGetGainMapWeight`.
         hdr_capacity_min: 1.0,
         hdr_capacity_max: 4.0,
         backward_direction: false,

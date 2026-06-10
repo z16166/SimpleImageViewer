@@ -97,6 +97,42 @@ pub(crate) fn upload_callback_tile(
     })
 }
 
+pub(crate) fn write_rgba32f_to_texture(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    rgba_f32: &[f32],
+) -> Result<(), String> {
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(
+        rgba32f_as_bytes(rgba_f32),
+        width,
+        height,
+        std::mem::size_of::<f32>() as u32 * 4,
+    )
+    .map_err(|err| format!("HDR rgba32f texture write: {err}"))?;
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &upload_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    Ok(())
+}
+
 pub(crate) fn upload_callback_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

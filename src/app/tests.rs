@@ -16,6 +16,8 @@
 
 use super::*;
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+use std::collections::HashSet;
+use std::sync::Arc;
 
 #[test]
 fn current_hdr_image_only_matches_its_source_index() {

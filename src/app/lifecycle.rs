@@ -8,6 +8,7 @@ use crate::ui::utils::{
     get_system_font_families, setup_fonts, setup_visuals, startup_font_family_list,
 };
 use eframe::egui::{self, Vec2};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -460,7 +461,7 @@ impl ImageViewerApp {
             cached_palette,
             is_printing: Arc::new(AtomicBool::new(false)),
             print_status_rx: None,
-            pending_anim_frames: None,
+            pending_anim_frames: HashMap::new(),
             last_mouse_wheel_nav: 0.0,
             last_keyboard_nav: None,
             preload_budget_forward: budget_fwd,

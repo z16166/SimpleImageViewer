@@ -28,6 +28,7 @@ mod raster;
 mod raw;
 mod tiff_raw_sniff;
 
+pub(crate) use raster::is_maybe_animated;
 pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
@@ -49,7 +50,7 @@ use detect::{load_primary_with_detection_fallback, recover_via_platform_and_cont
 use hdr_formats::load_hdr;
 use jpeg::load_jpeg_with_target_capacity;
 use modern::{load_avif_with_target_capacity, load_heif_hdr_aware, load_jxl_with_target_capacity};
-use raster::{is_maybe_animated, load_gif, load_png, load_psd, load_static, load_webp};
+use raster::{load_gif, load_png, load_psd, load_static, load_webp};
 use raw::load_raw;
 
 pub(crate) fn load_image_file(

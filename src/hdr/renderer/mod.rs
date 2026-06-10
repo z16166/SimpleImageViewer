@@ -51,7 +51,7 @@ pub(super) mod upload;
 pub(super) use self::upload::{
     create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
     rgba32f_as_bytes, upload_callback_tile, upload_image_plane, upload_jpeg_tiled_source_textures,
-    validate_upload_layout,
+    validate_upload_layout, write_rgba32f_to_texture,
 };
 
 pub(super) mod image_callback;

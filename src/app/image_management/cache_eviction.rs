@@ -43,7 +43,7 @@ impl ImageViewerApp {
         self.prefetched_tiles.clear();
         self.animation = None;
         self.animation_cache.clear();
-        self.pending_anim_frames = None;
+        self.pending_anim_frames.clear();
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.raw_metadata.clear();
@@ -101,6 +101,10 @@ impl ImageViewerApp {
         if let Some(mut anim) = self.animation_cache.remove(&from) {
             anim.image_index = to;
             self.animation_cache.insert(to, anim);
+        }
+        if let Some(mut pending) = self.pending_anim_frames.remove(&from) {
+            pending.image_index = to;
+            self.pending_anim_frames.insert(to, pending);
         }
         if let Some(ref mut anim) = self.animation {
             if anim.image_index == from {
@@ -205,6 +209,7 @@ impl ImageViewerApp {
         // 3. Prefetched tiles, animation cache
         self.prefetched_tiles.retain(|&idx, _| idx == except_idx);
         self.animation_cache.retain(|&idx, _| idx == except_idx);
+        self.pending_anim_frames.retain(|&idx, _| idx == except_idx);
 
         // 4. Other states
         if let Some(ref anim) = self.animation {
@@ -212,7 +217,6 @@ impl ImageViewerApp {
                 self.animation = None;
             }
         }
-        self.pending_anim_frames = None;
 
         // Keep self.tile_manager if its index matches except_idx
         if let Some(ref manager) = self.tile_manager {
@@ -236,6 +240,7 @@ impl ImageViewerApp {
 
     pub(super) fn handle_texture_cache_eviction(&mut self, evicted_idx: usize) {
         self.animation_cache.remove(&evicted_idx);
+        self.pending_anim_frames.remove(&evicted_idx);
         self.remove_hdr_image_index(evicted_idx);
     }
 
@@ -249,6 +254,7 @@ impl ImageViewerApp {
         indices.extend(self.hdr_tiled_preview_cache.keys().copied());
         indices.extend(self.deferred_sdr_uploads.keys().copied());
         indices.extend(self.animation_cache.keys().copied());
+        indices.extend(self.pending_anim_frames.keys().copied());
         indices.extend(self.hdr_sdr_fallback_indices.iter().copied());
         indices.extend(self.hdr_placeholder_fallback_indices.iter().copied());
         indices.extend(self.ultra_hdr_capacity_sensitive_indices.iter().copied());
@@ -269,6 +275,7 @@ impl ImageViewerApp {
             self.texture_cache.remove(idx);
             self.prefetched_tiles.remove(&idx);
             self.animation_cache.remove(&idx);
+            self.pending_anim_frames.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
             self.remove_hdr_image_index(idx);
         }
@@ -343,6 +350,7 @@ impl ImageViewerApp {
         for idx in distant_indices {
             self.texture_cache.remove(idx);
             self.animation_cache.remove(&idx);
+            self.pending_anim_frames.remove(&idx);
             self.remove_hdr_image_index(idx);
         }
     }

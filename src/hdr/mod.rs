@@ -25,7 +25,7 @@ pub(crate) mod gain_map;
 pub mod heif;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map;
-#[cfg(all(feature = "heif-native", test))]
+#[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map_compose_simd;
 #[cfg(feature = "heif-native")]
 pub(crate) mod heif_apple_gain_map_gpu;
@@ -38,7 +38,10 @@ pub(crate) mod jxl_gain_map_deferred;
 pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod mpf;
-pub(crate) mod openexr_core_backend;
+pub(crate) mod openexr_core;
+pub(crate) mod openexr_core_backend {
+    pub(crate) use super::openexr_core::*;
+}
 pub mod platform;
 pub mod radiance_tiled;
 pub mod renderer;

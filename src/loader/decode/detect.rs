@@ -125,6 +125,10 @@ pub(crate) fn recover_via_platform_and_content_detection(
     file_name: &str,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    #[cfg_attr(
+        not(any(target_os = "windows", target_os = "macos")),
+        allow(unused_variables)
+    )]
     high_quality: bool,
     primary_err: String,
 ) -> Result<ImageData, String> {
