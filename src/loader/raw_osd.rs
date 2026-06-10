@@ -104,6 +104,12 @@ impl RawOsdInfo {
         self
     }
 
+    /// Re-render `osd_line` with the current locale (call after a language change).
+    pub(crate) fn refresh_osd_line(&mut self) {
+        self.osd_line =
+            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
+    }
+
     /// Update after async/sync HQ refinement replaces the bootstrap buffer.
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
@@ -219,6 +225,35 @@ mod tests {
                 width: 3684,
                 height: 2760
             }
+        );
+    }
+
+    #[test]
+    fn refresh_osd_line_matches_with_osd_line() {
+        rust_i18n::set_locale("en");
+        let sensor = (6000u32, 4000u32);
+        let embedded = Some((1920u32, 1280u32));
+        let render = RawRenderPixels::Embedded {
+            width: 1920,
+            height: 1280,
+        };
+        let mut info = RawOsdInfo {
+            sensor_size: sensor,
+            embedded_preview: embedded,
+            render_pixels: render,
+            osd_line: Some("stale string".to_string()),
+        };
+        info.refresh_osd_line();
+        let expected = RawOsdInfo {
+            sensor_size: sensor,
+            embedded_preview: embedded,
+            render_pixels: render,
+            osd_line: None,
+        }
+        .with_osd_line();
+        assert_eq!(
+            info.osd_line, expected.osd_line,
+            "refresh_osd_line must produce the same output as with_osd_line"
         );
     }
 }
