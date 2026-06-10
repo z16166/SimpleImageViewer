@@ -312,8 +312,7 @@ if [[ -f "${LINK_MAP}" ]]; then
   cp -f "${LINK_MAP}" "${LINK_MAP_SNAP}"
   echo "Saved link map snapshot (before cargo test may relink): ${LINK_MAP_SNAP}"
 fi
-find "target/${RUST_TRIPLE}/ci/deps" -maxdepth 1 -name 'SimpleImageViewer-*' -delete 2>/dev/null || true
-cargo test --locked --profile "${RUST_PROFILE}" --target "${RUST_TRIPLE}" simd_swizzle
+cargo test --locked --profile "${RUST_PROFILE}" --target "${RUST_TRIPLE}" --lib simd_swizzle
 
 BIN=SimpleImageViewer
 SRC=""

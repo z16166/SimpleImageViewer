@@ -53,7 +53,6 @@ mod scanner;
 #[cfg(target_os = "windows")]
 mod seh_handler;
 mod settings;
-mod simd_swizzle;
 pub mod theme;
 mod tile_cache;
 mod ui;
