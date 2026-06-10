@@ -452,6 +452,12 @@ jobs:
           else
             echo "OK: no libstdc++.so in NEEDED (libstdc++ linked statically)."
           fi
+          if readelf -d "$BINARY" | grep -q 'libgomp\.so'; then
+            echo "::error::Binary must not list libgomp.so in NEEDED; libraw-sys should link static gomp (see libraries/libraw-sys/build.rs)."
+            exit 1
+          else
+            echo "OK: no libgomp.so in NEEDED (libgomp linked statically)."
+          fi
 
       - name: Package Artifacts (Windows)
         if: runner.os == 'Windows'
