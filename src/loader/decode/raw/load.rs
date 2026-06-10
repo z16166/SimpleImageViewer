@@ -20,7 +20,7 @@
 //!   Full develop only when the file has no embedded preview; on HDR displays that
 //!   develop result uses the HDR pipeline.
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
-//!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
+//!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
 use super::develop::{develop_full_resolution, develop_hq_preview};
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
@@ -32,9 +32,7 @@ use crate::loader::raw_osd::RawOsdContext;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::raw_osd::RawOsdInfo;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
-use crate::loader::{
-    DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
-};
+use crate::loader::{DecodedImage, ImageData, RawLoadOutput, RefinementRequest};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -95,12 +93,9 @@ fn load_raw_with_embedded_bootstrap(
     hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
 ) -> Result<RawLoadOutput, String> {
-    let use_hdr = !hdr_display_requests_sdr_preview(hdr_target_capacity);
-    let hdr_buffer_slot = if use_hdr {
-        Some(Arc::new(PLRwLock::new(None)))
-    } else {
-        None
-    };
+    // High-quality RAW preview always uses the scene-linear HDR pipeline
+    // to support exposure adjustments and tone mapping consistently.
+    let hdr_buffer_slot = Some(Arc::new(PLRwLock::new(None)));
 
     let bootstrap_w = preview.width;
     let bootstrap_h = preview.height;
@@ -119,28 +114,20 @@ fn load_raw_with_embedded_bootstrap(
     )?);
 
     crate::preload_debug!(
-        "[PreloadDebug][RAW] TiledBootstrap logical={}x{} refine=true hdr={} hdr_cap={:.3}",
+        "[PreloadDebug][RAW] TiledBootstrap logical={}x{} refine=true hdr=true hdr_cap={:.3}",
         width,
         height,
-        use_hdr,
         hdr_target_capacity
     );
 
-    if use_hdr {
-        let hdr_slot = hdr_buffer_slot.expect("hdr slot when use_hdr");
-        let hdr_source = Arc::new(RawHdrRefiningSource::new(hdr_slot, width, height))
-            as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
-        return Ok(RawLoadOutput {
-            image: ImageData::HdrTiled {
-                hdr: hdr_source,
-                fallback: source,
-            },
-            osd: osd_ctx.hq_bootstrap_dims(bootstrap_w, bootstrap_h),
-        });
-    }
-
+    let hdr_slot = hdr_buffer_slot.expect("hdr slot when use_hdr");
+    let hdr_source = Arc::new(RawHdrRefiningSource::new(hdr_slot, width, height))
+        as Arc<dyn crate::hdr::tiled::HdrTiledSource>;
     Ok(RawLoadOutput {
-        image: ImageData::Tiled(source),
+        image: ImageData::HdrTiled {
+            hdr: hdr_source,
+            fallback: source,
+        },
         osd: osd_ctx.hq_bootstrap_dims(bootstrap_w, bootstrap_h),
     })
 }

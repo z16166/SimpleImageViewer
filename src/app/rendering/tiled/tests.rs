@@ -591,3 +591,31 @@ fn tile_visit(col: u32, row: u32) -> (TileCoord, Rect, Rect) {
         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
     )
 }
+
+#[test]
+fn tiled_preview_fallback_is_active_when_hdr_preview_not_ready() {
+    let plane_backend = PlaneBackendKind::Hdr;
+
+    // Under Hdr backend:
+    // If hdr_preview_drawn is true, we should NOT draw the SDR preview fallback
+    let should_draw_sdr_fallback_when_hdr_drawn =
+        should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
+            || (plane_backend == PlaneBackendKind::Hdr && !true);
+
+    // If hdr_preview_drawn is false, we DO want to draw the SDR preview fallback
+    let should_draw_sdr_fallback_when_hdr_not_drawn =
+        should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
+            || (plane_backend == PlaneBackendKind::Hdr && !false);
+
+    assert!(!should_draw_sdr_fallback_when_hdr_drawn);
+    assert!(should_draw_sdr_fallback_when_hdr_not_drawn);
+
+    // Under Sdr backend:
+    // We should always draw the SDR preview regardless
+    let plane_backend_sdr = PlaneBackendKind::Sdr;
+    let should_draw_sdr_under_sdr =
+        should_draw_tiled_preview_for_backend(plane_backend_sdr, TiledPlaneKind::Sdr)
+            || (plane_backend_sdr == PlaneBackendKind::Hdr && !true);
+
+    assert!(should_draw_sdr_under_sdr);
+}

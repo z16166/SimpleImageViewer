@@ -177,6 +177,7 @@ impl ImageViewerApp {
 
         let effective_scale = dest.width() / rotated_img_size.x;
 
+        let mut hdr_preview_drawn = false;
         if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Hdr) {
             if let Some(hdr_preview) = self
                 .current_hdr_tiled_preview
@@ -202,11 +203,15 @@ impl ImageViewerApp {
                         keep_resident: self.hdr_plane_keep_resident(),
                     },
                 );
+                hdr_preview_drawn = true;
             }
         }
 
         // Draw the preview that matches the active tiled plane backend.
-        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr) {
+        // Fallback to SDR preview texture if the HDR preview is not yet ready.
+        if should_draw_tiled_preview_for_backend(plane_backend, TiledPlaneKind::Sdr)
+            || (plane_backend == PlaneBackendKind::Hdr && !hdr_preview_drawn)
+        {
             if let Some(ref preview) = self.tile_manager.as_ref().unwrap().preview_texture {
                 let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
                 draw_plane(

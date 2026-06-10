@@ -19,13 +19,8 @@
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::{LoaderOutput, RefinementRequest, TileDecodeSource, TilePixelKind};
 use crossbeam_channel::{Receiver, Sender};
-use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
 
-pub(crate) enum EitherDevelop {
-    Sdr(DynamicImage),
-    Hdr(crate::hdr::types::HdrImageBuffer),
-}
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
