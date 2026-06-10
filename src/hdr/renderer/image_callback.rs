@@ -215,6 +215,18 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     resources.jpeg_compose_bind_group_layout.as_ref(),
                     resources.jpeg_compose_pipeline.as_ref(),
                 ) {
+                    log::info!(
+                        "[HDR] ISO gain-map compose path=GPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
+                        self.image.width,
+                        self.image.height,
+                        deferred.gain_width,
+                        deferred.gain_height,
+                        self.tone_map.target_hdr_capacity(),
+                        crate::hdr::gain_map::gain_map_weight(
+                            deferred.metadata,
+                            self.tone_map.target_hdr_capacity()
+                        )
+                    );
                     let sdr_view = binding.uploaded_sdr_view.as_ref().expect("jpeg sdr view");
                     let gain_view = binding.uploaded_gain_view.as_ref().expect("jpeg gain view");
                     let display_storage = binding
@@ -244,6 +256,18 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         return compose_command_buffers;
                     }
                 } else {
+                    log::info!(
+                        "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
+                        self.image.width,
+                        self.image.height,
+                        deferred.gain_width,
+                        deferred.gain_height,
+                        self.tone_map.target_hdr_capacity(),
+                        crate::hdr::gain_map::gain_map_weight(
+                            deferred.metadata,
+                            self.tone_map.target_hdr_capacity()
+                        )
+                    );
                     let composed = crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
                         self.image.width,
                         self.image.height,

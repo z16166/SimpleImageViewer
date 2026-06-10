@@ -74,8 +74,8 @@ pub(crate) fn attach_avif_gain_map_gpu_deferred(
                 .to_string(),
         );
     }
-    log::debug!(
-        "[HDR] AVIF ISO gain map GPU deferred metadata: {}",
+    log::info!(
+        "[HDR][AVIF] ISO gain map deferred metadata: {}",
         gain_map_metadata_diagnostic(gain_metadata, target_hdr_capacity)
     );
     let mut buffer = attach_iso_gain_map_gpu_deferred(

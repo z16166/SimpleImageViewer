@@ -41,7 +41,49 @@ use parking_lot::RwLock as PLRwLock;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::loader::decode::assemble::make_image_data;
+use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
+
+fn load_raw_hq_static_hdr(
+    processor: &mut RawProcessor,
+    path: &PathBuf,
+    hdr_target_capacity: f32,
+    hdr_tone_map: &HdrToneMapSettings,
+    osd_ctx: &RawOsdContext,
+) -> Option<Result<RawLoadOutput, String>> {
+    crate::preload_debug!(
+        "[PreloadDebug][RAW] path={:?} hq_static_preview -> StaticHdrToneMap hdr_cap={:.3}",
+        path.file_name().unwrap_or_default(),
+        hdr_target_capacity
+    );
+    match processor.develop_scene_linear_hdr() {
+        Ok(hdr) => {
+            let width = hdr.width;
+            let height = hdr.height;
+            let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+                &hdr,
+                hdr_target_capacity,
+                hdr_tone_map,
+            ) {
+                Ok(pixels) => pixels,
+                Err(err) => return Some(Err(err)),
+            };
+            let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+            Some(Ok(RawLoadOutput {
+                image: make_hdr_image_data(hdr, fallback),
+                osd: osd_ctx.full_develop(width, height),
+            }))
+        }
+        Err(err) => {
+            log::error!(
+                "[Loader] RAW scene-linear HDR develop failed for {:?}: {}. Falling back to embedded SDR preview.",
+                path.file_name().unwrap_or_default(),
+                err
+            );
+            None
+        }
+    }
+}
+
 fn load_raw_with_embedded_bootstrap(
     path: PathBuf,
     preview: DecodedImage,
@@ -218,6 +260,15 @@ pub(crate) fn load_raw(
     // High-quality mode: use embedded preview when it already meets HQ requirements.
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
+            if let Some(result) = load_raw_hq_static_hdr(
+                &mut processor,
+                path,
+                hdr_target_capacity,
+                &hdr_tone_map,
+                &osd_ctx,
+            ) {
+                return result;
+            }
             crate::preload_debug!(
                 "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=true → StaticSdr",
                 path.file_name().unwrap_or_default(),
@@ -288,4 +339,3 @@ pub(crate) fn load_raw(
         &osd_ctx,
     )
 }
-

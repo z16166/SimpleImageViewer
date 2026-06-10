@@ -20,30 +20,45 @@ use std::time::Instant;
 use super::icon::load_icon;
 use super::logging::{init_logging, log_env_info, shutdown_logger};
 use super::panic::setup_panic_hook;
-use super::phases::{
-    startup_log_captured_phases,
-    startup_log_phase,
-};
 #[cfg(feature = "startup-timing")]
 use super::phases::{
-    startup_capture_phase,
-    startup_log_captured_phase,
-    startup_phase_at,
+    startup_capture_phase, startup_log_captured_phase, startup_phase_at,
     startup_reset_after_diagnostics,
 };
+use super::phases::{startup_log_captured_phases, startup_log_phase};
 
-#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-use super::wgpu::{
-    apply_dx12_preprobe_to_wgpu_setup, register_dx12_cache_validate_join_for_exit,
-    spawn_dx12_cache_validate_thread, spawn_dx12_preprobe_thread,
-    take_and_join_dx12_cache_validate_thread, Dx12PreprobeOutcome,
-};
 #[cfg(all(
     target_os = "windows",
     target_arch = "aarch64",
     not(feature = "legacy_win7")
 ))]
 use super::wgpu::apply_windows_arm64_default_wgpu_backends;
+#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+use super::wgpu::{
+    Dx12PreprobeOutcome, apply_dx12_preprobe_to_wgpu_setup,
+    register_dx12_cache_validate_join_for_exit, spawn_dx12_cache_validate_thread,
+    spawn_dx12_preprobe_thread, take_and_join_dx12_cache_validate_thread,
+};
+
+#[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+fn is_windows_7_version(os_version: &str) -> bool {
+    os_version
+        .split_once('.')
+        .and_then(|(major, rest)| rest.split_once('.').map(|(minor, _)| (major, minor)))
+        .or_else(|| os_version.split_once('.'))
+        .is_some_and(|(major, minor)| major == "6" && minor == "1")
+}
+
+#[cfg(all(test, target_os = "windows", feature = "legacy_win7"))]
+mod tests {
+    #[test]
+    fn legacy_win7_angle_gate_only_matches_windows_7() {
+        assert!(super::is_windows_7_version("6.1.7601"));
+        assert!(!super::is_windows_7_version("6.2.9200"));
+        assert!(!super::is_windows_7_version("10.0.26200"));
+        assert!(!super::is_windows_7_version("11"));
+    }
+}
 
 pub fn run() -> eframe::Result {
     crate::allocator_tuning::configure_mimalloc_for_image_viewer();
@@ -52,10 +67,15 @@ pub fn run() -> eframe::Result {
     {
         #[cfg(feature = "legacy_win7")]
         unsafe {
-            if std::env::var("WGPU_BACKEND").is_err() {
+            let os_version = sysinfo::System::os_version().unwrap_or_default();
+            if is_windows_7_version(&os_version) && std::env::var("WGPU_BACKEND").is_err() {
                 // Force choice of ANGLE (OpenGL ES over DX11) for Windows 7 compatibility
                 std::env::set_var("WGPU_BACKEND", "gl");
                 std::env::set_var("WGPU_GL_BACKEND", "angle");
+            } else if std::env::var("WGPU_BACKEND").is_err() {
+                // The legacy binary is also run on newer Windows during compatibility testing.
+                // Do not let the ANGLE/GLES feature make wgpu fall through to OpenGL there.
+                std::env::set_var("WGPU_BACKEND", "dx12");
             }
         }
         #[cfg(not(feature = "legacy_win7"))]

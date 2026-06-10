@@ -188,6 +188,46 @@ fn jxl_sdr_grade_fallback_skipped_for_high_peak_hdr() {
 
 #[cfg(feature = "jpegxl")]
 #[test]
+fn adobe_jxl_base_sdr_gain_map_uses_deferred_baseline_fallback_when_present() {
+    let path = std::path::Path::new(
+        r"F:\HDR\Gain_Map_Sample_Photos\Gain_Map_Sample_Photos\samples_jxl_base_sdr\01_base_sdr.jxl",
+    );
+    if !path.is_file() {
+        eprintln!("skip {}", path.display());
+        return;
+    }
+
+    let bytes = std::fs::read(path).expect("read jxl");
+    let tone = crate::hdr::types::HdrToneMapSettings::default();
+    let got = super::decode_jxl_bytes_to_image_data(&bytes, tone.target_hdr_capacity(), 1.0, tone)
+        .expect("decode jxl base_sdr gain map");
+
+    let crate::loader::ImageData::Hdr { hdr, fallback } = got else {
+        panic!("expected static HDR JXL gain-map image");
+    };
+    assert_eq!((hdr.width, hdr.height), (2400, 3000));
+    assert_eq!((fallback.width, fallback.height), (2400, 3000));
+    assert!(
+        hdr.rgba_f32.is_empty(),
+        "JXL base_sdr should defer ISO gain-map compose"
+    );
+    assert!(
+        hdr.metadata
+            .gain_map
+            .as_ref()
+            .and_then(|gain_map| gain_map.iso_deferred.as_ref())
+            .is_some(),
+        "JXL base_sdr gain-map path must carry ISO deferred planes"
+    );
+    assert_eq!(
+        fallback.rgba().len(),
+        (2400_usize * 3000_usize * 4),
+        "fallback should use the deferred SDR baseline, not empty rgba_f32"
+    );
+}
+
+#[cfg(feature = "jpegxl")]
+#[test]
 fn probe_conformance_animation_metadata_when_present() {
     for rel in [
         r"F:\HDR\conformance\testcases\animation_icos4d\input.jxl",

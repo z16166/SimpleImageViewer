@@ -18,6 +18,7 @@ use super::*;
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::DecodedImage;
 use crate::loader::ImageData;
+use crate::loader::raw_osd::RawRenderPixels;
 use std::path::PathBuf;
 
 #[test]
@@ -168,6 +169,47 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
         }
         other => panic!(
             "expected static embedded in performance mode, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+#[test]
+fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
+    use crossbeam_channel::unbounded;
+
+    let path = PathBuf::from(r"F:\win7\raws\canon\10d\RAW_CANON_10D.CRW");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+
+    let (refine_tx, _refine_rx) = unbounded();
+    let result = load_raw(
+        0,
+        0,
+        &path,
+        refine_tx,
+        true,
+        1.0,
+        HdrToneMapSettings::default(),
+    )
+    .expect("load_raw hq sdr tone map");
+
+    match result.image {
+        ImageData::Hdr { hdr, fallback } => {
+            assert_eq!((hdr.width, hdr.height), (2056, 3088));
+            assert_eq!((fallback.width, fallback.height), (2056, 3088));
+            assert_eq!(
+                result.osd.render_pixels,
+                RawRenderPixels::FullDevelop {
+                    width: 2056,
+                    height: 3088
+                }
+            );
+        }
+        other => panic!(
+            "expected HDR plane for SDR tone-map RAW HQ load, got {:?}",
             std::mem::discriminant(&other)
         ),
     }
@@ -343,8 +385,7 @@ fn canon_s90_cr2_develop_dimensions_when_file_present() {
     let thumb = processor.unpack_thumb().expect("thumb");
     let (out_w, out_h) = processor.developed_output_dimensions(Some(&thumb));
     let sdr = processor.develop().expect("develop");
-    let finalized =
-        crate::loader::preview_caps::finalize_raw_hq_developed_image(sdr, out_w, out_h);
+    let finalized = crate::loader::preview_caps::finalize_raw_hq_developed_image(sdr, out_w, out_h);
     let finalized_rgba = finalized.to_rgba8();
 
     eprintln!(

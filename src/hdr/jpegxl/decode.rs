@@ -23,17 +23,12 @@ use super::metadata::{
 };
 use super::runner::JxlResizableRunnerPtr;
 
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata, HdrReference, HdrTransferFunction,
-};
+use crate::hdr::types::{HdrColorProfile, HdrImageMetadata, HdrReference, HdrTransferFunction};
 #[cfg(feature = "jpegxl")]
 use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrPixelFormat, HdrToneMapSettings};
 #[cfg(feature = "jpegxl")]
 use crate::{
-    constants::{
-        DEFAULT_ANIMATION_DELAY_MS,
-        MIN_ANIMATION_DELAY_THRESHOLD_MS,
-    },
+    constants::{DEFAULT_ANIMATION_DELAY_MS, MIN_ANIMATION_DELAY_THRESHOLD_MS},
     loader::{AnimationFrame, DecodedImage, ImageData},
 };
 #[cfg(feature = "jpegxl")]
@@ -320,22 +315,26 @@ fn jxl_build_hdr_fallback(
     display_hdr_target_capacity: f32,
     tone_map: &HdrToneMapSettings,
 ) -> Result<DecodedImage, String> {
-    let color_space = hdr.color_space;
-    let sdr_grade_fallback =
-        jxl_sdr_grade_fallback_rgba8(hdr.rgba_f32.as_ref(), color_space, &hdr.metadata);
-    let fallback_pixels = match sdr_grade_fallback {
-        Some(px) => px,
-        None => {
-            if crate::loader::hdr_display_requests_sdr_preview(display_hdr_target_capacity) {
-                crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings(
-                    hdr,
-                    tone_map.exposure_ev,
-                    tone_map,
-                )?
-            } else {
-                crate::loader::cheap_hdr_sdr_placeholder_rgba8(hdr.width, hdr.height)?
-            }
-        }
+    let fallback_pixels = if hdr.rgba_f32.is_empty() {
+        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            hdr,
+            display_hdr_target_capacity,
+            tone_map,
+        )?
+        .as_ref()
+        .clone()
+    } else if let Some(px) =
+        jxl_sdr_grade_fallback_rgba8(hdr.rgba_f32.as_ref(), hdr.color_space, &hdr.metadata)
+    {
+        px
+    } else {
+        crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
+            hdr,
+            display_hdr_target_capacity,
+            tone_map,
+        )?
+        .as_ref()
+        .clone()
     };
     Ok(DecodedImage::new(hdr.width, hdr.height, fallback_pixels))
 }
