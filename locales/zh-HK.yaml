@@ -135,9 +135,9 @@ osd.mode.tiled: "分塊"
 raw.osd.embedded: "內嵌 %{size}"
 raw.osd.no_embedded: "內嵌 —"
 raw.osd.sensor: "感測 %{size}"
-raw.osd.render.embedded: "→內嵌 %{size}"
-raw.osd.render.full: "→全解 %{size}"
-raw.osd.render.hq_bootstrap: "→內嵌* %{size}"
+raw.osd.render.embedded: "→ 內嵌 %{size}"
+raw.osd.render.full: "→ 全解 %{size}"
+raw.osd.render.hq_bootstrap: "→ 內嵌* %{size}"
 
 # Scale mode
 scale.fit: "適應視窗"

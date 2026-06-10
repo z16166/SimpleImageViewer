@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.5] - 2026-06-10
+
+### Improved
+- **High-quality RAW demosaic speed**: High-quality RAW development now uses multi-core parallel processing, so full-resolution refine finishes much faster on modern CPUs.
+
+### Changed
+- **RAW status line readability**: The bottom-left RAW overlay now separates embedded preview, sensor size, and active render source with clearer spacing.
+
+### Fixed
+- **Windows high-quality RAW**: Windows release packages now include the OpenMP runtime needed for faster RAW demosaic, so high-quality mode works without installing extra components.
+
 ## [2.4.4] - 2026-06-10
 
 ### Fixed

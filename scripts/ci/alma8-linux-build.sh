@@ -116,6 +116,12 @@ if [[ -z "${_toolstd_a}" || "${_toolstd_a}" == libstdc++.a || ! -f "${_toolstd_a
   exit 1
 fi
 echo "Toolchain libstdc++.a: ${_toolstd_a}"
+_toolgomp_a="$("${CXX}" -print-file-name=libgomp.a)"
+if [[ -z "${_toolgomp_a}" || "${_toolgomp_a}" == libgomp.a || ! -f "${_toolgomp_a}" ]]; then
+  echo "::error::${CXX} -print-file-name=libgomp.a must resolve to an existing file (got: ${_toolgomp_a:-empty}). libgomp.a ships with gcc-toolset-15-gcc; libraw-sys adds its directory to the link path."
+  exit 1
+fi
+echo "Toolchain libgomp.a: ${_toolgomp_a}"
 if ! command -v ld.lld >/dev/null 2>&1; then
   echo "::error::ld.lld not on PATH after installing lld; LLD wrapper uses g++ -fuse-ld=lld (.cargo/g++-lld-wrap.sh)."
   exit 1
@@ -292,6 +298,9 @@ export CMAKE_PREFIX_PATH="/workspace/vcpkg_installed/${VCPKG_DEFAULT_TRIPLET}${C
 # Avoid `-Wl,-Bstatic -lstdc++ -Wl,-Bdynamic`: it can switch back to shared libstdc++ for symbols
 # from late `.a` objects (e.g. libde265 C++) after the static pass. `-static-libstdc++` is enough here;
 # root `build.rs` / vcpkg metadata handle archive order.
+# Do NOT add `-static-libgomp` here: RUSTFLAGS apply to every crate (including rlibs like
+# rust-fontconfig) and Alma gcc-toolset g++ rejects that flag outside the final app link.
+# LibRaw OpenMP uses `libraw-sys` `rustc-link-lib=static=gomp` on the release binary only.
 export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc"
 
 # Optional: override `profile.ci` LTO (off|thin|fat|true|false). If unset, Cargo.toml default applies.
