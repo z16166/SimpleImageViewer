@@ -62,6 +62,8 @@ pub(crate) struct HdrCallbackResources {
     pub(super) dummy_gain_view: wgpu::TextureView,
     pub(super) tile_bindings: HdrTileBindings,
     pub(super) image_bindings: HashMap<HdrImageKey, HdrImageBinding>,
+    pub(super) failed_jpeg_image_compose: HashSet<(HdrImageKey, u32)>,
+    pub(super) failed_apple_image_compose: HashSet<(HdrImageKey, u32)>,
     pub(super) jpeg_compose_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(super) jpeg_compose_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) jpeg_compose_tile_pipeline: Option<wgpu::ComputePipeline>,
@@ -82,19 +84,22 @@ pub(crate) struct HdrCallbackResources {
 }
 
 const HDR_COMPOSE_WORKGROUP_SIZE: u32 = 16;
+const HDR_COMPOSE_MIN_STORAGE_TEXTURES: u32 = 1;
+#[cfg(feature = "heif-native")]
+const HDR_COMPOSE_MIN_STORAGE_BUFFERS: u32 = 1;
 
 pub(super) fn iso_gain_map_compose_compute_supported(limits: &wgpu::Limits) -> bool {
     limits.max_compute_invocations_per_workgroup
         >= HDR_COMPOSE_WORKGROUP_SIZE * HDR_COMPOSE_WORKGROUP_SIZE
         && limits.max_compute_workgroup_size_x >= HDR_COMPOSE_WORKGROUP_SIZE
         && limits.max_compute_workgroup_size_y >= HDR_COMPOSE_WORKGROUP_SIZE
-        && limits.max_storage_textures_per_shader_stage >= 1
+        && limits.max_storage_textures_per_shader_stage >= HDR_COMPOSE_MIN_STORAGE_TEXTURES
 }
 
 #[cfg(feature = "heif-native")]
 pub(super) fn apple_compose_compute_supported(limits: &wgpu::Limits) -> bool {
     iso_gain_map_compose_compute_supported(limits)
-        && limits.max_storage_buffers_per_shader_stage >= 1
+        && limits.max_storage_buffers_per_shader_stage >= HDR_COMPOSE_MIN_STORAGE_BUFFERS
 }
 
 pub(crate) struct CallbackUpload {
@@ -215,24 +220,33 @@ pub(crate) fn create_callback_resources(
         cache: None,
     });
     let (dummy_gain_texture, dummy_gain_view) = create_dummy_gain_texture(device);
+    let adapter_info = device.adapter_info();
+    let gl_backend = adapter_info.backend == wgpu::Backend::Gl;
 
     #[cfg(feature = "heif-native")]
-    let (compose_bind_group_layout, compose_pipeline) =
-        if apple_compose_compute_supported(&device.limits()) {
-            let (layout, pipeline, _compose_tone_map_buffer) =
-                apple_compose_gpu::create_compose_compute_resources(device);
-            (Some(layout), Some(pipeline))
-        } else {
-            log::warn!(
-                "[HDR] GPU Apple HEIC gain-map compose unavailable \
+    let (compose_bind_group_layout, compose_pipeline) = if gl_backend {
+        log::warn!(
+            "[HDR] GPU Apple HEIC gain-map compose disabled on OpenGL backend; using CPU fallback"
+        );
+        (None, None)
+    } else if apple_compose_compute_supported(&device.limits()) {
+        let (layout, pipeline, _compose_tone_map_buffer) =
+            apple_compose_gpu::create_compose_compute_resources(device);
+        (Some(layout), Some(pipeline))
+    } else {
+        log::warn!(
+            "[HDR] GPU Apple HEIC gain-map compose unavailable \
                  (max_compute_invocations_per_workgroup={}, \
                  max_storage_buffers_per_shader_stage={}); using CPU fallback",
-                device.limits().max_compute_invocations_per_workgroup,
-                device.limits().max_storage_buffers_per_shader_stage
-            );
-            (None, None)
-        };
-    let jpeg_compose = if iso_gain_map_compose_compute_supported(&device.limits()) {
+            device.limits().max_compute_invocations_per_workgroup,
+            device.limits().max_storage_buffers_per_shader_stage
+        );
+        (None, None)
+    };
+    let jpeg_compose = if gl_backend {
+        log::warn!("[HDR] GPU ISO gain-map compose disabled on OpenGL backend; using CPU fallback");
+        None
+    } else if iso_gain_map_compose_compute_supported(&device.limits()) {
         Some(jpeg_compose_gpu::create_jpeg_compose_compute_resources(
             device,
         ))
@@ -272,6 +286,8 @@ pub(crate) fn create_callback_resources(
         dummy_gain_view,
         tile_bindings: HdrTileBindings::default(),
         image_bindings: HashMap::new(),
+        failed_jpeg_image_compose: HashSet::new(),
+        failed_apple_image_compose: HashSet::new(),
         jpeg_compose_bind_group_layout,
         jpeg_compose_pipeline,
         jpeg_compose_tile_pipeline,

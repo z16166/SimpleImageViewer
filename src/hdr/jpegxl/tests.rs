@@ -112,7 +112,7 @@ fn jxl_float_decode_metadata_maps_p3_primaries_enum() {
 #[test]
 fn jxl_sdr_grade_fallback_direct_quantize_for_already_encoded_srgb() {
     // libjxl preserves codestream encoding in the float buffer for Modular
-    // mode files: TF=sRGB 鈫?already-encoded floats. The fast path quantizes
+    // mode files: TF=sRGB ->already-encoded floats. The fast path quantizes
     // them directly via `value * 255` (no second-pass OETF).
     let rgba = vec![1.0_f32, 0.5, 0.0, 1.0];
     let mut meta = HdrImageMetadata::default();
@@ -120,10 +120,10 @@ fn jxl_sdr_grade_fallback_direct_quantize_for_already_encoded_srgb() {
     meta.luminance.mastering_max_nits = Some(255.0);
     let px = super::jxl_sdr_grade_fallback_rgba8(&rgba, HdrColorSpace::LinearSrgb, &meta)
         .expect("sdr-grade content must use direct sRGB encode");
-    assert_eq!(px[0], 255, "1.0 鈫?255, got {}", px[0]);
+    assert_eq!(px[0], 255, "1.0 ->255, got {}", px[0]);
     assert!(
         (px[1] as i32 - 128).abs() <= 1,
-        "0.5 鈫?~128 (direct quantize, no second-pass OETF), got {}",
+        "0.5 ->~128 (direct quantize, no second-pass OETF), got {}",
         px[1]
     );
     assert_eq!(px[2], 0);
@@ -136,17 +136,17 @@ fn jxl_sdr_grade_fallback_applies_srgb_oetf_for_truly_linear_floats() {
     // For TF=Linear codestream sources (e.g. conformance `patches/input.jxl`)
     // libjxl emits truly linear floats. The fast path must apply the sRGB
     // OETF before quantizing or shadows quantize ~22 codes too dark.
-    // Linear 0.5 鈫?encoded ~0.735 鈫?~187 in 8-bit (not 128).
+    // Linear 0.5 ->encoded ~0.735 ->~187 in 8-bit (not 128).
     let rgba = vec![1.0_f32, 0.5, 0.0, 1.0];
     let mut meta = HdrImageMetadata::default();
     meta.transfer_function = HdrTransferFunction::Linear;
     meta.luminance.mastering_max_nits = Some(255.0);
     let px = super::jxl_sdr_grade_fallback_rgba8(&rgba, HdrColorSpace::LinearSrgb, &meta)
         .expect("sdr-grade content must use the OETF + quantize path");
-    assert_eq!(px[0], 255, "1.0 鈫?255, got {}", px[0]);
+    assert_eq!(px[0], 255, "1.0 ->255, got {}", px[0]);
     assert!(
         (px[1] as i32 - 188).abs() <= 1,
-        "linear 0.5 鈫?encoded ~188 (sRGB OETF), got {}",
+        "linear 0.5 ->encoded ~188 (sRGB OETF), got {}",
         px[1]
     );
     assert_eq!(px[2], 0);
@@ -406,7 +406,7 @@ fn conformance_animation_spline_input_jxl_decodes_when_sample_present() {
 #[cfg(feature = "jpegxl")]
 #[test]
 fn conformance_bench_oriented_brg_input_jxl_color_space_when_sample_present() {
-    // libjxl HDR conformance: `bench_oriented_brg/input.jxl` 鈥?decoded pixels described by
+    // libjxl HDR conformance: `bench_oriented_brg/input.jxl` --decoded pixels described by
     // `JXL_COLOR_PROFILE_TARGET_DATA` ICC (BT.709 primaries); see read_jxl_metadata order.
     let path = std::path::Path::new(r"F:\HDR\conformance\testcases\bench_oriented_brg\input.jxl");
     if !path.is_file() {
@@ -498,7 +498,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_mean_not_washed_when_sample_prese
             darks += 1;
         }
     }
-    // Reinhard-on-SDR collapses everything into a 153鈥?78 mid band: mean ~180 and zero darks.
+    // Reinhard-on-SDR collapses everything into a 153--78 mid band: mean ~180 and zero darks.
     // A correct sRGB encode keeps the mean lower and preserves shadow detail.
     assert!(
         avg < 200,
@@ -511,7 +511,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_mean_not_washed_when_sample_prese
 }
 
 /// Pixel-level comparison between our SDR fallback and the conformance `ref.png`. They MUST
-/// match closely (鈮?a few code values mean diff, mostly identical channels) 鈥?`ref.png` is the
+/// match closely (<=a few code values mean diff, mostly identical channels) --`ref.png` is the
 /// libjxl conformance reference SDR rendering of `input.jxl`. Any larger drift means our
 /// `jxl_sdr_grade_fallback_rgba8` is NOT producing what the reference says.
 #[cfg(feature = "jpegxl")]
@@ -549,7 +549,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_matches_ref_png_when_sample_prese
     assert_eq!(
         (jxl_w, jxl_h),
         (ref_w, ref_h),
-        "ref.png dimensions {ref_w}脳{ref_h} must match JXL fallback {jxl_w}脳{jxl_h}"
+        "ref.png dimensions {ref_w}x{ref_h} must match JXL fallback {jxl_w}x{jxl_h}"
     );
     let ref_bytes = ref_img.into_raw();
     assert_eq!(jxl_bytes.len(), ref_bytes.len());
@@ -593,7 +593,7 @@ fn conformance_bench_oriented_brg_sdr_fallback_matches_ref_png_when_sample_prese
     // than ~5 code values on average, it's a real bug (and the user sees washing on screen).
     assert!(
         bias_r.abs() < 5.0 && bias_g.abs() < 5.0 && bias_b.abs() < 5.0,
-        "SDR fallback drifts from ref.png 鈥?bias=({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2}); \
+        "SDR fallback drifts from ref.png --bias=({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2}); \
          check linear/sRGB transfer handling and intensity_target scaling"
     );
 }
@@ -709,10 +709,10 @@ fn conformance_cmyk_layers_basic_info_and_channels_when_sample_present() {
     }
 }
 
-/// **Validate the lcms2-based CMYK鈫抯RGB path** end-to-end on `cmyk_layers/input.jxl`.
+/// **Validate the lcms2-based CMYK->sRGB path** end-to-end on `cmyk_layers/input.jxl`.
 ///
 /// Per libjxl PR #237, JPEG-recompressed CMYK files require external color management
-/// (4-channel CMYK input 鈫?3-channel sRGB output). libjxl's `JxlDecoderSetOutputColorProfile`
+/// (4-channel CMYK input ->3-channel sRGB output). libjxl's `JxlDecoderSetOutputColorProfile`
 /// is a no-op for non-XYB sources even with a CMS attached.
 ///
 /// Plumbing:
@@ -722,7 +722,7 @@ fn conformance_cmyk_layers_basic_info_and_channels_when_sample_present() {
 ///      opposite (`0 = no ink, 1 = max ink`).
 ///   3. Apply the embedded CMYK ICC via `cmsCreateTransform(... LCMS_TYPE_CMYK_FLT, sRGB,
 ///      LCMS_TYPE_RGBA_FLT, INTENT_PERCEPTUAL, 0)`. Alpha rides as an "extra" channel.
-///   4. Quantize to 8-bit and compare against `ref.png` 鈥?should match within ~卤2 codes
+///   4. Quantize to 8-bit and compare against `ref.png` --should match within ~+/-2 codes
 ///      per channel.
 #[cfg(feature = "jpegxl")]
 #[test]
@@ -880,7 +880,7 @@ fn conformance_cmyk_layers_cms_srgb_output_matches_ref_png_when_sample_present()
         libjxl_sys::CmsProfile::open_from_mem(&source_icc).expect("lcms could not parse CMYK ICC");
     let out_profile =
         libjxl_sys::CmsProfile::new_srgb().expect("lcms could not build sRGB profile");
-    // djxl converts CMYK鈫抯RGB with the destination's rendering intent.
+    // djxl converts CMYK->sRGB with the destination's rendering intent.
     // For its `ColorEncoding::SRGB(false)` target the default intent is
     // perceptual (matches `INTENT_PERCEPTUAL = 0`).
     let transform = libjxl_sys::CmsTransform::new(
@@ -891,7 +891,7 @@ fn conformance_cmyk_layers_cms_srgb_output_matches_ref_png_when_sample_present()
         libjxl_sys::LCMS_INTENT_PERCEPTUAL,
         0,
     )
-    .expect("lcms could not build CMYK鈫抯RGB transform");
+    .expect("lcms could not build CMYK->sRGB transform");
     transform.do_transform(
         cmyk_input.as_ptr().cast(),
         rgba_out.as_mut_ptr().cast(),
@@ -940,7 +940,7 @@ fn conformance_cmyk_layers_cms_srgb_output_matches_ref_png_when_sample_present()
     let bias_g = diff_g as f64 / n as f64;
     let bias_b = diff_b as f64 / n as f64;
     eprintln!(
-        "cmyk_layers (lcms2 CMYK鈫抯RGB) vs ref.png:\n  mean signed diff = ({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})\n  max abs diff = ({max_r}, {max_g}, {max_b})"
+        "cmyk_layers (lcms2 CMYK->sRGB) vs ref.png:\n  mean signed diff = ({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})\n  max abs diff = ({max_r}, {max_g}, {max_b})"
     );
     // ref.png was rendered by djxl with skcms; we use lcms2. Both should
     // produce the same colorimetric transform; small (<5 codes) bias is
@@ -948,17 +948,17 @@ fn conformance_cmyk_layers_cms_srgb_output_matches_ref_png_when_sample_present()
     // and intent handling between the two CMSes.
     assert!(
         bias_r.abs() < 5.0 && bias_g.abs() < 5.0 && bias_b.abs() < 5.0,
-        "lcms2 CMYK鈫抯RGB drifts too far from ref.png: bias=({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})"
+        "lcms2 CMYK->sRGB drifts too far from ref.png: bias=({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2})"
     );
 }
 
 /// Historical diagnostic: dumps libjxl's CMYK output as raw RGB plus a few
 /// hand-rolled compositing models (`R*K`, `R*(1-K)`, `min(R,K)`, etc.) and
 /// reports the per-channel pixel diff against the conformance ref.png.
-/// All such models are wrong without proper ICC-managed CMYK鈫抯RGB
+/// All such models are wrong without proper ICC-managed CMYK->sRGB
 /// conversion (see PR #237 in libjxl). We retain the test as a debugging
-/// aid 鈥?it documents how the old "guess the formula" approach misbehaves
-/// across ink mixes 鈥?but the real fix lives in
+/// aid --it documents how the old "guess the formula" approach misbehaves
+/// across ink mixes --but the real fix lives in
 /// `apply_cmyk_to_srgb_via_lcms`.
 #[cfg(feature = "jpegxl")]
 #[test]
@@ -1061,7 +1061,7 @@ fn conformance_cmyk_layers_naive_composition_models_are_all_wrong_when_sample_pr
         let n = (rgba_f32.len() / 4) as u64;
         let denom = n.max(1) as f64;
 
-        // K stats 鈥?is it "0=no ink, 1=full ink" or "0=black, 1=white" (visible intensity)?
+        // K stats --is it "0=no ink, 1=full ink" or "0=black, 1=white" (visible intensity)?
         let (mut k_min, mut k_max, mut k_sum) = (1.0_f32, 0.0_f32, 0.0_f64);
         for &k in &k_f32 {
             k_min = k_min.min(k);
@@ -1085,7 +1085,7 @@ fn conformance_cmyk_layers_naive_composition_models_are_all_wrong_when_sample_pr
                 k_f32[idx],
             )
         };
-        // Approximate text positions on a 512脳512 conformance test card.
+        // Approximate text positions on a 512x512 conformance test card.
         for (label, x, y) in [
             ("top-center  ", 256, 75),
             ("background  ", 256, 200),
@@ -1250,7 +1250,7 @@ fn conformance_cmyk_layers_sdr_fallback_matches_ref_png_when_sample_present() {
     );
     assert!(
         bias_r.abs() < 5.0 && bias_g.abs() < 5.0 && bias_b.abs() < 5.0,
-        "lcms2 CMYK鈫抯RGB SDR fallback bias too large: ({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2}) 鈥?\
+        "lcms2 CMYK->sRGB SDR fallback bias too large: ({bias_r:+.2}, {bias_g:+.2}, {bias_b:+.2}) --\
          check JxlDecoderSetExtraChannelBuffer wiring + jxl_decoder_copy_target_original_icc + \
          apply_cmyk_to_srgb_via_lcms (libjxl CMYK convention 0=max ink, lcms2 0=no ink in 0..100)"
     );
@@ -1292,7 +1292,7 @@ fn jxl_gain_map_bundle_parses_metadata_and_embedded_codestream() {
 /// producing a uniformly ~22-code darker image (mean signed diff
 /// (-19.76, -22.22, -25.93), max diff 75) and effectively losing the gray
 /// table grid lines that should be visible. After the fix every pixel
-/// matches `ref.png` to within 鈮? codes.
+/// matches `ref.png` to within <= codes.
 #[cfg(feature = "jpegxl")]
 #[test]
 fn conformance_patches_sdr_fallback_matches_ref_png_when_sample_present() {
@@ -1319,7 +1319,7 @@ fn conformance_patches_sdr_fallback_matches_ref_png_when_sample_present() {
     assert_eq!(
         hdr.metadata.transfer_function,
         HdrTransferFunction::Linear,
-        "patches.jxl ships TF=Linear in the codestream 鈥?read_jxl_metadata must surface that"
+        "patches.jxl ships TF=Linear in the codestream --read_jxl_metadata must surface that"
     );
     let ours = fallback.rgba();
     let ref_img = image::open(ref_path).expect("decode ref.png").to_rgba8();
@@ -1346,7 +1346,7 @@ fn conformance_patches_sdr_fallback_matches_ref_png_when_sample_present() {
     );
     assert!(
         bias.0.abs() < 2.0 && bias.1.abs() < 2.0 && bias.2.abs() < 2.0,
-        "mean signed diff vs ref.png must stay within 卤2 codes (was -19.76 / -22.22 / -25.93 \
+        "mean signed diff vs ref.png must stay within +/-2 codes (was -19.76 / -22.22 / -25.93 \
          before treating TF=Linear codestream as truly linear); got {bias:?}"
     );
     assert!(
@@ -1363,7 +1363,7 @@ fn conformance_patches_sdr_fallback_matches_ref_png_when_sample_present() {
 /// (`JxlDecoderGetColorAsEncodedProfile` returns `JXL_DEC_ERROR` here).
 /// libjxl emits truly linear floats per the codestream, so the SDR-grade
 /// fallback must apply the sRGB OETF before quantizing. Before parsing
-/// `rTRC`, we'd guess "non-sRGB primaries 鈫?PQ" for any non-sRGB ICC and
+/// `rTRC`, we'd guess "non-sRGB primaries ->PQ" for any non-sRGB ICC and
 /// route the linear floats through the HDR tone-mapping pipeline, which
 /// produced a uniformly ~16-code darker image (mean diff
 /// (-14.26, -16.16, -19.21), max 51) and washed out the gray table grid
@@ -1391,7 +1391,7 @@ fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present
     let crate::loader::ImageData::Hdr { fallback, hdr } = img else {
         panic!("unexpected ImageData variant");
     };
-    // The metadata TF is whatever the rTRC parser decides 鈥?it can be
+    // The metadata TF is whatever the rTRC parser decides --it can be
     // `Srgb` (piecewise / parametric / LUT curve) or `Linear` (count=0 or
     // count=1@1.0). Either way the SDR-grade fallback must produce bytes
     // that match ref.png; the previous bug was routing through the HDR
@@ -1402,7 +1402,7 @@ fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present
             hdr.metadata.transfer_function,
             HdrTransferFunction::Pq | HdrTransferFunction::Hlg
         ),
-        "patches_lossless is SDR 鈥?must not route through the HDR pipeline; \
+        "patches_lossless is SDR --must not route through the HDR pipeline; \
          got transfer_function={:?}",
         hdr.metadata.transfer_function
     );
@@ -1431,7 +1431,7 @@ fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present
     );
     assert!(
         bias.0.abs() < 2.0 && bias.1.abs() < 2.0 && bias.2.abs() < 2.0,
-        "mean signed diff vs ref.png must stay within 卤2 codes (was -14.26 / -16.16 / -19.21 \
+        "mean signed diff vs ref.png must stay within +/-2 codes (was -14.26 / -16.16 / -19.21 \
          before parsing rTRC); got {bias:?}"
     );
     assert!(
@@ -1448,7 +1448,7 @@ fn conformance_patches_lossless_sdr_fallback_matches_ref_png_when_sample_present
 #[test]
 fn icc_trc_kind_classifies_linear_gamma_and_lut() {
     // Build a minimal MOCK_ICC_PROFILE_SIZE-byte ICC profile with a single rTRC tag at a
-    // known offset. We don't need a valid header 鈥?`icc_find_tag_element_offset`
+    // known offset. We don't need a valid header --`icc_find_tag_element_offset`
     // only reads the tag-table at offset 128.
     fn make(count: u32, payload_after_count: &[u8]) -> Vec<u8> {
         let trc_offset = 256_u32;
@@ -1479,7 +1479,7 @@ fn icc_trc_kind_classifies_linear_gamma_and_lut() {
         Some(HdrTransferFunction::Linear)
     );
 
-    let gamma_22 = make(1, &[0x02, 0x33]); // u8.8 鈮?2.2
+    let gamma_22 = make(1, &[0x02, 0x33]); // u8.8 <=2.2
     assert_eq!(
         super::icc_trc_kind(&gamma_22),
         Some(HdrTransferFunction::Gamma)
@@ -1524,7 +1524,7 @@ fn conformance_blendmodes_sdr_fallback_close_to_ref_png_when_sample_present() {
     assert_eq!(
         hdr.metadata.transfer_function,
         HdrTransferFunction::Srgb,
-        "blendmodes.jxl ships TF=sRGB in the codestream 鈥?read_jxl_metadata must surface \
+        "blendmodes.jxl ships TF=sRGB in the codestream --read_jxl_metadata must surface \
          that so the SDR-grade fallback direct-quantizes without re-applying the OETF"
     );
     let ours = fallback.rgba();
@@ -1556,19 +1556,19 @@ fn conformance_blendmodes_sdr_fallback_close_to_ref_png_when_sample_present() {
     let bias = (sr as f64 / total, sg as f64 / total, sb as f64 / total);
     assert!(
         bias.0.abs() < 5.0 && bias.1.abs() < 5.0 && bias.2.abs() < 5.0,
-        "global mean RGB bias vs ref.png must stay within 卤5 codes (we currently sit at \
+        "global mean RGB bias vs ref.png must stay within +/-5 codes (we currently sit at \
          ~+1.55, -2.76, -0.75); got {bias:?}"
     );
     let exact_pct = exact as f64 / total;
     let close_15_pct = close_15 as f64 / total;
     assert!(
         exact_pct >= 0.30,
-        "Icc core tests: 鈮?0% of pixels must match ref.png exactly (currently ~37%); got {:.1}%",
+        "Icc core tests: at least 30% of pixels must match ref.png exactly (currently ~37%); got {:.1}%",
         exact_pct * 100.0
     );
     assert!(
         close_15_pct >= 0.55,
-        "鈮?5% of pixels must be within 15 codes of ref.png; got {:.1}%",
+        "at least 55% of pixels must be within 15 codes of ref.png; got {:.1}%",
         close_15_pct * 100.0
     );
 }
@@ -1584,7 +1584,7 @@ fn conformance_blendmodes_sdr_fallback_close_to_ref_png_when_sample_present() {
 fn diagnose_conformance_pair(name: &str, jxl_path: &std::path::Path, ref_path: &std::path::Path) {
     use crate::hdr::types::HdrToneMapSettings;
     if !jxl_path.is_file() || !ref_path.is_file() {
-        eprintln!("[{name}] skipped 鈥?conformance file not present");
+        eprintln!("[{name}] skipped --conformance file not present");
         return;
     }
     let bytes = std::fs::read(jxl_path).expect("read jxl");
@@ -1774,11 +1774,11 @@ fn diagnose_conformance_blendmodes_and_patches_when_sample_present() {
 ///   - what `linear_to_srgb_u8(v)` produces (apply sRGB OETF first)
 ///   - what `ref.png` actually has at that location
 /// The encoding that matches ref.png tells us how libjxl emitted floats
-/// for that bitstream 鈥?Modular-mode files with TF=Linear preserve linear
+/// for that bitstream --Modular-mode files with TF=Linear preserve linear
 /// values, while sRGB-tagged Modular-mode files preserve sRGB-encoded
 /// values, etc.
 /// Count `JXL_DEC_FRAME` events fired by libjxl for `blendmodes/input.jxl`
-/// 鈥?if it's >1 with `have_animation=0` we know the file ships multiple
+/// --if it's >1 with `have_animation=0` we know the file ships multiple
 /// blend-mode layers that libjxl coalesces; if our pipeline is somehow
 /// giving back the un-coalesced last layer that explains why our SDR
 /// fallback differs from `ref.png` on partially-transparent pixels.
@@ -1833,7 +1833,7 @@ fn diagnose_blendmodes_frame_count_when_sample_present() {
         libjxl_sys::JxlDecoderDestroy(decoder);
     }
     eprintln!(
-        "[blendmodes] JXL_DEC_FRAME fired {frame_count}脳 JXL_DEC_FULL_IMAGE fired {full_image_count}脳"
+        "[blendmodes] JXL_DEC_FRAME fired {frame_count}x JXL_DEC_FULL_IMAGE fired {full_image_count}x"
     );
 }
 
@@ -1981,7 +1981,7 @@ fn diagnose_jxl_float_buffer_encoding_when_samples_present() {
             (rw * 3 / 4, rh / 2),
             (rw * 3 / 4, rh * 3 / 4),
         ];
-        eprintln!("\n--- {case} ({rw}x{rh}) 鈥?float vs ref.png ---");
+        eprintln!("\n--- {case} ({rw}x{rh}) --float vs ref.png ---");
         for (x, y) in samples {
             let i = (y as usize * width as usize + x as usize) * 4;
             if i + 2 >= rgba_f32.len() {

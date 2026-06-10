@@ -84,6 +84,20 @@ impl CallbackTrait for HdrImagePlaneCallback {
         #[cfg(not(feature = "heif-native"))]
         let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
+        let jpeg_failed = iso_deferred.is_some()
+            && resources
+                .failed_jpeg_image_compose
+                .contains(&(image_key, target_capacity_bits));
+        #[cfg(feature = "heif-native")]
+        let apple_failed = apple_deferred.is_some()
+            && resources
+                .failed_apple_image_compose
+                .contains(&(image_key, target_capacity_bits));
+        #[cfg(not(feature = "heif-native"))]
+        let apple_failed = false;
+        if jpeg_failed || apple_failed {
+            return Vec::new();
+        }
 
         if !resources.image_bindings.contains_key(&image_key) {
             match upload_image_plane(device, queue, &self.image) {
@@ -215,7 +229,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     resources.jpeg_compose_bind_group_layout.as_ref(),
                     resources.jpeg_compose_pipeline.as_ref(),
                 ) {
-                    log::info!(
+                    log::debug!(
                         "[HDR] ISO gain-map compose path=GPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
                         self.image.width,
                         self.image.height,
@@ -256,7 +270,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         return compose_command_buffers;
                     }
                 } else {
-                    log::info!(
+                    log::debug!(
                         "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
                         self.image.width,
                         self.image.height,
@@ -268,24 +282,41 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             self.tone_map.target_hdr_capacity()
                         )
                     );
-                    let composed = crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
+                    // CPU fallback composes synchronously in the render callback; large images can
+                    // stall a frame. Move this work to a background task if it becomes user-visible.
+                    match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_cpu_pixels(
                         self.image.width,
                         self.image.height,
                         deferred,
                         self.tone_map.target_hdr_capacity(),
-                    );
-                    if let Err(err) = write_rgba32f_to_texture(
-                        queue,
-                        &binding.uploaded_texture,
-                        self.image.width,
-                        self.image.height,
-                        &composed,
                     ) {
-                        log::warn!("[HDR] ISO CPU compose upload failed: {err}");
-                        binding.bind_group = None;
-                    } else {
-                        binding.baked_jpeg_image_key = Some(image_key);
-                        binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                        Ok(composed) => {
+                            if let Err(err) = write_rgba32f_to_texture(
+                                queue,
+                                &binding.uploaded_texture,
+                                self.image.width,
+                                self.image.height,
+                                &composed,
+                            ) {
+                                log::warn!("[HDR] ISO CPU compose upload failed: {err}");
+                                resources
+                                    .failed_jpeg_image_compose
+                                    .insert((image_key, target_capacity_bits));
+                                resources.image_bindings.remove(&image_key);
+                                return Vec::new();
+                            } else {
+                                binding.baked_jpeg_image_key = Some(image_key);
+                                binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("[HDR] ISO CPU compose failed: {err}");
+                            resources
+                                .failed_jpeg_image_compose
+                                .insert((image_key, target_capacity_bits));
+                            resources.image_bindings.remove(&image_key);
+                            return Vec::new();
+                        }
                     }
                 }
             }
@@ -310,7 +341,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         log::warn!(
                             "[HDR] Apple GPU compose primary buffer allocation failed: {err}"
                         );
-                        binding.bind_group = None;
+                        resources
+                            .failed_apple_image_compose
+                            .insert((image_key, target_capacity_bits));
+                        resources.image_bindings.remove(&image_key);
+                        return Vec::new();
                     } else {
                         let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
                         let display_storage = binding
@@ -351,6 +386,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         }
                     }
                 } else {
+                    // CPU fallback composes synchronously in the render callback; large images can
+                    // stall a frame. Move this work to a background task if it becomes user-visible.
                     match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
                         &self.image,
                         self.tone_map.target_hdr_capacity(),
@@ -364,7 +401,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                                 &composed,
                             ) {
                                 log::warn!("[HDR] Apple CPU compose upload failed: {err}");
-                                binding.bind_group = None;
+                                resources
+                                    .failed_apple_image_compose
+                                    .insert((image_key, target_capacity_bits));
+                                resources.image_bindings.remove(&image_key);
+                                return Vec::new();
                             } else {
                                 binding.baked_apple_image_key = Some(image_key);
                                 binding.baked_apple_weight_bits = Some(target_capacity_bits);
@@ -372,7 +413,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         }
                         Err(err) => {
                             log::warn!("[HDR] Apple CPU compose failed: {err}");
-                            binding.bind_group = None;
+                            resources
+                                .failed_apple_image_compose
+                                .insert((image_key, target_capacity_bits));
+                            resources.image_bindings.remove(&image_key);
+                            return Vec::new();
                         }
                     }
                 }

@@ -223,6 +223,7 @@ impl ImageViewerApp {
         self.tile_manager = None;
         self.set_current_image_resolution(None);
         self.animation = None;
+        self.animation_cache.remove(&idx);
         self.pending_anim_frames.remove(&idx);
         self.prev_texture = None;
         self.prev_hdr_image = None;

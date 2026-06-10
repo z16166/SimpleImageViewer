@@ -282,7 +282,7 @@ impl ImageLoader {
                                 {
                                     let decode_ms = t0.elapsed().as_millis();
                                     if decode_ms > 50 {
-                                        log::info!(
+                                        log::debug!(
                                             "[tile-worker-{}] decode tile ({},{}) {}x{} took {}ms",
                                             i,
                                             request.col,
@@ -317,7 +317,7 @@ impl ImageLoader {
                                 {
                                     let decode_ms = t0.elapsed().as_millis();
                                     if decode_ms > 50 {
-                                        log::info!(
+                                        log::debug!(
                                             "[tile-worker-{}] decode HDR tile file=\"{}\" index={} generation={} coord=({},{}) size={}x{} took {}ms",
                                             i,
                                             source.source_name(),
@@ -936,7 +936,7 @@ impl ImageLoader {
                         let limit = hq_preview_max_side();
                         let started_at = std::time::Instant::now();
                         let is_hdr_mode = !hdr_display_requests_sdr_preview(hdr_target_capacity);
-                        log::info!(
+                        log::debug!(
                             "[Loader] [{}] HQ preview start: index={} generation={} limit={} source={}x{} (hdr_mode={})",
                             file_name,
                             index,
@@ -1151,7 +1151,7 @@ impl ImageLoader {
             match r {
                 Ok(Ok(pixels)) => {
                     if Self::hq_refinement_superseded(&loading, index, generation) {
-                        log::info!(
+                        log::debug!(
                             "[Loader] HDR SDR fallback refinement discarded (stale): index={index} generation={generation}"
                         );
                         return;

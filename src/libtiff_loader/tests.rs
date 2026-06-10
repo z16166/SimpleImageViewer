@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
-use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::ImageData;
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};

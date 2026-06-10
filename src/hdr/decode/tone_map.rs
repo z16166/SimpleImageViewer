@@ -19,9 +19,6 @@ use super::constants::{
     MAX_HDR_FALLBACK_TOTAL_BYTES, MAX_HDR_TONE_MAP_INPUT,
 };
 
-#[cfg(test)]
-use std::io::{BufRead, Cursor};
-
 use crate::hdr::types::{
     HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrReference,
     HdrToneMapSettings, HdrTransferFunction,

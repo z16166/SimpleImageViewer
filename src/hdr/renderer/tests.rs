@@ -125,7 +125,7 @@ fn pack_rows_for_texture_copy_borrows_when_already_aligned() {
 
 #[test]
 fn pack_rows_rgba32f_round_trip_preserves_data() {
-    // bytes_per_pixel=16 鈫?unpadded row = width * 16 bytes.
+    // bytes_per_pixel=16 ->unpadded row = width * 16 bytes.
     // Test widths that are / are not multiples of 16 (alignment boundary).
     for &(width, height) in &[(13, 7), (16, 4), (17, 11), (64, 64), (4033, 3)] {
         let pixel_count = width as usize * height as usize * 4;

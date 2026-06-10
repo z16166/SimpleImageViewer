@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.4] - 2026-06-10
+
+### Fixed
+- **HDR gain-map reliability**: Improved AVIF, JPEG XL, and Ultra HDR image handling so gain-map photos render more consistently across HDR and SDR displays.
+- **RAW tone-mapped viewing**: High-quality RAW loading on SDR displays now keeps the HDR tone-map path available, including OSD HDR status and exposure adjustment.
+- **Windows graphics backend selection**: Windows 10/11 compatibility builds now prefer the modern DirectX path instead of falling back to OpenGL, while Windows 7 keeps the ANGLE compatibility path.
+- **JPEG XL gain-map loading**: Fixed loading failures for JPEG XL files that store an SDR base image with deferred HDR gain-map data.
+- **HDR browsing stability**: Reduced repeated fallback work and stale HDR state after display capability changes, improving responsiveness when switching displays or browsing HDR images.
+
 ## [2.4.3] - 2026-06-09
 
 ### Added

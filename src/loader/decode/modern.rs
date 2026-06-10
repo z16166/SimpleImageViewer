@@ -66,7 +66,7 @@ pub(crate) fn load_avif_with_target_capacity(
             crate::mmap_util::map_file(path).map_err(|e| format!("Failed to read AVIF: {e}"))?;
 
         let decode_capacity = hdr_gain_map_decode_capacity(hdr_target_capacity, &hdr_tone_map);
-        log::info!(
+        log::debug!(
             "[HDR][AVIF] load path={} hdr_cap={:.3} decode_capacity={:.3} tone_target={:.3}",
             path.display(),
             hdr_target_capacity,

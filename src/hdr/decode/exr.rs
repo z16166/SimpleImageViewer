@@ -17,9 +17,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(test)]
-use std::io::{BufRead, Cursor};
-
 use crate::hdr::tiled::HdrTiledSource;
 
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};

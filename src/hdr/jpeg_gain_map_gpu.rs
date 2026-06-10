@@ -263,13 +263,26 @@ pub(crate) fn attach_iso_deferred_tile_metadata(
 }
 
 /// CPU compose when GPU ISO gain-map compose in [`crate::hdr::renderer::jpeg_compose_gpu`] is unavailable.
+///
+/// Keep the plane validation here even though normal decode paths validate in
+/// `attach_iso_gain_map_gpu_deferred`: renderer fallback code may receive deferred
+/// planes from tiled metadata or future loaders, and this function indexes both buffers directly.
 pub(crate) fn compose_iso_deferred_cpu_pixels(
     width: u32,
     height: u32,
     deferred: &IsoGainMapGpuSource,
     target_hdr_capacity: f32,
-) -> Vec<f32> {
+) -> Result<Vec<f32>, String> {
     use crate::hdr::gain_map::{append_hdr_pixel_from_sdr_and_gain, sample_gain_map_rgb};
+
+    crate::hdr::gain_map::validate_iso_deferred_planes(
+        width,
+        height,
+        deferred.sdr_rgba.as_slice(),
+        deferred.gain_width,
+        deferred.gain_height,
+        deferred.gain_rgba.as_slice(),
+    )?;
 
     let mut rgba_f32 = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
@@ -293,31 +306,101 @@ pub(crate) fn compose_iso_deferred_cpu_pixels(
             );
         }
     }
-    rgba_f32
+    Ok(rgba_f32)
 }
 
 /// CPU compose for a deferred ISO gain-map tile region.
+///
+/// The full physical planes are validated defensively before sampling tile pixels;
+/// not every caller necessarily constructed the metadata through the static-image attach helper.
 pub(crate) fn compose_iso_deferred_tile_cpu_pixels(
     deferred: &IsoGainMapGpuSource,
     tile_ctx: &crate::hdr::types::IsoDeferredTileContext,
     tile_width: u32,
     tile_height: u32,
     target_hdr_capacity: f32,
-) -> Vec<f32> {
-    crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
-        tile_width,
-        tile_height,
-        tile_ctx.origin_x,
-        tile_ctx.origin_y,
+) -> Result<Vec<f32>, String> {
+    crate::hdr::gain_map::validate_iso_deferred_planes(
         tile_ctx.physical_width,
         tile_ctx.physical_height,
-        tile_ctx.orientation,
         deferred.sdr_rgba.as_slice(),
-        deferred.gain_rgba.as_slice(),
         deferred.gain_width,
         deferred.gain_height,
-        deferred.metadata,
-        target_hdr_capacity,
-        crate::hdr::ultra_hdr::display_to_physical_pixel,
+        deferred.gain_rgba.as_slice(),
+    )?;
+    Ok(
+        crate::hdr::ultra_hdr_compose::compose_ultra_hdr_tile_region_cpu(
+            tile_width,
+            tile_height,
+            tile_ctx.origin_x,
+            tile_ctx.origin_y,
+            tile_ctx.physical_width,
+            tile_ctx.physical_height,
+            tile_ctx.orientation,
+            deferred.sdr_rgba.as_slice(),
+            deferred.gain_rgba.as_slice(),
+            deferred.gain_width,
+            deferred.gain_height,
+            deferred.metadata,
+            target_hdr_capacity,
+            crate::hdr::ultra_hdr::display_to_physical_pixel,
+        ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_gain_map_metadata() -> GainMapMetadata {
+        GainMapMetadata {
+            gain_map_min: [0.0; 3],
+            gain_map_max: [1.0; 3],
+            gamma: [1.0; 3],
+            offset_sdr: [0.0; 3],
+            offset_hdr: [0.0; 3],
+            hdr_capacity_min: 1.0,
+            hdr_capacity_max: 4.0,
+            backward_direction: false,
+        }
+    }
+
+    #[test]
+    fn cpu_compose_rejects_short_sdr_baseline() {
+        let deferred = IsoGainMapGpuSource {
+            sdr_rgba: Arc::new(vec![0; 4]),
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            metadata: test_gain_map_metadata(),
+        };
+
+        let err = compose_iso_deferred_cpu_pixels(2, 1, &deferred, 1.0)
+            .expect_err("short SDR baseline must be rejected before indexing");
+
+        assert!(err.contains("SDR baseline RGBA length mismatch"));
+    }
+
+    #[test]
+    fn tile_cpu_compose_rejects_short_sdr_baseline() {
+        let deferred = IsoGainMapGpuSource {
+            sdr_rgba: Arc::new(vec![0; 4]),
+            gain_rgba: Arc::new(vec![0; 4]),
+            gain_width: 1,
+            gain_height: 1,
+            metadata: test_gain_map_metadata(),
+        };
+        let tile_ctx = crate::hdr::types::IsoDeferredTileContext {
+            origin_x: 0,
+            origin_y: 0,
+            physical_width: 2,
+            physical_height: 1,
+            orientation: 1,
+        };
+
+        let err = compose_iso_deferred_tile_cpu_pixels(&deferred, &tile_ctx, 2, 1, 1.0)
+            .expect_err("short tiled SDR baseline must be rejected before indexing");
+
+        assert!(err.contains("SDR baseline RGBA length mismatch"));
+    }
 }

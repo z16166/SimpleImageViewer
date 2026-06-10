@@ -100,6 +100,7 @@ impl ImageLoader {
     }
 
     /// Push a deferred result behind already-queued items.
+    /// Use when work should yield to older results instead of preserving current-frame order.
     pub fn repush_back(&mut self, output: LoaderOutput) {
         self.local_queue.push_back(output);
     }

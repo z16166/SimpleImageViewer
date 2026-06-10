@@ -40,7 +40,7 @@ use super::wgpu::{
     spawn_dx12_preprobe_thread, take_and_join_dx12_cache_validate_thread,
 };
 
-#[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+#[cfg(target_os = "windows")]
 fn is_windows_7_version(os_version: &str) -> bool {
     os_version
         .split_once('.')
@@ -49,7 +49,18 @@ fn is_windows_7_version(os_version: &str) -> bool {
         .is_some_and(|(major, minor)| major == "6" && minor == "1")
 }
 
-#[cfg(all(test, target_os = "windows", feature = "legacy_win7"))]
+#[cfg(target_os = "windows")]
+/// Kept separate so startup failure hints use the same Windows 7 version gate as
+/// the legacy ANGLE backend selection and can be tested without running eframe.
+fn startup_failed_help_hint_for_windows_version(os_version: &str) -> String {
+    if is_windows_7_version(os_version) {
+        rust_i18n::t!("error.win7_graphics_hint").to_string()
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     #[test]
     fn legacy_win7_angle_gate_only_matches_windows_7() {
@@ -57,6 +68,13 @@ mod tests {
         assert!(!super::is_windows_7_version("6.2.9200"));
         assert!(!super::is_windows_7_version("10.0.26200"));
         assert!(!super::is_windows_7_version("11"));
+    }
+
+    #[test]
+    fn startup_failure_hint_only_matches_windows_7() {
+        assert!(!super::startup_failed_help_hint_for_windows_version("6.1.7601").is_empty());
+        assert!(super::startup_failed_help_hint_for_windows_version("6.10.0").is_empty());
+        assert!(super::startup_failed_help_hint_for_windows_version("10.0.26200").is_empty());
     }
 }
 
@@ -523,12 +541,7 @@ pub fn run() -> eframe::Result {
             #[cfg(target_os = "windows")]
             {
                 let os_version = sysinfo::System::os_version().unwrap_or_default();
-                if os_version.starts_with("6.1") {
-                    // Windows 7
-                    rust_i18n::t!("error.win7_graphics_hint").to_string()
-                } else {
-                    String::new()
-                }
+                startup_failed_help_hint_for_windows_version(&os_version)
             }
             #[cfg(not(target_os = "windows"))]
             String::new()

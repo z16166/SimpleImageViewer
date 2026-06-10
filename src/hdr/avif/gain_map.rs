@@ -83,13 +83,3 @@ fn signed(value: libavif_sys::avifSignedFraction) -> (i32, u32) {
 fn unsigned(value: libavif_sys::avifUnsignedFraction) -> (u32, u32) {
     (value.n, value.d)
 }
-
-#[cfg(test)]
-pub(crate) fn test_signed_fraction(n: i32, d: u32) -> libavif_sys::avifSignedFraction {
-    libavif_sys::avifSignedFraction { n, d }
-}
-
-#[cfg(test)]
-pub(crate) fn test_unsigned_fraction(n: u32, d: u32) -> libavif_sys::avifUnsignedFraction {
-    libavif_sys::avifUnsignedFraction { n, d }
-}

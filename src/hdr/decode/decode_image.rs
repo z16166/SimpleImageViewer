@@ -16,9 +16,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(test)]
-use std::io::{BufRead, Cursor};
-
 use image::{ImageReader, Limits};
 
 use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;

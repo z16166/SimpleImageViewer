@@ -28,5 +28,3 @@ pub use source::RadianceHdrTiledImageSource;
 
 #[cfg(test)]
 pub(crate) use header::parse_radiance_dimensions_line;
-#[cfg(test)]
-pub(crate) use layout::RadianceRasterLayout;

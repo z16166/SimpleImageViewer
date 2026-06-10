@@ -165,14 +165,22 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             resources.tile_bindings.remove(tile_key);
                             return Vec::new();
                         };
-                        let composed =
-                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
-                                deferred,
-                                &ctx,
-                                self.tile.width,
-                                self.tile.height,
-                                self.tone_map.target_hdr_capacity(),
-                            );
+                        // CPU fallback composes synchronously in the render callback; large tiles
+                        // can stall a frame. Move this work to a background task if it becomes visible.
+                        let composed = match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
+                            deferred,
+                            &ctx,
+                            self.tile.width,
+                            self.tile.height,
+                            self.tone_map.target_hdr_capacity(),
+                        ) {
+                            Ok(composed) => composed,
+                            Err(err) => {
+                                log::warn!("[HDR] ISO tile CPU compose failed: {err}");
+                                resources.tile_bindings.remove(tile_key);
+                                return Vec::new();
+                            }
+                        };
                         if let Err(err) = write_rgba32f_to_texture(
                             queue,
                             texture,
@@ -190,6 +198,7 @@ impl CallbackTrait for HdrTilePlaneCallback {
                         }
                     }
                     let _ = hdr_view;
+                    // CPU compose writes directly into the existing texture, so no GPU command buffer is needed.
                     return Vec::new();
                 }
 
@@ -266,14 +275,22 @@ impl CallbackTrait for HdrTilePlaneCallback {
                             return vec![compose_command];
                         }
 
-                        let composed =
-                            crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
-                                deferred,
-                                &ctx,
-                                self.tile.width,
-                                self.tile.height,
-                                self.tone_map.target_hdr_capacity(),
-                            );
+                        // CPU fallback composes synchronously in the render callback; large tiles
+                        // can stall a frame. Move this work to a background task if it becomes visible.
+                        let composed = match crate::hdr::jpeg_gain_map_gpu::compose_iso_deferred_tile_cpu_pixels(
+                            deferred,
+                            &ctx,
+                            self.tile.width,
+                            self.tile.height,
+                            self.tone_map.target_hdr_capacity(),
+                        ) {
+                            Ok(composed) => composed,
+                            Err(err) => {
+                                log::warn!("[HDR] ISO tile CPU compose failed: {err}");
+                                resources.tile_bindings.remove(tile_key);
+                                return Vec::new();
+                            }
+                        };
                         if let Err(err) = write_rgba32f_to_texture(
                             queue,
                             &uploaded.texture,
