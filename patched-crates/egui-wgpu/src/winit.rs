@@ -18,6 +18,17 @@ struct SurfaceState {
     height: u32,
     resizing: bool,
     needs_reconfigure: bool,
+
+    // Set when the previous frame observed `wgpu::CurrentSurfaceTexture::Lost`. Triggers a
+    // full surface recreation at the start of the next frame (see `recreate_surface`).
+    needs_recreate: bool,
+
+    // Backport of #8171 for the 0.34.3 patch release: recovering from a `Lost` surface requires
+    // dropping the old surface and creating a fresh one, which needs the window handle. On `main`
+    // the window is passed into `paint_and_update_textures`, but adding that argument here would be
+    // a breaking change to a public method, so for the patch we stash an owned handle instead.
+    // `None` when the surface was created via `set_window_unsafe` (no owned window available).
+    window_for_surface_recreation: Option<Arc<winit::window::Window>>,
 }
 
 /// Everything you need to paint egui with [`wgpu`] on [`winit`].
@@ -137,14 +148,7 @@ impl Painter {
         // Windows: keep the DXGI swap-chain color space in sync with the
         // configured format. wgpu-hal uses `IDXGISwapChain::ResizeBuffers`
         // to apply format changes, and ResizeBuffers does **not** touch the
-        // color-space attribute of the swap chain. That means after a
-        // hot-swap from `Rgba16Float` (scRGB linear) to `Bgra8Unorm` (sRGB)
-        // -- or vice versa -- the compositor still interprets the back
-        // buffer as the *old* color space, which is what makes the app
-        // appear to use "tone-map rendering" after dragging from HDR to SDR
-        // (浅黑 background) and makes HDR content look blue-tinted after
-        // dragging from SDR to HDR. Calling `SetColorSpace1` after every
-        // configure restores the expected behavior.
+        // color-space attribute of the swap chain.
         #[cfg(target_os = "windows")]
         windows_sync_swap_chain_color_space(&surface_state.surface, &render_state.adapter, render_state.target_format);
 
@@ -211,8 +215,9 @@ impl Painter {
         if let Some(window) = window {
             let size = window.inner_size();
             if !self.surfaces.contains_key(&viewport_id) {
-                let surface = self.instance.create_surface(window)?;
-                self.add_surface(surface, viewport_id, size).await?;
+                let surface = self.instance.create_surface(Arc::clone(&window))?;
+                self.add_surface(surface, viewport_id, size, Some(window))
+                    .await?;
             }
         } else {
             log::warn!("No window - clearing all surfaces");
@@ -241,7 +246,7 @@ impl Painter {
                     self.instance
                         .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(&window)?)?
                 };
-                self.add_surface(surface, viewport_id, size).await?;
+                self.add_surface(surface, viewport_id, size, None).await?;
             }
         } else {
             log::warn!("No window - clearing all surfaces");
@@ -255,10 +260,9 @@ impl Painter {
         surface: wgpu::Surface<'static>,
         viewport_id: ViewportId,
         size: winit::dpi::PhysicalSize<u32>,
+        window_for_surface_recreation: Option<Arc<winit::window::Window>>,
     ) -> Result<(), crate::WgpuError> {
-        let render_state = if let Some(render_state) = &self.render_state {
-            render_state
-        } else {
+        if self.render_state.is_none() {
             let render_state = RenderState::create(
                 &self.configuration,
                 &self.instance,
@@ -266,45 +270,105 @@ impl Painter {
                 self.options,
             )
             .await?;
-            self.render_state.get_or_insert(render_state)
-        };
-        let alpha_mode = if self.support_transparent_backbuffer {
-            let supported_alpha_modes = surface.get_capabilities(&render_state.adapter).alpha_modes;
+            self.render_state = Some(render_state);
+        }
+        self.install_surface(
+            surface,
+            viewport_id,
+            size.width,
+            size.height,
+            false,
+            window_for_surface_recreation,
+        );
+        Ok(())
+    }
 
-            // Prefer pre multiplied over post multiplied!
-            if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
-                wgpu::CompositeAlphaMode::PreMultiplied
-            } else if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
-                wgpu::CompositeAlphaMode::PostMultiplied
+    /// Inserts a freshly created surface into [`Self::surfaces`] and configures it.
+    ///
+    /// Render state must already be initialised before calling this.
+    fn install_surface(
+        &mut self,
+        surface: wgpu::Surface<'static>,
+        viewport_id: ViewportId,
+        width: u32,
+        height: u32,
+        resizing: bool,
+        window_for_surface_recreation: Option<Arc<winit::window::Window>>,
+    ) {
+        let alpha_mode = {
+            let render_state = self
+                .render_state
+                .as_ref()
+                .expect("install_surface called before render_state initialization");
+            if self.support_transparent_backbuffer {
+                let supported_alpha_modes =
+                    surface.get_capabilities(&render_state.adapter).alpha_modes;
+
+                // Prefer pre multiplied over post multiplied!
+                if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                    wgpu::CompositeAlphaMode::PreMultiplied
+                } else if supported_alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+                {
+                    wgpu::CompositeAlphaMode::PostMultiplied
+                } else {
+                    log::warn!(
+                        "Transparent window was requested, but the active wgpu surface does not support a `CompositeAlphaMode` with transparency."
+                    );
+                    wgpu::CompositeAlphaMode::Auto
+                }
             } else {
-                log::warn!(
-                    "Transparent window was requested, but the active wgpu surface does not support a `CompositeAlphaMode` with transparency."
-                );
                 wgpu::CompositeAlphaMode::Auto
             }
-        } else {
-            wgpu::CompositeAlphaMode::Auto
         };
         self.surfaces.insert(
             viewport_id,
             SurfaceState {
                 surface,
-                width: size.width,
-                height: size.height,
+                width,
+                height,
                 alpha_mode,
-                resizing: false,
+                resizing,
                 needs_reconfigure: false,
+                needs_recreate: false,
+                window_for_surface_recreation,
             },
         );
-        let Some(width) = NonZeroU32::new(size.width) else {
+        let Some(width) = NonZeroU32::new(width) else {
             log::debug!("The window width was zero; skipping generate textures");
-            return Ok(());
+            return;
         };
-        let Some(height) = NonZeroU32::new(size.height) else {
+        let Some(height) = NonZeroU32::new(height) else {
             log::debug!("The window height was zero; skipping generate textures");
-            return Ok(());
+            return;
         };
         self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, width, height);
+    }
+
+    /// Drop the existing [`wgpu::Surface`] for `viewport_id` and create a fresh one for the stored
+    /// window via [`wgpu::Instance::create_surface`], then configure it.
+    ///
+    /// Used to recover from [`wgpu::CurrentSurfaceTexture::Lost`], where reconfiguring the existing
+    /// surface object cannot recover. Backport of #8171 for the 0.34.3 patch release; see the note
+    /// on [`SurfaceState::window_for_surface_recreation`].
+    fn recreate_surface(&mut self, viewport_id: ViewportId) -> Result<(), crate::WgpuError> {
+        profiling::function_scope!();
+
+        let Some(old_state) = self.surfaces.get(&viewport_id) else {
+            return Ok(());
+        };
+        let Some(window) = old_state.window_for_surface_recreation.clone() else {
+            // Surface was created via `set_window_unsafe`; we have no owned window to recreate from.
+            return Ok(());
+        };
+        let width = old_state.width;
+        let height = old_state.height;
+        let resizing = old_state.resizing;
+
+        // Drop the old surface before creating the new one.
+        self.surfaces.remove(&viewport_id);
+
+        let surface = self.instance.create_surface(Arc::clone(&window))?;
+        self.install_surface(surface, viewport_id, width, height, resizing, Some(window));
         Ok(())
     }
 
@@ -444,22 +508,9 @@ impl Painter {
 
     /// Apply a pending runtime swap-chain format change request, if any.
     ///
-    /// Downstream patch on top of upstream egui-wgpu. The application writes a
-    /// new desired surface format into
-    /// [`crate::WgpuConfiguration::requested_target_format`] (e.g. when the
-    /// window has moved to a monitor with different HDR capabilities) and we
-    /// pick it up here at the start of every frame:
-    ///
-    /// 1. Validate that the surface actually supports the requested format
-    ///    (via `get_capabilities`); if not, log + drop the request.
-    /// 2. Hot-swap the egui pipeline format on the existing
-    ///    [`crate::RenderState::renderer`] (preserves textures + buffers).
-    /// 3. Update [`crate::RenderState::target_format`] and the cached
-    ///    [`crate::WgpuConfiguration::preferred_target_format`] so future
-    ///    `configure_surface` calls and downstream consumers
-    ///    (`Frame::wgpu_render_state()`) see the new format.
-    /// 4. Reconfigure the swap chain immediately and rebuild the MSAA / depth
-    ///    texture views to match the new format.
+    /// MUST be called AFTER `output_frame.present()`. Calling mid-frame
+    /// would cause `RenderPipeline targets are incompatible with render pass`
+    /// panics because the application's own pipelines still target the old format.
     fn try_apply_runtime_target_format_switch(&mut self, viewport_id: ViewportId) {
         let Some(requested_format) = self.configuration.requested_target_format.take() else {
             return;
@@ -500,24 +551,10 @@ impl Painter {
         }
         render_state.target_format = requested_format;
         self.configuration.preferred_target_format = Some(requested_format);
-        // Publish the new active format on the reverse-direction mailbox so
-        // the application can observe it via `frame.wgpu_render_state()`-
-        // independent path. `RenderState` derives `Clone` and eframe stores a
-        // clone in `Frame`, so the line above only updates the painter's copy
-        // — without this `set` the application's `frame.wgpu_render_state()
-        // .target_format` keeps returning the original startup format
-        // forever, causing the OSD / shader-mode logic to lock onto the
-        // initial mode after the very first runtime hot-swap.
         self.configuration
             .active_target_format
             .set(requested_format);
 
-        // Reconfigure the swap chain right now so the very next
-        // `get_current_texture()` returns a frame in the new format. This also
-        // rebuilds the MSAA / depth texture views via
-        // `resize_and_generate_depth_texture_view_and_msaa_view` (called from
-        // `on_window_resized`-style path). We reuse the cached width/height
-        // since the window dimensions did not change — only the format did.
         let (width, height) = {
             let s = self.surfaces.get(&viewport_id).expect("surface exists");
             (s.width, s.height)
@@ -525,8 +562,6 @@ impl Painter {
         if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
             self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, w, h);
         } else if let Some(s) = self.surfaces.get_mut(&viewport_id) {
-            // Window currently has no usable size (minimised); defer the
-            // surface reconfigure until paint time as usual.
             s.needs_reconfigure = true;
         }
     }
@@ -545,9 +580,7 @@ impl Painter {
         if renderer.rgb10a2_pq_framebuffer() == requested_pq {
             return;
         }
-        log::info!(
-            "egui-wgpu: hot-swapping Rgb10a2 UI encoding pq={requested_pq}"
-        );
+        log::info!("egui-wgpu: hot-swapping Rgb10a2 UI encoding pq={requested_pq}");
         renderer.recreate_pipeline_for_target_format(
             &render_state.device,
             render_state.target_format,
@@ -663,6 +696,19 @@ impl Painter {
         let capture = !capture_data.is_empty();
         let mut vsync_sec = 0.0;
 
+        // If the previous frame produced `CurrentSurfaceTexture::Lost`, the match below set
+        // `needs_recreate`. Recreate the surface now, before borrowing `render_state` / `surfaces`
+        // for the rest of the paint (see #8171).
+        if self
+            .surfaces
+            .get(&viewport_id)
+            .is_some_and(|s| s.needs_recreate)
+            && let Err(err) = self.recreate_surface(viewport_id)
+        {
+            log::error!("Failed to recreate surface for {viewport_id:?}: {err}");
+            return vsync_sec;
+        }
+
         // Wrap the rendering body in a labelled block so that all of the
         // mutable borrows of `self.render_state` / `self.surfaces` are
         // released BEFORE we invoke `try_apply_runtime_target_format_switch`
@@ -741,7 +787,16 @@ impl Painter {
             other => {
                 match (*self.configuration.on_surface_status)(&other) {
                     SurfaceErrorAction::RecreateSurface => {
-                        Self::configure_surface(surface_state, render_state, &self.configuration);
+                        if matches!(other, wgpu::CurrentSurfaceTexture::Lost) {
+                            surface_state.needs_recreate = true;
+                        } else {
+                            Self::configure_surface(
+                                surface_state,
+                                render_state,
+                                &self.configuration,
+                            );
+                        }
+                        self.context.request_repaint_of(viewport_id);
                     }
                     SurfaceErrorAction::SkipFrame => {}
                 }
@@ -775,11 +830,7 @@ impl Painter {
             // Translate eframe's sRGB-gamma `clear_color` into the color
             // space expected by the currently-bound swap-chain format so the
             // raw `LoadOp::Clear` matches what the egui fragment shader
-            // writes for regular UI geometry. Without this, the ~12/255
-            // sRGB panel background renders as ~3.76 nits on a
-            // Windows scRGB `Rgba16Float` HDR swap chain (blown-out grey)
-            // instead of ~0.3 nits (charcoal black). See
-            // `clear_color_for_framebuffer_format`.
+            // writes for regular UI geometry.
             let framebuffer_clear_color = renderer::clear_color_for_framebuffer_format(
                 clear_color,
                 output_frame.texture.format(),
@@ -906,34 +957,14 @@ impl Painter {
             output_frame.present();
             vsync_sec += start.elapsed().as_secs_f32();
         }
+
         } // 'render block — releases the mutable borrows of `self.render_state` /
           //                  `self.surfaces` so the deferred swap-chain switch
           //                  below can take a fresh `&mut self`.
 
         // ----- runtime swap-chain target-format switch (deferred to end-of-frame) -----
         //
-        // Downstream patch: if the application has posted a request through
-        // `WgpuConfiguration::requested_target_format` (typically because the
-        // window moved between an HDR and an SDR monitor), validate it against
-        // the surface's actual capabilities and, if supported, hot-swap the
-        // egui render pipeline + reconfigure the swap chain + rebuild the MSAA
-        // texture. We `take()` regardless to clear the mailbox; if the format
-        // is unsupported we just log and drop the request rather than
-        // thrashing every frame.
-        //
-        // This MUST run AFTER `output_frame.present()` rather than at the
-        // start of the frame: by the time we get here, the application has
-        // ALREADY built its `eframe`/egui paint callbacks for the current
-        // frame and those callbacks captured the old `target_format` from
-        // `frame.wgpu_render_state()`. Swapping the surface format mid-frame
-        // would cause a `RenderPipeline targets are incompatible with render
-        // pass` panic on the application's own pipelines (e.g. the HDR image
-        // plane pipeline) because the live render-pass attachments would no
-        // longer match what the callbacks built. Doing the swap here lets the
-        // current frame complete cleanly with the old format end-to-end and
-        // makes the *next* frame observe the new format from
-        // `frame.wgpu_render_state().target_format`, so all downstream
-        // pipelines rebuild in sync.
+        // MUST run AFTER `output_frame.present()`. See `try_apply_runtime_target_format_switch`.
         self.try_apply_runtime_target_format_switch(viewport_id);
         self.try_apply_runtime_rgb10a2_pq_switch(viewport_id);
         #[cfg(target_os = "linux")]
@@ -973,16 +1004,7 @@ impl Painter {
     }
 }
 
-/// Map a `wgpu::TextureFormat` to the DXGI color space the Windows
-/// compositor should interpret the swap-chain back buffer with.
-///
-/// * `Rgba16Float` / `Rgba32Float` -> `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
-///   (scRGB linear with Rec.709 primaries; the standard float HDR
-///   color space on Windows).
-/// * sRGB-aware 8-bit formats -> `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709`
-///   (sRGB gamma with Rec.709 primaries; the default SDR color space).
-/// * Other formats -> `None`, leaving whatever color space is currently
-///   set on the swap chain untouched.
+/// Map a `wgpu::TextureFormat` to the DXGI color space for Windows compositor.
 #[cfg(target_os = "windows")]
 fn desired_dxgi_color_space_for_format(
     format: wgpu::TextureFormat,
@@ -996,82 +1018,14 @@ fn desired_dxgi_color_space_for_format(
         }
         fmt if fmt.is_srgb() => Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709),
         wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm => {
-            // 8-bit UNORM swap chains are treated as sRGB by DWM even
-            // without the sRGB suffix (see
-            // <https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range>).
             Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
         }
         _ => None,
     }
 }
 
-#[cfg(target_os = "windows")]
-#[cfg(test)]
-mod color_space_tests {
-    use super::desired_dxgi_color_space_for_format;
-    use windows::Win32::Graphics::Dxgi::Common::{
-        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-    };
-
-    #[test]
-    fn float_formats_map_to_scrgb_linear() {
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba16Float),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
-        );
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba32Float),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
-        );
-    }
-
-    #[test]
-    fn bgra8_unorm_maps_to_srgb_default() {
-        // Bgra8Unorm (without explicit `_srgb_` suffix) is treated as an
-        // sRGB-gamma SDR surface by Windows DWM. Must NOT stay on
-        // whatever scRGB color space a previous HDR swap chain had left
-        // on the IDXGISwapChain when `ResizeBuffers` changed the format.
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8Unorm),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        );
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8Unorm),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        );
-    }
-
-    #[test]
-    fn srgb_formats_map_to_srgb_color_space() {
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8UnormSrgb),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        );
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8UnormSrgb),
-            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
-        );
-    }
-
-    #[test]
-    fn exotic_formats_return_none() {
-        assert_eq!(
-            desired_dxgi_color_space_for_format(wgpu::TextureFormat::R8Unorm),
-            None
-        );
-    }
-}
-
-/// Apply `IDXGISwapChain3::SetColorSpace1` to the DX12 swap chain backing
-/// the provided wgpu surface, so the compositor interprets the back
-/// buffer as the color space that matches the configured format.
-///
-/// Called after every `surface.configure` on Windows. No-op when:
-/// * the adapter backend is not DX12;
-/// * we cannot reach the hal surface / swap chain (e.g. off-screen
-///   rendering, headless CI, other hal backend); or
-/// * DXGI reports that the requested color space is not supported on
-///   the current display path (we log and leave the previous state).
+/// Apply `IDXGISwapChain3::SetColorSpace1` to the DX12 swap chain backing the provided wgpu surface.
+/// Called after every `surface.configure` on Windows.
 #[cfg(target_os = "windows")]
 fn windows_sync_swap_chain_color_space(
     surface: &wgpu::Surface<'_>,
@@ -1087,10 +1041,8 @@ fn windows_sync_swap_chain_color_space(
 
     use windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT;
 
-    // SAFETY: we use `as_hal` to borrow the DX12 hal `Surface`. The
-    // returned `swap_chain()` clones a COM pointer whose methods are
-    // all safe to call from a single thread while the hal surface is
-    // alive. We do not retain the pointer beyond this call.
+    // SAFETY: We borrow the DX12 hal Surface via `as_hal`. The swap_chain() COM pointer
+    // is valid for the duration of this call. We do not retain it beyond here.
     let result: Result<(), String> = unsafe {
         surface
             .as_hal::<wgpu::hal::api::Dx12>()
@@ -1123,5 +1075,58 @@ fn windows_sync_swap_chain_color_space(
         Err(reason) => {
             log::debug!("egui-wgpu: could not sync DXGI swap-chain color space ({reason})");
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[cfg(test)]
+mod color_space_tests {
+    use super::desired_dxgi_color_space_for_format;
+    use windows::Win32::Graphics::Dxgi::Common::{
+        DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    };
+
+    #[test]
+    fn float_formats_map_to_scrgb_linear() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba16Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba32Float),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn bgra8_unorm_maps_to_srgb_default() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8Unorm),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn srgb_formats_map_to_srgb_color_space() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::Rgba8UnormSrgb),
+            Some(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+        );
+    }
+
+    #[test]
+    fn exotic_formats_return_none() {
+        assert_eq!(
+            desired_dxgi_color_space_for_format(wgpu::TextureFormat::R8Unorm),
+            None
+        );
     }
 }
