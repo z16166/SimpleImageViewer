@@ -297,6 +297,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # LibRaw openmp: Apple Clang needs Homebrew libomp at configure time.
+          brew install libomp
           # vcpkg GPR binary caching runs NuGet.exe under Mono on macOS (same pattern as AlmaLinux CI).
           brew install mono
           mono --version

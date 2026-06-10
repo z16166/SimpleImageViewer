@@ -31,13 +31,38 @@ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
         x3f         ENABLE_X3FTOOLS
 )
 
+set(LIBRAW_CMAKE_OPTIONS
+    ${FEATURE_OPTIONS}
+    -DENABLE_EXAMPLES=OFF
+    -DCMAKE_REQUIRE_FIND_PACKAGE_Jasper=1
+    -DCMAKE_REQUIRE_FIND_PACKAGE_ZLIB=1
+)
+
+# Apple Clang ships without OpenMP; Homebrew libomp is required on macOS builders.
+if(VCPKG_TARGET_IS_OSX)
+    list(FIND FEATURES "openmp" _libraw_openmp_idx)
+    if(_libraw_openmp_idx GREATER_EQUAL 0)
+        if(EXISTS "/opt/homebrew/opt/libomp")
+            set(_libomp_prefix "/opt/homebrew/opt/libomp")
+        elseif(EXISTS "/usr/local/opt/libomp")
+            set(_libomp_prefix "/usr/local/opt/libomp")
+        endif()
+        if(_libomp_prefix)
+            list(APPEND LIBRAW_CMAKE_OPTIONS
+                "-DOpenMP_CXX_FLAGS=-Xpreprocessor -fopenmp -I${_libomp_prefix}/include"
+                "-DOpenMP_C_FLAGS=-Xpreprocessor -fopenmp -I${_libomp_prefix}/include"
+                "-DOpenMP_CXX_LIB_NAMES=omp"
+                "-DOpenMP_C_LIB_NAMES=omp"
+                "-DOpenMP_omp_LIBRARY=${_libomp_prefix}/lib/libomp.dylib"
+            )
+        endif()
+    endif()
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
-        ${FEATURE_OPTIONS}
-        -DENABLE_EXAMPLES=OFF
-        -DCMAKE_REQUIRE_FIND_PACKAGE_Jasper=1
-        -DCMAKE_REQUIRE_FIND_PACKAGE_ZLIB=1
+        ${LIBRAW_CMAKE_OPTIONS}
     MAYBE_UNUSED_VARIABLES
         CMAKE_REQUIRE_FIND_PACKAGE_OpenMP
 )

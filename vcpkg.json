@@ -20,6 +20,7 @@
       "name": "libraw",
       "features": [
         "dng-lossy",
+        "openmp",
         "x3f"
       ]
     },

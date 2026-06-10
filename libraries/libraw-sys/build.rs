@@ -1,3 +1,28 @@
+/// Final-link OpenMP runtime used by LibRaw (`raw_r`) when built with `openmp` feature.
+fn emit_openmp_link_args(target_os: &str) {
+    match target_os {
+        "linux" => {
+            // Match release policy: no DT_NEEDED libgomp.so (static libgcc/libstdc++ already).
+            println!("cargo:rustc-link-lib=static=gomp");
+        }
+        "windows" => {
+            // MSVC OpenMP import lib; runtime is vcomp140.dll (or arch-matched vcomp*.dll).
+            println!("cargo:rustc-link-lib=dylib=vcomp");
+        }
+        "macos" => {
+            for prefix in ["/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"] {
+                let lib_dir = format!("{prefix}/lib");
+                if std::path::Path::new(&lib_dir).join("libomp.dylib").exists() {
+                    println!("cargo:rustc-link-search=native={lib_dir}");
+                    break;
+                }
+            }
+            println!("cargo:rustc-link-lib=dylib=omp");
+        }
+        _ => {}
+    }
+}
+
 fn main() {
     // Force static linking
     unsafe {
@@ -157,5 +182,8 @@ fn main() {
         }
     }
 
+    emit_openmp_link_args(&target_os);
+
     println!("cargo:rerun-if-changed=src/libraw_shims.cpp");
+    println!("cargo:rerun-if-changed=../../vcpkg.json");
 }

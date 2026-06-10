@@ -292,7 +292,7 @@ export CMAKE_PREFIX_PATH="/workspace/vcpkg_installed/${VCPKG_DEFAULT_TRIPLET}${C
 # Avoid `-Wl,-Bstatic -lstdc++ -Wl,-Bdynamic`: it can switch back to shared libstdc++ for symbols
 # from late `.a` objects (e.g. libde265 C++) after the static pass. `-static-libstdc++` is enough here;
 # root `build.rs` / vcpkg metadata handle archive order.
-export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc"
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc -C link-arg=-static-libgomp"
 
 # Optional: override `profile.ci` LTO (off|thin|fat|true|false). If unset, Cargo.toml default applies.
 # Note: `fat` on Alma + gcc-toolset + static C++ deps has recorded NEEDED libstdc++.so.6 despite
