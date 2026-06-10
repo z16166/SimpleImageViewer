@@ -462,6 +462,8 @@ jobs:
           mkdir staging/assets
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
+          $openmpArch = if ('${{ matrix.target }}' -like 'aarch64*') { 'arm64' } elseif ('${{ matrix.target }}' -like 'i686*') { 'x86' } else { 'x64' }
+          & ./scripts/ci/copy-vcomp140.ps1 -StagingDir staging -Arch $openmpArch
           Compress-Archive -Path staging/* -DestinationPath $archiveName
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -674,6 +676,7 @@ jobs:
           cp $binarySrc, README.md, README_CN.md, LICENSE staging/
           cp assets/screenshot.jpg staging/assets/
           cp "$env:SystemRoot\System32\d3dcompiler_47.dll" staging/
+          & ./scripts/ci/copy-vcomp140.ps1 -StagingDir staging -Arch x64
           # 仅针对 Win7 额外增加 ANGLE 核心 DLL 探测 (从 Chrome 中提取)
           $angleDll = Get-ChildItem -Path "C:\Program Files\Google\Chrome\Application" -Filter "libEGL.dll" -Recurse | Select-Object -First 1
           if ($angleDll) {
