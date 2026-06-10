@@ -1,7 +1,7 @@
 {
   "name": "simple-image-viewer",
   "version-string": "2.0.7",
-  "builtin-baseline": "3855d4d6b52353ee2e2f73044327e59d01a18c84",
+  "builtin-baseline": "32305df7d0b9a308e6ac454dd98ebfe550342c09",
   "dependencies": [
     {
       "name": "tiff",

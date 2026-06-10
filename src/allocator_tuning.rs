@@ -23,17 +23,17 @@ struct MimallocOptionSetting {
     value: c_long,
 }
 
-// These option ids are from the bundled mimalloc v3.1.5 headers in libmimalloc-sys 0.1.44.
-// The Rust sys crate intentionally exposes only the stable constants, so keep these ids
+// Option ids from bundled mimalloc v3.3.2 in libmimalloc-sys 0.1.49.
+// The Rust sys crate exposes only a subset of constants, so keep these ids
 // covered by tests and revisit them when upgrading mimalloc.
 const MI_OPTION_EAGER_COMMIT: ffi::mi_option_t = 3;
 const MI_OPTION_ARENA_EAGER_COMMIT: ffi::mi_option_t = 4;
 const MI_OPTION_PURGE_DECOMMITS: ffi::mi_option_t = 5;
 const MI_OPTION_ABANDONED_PAGE_PURGE: ffi::mi_option_t = 12;
 const MI_OPTION_PURGE_DELAY: ffi::mi_option_t = 15;
-const MI_OPTION_ARENA_PURGE_MULT: ffi::mi_option_t = 25;
-const MI_OPTION_PAGE_RECLAIM_ON_FREE: ffi::mi_option_t = 37;
-const MI_OPTION_PAGE_FULL_RETAIN: ffi::mi_option_t = 38;
+const MI_OPTION_ARENA_PURGE_MULT: ffi::mi_option_t = 24;
+const MI_OPTION_PAGE_RECLAIM_ON_FREE: ffi::mi_option_t = 35;
+const MI_OPTION_PAGE_FULL_RETAIN: ffi::mi_option_t = 36;
 
 const IMAGE_VIEWER_MIMALLOC_SETTINGS: &[MimallocOptionSetting] = &[
     // Large image decode/upload bursts allocate many short-lived buffers.
@@ -104,9 +104,9 @@ mod tests {
         assert_eq!(MI_OPTION_PURGE_DECOMMITS, 5);
         assert_eq!(MI_OPTION_ABANDONED_PAGE_PURGE, 12);
         assert_eq!(MI_OPTION_PURGE_DELAY, 15);
-        assert_eq!(MI_OPTION_ARENA_PURGE_MULT, 25);
-        assert_eq!(MI_OPTION_PAGE_RECLAIM_ON_FREE, 37);
-        assert_eq!(MI_OPTION_PAGE_FULL_RETAIN, 38);
+        assert_eq!(MI_OPTION_ARENA_PURGE_MULT, 24);
+        assert_eq!(MI_OPTION_PAGE_RECLAIM_ON_FREE, 35);
+        assert_eq!(MI_OPTION_PAGE_FULL_RETAIN, 36);
     }
 
     #[test]
