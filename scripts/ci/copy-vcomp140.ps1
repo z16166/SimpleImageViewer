@@ -1,4 +1,9 @@
 # Stage MSVC OpenMP runtime (vcomp140.dll) next to the release binary.
+#
+# Uses the desktop Redist layout only:
+#   VC\Redist\MSVC\<version>\<arch>\Microsoft.VC143.OpenMP\vcomp140.dll
+# Skips the onecore copy under:
+#   VC\Redist\MSVC\<version>\onecore\<arch>\...
 param(
     [Parameter(Mandatory = $true)]
     [string]$StagingDir,
@@ -13,36 +18,53 @@ if (-not (Test-Path $StagingDir)) {
     New-Item -ItemType Directory -Force -Path $StagingDir | Out-Null
 }
 
+function Collect-Vcomp140FromRedistRoot {
+    param(
+        [string]$RedistRoot,
+        [string]$ArchDir,
+        [System.Collections.Generic.List[System.IO.FileInfo]]$Out
+    )
+
+    if (-not (Test-Path $RedistRoot)) { return }
+
+    foreach ($versionDir in Get-ChildItem $RedistRoot -Directory -ErrorAction SilentlyContinue) {
+        if ($versionDir.Name -eq 'onecore') { continue }
+
+        $openmpGlob = Join-Path $versionDir.FullName "$ArchDir\Microsoft.VC*.OpenMP"
+        foreach ($openmpDir in Get-ChildItem $openmpGlob -Directory -ErrorAction SilentlyContinue) {
+            $dll = Join-Path $openmpDir.FullName 'vcomp140.dll'
+            if (Test-Path $dll) {
+                $Out.Add((Get-Item -LiteralPath $dll))
+            }
+        }
+    }
+}
+
 function Find-Vcomp140Dll {
     param([string]$ArchDir)
 
-    $relative = "Microsoft.VC*.OpenMP\$ArchDir\vcomp140.dll"
-    $roots = @(
-        ${env:ProgramFiles(x86)} + '\Microsoft Visual Studio\2022',
-        ${env:ProgramFiles} + '\Microsoft Visual Studio\2022'
-    )
+    $candidates = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 
-    foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-        $match = Get-ChildItem -Path $root -Recurse -Filter 'vcomp140.dll' -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -like "*\$relative" } |
-            Sort-Object { $_.FullName.Length } -Descending |
-            Select-Object -First 1
-        if ($match) { return $match.FullName }
-    }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        $vsRoot = Join-Path $pf 'Microsoft Visual Studio'
+        if (-not (Test-Path $vsRoot)) { continue }
 
-    if ($env:VCToolsInstallDir) {
-        $redistRoot = Join-Path $env:VCToolsInstallDir '..\..\Redist\MSVC'
-        if (Test-Path $redistRoot) {
-            $match = Get-ChildItem -Path $redistRoot -Recurse -Filter 'vcomp140.dll' -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -like "*\$relative" } |
-                Sort-Object { $_.FullName.Length } -Descending |
-                Select-Object -First 1
-            if ($match) { return $match.FullName }
+        foreach ($versionRoot in Get-ChildItem $vsRoot -Directory -ErrorAction SilentlyContinue) {
+            foreach ($flavor in Get-ChildItem $versionRoot.FullName -Directory -ErrorAction SilentlyContinue) {
+                $redist = Join-Path $flavor.FullName 'VC\Redist\MSVC'
+                Collect-Vcomp140FromRedistRoot -RedistRoot $redist -ArchDir $ArchDir -Out $candidates
+            }
         }
     }
 
-    return $null
+    if ($env:VCToolsInstallDir) {
+        $redist = Join-Path $env:VCToolsInstallDir '..\..\Redist\MSVC'
+        Collect-Vcomp140FromRedistRoot -RedistRoot $redist -ArchDir $ArchDir -Out $candidates
+    }
+
+    if ($candidates.Count -eq 0) { return $null }
+
+    return ($candidates | Sort-Object FullName -Descending | Select-Object -First 1).FullName
 }
 
 $src = Find-Vcomp140Dll -ArchDir $Arch
