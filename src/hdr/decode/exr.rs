@@ -20,12 +20,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
 
-
 use crate::hdr::tiled::HdrTiledSource;
 
-use crate::hdr::types::{
-    HdrImageBuffer, HdrPixelFormat,
-};
+use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 pub(crate) fn decode_exr_display_image(path: &Path) -> Result<HdrImageBuffer, String> {
     let source = crate::hdr::exr_tiled::ExrTiledImageSource::open(path)?;
     let (width, height) = (source.width(), source.height());

@@ -8,8 +8,8 @@ use crate::ui::utils::{
     get_system_font_families, setup_fonts, setup_visuals, startup_font_family_list,
 };
 use eframe::egui::{self, Vec2};
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;

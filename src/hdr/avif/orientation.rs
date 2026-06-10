@@ -103,4 +103,3 @@ pub(crate) fn libavif_probe_exif_orientation_from_path(path: &std::path::Path) -
     let mmap = crate::mmap_util::map_file(path).ok()?;
     libavif_probe_exif_orientation_from_bytes(&mmap[..])
 }
-

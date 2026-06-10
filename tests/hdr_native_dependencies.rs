@@ -129,20 +129,28 @@ fn gain_map_tmap_support_is_wired_for_modern_hdr_codecs() {
     assert!(loader.contains("load_jxl_with_target_capacity"));
 }
 
-
 fn read_hdr_module(name: &str) -> String {
     let dir = repo_root().join("src").join("hdr").join(name);
     if dir.is_dir() {
         let mut out = String::new();
-        for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
-            if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs") {
+        for entry in walkdir::WalkDir::new(&dir)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file() && entry.path().extension().map_or(false, |e| e == "rs")
+            {
                 out.push_str(&fs::read_to_string(entry.path()).unwrap());
             }
         }
         return out;
     }
-    fs::read_to_string(repo_root().join("src").join("hdr").join(format!("{name}.rs")))
-        .unwrap_or_default()
+    fs::read_to_string(
+        repo_root()
+            .join("src")
+            .join("hdr")
+            .join(format!("{name}.rs")),
+    )
+    .unwrap_or_default()
 }
 
 fn read_loader_source() -> String {

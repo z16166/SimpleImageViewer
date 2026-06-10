@@ -17,11 +17,10 @@ use super::decode::RawHeifImage;
 use super::metadata::{HeifAuxiliaryClassification, list_heif_auxiliary_evidence};
 use super::orientation::heif_exif_orientation_from_raw_handle;
 
-
-
-
 #[cfg(feature = "heif-native")]
-pub(crate) fn heif_has_apple_hdr_gain_map_auxiliary(handle: *const libheif_sys::heif_image_handle) -> bool {
+pub(crate) fn heif_has_apple_hdr_gain_map_auxiliary(
+    handle: *const libheif_sys::heif_image_handle,
+) -> bool {
     list_heif_auxiliary_evidence(handle)
         .iter()
         .any(|item| item.classification == HeifAuxiliaryClassification::AppleHdrGainMap)
@@ -47,7 +46,11 @@ pub(crate) fn gain_map_stored_in_sensor_orientation(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn rotate_gain_rgba_90_cw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+pub(crate) fn rotate_gain_rgba_90_cw(
+    width: u32,
+    height: u32,
+    gain_rgba: &[u8],
+) -> (u32, u32, Vec<u8>) {
     let new_w = height;
     let new_h = width;
     let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
@@ -64,7 +67,11 @@ pub(crate) fn rotate_gain_rgba_90_cw(width: u32, height: u32, gain_rgba: &[u8]) 
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn rotate_gain_rgba_90_ccw(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+pub(crate) fn rotate_gain_rgba_90_ccw(
+    width: u32,
+    height: u32,
+    gain_rgba: &[u8],
+) -> (u32, u32, Vec<u8>) {
     let new_w = height;
     let new_h = width;
     let mut rotated = vec![0u8; new_w as usize * new_h as usize * 4];
@@ -81,7 +88,11 @@ pub(crate) fn rotate_gain_rgba_90_ccw(width: u32, height: u32, gain_rgba: &[u8])
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn rotate_gain_rgba_180(width: u32, height: u32, gain_rgba: &[u8]) -> (u32, u32, Vec<u8>) {
+pub(crate) fn rotate_gain_rgba_180(
+    width: u32,
+    height: u32,
+    gain_rgba: &[u8],
+) -> (u32, u32, Vec<u8>) {
     let mut rotated = vec![0u8; gain_rgba.len()];
     for i in 0..(width as usize * height as usize) {
         let src_idx = i * 4;

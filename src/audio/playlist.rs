@@ -82,7 +82,10 @@ pub(crate) fn build_base_non_m3u_set(base_playlist: &[PathBuf]) -> HashSet<PathB
         .collect()
 }
 
-pub(crate) fn expand_m3u_excluding_base(m3u_path: &Path, base_path_set: &HashSet<PathBuf>) -> Vec<PathBuf> {
+pub(crate) fn expand_m3u_excluding_base(
+    m3u_path: &Path,
+    base_path_set: &HashSet<PathBuf>,
+) -> Vec<PathBuf> {
     parse_m3u_entries(m3u_path)
         .into_iter()
         .filter(|p| !base_path_set.contains(p))

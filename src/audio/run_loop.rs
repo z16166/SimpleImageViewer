@@ -16,9 +16,9 @@
 use super::loop_state::{AudioLoopState, AudioSlots};
 use super::player::{AudioCommand, AudioError};
 use super::slots::{set_current_track, set_metadata};
-use super::wasapi::{wasapi_monitor_init, wasapi_monitor_uninit};
 #[cfg(windows)]
 use super::wasapi::wasapi_poll_device_lost;
+use super::wasapi::{wasapi_monitor_init, wasapi_monitor_uninit};
 
 use crossbeam_channel;
 use parking_lot::Mutex;
@@ -26,7 +26,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
 
 pub(crate) fn run_audio_loop(
     rx: crossbeam_channel::Receiver<AudioCommand>,

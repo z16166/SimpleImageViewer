@@ -41,7 +41,9 @@ pub(crate) fn imf_exr_chromaticities_from_path(path: &Path) -> Option<[f32; 8]> 
     (code == 0).then_some(out)
 }
 
-pub(crate) fn hdr_color_space_from_chromaticities_xy(ch: &[f32; 8]) -> crate::hdr::types::HdrColorSpace {
+pub(crate) fn hdr_color_space_from_chromaticities_xy(
+    ch: &[f32; 8],
+) -> crate::hdr::types::HdrColorSpace {
     if chromaticities_looks_like_aces_ap0(ch) {
         crate::hdr::types::HdrColorSpace::Aces2065_1
     } else {
@@ -229,4 +231,3 @@ pub(crate) fn extract_rgba32f_tile_from_flat_buffer(
     }
     Ok(out)
 }
-

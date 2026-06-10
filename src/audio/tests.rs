@@ -17,8 +17,8 @@
 use super::*;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn make_temp_dir(name: &str) -> PathBuf {

@@ -13,9 +13,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::types::{
-    ImageLoader, TileRequest,
-};
+use super::types::{ImageLoader, TileRequest};
 
 use crate::loader::TileDecodeSource;
 
@@ -41,5 +39,4 @@ impl ImageLoader {
         });
         cvar.notify_one();
     }
-
 }

@@ -23,7 +23,9 @@ use crate::ipc::IpcMessage;
 use crate::settings::Settings;
 use crate::ui::utils::setup_visuals;
 
-use super::types::{hdr_output_state_changed, CachedWindowPlacement, HdrOutputStateSnapshot, ImageViewerApp};
+use super::types::{
+    CachedWindowPlacement, HdrOutputStateSnapshot, ImageViewerApp, hdr_output_state_changed,
+};
 
 impl eframe::App for ImageViewerApp {
     fn on_exit(&mut self) {

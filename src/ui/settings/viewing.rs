@@ -20,7 +20,11 @@ use crate::ui::utils::{settings_card, themed_labeled_toggle};
 use eframe::egui::{self, RichText, Vec2};
 use rust_i18n::t;
 
-pub(super) fn draw_viewing_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui, fullscreen_changed: &mut bool) {
+pub(super) fn draw_viewing_tab(
+    app: &mut ImageViewerApp,
+    ui: &mut egui::Ui,
+    fullscreen_changed: &mut bool,
+) {
     let palette = app.cached_palette.clone();
     settings_card(ui, &palette, t!("section.display"), |ui| {
         let old_fullscreen = app.settings.fullscreen;

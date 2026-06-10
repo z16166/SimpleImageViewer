@@ -15,10 +15,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::decode::decode_primary_heif_to_hdr;
 use super::gain_map::{decode_heif_gain_map, heif_has_apple_hdr_gain_map_auxiliary};
-use super::metadata::{inspect_heif_gain_map_auxiliaries, read_heif_metadata, refine_heif_transfer_for_primary_bit_depth};
+use super::metadata::{
+    inspect_heif_gain_map_auxiliaries, read_heif_metadata,
+    refine_heif_transfer_for_primary_bit_depth,
+};
 use super::orientation::allocate_decode_options_for_heif_manual_geometry_fixup;
 use super::session::open_heif_primary_from_bytes;
-
 
 use crate::hdr::types::HdrColorProfile;
 #[cfg(feature = "heif-native")]
@@ -156,4 +158,3 @@ pub(crate) fn decode_heif_hdr_bytes(
     );
     Ok(hdr)
 }
-

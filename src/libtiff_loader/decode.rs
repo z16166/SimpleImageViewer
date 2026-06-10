@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrToneMapSettings, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 
 use super::constants::*;
@@ -345,7 +345,12 @@ fn to_srgb_8(linear: f32) -> u8 {
     (s * 255.0) as u8
 }
 
-pub(crate) fn tiff_ieee_scene_linear_eligible(sample_format: u16, bps: u16, photo: u16, spp: u16) -> bool {
+pub(crate) fn tiff_ieee_scene_linear_eligible(
+    sample_format: u16,
+    bps: u16,
+    photo: u16,
+    spp: u16,
+) -> bool {
     if sample_format != lib::SAMPLEFORMAT_IEEEFP || !matches!(bps, 16 | 32 | 64) {
         return false;
     }

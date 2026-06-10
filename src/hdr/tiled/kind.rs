@@ -17,10 +17,7 @@
 use super::buffer::HdrTileBuffer;
 use std::sync::Arc;
 
-
-use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata,
-};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HdrTiledSourceKind {

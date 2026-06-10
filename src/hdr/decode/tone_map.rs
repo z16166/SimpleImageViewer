@@ -19,7 +19,6 @@ use super::constants::{
     MAX_HDR_FALLBACK_TOTAL_BYTES, MAX_HDR_TONE_MAP_INPUT,
 };
 
-
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
 
@@ -306,7 +305,11 @@ fn should_use_iec61966_tone_map_fallback(buffer: &HdrImageBuffer, tf: HdrTransfe
     use_direct_srgb_sdr_fallback(&buffer.metadata, tf)
 }
 
-pub(crate) fn encode_sdr_rgb8(linear_srgb: [f32; 3], exposure_scale: f32, peak_scale: f32) -> [u8; 3] {
+pub(crate) fn encode_sdr_rgb8(
+    linear_srgb: [f32; 3],
+    exposure_scale: f32,
+    peak_scale: f32,
+) -> [u8; 3] {
     let mut out = [0_u8; 3];
     for i in 0..3 {
         let exposed = clamp_hdr_tone_map_input(
@@ -361,4 +364,3 @@ fn clamp_hdr_tone_map_input(value: f32) -> f32 {
 fn float_to_u8(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
-

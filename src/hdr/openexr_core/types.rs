@@ -92,7 +92,10 @@ impl OpenExrCoreDecodedChunkCache {
         }
     }
 
-    pub(crate) fn get(&mut self, key: &OpenExrCoreDecodedChunkKey) -> Option<Arc<OpenExrCoreDecodedChunk>> {
+    pub(crate) fn get(
+        &mut self,
+        key: &OpenExrCoreDecodedChunkKey,
+    ) -> Option<Arc<OpenExrCoreDecodedChunk>> {
         let chunk = self.entries.get(key).cloned();
         if chunk.is_some() {
             #[cfg(test)]
@@ -117,7 +120,11 @@ impl OpenExrCoreDecodedChunkCache {
         self.in_flight.remove(key);
     }
 
-    pub(crate) fn insert(&mut self, key: OpenExrCoreDecodedChunkKey, chunk: Arc<OpenExrCoreDecodedChunk>) {
+    pub(crate) fn insert(
+        &mut self,
+        key: OpenExrCoreDecodedChunkKey,
+        chunk: Arc<OpenExrCoreDecodedChunk>,
+    ) {
         if chunk.byte_size > self.max_bytes {
             return;
         }
@@ -156,4 +163,3 @@ impl OpenExrCoreDecodedChunkCache {
         }
     }
 }
-

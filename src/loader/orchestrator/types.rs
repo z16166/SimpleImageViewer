@@ -17,10 +17,7 @@
 //! Worker pool, deferred loads, refinement channels, tile queue orchestration ([`ImageLoader`]).
 
 use crate::hdr::types::HdrToneMapSettings;
-use crate::loader::{
-    LoaderOutput,
-    RefinementRequest, TileDecodeSource, TilePixelKind,
-};
+use crate::loader::{LoaderOutput, RefinementRequest, TileDecodeSource, TilePixelKind};
 use crossbeam_channel::{Receiver, Sender};
 use image::DynamicImage;
 use parking_lot::{Condvar, Mutex};
@@ -145,4 +142,3 @@ pub struct ImageLoader {
     pub(crate) hdr_tone_sdr_white_nits_bits: Arc<AtomicU32>,
     pub(crate) hdr_tone_max_display_nits_bits: Arc<AtomicU32>,
 }
-

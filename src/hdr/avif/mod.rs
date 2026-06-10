@@ -32,17 +32,17 @@ mod tests;
 pub(crate) use brand::is_avif_brand;
 pub(crate) use metadata::avif_cicp_to_metadata;
 
-#[cfg(feature = "avif-native")]
-pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use decode::decode_avif_hdr_bytes;
+#[cfg(feature = "avif-native")]
+pub(crate) use decode::decode_avif_hdr_bytes_with_target_capacity;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use gain_map::avif_gain_map_to_metadata;
 #[cfg(feature = "avif-native")]
 pub(crate) use orientation::libavif_probe_exif_orientation_from_path;
 #[cfg(all(test, feature = "avif-native"))]
 pub(crate) use orientation::{
-    avif_irot_imir_to_exif_orientation, AVIF_TRANSFORM_IMIR_FLAG, AVIF_TRANSFORM_IROT_FLAG,
+    AVIF_TRANSFORM_IMIR_FLAG, AVIF_TRANSFORM_IROT_FLAG, avif_irot_imir_to_exif_orientation,
 };
 #[cfg(feature = "avif-native")]
 pub(crate) use sequence::try_decode_avif_image_sequence_hdr;
@@ -63,13 +63,13 @@ use crate::hdr::types::{
 };
 
 #[cfg(feature = "avif-native")]
-use metadata::{avif_yuv_to_rgb_output_metadata, AvifMetadataExt};
+use metadata::{AvifMetadataExt, avif_yuv_to_rgb_output_metadata};
 
 #[cfg(feature = "avif-native")]
 use decode::{
     apply_icc_to_srgb_via_lcms, avif_fill_opaque_alpha_f32_if_no_alpha_plane,
-    avif_fill_opaque_alpha_u16_if_no_alpha_plane, avif_image_icc_bytes,
-    decode_avif_image_rgba_u16, libavif_result_to_string, rgb_channel_max_f,
+    avif_fill_opaque_alpha_u16_if_no_alpha_plane, avif_image_icc_bytes, decode_avif_image_rgba_u16,
+    libavif_result_to_string, rgb_channel_max_f,
 };
 
 #[cfg(feature = "avif-native")]

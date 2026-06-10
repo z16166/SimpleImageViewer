@@ -14,12 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{compose_apple_gain_map_pixels, compose_row_scalar, precompute_gain_row_linear, GainRowLinear};
+use super::{
+    GainRowLinear, compose_apple_gain_map_pixels, compose_row_scalar, precompute_gain_row_linear,
+};
+#[cfg(target_arch = "x86_64")]
+use super::{load_rgb_interleaved4_sse41, store_rgb_interleaved4_sse41};
 use crate::hdr::decode::bt709_nonlinear_channel_to_linear;
 use crate::hdr::gain_map::sample_gain_map_rgb;
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
-#[cfg(target_arch = "x86_64")]
-use super::{load_rgb_interleaved4_sse41, store_rgb_interleaved4_sse41};
 
 fn precompute_gain_row_linear_legacy(
     gain_rgba: &[u8],

@@ -18,4 +18,3 @@
 pub(crate) fn is_avif_brand(brand: &[u8]) -> bool {
     matches!(brand, b"avif" | b"avis")
 }
-

@@ -23,14 +23,17 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
 
-use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::DecodedImage;
+use crate::loader::preview_caps::hq_preview_max_side;
 use crate::raw_processor::RawProcessor;
 use std::path::PathBuf;
 
-
 /// True when an embedded preview is large enough to substitute for a full demosaic.
-pub(crate) fn raw_embedded_preview_covers_sensor(preview: &DecodedImage, raw_w: u32, raw_h: u32) -> bool {
+pub(crate) fn raw_embedded_preview_covers_sensor(
+    preview: &DecodedImage,
+    raw_w: u32,
+    raw_h: u32,
+) -> bool {
     let pw = preview.width as u64;
     let ph = preview.height as u64;
     let rw = raw_w as u64;

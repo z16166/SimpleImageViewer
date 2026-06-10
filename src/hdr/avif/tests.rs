@@ -201,8 +201,8 @@ fn avif_software_gain_map_decode_defers_compose_to_gpu() {
     };
     let bytes = std::fs::read(&path).expect("read avif sample");
     let capacity = HdrToneMapSettings::default().target_hdr_capacity();
-    let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity)
-        .expect("decode avif");
+    let hdr =
+        super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode avif");
     if iso_deferred_from_metadata(&hdr.metadata).is_some() {
         assert!(
             hdr.rgba_f32.is_empty(),
@@ -289,8 +289,7 @@ fn decode_paris_icc_exif_xmp_avif_when_sample_present() {
     let bytes = std::fs::read(path).expect("read avif");
     let tone = HdrToneMapSettings::default();
     let capacity = tone.target_hdr_capacity();
-    let hdr =
-        super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
+    let hdr = super::decode_avif_hdr_bytes_with_target_capacity(&bytes, capacity).expect("decode");
     let fallback_pixels =
         hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, capacity, &tone).expect("fallback");
     let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
@@ -423,11 +422,8 @@ fn probe_netflix_cosmos_raw_decode() {
         max_display_nits: 450.0,
         ..HdrToneMapSettings::default()
     };
-    let linear = decode_transfer_to_display_linear(
-        raw,
-        hdr.metadata.transfer_function,
-        tone.sdr_white_nits,
-    );
+    let linear =
+        decode_transfer_to_display_linear(raw, hdr.metadata.transfer_function, tone.sdr_white_nits);
     eprintln!("center display-linear = {linear:?}");
     assert!(
         linear[0] < 1.5 && linear[1] < 1.5 && linear[2] < 1.5,

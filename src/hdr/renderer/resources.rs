@@ -93,7 +93,8 @@ pub(super) fn iso_gain_map_compose_compute_supported(limits: &wgpu::Limits) -> b
 
 #[cfg(feature = "heif-native")]
 pub(super) fn apple_compose_compute_supported(limits: &wgpu::Limits) -> bool {
-    iso_gain_map_compose_compute_supported(limits) && limits.max_storage_buffers_per_shader_stage >= 1
+    iso_gain_map_compose_compute_supported(limits)
+        && limits.max_storage_buffers_per_shader_stage >= 1
 }
 
 pub(crate) struct CallbackUpload {
@@ -232,7 +233,9 @@ pub(crate) fn create_callback_resources(
             (None, None)
         };
     let jpeg_compose = if iso_gain_map_compose_compute_supported(&device.limits()) {
-        Some(jpeg_compose_gpu::create_jpeg_compose_compute_resources(device))
+        Some(jpeg_compose_gpu::create_jpeg_compose_compute_resources(
+            device,
+        ))
     } else {
         log::warn!(
             "[HDR] GPU ISO gain-map compose unavailable \

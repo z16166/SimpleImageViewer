@@ -16,9 +16,7 @@
 
 use crate::app::ImageViewerApp;
 use crate::settings::PairedRawJpegHandling;
-use crate::ui::utils::{
-    path_display_box, settings_card, styled_button, themed_labeled_toggle,
-};
+use crate::ui::utils::{path_display_box, settings_card, styled_button, themed_labeled_toggle};
 use eframe::egui::{self, RichText};
 use rust_i18n::t;
 

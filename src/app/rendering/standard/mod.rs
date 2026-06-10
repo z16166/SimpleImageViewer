@@ -14,9 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::app::TransitionStyle;
 use crate::app::rendering::plan::RenderPlan;
 use crate::app::rendering::plane::PlaneBackendKind;
-use crate::app::TransitionStyle;
 
 mod draw;
 mod hdr_draw;

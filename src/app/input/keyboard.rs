@@ -14,7 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{AppAction, app_action_from_hotkey_action_id, get_modifiers_mask, text_event_to_hotkey_logical_key};
+use super::{
+    AppAction, app_action_from_hotkey_action_id, get_modifiers_mask,
+    text_event_to_hotkey_logical_key,
+};
 use crate::app::ImageViewerApp;
 use crate::hotkeys::model::KeyChord;
 use eframe::egui::{self, Context, Key};

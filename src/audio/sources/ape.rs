@@ -15,17 +15,15 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::super::norm::{NORM_I8, NORM_I16, NORM_I24, NORM_I32};
 
-use crate::constants::{
-    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE,
-};
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use crate::constants::{DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE};
 use std::ffi::c_void;
 use std::num::NonZero;
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use monkey_sdk_sys::*;

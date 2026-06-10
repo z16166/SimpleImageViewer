@@ -18,10 +18,7 @@ use super::decode::{
     planar_storage_span_bytes,
 };
 
-
-use crate::hdr::types::{
-    HdrColorProfile, HdrImageMetadata,
-};
+use crate::hdr::types::{HdrColorProfile, HdrImageMetadata};
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
 #[cfg(feature = "heif-native")]
@@ -158,14 +155,22 @@ pub(crate) fn studio_digital_sample_to_normalized(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn chroma_column_index(x: usize, chroma: libheif_sys::heif_chroma, chroma_plane_w: usize) -> usize {
+pub(crate) fn chroma_column_index(
+    x: usize,
+    chroma: libheif_sys::heif_chroma,
+    chroma_plane_w: usize,
+) -> usize {
     let subsamp_h = chroma != libheif_sys::heif_chroma_444;
     let ix = if subsamp_h { x / 2 } else { x };
     ix.min(chroma_plane_w.saturating_sub(1))
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn chroma_row_index(y_px: usize, chroma: libheif_sys::heif_chroma, chroma_plane_h: usize) -> usize {
+pub(crate) fn chroma_row_index(
+    y_px: usize,
+    chroma: libheif_sys::heif_chroma,
+    chroma_plane_h: usize,
+) -> usize {
     let subsamp_v = chroma == libheif_sys::heif_chroma_420;
     let iy = if subsamp_v { y_px / 2 } else { y_px };
     iy.min(chroma_plane_h.saturating_sub(1))

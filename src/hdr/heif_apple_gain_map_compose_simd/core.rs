@@ -946,4 +946,3 @@ pub(crate) unsafe fn compose_row_neon(
         }
     }
 }
-

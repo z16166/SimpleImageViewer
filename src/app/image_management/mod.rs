@@ -1,4 +1,4 @@
-﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -826,7 +826,8 @@ pub(super) fn needs_stale_animated_first_frame_reload(
     pending_anim_frames: &HashMap<usize, PendingAnimUpload>,
     has_sdr_texture: bool,
 ) -> bool {
-    if animation_cache.contains_key(&current_index) || pending_anim_frames.contains_key(&current_index)
+    if animation_cache.contains_key(&current_index)
+        || pending_anim_frames.contains_key(&current_index)
     {
         return false;
     }

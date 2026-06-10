@@ -23,7 +23,6 @@ use super::kind::{HdrTiledSource, HdrTiledSourceKind};
 use super::preview::downsample_hdr_image_nearest;
 use super::validate::{validate_rgba32f_len, validate_tile_bounds};
 
-
 #[derive(Debug)]
 pub struct HdrTiledImageSource {
     image: HdrImageBuffer,
@@ -174,4 +173,3 @@ impl HdrTiledSource for HdrTiledImageSource {
         Ok(tile)
     }
 }
-

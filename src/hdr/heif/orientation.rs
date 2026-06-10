@@ -17,7 +17,6 @@ use super::session::{
     HeifPrimaryGuard, open_heif_primary_from_bytes, orientation_from_heif_exif_item_blob,
 };
 
-
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
@@ -353,4 +352,3 @@ pub(crate) fn decoded_pixels_match_swapped_ispe(
         decoded_w == ih && decoded_h == iw
     }
 }
-

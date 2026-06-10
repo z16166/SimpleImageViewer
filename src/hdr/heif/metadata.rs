@@ -16,18 +16,19 @@
 use super::brand::heif_nclx_to_metadata;
 use super::gain_map::HeifAuxiliaryImageHandle;
 
-
+#[cfg(feature = "heif-native")]
+use crate::hdr::types::HdrGainMapMetadata;
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
-#[cfg(feature = "heif-native")]
-use crate::hdr::types::HdrGainMapMetadata;
 #[cfg(feature = "heif-native")]
 use std::ffi::CStr;
 #[cfg(feature = "heif-native")]
 use std::sync::Arc;
 
-pub(crate) fn read_heif_metadata(handle: *const libheif_sys::heif_image_handle) -> HdrImageMetadata {
+pub(crate) fn read_heif_metadata(
+    handle: *const libheif_sys::heif_image_handle,
+) -> HdrImageMetadata {
     let mut nclx_ptr = std::ptr::null_mut();
     let nclx_status =
         unsafe { libheif_sys::heif_image_handle_get_nclx_color_profile(handle, &mut nclx_ptr) };
@@ -129,7 +130,10 @@ pub(crate) fn apply_heif_unknown_transfer_bt709_primaries_fallback(
 }
 
 #[cfg(feature = "heif-native")]
-pub(crate) fn apply_heif_transfer_depth_heuristics(luma_bits: i32, metadata: &mut HdrImageMetadata) {
+pub(crate) fn apply_heif_transfer_depth_heuristics(
+    luma_bits: i32,
+    metadata: &mut HdrImageMetadata,
+) {
     let luma = luma_bits.max(0) as u32;
     if luma == 0 || luma > 8 {
         return;

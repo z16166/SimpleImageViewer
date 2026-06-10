@@ -13,11 +13,6 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
-use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrToneMapSettings, HdrTransferFunction,
-};
 use super::decode::{
     decode_ieee_scene_linear_rgba32f, decode_logl_logluv_scene_linear_rgba32f,
     decode_uint16_rgb_scene_linear_rgba32f, tiff_ieee_scene_linear_eligible,
@@ -26,6 +21,11 @@ use super::decode::{
 };
 use super::scanline::{LibTiffScanlineSource, manual_decode_scanline};
 use super::tiled::LibTiffTiledSource;
+use crate::hdr::decode::hdr_to_sdr_rgba8_with_tone_settings;
+use crate::hdr::types::{
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
+};
 use parking_lot::Mutex;
 use std::ffi::CString;
 

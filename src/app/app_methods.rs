@@ -151,7 +151,12 @@ impl ImageViewerApp {
     }
 
     /// Shared handler for IPC open-file requests (`OpenImage` vs `OpenImageNoRecursive`).
-    pub(crate) fn handle_ipc_open_image(&mut self, path: PathBuf, ctx: &egui::Context, no_recursive: bool) {
+    pub(crate) fn handle_ipc_open_image(
+        &mut self,
+        path: PathBuf,
+        ctx: &egui::Context,
+        no_recursive: bool,
+    ) {
         let Some(parent) = path.parent() else {
             return;
         };

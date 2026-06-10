@@ -13,7 +13,10 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::types::{DelayedFallbackJob, EitherDevelop, ImageLoader, TileInFlightKey, TileRequest, should_spawn_load_task};
+use super::types::{
+    DelayedFallbackJob, EitherDevelop, ImageLoader, TileInFlightKey, TileRequest,
+    should_spawn_load_task,
+};
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
@@ -22,9 +25,8 @@ use crate::loader::preview_caps::{
 };
 use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
-    RefinementRequest, TileDecodeSource, TileResult,
-    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hq_preview_max_side, source_key_for_path,
+    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
+    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side, source_key_for_path,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender};
@@ -36,7 +38,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
-
 
 impl ImageLoader {
     pub fn new() -> Self {

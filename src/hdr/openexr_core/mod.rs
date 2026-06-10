@@ -7,7 +7,6 @@
 // (at your option) any later version.
 
 #[allow(dead_code)]
-
 mod channels;
 mod chromaticities;
 mod mmap;

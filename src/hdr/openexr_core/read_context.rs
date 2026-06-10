@@ -17,24 +17,25 @@ use std::time::Instant;
 use openexr_core_sys as sys;
 
 use super::channels::{
-    OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming, OpenExrCoreDecodedChunkFetch,
-    OpenExrCoreTileGrid, DecodePipelineGuard, assign_channel_roles, budgeted_scanline_preview_source_y,
-    channel_sample_f32, channel_sample_f32_filtered, configured_decoded_chunk_cache_max_bytes,
-    copy_channels, copy_decoded_chunk_to_tile, decode_pipeline_channels, decoded_chunk_key, exr_result,
-    extent_from_window_axis, sample_decoded_scanline_chunk_into_preview,
-    scanline_preview_decode_parallelism, scanline_preview_dimensions,
-    scanline_preview_source_row_budget, validate_tile_bounds,
+    DecodePipelineGuard, OpenExrCoreChannelChunkLayout, OpenExrCoreChunkDecodeTiming,
+    OpenExrCoreDecodedChunkFetch, OpenExrCoreTileGrid, assign_channel_roles,
+    budgeted_scanline_preview_source_y, channel_sample_f32, channel_sample_f32_filtered,
+    configured_decoded_chunk_cache_max_bytes, copy_channels, copy_decoded_chunk_to_tile,
+    decode_pipeline_channels, decoded_chunk_key, exr_result, extent_from_window_axis,
+    sample_decoded_scanline_chunk_into_preview, scanline_preview_decode_parallelism,
+    scanline_preview_dimensions, scanline_preview_source_row_budget, validate_tile_bounds,
 };
 #[cfg(feature = "tile-debug")]
 use super::channels::{compression_name, storage_name};
 use super::chromaticities::{
-    hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path, openexr_luminance_weights_from_chromaticities_xy,
+    hdr_color_space_from_chromaticities_xy, imf_exr_chromaticities_from_path,
+    openexr_luminance_weights_from_chromaticities_xy,
 };
 use super::mmap::{ExrMmapCookieGuard, openexr_memory_map_initializer};
 use super::types::{
-    ChannelRole, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache, OpenExrCorePartInfo, OpenExrCoreRgbaTile,
+    ChannelRole, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkCache, OpenExrCorePartInfo,
+    OpenExrCoreRgbaTile,
 };
-
 
 #[derive(Debug)]
 pub(crate) struct OpenExrCoreReadContext {

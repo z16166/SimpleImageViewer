@@ -14,11 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, IsoDeferredTileContext};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::globals::NEXT_HDR_TILE_CACHE_ID;
-
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

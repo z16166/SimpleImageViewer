@@ -16,8 +16,9 @@
 
 use super::header::{build_radiance_scanline_offsets, read_radiance_header};
 use super::layout::RadianceRasterLayout;
-use super::tile_decode::{decode_radiance_hdr_preview, decode_radiance_sdr_preview, decode_radiance_tile_window};
-
+use super::tile_decode::{
+    decode_radiance_hdr_preview, decode_radiance_sdr_preview, decode_radiance_tile_window,
+};
 
 use parking_lot::Mutex;
 use std::io::Cursor;

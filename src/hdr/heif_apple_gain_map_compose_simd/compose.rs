@@ -16,14 +16,14 @@
 
 //! for RGB-interleaved gain rows (aarch64 already uses `vld3q_f32` / `vst3q_f32`).
 
-use super::core::{
-    classify_fast_path, compose_row_scalar, precompute_gain_row_linear, ComposeFastPath,
-    GainRowLinear, SIMD_PIXELS_PER_STEP,
-};
-#[cfg(target_arch = "x86_64")]
-use super::core::compose_row_sse41;
 #[cfg(target_arch = "aarch64")]
 use super::core::compose_row_neon;
+#[cfg(target_arch = "x86_64")]
+use super::core::compose_row_sse41;
+use super::core::{
+    ComposeFastPath, GainRowLinear, SIMD_PIXELS_PER_STEP, classify_fast_path, compose_row_scalar,
+    precompute_gain_row_linear,
+};
 use crate::hdr::types::{HdrColorSpace, HdrImageMetadata, HdrTransferFunction};
 use rayon::prelude::*;
 
@@ -166,4 +166,3 @@ pub(crate) fn compose_apple_gain_map_pixels(
             );
         });
 }
-

@@ -16,8 +16,8 @@
 
 use super::*;
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrToneMapSettings, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrToneMapSettings, HdrTransferFunction,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,11 +73,8 @@ fn pq_bt709_primaries_sdr_fallback_matches_reinhard_encode_path() {
     let tf = buffer.metadata.transfer_function;
     assert_eq!(tf, HdrTransferFunction::Pq);
     let peak_scale = tone.sdr_white_nits / tone.max_display_nits.max(tone.sdr_white_nits);
-    let decoded = decode_transfer_to_display_linear(
-        [0.45_f32, 0.42_f32, 0.50_f32],
-        tf,
-        tone.sdr_white_nits,
-    );
+    let decoded =
+        decode_transfer_to_display_linear([0.45_f32, 0.42_f32, 0.50_f32], tf, tone.sdr_white_nits);
     let linear_srgb = linear_primary_to_linear_srgb(decoded, buffer.color_space, &meta709);
     let expected = encode_sdr_rgb8(linear_srgb, 1.0_f32, peak_scale);
     assert_eq!(sdr, vec![expected[0], expected[1], expected[2], 255]);
@@ -88,8 +85,7 @@ fn pq_bt709_primaries_sdr_fallback_matches_reinhard_encode_path() {
         metadata: meta2020,
         ..buffer.clone()
     };
-    let pq2020 =
-        hdr_to_sdr_rgba8_with_tone_settings(&buffer2020, 0.0, &tone).expect("sdr pq2020");
+    let pq2020 = hdr_to_sdr_rgba8_with_tone_settings(&buffer2020, 0.0, &tone).expect("sdr pq2020");
     assert_ne!(
         &sdr[..3],
         &pq2020[..3],
@@ -348,8 +344,7 @@ fn hdr_to_sdr_rgba8_with_tone_settings_respects_max_display_nits() {
     };
     let brighter =
         hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &narrow_peak).expect("tone map");
-    let darker =
-        hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &wide_peak).expect("tone map");
+    let darker = hdr_to_sdr_rgba8_with_tone_settings(&buffer, 0.0, &wide_peak).expect("tone map");
     let sum_brighter: u32 = brighter[..3].iter().map(|&b| b as u32).sum();
     let sum_darker: u32 = darker[..3].iter().map(|&b| b as u32).sum();
     assert!(

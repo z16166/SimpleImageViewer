@@ -16,7 +16,6 @@
 use crate::constants::JXL_PROBE_ITERATION_CAP;
 use crate::hdr::types::HdrImageMetadata;
 
-
 pub(crate) fn is_jxl_header(header: &[u8]) -> bool {
     header.starts_with(&[0xff, 0x0a])
         || header.starts_with(&[0x00, 0x00, 0x00, 0x0c, b'J', b'X', b'L', b' '])

@@ -56,4 +56,3 @@ pub fn init_rayon_with_com() {
         .build_global()
         .unwrap_or(());
 }
-

@@ -60,10 +60,9 @@ mod wic;
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 mod wgpu_preprobe_cache;
 
+mod startup;
 #[cfg(target_os = "windows")]
 mod windows_utils;
-mod startup;
-
 
 fn main() -> eframe::Result {
     startup::run()

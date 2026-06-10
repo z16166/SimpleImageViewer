@@ -14,7 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub(crate) fn validate_rgba32f_len(width: u32, height: u32, actual_len: usize) -> Result<(), String> {
+pub(crate) fn validate_rgba32f_len(
+    width: u32,
+    height: u32,
+    actual_len: usize,
+) -> Result<(), String> {
     let expected_len = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(4))
@@ -60,4 +64,3 @@ pub(crate) fn validate_tile_bounds(
 
     Ok(())
 }
-

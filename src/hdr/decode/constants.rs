@@ -14,18 +14,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
 #[cfg(test)]
 use std::io::{BufRead, Cursor};
-
-
 
 pub(crate) const HDR_RGBA32F_BYTES_PER_PIXEL: u64 = 4 * std::mem::size_of::<f32>() as u64;
 pub(crate) const SDR_RGBA8_BYTES_PER_PIXEL: u64 = 4;
 pub(crate) const HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR: u64 =
     HDR_RGBA32F_BYTES_PER_PIXEL + SDR_RGBA8_BYTES_PER_PIXEL;
 pub(crate) const MAX_HDR_FALLBACK_PIXELS: u64 = 8192 * 8192;
-pub(crate) const MAX_HDR_FALLBACK_DECODE_BYTES: u64 = MAX_HDR_FALLBACK_PIXELS * HDR_RGBA32F_BYTES_PER_PIXEL;
+pub(crate) const MAX_HDR_FALLBACK_DECODE_BYTES: u64 =
+    MAX_HDR_FALLBACK_PIXELS * HDR_RGBA32F_BYTES_PER_PIXEL;
 pub(crate) const MAX_HDR_FALLBACK_TOTAL_BYTES: u64 =
     MAX_HDR_FALLBACK_PIXELS * HDR_FALLBACK_BYTES_PER_PIXEL_WITH_SDR;
 pub(crate) const MAX_HDR_TONE_MAP_INPUT: f32 = f32::MAX;

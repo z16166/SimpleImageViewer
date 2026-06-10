@@ -37,7 +37,10 @@ pub(crate) fn build_radiance_scanline_offsets(
     Ok(offsets)
 }
 
-pub(crate) fn validate_scanline_offsets(outer_len: u32, scanline_offsets: &[usize]) -> Result<(), String> {
+pub(crate) fn validate_scanline_offsets(
+    outer_len: u32,
+    scanline_offsets: &[usize],
+) -> Result<(), String> {
     if scanline_offsets.len() != outer_len as usize {
         return Err(format!(
             "Radiance HDR scanline index has {} chunks, expected {outer_len}",

@@ -13,7 +13,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::cue::{load_cue, CueSheet};
+use super::cue::{CueSheet, load_cue};
 use super::player::AudioError;
 use super::playlist::{build_base_non_m3u_set, expand_m3u_excluding_base, is_m3u_path};
 use super::slots::{
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::wasapi::{wasapi_is_device_available, AUDIO_HW_POS_ZERO_GRACE};
+use super::wasapi::{AUDIO_HW_POS_ZERO_GRACE, wasapi_is_device_available};
 
 // ---------------------------------------------------------------------------
 // Shared slot bundle passed into the audio thread

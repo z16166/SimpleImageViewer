@@ -187,4 +187,3 @@ pub fn spawn_monitor_hdr_status(
 ) -> Result<SpawnMonitorHdrProbe, String> {
     Err("spawn-monitor HDR probing is only implemented on Windows".to_string())
 }
-

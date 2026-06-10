@@ -16,8 +16,8 @@
 use super::ape::ApeSource;
 
 use crate::constants::{
-    AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE,
-    DEFAULT_CHANNELS, DEFAULT_SAMPLE_RATE,
+    AUDIO_BUFFER_CAPACITY, AUDIO_BUFFER_QUEUE_DEPTH, AUDIO_CHUNK_SIZE, DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE,
 };
 use std::fs;
 use std::path::Path;
@@ -29,7 +29,6 @@ use lofty::file::TaggedFileExt;
 use lofty::read_from_path;
 use lofty::tag::Accessor;
 use std::num::NonZero;
-
 
 use symphonia::core::audio::{AudioBuffer, AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;

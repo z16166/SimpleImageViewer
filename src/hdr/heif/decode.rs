@@ -13,10 +13,9 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::session::append_heif_unci_build_hint;
 use super::metadata::heif_sample_bit_depth;
+use super::session::append_heif_unci_build_hint;
 use super::ycbcr::hdr_buffer_from_ycbcr;
-
 
 use crate::hdr::types::HdrImageMetadata;
 #[cfg(feature = "heif-native")]
@@ -621,4 +620,3 @@ pub(crate) fn hdr_buffer_from_planar_rgb444(
         rgba_f32: Arc::new(rgba_f32),
     })
 }
-

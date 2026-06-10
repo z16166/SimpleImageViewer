@@ -22,8 +22,8 @@ use crate::hdr::tiled::{
     configured_hdr_tile_cache_max_bytes, set_global_hdr_tile_cache_max_bytes_for_tests,
 };
 use crate::hdr::types::{
-    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-    HdrReference, HdrTransferFunction,
+    HdrColorProfile, HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat, HdrReference,
+    HdrTransferFunction,
 };
 
 #[test]
@@ -35,8 +35,8 @@ fn extracts_rgba32f_tile_from_in_memory_hdr_buffer() {
         color_space: HdrColorSpace::LinearSrgb,
         metadata: HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb),
         rgba_f32: Arc::new(vec![
-            0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2, 1.0,
-            4.0, 4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
+            0.0, 0.1, 0.2, 1.0, 1.0, 1.1, 1.2, 1.0, 2.0, 2.1, 2.2, 1.0, 3.0, 3.1, 3.2, 1.0, 4.0,
+            4.1, 4.2, 1.0, 5.0, 5.1, 5.2, 1.0,
         ]),
     };
 
@@ -202,9 +202,8 @@ fn repeated_tile_extraction_reuses_cached_tile_buffer() {
 
 #[test]
 fn hdr_tile_cache_evicts_least_recently_used_tile_when_over_budget() {
-    let source =
-        HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
-            .expect("valid HDR tile source");
+    let source = HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
+        .expect("valid HDR tile source");
 
     let first = source
         .extract_tile_rgba32f_arc(0, 0, 1, 1)
@@ -256,9 +255,8 @@ fn hdr_tile_cache_budget_scales_with_physical_memory() {
 
 #[test]
 fn hdr_tile_cache_refreshes_lru_on_repeated_access() {
-    let source =
-        HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
-            .expect("valid HDR tile source");
+    let source = HdrTiledImageSource::new_with_cache_budget(test_image(4, 1), 2 * tile_bytes(1, 1))
+        .expect("valid HDR tile source");
 
     let first = source
         .extract_tile_rgba32f_arc(0, 0, 1, 1)
@@ -394,11 +392,7 @@ impl HdrTiledSource for RecordingDiskBackedSource {
         super::hdr_preview_from_tiled_source_nearest(self, max_w, max_h)
     }
 
-    fn generate_sdr_preview(
-        &self,
-        max_w: u32,
-        max_h: u32,
-    ) -> Result<(u32, u32, Vec<u8>), String> {
+    fn generate_sdr_preview(&self, max_w: u32, max_h: u32) -> Result<(u32, u32, Vec<u8>), String> {
         let preview = self.generate_hdr_preview(max_w, max_h)?;
         super::sdr_preview_from_hdr_preview(&preview)
     }

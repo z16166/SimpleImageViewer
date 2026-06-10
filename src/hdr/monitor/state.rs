@@ -17,9 +17,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
-
 use super::effective::active_monitor_hdr_status;
-use super::types::{HdrMonitorSelection, HdrMonitorSignature, HDR_MONITOR_PROBE_INTERVAL};
+use super::types::{HDR_MONITOR_PROBE_INTERVAL, HdrMonitorSelection, HdrMonitorSignature};
 #[derive(Debug)]
 pub struct HdrMonitorState {
     #[cfg(test)]

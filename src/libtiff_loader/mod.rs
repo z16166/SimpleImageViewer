@@ -28,9 +28,9 @@ mod tiled;
 mod tests;
 
 pub use load::load_via_libtiff;
-pub(crate) use orientation::apply_orientation_buffer;
 #[cfg(test)]
 pub use load::peek_tiff_tags;
+pub(crate) use orientation::apply_orientation_buffer;
 
 #[cfg(test)]
 pub(crate) use constants::*;

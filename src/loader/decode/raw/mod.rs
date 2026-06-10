@@ -23,7 +23,6 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
 
-
 mod develop;
 mod load;
 mod preview;
@@ -34,8 +33,10 @@ mod tests;
 pub(crate) use load::load_raw;
 
 #[cfg(test)]
-pub(crate) use preview::{raw_embedded_preview_covers_sensor, raw_embedded_preview_meets_hq_requirement};
-#[cfg(test)]
 pub(crate) use crate::loader::preview_caps::hq_preview_max_side;
 #[cfg(test)]
 pub(crate) use crate::raw_processor::RawProcessor;
+#[cfg(test)]
+pub(crate) use preview::{
+    raw_embedded_preview_covers_sensor, raw_embedded_preview_meets_hq_requirement,
+};

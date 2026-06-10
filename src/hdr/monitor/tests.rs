@@ -193,10 +193,7 @@ fn macos_edr_selected_monitor_enables_macos_edr_on_float_surface() {
     let selection = macos_edr_selection_from_values("Built-in XDR".to_string(), 2.2, 4.0, 1.5);
 
     assert_eq!(
-        effective_capability_output_mode(
-            Some(wgpu::TextureFormat::Rgba16Float),
-            Some(&selection)
-        ),
+        effective_capability_output_mode(Some(wgpu::TextureFormat::Rgba16Float), Some(&selection)),
         HdrOutputMode::MacOsEdr
     );
 }
@@ -228,10 +225,7 @@ fn macos_non_edr_selected_monitor_forces_sdr_tone_mapping() {
     let selection = macos_edr_selection_from_values("SDR".to_string(), 1.0, 1.0, 0.0);
 
     assert_eq!(
-        effective_capability_output_mode(
-            Some(wgpu::TextureFormat::Rgba16Float),
-            Some(&selection)
-        ),
+        effective_capability_output_mode(Some(wgpu::TextureFormat::Rgba16Float), Some(&selection)),
         HdrOutputMode::SdrToneMapped
     );
 }

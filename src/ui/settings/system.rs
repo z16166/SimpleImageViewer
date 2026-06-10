@@ -17,7 +17,7 @@
 #[cfg(target_os = "windows")]
 use crate::app::ImageViewerApp;
 #[cfg(target_os = "windows")]
-use crate::ui::utils::{settings_card_styled, styled_button, SettingsCardStyle};
+use crate::ui::utils::{SettingsCardStyle, settings_card_styled, styled_button};
 #[cfg(target_os = "windows")]
 use eframe::egui::{self, Margin, RichText};
 #[cfg(target_os = "windows")]

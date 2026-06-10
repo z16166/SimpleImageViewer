@@ -261,4 +261,3 @@ fn theme_options() -> [(AppTheme, String); 3] {
         (AppTheme::System, t!("theme.system").to_string()),
     ]
 }
-

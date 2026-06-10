@@ -1348,4 +1348,3 @@ pub fn discover_imageio_codecs() -> Vec<String> {
         "heic".to_string(),
     ]
 }
-

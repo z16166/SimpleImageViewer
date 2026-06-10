@@ -14,15 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::buffer::HdrTileBuffer;
 use super::globals::{
     DEFAULT_HDR_TILE_CACHE_MAX_BYTES, HDR_TILE_CACHE_MAX_BYTES, HdrTileCacheKey,
     MAX_HDR_TILE_CACHE_MAX_BYTES,
 };
-
 
 pub(crate) fn configured_hdr_tile_cache_max_bytes() -> usize {
     HDR_TILE_CACHE_MAX_BYTES.load(Ordering::Relaxed)

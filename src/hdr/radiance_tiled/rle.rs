@@ -18,7 +18,10 @@ use super::layout::Rgbe8Pixel;
 
 use std::io::{Cursor, Read};
 
-pub(crate) fn read_scanline<R: Read>(reader: &mut R, scanline: &mut [Rgbe8Pixel]) -> Result<(), String> {
+pub(crate) fn read_scanline<R: Read>(
+    reader: &mut R,
+    scanline: &mut [Rgbe8Pixel],
+) -> Result<(), String> {
     if scanline.is_empty() {
         return Ok(());
     }
@@ -235,4 +238,3 @@ impl Rgbe8Pixel {
         ]
     }
 }
-

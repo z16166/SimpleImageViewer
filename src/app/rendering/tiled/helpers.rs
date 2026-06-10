@@ -15,10 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::should_draw_tiled_preview_transition;
+use crate::app::TransitionStyle;
 use crate::app::rendering::plan::RenderPlan;
 use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::rendering::transitions::TransitionParams;
-use crate::app::TransitionStyle;
 use crate::hdr::tiled::HdrTiledSource;
 use crate::loader::{TileDecodeSource, TilePixelKind};
 use crate::tile_cache::{PendingTileKey, TileCoord, TileManager};
@@ -49,7 +49,10 @@ pub(crate) fn should_draw_tiled_preview_transition_for_backend(
 /// `TransitionParams::alpha` / `prev_alpha` for these styles are their defaults
 /// (1.0 / 0.0) because their custom rendering path never sets them — they cannot
 /// be used directly in the tiled path.
-pub(crate) fn effective_hdr_tiled_alphas(tp: &TransitionParams, style: TransitionStyle) -> (f32, f32) {
+pub(crate) fn effective_hdr_tiled_alphas(
+    tp: &TransitionParams,
+    style: TransitionStyle,
+) -> (f32, f32) {
     if !tp.is_animating {
         return (1.0, 0.0);
     }
@@ -102,7 +105,11 @@ pub(crate) fn rotated_axis_aligned_rect(rect: Rect, pivot: Pos2, angle: f32) -> 
     Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
 }
 
-pub(crate) fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rotation_steps: i32) -> Rect {
+pub(crate) fn tile_plane_rect_for_tile(
+    tile_screen_rect: Rect,
+    pivot: Pos2,
+    rotation_steps: i32,
+) -> Rect {
     let rotation_steps = rotation_steps.rem_euclid(4);
     if rotation_steps == 0 {
         tile_screen_rect
@@ -116,7 +123,12 @@ pub(crate) fn tile_plane_rect_for_tile(tile_screen_rect: Rect, pivot: Pos2, rota
 }
 
 #[cfg(feature = "tile-debug")]
-pub(crate) fn draw_tile_debug_border(ui: &egui::Ui, rect: Rect, pivot: Pos2, rot: Option<egui::emath::Rot2>) {
+pub(crate) fn draw_tile_debug_border(
+    ui: &egui::Ui,
+    rect: Rect,
+    pivot: Pos2,
+    rot: Option<egui::emath::Rot2>,
+) {
     if let Some(r) = rot {
         let p1 = pivot + r * (rect.left_top() - pivot);
         let p2 = pivot + r * (rect.right_top() - pivot);

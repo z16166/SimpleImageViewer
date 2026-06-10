@@ -22,9 +22,7 @@ use std::io::{BufRead, Cursor};
 use image::{ImageReader, Limits};
 
 use super::constants::MAX_HDR_FALLBACK_DECODE_BYTES;
-use crate::hdr::types::{
-    HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,
-};
+use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
 
 pub fn is_hdr_candidate_ext(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("exr")

@@ -15,9 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::hdr::cicp::{self, H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
-use crate::hdr::types::{
-    HdrImageMetadata, HdrReference, HdrTransferFunction,
-};
+use crate::hdr::types::{HdrImageMetadata, HdrReference, HdrTransferFunction};
 
 pub(crate) fn is_heif_brand(brand: &[u8]) -> bool {
     matches!(

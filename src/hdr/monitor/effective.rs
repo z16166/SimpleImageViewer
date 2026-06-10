@@ -1,11 +1,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-use super::types::HdrMonitorSelection;
-#[cfg(target_os = "windows")]
-use super::windows::windows_active_monitor_hdr_status;
 #[cfg(target_os = "macos")]
 use super::macos::macos_active_monitor_hdr_status;
+use super::types::HdrMonitorSelection;
 #[cfg(target_os = "linux")]
 use super::wayland;
+#[cfg(target_os = "windows")]
+use super::windows::windows_active_monitor_hdr_status;
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::HdrOutputMode;
 

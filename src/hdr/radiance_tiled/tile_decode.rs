@@ -16,8 +16,10 @@
 
 use super::header::validate_scanline_offsets;
 use super::layout::RadianceRasterLayout;
+use super::layout::{
+    Rgbe8Pixel, inner_range_covering_coord_inclusive, outer_range_covering_coord_inclusive,
+};
 use super::rle::read_scanline;
-use super::layout::{Rgbe8Pixel, inner_range_covering_coord_inclusive, outer_range_covering_coord_inclusive};
 
 use std::io::Cursor;
 use std::sync::Arc;

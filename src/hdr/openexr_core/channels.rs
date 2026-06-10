@@ -13,14 +13,14 @@ use std::sync::Arc;
 
 use openexr_core_sys as sys;
 
-use super::types::{
-    ChannelRole, OpenExrCoreChannelInfo, OpenExrCoreDecodedChunk,
-    OpenExrCoreDecodedChunkKey,
-};
 use super::read_context::OpenExrCoreReadContext;
+use super::types::{
+    ChannelRole, OpenExrCoreChannelInfo, OpenExrCoreDecodedChunk, OpenExrCoreDecodedChunkKey,
+};
 use super::{
     DEFAULT_DECODED_CHUNK_CACHE_BYTES, MAX_DECODED_CHUNK_CACHE_BYTES,
-    SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE, SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET, SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET,
+    SCANLINE_BOOTSTRAP_PREVIEW_MAX_SIDE, SCANLINE_BOOTSTRAP_PREVIEW_SOURCE_ROW_BUDGET,
+    SCANLINE_REFINED_PREVIEW_SOURCE_ROW_BUDGET,
 };
 use std::time::Instant;
 
@@ -397,7 +397,9 @@ pub(crate) fn compression_name(compression: u8) -> &'static str {
     }
 }
 
-pub(crate) fn assign_channel_roles(channels: &[sys::ExrCodingChannelInfo]) -> Vec<Option<ChannelRole>> {
+pub(crate) fn assign_channel_roles(
+    channels: &[sys::ExrCodingChannelInfo],
+) -> Vec<Option<ChannelRole>> {
     let mut roles = vec![None; channels.len()];
 
     let mut has_r = false;
@@ -447,7 +449,9 @@ pub(crate) fn assign_channel_roles(channels: &[sys::ExrCodingChannelInfo]) -> Ve
     roles
 }
 
-pub(crate) fn copy_channels(chlist: *const sys::ExrAttrChlist) -> Result<Vec<OpenExrCoreChannelInfo>, String> {
+pub(crate) fn copy_channels(
+    chlist: *const sys::ExrAttrChlist,
+) -> Result<Vec<OpenExrCoreChannelInfo>, String> {
     if chlist.is_null() {
         return Err("OpenEXRCore returned a null channel list".to_string());
     }
@@ -514,4 +518,3 @@ pub(crate) fn exr_result(result: sys::ExrResult) -> Result<(), String> {
     };
     Err(format!("OpenEXRCore error {result}: {message}"))
 }
-

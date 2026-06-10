@@ -130,8 +130,7 @@ fn ieee_float_sample_assets_load_as_hdr() {
             path.display()
         );
         let tone = crate::hdr::types::HdrToneMapSettings::default();
-        let img =
-            load_via_libtiff(&path, 1.0, tone).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let img = load_via_libtiff(&path, 1.0, tone).unwrap_or_else(|e| panic!("load {name}: {e}"));
         match &img {
             ImageData::Hdr { hdr, .. } => {
                 assert_eq!(hdr.width, 64, "{name}");
@@ -179,11 +178,8 @@ fn tiff_stress_test() {
                 .to_lowercase();
             if ext == "tif" || ext == "tiff" {
                 total += 1;
-                match load_via_libtiff(
-                    path,
-                    1.0,
-                    crate::hdr::types::HdrToneMapSettings::default(),
-                ) {
+                match load_via_libtiff(path, 1.0, crate::hdr::types::HdrToneMapSettings::default())
+                {
                     Ok(_) => {
                         // println!("OK: {}", path.display());
                     }
@@ -193,8 +189,7 @@ fn tiff_stress_test() {
 
                         // Debug tags
                         unsafe {
-                            let c_path =
-                                std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+                            let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
                             let tif = lib::TIFFOpen(
                                 c_path.as_ptr(),
                                 b"r\0".as_ptr() as *const std::ffi::c_char,
@@ -207,27 +202,16 @@ fn tiff_stress_test() {
                                 let mut comp: u16 = 0;
                                 let mut photo: u16 = 0;
                                 lib::TIFFSetDirectory(tif, 0);
-                                let r1 =
-                                    lib::TIFFGetField(tif, lib::TIFFTAG_IMAGEWIDTH, &mut w);
-                                let r2 =
-                                    lib::TIFFGetField(tif, lib::TIFFTAG_IMAGELENGTH, &mut h);
-                                let r3 = lib::TIFFGetField(
-                                    tif,
-                                    lib::TIFFTAG_BITSPERSAMPLE,
-                                    &mut bps,
-                                );
-                                let r4 = lib::TIFFGetField(
-                                    tif,
-                                    lib::TIFFTAG_SAMPLESPERPIXEL,
-                                    &mut spp,
-                                );
+                                let r1 = lib::TIFFGetField(tif, lib::TIFFTAG_IMAGEWIDTH, &mut w);
+                                let r2 = lib::TIFFGetField(tif, lib::TIFFTAG_IMAGELENGTH, &mut h);
+                                let r3 =
+                                    lib::TIFFGetField(tif, lib::TIFFTAG_BITSPERSAMPLE, &mut bps);
+                                let r4 =
+                                    lib::TIFFGetField(tif, lib::TIFFTAG_SAMPLESPERPIXEL, &mut spp);
                                 let r5 =
                                     lib::TIFFGetField(tif, lib::TIFFTAG_COMPRESSION, &mut comp);
-                                let r6 = lib::TIFFGetField(
-                                    tif,
-                                    lib::TIFFTAG_PHOTOMETRIC,
-                                    &mut photo,
-                                );
+                                let r6 =
+                                    lib::TIFFGetField(tif, lib::TIFFTAG_PHOTOMETRIC, &mut photo);
                                 println!(
                                     "  TAGS: Res={}{}{}{}{}{}, Size={}x{}, BPS={}, SPP={}, Comp={}, Photo={}",
                                     r1, r2, r3, r4, r5, r6, w, h, bps, spp, comp, photo

@@ -459,7 +459,13 @@ pub fn settings_card<R>(
     title: impl Into<String>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    settings_card_styled(ui, palette, title, SettingsCardStyle::default(), add_contents)
+    settings_card_styled(
+        ui,
+        palette,
+        title,
+        SettingsCardStyle::default(),
+        add_contents,
+    )
 }
 
 pub fn settings_card_styled<R>(

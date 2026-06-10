@@ -24,8 +24,10 @@ impl ImageViewerApp {
 
         // ── 1. Continue uploading deferred animation frames (max 8 per tick) ──
         const ANIM_UPLOAD_QUOTA: usize = 8;
-        let pending_idx =
-            super::super::prefetch_animation_upload_index(&self.pending_anim_frames, self.current_index);
+        let pending_idx = super::super::prefetch_animation_upload_index(
+            &self.pending_anim_frames,
+            self.current_index,
+        );
         let defer_pending_animation_upload = pending_idx.is_some_and(|idx| {
             should_defer_background_upload_during_transition(
                 idx == self.current_index,

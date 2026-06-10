@@ -39,8 +39,8 @@ fn should_spawn_load_task_only_for_newer_generation() {
 
 #[test]
 fn test_discard_pending_stale_outputs_preserves_hdr_fallback() {
-    use crate::loader::{HdrSdrFallbackResult, LoaderOutput};
     use super::ImageLoader;
+    use crate::loader::{HdrSdrFallbackResult, LoaderOutput};
     let mut loader = ImageLoader::new();
 
     let fallback_result = HdrSdrFallbackResult {
@@ -68,9 +68,9 @@ fn test_discard_pending_stale_outputs_preserves_hdr_fallback() {
 
 #[test]
 fn test_fallback_refinement_failure_clears_inflight() {
-    use crate::loader::LoaderOutput;
     use super::ImageLoader;
     use crate::hdr::types::{HdrColorSpace, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat};
+    use crate::loader::LoaderOutput;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 

@@ -10,9 +10,9 @@ use memmap2::Mmap;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 
+use super::decode::{get_raw_value, process_scanline_contig, process_scanline_separate};
 use super::handle::create_tiff_handle;
 use super::thumbnail::extract_embedded_thumbnail;
-use super::decode::{get_raw_value, process_scanline_contig, process_scanline_separate};
 
 // --- Scanline Implementation (Mock Tiles from Strips) ---
 

@@ -40,7 +40,10 @@ pub(crate) fn parse_env_bool(value: Option<&str>) -> bool {
     )
 }
 
-pub(crate) fn logging_config_from_env(log_level: Option<&str>, log_file: Option<&str>) -> LoggingConfig {
+pub(crate) fn logging_config_from_env(
+    log_level: Option<&str>,
+    log_file: Option<&str>,
+) -> LoggingConfig {
     LoggingConfig {
         level: log_level
             .map(str::trim)

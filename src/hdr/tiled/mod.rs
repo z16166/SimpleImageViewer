@@ -15,8 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod buffer;
-mod globals;
 mod cache;
+mod globals;
 mod kind;
 mod preview;
 mod source;
@@ -26,17 +26,17 @@ mod validate;
 mod tests;
 
 pub(crate) use buffer::HdrTileBuffer;
-pub(crate) use cache::{
-    configured_hdr_tile_cache_max_bytes, configure_hdr_tile_cache_budget_from_system_memory,
-    HdrTileCache,
-};
 #[cfg(test)]
 pub(crate) use cache::set_global_hdr_tile_cache_max_bytes_for_tests;
+pub(crate) use cache::{
+    HdrTileCache, configure_hdr_tile_cache_budget_from_system_memory,
+    configured_hdr_tile_cache_max_bytes,
+};
 pub(crate) use globals::HDR_TILE_CACHE_MAX_BYTES;
 pub(crate) use kind::{HdrTiledSource, HdrTiledSourceKind};
 pub(crate) use preview::{
-    downsample_hdr_image_nearest, hdr_preview_from_tiled_source_nearest,
-    preview_dimensions, preview_sample_coord, sdr_preview_from_hdr_preview,
+    downsample_hdr_image_nearest, hdr_preview_from_tiled_source_nearest, preview_dimensions,
+    preview_sample_coord, sdr_preview_from_hdr_preview,
 };
 pub(crate) use source::HdrTiledImageSource;
 pub(crate) use validate::validate_tile_bounds;

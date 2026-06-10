@@ -84,4 +84,3 @@ pub(crate) fn avif_yuv_to_rgb_output_metadata(
     }
     metadata
 }
-

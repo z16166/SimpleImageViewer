@@ -38,4 +38,3 @@ impl Drop for JxlResizableRunnerPtr {
         }
     }
 }
-

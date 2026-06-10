@@ -16,8 +16,6 @@
 
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-
-
 pub(crate) const DEFAULT_HDR_TILE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_HDR_TILE_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024 * 1024;
 pub(crate) static HDR_TILE_CACHE_MAX_BYTES: AtomicUsize =

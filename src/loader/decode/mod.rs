@@ -28,8 +28,8 @@ mod raster;
 mod raw;
 mod tiff_raw_sniff;
 
-pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 pub(crate) use raster::is_maybe_animated;
+pub(crate) use tiff_raw_sniff::tiff_may_be_camera_raw;
 
 use crate::constants::{BYTES_PER_MB, DEFAULT_PREVIEW_SIZE};
 use crate::hdr::types::HdrToneMapSettings;

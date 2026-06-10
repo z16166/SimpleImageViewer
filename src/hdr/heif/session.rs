@@ -114,7 +114,9 @@ pub(crate) fn ensure_heif_ok_lib(err: libheif_sys::heif_error, action: &str) -> 
 
 /// Allocate libheif context, read the blob, and resolve the primary image handle.
 #[cfg(feature = "heif-native")]
-pub(crate) fn open_heif_primary_from_bytes(bytes: &[u8]) -> Result<(HeifCtxGuard, HeifPrimaryGuard), String> {
+pub(crate) fn open_heif_primary_from_bytes(
+    bytes: &[u8],
+) -> Result<(HeifCtxGuard, HeifPrimaryGuard), String> {
     {
         use std::sync::Once;
         static LOG_VERSION: Once = Once::new();

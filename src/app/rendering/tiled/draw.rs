@@ -14,24 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::helpers::{
-    TileRequestBudget, TiledPlaneKind, draw_hdr_plane_tile_visit,
-    effective_hdr_tiled_alphas, has_pending_visible_tiles_for_backend,
-    hdr_tile_cache_key_for_coord, is_tiled_plane_active, prev_transition_params_for_tiled_draw,
-    should_draw_tiled_preview_for_backend, should_draw_tiled_preview_transition_for_backend,
-    should_invalidate_tile_requests_on_pan_drag, should_repaint_for_ready_tiles_for_backend,
-    tile_decode_source_for_backend, tile_pending_key_for_backend, tile_plane_kind_for_backend,
-    tile_request_priority, tile_visits_for_backend, tiled_lookahead_padding,
-    tiled_plane_threshold_for_backend,
-};
 #[cfg(feature = "tile-debug")]
 use super::helpers::draw_tile_debug_border;
+use super::helpers::{
+    TileRequestBudget, TiledPlaneKind, draw_hdr_plane_tile_visit, effective_hdr_tiled_alphas,
+    has_pending_visible_tiles_for_backend, hdr_tile_cache_key_for_coord, is_tiled_plane_active,
+    prev_transition_params_for_tiled_draw, should_draw_tiled_preview_for_backend,
+    should_draw_tiled_preview_transition_for_backend, should_invalidate_tile_requests_on_pan_drag,
+    should_repaint_for_ready_tiles_for_backend, tile_decode_source_for_backend,
+    tile_pending_key_for_backend, tile_plane_kind_for_backend, tile_request_priority,
+    tile_visits_for_backend, tiled_lookahead_padding, tiled_plane_threshold_for_backend,
+};
 use super::{BURST_UPLOAD_MAX_512, BURST_UPLOAD_MULT, FALLBACK_PREVIEW_SCALE};
+use crate::app::ImageViewerApp;
 use crate::app::rendering::plan::RenderShape;
 use crate::app::rendering::plane::{
     PlaneBackendKind, PlaneDrawSource, draw_plane, draw_sdr_texture_plane, hdr_image_plane_rect,
 };
-use crate::app::ImageViewerApp;
 use crate::tile_cache::{TileCoord, TileStatus};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashSet;

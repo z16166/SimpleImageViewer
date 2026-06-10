@@ -46,4 +46,3 @@ pub(crate) fn should_draw_tiled_preview_transition(
             TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
         )
 }
-

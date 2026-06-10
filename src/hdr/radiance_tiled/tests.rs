@@ -198,12 +198,7 @@ fn open_indexes_radiance_scanline_offsets_for_direct_tile_decode() {
     assert!((tile.rgba_f32[4] - expected).abs() < 0.001);
 }
 
-fn append_constant_new_rle_scanline(
-    bytes: &mut Vec<u8>,
-    width: u32,
-    rgb: [u8; 3],
-    exponent: u8,
-) {
+fn append_constant_new_rle_scanline(bytes: &mut Vec<u8>, width: u32, rgb: [u8; 3], exponent: u8) {
     bytes.extend_from_slice(&[2, 2, (width >> 8) as u8, (width & 0xff) as u8]);
     for value in [rgb[0], rgb[1], rgb[2], exponent] {
         let mut remaining = width;

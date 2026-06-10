@@ -14,17 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{
-    should_dispatch_standard_draw, should_draw_pending_navigation_hold_frame,
-    should_draw_static_hdr_immediately, should_route_through_hdr_plane,
-};
 use super::helpers::{
     curtain_hdr_transition_rotation, pending_navigation_hold_params,
     resolve_transition_prev_layout, should_clear_transition_state_after_static_hdr_draw,
 };
+use super::{
+    should_dispatch_standard_draw, should_draw_pending_navigation_hold_frame,
+    should_draw_static_hdr_immediately, should_route_through_hdr_plane,
+};
+use crate::app::TransitionStyle;
 use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::rendering::plane::PlaneBackendKind;
-use crate::app::TransitionStyle;
 use crate::hdr::renderer::HdrRenderOutputMode;
 use eframe::egui::{Pos2, Rect, Vec2};
 
@@ -176,8 +176,7 @@ fn hdr_curtain_transition_uses_image_rotation() {
 fn transition_prev_layout_uses_captured_outgoing_rect_for_tiled_previews() {
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1024.0, 512.0));
     let wide_new_dest = Rect::from_center_size(screen.center(), Vec2::new(1024.0, 96.0));
-    let captured_tall_old_dest =
-        Rect::from_center_size(screen.center(), Vec2::new(48.0, 512.0));
+    let captured_tall_old_dest = Rect::from_center_size(screen.center(), Vec2::new(48.0, 512.0));
 
     let (prev_dest, _, has_prev) = resolve_transition_prev_layout(
         screen,

@@ -33,7 +33,11 @@ impl ImageViewerApp {
     }
 
     /// Outgoing-frame layout for complex transitions whose destination is an SDR texture.
-    pub(crate) fn transition_prev_layout(&self, screen_rect: Rect, final_dest: Rect) -> (Rect, Rect, bool) {
+    pub(crate) fn transition_prev_layout(
+        &self,
+        screen_rect: Rect,
+        final_dest: Rect,
+    ) -> (Rect, Rect, bool) {
         let prev_size = self
             .prev_hdr_image
             .as_ref()

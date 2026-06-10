@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::tiled_source::WicTiledSource;
 
-
 use super::com::ComGuard;
 use super::imports::*;
 

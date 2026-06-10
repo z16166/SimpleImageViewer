@@ -17,10 +17,10 @@
 #[cfg(feature = "heif-native")]
 use crate::hdr::cicp::{H273_TRANSFER_ITU_BT709, H273_TRANSFER_SMPTE170M};
 #[cfg(feature = "heif-native")]
-use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
-#[cfg(feature = "heif-native")]
 use crate::hdr::heif::heif_nclx_to_metadata;
 use crate::hdr::heif::is_heif_brand;
+#[cfg(feature = "heif-native")]
+use crate::hdr::heif::{HeifAuxiliaryClassification, classify_heif_auxiliary_type};
 #[cfg(feature = "heif-native")]
 use crate::hdr::types::{HdrColorProfile, HdrReference, HdrTransferFunction};
 
@@ -98,8 +98,7 @@ fn heif_transfer_depth_heuristic_unknown_8bit_to_srgb() {
 #[test]
 fn heif_unknown_transfer_bt709_primaries_fallback_promotes_srgb_still_decode() {
     use super::{
-        apply_heif_transfer_depth_heuristics,
-        apply_heif_unknown_transfer_bt709_primaries_fallback,
+        apply_heif_transfer_depth_heuristics, apply_heif_unknown_transfer_bt709_primaries_fallback,
     };
 
     let mut m = heif_nclx_to_metadata(1, 99, 1, true);
@@ -117,8 +116,7 @@ fn heif_unknown_transfer_bt709_primaries_fallback_promotes_srgb_still_decode() {
 #[test]
 fn heif_unknown_transfer_not_lifted_for_rec2020_primaries() {
     use super::{
-        apply_heif_transfer_depth_heuristics,
-        apply_heif_unknown_transfer_bt709_primaries_fallback,
+        apply_heif_transfer_depth_heuristics, apply_heif_unknown_transfer_bt709_primaries_fallback,
     };
 
     let mut m = heif_nclx_to_metadata(9, 99, 9, false);

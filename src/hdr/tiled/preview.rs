@@ -21,7 +21,6 @@ use rayon::prelude::*;
 use super::kind::HdrTiledSource;
 use super::validate::validate_rgba32f_len;
 
-
 pub(crate) fn downsample_hdr_image_nearest(
     image: &HdrImageBuffer,
     max_w: u32,
@@ -152,4 +151,3 @@ pub(crate) fn preview_sample_coord(
     ((u64::from(preview_coord) * u64::from(source_extent - 1)) / u64::from(preview_extent - 1))
         as u32
 }
-

@@ -13,26 +13,28 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
+use super::decode::{
+    decode_jxl_hdr_bytes_with_target_capacity, jxl_tag_display_referred_when_sdr_grade,
+};
 use super::probe::{
     JXL_TRANSFER_FUNCTION_709, JXL_TRANSFER_FUNCTION_GAMMA, JXL_TRANSFER_FUNCTION_HLG,
     JXL_TRANSFER_FUNCTION_LINEAR, JXL_TRANSFER_FUNCTION_PQ, JXL_TRANSFER_FUNCTION_SRGB,
 };
-use super::decode::{
-    decode_jxl_hdr_bytes_with_target_capacity, jxl_tag_display_referred_when_sdr_grade,
-};
 
-
+#[cfg(feature = "jpegxl")]
+use crate::constants::MAX_ICC_TAG_COUNT;
 #[cfg(feature = "jpegxl")]
 use crate::hdr::gain_map::GainMapMetadata;
 use crate::hdr::types::{
     HdrColorProfile, HdrImageMetadata, HdrLuminanceMetadata, HdrReference, HdrTransferFunction,
 };
 #[cfg(feature = "jpegxl")]
-use crate::constants::MAX_ICC_TAG_COUNT;
-#[cfg(feature = "jpegxl")]
 use std::sync::Arc;
 #[cfg(feature = "jpegxl")]
-pub(crate) fn ensure_jxl_success(status: libjxl_sys::JxlDecoderStatus, action: &str) -> Result<(), String> {
+pub(crate) fn ensure_jxl_success(
+    status: libjxl_sys::JxlDecoderStatus,
+    action: &str,
+) -> Result<(), String> {
     if status == libjxl_sys::JXL_DEC_SUCCESS {
         Ok(())
     } else {
@@ -508,7 +510,9 @@ fn chromaticities_close_to_bt709_srgb(color: &libjxl_sys::JxlColorEncoding) -> b
 /// RGB primaries; the encoding's `transfer_function` describes the **coded** image, not raw
 /// nonlinear samples in the float buffer (see libjxl decoder API / examples).
 #[cfg(feature = "jpegxl")]
-pub(crate) fn hdr_metadata_from_jxl_float_decode(color: &libjxl_sys::JxlColorEncoding) -> HdrImageMetadata {
+pub(crate) fn hdr_metadata_from_jxl_float_decode(
+    color: &libjxl_sys::JxlColorEncoding,
+) -> HdrImageMetadata {
     let cicp_primaries = jxl_cicp_color_primaries_from_encoding(color);
     // libjxl's `JxlTransferFunction` is a signed `c_int` enum but the values
     // we care about (1, 4, 8, 13, 16, 18, 65535=GAMMA) all fit unsigned u16.
@@ -572,7 +576,9 @@ fn jxl_cicp_transfer_code_from_jxl(jxl_tf: i64) -> u16 {
 }
 
 #[cfg(feature = "jpegxl")]
-pub(crate) fn jxl_decoder_copy_target_data_icc(decoder: *const libjxl_sys::JxlDecoder) -> Option<Vec<u8>> {
+pub(crate) fn jxl_decoder_copy_target_data_icc(
+    decoder: *const libjxl_sys::JxlDecoder,
+) -> Option<Vec<u8>> {
     jxl_decoder_copy_icc_for_target(decoder, libjxl_sys::JXL_COLOR_PROFILE_TARGET_DATA)
 }
 
@@ -581,7 +587,9 @@ pub(crate) fn jxl_decoder_copy_target_data_icc(decoder: *const libjxl_sys::JxlDe
 /// color management — for CMYK-style sources it's a CMYK ICC profile that we
 /// feed into lcms2 to compose CMYK→sRGB.
 #[cfg(feature = "jpegxl")]
-pub(crate) fn jxl_decoder_copy_target_original_icc(decoder: *const libjxl_sys::JxlDecoder) -> Option<Vec<u8>> {
+pub(crate) fn jxl_decoder_copy_target_original_icc(
+    decoder: *const libjxl_sys::JxlDecoder,
+) -> Option<Vec<u8>> {
     jxl_decoder_copy_icc_for_target(decoder, libjxl_sys::JXL_COLOR_PROFILE_TARGET_ORIGINAL)
 }
 
@@ -606,7 +614,9 @@ fn jxl_decoder_copy_icc_for_target(
 /// embedded `TARGET_DATA` ICC (`rXYZ`/`gXYZ`/`bXYZ`), instead of relying on the decoder's generic
 /// fallback that can disagree with narrow-gamut PQ ICCs (e.g. conformance `bench_oriented_brg`).
 #[cfg(feature = "jpegxl")]
-pub(crate) fn jxl_apply_preferred_profile_from_target_data_icc(decoder: *mut libjxl_sys::JxlDecoder) {
+pub(crate) fn jxl_apply_preferred_profile_from_target_data_icc(
+    decoder: *mut libjxl_sys::JxlDecoder,
+) {
     let Some(icc) = jxl_decoder_copy_target_data_icc(decoder.cast_const()) else {
         return;
     };
@@ -728,4 +738,3 @@ pub(crate) fn read_jxl_metadata(
     jxl_tag_display_referred_when_sdr_grade(&mut metadata);
     metadata
 }
-
