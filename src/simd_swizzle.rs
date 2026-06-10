@@ -448,3 +448,100 @@ unsafe fn interleave_rgb_packed_to_rgba_neon(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interleave_rgba_scalar(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
+        let len = r
+            .len()
+            .min(g.len())
+            .min(b.len())
+            .min(a.len())
+            .min(dst.len() / RGBA_CHANNELS);
+        for i in 0..len {
+            let base = i * RGBA_CHANNELS;
+            dst[base] = r[i];
+            dst[base + 1] = g[i];
+            dst[base + 2] = b[i];
+            dst[base + 3] = a[i];
+        }
+    }
+
+    fn interleave_rgb_with_alpha_scalar(r: &[u8], g: &[u8], b: &[u8], alpha: u8, dst: &mut [u8]) {
+        let len = r
+            .len()
+            .min(g.len())
+            .min(b.len())
+            .min(dst.len() / RGBA_CHANNELS);
+        for i in 0..len {
+            let base = i * RGBA_CHANNELS;
+            dst[base] = r[i];
+            dst[base + 1] = g[i];
+            dst[base + 2] = b[i];
+            dst[base + 3] = alpha;
+        }
+    }
+
+    fn interleave_rgb_packed_to_rgba_packed_scalar(src: &[u8], dst: &mut [u8]) {
+        let count = (src.len() / RGB_CHANNELS).min(dst.len() / RGBA_CHANNELS);
+        for i in 0..count {
+            let s = i * RGB_CHANNELS;
+            let d = i * RGBA_CHANNELS;
+            dst[d] = src[s];
+            dst[d + 1] = src[s + 1];
+            dst[d + 2] = src[s + 2];
+            dst[d + 3] = MAX_CHANNEL_VALUE;
+        }
+    }
+
+    fn patterned_channels(len: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let r: Vec<u8> = (0..len).map(|i| ((i * 3 + 1) % 256) as u8).collect();
+        let g: Vec<u8> = (0..len).map(|i| ((i * 5 + 2) % 256) as u8).collect();
+        let b: Vec<u8> = (0..len).map(|i| ((i * 7 + 3) % 256) as u8).collect();
+        let a: Vec<u8> = (0..len).map(|i| ((i * 11 + 4) % 256) as u8).collect();
+        (r, g, b, a)
+    }
+
+    const PARITY_LENGTHS: &[usize] = &[0, 1, 15, 16, 17, 31, 32, 33, 64, 100];
+
+    #[test]
+    fn simd_swizzle_interleave_rgba_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let (r, g, b, a) = patterned_channels(*len);
+            let mut simd_dst = vec![0_u8; len * RGBA_CHANNELS];
+            let mut scalar_dst = vec![0_u8; len * RGBA_CHANNELS];
+            interleave_rgba(&r, &g, &b, &a, &mut simd_dst);
+            interleave_rgba_scalar(&r, &g, &b, &a, &mut scalar_dst);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn simd_swizzle_interleave_rgb_with_alpha_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let (r, g, b, _) = patterned_channels(*len);
+            let alpha = 200_u8;
+            let mut simd_dst = vec![0_u8; len * RGBA_CHANNELS];
+            let mut scalar_dst = vec![0_u8; len * RGBA_CHANNELS];
+            interleave_rgb_with_alpha(&r, &g, &b, alpha, &mut simd_dst);
+            interleave_rgb_with_alpha_scalar(&r, &g, &b, alpha, &mut scalar_dst);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+
+    #[test]
+    fn simd_swizzle_interleave_rgb_packed_to_rgba_matches_scalar() {
+        for len in PARITY_LENGTHS {
+            let src: Vec<u8> = (0..len * RGB_CHANNELS)
+                .map(|i| ((i * 13 + 7) % 256) as u8)
+                .collect();
+            let mut simd_dst = vec![0_u8; len * RGBA_CHANNELS];
+            let mut scalar_dst = vec![0_u8; len * RGBA_CHANNELS];
+            interleave_rgb_packed_to_rgba_packed(&src, &mut simd_dst);
+            interleave_rgb_packed_to_rgba_packed_scalar(&src, &mut scalar_dst);
+            assert_eq!(simd_dst, scalar_dst, "len={len}");
+        }
+    }
+}

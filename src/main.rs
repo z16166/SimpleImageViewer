@@ -14,11 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(not(debug_assertions), not(test)), windows_subsystem = "windows")]
 
 // Use mimalloc for all platforms — the default Windows HeapAlloc has severe
 // lock contention when many threads concurrently allocate/free ~68KB buffers
 // (one per PSB row decode). mimalloc uses per-thread heaps to eliminate this.
+// Unit/integration tests use the system allocator: mimalloc + static CRT on
+// Windows CI has been observed to fault the test harness before any case runs.
+#[cfg(not(test))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
