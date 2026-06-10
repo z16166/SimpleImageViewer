@@ -7,6 +7,7 @@ vcpkg_from_github(
     PATCHES
         fix-arm-neon-clang.patch
         pkgconfig-cxx-linkage.diff
+        msvc-optimization-workaround.patch
 )
 
 # dec265 links libde265.a containing std::thread; clang++ needs -pthread on the final link (undefined pthread_create).
