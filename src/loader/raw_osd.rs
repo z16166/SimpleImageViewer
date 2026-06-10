@@ -138,7 +138,7 @@ impl RawOsdInfo {
             )
             .to_string(),
         };
-        Some(format!("{embedded}·{sensor}·{render}"))
+        Some(format!("{embedded} · {sensor} · {render}"))
     }
 
     #[cfg(any(test, target_os = "windows", target_os = "macos"))]
@@ -162,6 +162,23 @@ fn format_dims(w: u32, h: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_osd_line_separates_fields_with_spaces() {
+        let line = RawOsdInfo::compose_osd_line(
+            (6000, 4000),
+            Some((1920, 1280)),
+            RawRenderPixels::HqBootstrap {
+                width: 1920,
+                height: 1280,
+            },
+        )
+        .expect("line");
+        assert!(
+            line.contains(" · "),
+            "expected spaced middle-dot separators, got: {line}"
+        );
+    }
 
     #[test]
     fn hq_refine_promotes_bootstrap_to_full_develop() {

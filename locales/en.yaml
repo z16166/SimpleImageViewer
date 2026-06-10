@@ -137,9 +137,9 @@ osd.mode.tiled: "TILED"
 raw.osd.embedded: "Embedded %{size}"
 raw.osd.no_embedded: "Embedded —"
 raw.osd.sensor: "Sensor %{size}"
-raw.osd.render.embedded: "→Embedded %{size}"
-raw.osd.render.full: "→Full %{size}"
-raw.osd.render.hq_bootstrap: "→Embedded* %{size}"
+raw.osd.render.embedded: "→ Embedded %{size}"
+raw.osd.render.full: "→ Full %{size}"
+raw.osd.render.hq_bootstrap: "→ Embedded* %{size}"
 
 # Scale mode
 scale.fit: "Fit to Window"
