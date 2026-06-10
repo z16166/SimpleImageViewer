@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.6] - 2026-06-10
+
+### Improved
+- **Window startup responsiveness**: Upgraded the core user interface framework to improve window maximization responsiveness and ensure clean, flash-free rendering on first launch.
+
+### Fixed
+- **HEVC/HEIF startup stability**: Resolved a critical startup crash on Windows that occurred when initializing the HEVC image decoding engine, ensuring stable loading of HEVC/HEIF photos.
+
 ## [2.4.5] - 2026-06-10
 
 ### Improved

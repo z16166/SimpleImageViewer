@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.92"
 name = "eframe"
-version = "0.34.2"
+version = "0.34.3"
 authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
 build = false
 include = [
@@ -126,12 +126,12 @@ default-features = false
 version = "0.2.11"
 
 [dependencies.egui]
-version = "0.34.2"
+version = "0.34.3"
 features = ["bytemuck"]
 default-features = false
 
 [dependencies.egui_glow]
-version = "0.34.2"
+version = "0.34.3"
 optional = true
 default-features = false
 
@@ -212,7 +212,7 @@ features = [
 ]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.egui-wgpu]
-version = "0.34.2"
+version = "0.34.3"
 features = [
     "winit",
     "capture",
@@ -221,7 +221,7 @@ optional = true
 default-features = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.egui-winit]
-version = "0.34.2"
+version = "0.34.3"
 features = [
     "clipboard",
     "links",
@@ -271,7 +271,7 @@ version = "6.0.0"
 version = "1.24.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.egui-wgpu]
-version = "0.34.2"
+version = "0.34.3"
 features = ["capture"]
 optional = true
 default-features = false

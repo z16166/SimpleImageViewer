@@ -1,0 +1,20 @@
+diff --git a/libde265/scan.cc b/libde265/scan.cc
+--- a/libde265/scan.cc
++++ b/libde265/scan.cc
+@@ -132,6 +132,9 @@
+ }
+ 
+ 
++#if defined(_MSC_VER)
++#pragma optimize("", off)
++#endif
+ void init_scan_orders()
+ {
+   for (int log2size=1;log2size<=5;log2size++)
+@@ -150,3 +153,6 @@
+             fill_scan_pos(&scanpos[scanIdx][log2size][ y*(1<<log2size) + x ],x,y,scanIdx,log2size);
+           }
+ }
++#if defined(_MSC_VER)
++#pragma optimize("", on)
++#endif

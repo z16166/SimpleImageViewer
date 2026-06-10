@@ -256,18 +256,6 @@ impl RenderState {
     }
 }
 
-fn install_uncaptured_error_handler(device: &wgpu::Device) {
-    device.on_uncaptured_error(Arc::new(|error| match error {
-        wgpu::Error::OutOfMemory { source } => {
-            log::error!("wgpu reported an out-of-memory error; skipping fatal panic: {source}");
-        }
-        other => {
-            log::error!("Handling uncaptured wgpu error as fatal: {other}");
-            panic!("wgpu error: {other}\n");
-        }
-    }));
-}
-
 fn describe_adapters(adapters: &[wgpu::Adapter]) -> String {
     if adapters.is_empty() {
         "(none)".to_owned()
@@ -287,7 +275,12 @@ pub enum SurfaceErrorAction {
     /// Do nothing and skip the current frame.
     SkipFrame,
 
-    /// Instructs egui to recreate the surface, then skip the current frame.
+    /// Recover the surface, then skip the current frame.
+    ///
+    /// egui reconfigures the existing surface for [`wgpu::CurrentSurfaceTexture::Outdated`], and
+    /// drops & recreates it via [`wgpu::Instance::create_surface`] for
+    /// [`wgpu::CurrentSurfaceTexture::Lost`] (where reconfiguring the same surface object cannot
+    /// recover).
     RecreateSurface,
 }
 
@@ -300,9 +293,10 @@ pub enum SurfaceErrorAction {
 /// `RenderState`. We need the format to follow the active monitor's HDR
 /// capability (`Rgba16Float` on HDR, `Bgra8Unorm` on SDR) when the user
 /// drags the window across monitors, so the [`crate::winit::Painter`] checks
-/// this mailbox at the start of every `paint_and_update_textures` call and,
-/// if a different but surface-supported format has been requested, hot-swaps
-/// the egui pipeline format and triggers a swap-chain reconfigure.
+/// this mailbox at the end of every `paint_and_update_textures` call (after
+/// present) and, if a different but surface-supported format has been
+/// requested, hot-swaps the egui pipeline format and triggers a swap-chain
+/// reconfigure.
 ///
 /// `None` means "do not request a format change". `Some(format)` is consumed
 /// (taken out) by the painter once the change has been applied.
@@ -545,81 +539,6 @@ impl ActiveSurfaceFormat {
     }
 }
 
-/// Configuration for using wgpu with eframe or the egui-wgpu winit feature.
-#[derive(Clone)]
-pub struct WgpuConfiguration {
-    /// Present mode used for the primary surface.
-    pub present_mode: wgpu::PresentMode,
-
-    /// Desired maximum number of frames that the presentation engine should queue in advance.
-    ///
-    /// Use `1` for low-latency, and `2` for high-throughput.
-    ///
-    /// See [`wgpu::SurfaceConfiguration::desired_maximum_frame_latency`] for details.
-    ///
-    /// `None` = `wgpu` default.
-    pub desired_maximum_frame_latency: Option<u32>,
-
-    /// Preferred surface format for the primary surface, if supported.
-    ///
-    /// This is useful for applications that need a non-default presentation
-    /// format, such as an HDR float swapchain. If the requested format is not
-    /// exposed by the surface, egui-wgpu falls back to its standard SDR-safe
-    /// format preference.
-    pub preferred_target_format: Option<wgpu::TextureFormat>,
-
-    /// Mailbox the application can use to ask the painter to swap to a
-    /// different surface target format **at runtime** (e.g. when the window
-    /// is dragged from an SDR monitor onto an HDR monitor or vice versa).
-    ///
-    /// The painter polls this on every frame. See [`RequestedSurfaceFormat`]
-    /// for the full contract. When unused (`Default::default()` / not
-    /// written to), the painter behaves identically to upstream egui-wgpu.
-    pub requested_target_format: RequestedSurfaceFormat,
-
-    /// Reverse-direction observer the painter writes the **current active**
-    /// swap-chain target format into after every successful runtime hot-swap.
-    ///
-    /// Required because `RenderState` derives `Clone` and eframe stores a
-    /// clone in `Frame`, so mutating the painter's `RenderState.target_format`
-    /// is not visible through `frame.wgpu_render_state().target_format`. The
-    /// application must read the live format from this mailbox to keep its
-    /// OSD / shader-mode state in sync after cross-monitor drags.
-    /// See [`ActiveSurfaceFormat`] for the contract.
-    pub active_target_format: ActiveSurfaceFormat,
-
-    /// When the active monitor uses `Rgb10a2Unorm`, selects PQ vs gamma 2.2 UI encoding.
-    pub requested_rgb10a2_pq_encode: RequestedRgb10a2PqEncode,
-
-    /// SDR white / panel peak scale for gamma 2.2 HDR UI on `Rgb10a2Unorm`.
-    pub gamma22_display_scale: Gamma22DisplayScale,
-
-    /// Vulkan WSI HDR surface gates (`HDR10_ST2084_EXT`, etc.) from the first probe.
-    pub vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox,
-
-    /// Per-content HDR10 ST 2086 metadata for `vkSetHdrMetadataEXT` on Linux.
-    pub requested_vulkan_hdr_metadata: RequestedVulkanHdrMetadata,
-
-    /// How to create the wgpu adapter & device
-    pub wgpu_setup: WgpuSetup,
-
-    /// Callback for surface status changes.
-    ///
-    /// Called with the [`wgpu::CurrentSurfaceTexture`] result whenever acquiring a frame
-    /// does not return [`wgpu::CurrentSurfaceTexture::Success`]. For
-    /// [`wgpu::CurrentSurfaceTexture::Suboptimal`], egui uses the frame as-is and
-    /// defers surface reconfiguration to the next frame — the callback is not invoked
-    /// in that case either.
-    pub on_surface_status:
-        Arc<dyn Fn(&wgpu::CurrentSurfaceTexture) -> SurfaceErrorAction + Send + Sync>,
-}
-
-#[test]
-fn wgpu_config_impl_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<WgpuConfiguration>();
-}
-
 #[cfg(test)]
 mod requested_surface_format_tests {
     use super::RequestedSurfaceFormat;
@@ -700,7 +619,7 @@ mod active_surface_format_tests {
 
     #[test]
     fn set_publishes_a_format_that_get_returns_repeatedly() {
-        // Regression: this is the dual of `RequestedSurfaceFormat::take` —
+        // Regression: this is the dual of `RequestedSurfaceFormat::take` -
         // unlike a request mailbox, the active-format mailbox must keep
         // returning the latest format on every read so the application's
         // per-frame `update()` can poll it without losing the value.
@@ -725,7 +644,7 @@ mod active_surface_format_tests {
 
     #[test]
     fn clones_share_the_same_mailbox() {
-        // Critical: the painter and the application hold separate clones —
+        // Critical: the painter and the application hold separate clones -
         // `WgpuConfiguration` is itself `Clone` and `main.rs` clones the
         // mailbox into both the configuration handed to eframe AND the
         // application struct. Painter writes must be visible to the
@@ -741,6 +660,82 @@ mod active_surface_format_tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ActiveSurfaceFormat>();
     }
+}
+
+/// Configuration for using wgpu with eframe or the egui-wgpu winit feature.
+#[derive(Clone)]
+pub struct WgpuConfiguration {
+    /// Present mode used for the primary surface.
+    pub present_mode: wgpu::PresentMode,
+
+    /// Desired maximum number of frames that the presentation engine should queue in advance.
+    ///
+    /// Use `1` for low-latency, and `2` for high-throughput.
+    ///
+    /// See [`wgpu::SurfaceConfiguration::desired_maximum_frame_latency`] for details.
+    ///
+    /// `None` = `wgpu` default.
+    pub desired_maximum_frame_latency: Option<u32>,
+
+    /// Preferred surface format for the primary surface, if supported.
+    ///
+    /// This is useful for applications that need a non-default presentation
+    /// format, such as an HDR float swapchain. If the requested format is not
+    /// exposed by the surface, egui-wgpu falls back to its standard SDR-safe
+    /// format preference.
+    pub preferred_target_format: Option<wgpu::TextureFormat>,
+
+    /// Mailbox the application can use to ask the painter to swap to a
+    /// different surface target format **at runtime** (e.g. when the window
+    /// is dragged from an SDR monitor onto an HDR monitor or vice versa).
+    ///
+    /// The painter polls this at the end of every frame (after present).
+    /// See [`RequestedSurfaceFormat`] for the full contract. When unused
+    /// (`Default::default()` / not written to), the painter behaves
+    /// identically to upstream egui-wgpu.
+    pub requested_target_format: RequestedSurfaceFormat,
+
+    /// Reverse-direction observer the painter writes the **current active**
+    /// swap-chain target format into after every successful runtime hot-swap.
+    ///
+    /// Required because `RenderState` derives `Clone` and eframe stores a
+    /// clone in `Frame`, so mutating the painter's `RenderState.target_format`
+    /// is not visible through `frame.wgpu_render_state().target_format`. The
+    /// application must read the live format from this mailbox to keep its
+    /// OSD / shader-mode state in sync after cross-monitor drags.
+    /// See [`ActiveSurfaceFormat`] for the contract.
+    pub active_target_format: ActiveSurfaceFormat,
+
+    /// When the active monitor uses `Rgb10a2Unorm`, selects PQ vs gamma 2.2 UI encoding.
+    pub requested_rgb10a2_pq_encode: RequestedRgb10a2PqEncode,
+
+    /// SDR white / panel peak scale for gamma 2.2 HDR UI on `Rgb10a2Unorm`.
+    pub gamma22_display_scale: Gamma22DisplayScale,
+
+    /// Vulkan WSI HDR surface gates (`HDR10_ST2084_EXT`, etc.) from the first probe.
+    pub vulkan_wsi_hdr_gates: VulkanWsiHdrGatesMailbox,
+
+    /// Per-content HDR10 ST 2086 metadata for `vkSetHdrMetadataEXT` on Linux.
+    pub requested_vulkan_hdr_metadata: RequestedVulkanHdrMetadata,
+
+    /// How to create the wgpu adapter & device
+    pub wgpu_setup: WgpuSetup,
+
+    /// Callback for surface status changes.
+    ///
+    /// Called with the [`wgpu::CurrentSurfaceTexture`] result whenever acquiring a frame
+    /// does not return [`wgpu::CurrentSurfaceTexture::Success`]. For
+    /// [`wgpu::CurrentSurfaceTexture::Suboptimal`], egui uses the frame as-is and
+    /// defers surface reconfiguration to the next frame — the callback is not invoked
+    /// in that case either.
+    pub on_surface_status:
+        Arc<dyn Fn(&wgpu::CurrentSurfaceTexture) -> SurfaceErrorAction + Send + Sync>,
+}
+
+#[test]
+fn wgpu_config_impl_send_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<WgpuConfiguration>();
 }
 
 impl std::fmt::Debug for WgpuConfiguration {
@@ -791,23 +786,28 @@ impl Default for WgpuConfiguration {
             // No display handle available at this point — callers should replace this with
             // `WgpuSetup::from_display_handle(...)` before creating the instance if one is available.
             wgpu_setup: WgpuSetup::without_display_handle(),
-            on_surface_status: Arc::new(|status| {
-                match status {
-                    wgpu::CurrentSurfaceTexture::Outdated => {
-                        // This error occurs when the app is minimized on Windows.
-                        // Silently return here to prevent spamming the console with:
-                        // "The underlying surface has changed, and therefore the swap chain must be updated"
-                    }
-                    wgpu::CurrentSurfaceTexture::Occluded => {
-                        // This error occurs when the application is occluded (e.g. minimized or behind another window).
-                        log::debug!("Dropped frame with error: {status:?}");
-                    }
-                    _ => {
-                        log::warn!("Dropped frame with error: {status:?}");
-                    }
+            on_surface_status: Arc::new(|status| match status {
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    // The compositor changed the surface (resize, scale, output, …). wgpu
+                    // requires us to reconfigure before the next acquire. Skipping would mean
+                    // we are stuck in `Outdated` forever (e.g. spinner not spinning on Wayland).
+                    log::trace!("Dropped frame with error: {status:?}");
+                    SurfaceErrorAction::RecreateSurface
                 }
-
-                SurfaceErrorAction::SkipFrame
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    // The underlying surface is gone and we need a fresh one from the `wgpu::Instance`.
+                    log::debug!("Dropped frame with error: {status:?}");
+                    SurfaceErrorAction::RecreateSurface
+                }
+                wgpu::CurrentSurfaceTexture::Occluded => {
+                    // App is hidden (minimized / behind another window). Skip silently.
+                    log::trace!("Skipping frame due to occlusion.");
+                    SurfaceErrorAction::SkipFrame
+                }
+                _ => {
+                    log::warn!("Dropped frame with error: {status:?}");
+                    SurfaceErrorAction::SkipFrame
+                }
             }),
         }
     }
@@ -826,6 +826,9 @@ pub fn preferred_framebuffer_format(
 /// Find the framebuffer format that egui prefers, with an optional caller preference.
 ///
 /// The caller preference only wins if the surface reports it as supported.
+///
+/// # Errors
+/// Returns [`WgpuError::NoSurfaceFormatsAvailable`] if the given list of formats is empty.
 pub fn preferred_framebuffer_format_with_preference(
     formats: &[wgpu::TextureFormat],
     preferred_format: Option<wgpu::TextureFormat>,
@@ -882,6 +885,18 @@ mod preferred_framebuffer_format_tests {
 
         assert_eq!(format, wgpu::TextureFormat::Bgra8Unorm);
     }
+}
+
+fn install_uncaptured_error_handler(device: &wgpu::Device) {
+    device.on_uncaptured_error(Arc::new(|error| match error {
+        wgpu::Error::OutOfMemory { source } => {
+            log::error!("wgpu reported an out-of-memory error; skipping fatal panic: {source}");
+        }
+        other => {
+            log::error!("Handling uncaptured wgpu error as fatal: {other}");
+            panic!("wgpu error: {other}\n");
+        }
+    }));
 }
 
 /// Take's epi's depth/stencil bits and returns the corresponding wgpu format.
