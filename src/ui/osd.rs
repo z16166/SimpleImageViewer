@@ -400,19 +400,25 @@ impl OsdRenderer {
         if let Some(raw) = self.supplemental_state.raw_line.as_deref() {
             self.cached_raw_line.push_str(raw);
         }
-        let hdr = self.supplemental_state.hdr_line_from_state();
-        self.has_hdr_line = hdr.is_some();
-        self.cached_hdr_line_display.clear();
-        if let Some(hdr) = hdr {
-            self.cached_hdr_line_display.push('[');
-            self.cached_hdr_line_display.push_str(&hdr);
-            self.cached_hdr_line_display.push(']');
-        }
+        self.refresh_cached_hdr_line();
         self.bump_content();
     }
 
     pub fn invalidate(&mut self) {
         self.last_music_state = None;
+        self.bump_content();
+    }
+
+    /// Re-translate all cached OSD strings after a locale change.
+    ///
+    /// `cached_raw_line` is refreshed in the same frame: the caller is expected to
+    /// call `raw_metadata.on_language_changed()` first (which sends `OsdEvent::RawLine`
+    /// to the channel) and then call `sync_events()` after this method so the event
+    /// is consumed before rendering.
+    pub fn on_language_changed(&mut self) {
+        self.cached_loading_hint = t!("status.loading").to_string();
+        self.rebuild_hud_from_state();
+        self.refresh_cached_hdr_line();
         self.bump_content();
     }
 
@@ -437,6 +443,17 @@ impl OsdRenderer {
             mode_label,
         );
         self.bump_content();
+    }
+
+    fn refresh_cached_hdr_line(&mut self) {
+        let hdr = self.supplemental_state.hdr_line_from_state();
+        self.has_hdr_line = hdr.is_some();
+        self.cached_hdr_line_display.clear();
+        if let Some(hdr) = hdr {
+            self.cached_hdr_line_display.push('[');
+            self.cached_hdr_line_display.push_str(&hdr);
+            self.cached_hdr_line_display.push(']');
+        }
     }
 
     fn ensure_layout(&mut self, ui: &egui::Ui, max_width: f32) {

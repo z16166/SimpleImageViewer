@@ -225,6 +225,15 @@ impl RawMetadataStore {
         self.by_index.contains_key(&index)
     }
 
+    /// Re-render every cached RAW OSD line with the current locale, then push the
+    /// updated string for the current index through the event channel.
+    pub(crate) fn on_language_changed(&mut self) {
+        for info in self.by_index.values_mut() {
+            info.refresh_osd_line();
+        }
+        self.refresh_current_line();
+    }
+
     fn refresh_current_line(&mut self) {
         let line = self
             .by_index
