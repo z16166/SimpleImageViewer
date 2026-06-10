@@ -408,7 +408,7 @@ jobs:
         if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: v22-ci-profile
+          prefix-key: v23-ci-profile
           key: ${{ matrix.target }}
           env-vars: CC_x86_64_unknown_linux_gnu CXX_x86_64_unknown_linux_gnu CC_aarch64_unknown_linux_gnu CXX_aarch64_unknown_linux_gnu
 
@@ -423,7 +423,13 @@ jobs:
 
       - name: Run SIMD Parity Tests (Native)
         if: "!matrix.use_cross && matrix.target != 'aarch64-pc-windows-msvc'"
-        run: cargo test --profile ci --target ${{ matrix.target }} simd_swizzle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rust-cache may restore a stale SimpleImageViewer unit-test exe (mimalloc +
+          # static CRT harness fault on Windows GA before any case runs). Force relink.
+          find "target/${{ matrix.target }}/ci/deps" -maxdepth 1 -name 'SimpleImageViewer-*' -delete 2>/dev/null || true
+          cargo test --profile ci --target ${{ matrix.target }} simd_swizzle
 
       - name: Check glibc compatibility
         if: runner.os == 'Linux'

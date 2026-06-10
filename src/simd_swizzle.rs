@@ -23,7 +23,9 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 
-use crate::constants::{MAX_CHANNEL_VALUE, RGB_CHANNELS, RGBA_CHANNELS};
+const RGB_CHANNELS: usize = 3;
+const RGBA_CHANNELS: usize = 4;
+const MAX_CHANNEL_VALUE: u8 = 255;
 
 /// Interleaves planar R, G, B, A channels into a packed RGBA buffer.
 pub fn interleave_rgba(r: &[u8], g: &[u8], b: &[u8], a: &[u8], dst: &mut [u8]) {
