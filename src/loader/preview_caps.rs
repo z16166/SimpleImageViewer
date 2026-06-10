@@ -62,8 +62,10 @@ pub fn refresh_hq_preview_monitor_cap(ctx: &eframe::egui::Context) {
 
 /// Skip [`finalize_raw_hq_developed_image`] Lanczos align when develop output is within this
 /// many pixels of the logical sensor grid (common LibRaw crop vs EXIF output size).
+#[cfg(test)]
 const HQ_RAW_LOGICAL_ALIGN_TOLERANCE_PX: u32 = 2;
 
+#[cfg(test)]
 fn raw_develop_dimensions_need_logical_align(
     rw: u32,
     rh: u32,
@@ -78,6 +80,7 @@ fn raw_develop_dimensions_need_logical_align(
 ///
 /// HQ refinement keeps the full develop resolution; only resample when dimensions mismatch the
 /// sensor grid so tile extraction can direct-crop without per-tile upscaling.
+#[cfg(test)]
 pub(crate) fn finalize_raw_hq_developed_image(
     img: image::DynamicImage,
     logical_w: u32,

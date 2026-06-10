@@ -21,12 +21,12 @@
 //!   Full develop only when the file has no embedded preview; on HDR displays that
 //!   develop result uses the HDR pipeline.
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
-//!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
+//!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
 use crate::hdr::types::HdrToneMapSettings;
+use crate::loader::preview_caps::finalize_raw_hq_hdr_buffer;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
-use crate::loader::preview_caps::{finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer};
 use crate::loader::raw_osd::RawOsdContext;
 use crate::loader::tiled_sources::RawImageSource;
 use crate::loader::{
@@ -166,34 +166,22 @@ pub(crate) fn develop_hq_preview(
     osd_ctx: &RawOsdContext,
 ) -> Result<RawLoadOutput, String> {
     crate::preload_debug!(
-        "[PreloadDebug][RAW] sync HQ develop path={:?} limit={} hdr={}",
+        "[PreloadDebug][RAW] sync HQ develop path={:?} limit={} hdr=true",
         _path.file_name().unwrap_or_default(),
-        hq_preview_max_side(),
-        !hdr_display_requests_sdr_preview(hdr_target_capacity)
+        hq_preview_max_side()
     );
 
-    if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
-        let hdr = processor.develop_scene_linear_hdr()?;
-        let (logical_w, logical_h) = processor.developed_output_dimensions(None);
-        let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
-        let fallback_pixels =
-            hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
-        let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-        let osd = osd_ctx.full_develop(hdr.width, hdr.height);
-        return Ok(RawLoadOutput {
-            image: make_hdr_image_data(hdr, fallback),
-            osd,
-        });
-    }
-
-    let img = processor.develop()?;
+    // High-quality RAW preview always uses the scene-linear HDR pipeline
+    // to support exposure adjustments and tone mapping consistently.
+    let hdr = processor.develop_scene_linear_hdr()?;
     let (logical_w, logical_h) = processor.developed_output_dimensions(None);
-    let finalized = finalize_raw_hq_developed_image(img, logical_w, logical_h);
-    let rgba = finalized.to_rgba8();
-    let (pw, ph) = (rgba.width(), rgba.height());
-    let osd = osd_ctx.full_develop(pw, ph);
+    let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
+    let fallback_pixels =
+        hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
+    let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
+    let osd = osd_ctx.full_develop(hdr.width, hdr.height);
     Ok(RawLoadOutput {
-        image: make_image_data(DecodedImage::from(rgba)),
+        image: make_hdr_image_data(hdr, fallback),
         osd,
     })
 }

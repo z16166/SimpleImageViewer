@@ -21,7 +21,7 @@
 //!   Full develop only when the file has no embedded preview; on HDR displays that
 //!   develop result uses the HDR pipeline.
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
-//!   full sensor resolution. Developed pixels use the HDR pipeline on HDR displays.
+//!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
 use crate::loader::DecodedImage;
 use crate::loader::preview_caps::hq_preview_max_side;

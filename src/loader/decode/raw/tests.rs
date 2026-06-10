@@ -119,7 +119,7 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
     .expect("load_raw hq");
 
     match result.image {
-        ImageData::HdrTiled { fallback, .. } | ImageData::Tiled(fallback) => {
+        ImageData::HdrTiled { fallback, .. } => {
             assert_eq!(fallback.width(), 3040);
             assert_eq!(fallback.height(), 2024);
             eprintln!(
@@ -129,7 +129,7 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
             );
         }
         other => panic!(
-            "expected tiled HQ bootstrap, got {:?}",
+            "expected HdrTiled HQ bootstrap, got {:?}",
             std::mem::discriminant(&other)
         ),
     }

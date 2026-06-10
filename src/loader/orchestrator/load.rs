@@ -14,15 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 use super::types::{
-    DelayedFallbackJob, EitherDevelop, ImageLoader, TileInFlightKey, TileRequest,
-    should_spawn_load_task,
+    DelayedFallbackJob, ImageLoader, TileInFlightKey, TileRequest, should_spawn_load_task,
 };
 
 use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
-use crate::loader::preview_caps::{
-    REFINEMENT_POOL, finalize_raw_hq_developed_image, finalize_raw_hq_hdr_buffer,
-};
+use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
     DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
     RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
@@ -405,13 +402,11 @@ impl ImageLoader {
 
                     // 2. Perform HQ demosaic at full develop resolution.
                     let limit = hq_preview_max_side();
-                    let use_hdr = !hdr_display_requests_sdr_preview(req.hdr_target_capacity);
                     log::debug!(
-                        "[Refinement] Starting HQ demosaic for {:?} (gen={} limit={} hdr={})",
+                        "[Refinement] Starting HQ demosaic for {:?} (gen={} limit={})",
                         req.path.file_name().unwrap_or_default(),
                         req.generation,
                         limit,
-                        use_hdr
                     );
                     let t0 = std::time::Instant::now();
 
@@ -438,88 +433,18 @@ impl ImageLoader {
                     let user_flip = req.orientation_override.unwrap_or(0);
                     processor.set_user_flip(user_flip);
 
-                    let develop_result = if use_hdr {
-                        processor
-                            .develop_scene_linear_hdr()
-                            .and_then(|hdr| {
-                                finalize_raw_hq_hdr_buffer(
-                                    hdr,
-                                    req.logical_width,
-                                    req.logical_height,
-                                )
-                            })
-                            .map(EitherDevelop::Hdr)
-                    } else {
-                        processor
-                            .develop()
-                            .map(|img| {
-                                finalize_raw_hq_developed_image(
-                                    img,
-                                    req.logical_width,
-                                    req.logical_height,
-                                )
-                            })
-                            .map(EitherDevelop::Sdr)
-                    };
+                    let develop_result = processor
+                        .develop_scene_linear_hdr()
+                        .and_then(|hdr| {
+                            finalize_raw_hq_hdr_buffer(
+                                hdr,
+                                req.logical_width,
+                                req.logical_height,
+                            )
+                        });
 
                     match develop_result {
-                        Ok(EitherDevelop::Sdr(scaled)) => {
-                            let elapsed = t0.elapsed();
-
-                            let global_gen =
-                                worker_gen.load(std::sync::atomic::Ordering::Relaxed);
-                            if req.generation < global_gen {
-                            log::debug!(
-                                "[Refinement] Discarding stale HQ develop result for {:?} (gen {} < {})",
-                                req.path.file_name().unwrap_or_default(),
-                                req.generation,
-                                global_gen
-                            );
-                                continue;
-                            }
-
-                            let rgba = scaled.to_rgba8();
-                            let preview_w = rgba.width();
-                            let preview_h = rgba.height();
-                            let preview = DecodedImage::new(
-                                preview_w,
-                                preview_h,
-                                rgba.clone().into_raw(),
-                            );
-                            let dynamic = DynamicImage::ImageRgba8(rgba);
-
-                            {
-                                let mut dev_lock = req.developed_image.write();
-                                *dev_lock = Some(dynamic);
-                            }
-
-                            let _ = worker_tx.send(LoaderOutput::Preview(
-                                PreviewResult::from_sdr_preview(
-                                    req.index,
-                                    req.generation,
-                                    req.source_key,
-                                    Ok(preview),
-                                ),
-                            ));
-                            let _ =
-                                worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
-                            crate::preload_debug!(
-                                "[PreloadDebug][RAW] refine_done idx={} gen={} mode=Sdr preview={}x{} elapsed={:.1}s path={}",
-                                req.index,
-                                req.generation,
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64(),
-                                req.path.display()
-                            );
-                            log::debug!(
-                                "[Refinement] HQ SDR completed {}x{} in {:.1}s",
-                                preview_w,
-                                preview_h,
-                                elapsed.as_secs_f64()
-                            );
-                        }
-                        Ok(EitherDevelop::Hdr(hdr)) => {
+                        Ok(hdr) => {
                             let elapsed = t0.elapsed();
                             let preview_w = hdr.width;
                             let preview_h = hdr.height;
