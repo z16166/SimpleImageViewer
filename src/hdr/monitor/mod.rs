@@ -36,10 +36,14 @@ pub use types::{HdrMonitorSelection, HdrNativeSurfaceEncoding};
 
 #[cfg(test)]
 pub(crate) use crate::hdr::renderer::HdrRenderOutputMode;
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use crate::hdr::types::HdrOutputMode;
 #[cfg(all(test, target_os = "windows"))]
 pub(crate) use ::windows::Win32::Graphics::Dxgi::Common::{
     DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_COLOR_SPACE_TYPE,
 };
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use effective::active_monitor_hdr_status;
 #[cfg(test)]
 pub(crate) use macos::macos_edr_selection_from_values;
 #[cfg(test)]
