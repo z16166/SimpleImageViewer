@@ -333,8 +333,9 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
             pos = append_str(&mut buf, pos, "\r\nRegisters (ARM64):\r\n");
             pos = append_reg(&mut buf, pos, "PC ", ctx.Pc);
             pos = append_reg(&mut buf, pos, "SP ", ctx.Sp);
-            pos = append_reg(&mut buf, pos, "FP ", ctx.Anonymous.Anonymous.Fp);
-            pos = append_reg(&mut buf, pos, "LR ", ctx.Anonymous.Anonymous.Lr);
+            let (fp, lr) = unsafe { (ctx.Anonymous.Anonymous.Fp, ctx.Anonymous.Anonymous.Lr) };
+            pos = append_reg(&mut buf, pos, "FP ", fp);
+            pos = append_reg(&mut buf, pos, "LR ", lr);
             for i in 0..8u32 {
                 let mut name = [b'X', b'0', b' '];
                 name[1] = b'0' + i as u8;
@@ -342,7 +343,8 @@ unsafe fn write_text_report(path: PCWSTR, exception_info: *const EXCEPTION_POINT
                     core::str::from_utf8_unchecked(&name)
                 });
                 pos = append_str(&mut buf, pos, " = 0x");
-                pos = append_hex64(&mut buf, pos, ctx.Anonymous.X[i as usize]);
+                let val = unsafe { ctx.Anonymous.X[i as usize] };
+                pos = append_hex64(&mut buf, pos, val);
                 pos = append_str(&mut buf, pos, "\r\n");
             }
         }
