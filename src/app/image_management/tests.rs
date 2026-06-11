@@ -121,6 +121,7 @@ fn first_cached_hdr_still_prefers_static_cache_then_animation_then_pending() {
             delays: Vec::new(),
             current_frame: 0,
             frame_start: Instant::now(),
+            cpu_frames: None,
         },
     );
     assert_eq!(
@@ -1100,6 +1101,9 @@ fn make_test_app() -> ImageViewerApp {
 
     let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
     ImageViewerApp {
+        pixel_data_source: None,
+        pixel_hover_cache: None,
+        pixel_region_first_point: None,
         settings: Settings::default(),
         image_files: Vec::new(),
         file_byte_len_by_index: Vec::new(),

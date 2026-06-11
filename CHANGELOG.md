@@ -2,7 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.0] - 2026-06-11
+
+### Added
+- **Pixel Inspector**: Real-time pixel coordinates and RGBA colors viewer on hover, with support for custom region selection (Shift + Click) to inspect a detailed grid of pixel values in a dedicated dialog.
+
+### Improved
+- **Escape Key Selection Cancellation**: Instantly cancel active pixel region selection using the Escape key.
+- **Pixel Grid Memory Performance**: Optimized the pixel inspection grid layout to utilize contiguous memory, reducing heap allocation overhead for faster loading and smoother scrolling.
+
 ## [2.4.7] - 2026-06-11
+
+### Added
+- **Pixel Inspector**: View real-time pixel coordinates and colors on hover, or select a custom region to inspect a detailed grid of pixel values.
 
 ### Improved
 - **High-quality RAW previews on SDR displays**: Enabled full exposure adjustments (EV settings) and tone mapping consistently on SDR monitors when High-Quality RAW preview is active.

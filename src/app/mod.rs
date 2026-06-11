@@ -29,6 +29,7 @@ mod app_methods;
 mod eframe_app;
 mod hotkeys_ui;
 mod metadata_extract;
+mod pixel_inspector_ui;
 mod preload;
 mod types;
 

@@ -46,6 +46,7 @@ mod macos_image_io;
 mod metadata_utils;
 mod mmap_util;
 mod path_location;
+mod pixel_inspector;
 pub mod print;
 mod psb_reader;
 mod raw_processor;

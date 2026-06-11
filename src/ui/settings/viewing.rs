@@ -17,7 +17,7 @@
 use super::slideshow;
 use crate::app::{ImageViewerApp, ScaleMode};
 use crate::ui::utils::{settings_card, themed_labeled_toggle};
-use eframe::egui::{self, RichText, Vec2};
+use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
 pub(super) fn draw_viewing_tab(
@@ -71,10 +71,29 @@ pub(super) fn draw_viewing_tab(
                 }
             });
         });
-        ui.add_space(4.0);
-        ui.label(RichText::new(t!("label.z_toggle_hint")).color(palette.text_muted));
+        ui.add_space(6.0);
+        if themed_labeled_toggle(
+            ui,
+            &mut app.settings.show_pixel_inspector,
+            t!("label.show_pixel_inspector"),
+            &palette,
+        )
+        .changed()
+        {
+            app.queue_save();
+            if app.settings.show_pixel_inspector {
+                app.refresh_pixel_data_source_for_current_index();
+                if app.pixel_data_source.is_none() && !app.image_files.is_empty() {
+                    app.loader.request_load(
+                        app.current_index,
+                        app.generation,
+                        app.image_files[app.current_index].clone(),
+                        app.settings.raw_high_quality,
+                    );
+                }
+            }
+        }
 
-        ui.add_space(8.0);
         if themed_labeled_toggle(
             ui,
             &mut app.settings.show_osd,

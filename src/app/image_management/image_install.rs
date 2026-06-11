@@ -122,6 +122,11 @@ impl ImageViewerApp {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: decoded.width,
+                height: decoded.height,
+                pixels: decoded.arc_pixels(),
+            });
         }
         if self
             .image_files
@@ -175,6 +180,11 @@ impl ImageViewerApp {
             self.refresh_hdr_view_status();
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: hdr.width,
+                height: hdr.height,
+                pixels: fallback.arc_pixels(),
+            });
             if sdr_fallback_is_placeholder {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
                     let source_key = source_key_for_path(&self.image_files[idx]);
@@ -202,6 +212,13 @@ impl ImageViewerApp {
         let Some(fallback_image) = update.fallback else {
             return;
         };
+        if idx == self.current_index {
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: fallback_image.width,
+                height: fallback_image.height,
+                pixels: fallback_image.arc_pixels(),
+            });
+        }
         let active_hdr_plane_displays_current = idx == self.current_index
             && self.effective_hdr_display_output().is_some()
             && self
@@ -273,6 +290,9 @@ impl ImageViewerApp {
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
             source.request_refinement(idx, self.generation);
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                Arc::clone(&source),
+            ));
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
@@ -306,6 +326,11 @@ impl ImageViewerApp {
             if idx == self.current_index {
                 self.set_current_image_resolution(Some((first.width, first.height)));
                 self.tile_manager = None;
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                    width: first.width,
+                    height: first.height,
+                    pixels: first.arc_pixels(),
+                });
             }
         }
 
@@ -368,6 +393,11 @@ impl ImageViewerApp {
                 self.refresh_hdr_view_status();
                 self.tile_manager = None;
                 self.clear_current_animation_for_index(idx);
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                    width: first.width(),
+                    height: first.height(),
+                    pixels: first.fallback.arc_pixels(),
+                });
             }
         }
 

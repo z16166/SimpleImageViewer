@@ -69,10 +69,21 @@ impl ImageViewerApp {
     /// Layer 1: Input handling for the main window (normal operation).
     fn handle_main_window_input(&mut self, ctx: &Context) {
         let mut action: Option<AppAction> = None;
+        let mut esc_consumed = false;
 
         ctx.input(|i| {
-            action = self.map_key_to_action(i);
+            if i.key_pressed(Key::Escape) && self.pixel_region_first_point.is_some() {
+                esc_consumed = true;
+            } else {
+                action = self.map_key_to_action(i);
+            }
         });
+
+        if esc_consumed {
+            self.pixel_region_first_point = None;
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
+            return;
+        }
 
         // If OSD was toggled via Tab, we also clear focus to prevent egui focus-trapping.
         if action == Some(AppAction::ToggleOSD) {

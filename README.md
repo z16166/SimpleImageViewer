@@ -35,6 +35,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Custom hotkeys** — rebind navigation, zoom, rotation, slideshow, printing, and other actions from **Settings > Hotkeys**; supports keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks. The defaults are listed in **Controls** below and can be changed at any time
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
+- **Pixel Inspector** — view real-time pixel coordinates and RGBA colors on hover, or select a custom region (Shift + Click) to inspect a detailed grid of pixel values.
 - **Modal Dialogs** — metadata and settings dialogs now behave as true modals; background interactions are blocked with a visual dimmer for a focused experience
 - **Distraction-Free Mode** — hide all on-screen display (OSD) texts via settings for a pure image view
 - **Resume Viewing** — optionally remember the last viewed image and automatically resume from it on next launch
@@ -87,7 +88,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `F` / `F11` | Toggle full-screen |
 | `F1` | Open Settings panel |
 | `F5` | Refresh image file list |
-| `Esc` | Exit full-screen / Close dialogs |
+| `Esc` | Exit full-screen / Close dialogs / Cancel region selection |
+| `Shift + Left-Click` | Begin/complete pixel region selection |
 | `Left-Click (bg)` | Close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |
 | `Delete` | Move current image to Recycle Bin / Trash |

@@ -180,6 +180,8 @@ pub struct Settings {
     pub show_osd: bool,
     #[serde(default = "default_true")]
     pub show_music_osd: bool,
+    #[serde(default)]
+    pub show_pixel_inspector: bool,
 
     // RAW Processing
     #[serde(default)]
@@ -303,6 +305,7 @@ impl Default for Settings {
             last_viewed_image: None,
             show_osd: true,
             show_music_osd: true,
+            show_pixel_inspector: false,
             music_paused: false,
             last_music_file: None,
             last_music_cue_track: None,

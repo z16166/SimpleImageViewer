@@ -48,6 +48,7 @@ pub enum HotkeyActionId {
     ToggleGoto,
     ToggleSlideshow,
     RefreshFileList,
+    SelectPixelRegion,
     #[cfg(not(target_os = "windows"))]
     Quit,
     ExitFullscreen,
@@ -143,6 +144,10 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
     ActionDescriptor {
         id: HotkeyActionId::RefreshFileList,
         id_str: "refresh_file_list",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::SelectPixelRegion,
+        id_str: "select_pixel_region",
     },
     #[cfg(not(target_os = "windows"))]
     ActionDescriptor {
@@ -521,6 +526,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::Quit => &[KeyChord {
             modifiers: MOD_CTRL,
             key: HotkeyLogicalKey::Egui(egui::Key::Q),
+        }],
+        HotkeyActionId::SelectPixelRegion => &[KeyChord {
+            modifiers: MOD_SHIFT,
+            key: HotkeyLogicalKey::MouseLeft,
         }],
         HotkeyActionId::ExitFullscreen => &[KeyChord {
             modifiers: 0,

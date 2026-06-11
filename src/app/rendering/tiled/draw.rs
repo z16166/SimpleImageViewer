@@ -46,7 +46,7 @@ impl ImageViewerApp {
         screen_rect: Rect,
         canvas_resp: &egui::Response,
     ) {
-        if canvas_resp.dragged() {
+        if canvas_resp.dragged() && !self.is_pixel_region_selection_active(ui.ctx()) {
             self.pan_offset += canvas_resp.drag_delta();
             if should_invalidate_tile_requests_on_pan_drag() {
                 self.invalidate_tile_requests_for_view_change();

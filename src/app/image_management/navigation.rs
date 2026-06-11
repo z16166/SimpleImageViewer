@@ -320,6 +320,9 @@ impl ImageViewerApp {
         self.set_zoom_factor(1.0);
         self.pan_offset = Vec2::ZERO;
         self.animation = None;
+        self.pixel_data_source = None;
+        self.pixel_hover_cache = None;
+        self.pixel_region_first_point = None;
 
         // Update resolution if already in cache (for immediate low-res display)
         if self.texture_cache.contains(self.current_index) {
@@ -337,11 +340,12 @@ impl ImageViewerApp {
         self.error_message = None;
         self.is_font_error = false;
         ctx.request_repaint();
-        // Close any open EXIF/XMP modal — it shows data for the previous image
+        // Close any open EXIF/XMP/PixelRegion modal — it shows data for the previous image
         if matches!(
             self.active_modal,
             Some(crate::ui::dialogs::modal_state::ActiveModal::Exif(_))
                 | Some(crate::ui::dialogs::modal_state::ActiveModal::Xmp(_))
+                | Some(crate::ui::dialogs::modal_state::ActiveModal::PixelRegion(_))
         ) {
             self.active_modal = None;
         }
@@ -363,6 +367,7 @@ impl ImageViewerApp {
                 delays: cached_anim.delays.clone(),
                 current_frame: 0,
                 frame_start: Instant::now(),
+                cpu_frames: cached_anim.cpu_frames.clone(),
             });
         }
 
@@ -395,6 +400,9 @@ impl ImageViewerApp {
             tm.get_source()
                 .request_refinement(self.current_index, self.generation);
 
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                tm.get_source(),
+            ));
             self.tile_manager = Some(tm);
 
             crate::preload_debug!(
@@ -505,6 +513,15 @@ impl ImageViewerApp {
             .map(|old_gen| (self.current_index, old_gen));
         self.loader
             .discard_pending_stale_outputs(self.generation, also_keep);
+        self.refresh_pixel_data_source_for_current_index();
+        if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
+            self.loader.request_load(
+                self.current_index,
+                self.generation,
+                self.image_files[self.current_index].clone(),
+                self.settings.raw_high_quality,
+            );
+        }
         self.trigger_current_hdr_fallback_refinement_if_needed();
         self.try_start_pending_transition_if_ready();
     }
@@ -566,5 +583,66 @@ impl ImageViewerApp {
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();
+    }
+
+    pub(crate) fn refresh_pixel_data_source_for_current_index(&mut self) {
+        if self.image_files.is_empty() {
+            self.pixel_data_source = None;
+            return;
+        }
+
+        // 1. TileManager
+        if let Some(tm) = &self.tile_manager {
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                tm.get_source(),
+            ));
+            return;
+        }
+
+        // 2. Animated frames
+        if let Some(ref anim) = self.animation {
+            if anim.image_index == self.current_index {
+                if let Some(ref cpu_frames) = anim.cpu_frames {
+                    if let Some(pixels) = cpu_frames.get(anim.current_frame) {
+                        let size = anim.textures[anim.current_frame].size();
+                        self.pixel_data_source =
+                            Some(crate::pixel_inspector::PixelDataSource::Static {
+                                width: size[0] as u32,
+                                height: size[1] as u32,
+                                pixels: std::sync::Arc::clone(pixels),
+                            });
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(cached_anim) = self.animation_cache.get(&self.current_index) {
+            if let Some(ref cpu_frames) = cached_anim.cpu_frames {
+                if let Some(pixels) = cpu_frames.first() {
+                    if let Some(texture) = cached_anim.textures.first() {
+                        let size = texture.size();
+                        self.pixel_data_source =
+                            Some(crate::pixel_inspector::PixelDataSource::Static {
+                                width: size[0] as u32,
+                                height: size[1] as u32,
+                                pixels: std::sync::Arc::clone(pixels),
+                            });
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 3. Deferred SDR upload
+        if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                width: decoded.width,
+                height: decoded.height,
+                pixels: decoded.arc_pixels(),
+            });
+            return;
+        }
+
+        self.pixel_data_source = None;
     }
 }
