@@ -82,6 +82,10 @@ impl DecodedImage {
         self.pixels
     }
 
+    pub fn arc_pixels(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.pixels)
+    }
+
     /// Build `RgbaImage`; avoids copying the buffer when this is the only [`Arc`] handle.
     pub fn into_rgba8_image(self) -> Result<RgbaImage, String> {
         let w = self.width;

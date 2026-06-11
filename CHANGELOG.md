@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [2.4.7] - 2026-06-11
 
+### Added
+- **Pixel Inspector**: View real-time pixel coordinates and colors on hover, or select a custom region to inspect a detailed grid of pixel values.
+
 ### Improved
 - **High-quality RAW previews on SDR displays**: Enabled full exposure adjustments (EV settings) and tone mapping consistently on SDR monitors when High-Quality RAW preview is active.
 - **Smoother RAW loading transitions**: Initial loading of RAW files now boots instantly using the embedded preview image, smoothly transitioning to the high-quality refined version in the background without causing the screen to flash black.

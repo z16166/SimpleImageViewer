@@ -123,18 +123,14 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                     // Row 0: Headers (X coordinates)
                                     ui.label(RichText::new("Y\\X").monospace().weak());
                                     for x in state.x0..state.x1 {
-                                        ui.label(
-                                            RichText::new(format!("{}", x)).monospace().weak(),
-                                        );
+                                        ui.label(RichText::new(x.to_string()).monospace().weak());
                                     }
                                     ui.end_row();
 
                                     // Rows 1..N: Data rows
                                     for (r_idx, row_pixels) in pixels.iter().enumerate() {
                                         let y = state.y0 + r_idx as u32;
-                                        ui.label(
-                                            RichText::new(format!("{}", y)).monospace().weak(),
-                                        );
+                                        ui.label(RichText::new(y.to_string()).monospace().weak());
 
                                         for px in row_pixels {
                                             let [r, g, b, a] = *px;

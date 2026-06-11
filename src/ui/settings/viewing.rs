@@ -81,6 +81,17 @@ pub(super) fn draw_viewing_tab(
         .changed()
         {
             app.queue_save();
+            if app.settings.show_pixel_inspector {
+                app.refresh_pixel_data_source_for_current_index();
+                if app.pixel_data_source.is_none() && !app.image_files.is_empty() {
+                    app.loader.request_load(
+                        app.current_index,
+                        app.generation,
+                        app.image_files[app.current_index].clone(),
+                        app.settings.raw_high_quality,
+                    );
+                }
+            }
         }
 
         if themed_labeled_toggle(

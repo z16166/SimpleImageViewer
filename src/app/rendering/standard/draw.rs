@@ -87,11 +87,27 @@ impl ImageViewerApp {
         let texture = if let Some(ref mut anim) = self.animation {
             if anim.image_index == self.current_index && !anim.textures.is_empty() {
                 let elapsed = anim.frame_start.elapsed();
-                if elapsed >= anim.delays[anim.current_frame] {
+                let frame_changed = elapsed >= anim.delays[anim.current_frame];
+                if frame_changed {
                     // Infinite loop for all animated formats here (GIF/WebP/APNG/AVIF sequence, etc.);
                     // container metadata such as AVIF `repetitionCount` is intentionally ignored.
                     anim.current_frame = (anim.current_frame + 1) % anim.textures.len();
                     anim.frame_start = Instant::now();
+                }
+
+                if frame_changed || self.pixel_data_source.is_none() {
+                    // Update pixel data source with the active frame's pixels
+                    if let Some(ref cpu_frames) = anim.cpu_frames {
+                        if let Some(pixels) = cpu_frames.get(anim.current_frame) {
+                            let size = anim.textures[anim.current_frame].size();
+                            self.pixel_data_source =
+                                Some(crate::pixel_inspector::PixelDataSource::Static {
+                                    width: size[0] as u32,
+                                    height: size[1] as u32,
+                                    pixels: std::sync::Arc::clone(pixels),
+                                });
+                        }
+                    }
                 }
                 if let Some(hdr_frames) = &anim.hdr_frames {
                     if let Some(hdr) = hdr_frames.get(anim.current_frame) {

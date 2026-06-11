@@ -51,14 +51,12 @@ impl ImageViewerApp {
                 };
                 if let Some(action) = pointer_hotkey_action {
                     if action == crate::app::input::AppAction::SelectPixelRegion {
-                        if self.settings.show_pixel_inspector {
-                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                                if let Some(res) = self.current_image_res {
-                                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
-                                    let display_rect =
-                                        self.compute_plane_layout(img_size, screen_rect).dest;
-                                    self.handle_pixel_region_click(pos, screen_rect, display_rect);
-                                }
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            if let Some(res) = self.current_image_res {
+                                let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                                let display_rect =
+                                    self.compute_plane_layout(img_size, screen_rect).dest;
+                                self.handle_pixel_region_click(pos, display_rect);
                             }
                         }
                     } else {
@@ -202,7 +200,7 @@ impl ImageViewerApp {
                 if let Some(res) = self.current_image_res {
                     let img_size = Vec2::new(res.0 as f32, res.1 as f32);
                     let display_rect = self.compute_plane_layout(img_size, screen_rect).dest;
-                    self.draw_pixel_inspector_canvas_feedback(ui, screen_rect, display_rect);
+                    self.draw_pixel_inspector_canvas_feedback(ui, display_rect);
                     self.draw_pixel_hover_tooltip(ui, screen_rect, display_rect);
                 }
 

@@ -202,6 +202,14 @@ pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
 pub const MOCK_ICC_PROFILE_SIZE: usize = 4096;
 
 /// Pixel region warning dimension threshold (warn when width or height is larger than this).
-pub const PIXEL_REGION_WARN_DIM: u32 = 128;
+pub const PIXEL_REGION_WARN_DIM: u32 = 64;
+/// Maximum allowed dimension for pixel region inspection.
+pub const PIXEL_REGION_MAX_DIM: u32 = 128;
 /// Pixel inspector tooltip offset relative to the mouse pointer.
 pub const PIXEL_TOOLTIP_OFFSET: f32 = 16.0;
+/// Width of the pixel inspector hover tooltip in logical pixels.
+pub const PIXEL_TOOLTIP_WIDTH: f32 = 132.0;
+/// Height of the pixel inspector hover tooltip in logical pixels.
+pub const PIXEL_TOOLTIP_HEIGHT: f32 = 32.0;
+/// Square of threshold of pointer movement under which the pointer is considered stationary.
+pub const PIXEL_POINTER_STATIONARY_THRESHOLD_SQ: f32 = 0.01;

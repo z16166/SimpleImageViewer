@@ -48,9 +48,9 @@ pub enum HotkeyActionId {
     ToggleGoto,
     ToggleSlideshow,
     RefreshFileList,
+    SelectPixelRegion,
     #[cfg(not(target_os = "windows"))]
     Quit,
-    SelectPixelRegion,
     ExitFullscreen,
 }
 
@@ -145,14 +145,14 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
         id: HotkeyActionId::RefreshFileList,
         id_str: "refresh_file_list",
     },
+    ActionDescriptor {
+        id: HotkeyActionId::SelectPixelRegion,
+        id_str: "select_pixel_region",
+    },
     #[cfg(not(target_os = "windows"))]
     ActionDescriptor {
         id: HotkeyActionId::Quit,
         id_str: "quit_app",
-    },
-    ActionDescriptor {
-        id: HotkeyActionId::SelectPixelRegion,
-        id_str: "select_pixel_region",
     },
     ActionDescriptor {
         id: HotkeyActionId::ExitFullscreen,

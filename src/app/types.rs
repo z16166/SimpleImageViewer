@@ -26,6 +26,7 @@ use eframe::egui::{self, Pos2, Rect, Vec2};
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
+use crate::pixel_inspector::PixelHoverCache;
 use crate::settings::{Settings, TransitionStyle};
 use crate::theme::{SystemThemeCache, ThemePalette};
 use crate::tile_cache::TileManager;
@@ -118,6 +119,7 @@ pub(crate) struct UltraHdrCapacityRefresh {
     pub(crate) reload_current: bool,
 }
 /// Animation playback state for the currently displayed animated image.
+#[derive(Clone)]
 pub(crate) struct AnimationPlayback {
     /// Index in the image_files list that this animation belongs to.
     pub(crate) image_index: usize,
@@ -131,6 +133,8 @@ pub(crate) struct AnimationPlayback {
     pub(crate) current_frame: usize,
     /// When the current frame started displaying.
     pub(crate) frame_start: Instant,
+    /// Per-frame raw CPU pixel buffers (zero-copy clone of Arc handles).
+    pub(crate) cpu_frames: Option<Vec<std::sync::Arc<Vec<u8>>>>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HardwareTier {
@@ -255,19 +259,6 @@ impl CurrentHdrTiledImage {
     ) -> Option<&Arc<dyn crate::hdr::tiled::HdrTiledSource>> {
         (self.index == index).then_some(&self.source)
     }
-}
-
-pub(crate) struct PixelHoverCache {
-    pub last_screen_pos: egui::Pos2,
-    pub display_text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PixelRegionRect {
-    pub x0: u32,
-    pub y0: u32,
-    pub x1: u32,
-    pub y1: u32, // exclusive
 }
 
 pub struct ImageViewerApp {
@@ -554,7 +545,6 @@ pub struct ImageViewerApp {
     pub(crate) pixel_data_source: Option<crate::pixel_inspector::PixelDataSource>,
     pub(crate) pixel_hover_cache: Option<PixelHoverCache>,
     pub(crate) pixel_region_first_point: Option<(u32, u32)>,
-    pub(crate) pixel_region_selection: Option<PixelRegionRect>,
 }
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
 pub(crate) struct PendingAnimUpload {

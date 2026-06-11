@@ -7,11 +7,61 @@
 // (at your option) any later version.
 //
 
-use eframe::egui::{Pos2, Rect};
+use eframe::egui::{Pos2, Rect, Vec2};
 use std::sync::Arc;
 
 use crate::loader::TiledImageSource;
 use crate::tile_cache::{PIXEL_CACHE, TileCoord, get_tile_size};
+
+pub(crate) struct PixelHoverCache {
+    pub last_screen_pos: Pos2,
+    pub zoom_factor: f32,
+    pub rotation_steps: i32,
+    pub current_index: usize,
+    pub pan_offset: Vec2,
+    pub display_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PixelRegionRect {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32, // exclusive
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PixelRegionValidationError {
+    Empty,
+    TooLarge { w: u32, h: u32 },
+}
+
+pub(crate) fn validate_pixel_region(
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+    max_dim: u32,
+) -> Result<PixelRegionRect, PixelRegionValidationError> {
+    if x0 == x1 && y0 == y1 {
+        return Err(PixelRegionValidationError::Empty);
+    }
+    let x_min = x0.min(x1);
+    let x_max = x0.max(x1);
+    let y_min = y0.min(y1);
+    let y_max = y0.max(y1);
+    let w = x_max - x_min + 1;
+    let h = y_max - y_min + 1;
+    if w > max_dim || h > max_dim {
+        return Err(PixelRegionValidationError::TooLarge { w, h });
+    }
+    Ok(PixelRegionRect {
+        x0: x_min,
+        y0: y_min,
+        x1: x_max + 1,
+        y1: y_max + 1,
+    })
+}
 
 pub(crate) enum PixelDataSource {
     Static {
@@ -30,13 +80,19 @@ pub fn screen_to_image_coord(
     img_w: u32,
     img_h: u32,
 ) -> Option<(u32, u32)> {
+    if display_rect.width() <= 0.0 || display_rect.height() <= 0.0 {
+        return None;
+    }
     if !display_rect.contains(screen_pos) {
         return None;
     }
 
-    // Normalize coordinates [0.0, 1.0] relative to the display rectangle
-    let u = ((screen_pos.x - display_rect.min.x) / display_rect.width()).clamp(0.0, 0.99999);
-    let v = ((screen_pos.y - display_rect.min.y) / display_rect.height()).clamp(0.0, 0.99999);
+    // Normalize coordinates [0.0, 1.0] relative to the display rectangle.
+    // Clamp to less than 1.0 using EPSILON to prevent out of bounds when multiplying by image size.
+    let u =
+        ((screen_pos.x - display_rect.min.x) / display_rect.width()).clamp(0.0, 1.0 - f32::EPSILON);
+    let v = ((screen_pos.y - display_rect.min.y) / display_rect.height())
+        .clamp(0.0, 1.0 - f32::EPSILON);
 
     let rot = rotation_steps.rem_euclid(4);
 
@@ -49,7 +105,14 @@ pub fn screen_to_image_coord(
         _ => unreachable!(),
     };
 
-    Some((px as u32, py as u32))
+    // Epsilon offset to compensate for float-truncation: when the normalized coordinate
+    // lands exactly on a pixel boundary (e.g. u=0.0 -> px=0.0), truncation can roundtrip
+    // to the previous pixel. Adding a small bias pushes it into the correct pixel.
+    // 1e-4 is chosen as the smallest value that reliably rounds up across all rotation
+    // mappings while never skipping to the next pixel at normal zoom levels.
+    let x = ((px + 1e-4) as u32).min(img_w.saturating_sub(1));
+    let y = ((py + 1e-4) as u32).min(img_h.saturating_sub(1));
+    Some((x, y))
 }
 
 /// Reads a single pixel from the active image (non-blocking, for hover tooltips).
@@ -135,7 +198,6 @@ impl Clone for PixelDataSource {
     }
 }
 
-/// Translate original image pixel coordinates (top-left origin) into screen coordinates on the canvas display rectangle.
 pub fn image_to_screen_coord(
     img_pos: (u32, u32),
     display_rect: Rect,
@@ -143,6 +205,9 @@ pub fn image_to_screen_coord(
     img_w: u32,
     img_h: u32,
 ) -> Pos2 {
+    if img_w == 0 || img_h == 0 {
+        return Pos2::ZERO;
+    }
     let px = img_pos.0 as f32;
     let py = img_pos.1 as f32;
 
@@ -226,4 +291,115 @@ pub fn extract_region(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_coordinate_mapping_rotation_0() {
+        let display_rect = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(110.0, 110.0));
+        let img_w = 100;
+        let img_h = 100;
+
+        // Top-left
+        let p = Pos2::new(10.0, 10.0);
+        let img_coord = screen_to_image_coord(p, display_rect, 0, img_w, img_h).unwrap();
+        assert_eq!(img_coord, (0, 0));
+        assert_eq!(
+            image_to_screen_coord(img_coord, display_rect, 0, img_w, img_h),
+            p
+        );
+
+        // Center
+        let p = Pos2::new(60.0, 60.0);
+        let img_coord = screen_to_image_coord(p, display_rect, 0, img_w, img_h).unwrap();
+        assert_eq!(img_coord, (50, 50));
+        assert_eq!(
+            image_to_screen_coord(img_coord, display_rect, 0, img_w, img_h),
+            p
+        );
+    }
+
+    #[test]
+    fn test_coordinate_mapping_rotations() {
+        let display_rect = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(110.0, 210.0));
+        let img_w = 100;
+        let img_h = 200;
+
+        let img_pos = (20, 30);
+        for rot in 0..4 {
+            let screen = image_to_screen_coord(img_pos, display_rect, rot, img_w, img_h);
+            let mapped = screen_to_image_coord(screen, display_rect, rot, img_w, img_h).unwrap();
+            assert_eq!(mapped, img_pos, "Failed on rotation {}", rot);
+        }
+    }
+
+    #[test]
+    fn test_zero_dimensions_defense() {
+        let display_rect = Rect::from_min_max(Pos2::new(10.0, 10.0), Pos2::new(10.0, 110.0));
+        let res = screen_to_image_coord(Pos2::new(10.0, 50.0), display_rect, 0, 100, 100);
+        assert!(res.is_none());
+
+        let screen = image_to_screen_coord((10, 10), display_rect, 0, 0, 100);
+        assert_eq!(screen, Pos2::ZERO);
+    }
+
+    #[test]
+    fn test_extract_region_static() {
+        let pixels = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let source = PixelDataSource::Static {
+            width: 2,
+            height: 2,
+            pixels: Arc::new(pixels),
+        };
+
+        let region = extract_region(&source, 0, 0, 2, 2);
+        assert_eq!(region.len(), 2);
+        assert_eq!(region[0].len(), 2);
+        assert_eq!(region[0][0], [0, 1, 2, 3]);
+        assert_eq!(region[0][1], [4, 5, 6, 7]);
+        assert_eq!(region[1][0], [8, 9, 10, 11]);
+        assert_eq!(region[1][1], [12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn test_validate_pixel_region_cases() {
+        let max_dim = 128;
+
+        // 1. Identical coordinates -> Err(Empty)
+        assert_eq!(
+            validate_pixel_region(10, 20, 10, 20, max_dim),
+            Err(PixelRegionValidationError::Empty)
+        );
+
+        // 2. Same row, different columns -> Ok (1xN region)
+        assert_eq!(
+            validate_pixel_region(10, 20, 50, 20, max_dim),
+            Ok(PixelRegionRect {
+                x0: 10,
+                y0: 20,
+                x1: 51,
+                y1: 21,
+            })
+        );
+
+        // 3. Same column, different rows -> Ok (Nx1 region)
+        assert_eq!(
+            validate_pixel_region(30, 5, 30, 80, max_dim),
+            Ok(PixelRegionRect {
+                x0: 30,
+                y0: 5,
+                x1: 31,
+                y1: 81,
+            })
+        );
+
+        // 4. Over limit dimensions -> Err(TooLarge)
+        assert_eq!(
+            validate_pixel_region(10, 10, 150, 10, max_dim),
+            Err(PixelRegionValidationError::TooLarge { w: 141, h: 1 })
+        );
+    }
 }

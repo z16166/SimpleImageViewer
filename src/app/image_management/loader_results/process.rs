@@ -79,6 +79,7 @@ impl ImageViewerApp {
                         delays: pending.delays,
                         current_frame: 0,
                         frame_start: Instant::now(),
+                        cpu_frames: Some(pending.frames.iter().map(|f| f.arc_pixels()).collect()),
                     };
 
                     if idx == self.current_index {
@@ -95,6 +96,7 @@ impl ImageViewerApp {
                             delays: playback.delays.clone(),
                             current_frame: 0,
                             frame_start: Instant::now(),
+                            cpu_frames: playback.cpu_frames.clone(),
                         });
                     }
                     self.animation_cache.insert(idx, playback);
