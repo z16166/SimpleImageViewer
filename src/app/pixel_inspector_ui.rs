@@ -96,9 +96,11 @@ impl ImageViewerApp {
         );
         let mut tooltip_pos = pointer_pos + offset;
 
-        // Tooltip dimensions
-        let tooltip_w = crate::constants::PIXEL_TOOLTIP_WIDTH;
-        let tooltip_h = crate::constants::PIXEL_TOOLTIP_HEIGHT;
+        // Tooltip dimensions scaled proportionally with settings.font_size
+        let font_size_ratio = self.settings.font_size / 16.0;
+        let tooltip_w = crate::constants::PIXEL_TOOLTIP_WIDTH * font_size_ratio;
+        let tooltip_h = crate::constants::PIXEL_TOOLTIP_HEIGHT * font_size_ratio;
+        let tooltip_font_size = 10.0 * font_size_ratio;
 
         // Fit within screen bounds safely
         if tooltip_pos.x + tooltip_w > screen_rect.max.x {
@@ -144,7 +146,7 @@ impl ImageViewerApp {
                 ),
             Align2::LEFT_TOP,
             display_text,
-            FontId::monospace(10.0),
+            FontId::monospace(tooltip_font_size),
             text_color,
         );
     }

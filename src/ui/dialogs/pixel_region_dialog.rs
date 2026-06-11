@@ -41,6 +41,14 @@ fn text_color_for_bg(r: u8, g: u8, b: u8) -> Color32 {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
+    let base_font_size = ctx
+        .global_style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .map(|id| id.size)
+        .unwrap_or(16.0);
+    let cell_font_size = base_font_size * 0.65625;
+
     // Poll the background channel receiver for loaded pixels
     if let Some(ref rx) = state.load_rx {
         if let Ok(pixels) = rx.try_recv() {
@@ -169,7 +177,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                                             .monospace()
                                                             .strong()
                                                             .color(text_color)
-                                                            .size(10.5),
+                                                            .size(cell_font_size),
                                                     );
                                                 });
                                         }
