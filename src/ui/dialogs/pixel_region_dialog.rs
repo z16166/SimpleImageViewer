@@ -19,8 +19,8 @@ pub struct State {
     pub y0: u32,
     pub x1: u32,
     pub y1: u32,
-    pub pixels: Option<Vec<Vec<[u8; 4]>>>,
-    pub load_rx: Option<crossbeam_channel::Receiver<Vec<Vec<[u8; 4]>>>>,
+    pub pixels: Option<crate::pixel_inspector::PixelRegion>,
+    pub load_rx: Option<crossbeam_channel::Receiver<crate::pixel_inspector::PixelRegion>>,
 }
 
 fn text_color_for_bg(r: u8, g: u8, b: u8) -> Color32 {
@@ -106,7 +106,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
 
             // ── Scrollable Grid or Spinner ────────────────────────────────────
             if let Some(ref pixels) = state.pixels {
-                if pixels.first().map_or(true, |r| r.is_empty()) {
+                if pixels.pixels.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(
                             RichText::new(t!("pixel_inspector.region_empty"))
@@ -128,12 +128,13 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                     ui.end_row();
 
                                     // Rows 1..N: Data rows
-                                    for (r_idx, row_pixels) in pixels.iter().enumerate() {
+                                    for r_idx in 0..pixels.height {
                                         let y = state.y0 + r_idx as u32;
                                         ui.label(RichText::new(y.to_string()).monospace().weak());
 
-                                        for px in row_pixels {
-                                            let [r, g, b, a] = *px;
+                                        for c_idx in 0..pixels.width {
+                                            let px = pixels.pixels[r_idx * pixels.width + c_idx];
+                                            let [r, g, b, a] = px;
                                             let rgba_str =
                                                 format!("{:02X}{:02X}{:02X}{:02X}", r, g, b, a);
 

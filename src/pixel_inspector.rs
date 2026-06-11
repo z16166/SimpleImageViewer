@@ -36,6 +36,13 @@ pub(crate) enum PixelRegionValidationError {
     TooLarge { w: u32, h: u32 },
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PixelRegion {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<[u8; 4]>,
+}
+
 pub(crate) fn validate_pixel_region(
     x0: u32,
     y0: u32,
@@ -229,19 +236,13 @@ pub fn image_to_screen_coord(
 
 /// Extracts a rectangular region of pixels. Since this can block or decode tiles,
 /// it should be executed off the main UI thread.
-pub fn extract_region(
-    source: &PixelDataSource,
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
-) -> Vec<Vec<[u8; 4]>> {
+pub fn extract_region(source: &PixelDataSource, x0: u32, y0: u32, x1: u32, y1: u32) -> PixelRegion {
     if x1 <= x0 || y1 <= y0 {
-        return Vec::new();
+        return PixelRegion::default();
     }
-    let w = x1 - x0;
-    let h = y1 - y0;
-    let mut out = vec![vec![[0, 0, 0, 0]; w as usize]; h as usize];
+    let w = (x1 - x0) as usize;
+    let h = (y1 - y0) as usize;
+    let mut out_pixels = vec![[0, 0, 0, 0]; w * h];
 
     match source {
         PixelDataSource::Static {
@@ -261,7 +262,7 @@ pub fn extract_region(
                     let dest_col = (x - x0) as usize;
                     let idx = (y * width + x) as usize * 4;
                     if idx + 3 < pixels.len() {
-                        out[dest_row][dest_col] = [
+                        out_pixels[dest_row * w + dest_col] = [
                             pixels[idx],
                             pixels[idx + 1],
                             pixels[idx + 2],
@@ -272,14 +273,12 @@ pub fn extract_region(
             }
         }
         PixelDataSource::Tiled(tiled_source) => {
-            let tile_pixels = tiled_source.extract_tile(x0, y0, w, h);
+            let tile_pixels = tiled_source.extract_tile(x0, y0, w as u32, h as u32);
             for r in 0..h {
-                let dest_row = r as usize;
                 for c in 0..w {
-                    let dest_col = c as usize;
-                    let idx = (dest_row * w as usize + dest_col) * 4;
+                    let idx = (r * w + c) * 4;
                     if idx + 3 < tile_pixels.len() {
-                        out[dest_row][dest_col] = [
+                        out_pixels[r * w + c] = [
                             tile_pixels[idx],
                             tile_pixels[idx + 1],
                             tile_pixels[idx + 2],
@@ -290,7 +289,11 @@ pub fn extract_region(
             }
         }
     }
-    out
+    PixelRegion {
+        width: w,
+        height: h,
+        pixels: out_pixels,
+    }
 }
 
 #[cfg(test)]
@@ -356,12 +359,13 @@ mod tests {
         };
 
         let region = extract_region(&source, 0, 0, 2, 2);
-        assert_eq!(region.len(), 2);
-        assert_eq!(region[0].len(), 2);
-        assert_eq!(region[0][0], [0, 1, 2, 3]);
-        assert_eq!(region[0][1], [4, 5, 6, 7]);
-        assert_eq!(region[1][0], [8, 9, 10, 11]);
-        assert_eq!(region[1][1], [12, 13, 14, 15]);
+        assert_eq!(region.width, 2);
+        assert_eq!(region.height, 2);
+        assert_eq!(region.pixels.len(), 4);
+        assert_eq!(region.pixels[0], [0, 1, 2, 3]);
+        assert_eq!(region.pixels[1], [4, 5, 6, 7]);
+        assert_eq!(region.pixels[2], [8, 9, 10, 11]);
+        assert_eq!(region.pixels[3], [12, 13, 14, 15]);
     }
 
     #[test]
