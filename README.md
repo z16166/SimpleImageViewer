@@ -88,7 +88,8 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `F` / `F11` | Toggle full-screen |
 | `F1` | Open Settings panel |
 | `F5` | Refresh image file list |
-| `Esc` | Exit full-screen / Close dialogs |
+| `Esc` | Exit full-screen / Close dialogs / Cancel region selection |
+| `Shift + Left-Click` | Begin/complete pixel region selection |
 | `Left-Click (bg)` | Close Settings panel |
 | `Right-click` | Open context menu (Copy Path / Copy File / View EXIF / View XMP / Set Wallpaper / Print) |
 | `Delete` | Move current image to Recycle Bin / Trash |
