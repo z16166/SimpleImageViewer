@@ -106,7 +106,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
 
             // ── Scrollable Grid or Spinner ────────────────────────────────────
             if let Some(ref pixels) = state.pixels {
-                if pixels.is_empty() || pixels[0].is_empty() {
+                if pixels.first().map_or(true, |r| r.is_empty()) {
                     ui.centered_and_justified(|ui| {
                         ui.label(
                             RichText::new(t!("pixel_inspector.region_empty"))

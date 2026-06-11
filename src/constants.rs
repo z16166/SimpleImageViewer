@@ -213,3 +213,7 @@ pub const PIXEL_TOOLTIP_WIDTH: f32 = 132.0;
 pub const PIXEL_TOOLTIP_HEIGHT: f32 = 32.0;
 /// Square of threshold of pointer movement under which the pointer is considered stationary.
 pub const PIXEL_POINTER_STATIONARY_THRESHOLD_SQ: f32 = 0.01;
+/// Horizontal inner padding of the pixel inspector hover tooltip in logical pixels.
+pub const PIXEL_TOOLTIP_PADDING_X: f32 = 6.0;
+/// Vertical inner padding of the pixel inspector hover tooltip in logical pixels.
+pub const PIXEL_TOOLTIP_PADDING_Y: f32 = 4.0;

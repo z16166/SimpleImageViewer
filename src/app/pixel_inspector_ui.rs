@@ -128,7 +128,11 @@ impl ImageViewerApp {
         );
 
         painter.text(
-            rect.min + Vec2::new(6.0, 4.0),
+            rect.min
+                + Vec2::new(
+                    crate::constants::PIXEL_TOOLTIP_PADDING_X,
+                    crate::constants::PIXEL_TOOLTIP_PADDING_Y,
+                ),
             Align2::LEFT_TOP,
             display_text,
             FontId::monospace(10.0),
