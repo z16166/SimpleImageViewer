@@ -25,11 +25,13 @@ pub struct State {
 
 fn text_color_for_bg(r: u8, g: u8, b: u8) -> Color32 {
     // Standard relative luminance formula (sRGB) to achieve maximum WCAG contrast
+    // Threshold is lowered from 0.179 to 0.13 to bias towards black text, preventing
+    // thin white text from washing out (subpixel blending) on medium-dark backgrounds.
     let r_lin = (r as f32 / 255.0).powf(2.2);
     let g_lin = (g as f32 / 255.0).powf(2.2);
     let b_lin = (b as f32 / 255.0).powf(2.2);
     let luminance = 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin;
-    if luminance > 0.179 {
+    if luminance > 0.13 {
         Color32::BLACK
     } else {
         Color32::WHITE
@@ -39,6 +41,14 @@ fn text_color_for_bg(r: u8, g: u8, b: u8) -> Color32 {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
+    let base_font_size = ctx
+        .global_style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .map(|id| id.size)
+        .unwrap_or(16.0);
+    let cell_font_size = base_font_size * 0.65625;
+
     // Poll the background channel receiver for loaded pixels
     if let Some(ref rx) = state.load_rx {
         if let Ok(pixels) = rx.try_recv() {
@@ -159,7 +169,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                             // Use Frame to fill the background color and center the text
                                             egui::Frame::new()
                                                 .fill(bg_color)
-                                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                                .inner_margin(egui::Margin::symmetric(3, 2))
                                                 .corner_radius(egui::CornerRadius::same(2))
                                                 .show(ui, |ui| {
                                                     ui.label(
@@ -167,7 +177,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                                             .monospace()
                                                             .strong()
                                                             .color(text_color)
-                                                            .size(9.0),
+                                                            .size(cell_font_size),
                                                     );
                                                 });
                                         }
