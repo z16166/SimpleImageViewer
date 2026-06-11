@@ -197,6 +197,11 @@ pub const MAX_ICC_TAG_COUNT: usize = 4096;
 /// Iteration cap for JXL decoder event loops on probes to ensure early termination on bad inputs.
 pub const JXL_PROBE_ITERATION_CAP: usize = 4096;
 
-/// Default buffer/profile size for building mock ICC profiles in unit tests.
+/// Default buffer/profile size for building ICC profiles in unit tests.
 #[cfg(test)]
 pub const MOCK_ICC_PROFILE_SIZE: usize = 4096;
+
+/// Pixel region warning dimension threshold (warn when width or height is larger than this).
+pub const PIXEL_REGION_WARN_DIM: u32 = 128;
+/// Pixel inspector tooltip offset relative to the mouse pointer.
+pub const PIXEL_TOOLTIP_OFFSET: f32 = 16.0;

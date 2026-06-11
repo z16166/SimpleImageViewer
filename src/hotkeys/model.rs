@@ -50,6 +50,7 @@ pub enum HotkeyActionId {
     RefreshFileList,
     #[cfg(not(target_os = "windows"))]
     Quit,
+    SelectPixelRegion,
     ExitFullscreen,
 }
 
@@ -148,6 +149,10 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
     ActionDescriptor {
         id: HotkeyActionId::Quit,
         id_str: "quit_app",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::SelectPixelRegion,
+        id_str: "select_pixel_region",
     },
     ActionDescriptor {
         id: HotkeyActionId::ExitFullscreen,
@@ -521,6 +526,10 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::Quit => &[KeyChord {
             modifiers: MOD_CTRL,
             key: HotkeyLogicalKey::Egui(egui::Key::Q),
+        }],
+        HotkeyActionId::SelectPixelRegion => &[KeyChord {
+            modifiers: MOD_SHIFT,
+            key: HotkeyLogicalKey::MouseLeft,
         }],
         HotkeyActionId::ExitFullscreen => &[KeyChord {
             modifiers: 0,

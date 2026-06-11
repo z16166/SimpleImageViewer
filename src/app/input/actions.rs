@@ -46,6 +46,7 @@ pub(crate) enum AppAction {
     RefreshFileList,
     #[cfg(not(target_os = "windows"))]
     Quit,
+    SelectPixelRegion,
     ExitFullscreen,
 }
 
@@ -158,6 +159,9 @@ impl ImageViewerApp {
             #[cfg(not(target_os = "windows"))]
             AppAction::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            AppAction::SelectPixelRegion => {
+                // Handled directly in rendering/mod.rs canvas layer
             }
             AppAction::ExitFullscreen => {
                 if self.settings.fullscreen {

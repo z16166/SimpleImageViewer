@@ -73,6 +73,9 @@ impl ImageViewerApp {
             Some(ActiveModal::FileAssoc(state)) => {
                 crate::ui::dialogs::file_assoc::show(state, ctx, &self.cached_palette)
             }
+            Some(ActiveModal::PixelRegion(state)) => {
+                crate::ui::dialogs::pixel_region_dialog::show(state, ctx, &self.cached_palette)
+            }
         };
 
         match result {

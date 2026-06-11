@@ -122,6 +122,15 @@ impl ImageViewerApp {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            if self.settings.show_pixel_inspector {
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                    width: decoded.width,
+                    height: decoded.height,
+                    pixels: decoded.clone().into_arc_pixels(),
+                });
+            } else {
+                self.pixel_data_source = None;
+            }
         }
         if self
             .image_files
@@ -175,6 +184,15 @@ impl ImageViewerApp {
             self.refresh_hdr_view_status();
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
+            if self.settings.show_pixel_inspector {
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
+                    width: hdr.width,
+                    height: hdr.height,
+                    pixels: fallback.clone().into_arc_pixels(),
+                });
+            } else {
+                self.pixel_data_source = None;
+            }
             if sdr_fallback_is_placeholder {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
                     let source_key = source_key_for_path(&self.image_files[idx]);
@@ -273,6 +291,13 @@ impl ImageViewerApp {
             self.animation = None;
             self.log_large_image(idx, source.width(), source.height());
             source.request_refinement(idx, self.generation);
+            if self.settings.show_pixel_inspector {
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                    Arc::clone(&source),
+                ));
+            } else {
+                self.pixel_data_source = None;
+            }
         } else {
             self.prefetched_tiles.insert(idx, tm);
         }
@@ -306,6 +331,16 @@ impl ImageViewerApp {
             if idx == self.current_index {
                 self.set_current_image_resolution(Some((first.width, first.height)));
                 self.tile_manager = None;
+                if self.settings.show_pixel_inspector {
+                    self.pixel_data_source =
+                        Some(crate::pixel_inspector::PixelDataSource::Static {
+                            width: first.width,
+                            height: first.height,
+                            pixels: first.arc_pixels(),
+                        });
+                } else {
+                    self.pixel_data_source = None;
+                }
             }
         }
 
@@ -368,6 +403,16 @@ impl ImageViewerApp {
                 self.refresh_hdr_view_status();
                 self.tile_manager = None;
                 self.clear_current_animation_for_index(idx);
+                if self.settings.show_pixel_inspector {
+                    self.pixel_data_source =
+                        Some(crate::pixel_inspector::PixelDataSource::Static {
+                            width: first.width(),
+                            height: first.height(),
+                            pixels: first.fallback.clone().into_arc_pixels(),
+                        });
+                } else {
+                    self.pixel_data_source = None;
+                }
             }
         }
 

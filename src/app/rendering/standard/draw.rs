@@ -124,7 +124,7 @@ impl ImageViewerApp {
             Vec2::splat(1.0)
         };
 
-        if canvas_resp.dragged() {
+        if canvas_resp.dragged() && !self.is_pixel_region_selection_active(ui.ctx()) {
             self.pan_offset += canvas_resp.drag_delta();
             self.invalidate_tile_requests_for_view_change();
         }

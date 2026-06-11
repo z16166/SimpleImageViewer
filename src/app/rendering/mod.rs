@@ -50,7 +50,20 @@ impl ImageViewerApp {
                     None
                 };
                 if let Some(action) = pointer_hotkey_action {
-                    self.dispatch_action(action, ui.ctx());
+                    if action == crate::app::input::AppAction::SelectPixelRegion {
+                        if self.settings.show_pixel_inspector {
+                            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                                if let Some(res) = self.current_image_res {
+                                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                                    let display_rect =
+                                        self.compute_plane_layout(img_size, screen_rect).dest;
+                                    self.handle_pixel_region_click(pos, screen_rect, display_rect);
+                                }
+                            }
+                        }
+                    } else {
+                        self.dispatch_action(action, ui.ctx());
+                    }
                 }
 
                 // ── Custom right-click context menu ──────────────────────────
@@ -183,6 +196,14 @@ impl ImageViewerApp {
                         // Standard / animated path → standard.rs
                         self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
                     }
+                }
+
+                // ── Pixel Inspector hover tooltip & canvas feedback ──────────
+                if let Some(res) = self.current_image_res {
+                    let img_size = Vec2::new(res.0 as f32, res.1 as f32);
+                    let display_rect = self.compute_plane_layout(img_size, screen_rect).dest;
+                    self.draw_pixel_inspector_canvas_feedback(ui, screen_rect, display_rect);
+                    self.draw_pixel_hover_tooltip(ui, screen_rect, display_rect);
                 }
 
                 // ── Global HUD / OSD overlay ──────────────────────────────────

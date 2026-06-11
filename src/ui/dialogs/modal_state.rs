@@ -89,4 +89,6 @@ pub enum ActiveModal {
     /// File association manager (Windows only).  State is private to [`file_assoc`].
     #[cfg(target_os = "windows")]
     FileAssoc(crate::ui::dialogs::file_assoc::State),
+    /// Pixel region grid dialog.
+    PixelRegion(crate::ui::dialogs::pixel_region_dialog::State),
 }

@@ -226,6 +226,7 @@ pub(super) fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAct
         HotkeyActionId::RefreshFileList => AppAction::RefreshFileList,
         #[cfg(not(target_os = "windows"))]
         HotkeyActionId::Quit => AppAction::Quit,
+        HotkeyActionId::SelectPixelRegion => AppAction::SelectPixelRegion,
         HotkeyActionId::ExitFullscreen => AppAction::ExitFullscreen,
     }
 }

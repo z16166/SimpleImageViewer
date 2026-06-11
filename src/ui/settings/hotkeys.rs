@@ -656,6 +656,7 @@ fn localized_hotkey_action_label(action_id: HotkeyActionId) -> String {
         #[cfg(not(target_os = "windows"))]
         HotkeyActionId::Quit => "hotkeys.action.quit_app",
         HotkeyActionId::ExitFullscreen => "hotkeys.action.exit_fullscreen",
+        HotkeyActionId::SelectPixelRegion => "hotkeys.action.select_pixel_region",
     };
     t!(key).to_string()
 }

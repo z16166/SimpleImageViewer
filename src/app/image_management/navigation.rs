@@ -320,6 +320,10 @@ impl ImageViewerApp {
         self.set_zoom_factor(1.0);
         self.pan_offset = Vec2::ZERO;
         self.animation = None;
+        self.pixel_data_source = None;
+        self.pixel_hover_cache = None;
+        self.pixel_region_first_point = None;
+        self.pixel_region_selection = None;
 
         // Update resolution if already in cache (for immediate low-res display)
         if self.texture_cache.contains(self.current_index) {
@@ -395,6 +399,9 @@ impl ImageViewerApp {
             tm.get_source()
                 .request_refinement(self.current_index, self.generation);
 
+            self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                tm.get_source(),
+            ));
             self.tile_manager = Some(tm);
 
             crate::preload_debug!(
@@ -426,7 +433,12 @@ impl ImageViewerApp {
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
             );
-        } else if self.has_loaded_asset(self.current_index) {
+        } else if self.has_loaded_asset(self.current_index)
+            && !(self.settings.show_pixel_inspector
+                && !self
+                    .texture_cache
+                    .is_preview_placeholder(self.current_index))
+        {
             crate::preload_debug!(
                 "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
                 self.current_index,
@@ -505,6 +517,13 @@ impl ImageViewerApp {
             .map(|old_gen| (self.current_index, old_gen));
         self.loader
             .discard_pending_stale_outputs(self.generation, also_keep);
+        if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
+            if let Some(tm) = &self.tile_manager {
+                self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Tiled(
+                    tm.get_source(),
+                ));
+            }
+        }
         self.trigger_current_hdr_fallback_refinement_if_needed();
         self.try_start_pending_transition_if_ready();
     }
