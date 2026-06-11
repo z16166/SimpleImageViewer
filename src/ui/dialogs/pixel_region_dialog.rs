@@ -24,8 +24,12 @@ pub struct State {
 }
 
 fn text_color_for_bg(r: u8, g: u8, b: u8) -> Color32 {
-    let lum = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-    if lum > 128.0 {
+    // Standard relative luminance formula (sRGB) to achieve maximum WCAG contrast
+    let r_lin = (r as f32 / 255.0).powf(2.2);
+    let g_lin = (g as f32 / 255.0).powf(2.2);
+    let b_lin = (b as f32 / 255.0).powf(2.2);
+    let luminance = 0.2126 * r_lin + 0.7152 * g_lin + 0.0722 * b_lin;
+    if luminance > 0.179 {
         Color32::BLACK
     } else {
         Color32::WHITE
@@ -121,16 +125,26 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                 .spacing([4.0, 4.0])
                                 .show(ui, |ui| {
                                     // Row 0: Headers (X coordinates)
-                                    ui.label(RichText::new("Y\\X").monospace().weak());
+                                    ui.label(
+                                        RichText::new("Y\\X").monospace().color(palette.text_muted),
+                                    );
                                     for x in state.x0..state.x1 {
-                                        ui.label(RichText::new(x.to_string()).monospace().weak());
+                                        ui.label(
+                                            RichText::new(x.to_string())
+                                                .monospace()
+                                                .color(palette.text_muted),
+                                        );
                                     }
                                     ui.end_row();
 
                                     // Rows 1..N: Data rows
                                     for r_idx in 0..pixels.height {
                                         let y = state.y0 + r_idx as u32;
-                                        ui.label(RichText::new(y.to_string()).monospace().weak());
+                                        ui.label(
+                                            RichText::new(y.to_string())
+                                                .monospace()
+                                                .color(palette.text_muted),
+                                        );
 
                                         for c_idx in 0..pixels.width {
                                             let px = pixels.pixels[r_idx * pixels.width + c_idx];
@@ -151,6 +165,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                                                     ui.label(
                                                         RichText::new(&rgba_str)
                                                             .monospace()
+                                                            .strong()
                                                             .color(text_color)
                                                             .size(9.0),
                                                     );

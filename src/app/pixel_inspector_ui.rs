@@ -119,11 +119,20 @@ impl ImageViewerApp {
         let painter = ui.painter();
         let rect = Rect::from_min_size(tooltip_pos, Vec2::new(tooltip_w, tooltip_h));
 
+        let bg_color = Color32::from_rgba_unmultiplied(
+            self.cached_palette.panel_bg.r(),
+            self.cached_palette.panel_bg.g(),
+            self.cached_palette.panel_bg.b(),
+            240,
+        );
+        let text_color = self.cached_palette.text_normal;
+        let border_color = self.cached_palette.widget_border;
+
         painter.rect(
             rect,
             egui::CornerRadius::same(3),
-            Color32::from_black_alpha(180),
-            egui::Stroke::new(1.0_f32, Color32::from_white_alpha(40)),
+            bg_color,
+            egui::Stroke::new(1.0_f32, border_color),
             egui::StrokeKind::Outside,
         );
 
@@ -136,7 +145,7 @@ impl ImageViewerApp {
             Align2::LEFT_TOP,
             display_text,
             FontId::monospace(10.0),
-            Color32::WHITE,
+            text_color,
         );
     }
 
