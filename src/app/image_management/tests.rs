@@ -1259,6 +1259,8 @@ fn make_test_app() -> ImageViewerApp {
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,
+        explicit_quit: false,
+        tray_state: None,
     }
 }
 

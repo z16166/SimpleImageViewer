@@ -239,6 +239,10 @@ pub struct Settings {
     /// artifact (e.g. `[-7,-7]`) instead of a restorable outer top-left.
     #[serde(default)]
     pub window_maximized_screen_center: Option<[i32; 2]>,
+    #[serde(default)]
+    pub last_copy_cut_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub minimize_to_tray_on_close: bool,
 }
 
 fn default_interval() -> f32 {
@@ -325,6 +329,8 @@ impl Default for Settings {
             window_maximized_inner_size: None,
             window_maximized: false,
             window_maximized_screen_center: None,
+            last_copy_cut_dir: None,
+            minimize_to_tray_on_close: false,
         }
     }
 }

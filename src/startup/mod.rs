@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod icon;
+pub(crate) mod icon;
 mod launch;
 mod logging;
 mod panic;

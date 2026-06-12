@@ -16,6 +16,7 @@
 
 pub mod confirm;
 pub mod exif;
+pub mod file_copy_cut;
 pub mod goto;
 pub mod modal_state;
 pub mod movable_modal;

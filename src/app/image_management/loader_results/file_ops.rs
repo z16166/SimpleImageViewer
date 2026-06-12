@@ -90,6 +90,39 @@ impl ImageViewerApp {
                         state.apply_wallpaper_probe(current, monitors, supports_per_monitor);
                     }
                 }
+                FileOpResult::CopyTo(src_path, dest_dir, result) => match result {
+                    Ok(()) => {
+                        log::info!("Successfully copied {:?} to {:?}", src_path, dest_dir);
+                        self.status_message = t!("status.copy_success").to_string();
+                    }
+                    Err(e) => {
+                        log::error!("Failed to copy {:?}: {}", src_path, e);
+                        self.active_modal =
+                            Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                                crate::ui::dialogs::confirm::State::info(
+                                    t!("file_copy_cut.error_title"),
+                                    t!("file_copy_cut.copy_failed_msg", error = e),
+                                ),
+                            ));
+                    }
+                },
+                FileOpResult::CutTo(src_path, dest_dir, result) => match result {
+                    Ok(()) => {
+                        log::info!("Successfully cut {:?} to {:?}", src_path, dest_dir);
+                        self.remove_image_by_path(&src_path);
+                        self.status_message = t!("status.cut_success").to_string();
+                    }
+                    Err(e) => {
+                        log::error!("Failed to cut {:?}: {}", src_path, e);
+                        self.active_modal =
+                            Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
+                                crate::ui::dialogs::confirm::State::info(
+                                    t!("file_copy_cut.error_title"),
+                                    t!("file_copy_cut.cut_failed_msg", error = e),
+                                ),
+                            ));
+                    }
+                },
             }
         }
     }

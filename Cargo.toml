@@ -1,6 +1,6 @@
 [package]
 name = "simple-image-viewer"
-version = "2.5.0"
+version = "2.5.1"
 edition = "2024"
 description = "A high-performance, cross-platform image viewer"
 license = "GPL-3.0-only"
@@ -47,6 +47,7 @@ clipboard-rs = "0.3"
 wallpaper = "3.2.0"
 interprocess = "2.4.0"
 trash = "5"
+tray-icon = "0.19"
 psd = "0.3"
 sysinfo = { version = "0.35", default-features = false, features = ["system"] }
 xmpkit = { version = "0.1", default-features = false, features = ["gif", "jpeg", "png", "psd", "tiff", "webp"] }

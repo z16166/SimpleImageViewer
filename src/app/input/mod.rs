@@ -228,6 +228,9 @@ pub(super) fn app_action_from_hotkey_action_id(action: HotkeyActionId) -> AppAct
         HotkeyActionId::Quit => AppAction::Quit,
         HotkeyActionId::SelectPixelRegion => AppAction::SelectPixelRegion,
         HotkeyActionId::ExitFullscreen => AppAction::ExitFullscreen,
+        HotkeyActionId::CopyTo => AppAction::CopyTo,
+        HotkeyActionId::CutTo => AppAction::CutTo,
+        HotkeyActionId::ToggleTray => AppAction::ToggleTray,
     }
 }
 

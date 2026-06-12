@@ -41,13 +41,11 @@ pub(crate) enum SettingsTab {
     Appearance,
     Hotkeys,
     ContextMenu,
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     System,
     About,
 }
 
 impl SettingsTab {
-    #[cfg(target_os = "windows")]
     pub(crate) const ALL: [Self; 9] = [
         Self::Library,
         Self::Viewing,
@@ -57,18 +55,6 @@ impl SettingsTab {
         Self::Hotkeys,
         Self::ContextMenu,
         Self::System,
-        Self::About,
-    ];
-
-    #[cfg(not(target_os = "windows"))]
-    pub(crate) const ALL: [Self; 8] = [
-        Self::Library,
-        Self::Viewing,
-        Self::Slideshow,
-        Self::Music,
-        Self::Appearance,
-        Self::Hotkeys,
-        Self::ContextMenu,
         Self::About,
     ];
 
@@ -205,6 +191,8 @@ pub enum FileOpResult {
         monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
         supports_per_monitor: bool,
     },
+    CopyTo(PathBuf, PathBuf, Result<(), String>),
+    CutTo(PathBuf, PathBuf, Result<(), String>),
 }
 
 /// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).
@@ -545,6 +533,15 @@ pub struct ImageViewerApp {
     pub(crate) pixel_data_source: Option<crate::pixel_inspector::PixelDataSource>,
     pub(crate) pixel_hover_cache: Option<PixelHoverCache>,
     pub(crate) pixel_region_first_point: Option<(u32, u32)>,
+    pub(crate) tray_state: Option<TrayState>,
+    pub(crate) explicit_quit: bool,
+}
+
+pub(crate) struct TrayState {
+    pub(crate) _tray_icon: tray_icon::TrayIcon,
+    pub(crate) show_item_id: tray_icon::menu::MenuId,
+    pub(crate) quit_item_id: tray_icon::menu::MenuId,
+    pub(crate) was_maximized: bool,
 }
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
 pub(crate) struct PendingAnimUpload {

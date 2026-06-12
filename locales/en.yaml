@@ -402,3 +402,23 @@ pixel_inspector.format_note: "Format: RRGGBBAA (hex)"
 pixel_inspector.loading: "Loading pixel data…"
 pixel_inspector.not_ready: "Pixel data is not ready yet. Please try again in a moment."
 
+# Tray and Copy/Cut
+section.system_general: "General System Options"
+label.minimize_to_tray_on_close: "Minimize to tray on close"
+tray.show_window: "Show Main Window"
+tray.quit: "Exit"
+ctx.copy_to: "📋 Copy to..."
+ctx.cut_to: "✂ Cut to..."
+hotkeys.action.copy_to: "Copy current image to directory"
+hotkeys.action.cut_to: "Cut current image to directory"
+hotkeys.action.toggle_tray: "Minimize to tray / restore"
+file_copy_cut.title_copy: "Copy Image to Directory"
+file_copy_cut.title_cut: "Cut Image to Directory"
+file_copy_cut.prompt: "Target directory:"
+file_copy_cut.error_title: "Operation Failed"
+file_copy_cut.copy_failed_msg: "Failed to copy image: %{error}"
+file_copy_cut.cut_failed_msg: "Failed to move image: %{error}"
+status.copy_success: "Successfully copied image"
+status.cut_success: "Successfully moved image"
+
+
