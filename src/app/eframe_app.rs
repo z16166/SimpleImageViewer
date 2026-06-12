@@ -124,6 +124,7 @@ impl eframe::App for ImageViewerApp {
 
         // Explicitly drop tray icon state so it gets cleaned up from the taskbar before process termination.
         self.tray_state = None;
+        crate::app::tray_handlers::clear_menu_ids();
         self.hidden_to_tray = false;
         self.pending_hide_to_tray = false;
 
@@ -135,22 +136,13 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
-        // Poll tray events
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                self.show_main_window_from_tray(ctx);
-            }
-        }
-        while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
-            if let Some(state) = &self.tray_state {
-                if event.id == state.show_item_id {
+        // Poll tray commands (handlers wake the event loop via request_repaint).
+        while let Ok(cmd) = self.tray_cmd_rx.try_recv() {
+            match cmd {
+                crate::app::tray_handlers::TrayCommand::ShowMainWindow => {
                     self.show_main_window_from_tray(ctx);
-                } else if event.id == state.quit_item_id {
+                }
+                crate::app::tray_handlers::TrayCommand::Quit => {
                     self.explicit_quit = true;
                     self.quit_process_now();
                 }
@@ -691,12 +683,13 @@ impl ImageViewerApp {
             .with_icon(icon)
             .build()
         {
-            Ok(t) => Some(super::types::TrayState {
-                _tray_icon: t,
-                show_item_id,
-                quit_item_id,
-                was_maximized,
-            }),
+            Ok(t) => {
+                crate::app::tray_handlers::set_menu_ids(show_item_id, quit_item_id);
+                Some(super::types::TrayState {
+                    _tray_icon: t,
+                    was_maximized,
+                })
+            }
             Err(e) => {
                 log::error!("Failed to build tray icon: {:?}", e);
                 None
@@ -715,8 +708,9 @@ impl ImageViewerApp {
     }
 
     fn focus_main_window(ctx: &Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Win32 foreground first while the tray click is still fresh, then sync egui state.
         crate::ipc::force_foreground();
+        Self::focus_and_unminimize_window(ctx);
     }
 
     fn quit_process_now(&mut self) -> ! {
@@ -773,6 +767,7 @@ impl ImageViewerApp {
             Some(state) => self.tray_state = Some(state),
             None => {
                 log::warn!("Failed to rebuild tray after language change; restoring main window");
+                crate::app::tray_handlers::clear_menu_ids();
                 self.hidden_to_tray = false;
                 self.pending_hide_to_tray = false;
                 Self::show_main_window_from_tray_viewport(ctx, was_maximized);
