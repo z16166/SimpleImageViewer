@@ -657,6 +657,9 @@ fn localized_hotkey_action_label(action_id: HotkeyActionId) -> String {
         HotkeyActionId::Quit => "hotkeys.action.quit_app",
         HotkeyActionId::ExitFullscreen => "hotkeys.action.exit_fullscreen",
         HotkeyActionId::SelectPixelRegion => "hotkeys.action.select_pixel_region",
+        HotkeyActionId::CopyTo => "hotkeys.action.copy_to",
+        HotkeyActionId::CutTo => "hotkeys.action.cut_to",
+        HotkeyActionId::ToggleTray => "hotkeys.action.toggle_tray",
     };
     t!(key).to_string()
 }

@@ -524,6 +524,11 @@ impl ImageViewerApp {
             pixel_data_source: None,
             pixel_hover_cache: None,
             pixel_region_first_point: None,
+            tray_state: None,
+            hidden_to_tray: false,
+            pending_hide_to_tray: false,
+            copy_cut_overwrite_if_exists: false,
+            explicit_quit: false,
             settings,
         };
         for diagnostic in app.hdr_capabilities.startup_diagnostics() {

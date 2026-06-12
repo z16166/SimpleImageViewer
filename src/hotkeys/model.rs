@@ -52,6 +52,9 @@ pub enum HotkeyActionId {
     #[cfg(not(target_os = "windows"))]
     Quit,
     ExitFullscreen,
+    CopyTo,
+    CutTo,
+    ToggleTray,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,6 +160,18 @@ pub const ACTION_DESCRIPTORS: &[ActionDescriptor] = &[
     ActionDescriptor {
         id: HotkeyActionId::ExitFullscreen,
         id_str: "exit_fullscreen",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::CopyTo,
+        id_str: "copy_to",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::CutTo,
+        id_str: "cut_to",
+    },
+    ActionDescriptor {
+        id: HotkeyActionId::ToggleTray,
+        id_str: "toggle_tray",
     },
 ];
 
@@ -534,6 +549,18 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         HotkeyActionId::ExitFullscreen => &[KeyChord {
             modifiers: 0,
             key: HotkeyLogicalKey::Egui(egui::Key::Escape),
+        }],
+        HotkeyActionId::CopyTo => &[KeyChord {
+            modifiers: MOD_CTRL | MOD_SHIFT,
+            key: HotkeyLogicalKey::Egui(egui::Key::C),
+        }],
+        HotkeyActionId::CutTo => &[KeyChord {
+            modifiers: MOD_CTRL | MOD_SHIFT,
+            key: HotkeyLogicalKey::Egui(egui::Key::X),
+        }],
+        HotkeyActionId::ToggleTray => &[KeyChord {
+            modifiers: MOD_CTRL | MOD_SHIFT,
+            key: HotkeyLogicalKey::Egui(egui::Key::T),
         }],
     }
 }

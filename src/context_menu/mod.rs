@@ -136,6 +136,57 @@ mod tests {
     }
 
     #[test]
+    fn validation_upgrade_inherits_enabled_status() {
+        // Test when copy_path is disabled
+        let cfg = ContextMenuConfigFile {
+            version: 1,
+            items: vec![
+                ContextMenuEntry::builtin("copy_path", false),
+                ContextMenuEntry::builtin("delete", true), // prevent fallback to defaults
+            ],
+        };
+        let validated = validate_context_menu_config(&cfg);
+        let copy_to = validated
+            .config
+            .items
+            .iter()
+            .find(|item| item.builtin_id.as_deref() == Some("copy_to"))
+            .unwrap();
+        let cut_to = validated
+            .config
+            .items
+            .iter()
+            .find(|item| item.builtin_id.as_deref() == Some("cut_to"))
+            .unwrap();
+        assert!(!copy_to.enabled);
+        assert!(!cut_to.enabled);
+
+        // Test when copy_path is enabled
+        let cfg = ContextMenuConfigFile {
+            version: 1,
+            items: vec![
+                ContextMenuEntry::builtin("copy_path", true),
+                ContextMenuEntry::builtin("delete", true),
+            ],
+        };
+        let validated = validate_context_menu_config(&cfg);
+        let copy_to = validated
+            .config
+            .items
+            .iter()
+            .find(|item| item.builtin_id.as_deref() == Some("copy_to"))
+            .unwrap();
+        let cut_to = validated
+            .config
+            .items
+            .iter()
+            .find(|item| item.builtin_id.as_deref() == Some("cut_to"))
+            .unwrap();
+        assert!(copy_to.enabled);
+        assert!(cut_to.enabled);
+    }
+
+    #[test]
     fn validation_falls_back_to_defaults_when_no_action_is_enabled() {
         let mut cfg = default_context_menu_config_file();
         for item in &mut cfg.items {

@@ -48,6 +48,9 @@ pub(crate) enum AppAction {
     Quit,
     SelectPixelRegion,
     ExitFullscreen,
+    CopyTo,
+    CutTo,
+    ToggleTray,
 }
 
 impl ImageViewerApp {
@@ -65,7 +68,9 @@ impl ImageViewerApp {
                 | AppAction::PermanentDelete
                 | AppAction::Print
                 | AppAction::ToggleGoto
-                | AppAction::ToggleAutoSwitch => return,
+                | AppAction::ToggleAutoSwitch
+                | AppAction::CopyTo
+                | AppAction::CutTo => return,
                 _ => {}
             }
         }
@@ -158,6 +163,7 @@ impl ImageViewerApp {
             }
             #[cfg(not(target_os = "windows"))]
             AppAction::Quit => {
+                self.explicit_quit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             AppAction::SelectPixelRegion => {
@@ -169,6 +175,31 @@ impl ImageViewerApp {
                     self.pending_fullscreen = Some(false);
                     self.queue_save();
                 }
+            }
+            AppAction::CopyTo => {
+                if !self.image_files.is_empty() {
+                    self.active_modal = Some(ActiveModal::FileCopyCut(
+                        crate::ui::dialogs::file_copy_cut::State::new(
+                            false,
+                            self.settings.last_copy_cut_dir.clone(),
+                            self.copy_cut_overwrite_if_exists,
+                        ),
+                    ));
+                }
+            }
+            AppAction::CutTo => {
+                if !self.image_files.is_empty() {
+                    self.active_modal = Some(ActiveModal::FileCopyCut(
+                        crate::ui::dialogs::file_copy_cut::State::new(
+                            true,
+                            self.settings.last_copy_cut_dir.clone(),
+                            self.copy_cut_overwrite_if_exists,
+                        ),
+                    ));
+                }
+            }
+            AppAction::ToggleTray => {
+                self.minimize_to_tray_from_hotkey(ctx);
             }
         }
     }

@@ -122,6 +122,11 @@ impl eframe::App for ImageViewerApp {
         #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
         crate::startup::take_and_join_dx12_cache_validate_thread();
 
+        // Explicitly drop tray icon state so it gets cleaned up from the taskbar before process termination.
+        self.tray_state = None;
+        self.hidden_to_tray = false;
+        self.pending_hide_to_tray = false;
+
         crate::startup::shutdown_logger();
         #[cfg(target_os = "windows")]
         std::process::exit(0);
@@ -130,6 +135,78 @@ impl eframe::App for ImageViewerApp {
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
     /// Called before each ui() call (and also when hidden but repaint requested).
     fn logic(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+        // Poll tray events
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.show_main_window_from_tray(ctx);
+            }
+        }
+        while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            if let Some(state) = &self.tray_state {
+                if event.id == state.show_item_id {
+                    self.show_main_window_from_tray(ctx);
+                } else if event.id == state.quit_item_id {
+                    self.explicit_quit = true;
+                    self.quit_process_now();
+                }
+            }
+        }
+
+        // Process IPC messages (needs to happen before minimized check to wake up immediately)
+        while let Ok(msg) = self.ipc_rx.try_recv() {
+            if self.hidden_to_tray {
+                self.show_main_window_from_tray(ctx);
+            }
+            match msg {
+                IpcMessage::OpenImage(path) => {
+                    log::info!("IPC: open image {:?}", path);
+                    self.handle_ipc_open_image(path, ctx, false);
+                }
+                IpcMessage::OpenImageNoRecursive(path) => {
+                    log::info!("IPC: open image (no-recursive) {:?}", path);
+                    self.handle_ipc_open_image(path, ctx, true);
+                }
+                IpcMessage::Focus => {
+                    log::info!("IPC received empty ping, requesting window focus");
+                    Self::focus_and_unminimize_window(ctx);
+                }
+            }
+        }
+
+        // Intercept close request if minimize to tray is enabled and not an explicit quit.
+        // eframe may report the close request for more than one frame, so keep
+        // canceling it while we are in tray mode instead of only on the first frame.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.explicit_quit {
+            let is_shutting_down = {
+                #[cfg(target_os = "windows")]
+                {
+                    use windows::Win32::UI::WindowsAndMessaging::{
+                        GetSystemMetrics, SM_SHUTTINGDOWN,
+                    };
+                    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+                }
+                #[cfg(not(target_os = "windows"))]
+                false
+            };
+
+            if self.settings.minimize_to_tray_on_close && !is_shutting_down {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if !self.hidden_to_tray && !self.pending_hide_to_tray {
+                    self.prepare_hide_to_tray(ctx);
+                }
+                return;
+            }
+        }
+
+        if self.pending_hide_to_tray {
+            self.finish_hide_to_tray(ctx);
+        }
+
         // Cache window placement (outer position, inner size, maximized) so
         // `on_exit` can persist it without needing a `ctx`. egui exposes the
         // OS-level outer rect via `ViewportInfo::outer_rect`; on multi-monitor
@@ -195,24 +272,6 @@ impl eframe::App for ImageViewerApp {
             self.music_hud_last_activity = Instant::now();
         }
 
-        // Process IPC messages
-        while let Ok(msg) = self.ipc_rx.try_recv() {
-            match msg {
-                IpcMessage::OpenImage(path) => {
-                    log::info!("IPC: open image {:?}", path);
-                    self.handle_ipc_open_image(path, ctx, false);
-                }
-                IpcMessage::OpenImageNoRecursive(path) => {
-                    log::info!("IPC: open image (no-recursive) {:?}", path);
-                    self.handle_ipc_open_image(path, ctx, true);
-                }
-                IpcMessage::Focus => {
-                    log::info!("IPC received empty ping, requesting window focus");
-                    Self::focus_and_unminimize_window(ctx);
-                }
-            }
-        }
-
         if let Some(rx) = self.font_families_rx.as_ref() {
             match rx.try_recv() {
                 Ok(families) => {
@@ -268,7 +327,8 @@ impl eframe::App for ImageViewerApp {
         let dt = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
 
-        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let minimized =
+            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || self.hidden_to_tray;
 
         if minimized {
             // Pause the auto-switch timer while minimized by offsetting its start
@@ -278,6 +338,10 @@ impl eframe::App for ImageViewerApp {
 
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
+
+            // Process keyboard input (like Ctrl+Shift+T hotkey toggle) and file operation results even when minimized/in tray
+            self.handle_keyboard(ctx);
+            self.process_file_op_results();
 
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -592,5 +656,146 @@ impl eframe::App for ImageViewerApp {
 
         // ── Music HUD (Foreground Layer) ─────────────────────────────────
         self.draw_music_hud_foreground(&ctx);
+    }
+}
+
+impl ImageViewerApp {
+    fn build_tray_state(was_maximized: bool) -> Option<super::types::TrayState> {
+        let icon_data = crate::startup::icon::load_icon();
+        let icon =
+            match tray_icon::Icon::from_rgba(icon_data.rgba, icon_data.width, icon_data.height) {
+                Ok(icon) => icon,
+                Err(e) => {
+                    log::error!("Failed to convert tray icon: {:?}", e);
+                    return None;
+                }
+            };
+
+        let show_item =
+            tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
+        let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
+        let show_item_id = show_item.id().clone();
+        let quit_item_id = quit_item.id().clone();
+
+        let tray_menu = tray_icon::menu::Menu::new();
+        let _ = tray_menu.append_items(&[
+            &show_item,
+            &tray_icon::menu::PredefinedMenuItem::separator(),
+            &quit_item,
+        ]);
+
+        match tray_icon::TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_menu_on_left_click(false)
+            .with_tooltip(t!("app.name").to_string())
+            .with_icon(icon)
+            .build()
+        {
+            Ok(t) => Some(super::types::TrayState {
+                _tray_icon: t,
+                show_item_id,
+                quit_item_id,
+                was_maximized,
+            }),
+            Err(e) => {
+                log::error!("Failed to build tray icon: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn show_main_window_from_tray_viewport(ctx: &Context, was_maximized: bool) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        if was_maximized {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::ipc::force_foreground();
+    }
+
+    fn focus_main_window(ctx: &Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::ipc::force_foreground();
+    }
+
+    fn quit_process_now(&mut self) -> ! {
+        <Self as eframe::App>::on_exit(self);
+        std::process::exit(0);
+    }
+
+    fn ensure_tray_icon(&mut self, was_maximized: bool) -> bool {
+        if self.tray_state.is_none()
+            && let Some(state) = Self::build_tray_state(was_maximized)
+        {
+            self.tray_state = Some(state);
+        }
+
+        if let Some(state) = &mut self.tray_state {
+            state.was_maximized = was_maximized;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn prepare_hide_to_tray(&mut self, ctx: &Context) {
+        self.explicit_quit = false; // Reset explicit quit flag
+        let was_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        if self.ensure_tray_icon(was_maximized) {
+            self.pending_hide_to_tray = true;
+            ctx.request_repaint();
+        }
+    }
+
+    fn finish_hide_to_tray(&mut self, ctx: &Context) {
+        self.pending_hide_to_tray = false;
+        self.hidden_to_tray = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        crate::ipc::hide_main_window();
+    }
+
+    pub(crate) fn minimize_to_tray(&mut self, ctx: &Context) {
+        self.prepare_hide_to_tray(ctx);
+        if self.pending_hide_to_tray {
+            self.finish_hide_to_tray(ctx);
+        }
+    }
+
+    /// Rebuild the tray icon/menu after locale change. When already minimized to tray,
+    /// replaces the tray in place so the user is not left with a hidden window and no icon.
+    pub(crate) fn refresh_tray_after_language_change(&mut self, ctx: &Context) {
+        let Some(old) = self.tray_state.take() else {
+            return;
+        };
+        let was_maximized = old.was_maximized;
+        match Self::build_tray_state(was_maximized) {
+            Some(state) => self.tray_state = Some(state),
+            None => {
+                log::warn!("Failed to rebuild tray after language change; restoring main window");
+                self.hidden_to_tray = false;
+                self.pending_hide_to_tray = false;
+                Self::show_main_window_from_tray_viewport(ctx, was_maximized);
+            }
+        }
+    }
+
+    pub(crate) fn show_main_window_from_tray(&mut self, ctx: &Context) {
+        self.explicit_quit = false; // Reset explicit quit flag when restoring
+        if let Some(state) = &self.tray_state {
+            if self.hidden_to_tray || self.pending_hide_to_tray {
+                self.hidden_to_tray = false;
+                self.pending_hide_to_tray = false;
+                Self::show_main_window_from_tray_viewport(ctx, state.was_maximized);
+            } else {
+                Self::focus_main_window(ctx);
+            }
+        }
+    }
+
+    pub(crate) fn minimize_to_tray_from_hotkey(&mut self, ctx: &Context) {
+        if !self.hidden_to_tray {
+            self.minimize_to_tray(ctx);
+        }
     }
 }

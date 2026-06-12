@@ -28,8 +28,9 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
   - **macOS / Linux**: Automatically exports the image to a perfectly sized, margin-less PDF and opens it with the system default viewer for printing.
   - **Flexible Modes**: Print the entire image or just the currently zoomed-in "Visible Area" with precise cropping.
 - **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
+- **System Tray Integration** — optionally minimize the application to the system tray upon window close (cross-platform). Left-click the tray icon to restore the window, right-click for a context menu (Show Main Window / Exit), and automatically restore when opening images or launching new instances.
+- **Copy & Cut to Folder** — copy or move the currently viewed image to any folder via the context menu or new customizable hotkeys (`Ctrl + Shift + C` for copy, `Ctrl + Shift + X` for cut). Features a folder browser dialog that remembers path history, and removes the file from the viewer list on a successful cut.
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
-- **Update checks** — checks GitHub Releases in the background at most once per day. Windows portable builds can install verified updates automatically; macOS and Linux builds notify you and open the download page.
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
 - **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode, and `F5` to refresh the image list without losing your zoom/rotation or playing animations
 - **Custom hotkeys** — rebind navigation, zoom, rotation, slideshow, printing, and other actions from **Settings > Hotkeys**; supports keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks. The defaults are listed in **Controls** below and can be changed at any time
@@ -95,6 +96,9 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Delete` | Move current image to Recycle Bin / Trash |
 | `Shift + Delete` | Permanently delete current image (no Recycle Bin) |
 | `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
+| `Ctrl + Shift + C` | **Copy** current image to a specified directory |
+| `Ctrl + Shift + X` | **Cut** (move) current image to a specified directory |
+| `Ctrl + Shift + T` | **Minimize** the visible window to tray |
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
 | `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
@@ -116,8 +120,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | **Hotkeys** | Remap keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button bindings for major viewer actions |
 | **Context Menu** | Customize the right-click menu: reorder built-in items, add separators, enable or disable entries, and add custom commands (`%1` = current image path) |
 | **Language** | Manually switch between English, Simplified Chinese, and Traditional Chinese |
-| **System Integration** | *(Windows only)* Register/unregister file type associations for the Windows "Open With" menu |
-| **Updates** | Enable/disable update checks, run a manual check, and configure HTTP/SOCKS5 proxy settings for release checks and downloads |
+| **System** | Toggle minimizing to system tray on window close (cross-platform); *(Windows only)* register/unregister file type associations for the Windows "Open With" menu |
 
 
 ---
@@ -157,6 +160,8 @@ font_size: 16.0
 preload: true
 language: "zh-CN"
 theme: "system"
+minimize_to_tray_on_close: false
+last_copy_cut_dir: "D:\\Photos"
 ```
 
 Delete the file to reset all settings to defaults.

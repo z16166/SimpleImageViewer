@@ -41,13 +41,11 @@ pub(crate) enum SettingsTab {
     Appearance,
     Hotkeys,
     ContextMenu,
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     System,
     About,
 }
 
 impl SettingsTab {
-    #[cfg(target_os = "windows")]
     pub(crate) const ALL: [Self; 9] = [
         Self::Library,
         Self::Viewing,
@@ -57,18 +55,6 @@ impl SettingsTab {
         Self::Hotkeys,
         Self::ContextMenu,
         Self::System,
-        Self::About,
-    ];
-
-    #[cfg(not(target_os = "windows"))]
-    pub(crate) const ALL: [Self; 8] = [
-        Self::Library,
-        Self::Viewing,
-        Self::Slideshow,
-        Self::Music,
-        Self::Appearance,
-        Self::Hotkeys,
-        Self::ContextMenu,
         Self::About,
     ];
 
@@ -196,14 +182,77 @@ impl HardwareTier {
         }
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOpError {
+    CreateDirFailed(String),
+    InvalidSource,
+    TargetFileExists,
+    CopyFailed(String),
+    MoveFailed(String),
+    RemoveSourceFailed(String),
+}
+
+impl FileOpError {
+    pub fn localized_message(&self) -> String {
+        match self {
+            Self::CreateDirFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_create_dir", err = e).to_string()
+            }
+            Self::InvalidSource => rust_i18n::t!("file_copy_cut.err_invalid_source").to_string(),
+            Self::TargetFileExists => rust_i18n::t!("file_copy_cut.err_target_exists").to_string(),
+            Self::CopyFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_copy_failed", err = e).to_string()
+            }
+            Self::MoveFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_move_failed", err = e).to_string()
+            }
+            Self::RemoveSourceFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_remove_source", err = e).to_string()
+            }
+        }
+    }
+}
+
+// NOTE: This Display implementation is strictly for developer logs and diagnostics.
+// Any user-facing interface error messages MUST retrieve the translation via `localized_message()`.
+impl std::fmt::Display for FileOpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CreateDirFailed(e) => write!(f, "CreateDirFailed({})", e),
+            Self::InvalidSource => write!(f, "InvalidSource"),
+            Self::TargetFileExists => write!(f, "TargetFileExists"),
+            Self::CopyFailed(e) => write!(f, "CopyFailed({})", e),
+            Self::MoveFailed(e) => write!(f, "MoveFailed({})", e),
+            Self::RemoveSourceFailed(e) => write!(f, "RemoveSourceFailed({})", e),
+        }
+    }
+}
+
 pub enum FileOpResult {
-    Delete(PathBuf, usize, Result<(), String>),
+    Delete {
+        path: PathBuf,
+        original_index: usize,
+        original_size: u64,
+        result: Result<(), String>,
+    },
     Exif(PathBuf, Option<Vec<(String, String)>>),
     Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
     Wallpaper {
         current: Option<String>,
         monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
         supports_per_monitor: bool,
+    },
+    CopyTo {
+        src_path: PathBuf,
+        target_dir: PathBuf,
+        result: Result<(), FileOpError>,
+    },
+    CutTo {
+        src_path: PathBuf,
+        target_dir: PathBuf,
+        original_index: usize,
+        original_size: u64,
+        result: Result<(), FileOpError>,
     },
 }
 
@@ -545,6 +594,19 @@ pub struct ImageViewerApp {
     pub(crate) pixel_data_source: Option<crate::pixel_inspector::PixelDataSource>,
     pub(crate) pixel_hover_cache: Option<PixelHoverCache>,
     pub(crate) pixel_region_first_point: Option<(u32, u32)>,
+    pub(crate) tray_state: Option<TrayState>,
+    pub(crate) hidden_to_tray: bool,
+    pub(crate) pending_hide_to_tray: bool,
+    /// Session-only preference for the copy/cut dialog overwrite checkbox.
+    pub(crate) copy_cut_overwrite_if_exists: bool,
+    pub(crate) explicit_quit: bool,
+}
+
+pub(crate) struct TrayState {
+    pub(crate) _tray_icon: tray_icon::TrayIcon,
+    pub(crate) show_item_id: tray_icon::menu::MenuId,
+    pub(crate) quit_item_id: tray_icon::menu::MenuId,
+    pub(crate) was_maximized: bool,
 }
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.
 pub(crate) struct PendingAnimUpload {

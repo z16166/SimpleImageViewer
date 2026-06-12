@@ -1259,6 +1259,11 @@ fn make_test_app() -> ImageViewerApp {
         refresh_scan_in_progress: false,
         refresh_scan_slideshow_was_playing: false,
         refresh_anchor_path: None,
+        explicit_quit: false,
+        tray_state: None,
+        hidden_to_tray: false,
+        pending_hide_to_tray: false,
+        copy_cut_overwrite_if_exists: false,
     }
 }
 

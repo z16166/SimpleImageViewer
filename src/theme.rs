@@ -93,6 +93,7 @@ pub struct ThemePalette {
     // ── OSD (On-Screen Display) ──────────────────────────────────────────────
     pub osd_text: Color32,
     pub osd_hint: Color32,
+    pub error: Color32,
 
     pub is_dark: bool,
 }
@@ -127,6 +128,7 @@ impl ThemePalette {
 
             osd_text: Color32::from_rgb(240, 240, 240), // Fully opaque and brighter
             osd_hint: Color32::from_rgb(180, 180, 185), // Fully opaque and brighter
+            error: Color32::from_rgb(255, 100, 100),
 
             is_dark: true,
         }
@@ -163,6 +165,7 @@ impl ThemePalette {
 
             osd_text: Color32::from_rgba_unmultiplied(27, 38, 59, 200),
             osd_hint: Color32::from_rgba_unmultiplied(95, 99, 104, 160),
+            error: Color32::from_rgb(220, 53, 69),
 
             is_dark: false,
         }

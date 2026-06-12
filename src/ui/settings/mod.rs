@@ -307,10 +307,7 @@ fn draw_active_settings_tab(
         SettingsTab::Appearance => appearance::draw(app, ui, ctx),
         SettingsTab::Hotkeys => hotkeys::draw_hotkeys_tab(app, ui, ctx),
         SettingsTab::ContextMenu => context_menu::draw_context_menu_tab(app, ui, ctx),
-        #[cfg(target_os = "windows")]
         SettingsTab::System => system::draw_system_tab(app, ui),
-        #[cfg(not(target_os = "windows"))]
-        SettingsTab::System => {}
         SettingsTab::About => about::draw_about_tab(app, ui),
     }
 }

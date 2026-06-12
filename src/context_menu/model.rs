@@ -54,6 +54,20 @@ pub const CONTEXT_MENU_BUILTINS: &[ContextMenuBuiltinDescriptor] = &[
         default_enabled: true,
     },
     ContextMenuBuiltinDescriptor {
+        id: "copy_to",
+        label_key: "ctx.copy_to",
+        source: BuiltinActionSource::HotkeyAction(HotkeyActionId::CopyTo),
+        hotkey_action: Some(HotkeyActionId::CopyTo),
+        default_enabled: true,
+    },
+    ContextMenuBuiltinDescriptor {
+        id: "cut_to",
+        label_key: "ctx.cut_to",
+        source: BuiltinActionSource::HotkeyAction(HotkeyActionId::CutTo),
+        hotkey_action: Some(HotkeyActionId::CutTo),
+        default_enabled: true,
+    },
+    ContextMenuBuiltinDescriptor {
         id: "view_exif",
         label_key: "ctx.view_exif",
         source: BuiltinActionSource::ExistingContextMenuOnly,
@@ -206,6 +220,8 @@ pub fn hotkey_actions_allowed_in_context_menu() -> Vec<HotkeyActionId> {
         HotkeyActionId::PrintCurrent,
         HotkeyActionId::ToggleFullscreen,
         HotkeyActionId::ExitFullscreen,
+        HotkeyActionId::CopyTo,
+        HotkeyActionId::CutTo,
     ]
 }
 

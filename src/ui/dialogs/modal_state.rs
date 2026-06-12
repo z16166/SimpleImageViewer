@@ -65,6 +65,11 @@ pub enum ModalAction {
     /// Apply the selected file associations (Windows only).
     #[cfg(target_os = "windows")]
     ApplyFileAssoc(Vec<String>),
+    FileCopyCut {
+        is_cut: bool,
+        target_dir: std::path::PathBuf,
+        overwrite_if_exists: bool,
+    },
 }
 
 /// The single active modal dialog. Only one can be open at a time.
@@ -91,4 +96,5 @@ pub enum ActiveModal {
     FileAssoc(crate::ui::dialogs::file_assoc::State),
     /// Pixel region grid dialog.
     PixelRegion(crate::ui::dialogs::pixel_region_dialog::State),
+    FileCopyCut(crate::ui::dialogs::file_copy_cut::State),
 }

@@ -76,6 +76,9 @@ impl ImageViewerApp {
             Some(ActiveModal::PixelRegion(state)) => {
                 crate::ui::dialogs::pixel_region_dialog::show(state, ctx, &self.cached_palette)
             }
+            Some(ActiveModal::FileCopyCut(state)) => {
+                crate::ui::dialogs::file_copy_cut::show(state, ctx, &self.cached_palette)
+            }
         };
 
         match result {
@@ -143,6 +146,20 @@ impl ImageViewerApp {
                         t!("win.assoc_done_msg"),
                     ),
                 ));
+            }
+            ModalAction::FileCopyCut {
+                is_cut,
+                target_dir,
+                overwrite_if_exists,
+            } => {
+                self.copy_cut_overwrite_if_exists = overwrite_if_exists;
+                self.settings.last_copy_cut_dir = Some(target_dir.clone());
+                self.queue_save();
+                if is_cut {
+                    self.cut_current_image_to(target_dir, overwrite_if_exists);
+                } else {
+                    self.copy_current_image_to(target_dir, overwrite_if_exists);
+                }
             }
         }
     }
@@ -278,6 +295,8 @@ impl ImageViewerApp {
             }
             "toggle_fullscreen" => self.dispatch_action(AppAction::ToggleFullscreen, ui.ctx()),
             "exit_fullscreen" => self.dispatch_action(AppAction::ExitFullscreen, ui.ctx()),
+            "copy_to" => self.dispatch_action(AppAction::CopyTo, ui.ctx()),
+            "cut_to" => self.dispatch_action(AppAction::CutTo, ui.ctx()),
             _ => log::warn!("Unknown context menu builtin action: {}", id),
         }
         self.context_menu_pos = None;

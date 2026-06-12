@@ -14,16 +14,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#[cfg(target_os = "windows")]
 use crate::app::ImageViewerApp;
 #[cfg(target_os = "windows")]
-use crate::ui::utils::{SettingsCardStyle, settings_card_styled, styled_button};
+use crate::ui::utils::styled_button;
+use crate::ui::utils::{SettingsCardStyle, settings_card_styled};
 #[cfg(target_os = "windows")]
-use eframe::egui::{self, Margin, RichText};
-#[cfg(target_os = "windows")]
+use eframe::egui::RichText;
+use eframe::egui::{self, Margin};
 use rust_i18n::t;
 
-#[cfg(target_os = "windows")]
 pub(super) fn draw_system_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
     let pane_w = ui.max_rect().width();
     const SIDE_PAD: f32 = 12.0;
@@ -39,9 +38,50 @@ pub(super) fn draw_system_tab(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 |ui| {
                     ui.set_min_width(card_w);
                     ui.set_max_width(card_w);
-                    draw_windows_section(app, ui);
+                    draw_general_section(app, ui);
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        ui.add_space(12.0);
+                        draw_windows_section(app, ui);
+                    }
                 },
             );
+        },
+    );
+}
+
+fn draw_general_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
+    let palette = app.cached_palette.clone();
+    settings_card_styled(
+        ui,
+        &palette,
+        t!("section.system_general"),
+        SettingsCardStyle {
+            inner_margin: Margin {
+                left: 10,
+                right: 10,
+                top: 8,
+                bottom: 16,
+            },
+            pin_content_min_width: true,
+        },
+        |ui| {
+            let mut val = app.settings.minimize_to_tray_on_close;
+            if ui
+                .checkbox(&mut val, t!("label.minimize_to_tray_on_close"))
+                .changed()
+            {
+                app.settings.minimize_to_tray_on_close = val;
+                if !val {
+                    if app.hidden_to_tray {
+                        app.show_main_window_from_tray(ui.ctx());
+                    }
+                    app.pending_hide_to_tray = false;
+                    app.tray_state = None;
+                }
+                app.queue_save();
+            }
         },
     );
 }
