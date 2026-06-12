@@ -69,6 +69,7 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
             app.osd.on_language_changed(); // refreshes HUD / HDR / loading-hint caches
             app.osd.sync_events(); // immediately consumes the RawLine event
             app.cached_keyboard_hint = rust_i18n::t!("hint.keyboard").to_string();
+            app.tray_state = None;
             app.queue_save();
         }
         AppearanceMsg::ThemeChanged(theme) => {

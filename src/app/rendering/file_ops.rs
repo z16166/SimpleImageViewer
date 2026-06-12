@@ -250,9 +250,11 @@ impl ImageViewerApp {
                     .map(|_| ())
                     .map_err(|e| crate::app::types::FileOpError::CopyFailed(e.to_string()))
             })();
-            let _ = tx.send(crate::app::FileOpResult::CopyTo(
-                src_path, target_dir, result,
-            ));
+            let _ = tx.send(crate::app::FileOpResult::CopyTo {
+                src_path,
+                target_dir,
+                result,
+            });
         });
     }
 

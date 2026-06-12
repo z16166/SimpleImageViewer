@@ -46,10 +46,10 @@ pub fn validate_context_menu_config(config: &ContextMenuConfigFile) -> ContextMe
                 // Upgrade path: if we encounter copy_file or copy_path, insert copy_to and cut_to immediately after
                 if desc.id == "copy_file" || desc.id == "copy_path" {
                     if seen_builtins.insert("copy_to") {
-                        items.push(ContextMenuEntry::builtin("copy_to", true));
+                        items.push(ContextMenuEntry::builtin("copy_to", item.enabled));
                     }
                     if seen_builtins.insert("cut_to") {
-                        items.push(ContextMenuEntry::builtin("cut_to", true));
+                        items.push(ContextMenuEntry::builtin("cut_to", item.enabled));
                     }
                 }
             }

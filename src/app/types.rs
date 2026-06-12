@@ -242,7 +242,11 @@ pub enum FileOpResult {
         monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
         supports_per_monitor: bool,
     },
-    CopyTo(PathBuf, PathBuf, Result<(), FileOpError>),
+    CopyTo {
+        src_path: PathBuf,
+        target_dir: PathBuf,
+        result: Result<(), FileOpError>,
+    },
     CutTo {
         src_path: PathBuf,
         target_dir: PathBuf,

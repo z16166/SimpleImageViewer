@@ -35,7 +35,8 @@ impl ImageViewerApp {
                         // We use the original index to maintain order.
                         if original_idx <= self.image_files.len() {
                             self.image_files.insert(original_idx, path.clone());
-                            self.file_byte_len_by_index.insert(original_idx, original_size);
+                            self.file_byte_len_by_index
+                                .insert(original_idx, original_size);
                         } else {
                             self.image_files.push(path.clone());
                             self.file_byte_len_by_index.push(original_size);
@@ -114,7 +115,11 @@ impl ImageViewerApp {
                         state.apply_wallpaper_probe(current, monitors, supports_per_monitor);
                     }
                 }
-                FileOpResult::CopyTo(src_path, dest_dir, result) => match result {
+                FileOpResult::CopyTo {
+                    src_path,
+                    target_dir: dest_dir,
+                    result,
+                } => match result {
                     Ok(()) => {
                         log::info!("Successfully copied {:?} to {:?}", src_path, dest_dir);
                         self.status_message = t!("status.copy_success").to_string();
@@ -148,7 +153,8 @@ impl ImageViewerApp {
                         // ROLLBACK: Restore the file to the in-memory list if it failed to move.
                         if original_idx <= self.image_files.len() {
                             self.image_files.insert(original_idx, src_path.clone());
-                            self.file_byte_len_by_index.insert(original_idx, original_size);
+                            self.file_byte_len_by_index
+                                .insert(original_idx, original_size);
                         } else {
                             self.image_files.push(src_path.clone());
                             self.file_byte_len_by_index.push(original_size);
