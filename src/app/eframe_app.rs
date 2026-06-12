@@ -122,6 +122,9 @@ impl eframe::App for ImageViewerApp {
         #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
         crate::startup::take_and_join_dx12_cache_validate_thread();
 
+        // Explicitly drop tray icon state so it gets cleaned up from the taskbar before process termination.
+        self.tray_state = None;
+
         crate::startup::shutdown_logger();
         #[cfg(target_os = "windows")]
         std::process::exit(0);
@@ -241,7 +244,9 @@ impl eframe::App for ImageViewerApp {
 
         // Process IPC messages
         while let Ok(msg) = self.ipc_rx.try_recv() {
-            self.restore_from_tray(ctx);
+            if self.tray_state.is_some() {
+                self.restore_from_tray(ctx);
+            }
             match msg {
                 IpcMessage::OpenImage(path) => {
                     log::info!("IPC: open image {:?}", path);
@@ -642,6 +647,7 @@ impl eframe::App for ImageViewerApp {
 
 impl ImageViewerApp {
     pub(crate) fn minimize_to_tray(&mut self, ctx: &Context) {
+        self.explicit_quit = false; // Reset explicit quit flag
         if self.tray_state.is_some() {
             return;
         }
@@ -702,6 +708,7 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn restore_from_tray(&mut self, ctx: &Context) {
+        self.explicit_quit = false; // Reset explicit quit flag when restoring
         if let Some(state) = self.tray_state.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             if state.was_maximized {

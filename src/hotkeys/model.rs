@@ -560,7 +560,7 @@ pub fn default_key_chords(action_id: HotkeyActionId) -> &'static [KeyChord] {
         }],
         HotkeyActionId::ToggleTray => &[KeyChord {
             modifiers: MOD_CTRL | MOD_SHIFT,
-            key: HotkeyLogicalKey::Egui(egui::Key::Escape),
+            key: HotkeyLogicalKey::Egui(egui::Key::T),
         }],
     }
 }

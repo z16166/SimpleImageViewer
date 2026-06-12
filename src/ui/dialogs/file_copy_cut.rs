@@ -43,8 +43,8 @@ impl State {
 pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalResult {
     let mut result = ModalResult::Pending;
 
-    const WIDTH: f32 = 440.0;
-    const HEIGHT: f32 = 140.0;
+    const DEFAULT_DIALOG_WIDTH: f32 = 440.0;
+    const DEFAULT_DIALOG_HEIGHT: f32 = 150.0;
 
     let title = if state.is_cut {
         t!("file_copy_cut.title_cut").to_string()
@@ -54,7 +54,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
 
     MovableModal::new("file_copy_cut_dialog", title)
         .resizable(true)
-        .default_size([WIDTH, HEIGHT])
+        .default_size([DEFAULT_DIALOG_WIDTH, DEFAULT_DIALOG_HEIGHT])
         .show(ctx, palette, |ui| {
             ui.label(
                 RichText::new(t!("file_copy_cut.prompt"))
@@ -64,28 +64,30 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
             ui.add_space(6.0);
 
             ui.horizontal(|ui| {
-                let text_edit = egui::TextEdit::singleline(&mut state.input)
-                    .desired_width(ui.available_width() - 80.0);
-                let resp = ui.add(text_edit);
-
-                if state.needs_focus {
-                    resp.request_focus();
-                    state.needs_focus = false;
-                }
-
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                    result = try_confirm(state);
-                }
-
-                if styled_button(ui, t!("context_menu.browse"), palette).clicked() {
-                    let mut dialog = rfd::FileDialog::new();
-                    if !state.input.trim().is_empty() {
-                        dialog = dialog.set_directory(std::path::Path::new(state.input.trim()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if styled_button(ui, t!("file_copy_cut.browse"), palette).clicked() {
+                        let mut dialog = rfd::FileDialog::new();
+                        if !state.input.trim().is_empty() {
+                            dialog = dialog.set_directory(std::path::Path::new(state.input.trim()));
+                        }
+                        if let Some(dir) = dialog.pick_folder() {
+                            state.input = dir.to_string_lossy().into_owned();
+                        }
                     }
-                    if let Some(dir) = dialog.pick_folder() {
-                        state.input = dir.to_string_lossy().into_owned();
+
+                    let text_edit = egui::TextEdit::singleline(&mut state.input)
+                        .desired_width(ui.available_width() - 8.0);
+                    let resp = ui.add(text_edit);
+
+                    if state.needs_focus {
+                        resp.request_focus();
+                        state.needs_focus = false;
                     }
-                }
+
+                    if resp.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        result = try_confirm(state);
+                    }
+                });
             });
 
             if ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -108,12 +110,15 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
 
 fn try_confirm(state: &State) -> ModalResult {
     let target = state.input.trim();
-    if !target.is_empty() {
-        ModalResult::Confirmed(ModalAction::FileCopyCut {
-            is_cut: state.is_cut,
-            target_dir: PathBuf::from(target),
-        })
-    } else {
-        ModalResult::Pending
+    if target.is_empty() {
+        return ModalResult::Pending;
     }
+    let path = std::path::Path::new(target);
+    if path.is_file() {
+        return ModalResult::Pending;
+    }
+    ModalResult::Confirmed(ModalAction::FileCopyCut {
+        is_cut: state.is_cut,
+        target_dir: PathBuf::from(target),
+    })
 }

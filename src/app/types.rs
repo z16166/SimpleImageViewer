@@ -182,6 +182,29 @@ impl HardwareTier {
         }
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileOpError {
+    CreateDirFailed(String),
+    InvalidSource,
+    TargetFileExists,
+    CopyFailed(String),
+    MoveFailed(String),
+    RemoveSourceFailed(String),
+}
+
+impl std::fmt::Display for FileOpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CreateDirFailed(e) => write!(f, "CreateDirFailed({})", e),
+            Self::InvalidSource => write!(f, "InvalidSource"),
+            Self::TargetFileExists => write!(f, "TargetFileExists"),
+            Self::CopyFailed(e) => write!(f, "CopyFailed({})", e),
+            Self::MoveFailed(e) => write!(f, "MoveFailed({})", e),
+            Self::RemoveSourceFailed(e) => write!(f, "RemoveSourceFailed({})", e),
+        }
+    }
+}
+
 pub enum FileOpResult {
     Delete(PathBuf, usize, Result<(), String>),
     Exif(PathBuf, Option<Vec<(String, String)>>),
@@ -191,8 +214,8 @@ pub enum FileOpResult {
         monitors: Vec<crate::ui::dialogs::wallpaper::MonitorOption>,
         supports_per_monitor: bool,
     },
-    CopyTo(PathBuf, PathBuf, Result<(), String>),
-    CutTo(PathBuf, PathBuf, Result<(), String>),
+    CopyTo(PathBuf, PathBuf, Result<(), FileOpError>),
+    CutTo(PathBuf, PathBuf, usize, Result<(), FileOpError>),
 }
 
 /// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).

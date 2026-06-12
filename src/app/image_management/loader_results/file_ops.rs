@@ -95,30 +95,93 @@ impl ImageViewerApp {
                         log::info!("Successfully copied {:?} to {:?}", src_path, dest_dir);
                         self.status_message = t!("status.copy_success").to_string();
                     }
-                    Err(e) => {
-                        log::error!("Failed to copy {:?}: {}", src_path, e);
+                    Err(err) => {
+                        log::error!("Failed to copy {:?}: {:?}", src_path, err);
+                        let err_msg = match err {
+                            crate::app::types::FileOpError::CreateDirFailed(e) => {
+                                t!("file_copy_cut.err_create_dir", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::InvalidSource => {
+                                t!("file_copy_cut.err_invalid_source").to_string()
+                            }
+                            crate::app::types::FileOpError::TargetFileExists => {
+                                t!("file_copy_cut.err_target_exists").to_string()
+                            }
+                            crate::app::types::FileOpError::CopyFailed(e) => {
+                                t!("file_copy_cut.err_copy_failed", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::MoveFailed(e) => {
+                                t!("file_copy_cut.err_move_failed", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::RemoveSourceFailed(e) => {
+                                t!("file_copy_cut.err_remove_source", err = e).to_string()
+                            }
+                        };
                         self.active_modal =
                             Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
                                 crate::ui::dialogs::confirm::State::info(
                                     t!("file_copy_cut.error_title"),
-                                    t!("file_copy_cut.copy_failed_msg", error = e),
+                                    t!("file_copy_cut.copy_failed_msg", error = err_msg),
                                 ),
                             ));
                     }
                 },
-                FileOpResult::CutTo(src_path, dest_dir, result) => match result {
+                FileOpResult::CutTo(src_path, dest_dir, original_idx, result) => match result {
                     Ok(()) => {
                         log::info!("Successfully cut {:?} to {:?}", src_path, dest_dir);
-                        self.remove_image_by_path(&src_path);
                         self.status_message = t!("status.cut_success").to_string();
                     }
-                    Err(e) => {
-                        log::error!("Failed to cut {:?}: {}", src_path, e);
+                    Err(err) => {
+                        log::error!("Failed to cut {:?}: {:?}", src_path, err);
+
+                        // ROLLBACK: Restore the file to the in-memory list if it failed to move.
+                        if original_idx <= self.image_files.len() {
+                            self.image_files.insert(original_idx, src_path.clone());
+                            let sz = std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.insert(original_idx, sz);
+                        } else {
+                            self.image_files.push(src_path.clone());
+                            let sz = std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+                            self.file_byte_len_by_index.push(sz);
+                        }
+
+                        // Restore viewer state to ensure consistency.
+                        self.set_current_index(original_idx);
+                        self.generation = self.generation.wrapping_add(1);
+                        self.loader.set_generation(self.generation);
+                        self.loader.request_load(
+                            self.current_index,
+                            self.generation,
+                            self.image_files[self.current_index].clone(),
+                            self.settings.raw_high_quality,
+                        );
+                        self.schedule_preloads(true);
+
+                        let err_msg = match err {
+                            crate::app::types::FileOpError::CreateDirFailed(e) => {
+                                t!("file_copy_cut.err_create_dir", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::InvalidSource => {
+                                t!("file_copy_cut.err_invalid_source").to_string()
+                            }
+                            crate::app::types::FileOpError::TargetFileExists => {
+                                t!("file_copy_cut.err_target_exists").to_string()
+                            }
+                            crate::app::types::FileOpError::CopyFailed(e) => {
+                                t!("file_copy_cut.err_copy_failed", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::MoveFailed(e) => {
+                                t!("file_copy_cut.err_move_failed", err = e).to_string()
+                            }
+                            crate::app::types::FileOpError::RemoveSourceFailed(e) => {
+                                t!("file_copy_cut.err_remove_source", err = e).to_string()
+                            }
+                        };
                         self.active_modal =
                             Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
                                 crate::ui::dialogs::confirm::State::info(
                                     t!("file_copy_cut.error_title"),
-                                    t!("file_copy_cut.cut_failed_msg", error = e),
+                                    t!("file_copy_cut.cut_failed_msg", error = err_msg),
                                 ),
                             ));
                     }

@@ -221,12 +221,19 @@ impl ImageViewerApp {
         std::thread::spawn(move || {
             let result = (|| {
                 std::fs::create_dir_all(&target_dir)
-                    .map_err(|e| format!("Failed to create directory: {}", e))?;
-                let filename = src_path.file_name().ok_or("Invalid source filename")?;
+                    .map_err(|e| crate::app::types::FileOpError::CreateDirFailed(e.to_string()))?;
+                let filename = src_path
+                    .file_name()
+                    .ok_or(crate::app::types::FileOpError::InvalidSource)?;
                 let dest_path = target_dir.join(filename);
+
+                if dest_path.exists() {
+                    return Err(crate::app::types::FileOpError::TargetFileExists);
+                }
+
                 std::fs::copy(&src_path, &dest_path)
                     .map(|_| ())
-                    .map_err(|e| format!("Copy failed: {}", e))
+                    .map_err(|e| crate::app::types::FileOpError::CopyFailed(e.to_string()))
             })();
             let _ = tx.send(crate::app::FileOpResult::CopyTo(
                 src_path, target_dir, result,
@@ -238,7 +245,9 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
-        let src_path = self.image_files[self.current_index].clone();
+        let original_index = self.current_index;
+        let src_path = self.image_files[original_index].clone();
+        self.invalidate_random_slideshow_order();
 
         // CRITICAL: Drop all resources holding the file before move
         self.set_current_image_resolution(None);
@@ -251,13 +260,73 @@ impl ImageViewerApp {
         self.prev_hdr_image = None;
         self.prev_transition_rect = None;
 
-        let has_other_images = self.image_files.len() > 1;
-        let original_index = self.current_index;
+        let tx = self.file_op_tx.clone();
+        std::thread::spawn(move || {
+            // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
+            std::thread::sleep(std::time::Duration::from_millis(50));
 
-        if has_other_images {
-            // Navigate to next image so we aren't displaying the cut one anymore
-            let next_idx = (original_index + 1) % self.image_files.len();
-            self.set_current_index(next_idx);
+            let result = (|| {
+                std::fs::create_dir_all(&target_dir)
+                    .map_err(|e| crate::app::types::FileOpError::CreateDirFailed(e.to_string()))?;
+                let filename = src_path
+                    .file_name()
+                    .ok_or(crate::app::types::FileOpError::InvalidSource)?;
+                let dest_path = target_dir.join(filename);
+
+                if dest_path.exists() {
+                    return Err(crate::app::types::FileOpError::TargetFileExists);
+                }
+
+                // Try std::fs::rename first (efficient within the same drive)
+                if std::fs::rename(&src_path, &dest_path).is_err() {
+                    // Fall back to copy + delete (for cross-device/cross-drive moves)
+                    std::fs::copy(&src_path, &dest_path)
+                        .map_err(|e| crate::app::types::FileOpError::MoveFailed(e.to_string()))?;
+                    std::fs::remove_file(&src_path).map_err(|e| {
+                        crate::app::types::FileOpError::RemoveSourceFailed(e.to_string())
+                    })?;
+                }
+                Ok(())
+            })();
+
+            let _ = tx.send(crate::app::FileOpResult::CutTo(
+                src_path,
+                target_dir,
+                original_index,
+                result,
+            ));
+        });
+
+        // Remove from memory list immediately
+        self.image_files.remove(original_index);
+        if original_index < self.file_byte_len_by_index.len() {
+            self.file_byte_len_by_index.remove(original_index);
+        }
+
+        // Deletion/cut shifts indices, so every index-keyed cache must be rebuilt.
+        self.texture_cache.clear_all();
+        self.clear_hdr_image_state();
+        self.animation_cache.clear();
+        self.prefetched_tiles.clear();
+
+        if self.image_files.is_empty() {
+            self.set_current_index(0);
+            self.status_message = t!("status.no_images_left").to_string();
+            self.set_current_image_resolution(None);
+            self.animation = None;
+            self.current_hdr_image = None;
+            self.prev_texture = None;
+            self.prev_hdr_image = None;
+            self.prev_transition_rect = None;
+            self.transition_start = None;
+            self.active_modal = None;
+        } else {
+            // Adjust current_index if we were at the last element
+            if self.current_index >= self.image_files.len() {
+                self.set_current_index(self.image_files.len() - 1);
+            }
+
+            // Reset state for new image
             self.animation = None;
             self.prev_texture = None;
             self.prev_hdr_image = None;
@@ -286,79 +355,6 @@ impl ImageViewerApp {
             );
             self.schedule_preloads(true);
         }
-
-        self.invalidate_view_text_layout();
-
-        let tx = self.file_op_tx.clone();
-        std::thread::spawn(move || {
-            // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
-            std::thread::sleep(std::time::Duration::from_millis(50));
-
-            let result = (|| {
-                std::fs::create_dir_all(&target_dir)
-                    .map_err(|e| format!("Failed to create directory: {}", e))?;
-                let filename = src_path.file_name().ok_or("Invalid source filename")?;
-                let dest_path = target_dir.join(filename);
-
-                // Try std::fs::rename first (efficient within the same drive)
-                if std::fs::rename(&src_path, &dest_path).is_err() {
-                    // Fall back to copy + delete (for cross-device/cross-drive moves)
-                    std::fs::copy(&src_path, &dest_path)
-                        .map_err(|e| format!("Move failed (rename and copy both failed): {}", e))?;
-                    std::fs::remove_file(&src_path).map_err(|e| {
-                        format!("Move succeeded but failed to remove source file: {}", e)
-                    })?;
-                }
-                Ok(())
-            })();
-
-            let _ = tx.send(crate::app::FileOpResult::CutTo(
-                src_path, target_dir, result,
-            ));
-        });
-    }
-
-    pub(crate) fn remove_image_by_path(&mut self, path: &std::path::Path) {
-        let Some(remove_idx) = self.image_files.iter().position(|p| p == path) else {
-            return;
-        };
-
-        self.invalidate_random_slideshow_order();
-        self.image_files.remove(remove_idx);
-        if remove_idx < self.file_byte_len_by_index.len() {
-            self.file_byte_len_by_index.remove(remove_idx);
-        }
-
-        if self.image_files.is_empty() {
-            self.set_current_index(0);
-            self.status_message = t!("status.no_images_left").to_string();
-            self.set_current_image_resolution(None);
-            self.animation = None;
-            self.current_hdr_image = None;
-            self.prev_texture = None;
-            self.prev_hdr_image = None;
-            self.prev_transition_rect = None;
-            self.transition_start = None;
-            self.active_modal = None;
-        } else {
-            // Adjust current_index to point to the correct shifted element
-            let mut new_idx = self.current_index;
-            if remove_idx < self.current_index {
-                new_idx -= 1;
-            }
-            if new_idx >= self.image_files.len() {
-                new_idx = self.image_files.len() - 1;
-            }
-
-            self.set_current_index(new_idx);
-            self.refresh_current_file_name();
-            self.schedule_preloads(true);
-        }
-
-        self.texture_cache.clear_all();
-        self.clear_hdr_image_state();
-        self.animation_cache.clear();
-        self.prefetched_tiles.clear();
 
         self.invalidate_view_text_layout();
     }
