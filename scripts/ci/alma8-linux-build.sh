@@ -32,6 +32,8 @@ PKGS=(
   alsa-lib-devel libX11-devel libxcb-devel libxkbcommon-devel
   libXcursor-devel libXrandr-devel libXi-devel mesa-libGL-devel
   libwayland-client-devel libwayland-cursor-devel wayland-devel
+  # tray-icon (libappindicator + GTK3 status icon); dynamic libs at runtime, -devel for build
+  gtk3-devel libappindicator-gtk3-devel
   fontconfig-devel freetype-devel expat-devel zlib-devel gawk
   autoconf autoconf-archive automake libtool libtool-ltdl-devel gettext-devel m4 flex bison texinfo
   libatomic openssl-devel perl
