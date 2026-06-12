@@ -98,7 +98,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Ctrl + P` (or `Cmd + P`) | **Print** current image (Full Image) |
 | `Ctrl + Shift + C` | **Copy** current image to a specified directory |
 | `Ctrl + Shift + X` | **Cut** (move) current image to a specified directory |
-| `Ctrl + Shift + T` | **Minimize** to tray / restore window |
+| `Ctrl + Shift + T` | **Minimize** the visible window to tray |
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
 | `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |

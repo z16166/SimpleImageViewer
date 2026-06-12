@@ -1261,6 +1261,8 @@ fn make_test_app() -> ImageViewerApp {
         refresh_anchor_path: None,
         explicit_quit: false,
         tray_state: None,
+        hidden_to_tray: false,
+        pending_hide_to_tray: false,
     }
 }
 

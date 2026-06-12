@@ -197,7 +197,7 @@ impl ImageViewerApp {
                 }
             }
             AppAction::ToggleTray => {
-                self.toggle_tray(ctx);
+                self.minimize_to_tray_from_hotkey(ctx);
             }
         }
     }

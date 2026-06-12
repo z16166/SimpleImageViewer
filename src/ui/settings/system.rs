@@ -73,6 +73,13 @@ fn draw_general_section(app: &mut ImageViewerApp, ui: &mut egui::Ui) {
                 .changed()
             {
                 app.settings.minimize_to_tray_on_close = val;
+                if !val {
+                    if app.hidden_to_tray {
+                        app.show_main_window_from_tray(ui.ctx());
+                    }
+                    app.pending_hide_to_tray = false;
+                    app.tray_state = None;
+                }
                 app.queue_save();
             }
         },

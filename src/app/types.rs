@@ -595,6 +595,8 @@ pub struct ImageViewerApp {
     pub(crate) pixel_hover_cache: Option<PixelHoverCache>,
     pub(crate) pixel_region_first_point: Option<(u32, u32)>,
     pub(crate) tray_state: Option<TrayState>,
+    pub(crate) hidden_to_tray: bool,
+    pub(crate) pending_hide_to_tray: bool,
     pub(crate) explicit_quit: bool,
 }
 

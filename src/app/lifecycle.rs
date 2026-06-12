@@ -525,6 +525,8 @@ impl ImageViewerApp {
             pixel_hover_cache: None,
             pixel_region_first_point: None,
             tray_state: None,
+            hidden_to_tray: false,
+            pending_hide_to_tray: false,
             explicit_quit: false,
             settings,
         };

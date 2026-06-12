@@ -295,10 +295,117 @@ fn cleanup_stale_socket() {
 /// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
 /// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
 #[cfg(windows)]
-pub fn force_foreground() {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
+fn current_process_main_window() -> Option<isize> {
+    type HWND = isize;
+    type BOOL = i32;
+    type DWORD = u32;
+    type LPARAM = isize;
 
+    const GA_ROOT: u32 = 2;
+    const GW_OWNER: u32 = 4;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    struct CollectState {
+        process_id: DWORD,
+        best_hwnd: HWND,
+        best_area: i64,
+    }
+
+    unsafe extern "system" fn enum_collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = unsafe { &mut *(lparam as *mut CollectState) };
+        let mut process_id = 0;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut process_id);
+        }
+        if process_id != state.process_id {
+            return 1;
+        }
+
+        let is_root = unsafe { GetAncestor(hwnd, GA_ROOT) } == hwnd;
+        let is_unowned = unsafe { GetWindow(hwnd, GW_OWNER) } == 0;
+        if !is_root || !is_unowned {
+            return 1;
+        }
+
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+            return 1;
+        }
+
+        let width = i64::from(rect.right.saturating_sub(rect.left));
+        let height = i64::from(rect.bottom.saturating_sub(rect.top));
+        let area = width.saturating_mul(height);
+        if area > state.best_area {
+            state.best_hwnd = hwnd;
+            state.best_area = area;
+        }
+
+        1
+    }
+
+    unsafe extern "system" {
+        fn EnumWindows(
+            lpEnumFunc: unsafe extern "system" fn(HWND, LPARAM) -> BOOL,
+            lParam: LPARAM,
+        ) -> BOOL;
+        fn GetCurrentProcessId() -> DWORD;
+        fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
+        fn GetAncestor(hWnd: HWND, gaFlags: u32) -> HWND;
+        fn GetWindow(hWnd: HWND, uCmd: u32) -> HWND;
+        fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
+    }
+
+    let mut state = CollectState {
+        process_id: unsafe { GetCurrentProcessId() },
+        best_hwnd: 0,
+        best_area: 0,
+    };
+
+    unsafe {
+        EnumWindows(enum_collect, &mut state as *mut CollectState as LPARAM);
+    }
+
+    (state.best_hwnd != 0).then_some(state.best_hwnd)
+}
+
+#[cfg(windows)]
+pub fn hide_main_window() {
+    type HWND = isize;
+    type BOOL = i32;
+    const SW_HIDE: i32 = 0;
+
+    unsafe extern "system" {
+        fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
+    }
+
+    let Some(hwnd) = current_process_main_window() else {
+        log::warn!("hide_main_window: could not find current process main window");
+        return;
+    };
+
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn hide_main_window() {
+    // On non-Windows, egui's ViewportCommand::Visible(false) is sufficient.
+}
+
+/// Aggressively bring our window to the foreground on Windows.
+/// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
+/// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
+#[cfg(windows)]
+pub fn force_foreground() {
     type HWND = isize;
     type BOOL = i32;
     type DWORD = u32;
@@ -306,7 +413,6 @@ pub fn force_foreground() {
     const SW_SHOW: i32 = 5;
 
     unsafe extern "system" {
-        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> HWND;
         fn GetForegroundWindow() -> HWND;
         fn SetForegroundWindow(hWnd: HWND) -> BOOL;
         fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
@@ -318,18 +424,10 @@ pub fn force_foreground() {
     }
 
     unsafe {
-        // Find window by Class Name (which is our App ID "Simple Image Viewer")
-        // rather than by Title, because the title changes with i18n or current file name.
-        let class_name: Vec<u16> = OsStr::new("Simple Image Viewer")
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let hwnd = FindWindowW(class_name.as_ptr(), std::ptr::null());
-
-        if hwnd == 0 {
-            log::warn!("force_foreground: could not find window by class name");
+        let Some(hwnd) = current_process_main_window() else {
+            log::warn!("force_foreground: could not find current process main window");
             return;
-        }
+        };
 
         // If minimized, restore it first
         if IsIconic(hwnd) != 0 {
