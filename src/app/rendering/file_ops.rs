@@ -220,7 +220,11 @@ impl ImageViewerApp {
         self.invalidate_view_text_layout();
     }
 
-    pub(crate) fn copy_current_image_to(&mut self, target_dir: std::path::PathBuf) {
+    pub(crate) fn copy_current_image_to(
+        &mut self,
+        target_dir: std::path::PathBuf,
+        overwrite_if_exists: bool,
+    ) {
         if self.image_files.is_empty() {
             return;
         }
@@ -242,7 +246,7 @@ impl ImageViewerApp {
                     .ok_or(crate::app::types::FileOpError::InvalidSource)?;
                 let dest_path = target_dir.join(filename);
 
-                if dest_path.exists() {
+                if dest_path.exists() && !overwrite_if_exists {
                     return Err(crate::app::types::FileOpError::TargetFileExists);
                 }
 
@@ -258,7 +262,11 @@ impl ImageViewerApp {
         });
     }
 
-    pub(crate) fn cut_current_image_to(&mut self, target_dir: std::path::PathBuf) {
+    pub(crate) fn cut_current_image_to(
+        &mut self,
+        target_dir: std::path::PathBuf,
+        overwrite_if_exists: bool,
+    ) {
         if self.image_files.is_empty() {
             return;
         }
@@ -298,7 +306,13 @@ impl ImageViewerApp {
                 let dest_path = target_dir.join(filename);
 
                 if dest_path.exists() {
-                    return Err(crate::app::types::FileOpError::TargetFileExists);
+                    if overwrite_if_exists {
+                        std::fs::remove_file(&dest_path).map_err(|e| {
+                            crate::app::types::FileOpError::MoveFailed(e.to_string())
+                        })?;
+                    } else {
+                        return Err(crate::app::types::FileOpError::TargetFileExists);
+                    }
                 }
 
                 // Try std::fs::rename first (efficient within the same drive)

@@ -182,6 +182,7 @@ impl ImageViewerApp {
                         crate::ui::dialogs::file_copy_cut::State::new(
                             false,
                             self.settings.last_copy_cut_dir.clone(),
+                            self.copy_cut_overwrite_if_exists,
                         ),
                     ));
                 }
@@ -192,6 +193,7 @@ impl ImageViewerApp {
                         crate::ui::dialogs::file_copy_cut::State::new(
                             true,
                             self.settings.last_copy_cut_dir.clone(),
+                            self.copy_cut_overwrite_if_exists,
                         ),
                     ));
                 }

@@ -32,17 +32,19 @@ pub struct State {
     pub input: String,
     pub needs_focus: bool,
     pub is_cut: bool,
+    pub overwrite_if_exists: bool,
     pub error: Option<ValidationError>,
 }
 
 impl State {
-    pub fn new(is_cut: bool, initial_dir: Option<PathBuf>) -> Self {
+    pub fn new(is_cut: bool, initial_dir: Option<PathBuf>, overwrite_if_exists: bool) -> Self {
         Self {
             input: initial_dir
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             needs_focus: true,
             is_cut,
+            overwrite_if_exists,
             error: None,
         }
     }
@@ -52,7 +54,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
     let mut result = ModalResult::Pending;
 
     const DEFAULT_DIALOG_WIDTH: f32 = 440.0;
-    const DEFAULT_DIALOG_HEIGHT: f32 = 170.0;
+    const DEFAULT_DIALOG_HEIGHT: f32 = 200.0;
 
     let title = if state.is_cut {
         t!("file_copy_cut.title_cut").to_string()
@@ -112,6 +114,12 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                 ui.label(RichText::new(err_msg.as_ref()).color(palette.error).small());
             }
 
+            ui.add_space(6.0);
+            ui.checkbox(
+                &mut state.overwrite_if_exists,
+                t!("file_copy_cut.overwrite_if_exists"),
+            );
+
             if ui.input(|i| i.key_pressed(Key::Escape)) {
                 result = ModalResult::Dismissed;
             }
@@ -145,5 +153,6 @@ fn try_confirm(state: &mut State) -> ModalResult {
     ModalResult::Confirmed(ModalAction::FileCopyCut {
         is_cut: state.is_cut,
         target_dir: PathBuf::from(target),
+        overwrite_if_exists: state.overwrite_if_exists,
     })
 }

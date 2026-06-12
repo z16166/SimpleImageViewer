@@ -147,13 +147,18 @@ impl ImageViewerApp {
                     ),
                 ));
             }
-            ModalAction::FileCopyCut { is_cut, target_dir } => {
+            ModalAction::FileCopyCut {
+                is_cut,
+                target_dir,
+                overwrite_if_exists,
+            } => {
+                self.copy_cut_overwrite_if_exists = overwrite_if_exists;
                 self.settings.last_copy_cut_dir = Some(target_dir.clone());
                 self.queue_save();
                 if is_cut {
-                    self.cut_current_image_to(target_dir);
+                    self.cut_current_image_to(target_dir, overwrite_if_exists);
                 } else {
-                    self.copy_current_image_to(target_dir);
+                    self.copy_current_image_to(target_dir, overwrite_if_exists);
                 }
             }
         }

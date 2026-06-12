@@ -68,6 +68,7 @@ pub enum ModalAction {
     FileCopyCut {
         is_cut: bool,
         target_dir: std::path::PathBuf,
+        overwrite_if_exists: bool,
     },
 }
 

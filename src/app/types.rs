@@ -597,6 +597,8 @@ pub struct ImageViewerApp {
     pub(crate) tray_state: Option<TrayState>,
     pub(crate) hidden_to_tray: bool,
     pub(crate) pending_hide_to_tray: bool,
+    /// Session-only preference for the copy/cut dialog overwrite checkbox.
+    pub(crate) copy_cut_overwrite_if_exists: bool,
     pub(crate) explicit_quit: bool,
 }
 

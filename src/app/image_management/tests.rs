@@ -1263,6 +1263,7 @@ fn make_test_app() -> ImageViewerApp {
         tray_state: None,
         hidden_to_tray: false,
         pending_hide_to_tray: false,
+        copy_cut_overwrite_if_exists: false,
     }
 }
 
