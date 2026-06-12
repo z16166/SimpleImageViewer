@@ -97,26 +97,7 @@ impl ImageViewerApp {
                     }
                     Err(err) => {
                         log::error!("Failed to copy {:?}: {:?}", src_path, err);
-                        let err_msg = match err {
-                            crate::app::types::FileOpError::CreateDirFailed(e) => {
-                                t!("file_copy_cut.err_create_dir", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::InvalidSource => {
-                                t!("file_copy_cut.err_invalid_source").to_string()
-                            }
-                            crate::app::types::FileOpError::TargetFileExists => {
-                                t!("file_copy_cut.err_target_exists").to_string()
-                            }
-                            crate::app::types::FileOpError::CopyFailed(e) => {
-                                t!("file_copy_cut.err_copy_failed", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::MoveFailed(e) => {
-                                t!("file_copy_cut.err_move_failed", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::RemoveSourceFailed(e) => {
-                                t!("file_copy_cut.err_remove_source", err = e).to_string()
-                            }
-                        };
+                        let err_msg = err.localized_message();
                         self.active_modal =
                             Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
                                 crate::ui::dialogs::confirm::State::info(
@@ -145,10 +126,27 @@ impl ImageViewerApp {
                             self.file_byte_len_by_index.push(sz);
                         }
 
-                        // Restore viewer state to ensure consistency.
+                        // Restore viewer state and clear caches to ensure consistency.
                         self.set_current_index(original_idx);
+
+                        // Rebuild caches and clear old transform state to avoid rendering glitches
+                        self.texture_cache.clear_all();
+                        self.clear_hdr_image_state();
+                        self.animation_cache.clear();
+                        self.prefetched_tiles.clear();
+
+                        self.animation = None;
+                        self.prev_texture = None;
+                        self.prev_hdr_image = None;
+                        self.prev_transition_rect = None;
+                        self.transition_start = None;
+                        self.current_rotation = 0;
+                        self.set_zoom_factor(1.0);
+                        self.pan_offset = egui::Vec2::ZERO;
+
                         self.generation = self.generation.wrapping_add(1);
                         self.loader.set_generation(self.generation);
+                        self.images_ever_loaded = true; // Mark as loaded so it renders immediately
                         self.loader.request_load(
                             self.current_index,
                             self.generation,
@@ -157,26 +155,7 @@ impl ImageViewerApp {
                         );
                         self.schedule_preloads(true);
 
-                        let err_msg = match err {
-                            crate::app::types::FileOpError::CreateDirFailed(e) => {
-                                t!("file_copy_cut.err_create_dir", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::InvalidSource => {
-                                t!("file_copy_cut.err_invalid_source").to_string()
-                            }
-                            crate::app::types::FileOpError::TargetFileExists => {
-                                t!("file_copy_cut.err_target_exists").to_string()
-                            }
-                            crate::app::types::FileOpError::CopyFailed(e) => {
-                                t!("file_copy_cut.err_copy_failed", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::MoveFailed(e) => {
-                                t!("file_copy_cut.err_move_failed", err = e).to_string()
-                            }
-                            crate::app::types::FileOpError::RemoveSourceFailed(e) => {
-                                t!("file_copy_cut.err_remove_source", err = e).to_string()
-                            }
-                        };
+                        let err_msg = err.localized_message();
                         self.active_modal =
                             Some(crate::ui::dialogs::modal_state::ActiveModal::Confirm(
                                 crate::ui::dialogs::confirm::State::info(

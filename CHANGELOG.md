@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [2.5.1] - 2026-06-12
 
 ### Added
-- **System Tray Support**: Added an option in System settings to minimize the application to the system tray when the window is closed. Features left-click restore, a right-click context menu (Show Window / Exit), and automatic window restoration when opening new images from the file explorer.
+- **System Tray Support**: Added an option in System settings to minimize the application to the system tray when the window is closed. Features left-click restore, a right-click context menu (Show Window / Exit), automatic window restoration when opening new images from the file explorer, and a default global hotkey (`Ctrl + Shift + T`) to toggle tray visibility.
 - **Copy and Cut to Folder**: Easily copy or move the active image to a target directory via the context menu or keyboard shortcuts (`Ctrl + Shift + C` for copy, `Ctrl + Shift + X` for cut). Includes a folder picker dialog that remembers the previously used directory, and automatically updates the viewer's image list when a file is moved.
 
 ## [2.5.0] - 2026-06-11

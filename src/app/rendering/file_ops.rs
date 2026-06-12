@@ -218,6 +218,11 @@ impl ImageViewerApp {
         let src_path = self.image_files[self.current_index].clone();
         let tx = self.file_op_tx.clone();
 
+        // NOTE: Unlike delete or cut, we intentionally do NOT release texture caches,
+        // tile managers, or WIC/memmap handles here. A copy operation only reads the source
+        // file, which is permitted with read-sharing locks on Windows. Dropping resources
+        // here would cause the image viewer to flash blank and force a slow reload,
+        // which would be a poor user experience.
         std::thread::spawn(move || {
             let result = (|| {
                 std::fs::create_dir_all(&target_dir)

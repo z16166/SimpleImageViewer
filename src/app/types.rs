@@ -192,6 +192,29 @@ pub enum FileOpError {
     RemoveSourceFailed(String),
 }
 
+impl FileOpError {
+    pub fn localized_message(&self) -> String {
+        match self {
+            Self::CreateDirFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_create_dir", err = e).to_string()
+            }
+            Self::InvalidSource => rust_i18n::t!("file_copy_cut.err_invalid_source").to_string(),
+            Self::TargetFileExists => rust_i18n::t!("file_copy_cut.err_target_exists").to_string(),
+            Self::CopyFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_copy_failed", err = e).to_string()
+            }
+            Self::MoveFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_move_failed", err = e).to_string()
+            }
+            Self::RemoveSourceFailed(e) => {
+                rust_i18n::t!("file_copy_cut.err_remove_source", err = e).to_string()
+            }
+        }
+    }
+}
+
+// NOTE: This Display implementation is strictly for developer logs and diagnostics.
+// Any user-facing interface error messages MUST retrieve the translation via `localized_message()`.
 impl std::fmt::Display for FileOpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

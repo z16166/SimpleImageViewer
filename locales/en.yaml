@@ -425,6 +425,7 @@ file_copy_cut.err_target_exists: "Target file already exists"
 file_copy_cut.err_copy_failed: "Copy failed: %{err}"
 file_copy_cut.err_move_failed: "Move failed: %{err}"
 file_copy_cut.err_remove_source: "Move succeeded but failed to remove source file: %{err}"
+file_copy_cut.err_not_a_directory: "The target path is a file, not a directory"
 status.copy_success: "Successfully copied image"
 status.cut_success: "Successfully moved image"
 

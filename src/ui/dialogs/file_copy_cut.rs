@@ -26,6 +26,7 @@ pub struct State {
     pub input: String,
     pub needs_focus: bool,
     pub is_cut: bool,
+    pub error: Option<String>,
 }
 
 impl State {
@@ -36,6 +37,7 @@ impl State {
                 .unwrap_or_default(),
             needs_focus: true,
             is_cut,
+            error: None,
         }
     }
 }
@@ -72,12 +74,17 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                         }
                         if let Some(dir) = dialog.pick_folder() {
                             state.input = dir.to_string_lossy().into_owned();
+                            state.error = None;
                         }
                     }
 
                     let text_edit = egui::TextEdit::singleline(&mut state.input)
                         .desired_width(ui.available_width() - 8.0);
                     let resp = ui.add(text_edit);
+
+                    if resp.changed() {
+                        state.error = None;
+                    }
 
                     if state.needs_focus {
                         resp.request_focus();
@@ -89,6 +96,15 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                     }
                 });
             });
+
+            if let Some(ref err) = state.error {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(err)
+                        .color(egui::Color32::from_rgb(255, 100, 100))
+                        .small(),
+                );
+            }
 
             if ui.input(|i| i.key_pressed(Key::Escape)) {
                 result = ModalResult::Dismissed;
@@ -108,15 +124,18 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
     result
 }
 
-fn try_confirm(state: &State) -> ModalResult {
+fn try_confirm(state: &mut State) -> ModalResult {
     let target = state.input.trim();
     if target.is_empty() {
+        state.error = None;
         return ModalResult::Pending;
     }
     let path = std::path::Path::new(target);
     if path.is_file() {
+        state.error = Some(t!("file_copy_cut.err_not_a_directory").to_string());
         return ModalResult::Pending;
     }
+    state.error = None;
     ModalResult::Confirmed(ModalAction::FileCopyCut {
         is_cut: state.is_cut,
         target_dir: PathBuf::from(target),
