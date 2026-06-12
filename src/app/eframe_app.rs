@@ -651,6 +651,59 @@ impl eframe::App for ImageViewerApp {
 }
 
 impl ImageViewerApp {
+    fn build_tray_state(was_maximized: bool) -> Option<super::types::TrayState> {
+        let icon_data = crate::startup::icon::load_icon();
+        let icon =
+            match tray_icon::Icon::from_rgba(icon_data.rgba, icon_data.width, icon_data.height) {
+                Ok(icon) => icon,
+                Err(e) => {
+                    log::error!("Failed to convert tray icon: {:?}", e);
+                    return None;
+                }
+            };
+
+        let show_item =
+            tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
+        let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
+        let show_item_id = show_item.id().clone();
+        let quit_item_id = quit_item.id().clone();
+
+        let tray_menu = tray_icon::menu::Menu::new();
+        let _ = tray_menu.append_items(&[
+            &show_item,
+            &tray_icon::menu::PredefinedMenuItem::separator(),
+            &quit_item,
+        ]);
+
+        match tray_icon::TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip(t!("app.name").to_string())
+            .with_icon(icon)
+            .build()
+        {
+            Ok(t) => Some(super::types::TrayState {
+                _tray_icon: t,
+                show_item_id,
+                quit_item_id,
+                was_maximized,
+            }),
+            Err(e) => {
+                log::error!("Failed to build tray icon: {:?}", e);
+                None
+            }
+        }
+    }
+
+    fn show_main_window_from_tray(ctx: &Context, was_maximized: bool) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        if was_maximized {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        crate::ipc::force_foreground();
+    }
+
     pub(crate) fn minimize_to_tray(&mut self, ctx: &Context) {
         self.explicit_quit = false; // Reset explicit quit flag
         if self.tray_state.is_some() {
@@ -658,70 +711,32 @@ impl ImageViewerApp {
         }
 
         let was_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-
-        let icon_data = crate::startup::icon::load_icon();
-        let tray_icon =
-            match tray_icon::Icon::from_rgba(icon_data.rgba, icon_data.width, icon_data.height) {
-                Ok(icon) => {
-                    let show_item = tray_icon::menu::MenuItem::new(
-                        t!("tray.show_window").to_string(),
-                        true,
-                        None,
-                    );
-                    let quit_item =
-                        tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
-
-                    let show_item_id = show_item.id().clone();
-                    let quit_item_id = quit_item.id().clone();
-
-                    let tray_menu = tray_icon::menu::Menu::new();
-                    let _ = tray_menu.append_items(&[
-                        &show_item,
-                        &tray_icon::menu::PredefinedMenuItem::separator(),
-                        &quit_item,
-                    ]);
-
-                    let tray = tray_icon::TrayIconBuilder::new()
-                        .with_menu(Box::new(tray_menu))
-                        .with_tooltip(t!("app.name").to_string())
-                        .with_icon(icon)
-                        .build();
-
-                    match tray {
-                        Ok(t) => Some(super::types::TrayState {
-                            _tray_icon: t,
-                            show_item_id,
-                            quit_item_id,
-                            was_maximized,
-                        }),
-                        Err(e) => {
-                            log::error!("Failed to build tray icon: {:?}", e);
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to convert tray icon: {:?}", e);
-                    None
-                }
-            };
-
-        if let Some(state) = tray_icon {
+        if let Some(state) = Self::build_tray_state(was_maximized) {
             self.tray_state = Some(state);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+    }
+
+    /// Rebuild the tray icon/menu after locale change. When already minimized to tray,
+    /// replaces the tray in place so the user is not left with a hidden window and no icon.
+    pub(crate) fn refresh_tray_after_language_change(&mut self, ctx: &Context) {
+        let Some(old) = self.tray_state.take() else {
+            return;
+        };
+        let was_maximized = old.was_maximized;
+        match Self::build_tray_state(was_maximized) {
+            Some(state) => self.tray_state = Some(state),
+            None => {
+                log::warn!("Failed to rebuild tray after language change; restoring main window");
+                Self::show_main_window_from_tray(ctx, was_maximized);
+            }
         }
     }
 
     pub(crate) fn restore_from_tray(&mut self, ctx: &Context) {
         self.explicit_quit = false; // Reset explicit quit flag when restoring
         if let Some(state) = self.tray_state.take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            if state.was_maximized {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            crate::ipc::force_foreground();
+            Self::show_main_window_from_tray(ctx, state.was_maximized);
         }
     }
 
