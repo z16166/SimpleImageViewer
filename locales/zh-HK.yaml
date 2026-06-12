@@ -424,6 +424,7 @@ file_copy_cut.err_copy_failed: "複製失敗：%{err}"
 file_copy_cut.err_move_failed: "移動失敗：%{err}"
 file_copy_cut.err_remove_source: "移動成功，但無法刪除來源檔案：%{err}"
 file_copy_cut.err_not_a_directory: "目標路徑是一個檔案，而非目錄"
+file_copy_cut.err_empty_path: "目標路徑不能為空"
 status.copy_success: "複製圖片成功"
 status.cut_success: "移動圖片成功"
 

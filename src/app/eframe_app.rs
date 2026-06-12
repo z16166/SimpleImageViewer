@@ -155,6 +155,27 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
+        // Process IPC messages (needs to happen before minimized check to wake up immediately)
+        while let Ok(msg) = self.ipc_rx.try_recv() {
+            if self.tray_state.is_some() {
+                self.restore_from_tray(ctx);
+            }
+            match msg {
+                IpcMessage::OpenImage(path) => {
+                    log::info!("IPC: open image {:?}", path);
+                    self.handle_ipc_open_image(path, ctx, false);
+                }
+                IpcMessage::OpenImageNoRecursive(path) => {
+                    log::info!("IPC: open image (no-recursive) {:?}", path);
+                    self.handle_ipc_open_image(path, ctx, true);
+                }
+                IpcMessage::Focus => {
+                    log::info!("IPC received empty ping, requesting window focus");
+                    Self::focus_and_unminimize_window(ctx);
+                }
+            }
+        }
+
         // Intercept close request if minimize to tray is enabled and not an explicit quit
         if ctx.input(|i| i.viewport().close_requested()) && !self.explicit_quit {
             if self.settings.minimize_to_tray_on_close && self.tray_state.is_none() {
@@ -242,27 +263,6 @@ impl eframe::App for ImageViewerApp {
             self.music_hud_last_activity = Instant::now();
         }
 
-        // Process IPC messages
-        while let Ok(msg) = self.ipc_rx.try_recv() {
-            if self.tray_state.is_some() {
-                self.restore_from_tray(ctx);
-            }
-            match msg {
-                IpcMessage::OpenImage(path) => {
-                    log::info!("IPC: open image {:?}", path);
-                    self.handle_ipc_open_image(path, ctx, false);
-                }
-                IpcMessage::OpenImageNoRecursive(path) => {
-                    log::info!("IPC: open image (no-recursive) {:?}", path);
-                    self.handle_ipc_open_image(path, ctx, true);
-                }
-                IpcMessage::Focus => {
-                    log::info!("IPC received empty ping, requesting window focus");
-                    Self::focus_and_unminimize_window(ctx);
-                }
-            }
-        }
-
         if let Some(rx) = self.font_families_rx.as_ref() {
             match rx.try_recv() {
                 Ok(families) => {
@@ -318,7 +318,8 @@ impl eframe::App for ImageViewerApp {
         let dt = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
 
-        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        let minimized =
+            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || self.tray_state.is_some();
 
         if minimized {
             // Pause the auto-switch timer while minimized by offsetting its start

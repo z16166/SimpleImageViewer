@@ -424,6 +424,7 @@ file_copy_cut.err_copy_failed: "复制失败：%{err}"
 file_copy_cut.err_move_failed: "移动失败：%{err}"
 file_copy_cut.err_remove_source: "移动成功，但无法删除源文件：%{err}"
 file_copy_cut.err_not_a_directory: "目标路径是一个文件，而非目录"
+file_copy_cut.err_empty_path: "目标路径不能为空"
 status.copy_success: "复制图片成功"
 status.cut_success: "移动图片成功"
 

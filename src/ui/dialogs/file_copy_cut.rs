@@ -22,11 +22,17 @@ use eframe::egui::{self, Context, Key, RichText};
 use rust_i18n::t;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationError {
+    EmptyPath,
+    NotADirectory,
+}
+
 pub struct State {
     pub input: String,
     pub needs_focus: bool,
     pub is_cut: bool,
-    pub error: Option<String>,
+    pub error: Option<ValidationError>,
 }
 
 impl State {
@@ -46,7 +52,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
     let mut result = ModalResult::Pending;
 
     const DEFAULT_DIALOG_WIDTH: f32 = 440.0;
-    const DEFAULT_DIALOG_HEIGHT: f32 = 150.0;
+    const DEFAULT_DIALOG_HEIGHT: f32 = 170.0;
 
     let title = if state.is_cut {
         t!("file_copy_cut.title_cut").to_string()
@@ -79,7 +85,7 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                     }
 
                     let text_edit = egui::TextEdit::singleline(&mut state.input)
-                        .desired_width(ui.available_width() - 8.0);
+                        .desired_width(ui.available_width() - ui.spacing().item_spacing.x);
                     let resp = ui.add(text_edit);
 
                     if resp.changed() {
@@ -97,13 +103,13 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
                 });
             });
 
-            if let Some(ref err) = state.error {
+            if let Some(err) = state.error {
+                let err_msg = match err {
+                    ValidationError::EmptyPath => t!("file_copy_cut.err_empty_path"),
+                    ValidationError::NotADirectory => t!("file_copy_cut.err_not_a_directory"),
+                };
                 ui.add_space(4.0);
-                ui.label(
-                    RichText::new(err)
-                        .color(egui::Color32::from_rgb(255, 100, 100))
-                        .small(),
-                );
+                ui.label(RichText::new(err_msg.as_ref()).color(palette.error).small());
             }
 
             if ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -127,12 +133,12 @@ pub fn show(state: &mut State, ctx: &Context, palette: &ThemePalette) -> ModalRe
 fn try_confirm(state: &mut State) -> ModalResult {
     let target = state.input.trim();
     if target.is_empty() {
-        state.error = None;
+        state.error = Some(ValidationError::EmptyPath);
         return ModalResult::Pending;
     }
     let path = std::path::Path::new(target);
     if path.is_file() {
-        state.error = Some(t!("file_copy_cut.err_not_a_directory").to_string());
+        state.error = Some(ValidationError::NotADirectory);
         return ModalResult::Pending;
     }
     state.error = None;

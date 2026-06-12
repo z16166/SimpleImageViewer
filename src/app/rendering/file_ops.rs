@@ -104,6 +104,11 @@ impl ImageViewerApp {
 
         let original_index = self.current_index;
         let path_to_delete = self.image_files[original_index].clone();
+        let original_size = if original_index < self.file_byte_len_by_index.len() {
+            self.file_byte_len_by_index[original_index]
+        } else {
+            0
+        };
         self.invalidate_random_slideshow_order();
 
         // Final sanity check: make sure file still exists
@@ -142,6 +147,7 @@ impl ImageViewerApp {
                 let _ = tx.send(crate::app::FileOpResult::Delete(
                     path_to_delete,
                     original_index,
+                    original_size,
                     result,
                 ));
             });
@@ -215,6 +221,7 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             return;
         }
+        // CRITICAL: Clone the path on the main UI thread before spawning to avoid lifetimes/borrowing issues across thread boundaries
         let src_path = self.image_files[self.current_index].clone();
         let tx = self.file_op_tx.clone();
 
@@ -251,7 +258,14 @@ impl ImageViewerApp {
             return;
         }
         let original_index = self.current_index;
+        // CRITICAL: Clone the path on the main UI thread before spawning to avoid lifetimes/borrowing issues across thread boundaries
         let src_path = self.image_files[original_index].clone();
+        // Fetch the file size on the main thread so we can restore it on rollback without calling std::fs::metadata
+        let original_size = if original_index < self.file_byte_len_by_index.len() {
+            self.file_byte_len_by_index[original_index]
+        } else {
+            0
+        };
         self.invalidate_random_slideshow_order();
 
         // CRITICAL: Drop all resources holding the file before move
@@ -298,6 +312,7 @@ impl ImageViewerApp {
                 src_path,
                 target_dir,
                 original_index,
+                original_size,
                 result,
             ));
         });
