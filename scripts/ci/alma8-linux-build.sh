@@ -32,8 +32,8 @@ PKGS=(
   alsa-lib-devel libX11-devel libxcb-devel libxkbcommon-devel
   libXcursor-devel libXrandr-devel libXi-devel mesa-libGL-devel
   libwayland-client-devel libwayland-cursor-devel wayland-devel
-  # tray-icon (libappindicator + GTK3 status icon); dynamic libs at runtime, -devel for build
-  gtk3-devel libappindicator-gtk3-devel
+  # tray-icon -> libappindicator + GTK3 (GDK/Pango/Cairo/etc.); dynamically linked at runtime
+  glib2-devel cairo-devel pango-devel gdk-pixbuf2-devel atk-devel gtk3-devel libappindicator-gtk3-devel
   fontconfig-devel freetype-devel expat-devel zlib-devel gawk
   autoconf autoconf-archive automake libtool libtool-ltdl-devel gettext-devel m4 flex bison texinfo
   libatomic openssl-devel perl
@@ -259,7 +259,11 @@ if [[ ! -d "${VCPKG_PC}" ]]; then
   exit 1
 fi
 
-SYS_PC="/usr/lib64/pkgconfig:/usr/share/pkgconfig"
+# .pc files for GTK may be under lib64 (x86_64) or lib (some aarch64 layouts).
+SYS_PC_DIRS=(/usr/share/pkgconfig)
+[[ -d /usr/lib64/pkgconfig ]] && SYS_PC_DIRS=(/usr/lib64/pkgconfig "${SYS_PC_DIRS[@]}")
+[[ -d /usr/lib/pkgconfig ]] && SYS_PC_DIRS=(/usr/lib/pkgconfig "${SYS_PC_DIRS[@]}")
+SYS_PC="$(IFS=:; echo "${SYS_PC_DIRS[*]}")"
 export PKG_CONFIG_PATH="${VCPKG_PC}:${SYS_PC}"
 export PKG_CONFIG_LIBDIR="${PKG_CONFIG_PATH}"
 export PKG_CONFIG_ALLOW_CROSS=1
@@ -267,6 +271,15 @@ export PKG_CONFIG_ALLOW_CROSS=1
 if [[ "${RUST_TRIPLE}" == x86_64-* ]]; then
   export PKG_CONFIG_ALL_STATIC=1
 fi
+
+for _pc in gdk-3.0 gtk+-3.0 pango gdk-pixbuf-2.0; do
+  if ! pkg-config --exists "${_pc}"; then
+    echo "::error::missing pkg-config module ${_pc} (GTK tray deps; arch=$(uname -m))"
+    echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}"
+    pkg-config --print-search-path || true
+    exit 1
+  fi
+done
 
 # Monkey's Audio SDK (non-Windows path — was host step before)
 MONKEY_VERSION="${MONKEY_SDK_VERSION:-1293}"
