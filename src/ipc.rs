@@ -295,7 +295,7 @@ fn cleanup_stale_socket() {
 /// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
 /// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
 #[cfg(windows)]
-fn current_process_main_window() -> Option<isize> {
+fn current_process_main_window_with_options(visible_only: bool) -> Option<isize> {
     type HWND = isize;
     type BOOL = i32;
     type DWORD = u32;
@@ -317,6 +317,7 @@ fn current_process_main_window() -> Option<isize> {
         process_id: DWORD,
         best_hwnd: HWND,
         best_area: i64,
+        visible_only: bool,
     }
 
     unsafe extern "system" fn enum_collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -332,6 +333,10 @@ fn current_process_main_window() -> Option<isize> {
         let is_root = unsafe { GetAncestor(hwnd, GA_ROOT) } == hwnd;
         let is_unowned = unsafe { GetWindow(hwnd, GW_OWNER) } == 0;
         if !is_root || !is_unowned {
+            return 1;
+        }
+
+        if state.visible_only && unsafe { IsWindowVisible(hwnd) } == 0 {
             return 1;
         }
 
@@ -361,12 +366,14 @@ fn current_process_main_window() -> Option<isize> {
         fn GetAncestor(hWnd: HWND, gaFlags: u32) -> HWND;
         fn GetWindow(hWnd: HWND, uCmd: u32) -> HWND;
         fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
+        fn IsWindowVisible(hWnd: HWND) -> BOOL;
     }
 
     let mut state = CollectState {
         process_id: unsafe { GetCurrentProcessId() },
         best_hwnd: 0,
         best_area: 0,
+        visible_only,
     };
 
     unsafe {
@@ -374,6 +381,16 @@ fn current_process_main_window() -> Option<isize> {
     }
 
     (state.best_hwnd != 0).then_some(state.best_hwnd)
+}
+
+#[cfg(windows)]
+fn current_process_main_window() -> Option<isize> {
+    current_process_main_window_with_options(false)
+}
+
+#[cfg(windows)]
+fn current_process_visible_main_window() -> Option<isize> {
+    current_process_main_window_with_options(true)
 }
 
 #[cfg(windows)]
@@ -401,56 +418,102 @@ pub fn hide_main_window() {
     // On non-Windows, egui's ViewportCommand::Visible(false) is sufficient.
 }
 
-/// Aggressively bring our window to the foreground on Windows.
-/// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
-/// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
+/// Bring an already-visible main window to the foreground. No-op when hidden to tray.
 #[cfg(windows)]
-pub fn force_foreground() {
+pub fn force_foreground_if_visible() {
+    let Some(hwnd) = current_process_visible_main_window() else {
+        return;
+    };
+    force_foreground_hwnd(hwnd);
+}
+
+#[cfg(not(windows))]
+pub fn force_foreground_if_visible() {}
+
+#[cfg(windows)]
+fn force_foreground_hwnd(hwnd: isize) {
     type HWND = isize;
     type BOOL = i32;
     type DWORD = u32;
+    type UINT = u32;
     const SW_RESTORE: i32 = 9;
     const SW_SHOW: i32 = 5;
+    const SWP_NOMOVE: UINT = 0x0002;
+    const SWP_NOSIZE: UINT = 0x0001;
+    const SWP_SHOWWINDOW: UINT = 0x0040;
+    const HWND_TOP: HWND = 0;
 
     unsafe extern "system" {
         fn GetForegroundWindow() -> HWND;
         fn SetForegroundWindow(hWnd: HWND) -> BOOL;
+        fn SetActiveWindow(hWnd: HWND) -> HWND;
         fn ShowWindow(hWnd: HWND, nCmdShow: i32) -> BOOL;
         fn IsIconic(hWnd: HWND) -> BOOL;
         fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: *mut DWORD) -> DWORD;
-        fn GetCurrentThreadId() -> DWORD;
         fn AttachThreadInput(idAttach: DWORD, idAttachTo: DWORD, fAttach: BOOL) -> BOOL;
         fn BringWindowToTop(hWnd: HWND) -> BOOL;
+        fn SetWindowPos(
+            hWnd: HWND,
+            hWndInsertAfter: HWND,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: UINT,
+        ) -> BOOL;
+        fn SwitchToThisWindow(hWnd: HWND, fAltTab: BOOL);
     }
 
     unsafe {
-        let Some(hwnd) = current_process_main_window() else {
-            log::warn!("force_foreground: could not find current process main window");
-            return;
-        };
-
-        // If minimized, restore it first
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         } else {
             ShowWindow(hwnd, SW_SHOW);
         }
 
-        // Attach to the foreground thread to gain permission
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+
         let fg_hwnd = GetForegroundWindow();
         let fg_thread = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
-        let our_thread = GetCurrentThreadId();
+        let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+        let attached = fg_thread != 0 && fg_thread != target_thread;
+        if attached {
+            AttachThreadInput(fg_thread, target_thread, 1);
+        }
 
-        if fg_thread != our_thread && fg_thread != 0 {
-            AttachThreadInput(our_thread, fg_thread, 1);
-            BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
-            AttachThreadInput(our_thread, fg_thread, 0);
-        } else {
-            BringWindowToTop(hwnd);
-            SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+        SetActiveWindow(hwnd);
+        let foreground_set = SetForegroundWindow(hwnd) != 0;
+
+        if attached {
+            AttachThreadInput(fg_thread, target_thread, 0);
+        }
+
+        if !foreground_set || GetForegroundWindow() != hwnd {
+            SwitchToThisWindow(hwnd, 1);
         }
     }
+}
+
+/// Aggressively bring our window to the foreground on Windows.
+/// Uses the AttachThreadInput trick to bypass the OS foreground-lock restriction.
+/// On non-Windows platforms, this is a no-op (egui's Focus command suffices).
+#[cfg(windows)]
+pub fn force_foreground() {
+    let Some(hwnd) = current_process_visible_main_window().or_else(current_process_main_window)
+    else {
+        log::warn!("force_foreground: could not find current process main window");
+        return;
+    };
+    force_foreground_hwnd(hwnd);
 }
 
 #[cfg(not(windows))]

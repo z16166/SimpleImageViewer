@@ -1263,6 +1263,7 @@ fn make_test_app() -> ImageViewerApp {
         tray_state: None,
         hidden_to_tray: false,
         pending_hide_to_tray: false,
+        tray_cmd_rx: crossbeam_channel::never(),
         copy_cut_overwrite_if_exists: false,
     }
 }

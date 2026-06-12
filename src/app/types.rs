@@ -597,6 +597,7 @@ pub struct ImageViewerApp {
     pub(crate) tray_state: Option<TrayState>,
     pub(crate) hidden_to_tray: bool,
     pub(crate) pending_hide_to_tray: bool,
+    pub(crate) tray_cmd_rx: crossbeam_channel::Receiver<crate::app::tray_handlers::TrayCommand>,
     /// Session-only preference for the copy/cut dialog overwrite checkbox.
     pub(crate) copy_cut_overwrite_if_exists: bool,
     pub(crate) explicit_quit: bool,
@@ -604,8 +605,6 @@ pub struct ImageViewerApp {
 
 pub(crate) struct TrayState {
     pub(crate) _tray_icon: tray_icon::TrayIcon,
-    pub(crate) show_item_id: tray_icon::menu::MenuId,
-    pub(crate) quit_item_id: tray_icon::menu::MenuId,
     pub(crate) was_maximized: bool,
 }
 /// Holds animation frame data waiting to be uploaded to GPU across multiple frames.

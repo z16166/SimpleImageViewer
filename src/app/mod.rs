@@ -31,6 +31,7 @@ mod hotkeys_ui;
 mod metadata_extract;
 mod pixel_inspector_ui;
 mod preload;
+mod tray_handlers;
 mod types;
 
 pub use types::{FileOpResult, HardwareTier, ImageViewerApp};

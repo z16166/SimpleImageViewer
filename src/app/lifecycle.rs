@@ -51,6 +51,9 @@ impl ImageViewerApp {
             // However, setup_fonts will have at least loaded CJK as fallback.
         }
 
+        let tray_cmd_rx =
+            crate::app::tray_handlers::install_tray_event_handlers(cc.egui_ctx.clone());
+
         let (save_tx, save_rx) = crossbeam_channel::unbounded::<Settings>();
         let (save_error_tx, save_error_rx) = crossbeam_channel::unbounded::<String>();
         let saver_res = std::thread::Builder::new()
@@ -527,6 +530,7 @@ impl ImageViewerApp {
             tray_state: None,
             hidden_to_tray: false,
             pending_hide_to_tray: false,
+            tray_cmd_rx,
             copy_cut_overwrite_if_exists: false,
             explicit_quit: false,
             settings,
