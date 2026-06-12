@@ -316,4 +316,19 @@ mod tests {
         assert!(!should_show_loading_hint(0, true, false));
         assert!(!should_show_loading_hint(0, false, true));
     }
+
+    #[test]
+    fn test_validation_error_enum() {
+        use crate::ui::dialogs::file_copy_cut::ValidationError;
+        let err1 = ValidationError::EmptyPath;
+        let err2 = ValidationError::NotADirectory;
+        assert_ne!(err1, err2);
+    }
+
+    #[test]
+    fn test_file_op_error_localization() {
+        use crate::app::types::FileOpError;
+        let msg = FileOpError::InvalidSource.localized_message();
+        assert!(!msg.is_empty());
+    }
 }

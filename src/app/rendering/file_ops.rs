@@ -3,6 +3,9 @@ use crate::ui::dialogs::modal_state::ActiveModal;
 use eframe::egui::{self, Vec2};
 use rust_i18n::t;
 
+const DELETE_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+const CUT_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl ImageViewerApp {
     pub(crate) fn print_image(&mut self, ctx: &egui::Context, mode: crate::print::PrintMode) {
         use crate::print::{PrintJob, PrintMode, spawn_print_job};
@@ -136,7 +139,7 @@ impl ImageViewerApp {
 
             std::thread::spawn(move || {
                 // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(DELETE_FLUSH_DELAY);
 
                 let result = if permanent {
                     std::fs::remove_file(&path_to_delete).map_err(|e| e.to_string())
@@ -144,12 +147,12 @@ impl ImageViewerApp {
                     trash::delete(&path_to_delete).map_err(|e| e.to_string())
                 };
 
-                let _ = tx.send(crate::app::FileOpResult::Delete(
-                    path_to_delete,
+                let _ = tx.send(crate::app::FileOpResult::Delete {
+                    path: path_to_delete,
                     original_index,
                     original_size,
                     result,
-                ));
+                });
             });
 
             self.image_files.remove(original_index);
@@ -282,7 +285,7 @@ impl ImageViewerApp {
         let tx = self.file_op_tx.clone();
         std::thread::spawn(move || {
             // Yield briefly to give the OS a moment to flush handles (especially memory mapped files)
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(CUT_FLUSH_DELAY);
 
             let result = (|| {
                 std::fs::create_dir_all(&target_dir)
@@ -308,13 +311,13 @@ impl ImageViewerApp {
                 Ok(())
             })();
 
-            let _ = tx.send(crate::app::FileOpResult::CutTo(
+            let _ = tx.send(crate::app::FileOpResult::CutTo {
                 src_path,
                 target_dir,
                 original_index,
                 original_size,
                 result,
-            ));
+            });
         });
 
         // Remove from memory list immediately

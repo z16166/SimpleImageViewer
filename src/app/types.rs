@@ -229,7 +229,12 @@ impl std::fmt::Display for FileOpError {
 }
 
 pub enum FileOpResult {
-    Delete(PathBuf, usize, u64, Result<(), String>),
+    Delete {
+        path: PathBuf,
+        original_index: usize,
+        original_size: u64,
+        result: Result<(), String>,
+    },
     Exif(PathBuf, Option<Vec<(String, String)>>),
     Xmp(PathBuf, Option<(Vec<(String, String)>, String)>),
     Wallpaper {
@@ -238,7 +243,13 @@ pub enum FileOpResult {
         supports_per_monitor: bool,
     },
     CopyTo(PathBuf, PathBuf, Result<(), FileOpError>),
-    CutTo(PathBuf, PathBuf, usize, u64, Result<(), FileOpError>),
+    CutTo {
+        src_path: PathBuf,
+        target_dir: PathBuf,
+        original_index: usize,
+        original_size: u64,
+        result: Result<(), FileOpError>,
+    },
 }
 
 /// Work for the single context-menu background thread (EXIF / XMP / wallpaper introspection).

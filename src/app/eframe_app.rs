@@ -330,6 +330,10 @@ impl eframe::App for ImageViewerApp {
             // Limit background processing while hidden
             self.process_music_scan_results(); // Allow music to start if scanning finishes
 
+            // Process keyboard input (like Ctrl+Shift+T hotkey toggle) and file operation results even when minimized/in tray
+            self.handle_keyboard(ctx);
+            self.process_file_op_results();
+
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
             return;
