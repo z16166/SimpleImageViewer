@@ -133,14 +133,15 @@ fn read_green_plane(c: i32, r: i32) -> f32 {
 }
 
 fn apply_rgb_cam(rgb: vec3<f32>) -> vec3<f32> {
-    return max(
-        vec3<f32>(
-            uniforms.rgb_cam0.x * rgb.r + uniforms.rgb_cam0.y * rgb.g + uniforms.rgb_cam0.z * rgb.b,
-            uniforms.rgb_cam1.x * rgb.r + uniforms.rgb_cam1.y * rgb.g + uniforms.rgb_cam1.z * rgb.b,
-            uniforms.rgb_cam2.x * rgb.r + uniforms.rgb_cam2.y * rgb.g + uniforms.rgb_cam2.z * rgb.b,
-        ),
-        vec3<f32>(0.0),
+    return vec3<f32>(
+        uniforms.rgb_cam0.x * rgb.r + uniforms.rgb_cam0.y * rgb.g + uniforms.rgb_cam0.z * rgb.b,
+        uniforms.rgb_cam1.x * rgb.r + uniforms.rgb_cam1.y * rgb.g + uniforms.rgb_cam1.z * rgb.b,
+        uniforms.rgb_cam2.x * rgb.r + uniforms.rgb_cam2.y * rgb.g + uniforms.rgb_cam2.z * rgb.b,
     );
+}
+
+fn libraw_clip_channel(v: f32) -> f32 {
+    return f32(clamp(i32(v), 0, 65535));
 }
 
 // LibRaw ppg pass 1: fill green plane [1].
@@ -303,7 +304,13 @@ fn cs_ppg_rgb(@builtin(global_invocation_id) gid: vec3<u32>) {
         rgb.b = textureLoad(b_at_green, vec2<i32>(col, row)).r;
     }
 
-    rgb = apply_rgb_cam(rgb) * uniforms.output_scale * uniforms.scene_color_scale.xyz;
+    rgb = apply_rgb_cam(rgb);
+    rgb = vec3<f32>(
+        libraw_clip_channel(rgb.r),
+        libraw_clip_channel(rgb.g),
+        libraw_clip_channel(rgb.b),
+    );
+    rgb = rgb * uniforms.output_scale * uniforms.scene_color_scale.xyz;
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 
     textureStore(output_texture, vec2<i32>(col, row), vec4<f32>(rgb, 1.0));
@@ -896,19 +903,22 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
     let apply_rgb_cam = |rgb: [f32; 3]| -> [f32; 3] {
         let m = &source.rgb_cam;
         [
-            (m[0] * rgb[0] + m[1] * rgb[1] + m[2] * rgb[2]).max(0.0),
-            (m[4] * rgb[0] + m[5] * rgb[1] + m[6] * rgb[2]).max(0.0),
-            (m[8] * rgb[0] + m[9] * rgb[1] + m[10] * rgb[2]).max(0.0),
+            m[0] * rgb[0] + m[1] * rgb[1] + m[2] * rgb[2],
+            m[4] * rgb[0] + m[5] * rgb[1] + m[6] * rgb[2],
+            m[8] * rgb[0] + m[9] * rgb[1] + m[10] * rgb[2],
         ]
     };
+    let clip = |v: f32| (v as i32).clamp(0, 65535) as f32;
     for row in 0..source.height as i32 {
         for col in 0..source.width as i32 {
             let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, &rb_plane, col, row);
             let linear = apply_rgb_cam(rgb);
             let i = (row as usize * w + col as usize) * 4;
-            out[i] = (linear[0] * output_scale * source.scene_color_scale[0]).clamp(0.0, 1.0);
-            out[i + 1] = (linear[1] * output_scale * source.scene_color_scale[1]).clamp(0.0, 1.0);
-            out[i + 2] = (linear[2] * output_scale * source.scene_color_scale[2]).clamp(0.0, 1.0);
+            out[i] = (clip(linear[0]) * output_scale * source.scene_color_scale[0]).clamp(0.0, 1.0);
+            out[i + 1] =
+                (clip(linear[1]) * output_scale * source.scene_color_scale[1]).clamp(0.0, 1.0);
+            out[i + 2] =
+                (clip(linear[2]) * output_scale * source.scene_color_scale[2]).clamp(0.0, 1.0);
             out[i + 3] = 1.0;
         }
     }
@@ -946,6 +956,14 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn calibrate_scene_color_scale(
+        path: &Path,
+        source: &crate::hdr::types::RawGpuSource,
+    ) -> [f32; 3] {
+        crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, source)
+            .expect("scene color scale")
+    }
+
     #[test]
     fn raw_demosaic_compute_shader_parses_as_wgsl() {
         naga::front::wgsl::parse_str(RAW_DEMOSAIC_COMPUTE_SHADER)
@@ -965,9 +983,7 @@ mod tests {
         let mut source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
             .expect("extract gpu source");
-        source.scene_color_scale =
-            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
-                .expect("scene color scale");
+        source.scene_color_scale = calibrate_scene_color_scale(path, &source);
         eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
         let w = source.width as usize;
         let h = source.height as usize;
@@ -1056,9 +1072,7 @@ mod tests {
         let mut source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
             .expect("extract gpu source");
-        source.scene_color_scale =
-            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
-                .expect("scene color scale");
+        source.scene_color_scale = calibrate_scene_color_scale(path, &source);
         eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
         let w = source.width as usize;
         let h = source.height as usize;
@@ -1177,9 +1191,7 @@ mod tests {
         let mut source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
             .expect("extract gpu source");
-        source.scene_color_scale =
-            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
-                .expect("scene color scale");
+        source.scene_color_scale = calibrate_scene_color_scale(path, &source);
         eprintln!("canon 40d scene_color_scale={:?}", source.scene_color_scale);
         eprintln!(
             "canon 40d source meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?}",
@@ -1241,6 +1253,12 @@ mod tests {
                 ours_g / n,
                 ours_b / n,
             );
+            assert!(
+                (ours_r / n - lr_r / n).abs() < 0.5
+                    && (ours_g / n - lr_g / n).abs() < 0.5
+                    && (ours_b / n - lr_b / n).abs() < 0.5,
+                "GPU PPG demosaic camera counts must match LibRaw before rgb_cam"
+            );
         }
         let gpu_path = cpu_demosaic_ppg_scene_linear(&source);
         let (gr, gg, gb) = center_mean_rgba(&gpu_path, w, h);
@@ -1249,18 +1267,22 @@ mod tests {
             gr / gb.max(1e-9)
         );
 
-        let hdr = {
+        let hdr_ppg = {
             let mut develop_processor =
                 crate::raw_processor::RawProcessor::new().expect("libraw init");
             develop_processor.open(path).expect("libraw open");
             develop_processor
-                .develop_scene_linear_hdr()
-                .expect("develop_scene_linear_hdr")
+                .develop_scene_linear_hdr_with_qual(false, 2)
+                .expect("develop PPG")
         };
-        let (cr, cg, cb) = center_mean_rgba(hdr.rgba_f32.as_slice(), w, h);
+        let (cr, cg, cb) = center_mean_rgba(hdr_ppg.rgba_f32.as_slice(), w, h);
         eprintln!(
-            "canon 40d libraw cpu (AHD) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
+            "canon 40d libraw cpu (PPG) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
             cr / cb.max(1e-9)
+        );
+        assert!(
+            (gr - cr).abs() < 0.01 && (gg - cg).abs() < 0.01 && (gb - cb).abs() < 0.01,
+            "GPU PPG path must match LibRaw PPG develop at center"
         );
         let hdr_ppg_no_ab = {
             let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");

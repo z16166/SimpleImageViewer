@@ -109,6 +109,22 @@ unsafe extern "C" {
         black: *mut c_int,
         maximum: *mut c_int,
     );
+    pub fn siv_libraw_get_color_diag(
+        data: *mut libraw_data_t,
+        black: *mut c_int,
+        maximum: *mut c_int,
+        data_maximum: *mut c_int,
+        cblack0_3: *mut c_uint,
+        cblack4: *mut c_uint,
+        cblack5: *mut c_uint,
+        pre_mul: *mut c_float,
+        cam_mul: *mut c_float,
+    );
+    pub fn siv_libraw_raw_pixel_at(
+        data: *mut libraw_data_t,
+        row: c_uint,
+        col: c_uint,
+    ) -> c_ushort;
     pub fn siv_libraw_get_margins(
         data: *mut libraw_data_t,
         left_margin: *mut c_int,

@@ -307,9 +307,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     );
                     binding.baked_raw_demosaic_key = Some(image_key);
                     binding.baked_raw_demosaic_method = Some(source.demosaic_method);
-                    if binding.bind_group.is_none() {
-                        return compose_command_buffers;
-                    }
                 } else {
                     log::warn!(
                         "[HDR] GPU RAW demosaicing unavailable; falling back to CPU placeholder"
@@ -362,9 +359,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     ));
                     binding.baked_jpeg_image_key = Some(image_key);
                     binding.baked_jpeg_weight_bits = Some(target_capacity_bits);
-                    if binding.bind_group.is_none() {
-                        return compose_command_buffers;
-                    }
                 } else {
                     log::debug!(
                         "[HDR] ISO gain-map compose path=CPU size={}x{} gain={}x{} target_capacity={:.3} weight={:.3}",
@@ -477,9 +471,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         }
                         binding.baked_apple_image_key = Some(image_key);
                         binding.baked_apple_weight_bits = Some(target_capacity_bits);
-                        if binding.bind_group.is_none() {
-                            return compose_command_buffers;
-                        }
                     }
                 } else {
                     // CPU fallback composes synchronously in the render callback; large images can

@@ -300,6 +300,70 @@ impl RawProcessor {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_color_diag_after_unpack(
+        &self,
+    ) -> (
+        i32,
+        i32,
+        i32,
+        [u32; 4],
+        u32,
+        u32,
+        [f32; 4],
+        [f32; 4],
+        [f32; 4],
+        [f32; 4],
+    ) {
+        let mut black = 0i32;
+        let mut maximum = 0i32;
+        let mut data_maximum = 0i32;
+        let mut cblack = [0u32; 4];
+        let mut cblack4 = 0u32;
+        let mut cblack5 = 0u32;
+        let mut pre_mul = [0f32; 4];
+        let mut cam_mul = [0f32; 4];
+        let mut gpu_cblack = [0f32; 4];
+        let mut gpu_scale = [0f32; 4];
+        let mut rgb_cam = [0f32; 12];
+        unsafe {
+            ffi::siv_libraw_get_color_diag(
+                self.data,
+                &mut black,
+                &mut maximum,
+                &mut data_maximum,
+                cblack.as_mut_ptr(),
+                &mut cblack4,
+                &mut cblack5,
+                pre_mul.as_mut_ptr(),
+                cam_mul.as_mut_ptr(),
+            );
+            ffi::siv_libraw_get_gpu_color_params(
+                self.data,
+                rgb_cam.as_mut_ptr(),
+                gpu_cblack.as_mut_ptr(),
+                gpu_scale.as_mut_ptr(),
+            );
+        }
+        (
+            black,
+            maximum,
+            data_maximum,
+            cblack,
+            cblack4,
+            cblack5,
+            pre_mul,
+            cam_mul,
+            gpu_cblack,
+            gpu_scale,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_raw_pixel_at(&self, row: u32, col: u32) -> u16 {
+        unsafe { ffi::siv_libraw_raw_pixel_at(self.data, row, col) }
+    }
+
     pub fn extract_raw_gpu_source(
         &mut self,
         demosaic_method: crate::settings::RawDemosaicMethod,
@@ -377,14 +441,11 @@ impl RawProcessor {
             );
         }
 
-        // Pixels already include LibRaw raw2image + scale_colors (incl. white[][] WB).
-        // Since scale_colors scales the pixels without subtracting the black level,
-        // we must subtract the scaled black level on the GPU.
-        let mut black_level = [0.0f32; 4];
-        for c in 0..4 {
-            black_level[c] = _cblack[c] * _cfa_scale[c];
-        }
+        // CFA buffer is post raw2image_ex + scale_colors (same as CPU dcraw_process).
+        // Do not subtract black or re-apply cfa_scale on GPU.
+        let black_level = [0.0f32; 4];
         let cfa_scale = [1.0f32; 4];
+        let _ = (_cblack, _cfa_scale, black);
 
         log::debug!(
             "[Loader] RAW GPU source extraction parameters: maximum={}, black_level={:?}, cfa_scale={:?}, rgb_cam={:?}, bayer_pattern={:?}",
@@ -412,7 +473,11 @@ impl RawProcessor {
         })
     }
 
-    /// Per-channel scale toward LibRaw scene-linear develop, softened to avoid blue cast.
+    fn libraw_clip_channel(v: f32) -> f32 {
+        (v as i32).clamp(0, 65535) as f32
+    }
+
+    /// Per-channel scale toward LibRaw PPG develop (post-scale_colors counts, int CLIP matrix).
     pub fn compute_ppg_scene_color_scale(
         path: &std::path::Path,
         source: &crate::hdr::types::RawGpuSource,
@@ -426,9 +491,6 @@ impl RawProcessor {
         let mut matrix = RawProcessor::new().ok_or("libraw init failed")?;
         matrix.open(path)?;
         let counts = matrix.libraw_ppg_camera_rgb_counts()?;
-        let br = source.black_level[0];
-        let bg = (source.black_level[1] + source.black_level[3]) * 0.5;
-        let bb = source.black_level[2];
         let m = &source.rgb_cam;
         let mut mr = 0.0f64;
         let mut mg = 0.0f64;
@@ -444,12 +506,12 @@ impl RawProcessor {
                     continue;
                 }
                 let i = (y * w + x) * 3;
-                let r = (counts[i] as f32 - br).max(0.0);
-                let g = (counts[i + 1] as f32 - bg).max(0.0);
-                let b = (counts[i + 2] as f32 - bb).max(0.0);
-                let r_val = (m[0] * r + m[1] * g + m[2] * b).max(0.0);
-                let g_val = (m[4] * r + m[5] * g + m[6] * b).max(0.0);
-                let b_val = (m[8] * r + m[9] * g + m[10] * b).max(0.0);
+                let r = counts[i] as f32;
+                let g = counts[i + 1] as f32;
+                let b = counts[i + 2] as f32;
+                let r_val = Self::libraw_clip_channel(m[0] * r + m[1] * g + m[2] * b);
+                let g_val = Self::libraw_clip_channel(m[4] * r + m[5] * g + m[6] * b);
+                let b_val = Self::libraw_clip_channel(m[8] * r + m[9] * g + m[10] * b);
                 mr += r_val as f64 / 65535.0;
                 mg += g_val as f64 / 65535.0;
                 mb += b_val as f64 / 65535.0;
@@ -994,6 +1056,108 @@ mod tests {
     fn tif_extension_is_not_treated_as_raw_by_extension_alone() {
         assert!(!is_raw_extension("tif"));
         assert!(!is_raw_extension("tiff"));
+    }
+
+    #[test]
+    #[ignore = "manual diagnostic: cargo test analyze_canon_40d_cpu_libraw_path -- --ignored --nocapture"]
+    fn analyze_canon_40d_cpu_libraw_path() {
+        let path = Path::new(r"F:\win7\raws\canon\40d\RAW_CANON_40D_RAW_V103.CR2");
+        if !path.is_file() {
+            eprintln!("skip: {}", path.display());
+            return;
+        }
+        let mut p = RawProcessor::new().expect("libraw init");
+        p.open(path).expect("open");
+        p.unpack().expect("unpack");
+
+        let (
+            black,
+            maximum,
+            data_maximum,
+            cblack,
+            cblack4,
+            cblack5,
+            pre_mul,
+            cam_mul,
+            gpu_cblack,
+            gpu_scale,
+        ) = p.test_color_diag_after_unpack();
+        let (lm, tm) = p.margins();
+        let w = p.width();
+        let h = p.height();
+        let cx = w / 2;
+        let cy = h / 2;
+        let raw_row = (cy as i32 + tm) as u32;
+        let raw_col = (cx as i32 + lm) as u32;
+        let raw_px = p.test_raw_pixel_at(raw_row, raw_col);
+
+        let scaled_cfa = {
+            let mut ex = RawProcessor::new().expect("libraw init");
+            ex.open(path).expect("open");
+            let src = ex
+                .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+                .expect("extract");
+            src.raw_pixels[(cy as usize * w as usize) + cx as usize]
+        };
+
+        let ppg_counts_center = {
+            let mut pc = RawProcessor::new().expect("libraw init");
+            pc.open(path).expect("open");
+            let counts = pc.libraw_ppg_camera_rgb_counts().expect("ppg counts");
+            let i = (cy as usize * w as usize + cx as usize) * 3;
+            (counts[i], counts[i + 1], counts[i + 2])
+        };
+        let ppg_no_ab = {
+            let mut d = RawProcessor::new().expect("libraw init");
+            d.open(path).expect("open");
+            d.develop_scene_linear_hdr_with_qual(true, 2)
+                .expect("develop no ab")
+        };
+        let ppg_ab = {
+            let mut d = RawProcessor::new().expect("libraw init");
+            d.open(path).expect("open");
+            d.develop_scene_linear_hdr_with_qual(false, 2)
+                .expect("develop ab")
+        };
+        let ahd_ab = {
+            let mut d = RawProcessor::new().expect("libraw init");
+            d.open(path).expect("open");
+            d.develop_scene_linear_hdr_with_qual(false, 3)
+                .expect("develop ahd")
+        };
+        let idx = ((cy as usize * w as usize) + cx as usize) * 4;
+        eprintln!("=== Canon 40D CPU LibRaw path diagnostic ===");
+        eprintln!("output size: {w}x{h}, margins left={lm} top={tm}");
+        eprintln!(
+            "color.black={black} color.maximum={maximum} data_maximum={data_maximum}"
+        );
+        eprintln!(
+            "cblack[0..3]={cblack:?} cblack[4]={cblack4} cblack[5]={cblack5}"
+        );
+        eprintln!("cam_mul={cam_mul:?} pre_mul={pre_mul:?}");
+        eprintln!(
+            "gpu: cblack_rgb(black+cblack)={gpu_cblack:?} scale_mul={gpu_scale:?}"
+        );
+        eprintln!(
+            "center ({cx},{cy}): raw[{raw_row},{raw_col}]={raw_px} scaled_cfa={scaled_cfa}"
+        );
+        eprintln!(
+            "ppg camera counts at center rgb=({}, {}, {})",
+            ppg_counts_center.0, ppg_counts_center.1, ppg_counts_center.2
+        );
+        let f = |buf: &[f32], i: usize| (buf[i], buf[i + 1], buf[i + 2]);
+        let (nr, ng, nb) = f(ppg_no_ab.rgba_f32.as_slice(), idx);
+        let (ar, ag, ab) = f(ppg_ab.rgba_f32.as_slice(), idx);
+        let (hr, hg, hb) = f(ahd_ab.rgba_f32.as_slice(), idx);
+        eprintln!("develop PPG no_auto_bright center=({nr:.6}, {ng:.6}, {nb:.6}) R/B={:.4}", nr / nb.max(1e-9));
+        eprintln!("develop PPG auto_bright     center=({ar:.6}, {ag:.6}, {ab:.6}) R/B={:.4}", ar / ab.max(1e-9));
+        eprintln!("develop AHD auto_bright     center=({hr:.6}, {hg:.6}, {hb:.6}) R/B={:.4}", hr / hb.max(1e-9));
+        eprintln!(
+            "auto_bright gain vs no_ab: R={:.3}x G={:.3}x B={:.3}x",
+            ar / nr.max(1e-9),
+            ag / ng.max(1e-9),
+            ab / nb.max(1e-9)
+        );
     }
 
     #[test]

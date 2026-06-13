@@ -24,6 +24,22 @@
 // Access protected LibRaw color finish for GPU demosaic post-processing.
 class LibRawColorShim : public LibRaw {
 public:
+    /// Match CPU dcraw_process: raw2image_ex(subtract black) then scale_colors.
+    static int raw2image_scale_colors(LibRawColorShim *ip) {
+        if (!ip) {
+            return -1;
+        }
+        ip->imgdata.params.use_camera_wb = 1;
+        ip->imgdata.params.use_camera_matrix = 1;
+        ip->imgdata.params.output_color = 1;
+        const int rc = ip->raw2image_ex(1);
+        if (rc != 0) {
+            return rc;
+        }
+        ip->scale_colors();
+        return 0;
+    }
+
     static void finish_demosaic_rgb(
         LibRaw *base,
         unsigned short *rgb16,
@@ -92,12 +108,12 @@ public:
             return -1;
         }
         LibRawColorShim *ip = reinterpret_cast<LibRawColorShim *>(base);
-        ip->imgdata.params.use_camera_wb = 1;
-        ip->imgdata.params.use_camera_matrix = 1;
         ip->imgdata.params.user_qual = 2;
 
-        ip->raw2image();
-        ip->scale_colors();
+        const int prep = raw2image_scale_colors(ip);
+        if (prep != 0) {
+            return prep;
+        }
         ip->pre_interpolate();
         ip->ppg_interpolate();
 
@@ -132,21 +148,10 @@ public:
             return -1;
         }
         LibRawColorShim *ip = reinterpret_cast<LibRawColorShim *>(base);
-        ip->imgdata.params.use_camera_wb = 1;
-        ip->imgdata.params.use_camera_matrix = 1;
-        ip->imgdata.params.output_color = 1;
-
-        ip->raw2image();
-        printf("C++ shims: extract_scaled_cfa BEFORE scale_colors: image[0]=[%d, %d, %d, %d], black=%d\n",
-            ip->imgdata.image[0][0], ip->imgdata.image[0][1], ip->imgdata.image[0][2], ip->imgdata.image[0][3],
-            ip->imgdata.color.black);
-        ip->scale_colors();
-        printf("C++ shims: extract_scaled_cfa AFTER scale_colors: image[0]=[%d, %d, %d, %d]\n",
-            ip->imgdata.image[0][0], ip->imgdata.image[0][1], ip->imgdata.image[0][2], ip->imgdata.image[0][3]);
-
-
-
-
+        const int prep = raw2image_scale_colors(ip);
+        if (prep != 0) {
+            return prep;
+        }
         const unsigned w = ip->imgdata.sizes.width;
         const unsigned h = ip->imgdata.sizes.height;
         if (width_out) {
@@ -178,11 +183,11 @@ public:
             return -1;
         }
         LibRawColorShim *ip = reinterpret_cast<LibRawColorShim *>(base);
-        ip->imgdata.params.use_camera_wb = 1;
-        ip->imgdata.params.use_camera_matrix = 1;
         ip->imgdata.params.user_qual = 2;
-        ip->raw2image();
-        ip->scale_colors();
+        const int prep = raw2image_scale_colors(ip);
+        if (prep != 0) {
+            return prep;
+        }
         ip->pre_interpolate();
         ip->ppg_interpolate();
         const unsigned w = ip->imgdata.sizes.width;
@@ -207,14 +212,13 @@ public:
             return -1;
         }
         LibRawColorShim *ip = reinterpret_cast<LibRawColorShim *>(base);
-        ip->imgdata.params.use_camera_wb = 1;
-        ip->imgdata.params.use_camera_matrix = 1;
-        ip->imgdata.params.output_color = 1;
         ip->imgdata.params.user_qual = 2;
         ip->imgdata.params.gamm[0] = 1.0;
         ip->imgdata.params.gamm[1] = 1.0;
-        ip->raw2image();
-        ip->scale_colors();
+        const int prep = raw2image_scale_colors(ip);
+        if (prep != 0) {
+            return prep;
+        }
         ip->pre_interpolate();
         ip->ppg_interpolate();
         ip->imgdata.idata.filters = 0;
@@ -320,6 +324,41 @@ extern "C" {
         }
         *black = lr->color.black;
         *maximum = lr->color.maximum;
+    }
+
+    /// Diagnostic: full color metadata for CPU path analysis (cblack layout, pre_mul, raw sample).
+    void siv_libraw_get_color_diag(
+        libraw_data_t *lr,
+        int *black,
+        int *maximum,
+        int *data_maximum,
+        unsigned *cblack0_3,
+        unsigned *cblack4,
+        unsigned *cblack5,
+        float *pre_mul,
+        float *cam_mul
+    ) {
+        if (!lr) return;
+        *black = lr->color.black;
+        *maximum = lr->color.maximum;
+        *data_maximum = lr->color.data_maximum;
+        for (int i = 0; i < 4; i++) {
+            cblack0_3[i] = lr->color.cblack[i];
+            pre_mul[i] = lr->color.pre_mul[i];
+            cam_mul[i] = lr->color.cam_mul[i];
+        }
+        *cblack4 = lr->color.cblack[4];
+        *cblack5 = lr->color.cblack[5];
+    }
+
+    unsigned short siv_libraw_raw_pixel_at(
+        libraw_data_t *lr,
+        unsigned row,
+        unsigned col
+    ) {
+        if (!lr || !lr->rawdata.raw_image) return 0;
+        const unsigned pitch = lr->sizes.raw_pitch / 2;
+        return lr->rawdata.raw_image[row * pitch + col];
     }
 
     void siv_libraw_get_margins(libraw_data_t *lr, int *left_margin, int *top_margin) {

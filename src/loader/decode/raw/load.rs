@@ -259,7 +259,8 @@ pub(crate) fn load_raw(
     if use_gpu_demosaic {
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
             Ok(mut raw_gpu_source) => {
-                match RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source) {
+                let scale = RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source);
+                match scale {
                     Ok(scale) => {
                         log::debug!(
                             "[Loader] RAW GPU scene color scale={scale:?} for {:?}",
