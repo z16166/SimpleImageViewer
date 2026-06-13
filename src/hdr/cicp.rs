@@ -79,6 +79,7 @@ pub(crate) fn cicp_to_metadata(
         },
         luminance,
         gain_map: None,
+        raw_gpu_source: None,
     }
 }
 

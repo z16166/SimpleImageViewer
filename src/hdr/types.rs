@@ -155,6 +155,22 @@ pub struct AppleHeicGainMapGpuSource {
     pub stops: f32,
 }
 
+/// Raw sensor pixels and metadata for GPU demosaicing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawGpuSource {
+    pub raw_width: u32,
+    pub raw_height: u32,
+    pub width: u32,
+    pub height: u32,
+    pub raw_pixels: std::sync::Arc<Vec<u16>>,
+    pub black_level: [f32; 4],
+    pub cam_mul: [f32; 4],
+    pub maximum: f32,
+    pub bayer_pattern: [u32; 4],
+    pub demosaic_method: crate::settings::RawDemosaicMethod,
+    pub bootstrap_preview: Option<crate::loader::DecodedImage>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdrImageMetadata {
     pub transfer_function: HdrTransferFunction,
@@ -162,9 +178,18 @@ pub struct HdrImageMetadata {
     pub color_profile: HdrColorProfile,
     pub luminance: HdrLuminanceMetadata,
     pub gain_map: Option<HdrGainMapMetadata>,
+    pub raw_gpu_source: Option<RawGpuSource>,
 }
 
 impl HdrImageMetadata {
+    pub(crate) fn gpu_compose_pending(&self) -> bool {
+        self.raw_gpu_source.is_some()
+            || self
+                .gain_map
+                .as_ref()
+                .map_or(false, |gm| gm.gpu_compose_pending())
+    }
+
     pub fn from_color_space(color_space: HdrColorSpace) -> Self {
         Self {
             color_profile: HdrColorProfile::from_color_space(color_space),
@@ -235,6 +260,7 @@ impl Default for HdrImageMetadata {
             color_profile: HdrColorProfile::LinearSrgb,
             luminance: HdrLuminanceMetadata::default(),
             gain_map: None,
+            raw_gpu_source: None,
         }
     }
 }

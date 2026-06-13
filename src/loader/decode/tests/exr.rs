@@ -286,6 +286,7 @@ fn exr_extension_short_circuits_to_openexr_core_loader() {
         tx,
         refine_tx,
         false,
+        crate::settings::RawDemosaicMode::Cpu,
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
     );

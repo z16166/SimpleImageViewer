@@ -31,11 +31,15 @@ pub(crate) struct HdrImageBinding {
     pub(super) uploaded_sdr_texture: Option<wgpu::Texture>,
     pub(super) uploaded_sdr_view: Option<wgpu::TextureView>,
     pub(super) uploaded_display_storage_view: Option<wgpu::TextureView>,
+    pub(super) uploaded_raw_pixels_texture: Option<wgpu::Texture>,
+    pub(super) uploaded_raw_pixels_view: Option<wgpu::TextureView>,
 
     pub(super) baked_jpeg_image_key: Option<HdrImageKey>,
     pub(super) baked_jpeg_weight_bits: Option<u32>,
     pub(super) baked_apple_image_key: Option<HdrImageKey>,
     pub(super) baked_apple_weight_bits: Option<u32>,
+    pub(super) baked_raw_demosaic_key: Option<HdrImageKey>,
+    pub(super) baked_raw_demosaic_method: Option<crate::settings::RawDemosaicMethod>,
 
     pub(super) tone_map_buffer: wgpu::Buffer,
     pub(super) jpeg_compose_uniform_buffer: Option<wgpu::Buffer>,
@@ -64,9 +68,13 @@ pub(crate) struct HdrCallbackResources {
     pub(super) image_bindings: HashMap<HdrImageKey, HdrImageBinding>,
     pub(super) failed_jpeg_image_compose: HashSet<(HdrImageKey, u32)>,
     pub(super) failed_apple_image_compose: HashSet<(HdrImageKey, u32)>,
+    pub(super) failed_raw_demosaic: HashSet<HdrImageKey>,
     pub(super) jpeg_compose_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(super) jpeg_compose_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) jpeg_compose_tile_pipeline: Option<wgpu::ComputePipeline>,
+    pub(super) raw_demosaic_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    pub(super) raw_demosaic_pipeline: Option<wgpu::ComputePipeline>,
+    pub(super) raw_demosaic_uniform_buffer: Option<wgpu::Buffer>,
     /// Single ISO gain-map compose uniform for tiled Ultra HDR via [`HdrTilePlaneCallback`].
     ///
     /// Static deferred JPEG via [`HdrImagePlaneCallback`] uses per-binding buffers
@@ -112,6 +120,7 @@ pub(crate) struct ImagePlaneUpload {
     pub(super) base: CallbackUpload,
     pub(super) gain: Option<CallbackUpload>,
     pub(super) sdr_baseline: Option<CallbackUpload>,
+    pub(super) raw_pixels: Option<CallbackUpload>,
 }
 
 pub(crate) const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat =
@@ -278,6 +287,28 @@ pub(crate) fn create_callback_resources(
         None => (None, None, None, None),
     };
 
+    let raw_demosaic_compute_supported = device.limits().max_compute_invocations_per_workgroup
+        >= 256
+        && device.limits().max_compute_workgroup_size_x >= 16
+        && device.limits().max_compute_workgroup_size_y >= 16;
+
+    let (raw_demosaic_bind_group_layout, raw_demosaic_pipeline, raw_demosaic_uniform_buffer) =
+        if gl_backend {
+            log::warn!("[HDR] GPU RAW demosaicing disabled on OpenGL backend; using CPU fallback");
+            (None, None, None)
+        } else if raw_demosaic_compute_supported {
+            let (layout, pipeline, buf) =
+                crate::hdr::raw_demosaic_gpu::create_raw_demosaic_compute_resources(device);
+            (Some(layout), Some(pipeline), Some(buf))
+        } else {
+            log::warn!(
+                "[HDR] GPU RAW demosaicing unavailable \
+             (max_compute_invocations_per_workgroup={}); using CPU fallback",
+                device.limits().max_compute_invocations_per_workgroup
+            );
+            (None, None, None)
+        };
+
     HdrCallbackResources {
         target_format,
         bind_group_layout,
@@ -288,9 +319,13 @@ pub(crate) fn create_callback_resources(
         image_bindings: HashMap::new(),
         failed_jpeg_image_compose: HashSet::new(),
         failed_apple_image_compose: HashSet::new(),
+        failed_raw_demosaic: HashSet::new(),
         jpeg_compose_bind_group_layout,
         jpeg_compose_pipeline,
         jpeg_compose_tile_pipeline,
+        raw_demosaic_bind_group_layout,
+        raw_demosaic_pipeline,
+        raw_demosaic_uniform_buffer,
         jpeg_compose_uniform_buffer,
         jpeg_tiled_upload_key: None,
         jpeg_tiled_sdr_texture: None,

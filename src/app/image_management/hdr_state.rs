@@ -196,6 +196,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
             );
         }
 
@@ -236,6 +237,7 @@ impl ImageViewerApp {
             self.generation,
             self.image_files[idx].clone(),
             self.settings.raw_high_quality,
+            self.settings.raw_demosaic_mode,
         );
     }
 }

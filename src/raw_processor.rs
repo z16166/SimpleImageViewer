@@ -66,6 +66,7 @@ pub fn raw_scene_linear_metadata() -> crate::hdr::types::HdrImageMetadata {
         ),
         luminance: crate::hdr::types::HdrLuminanceMetadata::default(),
         gain_map: None,
+        raw_gpu_source: None,
     }
 }
 
@@ -172,6 +173,15 @@ impl RawProcessor {
         unsafe { ffi::libraw_get_raw_height(self.data) as u32 }
     }
 
+    pub fn is_supported_bayer(&self) -> bool {
+        let filters = unsafe { ffi::siv_libraw_get_filters(self.data) };
+        let colors = unsafe { ffi::siv_libraw_get_colors(self.data) };
+        // filters == 0 means not a CFA image (e.g. Foveon, linear RGB)
+        // filters == 1 means X-Trans (unsupported by our simple compute shader)
+        // colors != 3 means not RGB Bayer
+        filters > 1 && colors == 3
+    }
+
     /// Best-effort developed output dimensions for tiling and HQ size checks.
     ///
     /// Some bodies (e.g. Epson ERF) report `iwidth`/`iheight` equal to the tiny embedded JPEG
@@ -203,6 +213,115 @@ impl RawProcessor {
             self.is_unpacked = true;
         }
         Ok(())
+    }
+
+    pub fn extract_raw_gpu_source(
+        &mut self,
+        demosaic_method: crate::settings::RawDemosaicMethod,
+    ) -> Result<crate::hdr::types::RawGpuSource, String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+
+        let raw_pixels_ptr = unsafe { ffi::siv_libraw_get_raw_image(self.data) };
+        if raw_pixels_ptr.is_null() {
+            return Err("Raw sensor pixel buffer is null".to_string());
+        }
+
+        let rw = self.raw_width();
+        let rh = self.raw_height();
+        let w = self.width();
+        let h = self.height();
+
+        let mut left_margin = 0;
+        let mut top_margin = 0;
+        unsafe {
+            ffi::siv_libraw_get_margins(self.data, &mut left_margin, &mut top_margin);
+        }
+
+        // Validate bounds
+        if left_margin < 0
+            || top_margin < 0
+            || (left_margin as u32 + w) > rw
+            || (top_margin as u32 + h) > rh
+        {
+            return Err("Margins and active area exceed raw image boundaries".to_string());
+        }
+
+        // Copy and crop raw pixels row by row
+        let total_pixels = w as usize * h as usize;
+        let mut cropped_pixels = Vec::with_capacity(total_pixels);
+        unsafe {
+            let slice = std::slice::from_raw_parts(raw_pixels_ptr, (rw * rh) as usize);
+            for r in 0..h {
+                let src_row_offset = ((top_margin as u32 + r) * rw + left_margin as u32) as usize;
+                cropped_pixels
+                    .extend_from_slice(&slice[src_row_offset..src_row_offset + w as usize]);
+            }
+        }
+
+        // Query colors, filters, and params
+        let p00 =
+            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin, left_margin) } as u32;
+        let p01 =
+            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin, left_margin + 1) } as u32;
+        let p10 =
+            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin + 1, left_margin) } as u32;
+        let p11 =
+            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin + 1, left_margin + 1) }
+                as u32;
+        let bayer_pattern = [p00, p01, p10, p11];
+
+        let mut cam_mul = [0.0f32; 4];
+        let mut cblack = [0.0f32; 4];
+        let mut black = 0;
+        let mut maximum = 0;
+        unsafe {
+            ffi::siv_libraw_get_color_params(
+                self.data,
+                cam_mul.as_mut_ptr(),
+                cblack.as_mut_ptr(),
+                &mut black,
+                &mut maximum,
+            );
+        }
+
+        let mut black_level = [0.0f32; 4];
+        for i in 0..4 {
+            black_level[i] = if cblack[i] > 0.0 {
+                cblack[i]
+            } else {
+                black as f32
+            };
+        }
+
+        // Normalize cam_mul by green channel (cam_mul[1]) to prevent excessive scaling.
+        let green_gain = cam_mul[1].max(1e-6);
+        for i in 0..4 {
+            cam_mul[i] /= green_gain;
+        }
+
+        log::debug!(
+            "[Loader] RAW GPU source extraction parameters: maximum={}, black_level={:?}, cam_mul={:?}, bayer_pattern={:?}",
+            maximum,
+            black_level,
+            cam_mul,
+            bayer_pattern
+        );
+
+        Ok(crate::hdr::types::RawGpuSource {
+            raw_width: rw,
+            raw_height: rh,
+            width: w,
+            height: h,
+            raw_pixels: std::sync::Arc::new(cropped_pixels),
+            black_level,
+            cam_mul,
+            maximum: maximum as f32,
+            bayer_pattern,
+            demosaic_method,
+            bootstrap_preview: None,
+        })
     }
 
     #[allow(dead_code)]

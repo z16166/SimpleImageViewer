@@ -57,6 +57,7 @@ pub(crate) fn cheap_hdr_sdr_placeholder_rgba8(width: u32, height: u32) -> Result
 
 pub(crate) fn libraw_scene_linear_needs_eager_sdr_fallback(hdr: &HdrImageBuffer) -> bool {
     hdr.metadata.gain_map.is_none()
+        && hdr.metadata.raw_gpu_source.is_none()
         && hdr.metadata.transfer_function == HdrTransferFunction::Linear
         && hdr.metadata.reference == HdrReference::SceneLinear
 }
@@ -66,6 +67,9 @@ pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
 ) -> bool {
+    if hdr.metadata.raw_gpu_source.is_some() {
+        return true;
+    }
     if hdr_display_requests_sdr_preview(hdr_target_capacity) {
         return false;
     }
@@ -89,6 +93,11 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr_target_capacity: f32,
     tone: &HdrToneMapSettings,
 ) -> Result<Arc<Vec<u8>>, String> {
+    if hdr.metadata.raw_gpu_source.is_some() {
+        return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
+            hdr.width, hdr.height,
+        )?));
+    }
     if let Some(gain_map) = hdr.metadata.gain_map.as_ref() {
         if let Some(iso) = gain_map.iso_deferred.as_ref() {
             // Share deferred baseline planes; avoid cloning multi‑MP RGBA on cold fallback paths.

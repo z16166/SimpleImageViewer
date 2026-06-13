@@ -96,6 +96,24 @@ unsafe extern "C" {
     pub fn libraw_get_raw_width(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iheight(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iwidth(data: *mut libraw_data_t) -> c_int;
+
+    // GPU shims
+    pub fn siv_libraw_get_raw_image(data: *mut libraw_data_t) -> *mut c_ushort;
+    pub fn siv_libraw_get_color_at(data: *mut libraw_data_t, row: c_int, col: c_int) -> c_int;
+    pub fn siv_libraw_get_color_params(
+        data: *mut libraw_data_t,
+        cam_mul: *mut c_float,
+        cblack: *mut c_float,
+        black: *mut c_int,
+        maximum: *mut c_int,
+    );
+    pub fn siv_libraw_get_margins(
+        data: *mut libraw_data_t,
+        left_margin: *mut c_int,
+        top_margin: *mut c_int,
+    );
+    pub fn siv_libraw_get_filters(data: *mut libraw_data_t) -> c_uint;
+    pub fn siv_libraw_get_colors(data: *mut libraw_data_t) -> c_int;
 }
 
 pub fn version() -> String {

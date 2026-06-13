@@ -132,12 +132,15 @@ fn load_raw_with_embedded_bootstrap(
     })
 }
 
+pub(crate) const GPU_DEMOSAIC_BOOTSTRAP_PREVIEW: bool = true;
+
 pub(crate) fn load_raw(
     _index: usize,
     _generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
     high_quality: bool,
+    raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> Result<RawLoadOutput, String> {
@@ -238,10 +241,57 @@ pub(crate) fn load_raw(
             threshold,
             refine_tx,
             final_lr_flip,
+            raw_demosaic_mode,
             hdr_target_capacity,
             hdr_tone_map,
             &osd_ctx,
         );
+    }
+
+    let use_gpu_demosaic = high_quality
+        && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && final_lr_flip == 0
+        && processor.is_supported_bayer()
+        && width <= 8192
+        && height <= 8192
+        && area < threshold;
+
+    if use_gpu_demosaic {
+        match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
+            Ok(mut raw_gpu_source) => {
+                raw_gpu_source.bootstrap_preview = preview_opt.clone();
+                let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+                metadata.raw_gpu_source = Some(raw_gpu_source);
+
+                let hdr = crate::hdr::types::HdrImageBuffer {
+                    width,
+                    height,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: metadata.color_space_hint(),
+                    metadata,
+                    rgba_f32: std::sync::Arc::new(Vec::new()),
+                };
+
+                let fallback = if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+                    p.clone()
+                } else {
+                    let fallback_pixels =
+                        crate::loader::cheap_hdr_sdr_placeholder_rgba8(width, height)?;
+                    DecodedImage::from_arc(width, height, std::sync::Arc::new(fallback_pixels))
+                };
+
+                return Ok(RawLoadOutput {
+                    image: make_hdr_image_data(hdr, fallback),
+                    osd: osd_ctx.full_develop(width, height),
+                });
+            }
+            Err(err) => {
+                log::error!(
+                    "[Loader] GPU raw extract failed: {}. Falling back to CPU.",
+                    err
+                );
+            }
+        }
     }
 
     // High-quality mode: use embedded preview when it already meets HQ requirements.
@@ -321,6 +371,7 @@ pub(crate) fn load_raw(
     develop_hq_preview(
         &mut processor,
         path,
+        raw_demosaic_mode,
         hdr_target_capacity,
         hdr_tone_map,
         &osd_ctx,

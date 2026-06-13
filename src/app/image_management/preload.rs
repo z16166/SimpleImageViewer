@@ -51,8 +51,13 @@ impl ImageViewerApp {
                 self.generation,
                 path.display()
             );
-            self.loader
-                .request_load(cur, self.generation, path, self.settings.raw_high_quality);
+            self.loader.request_load(
+                cur,
+                self.generation,
+                path,
+                self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
+            );
         }
 
         if !self.settings.preload {
@@ -272,6 +277,7 @@ impl ImageViewerApp {
                 self.generation,
                 path.clone(),
                 self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
             );
             count += 1;
             let budget_charge = if decode_budget_bytes > budget {

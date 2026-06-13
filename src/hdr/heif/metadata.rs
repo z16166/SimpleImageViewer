@@ -62,6 +62,7 @@ pub(crate) fn read_heif_metadata(
                 reference: HdrReference::Unknown,
                 luminance: HdrLuminanceMetadata::default(),
                 gain_map: None,
+                raw_gpu_source: None,
             };
         }
     }
@@ -83,6 +84,7 @@ pub(crate) fn heif_metadata_without_embedded_colour_info() -> HdrImageMetadata {
         color_profile: HdrColorProfile::LinearSrgb,
         luminance: HdrLuminanceMetadata::default(),
         gain_map: None,
+        raw_gpu_source: None,
     }
 }
 

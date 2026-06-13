@@ -347,6 +347,7 @@ fn hdr_metadata_from_icc_rgb_xyz_primaries_for_jxl_float(icc: &[u8]) -> Option<H
         },
         luminance: HdrLuminanceMetadata::default(),
         gain_map: None,
+        raw_gpu_source: None,
     })
 }
 
@@ -428,6 +429,7 @@ fn hdr_metadata_from_h273_cicp_for_jxl_float_buffer(
         },
         luminance: HdrLuminanceMetadata::default(),
         gain_map: None,
+        raw_gpu_source: None,
     }
 }
 
@@ -535,6 +537,7 @@ pub(crate) fn hdr_metadata_from_jxl_float_decode(
         },
         luminance: HdrLuminanceMetadata::default(),
         gain_map: None,
+        raw_gpu_source: None,
     }
 }
 

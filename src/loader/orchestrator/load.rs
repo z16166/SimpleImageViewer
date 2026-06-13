@@ -160,6 +160,7 @@ impl ImageLoader {
                             job.loading.clone(),
                             job.current_gen.clone(),
                             job.high_quality,
+                            job.raw_demosaic_mode,
                             job.hdr_target_capacity,
                             job.hdr_tone_map,
                         );
@@ -629,6 +630,7 @@ impl ImageLoader {
         generation: u64,
         path: PathBuf,
         high_quality: bool,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode,
     ) {
         {
             let mut loading = self.loading.lock();
@@ -696,6 +698,7 @@ impl ImageLoader {
                 loading1,
                 current_gen1,
                 high_quality,
+                raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
             );
@@ -708,6 +711,7 @@ impl ImageLoader {
             generation,
             path: path2,
             high_quality,
+            raw_demosaic_mode,
             claimed: claimed2,
             loading: loading2,
             current_gen: current_gen2,
@@ -753,6 +757,7 @@ impl ImageLoader {
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         _current_gen: Arc<std::sync::atomic::AtomicU64>,
         high_quality: bool,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode,
         hdr_target_capacity: f32,
         hdr_tone_map: HdrToneMapSettings,
     ) {
@@ -773,6 +778,7 @@ impl ImageLoader {
                 tx.clone(),
                 refine_tx.clone(),
                 high_quality,
+                raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
             )

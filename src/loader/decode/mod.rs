@@ -60,6 +60,7 @@ pub(crate) fn load_image_file(
     _tx: Sender<LoaderOutput>,
     refine_tx: Sender<RefinementRequest>,
     high_quality: bool,
+    raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
 ) -> LoadResult {
@@ -120,6 +121,7 @@ pub(crate) fn load_image_file(
                 path,
                 refine_tx.clone(),
                 high_quality,
+                raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
             )?;
@@ -153,6 +155,7 @@ pub(crate) fn load_image_file(
                     path,
                     refine_tx.clone(),
                     high_quality,
+                    raw_demosaic_mode,
                     hdr_target_capacity,
                     hdr_tone_map,
                 )

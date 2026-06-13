@@ -68,4 +68,42 @@ extern "C" {
         ip->imgdata.params.gamm[1] = slope;
     }
 
+    unsigned short* siv_libraw_get_raw_image(libraw_data_t *lr) {
+        if (!lr) return nullptr;
+        return lr->rawdata.raw_image;
+    }
+
+    int siv_libraw_get_color_at(libraw_data_t *lr, int row, int col) {
+        if (!lr) return -1;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        return ip->COLOR(row, col);
+    }
+
+    void siv_libraw_get_color_params(libraw_data_t *lr, float *cam_mul, float *cblack, int *black, int *maximum) {
+        if (!lr) return;
+        for (int i = 0; i < 4; i++) {
+            cam_mul[i] = lr->color.cam_mul[i];
+            cblack[i] = lr->color.cblack[i];
+        }
+        *black = lr->color.black;
+        *maximum = lr->color.maximum;
+    }
+
+    void siv_libraw_get_margins(libraw_data_t *lr, int *left_margin, int *top_margin) {
+        if (!lr) return;
+        *left_margin = lr->sizes.left_margin;
+        *top_margin = lr->sizes.top_margin;
+    }
+
+    unsigned int siv_libraw_get_filters(libraw_data_t *lr) {
+        if (!lr) return 0;
+        return lr->idata.filters;
+    }
+
+    int siv_libraw_get_colors(libraw_data_t *lr) {
+        if (!lr) return 0;
+        return lr->idata.colors;
+    }
+
 }
+

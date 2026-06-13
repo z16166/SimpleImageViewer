@@ -113,6 +113,7 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
         &path,
         refine_tx,
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
     )
@@ -156,6 +157,7 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
         &path,
         refine_tx,
         false,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
     )
@@ -191,6 +193,7 @@ fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
         &path,
         refine_tx,
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         1.0,
         HdrToneMapSettings::default(),
     )
@@ -273,6 +276,7 @@ fn probe_epson_and_fuji_on_local_samples() {
                 &path,
                 refine_tx,
                 hq,
+                crate::settings::RawDemosaicMode::Cpu,
                 4.0,
                 HdrToneMapSettings::default(),
             )
@@ -324,6 +328,7 @@ fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
         &path,
         refine_tx,
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
     )

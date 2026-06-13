@@ -362,6 +362,7 @@ impl ImageViewerApp {
                                                 self.generation,
                                                 fallback_path,
                                                 self.settings.raw_high_quality,
+                                                self.settings.raw_demosaic_mode,
                                             );
                                         }
                                     } else {

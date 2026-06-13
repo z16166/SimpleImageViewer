@@ -127,6 +127,7 @@ impl ImageViewerApp {
             self.generation,
             path,
             self.settings.raw_high_quality,
+            self.settings.raw_demosaic_mode,
         );
 
         // Re-schedule preloads so nearby RAW files pick up the new mode too.
@@ -433,6 +434,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
             );
         } else if self.has_loaded_asset(self.current_index) {
             crate::preload_debug!(
@@ -461,6 +463,7 @@ impl ImageViewerApp {
                     self.generation,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
+                    self.settings.raw_demosaic_mode,
                 );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
@@ -474,6 +477,7 @@ impl ImageViewerApp {
                         self.generation,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
+                        self.settings.raw_demosaic_mode,
                     );
                 }
             } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
@@ -498,6 +502,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
             );
         }
 
@@ -520,6 +525,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
+                self.settings.raw_demosaic_mode,
             );
         }
         self.trigger_current_hdr_fallback_refinement_if_needed();
@@ -580,6 +586,7 @@ impl ImageViewerApp {
             self.generation,
             self.image_files[self.current_index].clone(),
             self.settings.raw_high_quality,
+            self.settings.raw_demosaic_mode,
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();

@@ -201,6 +201,7 @@ pub(crate) fn avif_image_to_hdr_buffer(
             },
             luminance,
             gain_map: None,
+            raw_gpu_source: None,
         }
     } else {
         metadata

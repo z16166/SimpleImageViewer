@@ -268,11 +268,148 @@ pub(crate) fn upload_rgba8_texture(
     })
 }
 
+fn convert_and_scale_preview_to_rgba32f(
+    preview: &crate::loader::DecodedImage,
+    target_w: u32,
+    target_h: u32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; (target_w * target_h * 4) as usize];
+    let src = preview.rgba();
+    let src_w = preview.width as f32;
+    let src_h = preview.height as f32;
+
+    for y in 0..target_h {
+        let src_y = (((y as f32 + 0.5) / target_h as f32) * src_h).floor() as u32;
+        let src_y = src_y.min(preview.height - 1);
+        let src_row_idx = (src_y * preview.width * 4) as usize;
+
+        let dest_row_idx = (y * target_w * 4) as usize;
+
+        for x in 0..target_w {
+            let src_x = (((x as f32 + 0.5) / target_w as f32) * src_w).floor() as u32;
+            let src_x = src_x.min(preview.width - 1);
+
+            let src_pixel_idx = src_row_idx + (src_x * 4) as usize;
+            let dest_pixel_idx = dest_row_idx + (x * 4) as usize;
+
+            out[dest_pixel_idx] = src[src_pixel_idx] as f32 / 255.0;
+            out[dest_pixel_idx + 1] = src[src_pixel_idx + 1] as f32 / 255.0;
+            out[dest_pixel_idx + 2] = src[src_pixel_idx + 2] as f32 / 255.0;
+            out[dest_pixel_idx + 3] = src[src_pixel_idx + 3] as f32 / 255.0;
+        }
+    }
+    out
+}
+
+pub(crate) fn upload_r16_uint_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u16],
+    max_texture_dimension_2d: u32,
+) -> Result<CallbackUpload, String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "{label} requires non-zero dimensions, got {width}x{height}"
+        ));
+    }
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(format!(
+            "{label} dimensions {width}x{height} exceed device max_texture_dimension_2d {max_texture_dimension_2d}",
+        ));
+    }
+    let tight_bytes = bytemuck::cast_slice(pixels);
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(tight_bytes, width, height, 2)
+        .map_err(|err| format!("{label}: {err}"))?;
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Uint,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &upload_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(CallbackUpload {
+        texture,
+        view,
+        storage_view: None,
+    })
+}
+
+const GPU_DEMOSAIC_BOOTSTRAP_PREVIEW: bool = true;
+
 pub(crate) fn upload_image_plane(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
+    if let Some(ref raw_source) = image.metadata.raw_gpu_source {
+        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let raw_pixels = upload_r16_uint_texture(
+            device,
+            queue,
+            "simple-image-viewer-hdr-raw-pixels-texture",
+            raw_source.width,
+            raw_source.height,
+            raw_source.raw_pixels.as_slice(),
+            device.limits().max_texture_dimension_2d,
+        )?;
+
+        if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW {
+            if let Some(ref preview) = raw_source.bootstrap_preview {
+                let scaled_f32 =
+                    convert_and_scale_preview_to_rgba32f(preview, image.width, image.height);
+                if let Err(err) = write_rgba32f_to_texture(
+                    queue,
+                    &base.texture,
+                    image.width,
+                    image.height,
+                    &scaled_f32,
+                ) {
+                    log::warn!("[HDR] GPU Demosaic bootstrap preview upload failed: {err}");
+                }
+            }
+        }
+
+        return Ok(ImagePlaneUpload {
+            base,
+            gain: None,
+            sdr_baseline: None,
+            raw_pixels: Some(raw_pixels),
+        });
+    }
+
     if let Some(deferred) = iso_deferred_from_metadata(&image.metadata) {
         let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
         let sdr = upload_rgba8_texture(
@@ -299,6 +436,7 @@ pub(crate) fn upload_image_plane(
             base,
             gain: Some(gain),
             sdr_baseline: Some(sdr),
+            raw_pixels: None,
         });
     }
 
@@ -319,6 +457,7 @@ pub(crate) fn upload_image_plane(
             base,
             gain: Some(gain),
             sdr_baseline: None,
+            raw_pixels: None,
         });
     }
 
@@ -327,6 +466,7 @@ pub(crate) fn upload_image_plane(
         base,
         gain: None,
         sdr_baseline: None,
+        raw_pixels: None,
     })
 }
 

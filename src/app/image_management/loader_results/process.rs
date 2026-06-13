@@ -292,6 +292,7 @@ impl ImageViewerApp {
                             requeue_gen,
                             requeue_path,
                             self.settings.raw_high_quality,
+                            self.settings.raw_demosaic_mode,
                         );
                     }
                     uploads_this_frame += 1;

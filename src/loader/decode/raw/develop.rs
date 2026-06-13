@@ -49,6 +49,7 @@ pub(crate) fn develop_full_resolution(
     threshold: u64,
     refine_tx: Sender<RefinementRequest>,
     final_lr_flip: i32,
+    _raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,
@@ -161,6 +162,7 @@ pub(crate) fn develop_full_resolution(
 pub(crate) fn develop_hq_preview(
     processor: &mut RawProcessor,
     _path: &PathBuf,
+    _raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
     osd_ctx: &RawOsdContext,

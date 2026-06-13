@@ -83,6 +83,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let apple_deferred = apple_heic_deferred_from_metadata(&self.image.metadata);
         #[cfg(not(feature = "heif-native"))]
         let apple_deferred: Option<&crate::hdr::types::AppleHeicGainMapGpuSource> = None;
+        let raw_source = self.image.metadata.raw_gpu_source.as_ref();
         let target_capacity_bits = self.tone_map.target_hdr_capacity().to_bits();
         let jpeg_failed = iso_deferred.is_some()
             && resources
@@ -95,7 +96,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 .contains(&(image_key, target_capacity_bits));
         #[cfg(not(feature = "heif-native"))]
         let apple_failed = false;
-        if jpeg_failed || apple_failed {
+        let raw_failed = raw_source.is_some() && resources.failed_raw_demosaic.contains(&image_key);
+        if jpeg_failed || apple_failed || raw_failed {
             return Vec::new();
         }
 
@@ -170,6 +172,12 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         } else {
                             (None, None)
                         };
+                    let (uploaded_raw_pixels_texture, uploaded_raw_pixels_view) =
+                        if let Some(raw) = uploaded.raw_pixels {
+                            (Some(raw.texture), Some(raw.view))
+                        } else {
+                            (None, None)
+                        };
 
                     let binding = HdrImageBinding {
                         uploaded_texture,
@@ -179,10 +187,14 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         uploaded_sdr_texture,
                         uploaded_sdr_view,
                         uploaded_display_storage_view,
+                        uploaded_raw_pixels_texture,
+                        uploaded_raw_pixels_view,
                         baked_jpeg_image_key: None,
                         baked_jpeg_weight_bits: None,
                         baked_apple_image_key: None,
                         baked_apple_weight_bits: None,
+                        baked_raw_demosaic_key: None,
+                        baked_raw_demosaic_method: None,
                         tone_map_buffer,
                         jpeg_compose_uniform_buffer,
                         #[cfg(feature = "heif-native")]
@@ -212,6 +224,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
         binding.last_use = std::time::Instant::now();
         binding.keep_resident = self.keep_resident;
 
+        let needs_raw_demosaic = raw_source.is_some()
+            && (binding.baked_raw_demosaic_key != Some(image_key)
+                || binding.baked_raw_demosaic_method != raw_source.map(|s| s.demosaic_method));
         let needs_jpeg_compose = iso_deferred.is_some()
             && (binding.baked_jpeg_image_key != Some(image_key)
                 || binding.baked_jpeg_weight_bits != Some(target_capacity_bits));
@@ -223,6 +238,53 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let needs_apple_compose = false;
 
         let mut compose_command_buffers = Vec::new();
+        if needs_raw_demosaic {
+            if let Some(source) = raw_source {
+                if let (Some(compose_layout), Some(compose_pipeline), Some(uniform_buf)) = (
+                    resources.raw_demosaic_bind_group_layout.as_ref(),
+                    resources.raw_demosaic_pipeline.as_ref(),
+                    resources.raw_demosaic_uniform_buffer.as_ref(),
+                ) {
+                    log::debug!(
+                        "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
+                        self.image.width,
+                        self.image.height,
+                        source.demosaic_method
+                    );
+                    let raw_pixels_view = binding
+                        .uploaded_raw_pixels_view
+                        .as_ref()
+                        .expect("raw pixels view");
+                    let output_view = binding
+                        .uploaded_display_storage_view
+                        .as_ref()
+                        .expect("display storage view");
+                    compose_command_buffers.push(
+                        crate::hdr::raw_demosaic_gpu::encode_raw_demosaic_compute_pass(
+                            device,
+                            queue,
+                            compose_layout,
+                            compose_pipeline,
+                            source,
+                            raw_pixels_view,
+                            output_view,
+                            uniform_buf,
+                        ),
+                    );
+                    binding.baked_raw_demosaic_key = Some(image_key);
+                    binding.baked_raw_demosaic_method = Some(source.demosaic_method);
+                    if binding.bind_group.is_none() {
+                        return compose_command_buffers;
+                    }
+                } else {
+                    log::warn!(
+                        "[HDR] GPU RAW demosaicing unavailable; falling back to CPU placeholder"
+                    );
+                    resources.failed_raw_demosaic.insert(image_key);
+                    return Vec::new();
+                }
+            }
+        }
         if needs_jpeg_compose {
             if let Some(deferred) = iso_deferred {
                 if let (Some(compose_layout), Some(compose_pipeline)) = (
@@ -430,7 +492,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let jpeg_gpu_composed = iso_deferred.is_some()
             && binding.baked_jpeg_image_key == Some(image_key)
             && binding.baked_jpeg_weight_bits == Some(target_capacity_bits);
-        let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed;
+        let raw_gpu_composed = raw_source.is_some()
+            && binding.baked_raw_demosaic_key == Some(image_key)
+            && binding.baked_raw_demosaic_method == raw_source.map(|s| s.demosaic_method);
+        let deferred_gpu_composed = apple_gpu_composed || jpeg_gpu_composed || raw_gpu_composed;
 
         let uniform = image_tone_map_uniform(
             &self.image,

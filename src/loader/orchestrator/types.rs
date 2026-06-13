@@ -91,6 +91,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) generation: u64,
     pub(crate) path: PathBuf,
     pub(crate) high_quality: bool,
+    pub(crate) raw_demosaic_mode: crate::settings::RawDemosaicMode,
     pub(crate) claimed: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) loading: Arc<Mutex<HashMap<usize, u64>>>,
     pub(crate) current_gen: Arc<std::sync::atomic::AtomicU64>,

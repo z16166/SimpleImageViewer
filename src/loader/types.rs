@@ -38,7 +38,7 @@ pub fn source_key_for_path(path: &Path) -> SourceKey {
 
 /// RGBA8 in a shared [`Arc`] so decode → channel → UI can reuse one allocation (cheap `Clone`).
 /// `egui::ColorImage::from_rgba_unmultiplied` still converts RGBA8 → `Color32` once at upload time.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
