@@ -178,6 +178,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         } else {
                             (None, None)
                         };
+                    let uploaded_raw_green_plane_view = uploaded
+                        .raw_green_plane
+                        .and_then(|g| g.storage_view);
 
                     let binding = HdrImageBinding {
                         uploaded_texture,
@@ -189,6 +192,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         uploaded_display_storage_view,
                         uploaded_raw_pixels_texture,
                         uploaded_raw_pixels_view,
+                        uploaded_raw_green_plane_view,
                         baked_jpeg_image_key: None,
                         baked_jpeg_weight_bits: None,
                         baked_apple_image_key: None,
@@ -240,9 +244,15 @@ impl CallbackTrait for HdrImagePlaneCallback {
         let mut compose_command_buffers = Vec::new();
         if needs_raw_demosaic {
             if let Some(source) = raw_source {
-                if let (Some(compose_layout), Some(compose_pipeline), Some(uniform_buf)) = (
+                if let (
+                    Some(compose_layout),
+                    Some(green_pipeline),
+                    Some(rgb_pipeline),
+                    Some(uniform_buf),
+                ) = (
                     resources.raw_demosaic_bind_group_layout.as_ref(),
-                    resources.raw_demosaic_pipeline.as_ref(),
+                    resources.raw_demosaic_green_pipeline.as_ref(),
+                    resources.raw_demosaic_rgb_pipeline.as_ref(),
                     resources.raw_demosaic_uniform_buffer.as_ref(),
                 ) {
                     log::debug!(
@@ -255,6 +265,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         .uploaded_raw_pixels_view
                         .as_ref()
                         .expect("raw pixels view");
+                    let green_plane_view = binding
+                        .uploaded_raw_green_plane_view
+                        .as_ref()
+                        .expect("raw green plane view");
                     let output_view = binding
                         .uploaded_display_storage_view
                         .as_ref()
@@ -264,9 +278,11 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             device,
                             queue,
                             compose_layout,
-                            compose_pipeline,
+                            green_pipeline,
+                            rgb_pipeline,
                             source,
                             raw_pixels_view,
+                            green_plane_view,
                             output_view,
                             uniform_buf,
                         ),

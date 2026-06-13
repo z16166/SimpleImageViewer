@@ -104,6 +104,82 @@ impl Drop for LibRawMemory {
 
 unsafe impl Send for RawProcessor {}
 
+/// LibRaw `green_matching()` on cropped Bayer u16 (G2 index 3 vs G1 index 1).
+fn equilibrate_dual_green_raw(
+    pixels: &mut [u16],
+    width: u32,
+    height: u32,
+    color_at: impl Fn(i32, i32) -> u32,
+    maximum: u16,
+) {
+    if width < 8 || height < 8 {
+        return;
+    }
+    let w = width as i32;
+    let h = height as i32;
+    let margin = 3;
+    let thr = maximum as f32 * 0.01;
+    let sat = maximum as f32 * 0.95;
+
+    let mut oj = 2i32;
+    let mut oi = 2i32;
+    if color_at(oj, oi) != 3 {
+        oj += 1;
+    }
+    if color_at(oj, oi) != 3 {
+        oi += 1;
+    }
+    if color_at(oj, oi) != 3 {
+        oj -= 1;
+    }
+
+    let neighbor_var = |vals: [u16; 4]| -> f32 {
+        let a = vals[0] as f32;
+        let b = vals[1] as f32;
+        let c = vals[2] as f32;
+        let d = vals[3] as f32;
+        ((a - b).abs()
+            + (a - c).abs()
+            + (a - d).abs()
+            + (b - c).abs()
+            + (c - d).abs()
+            + (b - d).abs())
+            / 6.0
+    };
+
+    for j in (oj..h - margin).step_by(2) {
+        for i in (oi..w - margin).step_by(2) {
+            if color_at(j, i) != 3 {
+                continue;
+            }
+            let o1 = [
+                pixels[((j - 1) * w + i - 1) as usize],
+                pixels[((j - 1) * w + i + 1) as usize],
+                pixels[((j + 1) * w + i - 1) as usize],
+                pixels[((j + 1) * w + i + 1) as usize],
+            ];
+            let o2 = [
+                pixels[((j - 2) * w + i) as usize],
+                pixels[((j + 2) * w + i) as usize],
+                pixels[(j * w + i - 2) as usize],
+                pixels[(j * w + i + 2) as usize],
+            ];
+            let m1 = (o1[0] as f64 + o1[1] as f64 + o1[2] as f64 + o1[3] as f64) / 4.0;
+            let m2 = (o2[0] as f64 + o2[1] as f64 + o2[2] as f64 + o2[3] as f64) / 4.0;
+            if m2 <= 0.0 {
+                continue;
+            }
+            let c1 = neighbor_var(o1);
+            let c2 = neighbor_var(o2);
+            let idx = (j * w + i) as usize;
+            let v = pixels[idx] as f32;
+            if v < sat && c1 < thr && c2 < thr {
+                pixels[idx] = (v * (m1 / m2) as f32).clamp(0.0, 65535.0) as u16;
+            }
+        }
+    }
+}
+
 impl RawProcessor {
     pub fn new() -> Option<Self> {
         unsafe {
@@ -223,6 +299,13 @@ impl RawProcessor {
             self.unpack()?;
         }
 
+        // Match CPU develop path WB metadata before reading cam_mul / black.
+        unsafe {
+            ffi::siv_libraw_set_use_camera_wb(self.data, 1);
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
+            ffi::siv_libraw_set_output_color(self.data, 1);
+        }
+
         let raw_pixels_ptr = unsafe { ffi::siv_libraw_get_raw_image(self.data) };
         if raw_pixels_ptr.is_null() {
             return Err("Raw sensor pixel buffer is null".to_string());
@@ -260,31 +343,53 @@ impl RawProcessor {
             }
         }
 
+        let color_at = |row: i32, col: i32| -> u32 {
+            unsafe {
+                ffi::siv_libraw_get_color_at(
+                    self.data,
+                    top_margin + row,
+                    left_margin + col,
+                ) as u32
+            }
+        };
+
         // Query colors, filters, and params
-        let p00 =
-            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin, left_margin) } as u32;
-        let p01 =
-            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin, left_margin + 1) } as u32;
-        let p10 =
-            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin + 1, left_margin) } as u32;
-        let p11 =
-            unsafe { ffi::siv_libraw_get_color_at(self.data, top_margin + 1, left_margin + 1) }
-                as u32;
+        let p00 = color_at(0, 0);
+        let p01 = color_at(0, 1);
+        let p10 = color_at(1, 0);
+        let p11 = color_at(1, 1);
         let bayer_pattern = [p00, p01, p10, p11];
 
-        let mut cam_mul = [0.0f32; 4];
+        let mut rgb_cam = [0.0f32; 12];
         let mut cblack = [0.0f32; 4];
+        let mut cfa_scale = [0.0f32; 4];
         let mut black = 0;
         let mut maximum = 0;
+        let mut _cam_mul = [0.0f32; 4];
+        let mut _cblack_tmp = [0.0f32; 4];
         unsafe {
+            ffi::siv_libraw_get_gpu_color_params(
+                self.data,
+                rgb_cam.as_mut_ptr(),
+                cblack.as_mut_ptr(),
+                cfa_scale.as_mut_ptr(),
+            );
             ffi::siv_libraw_get_color_params(
                 self.data,
-                cam_mul.as_mut_ptr(),
-                cblack.as_mut_ptr(),
+                _cam_mul.as_mut_ptr(),
+                _cblack_tmp.as_mut_ptr(),
                 &mut black,
                 &mut maximum,
             );
         }
+
+        equilibrate_dual_green_raw(
+            &mut cropped_pixels,
+            w,
+            h,
+            color_at,
+            maximum as u16,
+        );
 
         let mut black_level = [0.0f32; 4];
         for i in 0..4 {
@@ -295,17 +400,12 @@ impl RawProcessor {
             };
         }
 
-        // Normalize cam_mul by green channel (cam_mul[1]) to prevent excessive scaling.
-        let green_gain = cam_mul[1].max(1e-6);
-        for i in 0..4 {
-            cam_mul[i] /= green_gain;
-        }
-
         log::debug!(
-            "[Loader] RAW GPU source extraction parameters: maximum={}, black_level={:?}, cam_mul={:?}, bayer_pattern={:?}",
+            "[Loader] RAW GPU source extraction parameters: maximum={}, black_level={:?}, cfa_scale={:?}, rgb_cam={:?}, bayer_pattern={:?}",
             maximum,
             black_level,
-            cam_mul,
+            cfa_scale,
+            rgb_cam,
             bayer_pattern
         );
 
@@ -316,7 +416,8 @@ impl RawProcessor {
             height: h,
             raw_pixels: std::sync::Arc::new(cropped_pixels),
             black_level,
-            cam_mul,
+            cfa_scale,
+            rgb_cam,
             maximum: maximum as f32,
             bayer_pattern,
             demosaic_method,
@@ -409,6 +510,26 @@ impl RawProcessor {
 
             Ok(DynamicImage::ImageRgba8(rgba_img))
         }
+    }
+
+    /// Apply LibRaw scale_colors + convert_to_rgb to demosaiced camera-RGB counts.
+    pub fn apply_libraw_output_color(
+        &mut self,
+        rgb16: &mut [u16],
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        if width == 0 || height == 0 {
+            return Err("Invalid dimensions".to_string());
+        }
+        let expected = width as usize * height as usize * 3;
+        if rgb16.len() < expected {
+            return Err("RGB16 buffer too small".to_string());
+        }
+        unsafe {
+            ffi::siv_libraw_apply_output_color(self.data, rgb16.as_mut_ptr(), width, height);
+        }
+        Ok(())
     }
 
     pub fn develop_scene_linear_hdr(
@@ -846,6 +967,84 @@ mod tests {
             }
             assert!(max_l > 0.0, "{label}: scene linear HDR is all zero");
         }
+    }
+
+    /// Requires `F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2` on the test machine.
+    #[test]
+    fn log_canon_5d2_gpu_extract_metadata() {
+        let path = Path::new(r"F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
+        if !path.is_file() {
+            eprintln!("skip: Canon 5D2 sample not present at {}", path.display());
+            return;
+        }
+        let mut processor = RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        let source = processor
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .expect("extract gpu source");
+        eprintln!(
+            "canon 5d2 gpu meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?} size={}x{}",
+            source.maximum,
+            source.black_level,
+            source.cfa_scale,
+            source.rgb_cam,
+            source.bayer_pattern,
+            source.width,
+            source.height
+        );
+        let pixels = source.raw_pixels.as_slice();
+        let mut min_v = u16::MAX;
+        let mut max_v = 0u16;
+        for &v in pixels.iter().step_by(9973) {
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+        eprintln!("canon 5d2 raw sample min={min_v} max={max_v}");
+    }
+
+    /// Requires `F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2` on the test machine.
+    #[test]
+    fn compare_canon_5d2_cpu_scene_linear_stats() {
+        let path = Path::new(r"F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
+        if !path.is_file() {
+            eprintln!("skip: Canon 5D2 sample not present at {}", path.display());
+            return;
+        }
+        let mut processor = RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        let hdr = processor
+            .develop_scene_linear_hdr()
+            .expect("develop_scene_linear_hdr");
+        let w = hdr.width as usize;
+        let h = hdr.height as usize;
+        let cx = w / 2;
+        let cy = h / 2;
+        let mut r_sum = 0.0f64;
+        let mut g_sum = 0.0f64;
+        let mut b_sum = 0.0f64;
+        let mut count = 0u64;
+        for dy in 0..64 {
+            for dx in 0..64 {
+                let x = cx + dx - 32;
+                let y = cy + dy - 32;
+                if x >= w || y >= h {
+                    continue;
+                }
+                let i = (y * w + x) * 4;
+                r_sum += hdr.rgba_f32[i] as f64;
+                g_sum += hdr.rgba_f32[i + 1] as f64;
+                b_sum += hdr.rgba_f32[i + 2] as f64;
+                count += 1;
+            }
+        }
+        let n = count as f64;
+        eprintln!(
+            "canon 5d2 cpu center avg rgb=({:.4}, {:.4}, {:.4})",
+            r_sum / n,
+            g_sum / n,
+            b_sum / n
+        );
+        assert!(g_sum > r_sum, "expected scene to be G/B dominant (blue night), not red");
     }
 
     /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF` on the test machine.

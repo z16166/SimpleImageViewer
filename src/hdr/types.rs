@@ -163,8 +163,12 @@ pub struct RawGpuSource {
     pub width: u32,
     pub height: u32,
     pub raw_pixels: std::sync::Arc<Vec<u16>>,
+    /// Per-CFA black (LibRaw `cblack`).
     pub black_level: [f32; 4],
-    pub cam_mul: [f32; 4],
+    /// LibRaw `scale_colors` multipliers applied before demosaic.
+    pub cfa_scale: [f32; 4],
+    /// LibRaw `rgb_cam` output matrix (3x4 row-major).
+    pub rgb_cam: [f32; 12],
     pub maximum: f32,
     pub bayer_pattern: [u32; 4],
     pub demosaic_method: crate::settings::RawDemosaicMethod,

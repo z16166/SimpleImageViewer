@@ -114,6 +114,19 @@ unsafe extern "C" {
     );
     pub fn siv_libraw_get_filters(data: *mut libraw_data_t) -> c_uint;
     pub fn siv_libraw_get_colors(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_get_gpu_color_params(
+        data: *mut libraw_data_t,
+        rgb_cam_out: *mut c_float,
+        cblack_rgb: *mut c_float,
+        channel_scale: *mut c_float,
+    );
+    pub fn siv_libraw_apply_output_color(
+        data: *mut libraw_data_t,
+        rgb16: *mut c_ushort,
+        width: c_uint,
+        height: c_uint,
+    );
+    pub fn libraw_get_rgb_cam(data: *mut libraw_data_t, index1: c_int, index2: c_int) -> c_float;
 }
 
 pub fn version() -> String {
