@@ -392,6 +392,18 @@ pub(crate) fn upload_image_plane(
             raw_source.height,
             "simple-image-viewer-hdr-raw-green-plane-texture",
         )?;
+        let raw_r_at_green_plane = create_empty_r32f_storage_texture(
+            device,
+            raw_source.width,
+            raw_source.height,
+            "simple-image-viewer-hdr-raw-r-at-green-texture",
+        )?;
+        let raw_b_at_green_plane = create_empty_r32f_storage_texture(
+            device,
+            raw_source.width,
+            raw_source.height,
+            "simple-image-viewer-hdr-raw-b-at-green-texture",
+        )?;
 
         if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW {
             if let Some(ref preview) = raw_source.bootstrap_preview {
@@ -415,6 +427,8 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: None,
             raw_pixels: Some(raw_pixels),
             raw_green_plane: Some(raw_green_plane),
+            raw_r_at_green_plane: Some(raw_r_at_green_plane),
+            raw_b_at_green_plane: Some(raw_b_at_green_plane),
         });
     }
 
@@ -446,6 +460,8 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: Some(sdr),
             raw_pixels: None,
             raw_green_plane: None,
+            raw_r_at_green_plane: None,
+            raw_b_at_green_plane: None,
         });
     }
 
@@ -468,6 +484,8 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: None,
             raw_pixels: None,
             raw_green_plane: None,
+            raw_r_at_green_plane: None,
+            raw_b_at_green_plane: None,
         });
     }
 
@@ -478,6 +496,8 @@ pub(crate) fn upload_image_plane(
         sdr_baseline: None,
         raw_pixels: None,
         raw_green_plane: None,
+        raw_r_at_green_plane: None,
+        raw_b_at_green_plane: None,
     })
 }
 

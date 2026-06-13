@@ -1,4 +1,4 @@
-﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -29,12 +29,15 @@ struct DemosaicUniforms {
     rgb_cam0: vec4<f32>,
     rgb_cam1: vec4<f32>,
     rgb_cam2: vec4<f32>,
+    scene_color_scale: vec4<f32>,
 };
 
 @group(0) @binding(0) var raw_pixels_texture: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> uniforms: DemosaicUniforms;
 @group(0) @binding(2) var green_plane: texture_storage_2d<r32float, read_write>;
 @group(0) @binding(3) var output_texture: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(4) var r_at_green: texture_storage_2d<r32float, read_write>;
+@group(0) @binding(5) var b_at_green: texture_storage_2d<r32float, read_write>;
 
 fn read_cfa(c: i32, r: i32) -> f32 {
     var x = c;
@@ -140,6 +143,17 @@ fn read_channel_stored(c: i32, r: i32, ch: u32) -> f32 {
     if (ch == 1u) {
         return read_green_stored(c, r);
     }
+    // LibRaw PPG pass 2 writes interpolated R/B at green sites before pass 3 chroma.
+    if (fc == 1u || fc == 3u) {
+        let x = clamp(c, 0, i32(uniforms.width) - 1);
+        let y = clamp(r, 0, i32(uniforms.height) - 1);
+        if (ch == 0u) {
+            return textureLoad(r_at_green, vec2<i32>(x, y)).r;
+        }
+        if (ch == 2u) {
+            return textureLoad(b_at_green, vec2<i32>(x, y)).r;
+        }
+    }
     return 0.0;
 }
 
@@ -211,6 +225,23 @@ fn ppg_chroma_at_rb(col: i32, row: i32, fc: u32, green: f32) -> f32 {
 }
 
 @compute @workgroup_size(16, 16, 1)
+fn cs_ppg_rb_at_green(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let col = i32(gid.x);
+    let row = i32(gid.y);
+    if (col >= i32(uniforms.width) || row >= i32(uniforms.height)) {
+        return;
+    }
+    let fc = get_color_channel(col, row);
+    if (fc != 1u && fc != 3u) {
+        return;
+    }
+    let green = read_green_stored(col, row);
+    let rgb = ppg_green_site_rgb(col, row, green);
+    textureStore(r_at_green, vec2<i32>(col, row), vec4<f32>(rgb.r));
+    textureStore(b_at_green, vec2<i32>(col, row), vec4<f32>(rgb.b));
+}
+
+@compute @workgroup_size(16, 16, 1)
 fn cs_ppg_rgb(@builtin(global_invocation_id) gid: vec3<u32>) {
     let col = i32(gid.x);
     let row = i32(gid.y);
@@ -231,10 +262,12 @@ fn cs_ppg_rgb(@builtin(global_invocation_id) gid: vec3<u32>) {
         rgb.g = green;
         rgb.r = ppg_chroma_at_rb(col, row, fc, green);
     } else {
-        rgb = ppg_green_site_rgb(col, row, green);
+        rgb.r = textureLoad(r_at_green, vec2<i32>(col, row)).r;
+        rgb.g = green;
+        rgb.b = textureLoad(b_at_green, vec2<i32>(col, row)).r;
     }
 
-    rgb = apply_rgb_cam(rgb) * uniforms.output_scale;
+    rgb = apply_rgb_cam(rgb) * uniforms.output_scale * uniforms.scene_color_scale.xyz;
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
 
     textureStore(output_texture, vec2<i32>(col, row), vec4<f32>(rgb, 1.0));
@@ -254,6 +287,7 @@ pub struct RawDemosaicUniform {
     pub rgb_cam0: [f32; 4],
     pub rgb_cam1: [f32; 4],
     pub rgb_cam2: [f32; 4],
+    pub scene_color_scale: [f32; 4],
 }
 
 impl RawDemosaicUniform {
@@ -269,6 +303,12 @@ impl RawDemosaicUniform {
             rgb_cam0: source.rgb_cam[0..4].try_into().expect("rgb_cam row 0"),
             rgb_cam1: source.rgb_cam[4..8].try_into().expect("rgb_cam row 1"),
             rgb_cam2: source.rgb_cam[8..12].try_into().expect("rgb_cam row 2"),
+            scene_color_scale: [
+                source.scene_color_scale[0],
+                source.scene_color_scale[1],
+                source.scene_color_scale[2],
+                0.0,
+            ],
         }
     }
 }
@@ -277,6 +317,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
     device: &wgpu::Device,
 ) -> (
     wgpu::BindGroupLayout,
+    wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::Buffer,
@@ -329,6 +370,26 @@ pub(super) fn create_raw_demosaic_compute_resources(
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::ReadWrite,
+                    format: wgpu::TextureFormat::R32Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::ReadWrite,
+                    format: wgpu::TextureFormat::R32Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
         ],
     });
 
@@ -343,6 +404,15 @@ pub(super) fn create_raw_demosaic_compute_resources(
         layout: Some(&pipeline_layout),
         module: &shader,
         entry_point: Some("cs_ppg_green"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    let rb_at_green_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-rb-at-green-pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs_ppg_rb_at_green"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     });
@@ -367,6 +437,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
         rgb_cam0: [1.0, 0.0, 0.0, 0.0],
         rgb_cam1: [0.0, 1.0, 0.0, 0.0],
         rgb_cam2: [0.0, 0.0, 1.0, 0.0],
+        scene_color_scale: [1.0, 1.0, 1.0, 0.0],
     };
 
     let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -375,7 +446,13 @@ pub(super) fn create_raw_demosaic_compute_resources(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    (bind_group_layout, green_pipeline, rgb_pipeline, uniforms_buffer)
+    (
+        bind_group_layout,
+        green_pipeline,
+        rb_at_green_pipeline,
+        rgb_pipeline,
+        uniforms_buffer,
+    )
 }
 
 pub(crate) fn encode_raw_demosaic_compute_pass(
@@ -383,10 +460,13 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
     queue: &wgpu::Queue,
     bind_group_layout: &wgpu::BindGroupLayout,
     green_pipeline: &wgpu::ComputePipeline,
+    rb_at_green_pipeline: &wgpu::ComputePipeline,
     rgb_pipeline: &wgpu::ComputePipeline,
     source: &RawGpuSource,
     raw_pixels_view: &wgpu::TextureView,
     green_plane_view: &wgpu::TextureView,
+    r_at_green_view: &wgpu::TextureView,
+    b_at_green_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
@@ -413,6 +493,14 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(output_view),
             },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(r_at_green_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(b_at_green_view),
+            },
         ],
     });
 
@@ -428,6 +516,15 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
             timestamp_writes: None,
         });
         pass.set_pipeline(green_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+    }
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("simple-image-viewer-raw-demosaic-rb-at-green-pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(rb_at_green_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
     }
@@ -573,7 +670,8 @@ fn cpu_read_green_stored(plane: &[f32], source: &RawGpuSource, col: i32, row: i3
 fn cpu_read_channel_stored(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
-    plane: &[f32],
+    green_plane: &[f32],
+    rb_plane: &[(f32, f32)],
     col: i32,
     row: i32,
     ch: u32,
@@ -583,27 +681,62 @@ fn cpu_read_channel_stored(
         return read_cfa(col, row);
     }
     if ch == 1 {
-        return cpu_read_green_stored(plane, source, col, row);
+        return cpu_read_green_stored(green_plane, source, col, row);
+    }
+    if fc == 1 || fc == 3 {
+        let w = source.width as usize;
+        let x = col.clamp(0, source.width as i32 - 1) as usize;
+        let y = row.clamp(0, source.height as i32 - 1) as usize;
+        let (r, b) = rb_plane[y * w + x];
+        if ch == 0 {
+            return r;
+        }
+        if ch == 2 {
+            return b;
+        }
     }
     0.0
+}
+
+#[cfg(test)]
+fn cpu_build_rb_at_green_plane(
+    source: &RawGpuSource,
+    read_cfa: &impl Fn(i32, i32) -> f32,
+    green_plane: &[f32],
+) -> Vec<(f32, f32)> {
+    let w = source.width as usize;
+    let h = source.height as usize;
+    let mut plane = vec![(0.0f32, 0.0f32); w * h];
+    for row in 0..source.height as i32 {
+        for col in 0..source.width as i32 {
+            let fc = cpu_fc(source, col, row);
+            if fc != 1 && fc != 3 {
+                continue;
+            }
+            let green = cpu_read_green_stored(green_plane, source, col, row);
+            let rgb = cpu_ppg_green_site_rgb(source, read_cfa, green_plane, col, row, green);
+            plane[row as usize * w + col as usize] = (rgb[0], rgb[2]);
+        }
+    }
+    plane
 }
 
 #[cfg(test)]
 fn cpu_ppg_green_site_rgb(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
-    plane: &[f32],
+    green_plane: &[f32],
     col: i32,
     row: i32,
     green: f32,
 ) -> [f32; 3] {
     let mut rgb = [0.0f32, green, 0.0];
     let mut c = cpu_fc(source, col + 1, row);
-    let mut v = (cpu_read_channel_stored(source, read_cfa, plane, col - 1, row, c)
-        + cpu_read_channel_stored(source, read_cfa, plane, col + 1, row, c)
+    let mut v = (cpu_read_channel_stored(source, read_cfa, green_plane, &[], col - 1, row, c)
+        + cpu_read_channel_stored(source, read_cfa, green_plane, &[], col + 1, row, c)
         + 2.0 * green
-        - cpu_read_channel_stored(source, read_cfa, plane, col - 1, row, 1)
-        - cpu_read_channel_stored(source, read_cfa, plane, col + 1, row, 1))
+        - cpu_read_channel_stored(source, read_cfa, green_plane, &[], col - 1, row, 1)
+        - cpu_read_channel_stored(source, read_cfa, green_plane, &[], col + 1, row, 1))
         * 0.5;
     if c == 0 {
         rgb[0] = v;
@@ -611,11 +744,11 @@ fn cpu_ppg_green_site_rgb(
         rgb[2] = v;
     }
     c = 2 - c;
-    v = (cpu_read_channel_stored(source, read_cfa, plane, col, row - 1, c)
-        + cpu_read_channel_stored(source, read_cfa, plane, col, row + 1, c)
+    v = (cpu_read_channel_stored(source, read_cfa, green_plane, &[], col, row - 1, c)
+        + cpu_read_channel_stored(source, read_cfa, green_plane, &[], col, row + 1, c)
         + 2.0 * green
-        - cpu_read_channel_stored(source, read_cfa, plane, col, row - 1, 1)
-        - cpu_read_channel_stored(source, read_cfa, plane, col, row + 1, 1))
+        - cpu_read_channel_stored(source, read_cfa, green_plane, &[], col, row - 1, 1)
+        - cpu_read_channel_stored(source, read_cfa, green_plane, &[], col, row + 1, 1))
         * 0.5;
     if c == 0 {
         rgb[0] = v;
@@ -629,24 +762,33 @@ fn cpu_ppg_green_site_rgb(
 fn cpu_ppg_chroma_at_rb(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
-    plane: &[f32],
+    green_plane: &[f32],
+    rb_plane: &[(f32, f32)],
     col: i32,
     row: i32,
     fc: u32,
     green: f32,
 ) -> f32 {
     let c = 2 - fc;
-    let nd_c = cpu_read_channel_stored(source, read_cfa, plane, col - 1, row - 1, c);
-    let pd_c = cpu_read_channel_stored(source, read_cfa, plane, col + 1, row + 1, c);
-    let nd_g = cpu_read_channel_stored(source, read_cfa, plane, col - 1, row - 1, 1);
-    let pd_g = cpu_read_channel_stored(source, read_cfa, plane, col + 1, row + 1, 1);
+    let nd_c =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col - 1, row - 1, c);
+    let pd_c =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col + 1, row + 1, c);
+    let nd_g =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col - 1, row - 1, 1);
+    let pd_g =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col + 1, row + 1, 1);
     let diff0 = (nd_c - pd_c).abs() + (nd_g - green).abs() + (pd_g - green).abs();
     let guess0 = nd_c + pd_c + 2.0 * green - nd_g - pd_g;
 
-    let nw_c = cpu_read_channel_stored(source, read_cfa, plane, col + 1, row - 1, c);
-    let se_c = cpu_read_channel_stored(source, read_cfa, plane, col - 1, row + 1, c);
-    let nw_g = cpu_read_channel_stored(source, read_cfa, plane, col + 1, row - 1, 1);
-    let se_g = cpu_read_channel_stored(source, read_cfa, plane, col - 1, row + 1, 1);
+    let nw_c =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col + 1, row - 1, c);
+    let se_c =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col - 1, row + 1, c);
+    let nw_g =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col + 1, row - 1, 1);
+    let se_g =
+        cpu_read_channel_stored(source, read_cfa, green_plane, rb_plane, col - 1, row + 1, 1);
     let diff1 = (nw_c - se_c).abs() + (nw_g - green).abs() + (se_g - green).abs();
     let guess1 = nw_c + se_c + 2.0 * green - nw_g - se_g;
 
@@ -663,26 +805,29 @@ fn cpu_ppg_chroma_at_rb(
 fn cpu_ppg_camera_rgb_at(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
-    plane: &[f32],
+    green_plane: &[f32],
+    rb_plane: &[(f32, f32)],
     col: i32,
     row: i32,
 ) -> [f32; 3] {
     let fc = cpu_fc(source, col, row);
-    let green = cpu_read_green_stored(plane, source, col, row);
+    let green = cpu_read_green_stored(green_plane, source, col, row);
     if fc == 0 {
         [
             read_cfa(col, row),
             green,
-            cpu_ppg_chroma_at_rb(source, read_cfa, plane, col, row, fc, green),
+            cpu_ppg_chroma_at_rb(source, read_cfa, green_plane, rb_plane, col, row, fc, green),
         ]
     } else if fc == 2 {
         [
-            cpu_ppg_chroma_at_rb(source, read_cfa, plane, col, row, fc, green),
+            cpu_ppg_chroma_at_rb(source, read_cfa, green_plane, rb_plane, col, row, fc, green),
             green,
             read_cfa(col, row),
         ]
     } else {
-        cpu_ppg_green_site_rgb(source, read_cfa, plane, col, row, green)
+        let w = source.width as usize;
+        let (r, b) = rb_plane[row as usize * w + col as usize];
+        [r, green, b]
     }
 }
 
@@ -691,10 +836,11 @@ pub(crate) fn cpu_demosaic_ppg_camera_counts(source: &RawGpuSource) -> Vec<f32> 
     let w = source.width as usize;
     let read_cfa = cpu_ppg_helpers(source);
     let green_plane = cpu_build_green_plane(source, &read_cfa);
+    let rb_plane = cpu_build_rb_at_green_plane(source, &read_cfa, &green_plane);
     let mut out = vec![0.0f32; w * source.height as usize * 3];
     for row in 0..source.height as i32 {
         for col in 0..source.width as i32 {
-            let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, col, row);
+            let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, &rb_plane, col, row);
             let i = (row as usize * w + col as usize) * 3;
             out[i..i + 3].copy_from_slice(&rgb);
         }
@@ -709,6 +855,7 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
     let output_scale = 1.0f32 / 65535.0;
     let read_cfa = cpu_ppg_helpers(source);
     let green_plane = cpu_build_green_plane(source, &read_cfa);
+    let rb_plane = cpu_build_rb_at_green_plane(source, &read_cfa, &green_plane);
     let mut out = vec![0.0f32; w * source.height as usize * 4];
     let apply_rgb_cam = |rgb: [f32; 3]| -> [f32; 3] {
         let m = &source.rgb_cam;
@@ -720,12 +867,12 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
     };
     for row in 0..source.height as i32 {
         for col in 0..source.width as i32 {
-            let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, col, row);
+            let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, &rb_plane, col, row);
             let linear = apply_rgb_cam(rgb);
             let i = (row as usize * w + col as usize) * 4;
-            out[i] = (linear[0] * output_scale).clamp(0.0, 1.0);
-            out[i + 1] = (linear[1] * output_scale).clamp(0.0, 1.0);
-            out[i + 2] = (linear[2] * output_scale).clamp(0.0, 1.0);
+            out[i] = (linear[0] * output_scale * source.scene_color_scale[0]).clamp(0.0, 1.0);
+            out[i + 1] = (linear[1] * output_scale * source.scene_color_scale[1]).clamp(0.0, 1.0);
+            out[i + 2] = (linear[2] * output_scale * source.scene_color_scale[2]).clamp(0.0, 1.0);
             out[i + 3] = 1.0;
         }
     }
@@ -779,9 +926,13 @@ mod tests {
         }
         let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
         processor.open(path).expect("libraw open");
-        let source = processor
+        let mut source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
             .expect("extract gpu source");
+        source.scene_color_scale =
+            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
+                .expect("scene color scale");
+        eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
         let w = source.width as usize;
         let h = source.height as usize;
 
@@ -817,22 +968,164 @@ mod tests {
         let gpu_path = cpu_demosaic_ppg_scene_linear(&source);
         let (gr, gg, gb) = center_mean_rgba(&gpu_path, w, h);
         let gpu_rb = gr / gb.max(1e-9);
+        let m = &source.rgb_cam;
+        eprintln!(
+            "canon 5d2 rgb_cam matrix: row0={:?}, row1={:?}, row2={:?}",
+            &m[0..4],
+            &m[4..8],
+            &m[8..12]
+        );
+        let sample = [13729.0f32, 8838.0, 15838.0];
+        let lr = (
+            m[0] * sample[0] + m[1] * sample[1] + m[2] * sample[2],
+            m[4] * sample[0] + m[5] * sample[1] + m[6] * sample[2],
+            m[8] * sample[0] + m[9] * sample[1] + m[10] * sample[2],
+        );
+        eprintln!(
+            "canon 5d2 manual rgb_cam*counts/65535=({:.4}, {:.4}, {:.4})",
+            lr.0 / 65535.0,
+            lr.1 / 65535.0,
+            lr.2 / 65535.0,
+        );
 
-        let hdr = processor
-            .develop_scene_linear_hdr()
-            .expect("develop_scene_linear_hdr");
+        let hdr = {
+            let mut develop_processor =
+                crate::raw_processor::RawProcessor::new().expect("libraw init");
+            develop_processor.open(path).expect("libraw open");
+            develop_processor
+                .develop_scene_linear_hdr()
+                .expect("develop_scene_linear_hdr")
+        };
         let cpu = hdr.rgba_f32.as_slice();
         let (cr, cg, cb) = center_mean_rgba(cpu, w, h);
         let cpu_rb = cr / cb.max(1e-9);
 
-        eprintln!(
-            "canon 5d2 gpu-shader center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={gpu_rb:.3}"
-        );
-        eprintln!(
-            "canon 5d2 libraw cpu center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={cpu_rb:.3}"
-        );
+        eprintln!("canon 5d2 gpu-shader center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={gpu_rb:.3}");
+        eprintln!("canon 5d2 libraw cpu center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={cpu_rb:.3}");
         eprintln!(
             "note: GPU WGSL uses LibRaw PPG demosaic; LibRaw CPU default is AHD — expect small diff"
+        );
+    }
+
+    /// Requires `F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2` on the test machine.
+    #[test]
+    fn diff_canon_5d2_ppg_counts_via_libraw_output_color() {
+        let path = Path::new(r"F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
+        if !path.is_file() {
+            eprintln!("skip: Canon 5D2 sample not present at {}", path.display());
+            return;
+        }
+        let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        let mut source = processor
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .expect("extract gpu source");
+        source.scene_color_scale =
+            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
+                .expect("scene color scale");
+        eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
+        let w = source.width as usize;
+        let h = source.height as usize;
+        let cx = w / 2;
+        let cy = h / 2;
+
+        let counts = cpu_demosaic_ppg_camera_counts(&source);
+        if let Ok(libraw_counts) = {
+            let mut ref_processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
+            ref_processor.open(path).expect("libraw open");
+            ref_processor.libraw_ppg_camera_rgb_counts()
+        } {
+            let ci = (cy * w + cx) * 3;
+            eprintln!(
+                "canon 5d2 libraw counts at center=({:.0}, {:.0}, {:.0})",
+                libraw_counts[ci] as f32,
+                libraw_counts[ci + 1] as f32,
+                libraw_counts[ci + 2] as f32,
+            );
+            let mut lr_r = 0.0f64;
+            let mut lr_g = 0.0f64;
+            let mut lr_b = 0.0f64;
+            let mut ours_r = 0.0f64;
+            let mut ours_g = 0.0f64;
+            let mut ours_b = 0.0f64;
+            for dy in 0..64 {
+                for dx in 0..64 {
+                    let x = cx + dx - 32;
+                    let y = cy + dy - 32;
+                    if x >= w || y >= h {
+                        continue;
+                    }
+                    let i = (y * w + x) * 3;
+                    lr_r += libraw_counts[i] as f64;
+                    lr_g += libraw_counts[i + 1] as f64;
+                    lr_b += libraw_counts[i + 2] as f64;
+                    ours_r += counts[i] as f64;
+                    ours_g += counts[i + 1] as f64;
+                    ours_b += counts[i + 2] as f64;
+                }
+            }
+            let n = 64.0 * 64.0;
+            eprintln!(
+                "canon 5d2 libraw PPG camera counts center avg=({:.0}, {:.0}, {:.0})",
+                lr_r / n,
+                lr_g / n,
+                lr_b / n,
+            );
+            eprintln!(
+                "canon 5d2 ours PPG camera counts center avg=({:.0}, {:.0}, {:.0})",
+                ours_r / n,
+                ours_g / n,
+                ours_b / n,
+            );
+        }
+        let gpu_path = cpu_demosaic_ppg_scene_linear(&source);
+        let (gr, gg, gb) = center_mean_rgba(&gpu_path, w, h);
+        eprintln!(
+            "canon 5d2 gpu-shader center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={:.3}",
+            gr / gb.max(1e-9)
+        );
+
+        let hdr = {
+            let mut develop_processor =
+                crate::raw_processor::RawProcessor::new().expect("libraw init");
+            develop_processor.open(path).expect("libraw open");
+            develop_processor
+                .develop_scene_linear_hdr()
+                .expect("develop_scene_linear_hdr")
+        };
+        let (cr, cg, cb) = center_mean_rgba(hdr.rgba_f32.as_slice(), w, h);
+        eprintln!(
+            "canon 5d2 libraw cpu (AHD) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
+            cr / cb.max(1e-9)
+        );
+
+        let hdr_ppg = {
+            let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
+            p.open(path).expect("libraw open");
+            p.develop_scene_linear_hdr_with_qual(false, 2)
+                .expect("develop PPG")
+        };
+        let (pr, pg, pb) = center_mean_rgba(hdr_ppg.rgba_f32.as_slice(), w, h);
+        eprintln!(
+            "canon 5d2 libraw PPG center=({pr:.4}, {pg:.4}, {pb:.4}) R/B={:.3}",
+            pr / pb.max(1e-9)
+        );
+
+        let hdr_ppg_no_ab = {
+            let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
+            p.open(path).expect("libraw open");
+            p.develop_scene_linear_hdr_with_qual(true, 2)
+                .expect("develop PPG no auto bright")
+        };
+        let (pnr, png, pnb) = center_mean_rgba(hdr_ppg_no_ab.rgba_f32.as_slice(), w, h);
+        eprintln!(
+            "canon 5d2 libraw PPG no_auto_bright=({pnr:.4}, {png:.4}, {pnb:.4}) R/B={:.3}",
+            pnr / pnb.max(1e-9)
+        );
+
+        let _ = counts;
+        eprintln!(
+            "note: GPU WGSL uses PPG demosaic; CPU default is AHD — compare no_auto_bright to isolate color matrix vs auto_bright vs demosaic"
         );
     }
 }

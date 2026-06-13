@@ -306,51 +306,33 @@ impl RawProcessor {
             ffi::siv_libraw_set_output_color(self.data, 1);
         }
 
-        let raw_pixels_ptr = unsafe { ffi::siv_libraw_get_raw_image(self.data) };
-        if raw_pixels_ptr.is_null() {
-            return Err("Raw sensor pixel buffer is null".to_string());
-        }
-
-        let rw = self.raw_width();
-        let rh = self.raw_height();
         let w = self.width();
         let h = self.height();
-
-        let mut left_margin = 0;
-        let mut top_margin = 0;
-        unsafe {
-            ffi::siv_libraw_get_margins(self.data, &mut left_margin, &mut top_margin);
-        }
-
-        // Validate bounds
-        if left_margin < 0
-            || top_margin < 0
-            || (left_margin as u32 + w) > rw
-            || (top_margin as u32 + h) > rh
-        {
-            return Err("Margins and active area exceed raw image boundaries".to_string());
-        }
-
-        // Copy and crop raw pixels row by row
         let total_pixels = w as usize * h as usize;
-        let mut cropped_pixels = Vec::with_capacity(total_pixels);
-        unsafe {
-            let slice = std::slice::from_raw_parts(raw_pixels_ptr, (rw * rh) as usize);
-            for r in 0..h {
-                let src_row_offset = ((top_margin as u32 + r) * rw + left_margin as u32) as usize;
-                cropped_pixels
-                    .extend_from_slice(&slice[src_row_offset..src_row_offset + w as usize]);
-            }
+        let mut scaled_pixels = vec![0u16; total_pixels];
+        let mut scaled_w = 0u32;
+        let mut scaled_h = 0u32;
+        let extract_ret = unsafe {
+            ffi::siv_libraw_extract_scaled_cfa(
+                self.data,
+                scaled_pixels.as_mut_ptr(),
+                &mut scaled_w,
+                &mut scaled_h,
+            )
+        };
+        if extract_ret != 0 {
+            return Err(format!(
+                "LibRaw scaled CFA extraction failed (code {extract_ret})"
+            ));
+        }
+        if scaled_w != w || scaled_h != h {
+            return Err(format!(
+                "LibRaw scaled CFA size mismatch: expected {w}x{h}, got {scaled_w}x{scaled_h}"
+            ));
         }
 
         let color_at = |row: i32, col: i32| -> u32 {
-            unsafe {
-                ffi::siv_libraw_get_color_at(
-                    self.data,
-                    top_margin + row,
-                    left_margin + col,
-                ) as u32
-            }
+            unsafe { ffi::siv_libraw_get_color_at(self.data, row, col) as u32 }
         };
 
         // Query colors, filters, and params
@@ -361,8 +343,8 @@ impl RawProcessor {
         let bayer_pattern = [p00, p01, p10, p11];
 
         let mut rgb_cam = [0.0f32; 12];
-        let mut cblack = [0.0f32; 4];
-        let mut cfa_scale = [0.0f32; 4];
+        let mut _cblack = [0.0f32; 4];
+        let mut _cfa_scale = [0.0f32; 4];
         let mut black = 0;
         let mut maximum = 0;
         let mut _cam_mul = [0.0f32; 4];
@@ -371,8 +353,8 @@ impl RawProcessor {
             ffi::siv_libraw_get_gpu_color_params(
                 self.data,
                 rgb_cam.as_mut_ptr(),
-                cblack.as_mut_ptr(),
-                cfa_scale.as_mut_ptr(),
+                _cblack.as_mut_ptr(),
+                _cfa_scale.as_mut_ptr(),
             );
             ffi::siv_libraw_get_color_params(
                 self.data,
@@ -383,22 +365,14 @@ impl RawProcessor {
             );
         }
 
-        equilibrate_dual_green_raw(
-            &mut cropped_pixels,
-            w,
-            h,
-            color_at,
-            maximum as u16,
-        );
-
+        // Pixels already include LibRaw raw2image + scale_colors (incl. white[][] WB).
+        // Since scale_colors scales the pixels without subtracting the black level,
+        // we must subtract the scaled black level on the GPU.
         let mut black_level = [0.0f32; 4];
-        for i in 0..4 {
-            black_level[i] = if cblack[i] > 0.0 {
-                cblack[i]
-            } else {
-                black as f32
-            };
+        for c in 0..4 {
+            black_level[c] = _cblack[c] * _cfa_scale[c];
         }
+        let cfa_scale = [1.0f32; 4];
 
         log::debug!(
             "[Loader] RAW GPU source extraction parameters: maximum={}, black_level={:?}, cfa_scale={:?}, rgb_cam={:?}, bayer_pattern={:?}",
@@ -410,19 +384,95 @@ impl RawProcessor {
         );
 
         Ok(crate::hdr::types::RawGpuSource {
-            raw_width: rw,
-            raw_height: rh,
+            raw_width: self.raw_width(),
+            raw_height: self.raw_height(),
             width: w,
             height: h,
-            raw_pixels: std::sync::Arc::new(cropped_pixels),
+            raw_pixels: std::sync::Arc::new(scaled_pixels),
             black_level,
             cfa_scale,
             rgb_cam,
             maximum: maximum as f32,
             bayer_pattern,
             demosaic_method,
+            scene_color_scale: [1.0, 1.0, 1.0],
             bootstrap_preview: None,
         })
+    }
+
+    /// Per-channel scale toward LibRaw scene-linear develop, softened to avoid blue cast.
+    pub fn compute_ppg_scene_color_scale(
+        path: &std::path::Path,
+        source: &crate::hdr::types::RawGpuSource,
+    ) -> Result<[f32; 3], String> {
+        let w = source.width as usize;
+        let h = source.height as usize;
+        if w == 0 || h == 0 {
+            return Err("Invalid dimensions".to_string());
+        }
+
+        let mut matrix = RawProcessor::new().ok_or("libraw init failed")?;
+        matrix.open(path)?;
+        let counts = matrix.libraw_ppg_camera_rgb_counts()?;
+        let br = source.black_level[0];
+        let bg = (source.black_level[1] + source.black_level[3]) * 0.5;
+        let bb = source.black_level[2];
+        let m = &source.rgb_cam;
+        let mut mr = 0.0f64;
+        let mut mg = 0.0f64;
+        let mut mb = 0.0f64;
+        let cx = w / 2;
+        let cy = h / 2;
+
+        for dy in 0..64 {
+            for dx in 0..64 {
+                let x = cx + dx - 32;
+                let y = cy + dy - 32;
+                if x >= w || y >= h {
+                    continue;
+                }
+                let i = (y * w + x) * 3;
+                let r = (counts[i] as f32 - br).max(0.0);
+                let g = (counts[i + 1] as f32 - bg).max(0.0);
+                let b = (counts[i + 2] as f32 - bb).max(0.0);
+                let r_val = (m[0] * r + m[1] * g + m[2] * b).max(0.0);
+                let g_val = (m[4] * r + m[5] * g + m[6] * b).max(0.0);
+                let b_val = (m[8] * r + m[9] * g + m[10] * b).max(0.0);
+                mr += r_val as f64 / 65535.0;
+                mg += g_val as f64 / 65535.0;
+                mb += b_val as f64 / 65535.0;
+            }
+        }
+        let n = 64.0 * 64.0;
+        let matrix_mean = [mr / n, mg / n, mb / n];
+
+        let mut develop = RawProcessor::new().ok_or("libraw init failed")?;
+        develop.open(path)?;
+        let hdr = develop.develop_scene_linear_hdr_with_qual(false, 2)?;
+        let rgba = hdr.rgba_f32.as_slice();
+        let mut dr = 0.0f64;
+        let mut dg = 0.0f64;
+        let mut db = 0.0f64;
+        for dy in 0..64 {
+            for dx in 0..64 {
+                let x = cx + dx - 32;
+                let y = cy + dy - 32;
+                if x >= w || y >= h {
+                    continue;
+                }
+                let i = (y * w + x) * 4;
+                dr += rgba[i] as f64;
+                dg += rgba[i + 1] as f64;
+                db += rgba[i + 2] as f64;
+            }
+        }
+        let develop_mean = [dr / n, dg / n, db / n];
+
+        Ok([
+            (develop_mean[0] / matrix_mean[0].max(1e-9)) as f32,
+            (develop_mean[1] / matrix_mean[1].max(1e-9)) as f32,
+            (develop_mean[2] / matrix_mean[2].max(1e-9)) as f32,
+        ])
     }
 
     #[allow(dead_code)]
@@ -526,14 +576,95 @@ impl RawProcessor {
         if rgb16.len() < expected {
             return Err("RGB16 buffer too small".to_string());
         }
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
         unsafe {
+            ffi::siv_libraw_set_use_camera_wb(self.data, 1);
+            ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
+            ffi::siv_libraw_set_output_color(self.data, 1);
+            ffi::libraw_set_no_auto_bright(self.data, 0);
+            ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
+            ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
             ffi::siv_libraw_apply_output_color(self.data, rgb16.as_mut_ptr(), width, height);
         }
         Ok(())
     }
 
+    /// LibRaw scale_colors + pre_interpolate + PPG; camera RGB counts before convert_to_rgb.
+    pub fn libraw_ppg_camera_rgb_counts(&mut self) -> Result<Vec<u16>, String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+        let w = self.width();
+        let h = self.height();
+        let mut out = vec![0u16; w as usize * h as usize * 3];
+        let mut out_w = 0u32;
+        let mut out_h = 0u32;
+        let status = unsafe {
+            ffi::siv_libraw_ppg_camera_rgb_counts(
+                self.data,
+                out.as_mut_ptr(),
+                &mut out_w,
+                &mut out_h,
+            )
+        };
+        if status != 0 {
+            return Err(format!("siv_libraw_ppg_camera_rgb_counts failed: {status}"));
+        }
+        if out_w != w || out_h != h {
+            return Err(format!(
+                "LibRaw PPG size mismatch: extract {w}x{h} vs libraw {out_w}x{out_h}"
+            ));
+        }
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    pub fn ppg_pixel_channels_at(&mut self, row: u32, col: u32) -> Result<[u16; 4], String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+        let mut out = [0u16; 4];
+        let status =
+            unsafe { ffi::siv_libraw_ppg_pixel_channels(self.data, row, col, out.as_mut_ptr()) };
+        if status != 0 {
+            return Err(format!("siv_libraw_ppg_pixel_channels failed: {status}"));
+        }
+        Ok(out)
+    }
+
+    #[cfg(test)]
+    pub fn ppg_convert_pixel_at(&mut self, row: u32, col: u32) -> Result<[u16; 3], String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+        let mut out = [0u16; 3];
+        let status =
+            unsafe { ffi::siv_libraw_ppg_convert_pixel(self.data, row, col, out.as_mut_ptr()) };
+        if status != 0 {
+            return Err(format!("siv_libraw_ppg_convert_pixel failed: {status}"));
+        }
+        Ok(out)
+    }
+
     pub fn develop_scene_linear_hdr(
         &mut self,
+    ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
+        self.develop_scene_linear_hdr_with_qual(false, 3)
+    }
+
+    pub fn develop_scene_linear_hdr_no_auto_bright(
+        &mut self,
+    ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
+        self.develop_scene_linear_hdr_with_qual(true, 3)
+    }
+
+    /// LibRaw `user_qual`: 2 = PPG, 3 = AHD (default).
+    pub fn develop_scene_linear_hdr_with_qual(
+        &mut self,
+        no_auto_bright: bool,
+        user_qual: i32,
     ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
         if !self.is_unpacked {
             self.unpack()?;
@@ -543,10 +674,11 @@ impl RawProcessor {
             ffi::libraw_set_output_bps(self.data, 16);
             ffi::siv_libraw_set_use_camera_wb(self.data, 1);
             ffi::siv_libraw_set_use_camera_matrix(self.data, 1);
-            ffi::siv_libraw_set_output_color(self.data, 1); // sRGB primaries, with linear gamma below.
-            ffi::libraw_set_no_auto_bright(self.data, 0);
+            ffi::siv_libraw_set_output_color(self.data, 1);
+            ffi::libraw_set_no_auto_bright(self.data, if no_auto_bright { 1 } else { 0 });
             ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
             ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
+            ffi::siv_libraw_set_user_qual(self.data, user_qual);
 
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {
@@ -1044,7 +1176,10 @@ mod tests {
             g_sum / n,
             b_sum / n
         );
-        assert!(g_sum > r_sum, "expected scene to be G/B dominant (blue night), not red");
+        assert!(
+            g_sum > r_sum,
+            "expected scene to be G/B dominant (blue night), not red"
+        );
     }
 
     /// Requires `F:\win7\raws\kodak\RAW_KODAK_DCS460D_FILEVERSION_3.TIF` on the test machine.

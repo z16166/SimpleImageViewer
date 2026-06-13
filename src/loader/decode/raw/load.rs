@@ -259,6 +259,20 @@ pub(crate) fn load_raw(
     if use_gpu_demosaic {
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
             Ok(mut raw_gpu_source) => {
+                match RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source) {
+                    Ok(scale) => {
+                        log::debug!(
+                            "[Loader] RAW GPU scene color scale={scale:?} for {:?}",
+                            path.file_name().unwrap_or_default()
+                        );
+                        raw_gpu_source.scene_color_scale = scale;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[Loader] RAW GPU scene color scale fallback to identity: {err}"
+                        );
+                    }
+                }
                 raw_gpu_source.bootstrap_preview = preview_opt.clone();
                 let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
                 metadata.raw_gpu_source = Some(raw_gpu_source);
