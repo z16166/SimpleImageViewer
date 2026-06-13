@@ -39,6 +39,42 @@ struct DemosaicUniforms {
 @group(0) @binding(4) var r_at_green: texture_storage_2d<r32float, read_write>;
 @group(0) @binding(5) var b_at_green: texture_storage_2d<r32float, read_write>;
 
+fn get_bayer_color(phase: i32) -> u32 {
+    if (phase == 0) {
+        return uniforms.bayer_pattern.x;
+    } else if (phase == 1) {
+        return uniforms.bayer_pattern.y;
+    } else if (phase == 2) {
+        return uniforms.bayer_pattern.z;
+    } else {
+        return uniforms.bayer_pattern.w;
+    }
+}
+
+fn get_black_level(color_idx: u32) -> f32 {
+    if (color_idx == 0u) {
+        return uniforms.black_level.x;
+    } else if (color_idx == 1u) {
+        return uniforms.black_level.y;
+    } else if (color_idx == 2u) {
+        return uniforms.black_level.z;
+    } else {
+        return uniforms.black_level.w;
+    }
+}
+
+fn get_cfa_scale(color_idx: u32) -> f32 {
+    if (color_idx == 0u) {
+        return uniforms.cfa_scale.x;
+    } else if (color_idx == 1u) {
+        return uniforms.cfa_scale.y;
+    } else if (color_idx == 2u) {
+        return uniforms.cfa_scale.z;
+    } else {
+        return uniforms.cfa_scale.w;
+    }
+}
+
 fn read_cfa(c: i32, r: i32) -> f32 {
     var x = c;
     if (x < 0) {
@@ -66,9 +102,9 @@ fn read_cfa(c: i32, r: i32) -> f32 {
     let raw_val = f32(textureLoad(raw_pixels_texture, vec2<i32>(x, y), 0).r);
 
     let phase = (y % 2) * 2 + (x % 2);
-    let color_idx = uniforms.bayer_pattern[phase];
-    let black = uniforms.black_level[color_idx];
-    let scale = uniforms.cfa_scale[color_idx];
+    let color_idx = get_bayer_color(phase);
+    let black = get_black_level(color_idx);
+    let scale = get_cfa_scale(color_idx);
 
     return max(raw_val - black, 0.0) * scale;
 }
@@ -76,7 +112,7 @@ fn read_cfa(c: i32, r: i32) -> f32 {
 fn get_color_channel(c: i32, r: i32) -> u32 {
     let x = (c % 2 + 2) % 2;
     let y = (r % 2 + 2) % 2;
-    return uniforms.bayer_pattern[y * 2 + x];
+    return get_bayer_color(y * 2 + x);
 }
 
 fn abs_f(v: f32) -> f32 {
@@ -1126,6 +1162,116 @@ mod tests {
         let _ = counts;
         eprintln!(
             "note: GPU WGSL uses PPG demosaic; CPU default is AHD — compare no_auto_bright to isolate color matrix vs auto_bright vs demosaic"
+        );
+    }
+
+    #[test]
+    fn diff_canon_40d_ppg_counts_via_libraw_output_color() {
+        let path = Path::new(r"F:\win7\raws\canon\40d\RAW_CANON_40D_RAW_V103.CR2");
+        if !path.is_file() {
+            eprintln!("skip: Canon 40D sample not present at {}", path.display());
+            return;
+        }
+        let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
+        processor.open(path).expect("libraw open");
+        let mut source = processor
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .expect("extract gpu source");
+        source.scene_color_scale =
+            crate::raw_processor::RawProcessor::compute_ppg_scene_color_scale(path, &source)
+                .expect("scene color scale");
+        eprintln!("canon 40d scene_color_scale={:?}", source.scene_color_scale);
+        eprintln!(
+            "canon 40d source meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?}",
+            source.maximum,
+            source.black_level,
+            source.cfa_scale,
+            source.rgb_cam,
+            source.bayer_pattern
+        );
+        let (left_margin, top_margin) = processor.margins();
+        eprintln!(
+            "canon 40d margins: left_margin={}, top_margin={}",
+            left_margin, top_margin
+        );
+
+        let w = source.width as usize;
+        let h = source.height as usize;
+        let cx = w / 2;
+        let cy = h / 2;
+
+        let counts = cpu_demosaic_ppg_camera_counts(&source);
+        if let Ok(libraw_counts) = {
+            let mut ref_processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
+            ref_processor.open(path).expect("libraw open");
+            ref_processor.libraw_ppg_camera_rgb_counts()
+        } {
+            let mut lr_r = 0.0f64;
+            let mut lr_g = 0.0f64;
+            let mut lr_b = 0.0f64;
+            let mut ours_r = 0.0f64;
+            let mut ours_g = 0.0f64;
+            let mut ours_b = 0.0f64;
+            for dy in 0..64 {
+                for dx in 0..64 {
+                    let x = cx + dx - 32;
+                    let y = cy + dy - 32;
+                    if x >= w || y >= h {
+                        continue;
+                    }
+                    let i = (y * w + x) * 3;
+                    lr_r += libraw_counts[i] as f64;
+                    lr_g += libraw_counts[i + 1] as f64;
+                    lr_b += libraw_counts[i + 2] as f64;
+                    ours_r += counts[i] as f64;
+                    ours_g += counts[i + 1] as f64;
+                    ours_b += counts[i + 2] as f64;
+                }
+            }
+            let n = 64.0 * 64.0;
+            eprintln!(
+                "canon 40d libraw PPG camera counts center avg=({:.0}, {:.0}, {:.0})",
+                lr_r / n,
+                lr_g / n,
+                lr_b / n,
+            );
+            eprintln!(
+                "canon 40d ours PPG camera counts center avg=({:.0}, {:.0}, {:.0})",
+                ours_r / n,
+                ours_g / n,
+                ours_b / n,
+            );
+        }
+        let gpu_path = cpu_demosaic_ppg_scene_linear(&source);
+        let (gr, gg, gb) = center_mean_rgba(&gpu_path, w, h);
+        eprintln!(
+            "canon 40d gpu-shader center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={:.3}",
+            gr / gb.max(1e-9)
+        );
+
+        let hdr = {
+            let mut develop_processor =
+                crate::raw_processor::RawProcessor::new().expect("libraw init");
+            develop_processor.open(path).expect("libraw open");
+            develop_processor
+                .develop_scene_linear_hdr()
+                .expect("develop_scene_linear_hdr")
+        };
+        let (cr, cg, cb) = center_mean_rgba(hdr.rgba_f32.as_slice(), w, h);
+        eprintln!(
+            "canon 40d libraw cpu (AHD) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
+            cr / cb.max(1e-9)
+        );
+        let hdr_ppg_no_ab = {
+            let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
+            p.open(path).expect("libraw open");
+            p.develop_scene_linear_hdr_with_qual(true, 2)
+                .expect("develop PPG no auto bright")
+        };
+        let (pnr, png, pnb) = center_mean_rgba(hdr_ppg_no_ab.rgba_f32.as_slice(), w, h);
+        eprintln!(
+            "canon 40d libraw PPG no_auto_bright=({pnr:.4}, {png:.4}, {pnb:.4}) R/B={:.3}",
+            pnr / pnb.max(1e-9)
         );
     }
 }

@@ -280,6 +280,15 @@ impl RawProcessor {
         if iw > 0 && ih > 0 { (iw, ih) } else { (rw, rh) }
     }
 
+    pub fn margins(&self) -> (i32, i32) {
+        let mut left = 0;
+        let mut top = 0;
+        unsafe {
+            ffi::siv_libraw_get_margins(self.data, &mut left, &mut top);
+        }
+        (left, top)
+    }
+
     pub fn unpack(&mut self) -> Result<(), String> {
         unsafe {
             let ret = ffi::libraw_unpack(self.data);
@@ -331,8 +340,11 @@ impl RawProcessor {
             ));
         }
 
+        let (left_margin, top_margin) = self.margins();
         let color_at = |row: i32, col: i32| -> u32 {
-            unsafe { ffi::siv_libraw_get_color_at(self.data, row, col) as u32 }
+            unsafe {
+                ffi::siv_libraw_get_color_at(self.data, row + top_margin, col + left_margin) as u32
+            }
         };
 
         // Query colors, filters, and params

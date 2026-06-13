@@ -162,7 +162,7 @@ public:
         for (unsigned i = 0; i < npixels; i++) {
             const unsigned row = i / w;
             const unsigned col = i % w;
-            const int fc = ip->FC(row, col);
+            const int fc = ip->FC(row + ip->imgdata.sizes.top_margin, col + ip->imgdata.sizes.left_margin);
             out[i] = ip->imgdata.image[i][fc];
         }
         return 0;
@@ -370,14 +370,11 @@ extern "C" {
             pre_mul[0] = pre_mul[1] = pre_mul[2] = pre_mul[3] = 1.0f;
         }
 
-
         float cam_matrix[3][4];
         std::memcpy(cam_matrix, lr->color.rgb_cam, sizeof(cam_matrix));
 
         float output_matrix[3][4];
         std::memcpy(output_matrix, cam_matrix, sizeof(output_matrix));
-
-        // Do not divide columns by pre_mul, as the color matrix converts white-balanced camera space to sRGB.
 
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 4; j++) {
