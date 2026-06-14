@@ -26,6 +26,7 @@ mod jpeg;
 mod modern;
 mod raster;
 mod raw;
+pub(crate) use raw::open_raw_processor_with_preview;
 mod tiff_raw_sniff;
 
 pub(crate) use raster::is_maybe_animated;
@@ -63,6 +64,7 @@ pub(crate) fn load_image_file(
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    raw_open_prefetch: Option<&crate::loader::orchestrator::RawOpenPrefetch>,
 ) -> LoadResult {
     let file_name = path
         .file_name()
@@ -125,6 +127,7 @@ pub(crate) fn load_image_file(
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
+                raw_open_prefetch,
             )?;
             if out.osd.sensor_size.0 > 0 {
                 raw_osd_info = Some(out.osd);
@@ -160,6 +163,7 @@ pub(crate) fn load_image_file(
                     raw_demosaic_mode,
                     hdr_target_capacity,
                     hdr_tone_map,
+                    raw_open_prefetch,
                 )
                 .map(|out| {
                     if out.osd.sensor_size.0 > 0 {

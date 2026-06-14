@@ -15,8 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 mod load;
 mod poll;
+mod raw_prefetch;
 mod tiles;
 mod types;
+
+pub(crate) use raw_prefetch::{RawOpenPhaseTimings, RawOpenPrefetch, should_prefetch_raw_gpu_open};
 
 #[cfg(test)]
 mod tests;

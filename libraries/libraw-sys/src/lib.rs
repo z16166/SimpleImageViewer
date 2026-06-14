@@ -92,6 +92,7 @@ unsafe extern "C" {
     pub fn siv_libraw_set_output_color(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_set_gamma(data: *mut libraw_data_t, power: f64, slope: f64);
     pub fn siv_libraw_set_user_qual(data: *mut libraw_data_t, qual: c_int);
+    pub fn siv_libraw_set_half_size(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_get_bright(data: *mut libraw_data_t) -> c_float;
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;
@@ -152,11 +153,32 @@ unsafe extern "C" {
         width_out: *mut c_uint,
         height_out: *mut c_uint,
     ) -> c_int;
+    pub fn siv_libraw_ppg_camera_rgb_counts_from_scaled(
+        data: *mut libraw_data_t,
+        rgb16_out: *mut c_ushort,
+        width_out: *mut c_uint,
+        height_out: *mut c_uint,
+    ) -> c_int;
     pub fn siv_libraw_extract_scaled_cfa(
         data: *mut libraw_data_t,
         out: *mut c_ushort,
         width_out: *mut c_uint,
         height_out: *mut c_uint,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_matrix_patch_mean(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        mean_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_scene_color_scale(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        scale_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_uniform_scene_scale(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        uniform_out: *mut c_float,
     ) -> c_int;
     pub fn siv_libraw_ppg_pixel_channels(
         data: *mut libraw_data_t,

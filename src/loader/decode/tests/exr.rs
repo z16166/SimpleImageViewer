@@ -289,6 +289,7 @@ fn exr_extension_short_circuits_to_openexr_core_loader() {
         crate::settings::RawDemosaicMode::Cpu,
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
+        None,
     );
     let err = match result.result {
         Ok(_) => panic!("invalid EXR should fail in the OpenEXRCore loader"),

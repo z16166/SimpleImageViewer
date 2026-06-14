@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
+mod hdr_prewarm;
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
 pub(crate) mod image_management;

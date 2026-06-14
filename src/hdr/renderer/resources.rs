@@ -34,8 +34,6 @@ pub(crate) struct HdrImageBinding {
     pub(super) uploaded_raw_pixels_texture: Option<wgpu::Texture>,
     pub(super) uploaded_raw_pixels_view: Option<wgpu::TextureView>,
     pub(super) uploaded_raw_green_plane_view: Option<wgpu::TextureView>,
-    pub(super) uploaded_raw_r_at_green_plane_view: Option<wgpu::TextureView>,
-    pub(super) uploaded_raw_b_at_green_plane_view: Option<wgpu::TextureView>,
 
     pub(super) baked_jpeg_image_key: Option<HdrImageKey>,
     pub(super) baked_jpeg_weight_bits: Option<u32>,
@@ -77,7 +75,6 @@ pub(crate) struct HdrCallbackResources {
     pub(super) jpeg_compose_tile_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) raw_demosaic_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(super) raw_demosaic_green_pipeline: Option<wgpu::ComputePipeline>,
-    pub(super) raw_demosaic_rb_at_green_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) raw_demosaic_rgb_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) raw_demosaic_uniform_buffer: Option<wgpu::Buffer>,
     /// Single ISO gain-map compose uniform for tiled Ultra HDR via [`HdrTilePlaneCallback`].
@@ -127,8 +124,6 @@ pub(crate) struct ImagePlaneUpload {
     pub(super) sdr_baseline: Option<CallbackUpload>,
     pub(super) raw_pixels: Option<CallbackUpload>,
     pub(super) raw_green_plane: Option<CallbackUpload>,
-    pub(super) raw_r_at_green_plane: Option<CallbackUpload>,
-    pub(super) raw_b_at_green_plane: Option<CallbackUpload>,
 }
 
 pub(crate) const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat =
@@ -158,6 +153,7 @@ pub(super) fn create_dummy_gain_texture(
 pub(crate) fn create_callback_resources(
     device: &wgpu::Device,
     target_format: wgpu::TextureFormat,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> HdrCallbackResources {
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("simple-image-viewer-hdr-image-plane-bind-group-layout"),
@@ -234,7 +230,7 @@ pub(crate) fn create_callback_resources(
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache: pipeline_cache,
     });
     let (dummy_gain_texture, dummy_gain_view) = create_dummy_gain_texture(device);
     let adapter_info = device.adapter_info();
@@ -248,7 +244,7 @@ pub(crate) fn create_callback_resources(
         (None, None)
     } else if apple_compose_compute_supported(&device.limits()) {
         let (layout, pipeline, _compose_tone_map_buffer) =
-            apple_compose_gpu::create_compose_compute_resources(device);
+            apple_compose_gpu::create_compose_compute_resources(device, pipeline_cache);
         (Some(layout), Some(pipeline))
     } else {
         log::warn!(
@@ -266,6 +262,7 @@ pub(crate) fn create_callback_resources(
     } else if iso_gain_map_compose_compute_supported(&device.limits()) {
         Some(jpeg_compose_gpu::create_jpeg_compose_compute_resources(
             device,
+            pipeline_cache,
         ))
     } else {
         log::warn!(
@@ -303,19 +300,20 @@ pub(crate) fn create_callback_resources(
     let (
         raw_demosaic_bind_group_layout,
         raw_demosaic_green_pipeline,
-        raw_demosaic_rb_at_green_pipeline,
         raw_demosaic_rgb_pipeline,
         raw_demosaic_uniform_buffer,
     ) = if gl_backend {
         log::warn!("[HDR] GPU RAW demosaicing disabled on OpenGL backend; using CPU fallback");
-        (None, None, None, None, None)
+        (None, None, None, None)
     } else if raw_demosaic_compute_supported {
-        let (layout, green_pipeline, rb_at_green_pipeline, rgb_pipeline, buf) =
-            crate::hdr::raw_demosaic_gpu::create_raw_demosaic_compute_resources(device);
+        let (layout, green_pipeline, rgb_pipeline, buf) =
+            crate::hdr::raw_demosaic_gpu::create_raw_demosaic_compute_resources(
+                device,
+                pipeline_cache,
+            );
         (
             Some(layout),
             Some(green_pipeline),
-            Some(rb_at_green_pipeline),
             Some(rgb_pipeline),
             Some(buf),
         )
@@ -325,7 +323,7 @@ pub(crate) fn create_callback_resources(
              (max_compute_invocations_per_workgroup={}); using CPU fallback",
             device.limits().max_compute_invocations_per_workgroup
         );
-        (None, None, None, None, None)
+        (None, None, None, None)
     };
 
     HdrCallbackResources {
@@ -344,7 +342,6 @@ pub(crate) fn create_callback_resources(
         jpeg_compose_tile_pipeline,
         raw_demosaic_bind_group_layout,
         raw_demosaic_green_pipeline,
-        raw_demosaic_rb_at_green_pipeline,
         raw_demosaic_rgb_pipeline,
         raw_demosaic_uniform_buffer,
         jpeg_compose_uniform_buffer,

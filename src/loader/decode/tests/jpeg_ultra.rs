@@ -236,6 +236,7 @@ fn ultra_hdr_load_result_is_capacity_sensitive() {
         crate::settings::RawDemosaicMode::Cpu,
         HdrToneMapSettings::default().target_hdr_capacity(),
         HdrToneMapSettings::default(),
+        None,
     );
 
     assert!(

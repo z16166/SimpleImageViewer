@@ -267,6 +267,7 @@ fn chunk_byte_len(width: u32, chunk_rows: u32) -> u64 {
 
 pub(super) fn create_compose_compute_resources(
     device: &wgpu::Device,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::Buffer) {
     let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("simple-image-viewer-hdr-apple-compose-shader"),
@@ -329,7 +330,7 @@ pub(super) fn create_compose_compute_resources(
         module: &compose_shader,
         entry_point: Some("cs_compose_apple_gain"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        cache: pipeline_cache,
     });
     let compose_tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),

@@ -221,6 +221,41 @@ impl ImageViewerApp {
             log::info!("{diagnostic}");
         }
 
+        let hdr_callback_resources_prewarm =
+            crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared();
+        let (wgpu_pipeline_cache, wgpu_adapter_info) = if let Some(state) =
+            cc.wgpu_render_state.as_ref()
+        {
+            let adapter_info = state.adapter.get_info();
+            let pipeline_cache =
+                crate::wgpu_pipeline_cache::create_pipeline_cache(&state.device, &state.adapter);
+            if let Some(format) = crate::hdr::renderer::predicted_hdr_callback_target_format(
+                settings.hdr_native_surface_enabled_effective(),
+                initial_hdr_monitor_selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.hdr_supported),
+                hdr_capabilities.candidate_texture_format,
+                hdr_target_format,
+            ) {
+                hdr_callback_resources_prewarm.ensure_started(
+                    &state.device,
+                    format,
+                    Some(&pipeline_cache),
+                );
+            }
+            state.renderer.write().callback_resources.insert(
+                crate::hdr::renderer::HdrCallbackResourcesPrewarmSlot(
+                    hdr_callback_resources_prewarm.clone(),
+                ),
+            );
+            (
+                Some(std::sync::Arc::new(pipeline_cache)),
+                Some(adapter_info),
+            )
+        } else {
+            (None, None)
+        };
+
         crate::tile_cache::MAX_TEXTURE_SIDE
             .store(max_texture_side, std::sync::atomic::Ordering::Relaxed);
 
@@ -366,6 +401,14 @@ impl ImageViewerApp {
         };
 
         let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
+        let loader = ImageLoader::new();
+        if settings.resume_last_image {
+            if let Some(ref path) = settings.last_viewed_image {
+                if crate::loader::should_prefetch_raw_gpu_open(&settings, path) {
+                    loader.prefetch_raw_open(path.clone());
+                }
+            }
+        }
         let mut app = Self {
             save_tx,
             initial_image,
@@ -375,10 +418,13 @@ impl ImageViewerApp {
             scan_rx: None,
             scan_cancel: None,
             scanning: false,
-            loader: ImageLoader::new(),
+            loader,
             texture_cache: TextureCache::new(CACHE_SIZE),
             hdr_capabilities,
             hdr_renderer,
+            wgpu_pipeline_cache,
+            wgpu_adapter_info,
+            hdr_callback_resources_prewarm,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(
                 initial_hdr_monitor_selection,
@@ -398,6 +444,7 @@ impl ImageViewerApp {
             rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
             ultra_hdr_decode_output_mode: initial_hdr_output_mode,
+            preload_deferred_for_hdr_capacity: true,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,

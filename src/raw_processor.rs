@@ -521,66 +521,138 @@ impl RawProcessor {
         })
     }
 
-    fn libraw_clip_channel(v: f32) -> f32 {
-        (v as i32).clamp(0, 65535) as f32
+    pub fn set_half_size(&mut self, value: bool) {
+        unsafe { ffi::siv_libraw_set_half_size(self.data, if value { 1 } else { 0 }) }
     }
 
-    /// Per-channel scale toward LibRaw PPG develop (post-scale_colors counts, int CLIP matrix).
-    pub fn compute_ppg_scene_color_scale(
-        path: &std::path::Path,
-        source: &crate::hdr::types::RawGpuSource,
-    ) -> Result<[f32; 3], String> {
-        let counts_w = source.width as usize;
-        let counts_h = source.height as usize;
-        if counts_w == 0 || counts_h == 0 {
-            return Err("Invalid dimensions".to_string());
+    fn center_patch_mean_rgba_f32(rgba: &[f32], width: u32, height: u32) -> [f64; 3] {
+        if width == 0 || height == 0 {
+            return [0.0; 3];
         }
-
-        let mut matrix = RawProcessor::new().ok_or("libraw init failed")?;
-        matrix.open(path)?;
-        let counts = matrix.libraw_ppg_camera_rgb_counts()?;
-        let m = &source.rgb_cam;
+        let w = width as usize;
+        let h = height as usize;
+        let cx = w / 2;
+        let cy = h / 2;
         let mut mr = 0.0f64;
         let mut mg = 0.0f64;
         let mut mb = 0.0f64;
-
-        let mut develop = RawProcessor::new().ok_or("libraw init failed")?;
-        develop.open(path)?;
-        let hdr = develop.develop_scene_linear_hdr_with_qual(false, 2)?;
-        let develop_w = hdr.width as usize;
-        let develop_h = hdr.height as usize;
-        if develop_w == 0 || develop_h == 0 {
-            return Err("Invalid develop dimensions".to_string());
-        }
-        let rgba = hdr.rgba_f32.as_slice();
-        let rgba_pixels = develop_w
-            .checked_mul(develop_h)
-            .ok_or("Invalid develop dimensions")?;
-        let rgba_len = rgba_pixels
-            .checked_mul(4)
-            .ok_or("Invalid develop dimensions")?;
-        if rgba.len() < rgba_len {
-            return Err(format!(
-                "Develop RGBA buffer too small: have {} need {rgba_len} ({develop_w}x{develop_h})",
-                rgba.len(),
-            ));
-        }
-
-        // PPG counts use LibRaw iwidth/iheight; dcraw output can differ (e.g. some Canon ARGB).
-        // Sample the same 64x64 center patch only where both buffers overlap.
-        let patch_w = counts_w.min(develop_w);
-        let patch_h = counts_h.min(develop_h);
-        let cx = patch_w / 2;
-        let cy = patch_h / 2;
-
+        let mut n = 0.0f64;
         for dy in 0..64 {
             for dx in 0..64 {
                 let x = cx + dx - 32;
                 let y = cy + dy - 32;
-                if x >= patch_w || y >= patch_h {
+                if x >= w || y >= h {
                     continue;
                 }
-                let i = (y * counts_w + x) * 3;
+                let i = (y * w + x) * 4;
+                if i + 3 >= rgba.len() {
+                    continue;
+                }
+                mr += rgba[i] as f64;
+                mg += rgba[i + 1] as f64;
+                mb += rgba[i + 2] as f64;
+                n += 1.0;
+            }
+        }
+        if n <= 0.0 {
+            return [0.0; 3];
+        }
+        [mr / n, mg / n, mb / n]
+    }
+
+    fn clamp_scene_color_scale(scale: [f32; 3]) -> [f32; 3] {
+        scale.map(|v| {
+            if !v.is_finite() || v <= 0.0 {
+                1.0
+            } else {
+                v.clamp(0.25, 4.0)
+            }
+        })
+    }
+
+    /// Decimated center PPG + LibRaw auto_bright vs rgb_cam matrix; uniform luma scale on extract session.
+    pub fn estimate_gpu_scene_color_scale_from_processor(
+        processor: &mut Self,
+        rgb_cam: &[f32; 12],
+    ) -> [f32; 3] {
+        let mut uniform = 1.0f32;
+        let status = unsafe {
+            ffi::siv_libraw_decimated_ppg_uniform_scene_scale(
+                processor.data,
+                rgb_cam.as_ptr(),
+                &mut uniform,
+            )
+        };
+        if status != 0 {
+            log::debug!(
+                "[RawProcessor] GPU scene_color_scale decimated calib failed ({status}); using identity"
+            );
+            return [1.0, 1.0, 1.0];
+        }
+        let uniform = Self::clamp_scene_color_scale([uniform, uniform, uniform])[0];
+        log::debug!(
+            "[RawProcessor] GPU scene_color_scale={uniform} (decimated PPG auto_bright/matrix)"
+        );
+        [uniform, uniform, uniform]
+    }
+
+    /// Opens the file and runs decimated calibration (tests / offline tooling).
+    pub fn estimate_gpu_scene_color_scale(path: &Path) -> [f32; 3] {
+        let mut processor = match Self::new() {
+            Some(p) => p,
+            None => return [1.0, 1.0, 1.0],
+        };
+        if processor.open(path).is_err() {
+            return [1.0, 1.0, 1.0];
+        }
+        if processor
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .is_err()
+        {
+            return [1.0, 1.0, 1.0];
+        }
+        let rgb_cam = {
+            let mut rgb_cam = [0.0f32; 12];
+            unsafe {
+                ffi::siv_libraw_get_gpu_color_params(
+                    processor.data,
+                    rgb_cam.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+            }
+            rgb_cam
+        };
+        Self::estimate_gpu_scene_color_scale_from_processor(&mut processor, &rgb_cam)
+    }
+
+    fn libraw_clip_channel(v: f32) -> f32 {
+        (v as i32).clamp(0, 65535) as f32
+    }
+
+    fn ppg_matrix_patch_mean(
+        counts: &[u16],
+        width: usize,
+        height: usize,
+        rgb_cam: &[f32; 12],
+    ) -> Result<[f64; 3], String> {
+        if width == 0 || height == 0 {
+            return Err("Invalid dimensions".to_string());
+        }
+        let cx = width / 2;
+        let cy = height / 2;
+        let m = rgb_cam;
+        let mut mr = 0.0f64;
+        let mut mg = 0.0f64;
+        let mut mb = 0.0f64;
+        for dy in 0..64 {
+            for dx in 0..64 {
+                let x = cx + dx - 32;
+                let y = cy + dy - 32;
+                if x >= width || y >= height {
+                    continue;
+                }
+                let i = (y * width + x) * 3;
                 let r = counts[i] as f32;
                 let g = counts[i + 1] as f32;
                 let b = counts[i + 2] as f32;
@@ -593,8 +665,19 @@ impl RawProcessor {
             }
         }
         let n = 64.0 * 64.0;
-        let matrix_mean = [mr / n, mg / n, mb / n];
+        Ok([mr / n, mg / n, mb / n])
+    }
 
+    fn ppg_rgb16_patch_mean(
+        rgb16: &[u16],
+        width: usize,
+        height: usize,
+    ) -> Result<[f64; 3], String> {
+        if width == 0 || height == 0 {
+            return Err("Invalid dimensions".to_string());
+        }
+        let cx = width / 2;
+        let cy = height / 2;
         let mut dr = 0.0f64;
         let mut dg = 0.0f64;
         let mut db = 0.0f64;
@@ -602,22 +685,69 @@ impl RawProcessor {
             for dx in 0..64 {
                 let x = cx + dx - 32;
                 let y = cy + dy - 32;
-                if x >= patch_w || y >= patch_h {
+                if x >= width || y >= height {
                     continue;
                 }
-                let i = (y * develop_w + x) * 4;
-                dr += rgba[i] as f64;
-                dg += rgba[i + 1] as f64;
-                db += rgba[i + 2] as f64;
+                let i = (y * width + x) * 3;
+                dr += rgb16[i] as f64 / 65535.0;
+                dg += rgb16[i + 1] as f64 / 65535.0;
+                db += rgb16[i + 2] as f64 / 65535.0;
             }
         }
-        let develop_mean = [dr / n, dg / n, db / n];
+        let n = 64.0 * 64.0;
+        Ok([dr / n, dg / n, db / n])
+    }
 
+    #[cfg(test)]
+    fn scene_color_scale_from_ppg_counts(
+        counts: &mut [u16],
+        width: u32,
+        height: u32,
+        rgb_cam: &[f32; 12],
+        processor: &mut Self,
+    ) -> Result<[f32; 3], String> {
+        let matrix_mean =
+            Self::ppg_matrix_patch_mean(counts, width as usize, height as usize, rgb_cam)?;
+        processor.apply_libraw_output_color(counts, width, height)?;
+        let libraw_mean = Self::ppg_rgb16_patch_mean(counts, width as usize, height as usize)?;
         Ok([
-            (develop_mean[0] / matrix_mean[0].max(1e-9)) as f32,
-            (develop_mean[1] / matrix_mean[1].max(1e-9)) as f32,
-            (develop_mean[2] / matrix_mean[2].max(1e-9)) as f32,
+            (libraw_mean[0] / matrix_mean[0].max(1e-9)) as f32,
+            (libraw_mean[1] / matrix_mean[1].max(1e-9)) as f32,
+            (libraw_mean[2] / matrix_mean[2].max(1e-9)) as f32,
         ])
+    }
+
+    /// Test-only: full-image PPG + LibRaw `convert_to_rgb` calibration (not on GPU load path).
+    #[cfg(test)]
+    pub fn compute_ppg_scene_color_scale_from_processor(
+        processor: &mut Self,
+        source: &crate::hdr::types::RawGpuSource,
+    ) -> Result<[f32; 3], String> {
+        let w = source.width;
+        let h = source.height;
+        if w == 0 || h == 0 {
+            return Err("Invalid dimensions".to_string());
+        }
+        let mut counts = processor.libraw_ppg_camera_rgb_counts_from_scaled()?;
+        Self::scene_color_scale_from_ppg_counts(&mut counts, w, h, &source.rgb_cam, processor)
+    }
+
+    /// Re-opens file and runs full-image PPG for color calibration experiments.
+    #[cfg(test)]
+    pub fn compute_ppg_scene_color_scale(
+        path: &std::path::Path,
+        source: &crate::hdr::types::RawGpuSource,
+    ) -> Result<[f32; 3], String> {
+        let mut processor = RawProcessor::new().ok_or("libraw init failed")?;
+        processor.open(path)?;
+        let mut counts = processor.libraw_ppg_camera_rgb_counts()?;
+        Self::scene_color_scale_from_ppg_counts(
+            &mut counts,
+            source.width,
+            source.height,
+            &source.rgb_cam,
+            &mut processor,
+        )
     }
 
     #[allow(dead_code)]
@@ -707,7 +837,8 @@ impl RawProcessor {
         }
     }
 
-    /// Apply LibRaw scale_colors + convert_to_rgb to demosaiced camera-RGB counts.
+    /// Test-only: apply LibRaw `convert_to_rgb` to demosaiced camera-RGB counts.
+    #[cfg(test)]
     pub fn apply_libraw_output_color(
         &mut self,
         rgb16: &mut [u16],
@@ -736,7 +867,40 @@ impl RawProcessor {
         Ok(())
     }
 
-    /// LibRaw scale_colors + pre_interpolate + PPG; camera RGB counts before convert_to_rgb.
+    /// Test-only: PPG counts after [`Self::extract_raw_gpu_source`] (same LibRaw session).
+    #[cfg(test)]
+    pub fn libraw_ppg_camera_rgb_counts_from_scaled(&mut self) -> Result<Vec<u16>, String> {
+        if !self.is_unpacked {
+            self.unpack()?;
+        }
+        let w = self.width();
+        let h = self.height();
+        let mut out = vec![0u16; w as usize * h as usize * 3];
+        let mut out_w = 0u32;
+        let mut out_h = 0u32;
+        let status = unsafe {
+            ffi::siv_libraw_ppg_camera_rgb_counts_from_scaled(
+                self.data,
+                out.as_mut_ptr(),
+                &mut out_w,
+                &mut out_h,
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "siv_libraw_ppg_camera_rgb_counts_from_scaled failed: {status}"
+            ));
+        }
+        if out_w != w || out_h != h {
+            return Err(format!(
+                "LibRaw PPG from_scaled size mismatch: expected {w}x{h}, got {out_w}x{out_h}"
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Test-only: LibRaw scale_colors + pre_interpolate + PPG camera RGB counts.
+    #[cfg(test)]
     pub fn libraw_ppg_camera_rgb_counts(&mut self) -> Result<Vec<u16>, String> {
         if !self.is_unpacked {
             self.unpack()?;

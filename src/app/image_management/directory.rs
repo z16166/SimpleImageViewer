@@ -299,6 +299,7 @@ impl ImageViewerApp {
                             if is_first_batch && count > 0 {
                                 if !self.refresh_scan_in_progress {
                                     self.resolve_initial_position();
+                                    self.maybe_prefetch_startup_raw_open();
                                 }
                                 // Auto-close the settings panel only during the very first
                                 // startup scan (images_ever_loaded == false).

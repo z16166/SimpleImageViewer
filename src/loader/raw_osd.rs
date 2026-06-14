@@ -68,10 +68,10 @@ pub struct RawOsdInfo {
     pub demosaic_backend: Option<RawDemosaicBackend>,
     /// LibRaw `develop_scene_linear_hdr` duration for this file (latest CPU run).
     pub cpu_demosaic_ms: Option<u32>,
-    /// GPU pipeline wall time until demosaic bake is queued (load thread + first upload/shader).
+    /// CFA extract on the load thread (GPU path only).
+    pub gpu_extract_ms: Option<u32>,
+    /// CFA upload + GPU demosaic compute on the render thread.
     pub gpu_demosaic_ms: Option<u32>,
-    /// Start mark for in-flight GPU demosaic; not compared in [`PartialEq`].
-    pub(crate) gpu_pipeline_started: Option<std::time::Instant>,
 }
 
 impl PartialEq for RawOsdInfo {
@@ -81,6 +81,7 @@ impl PartialEq for RawOsdInfo {
             && self.render_pixels == other.render_pixels
             && self.demosaic_backend == other.demosaic_backend
             && self.cpu_demosaic_ms == other.cpu_demosaic_ms
+            && self.gpu_extract_ms == other.gpu_extract_ms
             && self.gpu_demosaic_ms == other.gpu_demosaic_ms
     }
 }
@@ -147,8 +148,8 @@ impl RawOsdContext {
             render_pixels,
             demosaic_backend,
             cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
             gpu_demosaic_ms: None,
-            gpu_pipeline_started: None,
         }
     }
 }
@@ -163,21 +164,9 @@ impl RawOsdInfo {
         self
     }
 
-    pub(crate) fn with_gpu_pipeline_started(mut self, started: std::time::Instant) -> Self {
-        self.gpu_pipeline_started = Some(started);
+    pub fn with_gpu_extract_ms(mut self, ms: u32) -> Self {
+        self.gpu_extract_ms = Some(ms);
         self
-    }
-
-    pub fn finish_gpu_demosaic_timing(&mut self) -> bool {
-        let Some(started) = self.gpu_pipeline_started.take() else {
-            return false;
-        };
-        let ms = elapsed_ms_u32(started);
-        if self.gpu_demosaic_ms == Some(ms) {
-            return false;
-        }
-        self.gpu_demosaic_ms = Some(ms);
-        true
     }
 
     /// Update after async/sync HQ refinement replaces the bootstrap buffer (CPU path).
@@ -213,6 +202,7 @@ impl RawOsdInfo {
         render_pixels: RawRenderPixels,
         demosaic_backend: Option<RawDemosaicBackend>,
         cpu_demosaic_ms: Option<u32>,
+        gpu_extract_ms: Option<u32>,
         gpu_demosaic_ms: Option<u32>,
     ) -> Option<String> {
         if sensor_size.0 == 0 || sensor_size.1 == 0 {
@@ -242,9 +232,12 @@ impl RawOsdInfo {
             None => t!("raw.osd.demosaic.preview").to_string(),
         };
         let mut line = format!("{embedded} · {sensor} · {demosaic} · {render}");
-        if let Some(timing) =
-            Self::format_active_demosaic_timing(demosaic_backend, cpu_demosaic_ms, gpu_demosaic_ms)
-        {
+        if let Some(timing) = Self::format_active_demosaic_timing(
+            demosaic_backend,
+            cpu_demosaic_ms,
+            gpu_extract_ms,
+            gpu_demosaic_ms,
+        ) {
             line.push_str(" · ");
             line.push_str(&timing);
         }
@@ -254,14 +247,19 @@ impl RawOsdInfo {
     fn format_active_demosaic_timing(
         backend: Option<RawDemosaicBackend>,
         cpu_ms: Option<u32>,
-        gpu_ms: Option<u32>,
+        gpu_extract_ms: Option<u32>,
+        gpu_demosaic_ms: Option<u32>,
     ) -> Option<String> {
         match backend {
             Some(RawDemosaicBackend::Host) => {
                 cpu_ms.map(|ms| t!("raw.osd.timing.cpu", ms = ms).to_string())
             }
             Some(RawDemosaicBackend::Video) => {
-                gpu_ms.map(|ms| t!("raw.osd.timing.gpu", ms = ms).to_string())
+                let total = gpu_extract_ms
+                    .into_iter()
+                    .chain(gpu_demosaic_ms)
+                    .try_fold(0u32, |acc, ms| acc.checked_add(ms))?;
+                Some(t!("raw.osd.timing.gpu", ms = total).to_string())
             }
             None => None,
         }
@@ -278,8 +276,8 @@ impl RawOsdInfo {
             },
             demosaic_backend: None,
             cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
             gpu_demosaic_ms: None,
-            gpu_pipeline_started: None,
         }
     }
 }
@@ -304,6 +302,7 @@ mod tests {
             Some(RawDemosaicBackend::Host),
             None,
             None,
+            None,
         )
         .expect("line");
         assert!(
@@ -323,6 +322,7 @@ mod tests {
             },
             Some(RawDemosaicBackend::Host),
             Some(1234),
+            None,
             Some(456),
         )
         .expect("line");
@@ -341,10 +341,11 @@ mod tests {
             },
             Some(RawDemosaicBackend::Video),
             Some(1234),
+            Some(100),
             Some(456),
         )
         .expect("line");
-        assert!(line.contains("456"), "{line}");
+        assert!(line.contains("556"), "{line}");
         assert!(!line.contains("1234"), "{line}");
     }
 
@@ -359,8 +360,8 @@ mod tests {
             },
             demosaic_backend: Some(RawDemosaicBackend::Host),
             cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
             gpu_demosaic_ms: None,
-            gpu_pipeline_started: None,
         };
         info.apply_hq_refine_preview(6000, 4000);
         assert_eq!(
@@ -383,8 +384,8 @@ mod tests {
             },
             demosaic_backend: Some(RawDemosaicBackend::Video),
             cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
             gpu_demosaic_ms: None,
-            gpu_pipeline_started: None,
         };
         info.apply_hq_refine_preview(1936, 1288);
         assert_eq!(
@@ -415,8 +416,8 @@ mod tests {
             },
             demosaic_backend: Some(RawDemosaicBackend::Host),
             cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
             gpu_demosaic_ms: None,
-            gpu_pipeline_started: None,
         };
         info.apply_hq_refine_preview(3684, 2760);
         assert_eq!(

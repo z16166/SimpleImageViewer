@@ -171,7 +171,7 @@ pub struct RawGpuSource {
     pub rgb_cam: [f32; 12],
     pub maximum: f32,
     pub bayer_pattern: [u32; 4],
-    /// Per-channel or uniform scale from LibRaw PPG develop calibration at load.
+    /// Per-channel scale: LibRaw output color / (rgb_cam * PPG counts at center).
     pub scene_color_scale: [f32; 3],
     pub demosaic_method: crate::settings::RawDemosaicMethod,
     pub bootstrap_preview: Option<crate::loader::DecodedImage>,

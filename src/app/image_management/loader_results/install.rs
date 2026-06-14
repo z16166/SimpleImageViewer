@@ -111,16 +111,24 @@ impl ImageViewerApp {
         let generation = load_result.generation;
 
         if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
-            log::info!(
-                "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
+            crate::preload_debug!(
+                "[PreloadDebug] stale-capacity drop: idx={} decoded_cap={:.3} current_cap={:.3} result_gen={} app_gen={}",
                 idx,
                 load_result.target_hdr_capacity,
-                self.ultra_hdr_decode_capacity
+                self.ultra_hdr_decode_capacity,
+                generation,
+                self.generation
             );
-            if !self.image_files.is_empty() && idx < self.image_files.len() {
-                return Some((idx, generation, self.image_files[idx].clone()));
-            }
-            return None;
+            let requeue = if self.hdr_image_cache.contains_key(&idx) {
+                None
+            } else if self.loader.is_loading(idx, self.generation) {
+                None
+            } else if !self.image_files.is_empty() && idx < self.image_files.len() {
+                Some((idx, self.generation, self.image_files[idx].clone()))
+            } else {
+                None
+            };
+            return requeue;
         }
 
         if let Some(osd) = &load_result.raw_osd {

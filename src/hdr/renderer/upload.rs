@@ -268,39 +268,6 @@ pub(crate) fn upload_rgba8_texture(
     })
 }
 
-fn convert_and_scale_preview_to_rgba32f(
-    preview: &crate::loader::DecodedImage,
-    target_w: u32,
-    target_h: u32,
-) -> Vec<f32> {
-    let mut out = vec![0.0f32; (target_w * target_h * 4) as usize];
-    let src = preview.rgba();
-    let src_w = preview.width as f32;
-    let src_h = preview.height as f32;
-
-    for y in 0..target_h {
-        let src_y = (((y as f32 + 0.5) / target_h as f32) * src_h).floor() as u32;
-        let src_y = src_y.min(preview.height - 1);
-        let src_row_idx = (src_y * preview.width * 4) as usize;
-
-        let dest_row_idx = (y * target_w * 4) as usize;
-
-        for x in 0..target_w {
-            let src_x = (((x as f32 + 0.5) / target_w as f32) * src_w).floor() as u32;
-            let src_x = src_x.min(preview.width - 1);
-
-            let src_pixel_idx = src_row_idx + (src_x * 4) as usize;
-            let dest_pixel_idx = dest_row_idx + (x * 4) as usize;
-
-            out[dest_pixel_idx] = src[src_pixel_idx] as f32 / 255.0;
-            out[dest_pixel_idx + 1] = src[src_pixel_idx + 1] as f32 / 255.0;
-            out[dest_pixel_idx + 2] = src[src_pixel_idx + 2] as f32 / 255.0;
-            out[dest_pixel_idx + 3] = src[src_pixel_idx + 3] as f32 / 255.0;
-        }
-    }
-    out
-}
-
 pub(crate) fn upload_r16_uint_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -367,8 +334,6 @@ pub(crate) fn upload_r16_uint_texture(
     })
 }
 
-const GPU_DEMOSAIC_BOOTSTRAP_PREVIEW: bool = true;
-
 pub(crate) fn upload_image_plane(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -394,34 +359,6 @@ pub(crate) fn upload_image_plane(
             raw_source.height,
             "simple-image-viewer-hdr-raw-green-plane-texture",
         )?;
-        let raw_r_at_green_plane = create_empty_r32f_storage_texture(
-            device,
-            raw_source.width,
-            raw_source.height,
-            "simple-image-viewer-hdr-raw-r-at-green-texture",
-        )?;
-        let raw_b_at_green_plane = create_empty_r32f_storage_texture(
-            device,
-            raw_source.width,
-            raw_source.height,
-            "simple-image-viewer-hdr-raw-b-at-green-texture",
-        )?;
-
-        if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW {
-            if let Some(ref preview) = raw_source.bootstrap_preview {
-                let scaled_f32 =
-                    convert_and_scale_preview_to_rgba32f(preview, image.width, image.height);
-                if let Err(err) = write_rgba32f_to_texture(
-                    queue,
-                    &base.texture,
-                    image.width,
-                    image.height,
-                    &scaled_f32,
-                ) {
-                    log::warn!("[HDR] GPU Demosaic bootstrap preview upload failed: {err}");
-                }
-            }
-        }
 
         #[cfg(feature = "preload-debug")]
         {
@@ -442,8 +379,6 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: None,
             raw_pixels: Some(raw_pixels),
             raw_green_plane: Some(raw_green_plane),
-            raw_r_at_green_plane: Some(raw_r_at_green_plane),
-            raw_b_at_green_plane: Some(raw_b_at_green_plane),
         });
     }
 
@@ -475,8 +410,6 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: Some(sdr),
             raw_pixels: None,
             raw_green_plane: None,
-            raw_r_at_green_plane: None,
-            raw_b_at_green_plane: None,
         });
     }
 
@@ -499,8 +432,6 @@ pub(crate) fn upload_image_plane(
             sdr_baseline: None,
             raw_pixels: None,
             raw_green_plane: None,
-            raw_r_at_green_plane: None,
-            raw_b_at_green_plane: None,
         });
     }
 
@@ -511,8 +442,6 @@ pub(crate) fn upload_image_plane(
         sdr_baseline: None,
         raw_pixels: None,
         raw_green_plane: None,
-        raw_r_at_green_plane: None,
-        raw_b_at_green_plane: None,
     })
 }
 

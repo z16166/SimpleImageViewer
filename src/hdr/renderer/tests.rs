@@ -840,7 +840,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
 
     let mut callback_resources = CallbackResources::default();
     let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    callback_resources.insert(create_callback_resources(&device, target_format));
+    callback_resources.insert(create_callback_resources(&device, target_format, None));
 
     let images: Vec<_> = (1..=9)
         .map(|i| {

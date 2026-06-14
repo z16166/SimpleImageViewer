@@ -305,6 +305,7 @@ pub fn run() -> eframe::Result {
 
         eframe::wgpu::DeviceDescriptor {
             label: Some("egui wgpu device"),
+            required_features: eframe::wgpu::Features::PIPELINE_CACHE,
             required_limits: eframe::wgpu::Limits {
                 max_texture_dimension_2d: hw_max_texture,
                 max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,

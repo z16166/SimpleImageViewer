@@ -42,7 +42,16 @@ pub(crate) use self::image_key::{HdrImageKey, RawGpuDemosaicBakedNotice};
 pub(super) mod resources;
 pub(super) use self::resources::{
     CallbackUpload, HDR_APPLE_GAIN_TEXTURE_FORMAT, HdrCallbackResources, HdrImageBinding,
-    ImagePlaneUpload, JpegTiledUploadKey, create_callback_resources,
+    ImagePlaneUpload, JpegTiledUploadKey,
+};
+
+#[cfg(test)]
+pub(super) use self::resources::create_callback_resources;
+
+mod prewarm;
+pub(crate) use self::prewarm::{
+    HdrCallbackResourcesPrewarm, HdrCallbackResourcesPrewarmSlot, ensure_hdr_callback_resources,
+    predicted_hdr_callback_target_format,
 };
 
 pub(super) mod tile_cache;

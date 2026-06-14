@@ -33,7 +33,8 @@ impl ImageViewerApp {
     }
 
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        let next_gen = self.generation.wrapping_add(1);
+        self.generation = next_gen;
         self.loader.set_generation(self.generation);
         self.loader.cancel_all();
         self.texture_cache.clear_all();

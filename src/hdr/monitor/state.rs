@@ -33,6 +33,13 @@ pub struct HdrMonitorState {
     pub(crate) selection: Option<HdrMonitorSelection>,
     #[cfg(not(test))]
     selection: Option<HdrMonitorSelection>,
+    /// True after the first HWND-based [`active_monitor_hdr_status`] attempt (success or failure).
+    /// Startup preload deferral waits for this so spawn-time DXGI (often the wrong monitor / SDR)
+    /// does not release loads before the runtime probe settles decode capacity.
+    #[cfg(test)]
+    pub(crate) runtime_probe_completed: bool,
+    #[cfg(not(test))]
+    runtime_probe_completed: bool,
     /// Sticky flag so we only `warn!` on the first failure in a streak of
     /// consecutive failures (avoid log spam at 1.33 Hz). Cleared the moment
     /// any probe succeeds.
@@ -46,6 +53,7 @@ impl Default for HdrMonitorState {
             last_probe_at: None,
             selection: None,
             last_probe_failed: false,
+            runtime_probe_completed: false,
         }
     }
 }
@@ -60,11 +68,16 @@ impl HdrMonitorState {
             last_probe_at: None,
             selection,
             last_probe_failed: false,
+            runtime_probe_completed: false,
         }
     }
 
     pub fn selection(&self) -> Option<&HdrMonitorSelection> {
         self.selection.as_ref()
+    }
+
+    pub(crate) fn runtime_probe_completed(&self) -> bool {
+        self.runtime_probe_completed
     }
 
     pub fn refresh_from_viewport(
@@ -128,6 +141,7 @@ impl HdrMonitorState {
                 }
             }
         }
+        self.runtime_probe_completed = true;
         if self.selection.is_some() {
             self.last_probe_failed = false;
         }

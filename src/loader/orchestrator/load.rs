@@ -97,8 +97,10 @@ impl ImageLoader {
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
+        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
         {
             let state = Arc::clone(&delayed_fallback);
+            let raw_open_prefetch = Arc::clone(&raw_open_prefetch);
             let _ = std::thread::Builder::new()
                 .name("loader-fallback".to_string())
                 .spawn(move || {
@@ -163,6 +165,7 @@ impl ImageLoader {
                             job.raw_demosaic_mode,
                             job.hdr_target_capacity,
                             job.hdr_tone_map,
+                            Arc::clone(&raw_open_prefetch),
                         );
                     }
                 });
@@ -553,6 +556,7 @@ impl ImageLoader {
             });
 
         Self {
+            raw_open_prefetch,
             tx,
             rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
@@ -567,6 +571,10 @@ impl ImageLoader {
             hdr_tone_sdr_white_nits_bits,
             hdr_tone_max_display_nits_bits,
         }
+    }
+
+    pub fn prefetch_raw_open(&self, path: PathBuf) {
+        self.raw_open_prefetch.request(&self.pool, path);
     }
 
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
@@ -662,6 +670,7 @@ impl ImageLoader {
         let rtx2 = self.refine_tx.clone();
         let hdr_target_capacity = self.hdr_target_capacity();
         let hdr_tone_map = self.hdr_tone_map_settings_snapshot();
+        let raw_open_prefetch = Arc::clone(&self.raw_open_prefetch);
 
         if path_is_raw {
             crate::preload_debug!(
@@ -674,6 +683,7 @@ impl ImageLoader {
             );
         }
 
+        let raw_open_prefetch_spawn = Arc::clone(&raw_open_prefetch);
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
             if generation != global_gen {
@@ -706,6 +716,7 @@ impl ImageLoader {
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
+                raw_open_prefetch_spawn,
             );
         });
 
@@ -724,6 +735,7 @@ impl ImageLoader {
             refine_tx: rtx2,
             hdr_target_capacity,
             hdr_tone_map,
+            raw_open_prefetch,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -765,6 +777,7 @@ impl ImageLoader {
         raw_demosaic_mode: crate::settings::RawDemosaicMode,
         hdr_target_capacity: f32,
         hdr_tone_map: HdrToneMapSettings,
+        raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
     ) {
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -786,6 +799,7 @@ impl ImageLoader {
                 raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
+                Some(raw_open_prefetch.as_ref()),
             )
         }))
         .unwrap_or_else(|e| {

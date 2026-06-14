@@ -232,6 +232,7 @@ const _: () = assert!(std::mem::size_of::<JpegGainMapComposeUniform>() == 128);
 
 pub(super) fn create_jpeg_compose_compute_resources(
     device: &wgpu::Device,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> (
     wgpu::BindGroupLayout,
     wgpu::ComputePipeline,
@@ -298,7 +299,7 @@ pub(super) fn create_jpeg_compose_compute_resources(
         module: &shader,
         entry_point: Some("cs_compose_jpeg_gain"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        cache: pipeline_cache,
     });
     let tile_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-tile-pipeline"),
@@ -306,7 +307,7 @@ pub(super) fn create_jpeg_compose_compute_resources(
         module: &shader,
         entry_point: Some("cs_compose_jpeg_gain_tile"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        cache: pipeline_cache,
     });
     let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),

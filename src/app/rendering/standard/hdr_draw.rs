@@ -40,9 +40,6 @@ impl ImageViewerApp {
         layout: &PlaneLayout,
         rotation: i32,
     ) {
-        if render_plan.backend != PlaneBackendKind::Sdr {
-            return;
-        }
         if !self
             .hdr_raw_gpu_demosaic_pending_indices
             .contains(&self.current_index)
@@ -52,11 +49,13 @@ impl ImageViewerApp {
         if hdr_image.metadata.raw_gpu_source.is_none() {
             return;
         }
+        // Visible draw uses the SDR bootstrap preview while pending; schedule an alpha-zero
+        // HDR plane so prepare() runs demosaic. When the plan already routes through Hdr,
+        // the main plane draw below triggers the same callback -- avoid a duplicate submit.
+        if render_plan.backend != PlaneBackendKind::Sdr {
+            return;
+        }
         let Some(target_format) = render_plan.target_format else {
-            log::warn!(
-                "[HDR] GPU RAW demosaic bake deferred: no HDR target format for idx={}",
-                self.current_index
-            );
             return;
         };
         self.draw_hdr_image_plane_clipped(

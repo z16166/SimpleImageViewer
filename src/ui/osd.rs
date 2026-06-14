@@ -148,6 +148,7 @@ pub enum OsdEvent {
     RawRenderPixels(crate::loader::RawRenderPixels),
     RawDemosaicBackend(Option<crate::loader::RawDemosaicBackend>),
     RawCpuDemosaicMs(Option<u32>),
+    RawGpuExtractMs(Option<u32>),
     RawGpuDemosaicMs(Option<u32>),
     HdrRenderPath(Option<crate::hdr::status::HdrRenderPath>),
     HdrColorSpace(Option<crate::hdr::types::HdrColorSpace>),
@@ -207,6 +208,10 @@ impl OsdEvent {
         Self::RawCpuDemosaicMs(*value)
     }
 
+    pub fn raw_gpu_extract_ms(value: &Option<u32>) -> Self {
+        Self::RawGpuExtractMs(*value)
+    }
+
     pub fn raw_gpu_demosaic_ms(value: &Option<u32>) -> Self {
         Self::RawGpuDemosaicMs(*value)
     }
@@ -254,6 +259,7 @@ struct SupplementalOsdInputs {
     raw_render_pixels: crate::loader::RawRenderPixels,
     raw_demosaic_backend: Option<crate::loader::RawDemosaicBackend>,
     raw_cpu_demosaic_ms: Option<u32>,
+    raw_gpu_extract_ms: Option<u32>,
     raw_gpu_demosaic_ms: Option<u32>,
     hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
     hdr_color_space: Option<crate::hdr::types::HdrColorSpace>,
@@ -282,6 +288,7 @@ impl Default for SupplementalOsdInputs {
             },
             raw_demosaic_backend: None,
             raw_cpu_demosaic_ms: None,
+            raw_gpu_extract_ms: None,
             raw_gpu_demosaic_ms: None,
             hdr_render_path: None,
             hdr_color_space: None,
@@ -336,6 +343,7 @@ impl SupplementalOsdInputs {
             OsdEvent::RawRenderPixels(value) => self.raw_render_pixels = value,
             OsdEvent::RawDemosaicBackend(value) => self.raw_demosaic_backend = value,
             OsdEvent::RawCpuDemosaicMs(value) => self.raw_cpu_demosaic_ms = value,
+            OsdEvent::RawGpuExtractMs(value) => self.raw_gpu_extract_ms = value,
             OsdEvent::RawGpuDemosaicMs(value) => self.raw_gpu_demosaic_ms = value,
             OsdEvent::HdrRenderPath(value) => self.hdr_render_path = value,
             OsdEvent::HdrColorSpace(value) => self.hdr_color_space = value,
@@ -464,6 +472,7 @@ impl OsdRenderer {
             self.supplemental_state.raw_render_pixels,
             self.supplemental_state.raw_demosaic_backend,
             self.supplemental_state.raw_cpu_demosaic_ms,
+            self.supplemental_state.raw_gpu_extract_ms,
             self.supplemental_state.raw_gpu_demosaic_ms,
         );
         self.has_raw_line = raw.is_some();

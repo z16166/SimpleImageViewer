@@ -17,10 +17,27 @@
 use super::*;
 
 impl ImageViewerApp {
+    pub(crate) fn maybe_prefetch_startup_raw_open(&self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let path = &self.image_files[self.current_index];
+        if !crate::loader::should_prefetch_raw_gpu_open(&self.settings, path) {
+            return;
+        }
+        self.loader.prefetch_raw_open(path.clone());
+    }
+
     pub(crate) fn schedule_preloads(&mut self, forward: bool) {
         let n = self.image_files.len();
         if n == 0 {
             preload_debug!("[PreloadDebug] schedule skipped: no images");
+            return;
+        }
+        if self.preload_deferred_for_hdr_capacity {
+            preload_debug!(
+                "[PreloadDebug] schedule deferred: waiting for runtime HDR capacity refresh"
+            );
             return;
         }
         let cur = self.current_index;
@@ -78,6 +95,19 @@ impl ImageViewerApp {
 
         if !self.settings.preload {
             preload_debug!("[PreloadDebug] background preload disabled in settings");
+            return;
+        }
+
+        let path_is_raw = self
+            .image_files
+            .get(cur)
+            .is_some_and(|p| crate::preload_debug::path_is_raw(p));
+        if should_defer_background_preload_for_raw_gpu_current(
+            self.raw_hq_index_requires_hdr_plane(cur),
+            path_is_raw,
+            current_is_loading,
+            self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+        ) {
             return;
         }
 

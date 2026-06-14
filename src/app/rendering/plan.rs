@@ -113,7 +113,11 @@ impl ImageViewerApp {
                 .hdr_raw_gpu_demosaic_pending_indices
                 .contains(&self.current_index)
             && has_sdr_fallback
-            && self.texture_cache.contains(self.current_index);
+            && (self.texture_cache.contains(self.current_index)
+                || self
+                    .hdr_image_cache
+                    .get(&self.current_index)
+                    .is_some_and(|hdr| crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)));
         build_render_plan_for_state(
             shape,
             has_hdr_plane,

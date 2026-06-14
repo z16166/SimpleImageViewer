@@ -236,4 +236,6 @@ fn sample_hash_u8(values: &[u8]) -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RawGpuDemosaicBakedNotice {
     pub key: HdrImageKey,
+    /// Wall time for CFA upload (first prepare) + compute encode on the GPU thread.
+    pub demosaic_ms: u32,
 }

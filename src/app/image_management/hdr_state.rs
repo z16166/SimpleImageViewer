@@ -111,6 +111,22 @@ impl ImageViewerApp {
         self.loader.set_hdr_tone_map_settings(tone);
     }
 
+    fn flush_deferred_preload_after_hdr_capacity(&mut self) {
+        if !self.preload_deferred_for_hdr_capacity {
+            return;
+        }
+        self.preload_deferred_for_hdr_capacity = false;
+        if self.image_files.is_empty() {
+            return;
+        }
+        preload_debug!(
+            "[PreloadDebug] schedule after HDR capacity refresh: cur={} gen={}",
+            self.current_index,
+            self.generation
+        );
+        self.schedule_preloads(true);
+    }
+
     pub(crate) fn refresh_ultra_hdr_decode_capacity(&mut self, ctx: &egui::Context) {
         const CAPACITY_EPSILON: f32 = 0.001;
         let next_output_mode = self.hdr_capabilities.output_mode;
@@ -122,6 +138,17 @@ impl ImageViewerApp {
         if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON
             && !crosses_hdr_sdr_boundary
         {
+            let monitor_hdr_supported = self
+                .effective_hdr_monitor_selection()
+                .is_some_and(|selection| selection.hdr_supported);
+            let can_release = startup_preload_defer_can_release(
+                self.hdr_monitor_state.runtime_probe_completed(),
+                monitor_hdr_supported,
+                next_output_mode,
+            );
+            if can_release {
+                self.flush_deferred_preload_after_hdr_capacity();
+            }
             return;
         }
 
@@ -145,11 +172,13 @@ impl ImageViewerApp {
                 "[HDR] HDR/SDR output boundary changed; invalidating in-flight/preload state and reloading current image"
             );
             self.reload_current_after_hdr_sdr_output_boundary_change();
+            self.flush_deferred_preload_after_hdr_capacity();
             ctx.request_repaint();
             return;
         }
 
         self.invalidate_ultra_hdr_capacity_sensitive_state(ctx);
+        self.flush_deferred_preload_after_hdr_capacity();
     }
 
     fn invalidate_ultra_hdr_capacity_sensitive_state(&mut self, ctx: &egui::Context) {

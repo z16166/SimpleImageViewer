@@ -75,7 +75,8 @@ impl ImageViewerApp {
                 if idx == self.current_index {
                     cleared_current = true;
                 }
-                self.raw_metadata.finish_gpu_demosaic_timing(idx);
+                self.raw_metadata
+                    .set_gpu_demosaic_ms(idx, notice.demosaic_ms);
                 self.raw_metadata.promote_gpu_demosaic_complete(idx);
             }
         }
@@ -88,6 +89,9 @@ impl ImageViewerApp {
                     Some(crate::app::CurrentHdrImage::new(self.current_index, hdr));
             }
             self.refresh_hdr_view_status();
+            if self.settings.preload {
+                self.schedule_preloads(true);
+            }
         }
         if cleared_any {
             ctx.request_repaint();

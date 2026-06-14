@@ -328,6 +328,10 @@ pub struct ImageViewerApp {
     pub(crate) texture_cache: TextureCache,
     pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
+    pub(crate) wgpu_adapter_info: Option<wgpu::AdapterInfo>,
+    pub(crate) hdr_callback_resources_prewarm:
+        std::sync::Arc<crate::hdr::renderer::HdrCallbackResourcesPrewarm>,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
     /// Last observed viewport placement (`outer_rect`, `inner_size`,
@@ -372,6 +376,8 @@ pub struct ImageViewerApp {
     pub(crate) rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode,
+    /// Startup: defer directory preloads until the first runtime HDR capacity refresh.
+    pub(crate) preload_deferred_for_hdr_capacity: bool,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,

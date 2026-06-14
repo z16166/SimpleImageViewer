@@ -501,6 +501,33 @@ fn output_mode_crosses_hdr_sdr_boundary(
     output_mode_is_hdr(previous) != output_mode_is_hdr(next)
 }
 
+/// Startup preload defer stays active until runtime monitor probe finishes **and** HDR
+/// decode capacity is not still gated at 1.0 by `SdrToneMapped` output (swap chain may
+/// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
+pub(crate) fn startup_preload_defer_can_release(
+    runtime_probe_completed: bool,
+    monitor_hdr_supported: bool,
+    output_mode: crate::hdr::types::HdrOutputMode,
+) -> bool {
+    if !runtime_probe_completed {
+        return false;
+    }
+    if !monitor_hdr_supported {
+        return true;
+    }
+    !matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped)
+}
+
+/// Hold neighbor preloads while the current index is extracting CFA or waiting on GPU demosaic.
+pub(crate) fn should_defer_background_preload_for_raw_gpu_current(
+    raw_hq_requires_hdr_plane: bool,
+    path_is_raw: bool,
+    current_loading: bool,
+    gpu_demosaic_pending: bool,
+) -> bool {
+    raw_hq_requires_hdr_plane && path_is_raw && (current_loading || gpu_demosaic_pending)
+}
+
 #[cfg(test)]
 fn select_transition_source<T: Clone>(
     current: Option<T>,
@@ -684,6 +711,15 @@ impl<'a> ImageInstallPlan<'a> {
 
     fn estimated_sdr_upload_bytes(&self) -> usize {
         match self {
+            Self::StaticHdr {
+                hdr,
+                fallback: decoded,
+                ..
+            } if crate::loader::hdr_raw_gpu_demosaic_pending(hdr)
+                && crate::loader::raw_gpu_source_has_bootstrap_preview(hdr) =>
+            {
+                0
+            }
             Self::StaticSdr { decoded }
             | Self::StaticHdr {
                 fallback: decoded, ..

@@ -59,13 +59,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let needs_resources = callback_resources
-            .get::<HdrCallbackResources>()
-            .map_or(true, |resources| {
-                resources.target_format != self.target_format
-            });
-        if needs_resources {
-            callback_resources.insert(create_callback_resources(device, self.target_format));
+        if !ensure_hdr_callback_resources(device, self.target_format, callback_resources) {
+            return Vec::new();
         }
 
         let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {
@@ -102,7 +97,14 @@ impl CallbackTrait for HdrImagePlaneCallback {
             return Vec::new();
         }
 
-        if !resources.image_bindings.contains_key(&image_key) {
+        let binding_missing = !resources.image_bindings.contains_key(&image_key);
+        let gpu_demosaic_started = if raw_source.is_some() && binding_missing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        if binding_missing {
             match upload_image_plane(device, queue, &self.image) {
                 Ok(uploaded) => {
                     let tone_map_buffer =
@@ -181,10 +183,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         };
                     let uploaded_raw_green_plane_view =
                         uploaded.raw_green_plane.and_then(|g| g.storage_view);
-                    let uploaded_raw_r_at_green_plane_view =
-                        uploaded.raw_r_at_green_plane.and_then(|g| g.storage_view);
-                    let uploaded_raw_b_at_green_plane_view =
-                        uploaded.raw_b_at_green_plane.and_then(|g| g.storage_view);
 
                     let binding = HdrImageBinding {
                         uploaded_texture,
@@ -197,8 +195,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         uploaded_raw_pixels_texture,
                         uploaded_raw_pixels_view,
                         uploaded_raw_green_plane_view,
-                        uploaded_raw_r_at_green_plane_view,
-                        uploaded_raw_b_at_green_plane_view,
                         baked_jpeg_image_key: None,
                         baked_jpeg_weight_bits: None,
                         baked_apple_image_key: None,
@@ -253,18 +249,16 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 if let (
                     Some(compose_layout),
                     Some(green_pipeline),
-                    Some(rb_at_green_pipeline),
                     Some(rgb_pipeline),
                     Some(uniform_buf),
                 ) = (
                     resources.raw_demosaic_bind_group_layout.as_ref(),
                     resources.raw_demosaic_green_pipeline.as_ref(),
-                    resources.raw_demosaic_rb_at_green_pipeline.as_ref(),
                     resources.raw_demosaic_rgb_pipeline.as_ref(),
                     resources.raw_demosaic_uniform_buffer.as_ref(),
                 ) {
-                    #[cfg(feature = "preload-debug")]
-                    let demosaic_bake_started = std::time::Instant::now();
+                    let demosaic_started =
+                        gpu_demosaic_started.unwrap_or_else(std::time::Instant::now);
                     log::debug!(
                         "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
                         self.image.width,
@@ -285,14 +279,6 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         .uploaded_raw_green_plane_view
                         .as_ref()
                         .expect("raw green plane view");
-                    let r_at_green_plane_view = binding
-                        .uploaded_raw_r_at_green_plane_view
-                        .as_ref()
-                        .expect("raw r-at-green plane view");
-                    let b_at_green_plane_view = binding
-                        .uploaded_raw_b_at_green_plane_view
-                        .as_ref()
-                        .expect("raw b-at-green plane view");
                     let output_view = binding
                         .uploaded_display_storage_view
                         .as_ref()
@@ -303,31 +289,32 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             queue,
                             compose_layout,
                             green_pipeline,
-                            rb_at_green_pipeline,
                             rgb_pipeline,
                             source,
                             raw_pixels_view,
                             green_plane_view,
-                            r_at_green_plane_view,
-                            b_at_green_plane_view,
                             output_view,
                             uniform_buf,
                         ),
                     );
                     binding.baked_raw_demosaic_key = Some(image_key);
                     binding.baked_raw_demosaic_method = Some(source.demosaic_method);
+                    let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
                     if let Some(notify) = self.raw_demosaic_baked_notify.as_ref()
                         && let Ok(mut pending) = notify.lock()
                     {
-                        pending.push(RawGpuDemosaicBakedNotice { key: image_key });
+                        pending.push(RawGpuDemosaicBakedNotice {
+                            key: image_key,
+                            demosaic_ms,
+                        });
                     }
                     #[cfg(feature = "preload-debug")]
                     {
                         crate::preload_debug!(
-                            "[PreloadDebug][RAW-GPU] demosaic encode queued {}x{} {:.0}ms",
+                            "[PreloadDebug][RAW-GPU] demosaic upload+encode {}x{} {}ms",
                             self.image.width,
                             self.image.height,
-                            demosaic_bake_started.elapsed().as_secs_f64() * 1000.0
+                            demosaic_ms
                         );
                     }
                 } else {

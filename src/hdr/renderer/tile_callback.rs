@@ -35,13 +35,8 @@ impl CallbackTrait for HdrTilePlaneCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let needs_resources = callback_resources
-            .get::<HdrCallbackResources>()
-            .map_or(true, |resources| {
-                resources.target_format != self.target_format
-            });
-        if needs_resources {
-            callback_resources.insert(create_callback_resources(device, self.target_format));
+        if !ensure_hdr_callback_resources(device, self.target_format, callback_resources) {
+            return Vec::new();
         }
 
         let Some(resources) = callback_resources.get_mut::<HdrCallbackResources>() else {

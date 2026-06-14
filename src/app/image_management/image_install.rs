@@ -182,7 +182,11 @@ impl ImageViewerApp {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        let skip_current_sdr_upload = idx == self.current_index && sdr_fallback_is_placeholder;
+        let bootstrap_already_uploaded = gpu_demosaic_pending
+            && self.texture_cache.contains(idx)
+            && !sdr_fallback_is_placeholder;
+        let skip_current_sdr_upload = idx == self.current_index
+            && (sdr_fallback_is_placeholder || bootstrap_already_uploaded);
         if !skip_current_sdr_upload {
             if defer_sdr_upload && idx != self.current_index {
                 self.deferred_sdr_uploads.insert(idx, fallback.clone());
@@ -200,6 +204,9 @@ impl ImageViewerApp {
             self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
             self.refresh_hdr_view_status();
+            if gpu_demosaic_pending {
+                ctx.request_repaint();
+            }
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {

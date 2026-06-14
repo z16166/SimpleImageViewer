@@ -99,6 +99,7 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) refine_tx: Sender<RefinementRequest>,
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
+    pub(crate) raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
 }
 
 pub(crate) fn should_spawn_load_task(
@@ -116,6 +117,7 @@ pub(crate) fn should_spawn_load_task(
 }
 
 pub struct ImageLoader {
+    pub(crate) raw_open_prefetch: std::sync::Arc<super::raw_prefetch::RawOpenPrefetch>,
     pub(crate) tx: Sender<LoaderOutput>,
     pub rx: Receiver<LoaderOutput>,
     /// Maps image index -> latest requested generation ID.

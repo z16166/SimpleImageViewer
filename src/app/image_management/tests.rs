@@ -499,6 +499,48 @@ fn first_batch_preload_waits_for_startup_target() {
 }
 
 #[test]
+fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
+    use crate::hdr::types::HdrOutputMode;
+
+    assert!(!super::startup_preload_defer_can_release(
+        false,
+        true,
+        HdrOutputMode::WindowsScRgb
+    ));
+    assert!(super::startup_preload_defer_can_release(
+        true,
+        false,
+        HdrOutputMode::SdrToneMapped
+    ));
+    assert!(!super::startup_preload_defer_can_release(
+        true,
+        true,
+        HdrOutputMode::SdrToneMapped
+    ));
+    assert!(super::startup_preload_defer_can_release(
+        true,
+        true,
+        HdrOutputMode::WindowsScRgb
+    ));
+}
+
+#[test]
+fn background_preload_defers_while_current_raw_gpu_path_active() {
+    assert!(super::should_defer_background_preload_for_raw_gpu_current(
+        true, true, true, false
+    ));
+    assert!(super::should_defer_background_preload_for_raw_gpu_current(
+        true, true, false, true
+    ));
+    assert!(!super::should_defer_background_preload_for_raw_gpu_current(
+        false, true, true, false
+    ));
+    assert!(!super::should_defer_background_preload_for_raw_gpu_current(
+        true, false, true, false
+    ));
+}
+
+#[test]
 fn startup_target_detects_explicit_image_or_resume_image() {
     let explicit = PathBuf::from("explicit.jpg");
     let resumed = PathBuf::from("resumed.jpg");
@@ -1117,6 +1159,10 @@ fn make_test_app() -> ImageViewerApp {
         texture_cache: TextureCache::new(10),
         hdr_capabilities: crate::hdr::capabilities::HdrCapabilities::sdr("test"),
         hdr_renderer: crate::hdr::renderer::HdrImageRenderer::new(),
+        wgpu_pipeline_cache: None,
+        wgpu_adapter_info: None,
+        hdr_callback_resources_prewarm:
+            crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared(),
         hdr_target_format: None,
         hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::default(),
         cached_window_placement: None,
@@ -1134,6 +1180,7 @@ fn make_test_app() -> ImageViewerApp {
         rgb10a2_pq_encode_requested: false,
         ultra_hdr_decode_capacity: 1.0,
         ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
+        preload_deferred_for_hdr_capacity: false,
         current_hdr_image: None,
         hdr_image_cache: HashMap::new(),
         current_hdr_tiled_image: None,

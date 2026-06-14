@@ -44,6 +44,56 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
+use crate::loader::orchestrator::{RawOpenPhaseTimings, RawOpenPrefetch};
+
+pub(crate) fn open_raw_processor_with_preview(
+    path: &PathBuf,
+) -> Result<(RawProcessor, Option<DecodedImage>, RawOpenPhaseTimings, i32), String> {
+    let open_started = std::time::Instant::now();
+    let mut processor =
+        RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+    if let Err(e) = processor.open(path) {
+        return Err(e);
+    }
+    let open_ms = crate::loader::elapsed_ms_u32(open_started);
+
+    let lr_flip = processor.flip();
+    let final_orientation = match lr_flip {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 3,
+        4 => 5,
+        5 => 8,
+        6 => 6,
+        7 => 7,
+        _ => crate::metadata_utils::get_exif_orientation(path),
+    };
+
+    let final_lr_flip = match final_orientation {
+        1 => 0,
+        2 => 1,
+        3 => 3,
+        4 => 2,
+        5 => 4,
+        6 => 6,
+        7 => 7,
+        8 => 5,
+        _ => 0,
+    };
+    processor.set_user_flip(final_lr_flip);
+
+    let thumb_started = std::time::Instant::now();
+    let preview_opt = extract_embedded_preview(&mut processor, path, final_orientation);
+    let thumb_ms = crate::loader::elapsed_ms_u32(thumb_started);
+
+    Ok((
+        processor,
+        preview_opt,
+        RawOpenPhaseTimings { open_ms, thumb_ms },
+        final_lr_flip,
+    ))
+}
 
 fn load_raw_hq_static_hdr(
     processor: &mut RawProcessor,
@@ -175,61 +225,57 @@ pub(crate) fn load_raw(
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    raw_open_prefetch: Option<&RawOpenPrefetch>,
 ) -> Result<RawLoadOutput, String> {
-    let mut processor =
-        RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    if let Err(e) = processor.open(path) {
-        log::warn!(
-            "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
-            path,
-            e
-        );
-        #[cfg(target_os = "windows")]
-        return crate::wic::load_via_wic(path, high_quality, None).map(|image| RawLoadOutput {
-            image,
-            osd: RawOsdInfo::empty(),
-        });
-        #[cfg(target_os = "macos")]
-        return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(|image| {
-            RawLoadOutput {
-                image,
-                osd: RawOsdInfo::empty(),
+    let (mut processor, preview_opt, open_timings, final_lr_flip, prefetched) = if let Some(
+        session,
+    ) =
+        raw_open_prefetch.and_then(|cache| cache.take_or_wait(path))
+    {
+        let final_lr_flip = session.final_lr_flip;
+        (
+            session.processor,
+            session.preview,
+            session.timings,
+            final_lr_flip,
+            true,
+        )
+    } else {
+        match open_raw_processor_with_preview(path) {
+            Ok((processor, preview, timings, final_lr_flip)) => {
+                (processor, preview, timings, final_lr_flip, false)
             }
-        });
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        return Err(format!(
-            "LibRaw failed and no platform fallback available: {}",
-            e
-        ));
-    }
-
-    let lr_flip = processor.flip();
-    let final_orientation = match lr_flip {
-        0 => 1,
-        1 => 2,
-        2 => 4,
-        3 => 3,
-        4 => 5,
-        5 => 8,
-        6 => 6,
-        7 => 7,
-        _ => crate::metadata_utils::get_exif_orientation(path),
+            Err(e) => {
+                log::warn!(
+                    "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
+                    path,
+                    e
+                );
+                #[cfg(target_os = "windows")]
+                return crate::wic::load_via_wic(path, high_quality, None).map(|image| {
+                    RawLoadOutput {
+                        image,
+                        osd: RawOsdInfo::empty(),
+                    }
+                });
+                #[cfg(target_os = "macos")]
+                return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(
+                    |image| RawLoadOutput {
+                        image,
+                        osd: RawOsdInfo::empty(),
+                    },
+                );
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                return Err(format!(
+                    "LibRaw failed and no platform fallback available: {}",
+                    e
+                ));
+            }
+        }
     };
 
-    let final_lr_flip = match final_orientation {
-        1 => 0,
-        2 => 1,
-        3 => 3,
-        4 => 2,
-        5 => 4,
-        6 => 6,
-        7 => 7,
-        8 => 5,
-        _ => 0,
-    };
-    processor.set_user_flip(final_lr_flip);
+    let _ = (open_timings, prefetched);
 
-    let preview_opt = extract_embedded_preview(&mut processor, path, final_orientation);
     let (width, height) = processor.developed_output_dimensions(preview_opt.as_ref());
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
@@ -303,38 +349,26 @@ pub(crate) fn load_raw(
         if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
             emit_raw_gpu_bootstrap_preview(&load_tx, index, generation, path, p);
         }
-        let gpu_pipeline_started = std::time::Instant::now();
         let extract_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
             Ok(mut raw_gpu_source) => {
                 let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
-                let scale_started = std::time::Instant::now();
-                let scale = RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source);
-                let scale_ms = crate::loader::elapsed_ms_u32(scale_started);
+                let calib_started = std::time::Instant::now();
+                raw_gpu_source.scene_color_scale =
+                    crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale_from_processor(
+                        &mut processor,
+                        &raw_gpu_source.rgb_cam,
+                    );
+                let calib_ms = crate::loader::elapsed_ms_u32(calib_started);
                 log::debug!(
-                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms scale={scale_ms}ms (scale calibrates via LibRaw CPU develop)",
+                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms calib={calib_ms}ms (decimated auto_bright; demosaic on GPU)",
                     path.file_name().unwrap_or_default()
                 );
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms scale={scale_ms}ms total={}ms",
+                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms calib={calib_ms}ms demosaic_pending",
                     path.file_name().unwrap_or_default(),
-                    crate::loader::elapsed_ms_u32(gpu_pipeline_started),
                 );
-                match scale {
-                    Ok(scale) => {
-                        log::debug!(
-                            "[Loader] RAW GPU scene color scale={scale:?} for {:?}",
-                            path.file_name().unwrap_or_default()
-                        );
-                        raw_gpu_source.scene_color_scale = scale;
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            "[Loader] RAW GPU scene color scale fallback to identity: {err}"
-                        );
-                    }
-                }
                 raw_gpu_source.bootstrap_preview = preview_opt.clone();
                 let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
                 metadata.raw_gpu_source = Some(raw_gpu_source);
@@ -362,7 +396,7 @@ pub(crate) fn load_raw(
                 } else {
                     osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
                 };
-                osd = osd.with_gpu_pipeline_started(gpu_pipeline_started);
+                osd = osd.with_gpu_extract_ms(extract_ms.saturating_add(calib_ms));
                 return Ok(RawLoadOutput {
                     image: make_hdr_image_data(hdr, fallback),
                     osd,
