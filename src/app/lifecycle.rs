@@ -8,12 +8,12 @@ use crate::ui::utils::{
     get_system_font_families, setup_fonts, setup_visuals, startup_font_family_list,
 };
 use eframe::egui::{self, Vec2};
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
-use parking_lot::Mutex;
 
 impl ImageViewerApp {
     pub fn refresh_audio_devices(&mut self) {
@@ -273,7 +273,8 @@ impl ImageViewerApp {
                 Some(adapter_info),
             )
         } else {
-            crate::loader::GPU_DEMOSAIC_SUPPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::loader::GPU_DEMOSAIC_SUPPORTED
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             (None, None)
         };
 

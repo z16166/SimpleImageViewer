@@ -558,13 +558,11 @@ impl RawProcessor {
                 &mut ab_luma,
             )
         };
-        let gpu_sum =
-            crate::hdr::raw_demosaic_gpu::scene_linear_center_luma_from_source(source);
+        let gpu_sum = crate::hdr::raw_demosaic_gpu::scene_linear_center_luma_from_source(source);
         if status == 0 && gpu_sum > 1e-9 && ab_luma > 0.0 {
             const PATCH_PIXELS: f64 = 4096.0;
             let cpu_sum = PATCH_PIXELS * ab_luma;
-            let uniform =
-                Self::clamp_scene_color_scale([(cpu_sum / gpu_sum) as f32, 0.0, 0.0])[0];
+            let uniform = Self::clamp_scene_color_scale([(cpu_sum / gpu_sum) as f32, 0.0, 0.0])[0];
             log::debug!(
                 "[RawProcessor] GPU scene_color_scale={uniform} (patch ab/gpu center luma {cpu_sum:.4}/{gpu_sum:.4})"
             );
