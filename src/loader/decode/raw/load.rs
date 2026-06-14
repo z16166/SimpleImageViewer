@@ -200,8 +200,8 @@ fn emit_raw_hq_bootstrap_preview(
     log_tag: &str,
 ) {
     crate::preload_debug!(
-        "[PreloadDebug][RAW-{tag}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
-        tag = log_tag,
+        "[PreloadDebug][RAW-{}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        log_tag,
         index,
         generation,
         preview.width,
