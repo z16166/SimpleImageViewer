@@ -19,7 +19,12 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::DecodedImage;
 use crate::loader::ImageData;
 use crate::loader::raw_osd::RawRenderPixels;
+use crossbeam_channel::unbounded;
 use std::path::PathBuf;
+
+fn dummy_load_tx() -> crossbeam_channel::Sender<crate::loader::LoaderOutput> {
+    unbounded().0
+}
 
 #[test]
 fn nikon1_embedded_thumb_covers_sensor() {
@@ -112,6 +117,7 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
         crate::settings::RawDemosaicMode::Cpu,
         4.0,
@@ -156,6 +162,7 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         false,
         crate::settings::RawDemosaicMode::Cpu,
         4.0,
@@ -192,6 +199,7 @@ fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
         crate::settings::RawDemosaicMode::Cpu,
         1.0,
@@ -275,6 +283,7 @@ fn probe_epson_and_fuji_on_local_samples() {
                 0,
                 &path,
                 refine_tx,
+        dummy_load_tx(),
                 hq,
                 crate::settings::RawDemosaicMode::Cpu,
                 4.0,
@@ -327,6 +336,7 @@ fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
         crate::settings::RawDemosaicMode::Cpu,
         4.0,

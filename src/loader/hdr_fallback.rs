@@ -62,12 +62,34 @@ pub(crate) fn libraw_scene_linear_needs_eager_sdr_fallback(hdr: &HdrImageBuffer)
         && hdr.metadata.reference == HdrReference::SceneLinear
 }
 
+/// Embedded preview attached for GPU demosaic bootstrap (real pixels, not a black placeholder).
+pub(crate) fn raw_gpu_source_has_bootstrap_preview(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata
+        .raw_gpu_source
+        .as_ref()
+        .and_then(|source| source.bootstrap_preview.as_ref())
+        .is_some()
+}
+
+/// GPU CFA extract finished but demosaic has not yet populated `rgba_f32`.
+pub(crate) fn hdr_raw_gpu_demosaic_pending(hdr: &HdrImageBuffer) -> bool {
+    hdr.metadata.raw_gpu_source.is_some() && hdr.rgba_f32.is_empty()
+}
+
+/// Empty GPU RAW buffers cannot be tone-mapped on the refinement worker.
+pub(crate) fn hdr_raw_gpu_refinement_is_pointless(hdr: &HdrImageBuffer) -> bool {
+    hdr_raw_gpu_demosaic_pending(hdr)
+}
+
 /// True when the loader attached a black SDR placeholder instead of a tone-mapped fallback.
 pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
 ) -> bool {
-    if hdr.metadata.raw_gpu_source.is_some() {
+    if raw_gpu_source_has_bootstrap_preview(hdr) {
+        return false;
+    }
+    if hdr_raw_gpu_demosaic_pending(hdr) {
         return true;
     }
     if hdr_display_requests_sdr_preview(hdr_target_capacity) {
@@ -93,7 +115,10 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
     hdr_target_capacity: f32,
     tone: &HdrToneMapSettings,
 ) -> Result<Arc<Vec<u8>>, String> {
-    if hdr.metadata.raw_gpu_source.is_some() {
+    if let Some(source) = hdr.metadata.raw_gpu_source.as_ref() {
+        if let Some(preview) = source.bootstrap_preview.as_ref() {
+            return Ok(Arc::new(preview.rgba().to_vec()));
+        }
         return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
             hdr.width, hdr.height,
         )?));
@@ -212,6 +237,37 @@ mod tests {
             .expect("ISO deferred fallback should use baseline SDR");
 
         assert_eq!(out, iso_sdr);
+    }
+
+    #[test]
+    fn gpu_raw_bootstrap_preview_is_not_sdr_placeholder() {
+        let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+            raw_width: 4,
+            raw_height: 4,
+            width: 4,
+            height: 4,
+            raw_pixels: Arc::new(vec![0; 16]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 65535.0,
+            bayer_pattern: [0, 1, 1, 2],
+            scene_color_scale: [1.0, 1.0, 1.0],
+            demosaic_method: crate::settings::RawDemosaicMethod::MalvarHeCutler,
+            bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
+        });
+        let hdr = HdrImageBuffer {
+            width: 4,
+            height: 4,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+        assert!(!hdr_sdr_fallback_is_placeholder_for_load(&hdr, 4.0));
+        assert!(hdr_raw_gpu_demosaic_pending(&hdr));
+        assert!(hdr_raw_gpu_refinement_is_pointless(&hdr));
     }
 
     #[test]

@@ -65,9 +65,7 @@ fn update(app: &mut ImageViewerApp, egui_ctx: &Context, msg: AppearanceMsg) {
             app.settings.language = lang;
             rust_i18n::set_locale(&app.settings.language);
             egui_ctx.send_viewport_cmd(egui::ViewportCommand::Title(t!("app.title").to_string()));
-            app.raw_metadata.on_language_changed(); // re-renders RAW OSD lines, sends RawLine event
-            app.osd.on_language_changed(); // refreshes HUD / HDR / loading-hint caches
-            app.osd.sync_events(); // immediately consumes the RawLine event
+            app.osd.on_language_changed();
             app.cached_keyboard_hint = rust_i18n::t!("hint.keyboard").to_string();
             app.refresh_tray_after_language_change(egui_ctx);
             app.queue_save();

@@ -27,7 +27,7 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::preview_caps::finalize_raw_hq_hdr_buffer;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
-use crate::loader::raw_osd::RawOsdContext;
+use crate::loader::raw_osd::{RawDemosaicBackend, RawOsdContext};
 use crate::loader::tiled_sources::RawImageSource;
 use crate::loader::{
     DecodedImage, ImageData, RawLoadOutput, RefinementRequest, hdr_display_requests_sdr_preview,
@@ -92,7 +92,7 @@ pub(crate) fn develop_full_resolution(
                     let fallback = DecodedImage::from_arc(hw, hh, fallback_pixels);
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
-                        osd: osd_ctx.full_develop(hw, hh),
+                        osd: osd_ctx.full_develop(hw, hh, RawDemosaicBackend::Host),
                     });
                 }
             } else {
@@ -108,7 +108,7 @@ pub(crate) fn develop_full_resolution(
                 let rgba = img.to_rgba8();
                 return Ok(RawLoadOutput {
                     image: make_image_data(DecodedImage::from(rgba.clone())),
-                    osd: osd_ctx.full_develop(rgba.width(), rgba.height()),
+                    osd: osd_ctx.full_develop(rgba.width(), rgba.height(), RawDemosaicBackend::Host),
                 });
             }
             Err(e) => {
@@ -148,7 +148,7 @@ pub(crate) fn develop_full_resolution(
     );
     Ok(RawLoadOutput {
         image: ImageData::Tiled(source),
-        osd: osd_ctx.full_develop(width, height),
+        osd: osd_ctx.full_develop(width, height, RawDemosaicBackend::Host),
     })
 }
 
@@ -181,7 +181,7 @@ pub(crate) fn develop_hq_preview(
     let fallback_pixels =
         hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
     let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-    let osd = osd_ctx.full_develop(hdr.width, hdr.height);
+    let osd = osd_ctx.full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host);
     Ok(RawLoadOutput {
         image: make_hdr_image_data(hdr, fallback),
         osd,

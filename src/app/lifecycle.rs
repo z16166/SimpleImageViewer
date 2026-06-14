@@ -10,7 +10,7 @@ use crate::ui::utils::{
 use eframe::egui::{self, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
@@ -406,6 +406,8 @@ impl ImageViewerApp {
             hdr_tiled_preview_cache: std::collections::HashMap::new(),
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
+            hdr_raw_gpu_demosaic_pending_indices: std::collections::HashSet::new(),
+            raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),
             ultra_hdr_capacity_sensitive_indices: std::collections::HashSet::new(),
@@ -440,7 +442,6 @@ impl ImageViewerApp {
             current_image_res: None,
             raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
             image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
-            last_hdr_view_status: None,
             current_file_name: String::new(),
             cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
             prev_texture: None,

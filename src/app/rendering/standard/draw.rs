@@ -201,6 +201,17 @@ impl ImageViewerApp {
             crate::app::rendering::geometry::unrotated_draw_rect_for_display(final_dest, rotation);
         let final_layout = PlaneLayout::from_dest(img_size, rotation, final_dest);
 
+        if let Some(ref hdr_image) = hdr_image {
+            self.ensure_gpu_raw_demosaic_bake_callback(
+                ui,
+                screen_rect,
+                hdr_image,
+                &render_plan,
+                &final_layout,
+                rotation,
+            );
+        }
+
         if tp.is_animating
             && matches!(
                 self.active_transition,

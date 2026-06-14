@@ -875,6 +875,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
             keep_resident: false,
+            raw_demosaic_baked_notify: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -927,6 +928,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
             keep_resident: false,
+            raw_demosaic_baked_notify: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

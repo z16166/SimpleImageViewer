@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
@@ -381,6 +381,9 @@ pub struct ImageViewerApp {
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// HDR indices whose current SDR fallback texture is a temporary black placeholder.
     pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
+    /// Static GPU RAW: show embedded preview via SDR until demosaic bake completes.
+    pub(crate) hdr_raw_gpu_demosaic_pending_indices: HashSet<usize>,
+    pub(crate) raw_demosaic_baked_notify: Arc<Mutex<Vec<crate::hdr::renderer::HdrImageKey>>>,
     /// HDR indices for which fallback refinement is currently in-flight.
     pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
@@ -456,7 +459,6 @@ pub struct ImageViewerApp {
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,
-    pub(crate) last_hdr_view_status: Option<crate::app::view_status::HdrViewStatusSnapshot>,
     /// File name shown in the image OSD for [`Self::current_index`].
     pub(crate) current_file_name: String,
     pub(crate) cached_keyboard_hint: String,

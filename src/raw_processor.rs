@@ -482,9 +482,9 @@ impl RawProcessor {
         path: &std::path::Path,
         source: &crate::hdr::types::RawGpuSource,
     ) -> Result<[f32; 3], String> {
-        let w = source.width as usize;
-        let h = source.height as usize;
-        if w == 0 || h == 0 {
+        let counts_w = source.width as usize;
+        let counts_h = source.height as usize;
+        if counts_w == 0 || counts_h == 0 {
             return Err("Invalid dimensions".to_string());
         }
 
@@ -495,17 +495,44 @@ impl RawProcessor {
         let mut mr = 0.0f64;
         let mut mg = 0.0f64;
         let mut mb = 0.0f64;
-        let cx = w / 2;
-        let cy = h / 2;
+
+        let mut develop = RawProcessor::new().ok_or("libraw init failed")?;
+        develop.open(path)?;
+        let hdr = develop.develop_scene_linear_hdr_with_qual(false, 2)?;
+        let develop_w = hdr.width as usize;
+        let develop_h = hdr.height as usize;
+        if develop_w == 0 || develop_h == 0 {
+            return Err("Invalid develop dimensions".to_string());
+        }
+        let rgba = hdr.rgba_f32.as_slice();
+        let rgba_pixels = develop_w
+            .checked_mul(develop_h)
+            .ok_or("Invalid develop dimensions")?;
+        let rgba_len = rgba_pixels
+            .checked_mul(4)
+            .ok_or("Invalid develop dimensions")?;
+        if rgba.len() < rgba_len {
+            return Err(format!(
+                "Develop RGBA buffer too small: have {} need {rgba_len} ({develop_w}x{develop_h})",
+                rgba.len(),
+            ));
+        }
+
+        // PPG counts use LibRaw iwidth/iheight; dcraw output can differ (e.g. some Canon ARGB).
+        // Sample the same 64x64 center patch only where both buffers overlap.
+        let patch_w = counts_w.min(develop_w);
+        let patch_h = counts_h.min(develop_h);
+        let cx = patch_w / 2;
+        let cy = patch_h / 2;
 
         for dy in 0..64 {
             for dx in 0..64 {
                 let x = cx + dx - 32;
                 let y = cy + dy - 32;
-                if x >= w || y >= h {
+                if x >= patch_w || y >= patch_h {
                     continue;
                 }
-                let i = (y * w + x) * 3;
+                let i = (y * counts_w + x) * 3;
                 let r = counts[i] as f32;
                 let g = counts[i + 1] as f32;
                 let b = counts[i + 2] as f32;
@@ -520,10 +547,6 @@ impl RawProcessor {
         let n = 64.0 * 64.0;
         let matrix_mean = [mr / n, mg / n, mb / n];
 
-        let mut develop = RawProcessor::new().ok_or("libraw init failed")?;
-        develop.open(path)?;
-        let hdr = develop.develop_scene_linear_hdr_with_qual(false, 2)?;
-        let rgba = hdr.rgba_f32.as_slice();
         let mut dr = 0.0f64;
         let mut dg = 0.0f64;
         let mut db = 0.0f64;
@@ -531,10 +554,10 @@ impl RawProcessor {
             for dx in 0..64 {
                 let x = cx + dx - 32;
                 let y = cy + dy - 32;
-                if x >= w || y >= h {
+                if x >= patch_w || y >= patch_h {
                     continue;
                 }
-                let i = (y * w + x) * 4;
+                let i = (y * develop_w + x) * 4;
                 dr += rgba[i] as f64;
                 dg += rgba[i + 1] as f64;
                 db += rgba[i + 2] as f64;

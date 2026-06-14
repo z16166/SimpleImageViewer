@@ -144,6 +144,9 @@ raw.osd.sensor: "Sensor %{size}"
 raw.osd.render.embedded: "→ Embedded %{size}"
 raw.osd.render.full: "→ Full %{size}"
 raw.osd.render.hq_bootstrap: "→ Embedded* %{size}"
+raw.osd.demosaic.host: "Host"
+raw.osd.demosaic.video: "Video"
+raw.osd.demosaic.preview: "Preview"
 
 # Scale mode
 scale.fit: "Fit to Window"

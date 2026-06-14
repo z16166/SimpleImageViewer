@@ -142,6 +142,9 @@ raw.osd.sensor: "传感 %{size}"
 raw.osd.render.embedded: "→ 内嵌 %{size}"
 raw.osd.render.full: "→ 全解 %{size}"
 raw.osd.render.hq_bootstrap: "→ 内嵌* %{size}"
+raw.osd.demosaic.host: "主机"
+raw.osd.demosaic.video: "显卡"
+raw.osd.demosaic.preview: "预览"
 
 # Scale mode
 scale.fit: "适应窗口"

@@ -36,7 +36,8 @@ use self::tone_map_uniform::{
 };
 
 pub(super) mod image_key;
-pub(super) use self::image_key::{HdrImageKey, HdrTileKey};
+pub(crate) use self::image_key::HdrImageKey;
+pub(super) use self::image_key::HdrTileKey;
 
 pub(super) mod resources;
 pub(super) use self::resources::{
@@ -76,7 +77,7 @@ use eframe::{
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 pub const HDR_IMAGE_PLANE_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
@@ -203,6 +204,7 @@ pub fn hdr_image_plane_callback(
         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
         None,
         false,
+        None,
     )
 }
 
@@ -217,6 +219,7 @@ pub fn hdr_image_plane_callback_with_uv(
     uv_rect: egui::Rect,
     ripple: Option<(egui::Pos2, f32, f32, u32)>,
     keep_resident: bool,
+    raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<HdrImageKey>>>>,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -230,6 +233,7 @@ pub fn hdr_image_plane_callback_with_uv(
             uv_rect,
             ripple,
             keep_resident,
+            raw_demosaic_baked_notify,
         },
     ))
 }

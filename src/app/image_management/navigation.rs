@@ -189,6 +189,20 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
+        let target_is_raw = self
+            .image_files
+            .get(target_index)
+            .is_some_and(|p| crate::preload_debug::path_is_raw(p));
+        let target_has_texture = self.texture_cache.contains(target_index);
+        let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+            || self.hdr_tiled_source_cache.contains_key(&target_index);
+        let target_gpu_raw = self
+            .hdr_image_cache
+            .get(&target_index)
+            .is_some_and(|img| img.metadata.raw_gpu_source.is_some());
+        crate::preload_debug!(
+            "[PreloadDebug][Nav] {previous_index} -> {target_index} raw={target_is_raw} gpu_raw={target_gpu_raw} tex_cache={target_has_texture} hdr_cache={target_has_hdr_plane}"
+        );
         self.transition_settled_at = None;
         self.transition_end_hold = false;
         self.last_background_upload_at = None;
@@ -436,7 +450,14 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
                 self.settings.raw_demosaic_mode,
             );
-        } else if self.has_loaded_asset(self.current_index) {
+        } else if self.has_loaded_asset(self.current_index)
+            && !raw_hq_navigate_missing_hdr_plane(
+                &self.image_files,
+                self.current_index,
+                self.settings.raw_high_quality,
+                &self.hdr_image_cache,
+                &self.hdr_tiled_source_cache,
+            ) {
             crate::preload_debug!(
                 "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
                 self.current_index,
@@ -484,11 +505,24 @@ impl ImageViewerApp {
                 self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             }
         } else {
-            crate::preload_debug!(
-                "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
+            if raw_hq_navigate_missing_hdr_plane(
+                &self.image_files,
                 self.current_index,
-                self.settings.raw_high_quality
-            );
+                self.settings.raw_high_quality,
+                &self.hdr_image_cache,
+                &self.hdr_tiled_source_cache,
+            ) {
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] navigate missing_hdr_plane idx={} → request_load",
+                    self.current_index
+                );
+            } else {
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
+                    self.current_index,
+                    self.settings.raw_high_quality
+                );
+            }
             // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
             // so handle_preview_update doesn't erroneously accept stale old-gen results.
             self.prefetch_prev_generation = None;
@@ -516,8 +550,24 @@ impl ImageViewerApp {
         let also_keep = self
             .prefetch_prev_generation
             .map(|old_gen| (self.current_index, old_gen));
-        self.loader
-            .discard_pending_stale_outputs(self.generation, also_keep);
+        let survivor_current_index = self.current_index;
+        let survivor_image_count = self.image_files.len();
+        let survivor_generation = self.generation;
+        let survivor_prefetch_generation = self.prefetch_prev_generation;
+        self.loader.discard_pending_stale_outputs(
+            self.generation,
+            also_keep,
+            move |idx, result_gen| {
+                accepts_background_image_generation(
+                    survivor_current_index,
+                    survivor_image_count,
+                    survivor_generation,
+                    survivor_prefetch_generation,
+                    idx,
+                    result_gen,
+                )
+            },
+        );
         self.refresh_pixel_data_source_for_current_index();
         if self.settings.show_pixel_inspector && self.pixel_data_source.is_none() {
             self.loader.request_load(

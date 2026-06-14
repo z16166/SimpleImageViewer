@@ -52,7 +52,7 @@ fn test_discard_pending_stale_outputs_preserves_hdr_fallback() {
     loader.test_send_loader_output(LoaderOutput::HdrSdrFallback(fallback_result));
 
     // Call discard with a newer generation (2)
-    loader.discard_pending_stale_outputs(2, None);
+    loader.discard_pending_stale_outputs(2, None, |_, _| false);
 
     // The fallback result should still be retrievable via poll()
     let result = loader.poll();

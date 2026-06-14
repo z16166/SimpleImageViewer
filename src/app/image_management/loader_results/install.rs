@@ -105,6 +105,7 @@ impl ImageViewerApp {
         load_result: &LoadResult,
         install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
+        defer_sdr_upload: bool,
     ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
         let generation = load_result.generation;
@@ -145,6 +146,7 @@ impl ImageViewerApp {
                     fallback,
                     load_result.sdr_fallback_is_placeholder,
                     ultra_hdr_capacity_sensitive,
+                    defer_sdr_upload,
                     ctx,
                 );
             }
@@ -182,5 +184,47 @@ impl ImageViewerApp {
             }
         }
         None
+    }
+
+    /// Installs the HDR plane for a background static RAW result while leaving the SDR fallback
+    /// in `deferred_sdr_uploads`, so upload quotas cannot block HDR cache population.
+    pub(super) fn try_install_background_static_hdr_hdr_only(
+        &mut self,
+        load_result: &LoadResult,
+        install_plan: &ImageInstallPlan<'_>,
+        generation: u64,
+        _reason: &str,
+        ctx: &egui::Context,
+    ) -> bool {
+        let idx = load_result.index;
+        if idx == self.current_index {
+            return false;
+        }
+        let ImageInstallPlan::StaticHdr {
+            hdr,
+            fallback,
+            ultra_hdr_capacity_sensitive,
+        } = install_plan
+        else {
+            return false;
+        };
+        crate::preload_debug!(
+            "[PreloadDebug] install hdr-only defer sdr: idx={} current={} gen={} reason={_reason}",
+            idx,
+            self.current_index,
+            generation,
+        );
+        self.loader.finish_image_request(idx, generation);
+        self.handle_image_load_result(
+            load_result,
+            ImageInstallPlan::StaticHdr {
+                hdr: Arc::clone(hdr),
+                fallback,
+                ultra_hdr_capacity_sensitive: *ultra_hdr_capacity_sensitive,
+            },
+            ctx,
+            true,
+        );
+        true
     }
 }

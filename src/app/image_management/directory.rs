@@ -179,6 +179,8 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.retain(|&idx| idx == keep);
         self.hdr_placeholder_fallback_indices
             .retain(|&idx| idx == keep);
+        self.hdr_raw_gpu_demosaic_pending_indices
+            .retain(|&idx| idx == keep);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);

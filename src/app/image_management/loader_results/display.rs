@@ -39,8 +39,55 @@ impl ImageViewerApp {
     /// preloaded PNG/JPG may sit in `deferred_sdr_uploads` for one extra frame and flash the
     /// canvas background between the hold frame and the new texture.
     pub(crate) fn prepare_display_frame(&mut self, ctx: &egui::Context) {
+        self.drain_raw_demosaic_baked_notifications(ctx);
         self.flush_deferred_sdr_upload_for_current(ctx);
         self.try_start_pending_transition_if_ready();
+    }
+
+    fn drain_raw_demosaic_baked_notifications(&mut self, ctx: &egui::Context) {
+        let baked = self
+            .raw_demosaic_baked_notify
+            .lock()
+            .map(|mut notify| std::mem::take(&mut *notify))
+            .unwrap_or_default();
+        if baked.is_empty() {
+            return;
+        }
+        let mut cleared_any = false;
+        let mut cleared_current = false;
+        for key in baked {
+            let matching: Vec<usize> = self
+                .hdr_image_cache
+                .iter()
+                .filter_map(|(&idx, hdr)| {
+                    if crate::hdr::renderer::HdrImageKey::from_image(hdr) == key
+                        && self.hdr_raw_gpu_demosaic_pending_indices.contains(&idx)
+                    {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for idx in matching {
+                self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+                cleared_any = true;
+                if idx == self.current_index {
+                    cleared_current = true;
+                }
+                self.raw_metadata.promote_gpu_demosaic_complete(idx);
+            }
+        }
+        if cleared_current {
+            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
+                self.current_hdr_image =
+                    Some(crate::app::CurrentHdrImage::new(self.current_index, hdr));
+            }
+            self.refresh_hdr_view_status();
+        }
+        if cleared_any {
+            ctx.request_repaint();
+        }
     }
 
     pub(crate) fn try_start_pending_transition_if_ready(&mut self) {

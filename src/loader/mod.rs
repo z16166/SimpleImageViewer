@@ -33,12 +33,13 @@ pub use orchestrator::ImageLoader;
 pub use preview_caps::{
     MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side, refresh_hq_preview_monitor_cap,
 };
-pub use raw_osd::{RawLoadOutput, RawOsdInfo};
+pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::TextureCache;
 pub use types::*;
 
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
+    hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
     hdr_to_sdr_with_user_tone,
 };

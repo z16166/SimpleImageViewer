@@ -375,6 +375,8 @@ pub(crate) fn upload_image_plane(
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
     if let Some(ref raw_source) = image.metadata.raw_gpu_source {
+        #[cfg(feature = "preload-debug")]
+        let upload_started = std::time::Instant::now();
         let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
         let raw_pixels = upload_r16_uint_texture(
             device,
@@ -419,6 +421,19 @@ pub(crate) fn upload_image_plane(
                     log::warn!("[HDR] GPU Demosaic bootstrap preview upload failed: {err}");
                 }
             }
+        }
+
+        #[cfg(feature = "preload-debug")]
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] upload plane {}x{} cfa={}x{} bootstrap={} {:.0}ms",
+                image.width,
+                image.height,
+                raw_source.width,
+                raw_source.height,
+                raw_source.bootstrap_preview.is_some(),
+                upload_started.elapsed().as_secs_f64() * 1000.0
+            );
         }
 
         return Ok(ImagePlaneUpload {

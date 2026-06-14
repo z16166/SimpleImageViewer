@@ -75,7 +75,7 @@ impl HdrTileKey {
 }
 
 impl HdrImageKey {
-    pub(super) fn from_image(image: &HdrImageBuffer) -> Self {
+    pub(crate) fn from_image(image: &HdrImageBuffer) -> Self {
         let (
             iso_deferred_sdr_ptr,
             iso_deferred_sdr_len,

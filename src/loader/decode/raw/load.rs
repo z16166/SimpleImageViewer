@@ -28,11 +28,12 @@ use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_req
 use crate::hdr::types::HdrToneMapSettings;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
+use crate::loader::raw_osd::RawDemosaicBackend;
 use crate::loader::raw_osd::RawOsdContext;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::raw_osd::RawOsdInfo;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
-use crate::loader::{DecodedImage, ImageData, RawLoadOutput, RefinementRequest};
+use crate::loader::{DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult, RawLoadOutput, RefinementRequest, source_key_for_path};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -68,7 +69,7 @@ fn load_raw_hq_static_hdr(
             let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
             Some(Ok(RawLoadOutput {
                 image: make_hdr_image_data(hdr, fallback),
-                osd: osd_ctx.full_develop(width, height),
+                osd: osd_ctx.full_develop(width, height, RawDemosaicBackend::Host),
             }))
         }
         Err(err) => {
@@ -134,11 +135,36 @@ fn load_raw_with_embedded_bootstrap(
 
 pub(crate) const GPU_DEMOSAIC_BOOTSTRAP_PREVIEW: bool = true;
 
+fn emit_raw_gpu_bootstrap_preview(
+    load_tx: &Sender<LoaderOutput>,
+    index: usize,
+    generation: u64,
+    path: &PathBuf,
+    preview: &DecodedImage,
+) {
+    crate::preload_debug!(
+        "[PreloadDebug][RAW-GPU] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        index,
+        generation,
+        preview.width,
+        preview.height,
+        path.file_name().unwrap_or_default()
+    );
+    let _ = load_tx.send(LoaderOutput::Preview(PreviewResult {
+        index,
+        generation,
+        source_key: source_key_for_path(path),
+        preview_bundle: PreviewBundle::refined().with_sdr(preview.clone()),
+        error: None,
+    }));
+}
+
 pub(crate) fn load_raw(
-    _index: usize,
-    _generation: u64,
+    index: usize,
+    generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
+    load_tx: Sender<LoaderOutput>,
     high_quality: bool,
     raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
@@ -257,9 +283,36 @@ pub(crate) fn load_raw(
         && area < threshold;
 
     if use_gpu_demosaic {
+        if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+            emit_raw_gpu_bootstrap_preview(&load_tx, index, generation, path, p);
+        }
+        #[cfg(feature = "preload-debug")]
+        let gpu_load_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
             Ok(mut raw_gpu_source) => {
+                #[cfg(feature = "preload-debug")]
+                let extract_done = std::time::Instant::now();
                 let scale = RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source);
+                #[cfg(feature = "preload-debug")]
+                {
+                    let scale_done = std::time::Instant::now();
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] load {:?} extract={:.0}ms scale={:.0}ms total={:.0}ms",
+                        path.file_name().unwrap_or_default(),
+                        extract_done
+                            .duration_since(gpu_load_started)
+                            .as_secs_f64()
+                            * 1000.0,
+                        scale_done
+                            .duration_since(extract_done)
+                            .as_secs_f64()
+                            * 1000.0,
+                        scale_done
+                            .duration_since(gpu_load_started)
+                            .as_secs_f64()
+                            * 1000.0,
+                    );
+                }
                 match scale {
                     Ok(scale) => {
                         log::debug!(
@@ -297,7 +350,12 @@ pub(crate) fn load_raw(
 
                 return Ok(RawLoadOutput {
                     image: make_hdr_image_data(hdr, fallback),
-                    osd: osd_ctx.full_develop(width, height),
+                    osd: if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
+                        let p = preview_opt.as_ref().expect("preview");
+                        osd_ctx.gpu_bootstrap_dims(p.width, p.height)
+                    } else {
+                        osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
+                    },
                 });
             }
             Err(err) => {

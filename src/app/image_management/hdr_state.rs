@@ -23,6 +23,10 @@ impl ImageViewerApp {
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
+        self.hdr_raw_gpu_demosaic_pending_indices.clear();
+        if let Ok(mut notify) = self.raw_demosaic_baked_notify.lock() {
+            notify.clear();
+        }
         self.hdr_in_flight_fallback_refinements.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
@@ -37,6 +41,7 @@ impl ImageViewerApp {
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
         self.hdr_placeholder_fallback_indices.remove(&index);
+        self.hdr_raw_gpu_demosaic_pending_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);

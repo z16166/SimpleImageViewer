@@ -17,8 +17,6 @@
 use super::*;
 
 impl ImageViewerApp {
-    const PREFETCH_WINDOW_DISTANCE: usize = 2;
-
     pub(crate) fn invalidate_random_slideshow_order(&mut self) {
         self.random_slideshow_order_ready = false;
     }
@@ -79,6 +77,9 @@ impl ImageViewerApp {
         }
         if self.hdr_placeholder_fallback_indices.remove(&from) {
             self.hdr_placeholder_fallback_indices.insert(to);
+        }
+        if self.hdr_raw_gpu_demosaic_pending_indices.remove(&from) {
+            self.hdr_raw_gpu_demosaic_pending_indices.insert(to);
         }
         if self.hdr_in_flight_fallback_refinements.remove(&from) {
             self.hdr_in_flight_fallback_refinements.insert(to);
@@ -197,6 +198,8 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.hdr_placeholder_fallback_indices
             .retain(|&idx| idx == except_idx);
+        self.hdr_raw_gpu_demosaic_pending_indices
+            .retain(|&idx| idx == except_idx);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == except_idx);
         self.deferred_sdr_uploads
@@ -257,6 +260,7 @@ impl ImageViewerApp {
         indices.extend(self.pending_anim_frames.keys().copied());
         indices.extend(self.hdr_sdr_fallback_indices.iter().copied());
         indices.extend(self.hdr_placeholder_fallback_indices.iter().copied());
+        indices.extend(self.hdr_raw_gpu_demosaic_pending_indices.iter().copied());
         indices.extend(self.ultra_hdr_capacity_sensitive_indices.iter().copied());
 
         let pixel_cache_indices: std::collections::HashSet<usize> = indices
@@ -284,7 +288,7 @@ impl ImageViewerApp {
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
         let within_window = |idx: usize| {
-            prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE)
+            prefetch_window_contains(self.current_index, len, idx, PREFETCH_WINDOW_DISTANCE)
         };
 
         // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too

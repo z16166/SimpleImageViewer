@@ -150,8 +150,10 @@ impl ImageViewerApp {
         fallback: &DecodedImage,
         sdr_fallback_is_placeholder: bool,
         ultra_hdr_capacity_sensitive: bool,
+        defer_sdr_upload: bool,
         ctx: &egui::Context,
     ) {
+        let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
         self.remove_hdr_image_index(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
         self.hdr_sdr_fallback_indices.insert(idx);
@@ -160,18 +162,37 @@ impl ImageViewerApp {
         } else {
             self.hdr_placeholder_fallback_indices.remove(&idx);
         }
+        if gpu_demosaic_pending {
+            self.hdr_raw_gpu_demosaic_pending_indices.insert(idx);
+            let bootstrap = if sdr_fallback_is_placeholder {
+                self.raw_metadata.embedded_preview_dims(idx)
+            } else {
+                Some((fallback.width, fallback.height))
+            };
+            self.raw_metadata.note_gpu_demosaic_pending(idx, bootstrap);
+        } else {
+            self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+        }
+        if gpu_demosaic_pending && self.texture_cache.contains(idx) {
+            self.texture_cache.set_original_res(idx, hdr.width, hdr.height);
+            self.texture_cache.set_preview_placeholder(idx, false);
+        }
         if ultra_hdr_capacity_sensitive {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        let current_hdr_placeholder = idx == self.current_index && sdr_fallback_is_placeholder;
-        if !current_hdr_placeholder {
-            self.queue_or_upload_static_sdr_texture(
-                idx,
-                fallback,
-                format!("img_hdr_fallback_{idx}"),
-                ctx,
-            );
+        let skip_current_sdr_upload = idx == self.current_index && sdr_fallback_is_placeholder;
+        if !skip_current_sdr_upload {
+            if defer_sdr_upload && idx != self.current_index {
+                self.deferred_sdr_uploads.insert(idx, fallback.clone());
+            } else {
+                self.queue_or_upload_static_sdr_texture(
+                    idx,
+                    fallback,
+                    format!("img_hdr_fallback_{idx}"),
+                    ctx,
+                );
+            }
         }
 
         if idx == self.current_index {
@@ -185,7 +206,9 @@ impl ImageViewerApp {
                 height: hdr.height,
                 pixels: fallback.arc_pixels(),
             });
-            if sdr_fallback_is_placeholder {
+            if sdr_fallback_is_placeholder
+                && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+            {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
                     let source_key = source_key_for_path(&self.image_files[idx]);
                     self.hdr_in_flight_fallback_refinements.insert(idx);

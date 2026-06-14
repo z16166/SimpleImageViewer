@@ -43,7 +43,23 @@ impl ImageViewerApp {
             current_has_asset,
             current_is_loading
         );
-        if !current_has_asset && !current_is_loading {
+        let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
+            &self.image_files,
+            cur,
+            self.settings.raw_high_quality,
+            &self.hdr_image_cache,
+            &self.hdr_tiled_source_cache,
+        );
+        if (!current_has_asset && !current_is_loading)
+            || (current_missing_hdr_plane && !current_is_loading)
+        {
+            if current_missing_hdr_plane && current_has_asset {
+                preload_debug!(
+                    "[PreloadDebug][RAW] request current reload: idx={} gen={} reason=missing_hdr_plane",
+                    cur,
+                    self.generation,
+                );
+            }
             let path = self.image_files[cur].clone();
             preload_debug!(
                 "[PreloadDebug] request current: idx={} gen={} path={}",
@@ -305,11 +321,18 @@ impl ImageViewerApp {
         ) {
             return false;
         }
-        current_image_has_loaded_asset(
+        let base_loaded = current_image_has_loaded_asset(
             self.texture_cache.contains(index),
             has_static_hdr,
             has_hdr_tiled_source,
             self.animation_cache.contains_key(&index),
-        ) || self.deferred_sdr_uploads.contains_key(&index)
+        ) || self.deferred_sdr_uploads.contains_key(&index);
+        if !base_loaded {
+            return false;
+        }
+        if self.raw_hq_index_requires_hdr_plane(index) && !has_hdr_plane {
+            return false;
+        }
+        true
     }
 }

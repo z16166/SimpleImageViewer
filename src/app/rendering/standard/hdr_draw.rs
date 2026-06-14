@@ -16,7 +16,8 @@
 
 use super::helpers::curtain_hdr_transition_rotation;
 use crate::app::rendering::geometry::PlaneLayout;
-use crate::app::rendering::plane::{PlaneDrawSource, draw_plane};
+use crate::app::rendering::plan::RenderPlan;
+use crate::app::rendering::plane::{PlaneBackendKind, PlaneDrawSource, draw_plane, hdr_image_plane_rect};
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::renderer::HdrRenderOutputMode;
 use crate::hdr::types::{HdrImageBuffer, HdrToneMapSettings};
@@ -24,6 +25,53 @@ use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::sync::Arc;
 
 impl ImageViewerApp {
+    /// GPU RAW demosaic runs inside [`HdrImagePlaneCallback::prepare`]. While bootstrap
+    /// preview is shown the render plan keeps the visible backend on SDR, which would
+    /// otherwise never invoke that callback. Schedule an alpha-zero HDR plane so the bake
+    /// completes and pending can clear without flashing the float plane over the preview.
+    pub(crate) fn ensure_gpu_raw_demosaic_bake_callback(
+        &self,
+        ui: &mut egui::Ui,
+        clip: Rect,
+        hdr_image: &Arc<HdrImageBuffer>,
+        render_plan: &RenderPlan,
+        layout: &PlaneLayout,
+        rotation: i32,
+    ) {
+        if render_plan.backend != PlaneBackendKind::Sdr {
+            return;
+        }
+        if !self
+            .hdr_raw_gpu_demosaic_pending_indices
+            .contains(&self.current_index)
+        {
+            return;
+        }
+        if hdr_image.metadata.raw_gpu_source.is_none() {
+            return;
+        }
+        let Some(target_format) = render_plan.target_format else {
+            log::warn!(
+                "[HDR] GPU RAW demosaic bake deferred: no HDR target format for idx={}",
+                self.current_index
+            );
+            return;
+        };
+        self.draw_hdr_image_plane_clipped(
+            ui,
+            clip,
+            hdr_image_plane_rect(layout),
+            Arc::clone(hdr_image),
+            self.hdr_renderer.tone_map,
+            target_format,
+            render_plan.output_mode,
+            rotation,
+            0.0,
+            None,
+        );
+        ui.ctx().request_repaint();
+    }
+
     pub(crate) fn draw_prev_image_underneath(
         &self,
         ui: &mut egui::Ui,
@@ -161,6 +209,7 @@ impl ImageViewerApp {
                 alpha,
                 ripple,
                 keep_resident: self.hdr_plane_keep_resident(),
+                raw_demosaic_baked_notify: Some(Arc::clone(&self.raw_demosaic_baked_notify)),
             },
         );
     }

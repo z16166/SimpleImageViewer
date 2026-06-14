@@ -1,5 +1,5 @@
 use eframe::egui::{self, Color32, Rect, TextureId};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaneBackendKind {
@@ -37,6 +37,7 @@ pub(crate) enum PlaneDrawSource {
         alpha: f32,
         ripple: Option<(egui::Pos2, f32, f32, u32)>,
         keep_resident: bool,
+        raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<crate::hdr::renderer::HdrImageKey>>>>,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,
@@ -80,6 +81,7 @@ pub(crate) fn draw_plane(
             alpha,
             ripple,
             keep_resident,
+            raw_demosaic_baked_notify,
         } => {
             let Some((clipped_rect, uv_rect)) = clipped_plane_rect_and_uv(rect, clip_rect) else {
                 return;
@@ -96,6 +98,7 @@ pub(crate) fn draw_plane(
                     uv_subrect(uv, uv_rect),
                     ripple,
                     keep_resident,
+                    raw_demosaic_baked_notify,
                 ));
         }
         PlaneDrawSource::HdrTile {

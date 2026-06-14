@@ -47,6 +47,7 @@ pub(crate) struct HdrImagePlaneCallback {
     pub(super) ripple: Option<(egui::Pos2, f32, f32, u32)>,
     /// When true, the GPU binding for this image is not evicted from the LRU cache.
     pub(super) keep_resident: bool,
+    pub(super) raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<HdrImageKey>>>>,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -262,11 +263,19 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     resources.raw_demosaic_rgb_pipeline.as_ref(),
                     resources.raw_demosaic_uniform_buffer.as_ref(),
                 ) {
+                    #[cfg(feature = "preload-debug")]
+                    let demosaic_bake_started = std::time::Instant::now();
                     log::debug!(
                         "[HDR] GPU RAW demosaicing path=GPU size={}x{} method={:?}",
                         self.image.width,
                         self.image.height,
                         source.demosaic_method
+                    );
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] demosaic bake {}x{} first={}",
+                        self.image.width,
+                        self.image.height,
+                        binding.baked_raw_demosaic_key != Some(image_key)
                     );
                     let raw_pixels_view = binding
                         .uploaded_raw_pixels_view
@@ -307,6 +316,20 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     );
                     binding.baked_raw_demosaic_key = Some(image_key);
                     binding.baked_raw_demosaic_method = Some(source.demosaic_method);
+                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref()
+                        && let Ok(mut pending) = notify.lock()
+                    {
+                        pending.push(image_key);
+                    }
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW-GPU] demosaic encode queued {}x{} {:.0}ms",
+                            self.image.width,
+                            self.image.height,
+                            demosaic_bake_started.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
                 } else {
                     log::warn!(
                         "[HDR] GPU RAW demosaicing unavailable; falling back to CPU placeholder"

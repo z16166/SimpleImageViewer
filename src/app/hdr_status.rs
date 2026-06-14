@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::plan::{RenderShape, build_render_plan_for_state};
+use crate::app::rendering::plan::{RenderPlan, RenderShape, build_render_plan_for_state};
 use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::HdrRenderPath;
@@ -61,24 +61,36 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn current_hdr_render_path(&self) -> Option<HdrRenderPath> {
-        // Treat per-index HDR caches (`hdr_image_cache` / `hdr_tiled_source_cache`) like the active
-        // float planes: `navigate_to`/`CurrentHdr*` can transiently diverge while the UI still
-        // renders HDR content (cf. stale `tile_manager` note on `tiled_canvas_matches_current_index`).
-        // Omitting caches makes `hdr_render_path_for_viewer_plan` return `None` and hides the OSD
-        // HDR line—including EV—even though sliders and tone-mapping still apply.
+        // Keep OSD [`HdrRenderPath`] aligned with [`Self::build_render_plan`] / draw path inputs.
         let idx = self.current_index;
+        let tiled_canvas_active = self.tiled_canvas_matches_current_index();
         let has_hdr_tiled_source = self
             .current_hdr_tiled_image
             .as_ref()
             .is_some_and(|current| current.source_for_index(idx).is_some())
             || self.hdr_tiled_source_cache.contains_key(&idx);
         let has_sdr_fallback = self.hdr_sdr_fallback_indices.contains(&idx);
-
         let has_hdr_image = self
             .current_hdr_image
             .as_ref()
             .is_some_and(|current| current.image_for_index(idx).is_some())
             || self.hdr_image_cache.contains_key(&idx);
+        let shape = if tiled_canvas_active {
+            RenderShape::Tiled
+        } else {
+            RenderShape::Static
+        };
+        let has_hdr_plane = if shape == RenderShape::Tiled {
+            has_hdr_tiled_source
+        } else {
+            has_hdr_image
+        };
+        let prefer_sdr_for_pending_gpu_demosaic = shape == RenderShape::Static
+            && self
+                .hdr_raw_gpu_demosaic_pending_indices
+                .contains(&idx)
+            && has_sdr_fallback
+            && self.texture_cache.contains(idx);
 
         let complex_transition_active = self.transition_start.is_some()
             && matches!(
@@ -86,14 +98,13 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
 
-        hdr_render_path_for_viewer_plan(
-            self.tiled_canvas_matches_current_index(),
-            has_hdr_tiled_source,
-            has_hdr_image,
-            has_sdr_fallback,
-            self.hdr_target_format,
+        let plan = self.build_render_plan(shape, has_hdr_plane, has_sdr_fallback);
+        hdr_render_path_for_render_plan(
+            &plan,
+            shape,
             complex_transition_active,
-            self.effective_hdr_monitor_selection().as_ref(),
+            prefer_sdr_for_pending_gpu_demosaic,
+            has_hdr_image || has_hdr_tiled_source || has_sdr_fallback,
         )
     }
 
@@ -113,7 +124,7 @@ impl ImageViewerApp {
             exposure_ev: self.effective_hdr_tone_map_settings().exposure_ev,
         };
         self.image_status.set_image_frame(image, file_name);
-        self.set_hdr_view_status_if_changed(&hdr);
+        self.push_hdr_view_status(&hdr);
         self.osd.sync_events();
     }
 
@@ -130,20 +141,11 @@ impl ImageViewerApp {
                 .map(|selection| selection.label.as_str()),
             exposure_ev: self.effective_hdr_tone_map_settings().exposure_ev,
         };
-        self.set_hdr_view_status_if_changed(&hdr);
+        self.push_hdr_view_status(&hdr);
         self.osd.sync_events();
     }
 
-    fn set_hdr_view_status_if_changed(&mut self, hdr: &HdrOsdFrame<'_>) {
-        if self
-            .last_hdr_view_status
-            .as_ref()
-            .is_some_and(|last| last.matches_frame(hdr))
-        {
-            return;
-        }
-        let key = crate::app::view_status::HdrViewStatusSnapshot::capture(hdr);
-        self.last_hdr_view_status = Some(key);
+    fn push_hdr_view_status(&mut self, hdr: &HdrOsdFrame<'_>) {
         self.image_status.set_hdr_frame(hdr);
     }
 
@@ -214,6 +216,37 @@ impl ImageViewerApp {
     }
 }
 
+fn hdr_render_path_for_render_plan(
+    plan: &RenderPlan,
+    shape: RenderShape,
+    complex_transition_active: bool,
+    prefer_sdr_for_pending_gpu_demosaic: bool,
+    has_hdr_content: bool,
+) -> Option<HdrRenderPath> {
+    // While GPU RAW demosaic is pending the canvas draws the cached SDR bootstrap texture.
+    // Suppress the HDR supplemental line so OSD does not advertise float-plane / native HDR
+    // output while EV and tone-mapping are inert on the baked preview.
+    if prefer_sdr_for_pending_gpu_demosaic {
+        return None;
+    }
+
+    if plan.backend == PlaneBackendKind::Hdr {
+        return match shape {
+            RenderShape::Tiled => Some(HdrRenderPath::FloatTilePlane),
+            RenderShape::Static if !complex_transition_active => {
+                Some(HdrRenderPath::FloatImagePlane)
+            }
+            RenderShape::Static => Some(HdrRenderPath::SdrFallback),
+        };
+    }
+
+    if has_hdr_content {
+        Some(HdrRenderPath::SdrFallback)
+    } else {
+        None
+    }
+}
+
 fn hdr_render_path_for_viewer_plan(
     tiled_canvas_active: bool,
     has_hdr_tiled_source: bool,
@@ -222,6 +255,7 @@ fn hdr_render_path_for_viewer_plan(
     hdr_target_format: Option<wgpu::TextureFormat>,
     complex_transition_active: bool,
     monitor_selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+    prefer_sdr_for_pending_gpu_demosaic: bool,
 ) -> Option<HdrRenderPath> {
     let shape = if tiled_canvas_active {
         RenderShape::Tiled
@@ -239,23 +273,15 @@ fn hdr_render_path_for_viewer_plan(
         has_sdr_fallback,
         hdr_target_format,
         monitor_selection,
+        prefer_sdr_for_pending_gpu_demosaic,
     );
-
-    if plan.backend == PlaneBackendKind::Hdr {
-        return match shape {
-            RenderShape::Tiled => Some(HdrRenderPath::FloatTilePlane),
-            RenderShape::Static if !complex_transition_active => {
-                Some(HdrRenderPath::FloatImagePlane)
-            }
-            RenderShape::Static => Some(HdrRenderPath::SdrFallback),
-        };
-    }
-
-    if has_hdr_image || has_hdr_tiled_source || has_sdr_fallback {
-        Some(HdrRenderPath::SdrFallback)
-    } else {
-        None
-    }
+    hdr_render_path_for_render_plan(
+        &plan,
+        shape,
+        complex_transition_active,
+        prefer_sdr_for_pending_gpu_demosaic,
+        has_hdr_image || has_hdr_tiled_source || has_sdr_fallback,
+    )
 }
 
 #[cfg(test)]
@@ -290,6 +316,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
                 Some(&monitor),
+                false,
             ),
             Some(HdrRenderPath::FloatTilePlane)
         );
@@ -298,7 +325,7 @@ mod tests {
     #[test]
     fn hdr_tiled_source_reports_sdr_fallback_without_hdr_target() {
         assert_eq!(
-            hdr_render_path_for_viewer_plan(true, true, false, true, None, false, None),
+            hdr_render_path_for_viewer_plan(true, true, false, true, None, false, None, false),
             Some(HdrRenderPath::SdrFallback)
         );
     }
@@ -315,8 +342,27 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 true,
                 Some(&monitor),
+                false,
             ),
             Some(HdrRenderPath::SdrFallback)
+        );
+    }
+
+    #[test]
+    fn gpu_raw_demosaic_pending_hides_hdr_supplemental_line() {
+        let monitor = hdr_capable_monitor();
+        assert_eq!(
+            hdr_render_path_for_viewer_plan(
+                false,
+                false,
+                true,
+                true,
+                Some(wgpu::TextureFormat::Rgba16Float),
+                false,
+                Some(&monitor),
+                true,
+            ),
+            None
         );
     }
 
@@ -331,6 +377,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Bgra8Unorm),
                 false,
                 None,
+                false,
             ),
             Some(HdrRenderPath::FloatImagePlane)
         );
@@ -349,6 +396,7 @@ mod tests {
                 Some(wgpu::TextureFormat::Rgba16Float),
                 false,
                 None,
+                false,
             ),
             Some(HdrRenderPath::FloatImagePlane)
         );
@@ -425,6 +473,7 @@ mod tests {
                     hdr_target_format,
                     complex_transition_active,
                     monitor_selection,
+                    false,
                 ),
                 expected,
                 "{label}"

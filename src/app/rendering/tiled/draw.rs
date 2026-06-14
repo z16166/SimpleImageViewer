@@ -201,6 +201,7 @@ impl ImageViewerApp {
                         alpha: tile_alpha,
                         ripple: None,
                         keep_resident: self.hdr_plane_keep_resident(),
+                        raw_demosaic_baked_notify: None,
                     },
                 );
                 hdr_preview_drawn = true;

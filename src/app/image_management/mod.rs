@@ -251,6 +251,13 @@ pub(crate) fn should_defer_hdr_sdr_fallback_install(
     transition_settled_at.is_some_and(|t| t.elapsed() < POST_TRANSITION_REFINEMENT_HOLD)
 }
 
+/// Circular distance within which prefetch CPU/GPU caches are retained and background decode
+/// results may survive a small number of navigation generation bumps.
+pub(crate) const PREFETCH_WINDOW_DISTANCE: usize = 2;
+
+/// Max `generation` drift still accepted for in-window background `LoaderOutput::Image` installs.
+const BACKGROUND_IMAGE_GEN_TOLERANCE: u64 = 4;
+
 const MIN_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 1024;
 const MAX_AVAILABLE_MEMORY_FOR_BACKGROUND_PRELOAD_MB: u64 = 4096;
 const BACKGROUND_PRELOAD_MEMORY_RESERVE_DIVISOR: u64 = 5;
@@ -704,6 +711,9 @@ impl ImageViewerApp {
                 return;
             }
             if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
+                if crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr) {
+                    return;
+                }
                 let source_key = source_key_for_path(&self.image_files[self.current_index]);
                 self.hdr_in_flight_fallback_refinements
                     .insert(self.current_index);
@@ -715,6 +725,25 @@ impl ImageViewerApp {
                 );
             }
         }
+    }
+
+    pub(super) fn accepts_background_image_generation(&self, idx: usize, generation: u64) -> bool {
+        accepts_background_image_generation(
+            self.current_index,
+            self.image_files.len(),
+            self.generation,
+            self.prefetch_prev_generation,
+            idx,
+            generation,
+        )
+    }
+
+    pub(super) fn raw_hq_index_requires_hdr_plane(&self, index: usize) -> bool {
+        raw_hq_index_requires_hdr_plane(
+            &self.image_files,
+            index,
+            self.settings.raw_high_quality,
+        )
     }
 }
 fn current_image_has_loaded_asset(
@@ -728,6 +757,154 @@ fn current_image_has_loaded_asset(
 
 fn hdr_fallback_asset_is_loaded(has_hdr_fallback: bool, has_hdr_plane: bool) -> bool {
     !has_hdr_fallback || has_hdr_plane
+}
+
+fn raw_hq_index_requires_hdr_plane(
+    image_files: &[std::path::PathBuf],
+    index: usize,
+    raw_high_quality: bool,
+) -> bool {
+    raw_high_quality
+        && image_files
+            .get(index)
+            .is_some_and(|p| crate::preload_debug::path_is_raw(p))
+}
+
+fn accepts_background_image_generation(
+    current_index: usize,
+    image_count: usize,
+    current_generation: u64,
+    prefetch_prev_generation: Option<u64>,
+    idx: usize,
+    generation: u64,
+) -> bool {
+    if generation == current_generation {
+        return true;
+    }
+    if idx == current_index {
+        return prefetch_prev_generation == Some(generation);
+    }
+    if image_count == 0 {
+        return false;
+    }
+    if !prefetch_window_contains(
+        current_index,
+        image_count,
+        idx,
+        PREFETCH_WINDOW_DISTANCE,
+    ) {
+        return false;
+    }
+    current_generation.wrapping_sub(generation) <= BACKGROUND_IMAGE_GEN_TOLERANCE
+}
+
+/// High-quality RAW navigation requires an HDR plane entry. Prefetch eviction may drop HDR while
+/// leaving a bootstrap SDR texture or deferred CPU pixels; those still satisfy `has_loaded_asset`
+/// but cannot run GPU demosaic or EV until the HDR cache is restored.
+fn raw_hq_navigate_missing_hdr_plane(
+    image_files: &[std::path::PathBuf],
+    index: usize,
+    raw_high_quality: bool,
+    hdr_image_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+    >,
+    hdr_tiled_source_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+    >,
+) -> bool {
+    if !raw_high_quality {
+        return false;
+    }
+    if !image_files
+        .get(index)
+        .is_some_and(|p| crate::preload_debug::path_is_raw(p))
+    {
+        return false;
+    }
+    !hdr_image_cache.contains_key(&index) && !hdr_tiled_source_cache.contains_key(&index)
+}
+
+#[cfg(test)]
+mod raw_hq_navigate_missing_hdr_plane_tests {
+    use super::raw_hq_navigate_missing_hdr_plane;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[test]
+    fn missing_hdr_plane_for_raw_hq_without_any_hdr_cache() {
+        let files = vec![PathBuf::from("sample.CR2")];
+        assert!(raw_hq_navigate_missing_hdr_plane(
+            &files,
+            0,
+            true,
+            &HashMap::new(),
+            &HashMap::new(),
+        ));
+    }
+
+    #[test]
+    fn not_missing_when_static_hdr_cache_present() {
+        let files = vec![PathBuf::from("sample.CR2")];
+        let mut hdr_cache = HashMap::new();
+        hdr_cache.insert(
+            0,
+            Arc::new(crate::hdr::types::HdrImageBuffer {
+                width: 100,
+                height: 100,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+                    crate::hdr::types::HdrColorSpace::LinearSrgb,
+                ),
+                rgba_f32: Arc::new(vec![0.0; 100 * 100 * 4]),
+            }),
+        );
+        assert!(!raw_hq_navigate_missing_hdr_plane(
+            &files, 0, true, &hdr_cache, &HashMap::new(),
+        ));
+    }
+
+    #[test]
+    fn ignores_non_raw_and_low_quality_paths() {
+        let files = vec![PathBuf::from("sample.jpg")];
+        assert!(!raw_hq_navigate_missing_hdr_plane(
+            &files,
+            0,
+            true,
+            &HashMap::new(),
+            &HashMap::new(),
+        ));
+        assert!(!raw_hq_navigate_missing_hdr_plane(
+            &files,
+            0,
+            false,
+            &HashMap::new(),
+            &HashMap::new(),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod background_image_generation_tests {
+    use super::accepts_background_image_generation;
+
+    #[test]
+    fn accepts_in_window_background_results_within_generation_tolerance() {
+        assert!(accepts_background_image_generation(33, 100, 18, None, 34, 16));
+        assert!(!accepts_background_image_generation(33, 100, 18, None, 34, 10));
+        assert!(!accepts_background_image_generation(31, 100, 18, None, 34, 16));
+        assert!(!accepts_background_image_generation(33, 100, 18, None, 40, 16));
+    }
+
+    #[test]
+    fn current_index_only_accepts_exact_or_prefetch_previous_generation() {
+        assert!(accepts_background_image_generation(34, 100, 19, None, 34, 19));
+        assert!(accepts_background_image_generation(34, 100, 19, Some(18), 34, 18));
+        assert!(!accepts_background_image_generation(34, 100, 19, None, 34, 18));
+    }
 }
 
 fn prefetch_circular_distance(current_index: usize, image_count: usize, candidate: usize) -> usize {

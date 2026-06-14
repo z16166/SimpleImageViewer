@@ -22,6 +22,7 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn prefetch_window_distance_matches_circular_neighbors() {
@@ -1140,6 +1141,8 @@ fn make_test_app() -> ImageViewerApp {
         hdr_tiled_preview_cache: HashMap::new(),
         hdr_sdr_fallback_indices: HashSet::new(),
         hdr_placeholder_fallback_indices: HashSet::new(),
+        hdr_raw_gpu_demosaic_pending_indices: HashSet::new(),
+        raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
         ultra_hdr_capacity_sensitive_indices: HashSet::new(),
@@ -1180,7 +1183,6 @@ fn make_test_app() -> ImageViewerApp {
         current_image_res: None,
         raw_metadata: crate::app::view_status::RawMetadataStore::new(osd_event_tx.clone()),
         image_status: crate::app::view_status::ImageViewStatus::new(osd_event_tx.clone()),
-        last_hdr_view_status: None,
         current_file_name: String::new(),
         cached_keyboard_hint: rust_i18n::t!("hint.keyboard").to_string(),
         prev_texture: None,
