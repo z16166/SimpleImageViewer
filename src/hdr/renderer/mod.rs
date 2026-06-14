@@ -1,4 +1,4 @@
-﻿// Simple Image Viewer - A high-performance, cross-platform image viewer
+// Simple Image Viewer - A high-performance, cross-platform image viewer
 // Copyright (C) 2024-2026 Simple Image Viewer Contributors
 //
 // This program is free software: you can redistribute it and/or modify
@@ -36,8 +36,8 @@ use self::tone_map_uniform::{
 };
 
 pub(super) mod image_key;
-pub(crate) use self::image_key::HdrImageKey;
 pub(super) use self::image_key::HdrTileKey;
+pub(crate) use self::image_key::{HdrImageKey, RawGpuDemosaicBakedNotice};
 
 pub(super) mod resources;
 pub(super) use self::resources::{
@@ -219,7 +219,7 @@ pub fn hdr_image_plane_callback_with_uv(
     uv_rect: egui::Rect,
     ripple: Option<(egui::Pos2, f32, f32, u32)>,
     keep_resident: bool,
-    raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<HdrImageKey>>>>,
+    raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
 ) -> egui::Shape {
     egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
         rect,

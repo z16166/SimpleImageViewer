@@ -47,7 +47,7 @@ pub(crate) struct HdrImagePlaneCallback {
     pub(super) ripple: Option<(egui::Pos2, f32, f32, u32)>,
     /// When true, the GPU binding for this image is not evicted from the LRU cache.
     pub(super) keep_resident: bool,
-    pub(super) raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<HdrImageKey>>>>,
+    pub(super) raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<RawGpuDemosaicBakedNotice>>>>,
 }
 
 impl CallbackTrait for HdrImagePlaneCallback {
@@ -319,7 +319,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     if let Some(notify) = self.raw_demosaic_baked_notify.as_ref()
                         && let Ok(mut pending) = notify.lock()
                     {
-                        pending.push(image_key);
+                        pending.push(RawGpuDemosaicBakedNotice { key: image_key });
                     }
                     #[cfg(feature = "preload-debug")]
                     {

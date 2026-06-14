@@ -117,6 +117,8 @@ pub(crate) struct RawMetadataStore {
     embedded_preview: TrackedParam<Option<(u32, u32)>, OsdEvent>,
     render_pixels: TrackedParam<RawRenderPixels, OsdEvent>,
     demosaic_backend: TrackedParam<Option<RawDemosaicBackend>, OsdEvent>,
+    cpu_demosaic_ms: TrackedParam<Option<u32>, OsdEvent>,
+    gpu_demosaic_ms: TrackedParam<Option<u32>, OsdEvent>,
 }
 
 impl RawMetadataStore {
@@ -134,7 +136,9 @@ impl RawMetadataStore {
                 tx.clone(),
                 OsdEvent::raw_render_pixels,
             ),
-            demosaic_backend: TrackedParam::new(None, tx, OsdEvent::raw_demosaic_backend),
+            demosaic_backend: TrackedParam::new(None, tx.clone(), OsdEvent::raw_demosaic_backend),
+            cpu_demosaic_ms: TrackedParam::new(None, tx.clone(), OsdEvent::raw_cpu_demosaic_ms),
+            gpu_demosaic_ms: TrackedParam::new(None, tx, OsdEvent::raw_gpu_demosaic_ms),
         }
     }
 
@@ -220,6 +224,33 @@ impl RawMetadataStore {
         true
     }
 
+    pub(crate) fn set_cpu_demosaic_ms(&mut self, index: usize, ms: u32) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        if info.cpu_demosaic_ms == Some(ms) {
+            return false;
+        }
+        info.cpu_demosaic_ms = Some(ms);
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn finish_gpu_demosaic_timing(&mut self, index: usize) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        if !info.finish_gpu_demosaic_timing() {
+            return false;
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
     pub(crate) fn embedded_preview_dims(&self, index: usize) -> Option<(u32, u32)> {
         self.by_index
             .get(&index)
@@ -254,11 +285,15 @@ impl RawMetadataStore {
                 height: 0,
             });
             self.demosaic_backend.set(None);
+            self.cpu_demosaic_ms.set(None);
+            self.gpu_demosaic_ms.set(None);
             return;
         };
         self.sensor_size.set(info.sensor_size);
         self.embedded_preview.set(info.embedded_preview);
         self.render_pixels.set(info.render_pixels);
         self.demosaic_backend.set(info.demosaic_backend);
+        self.cpu_demosaic_ms.set(info.cpu_demosaic_ms);
+        self.gpu_demosaic_ms.set(info.gpu_demosaic_ms);
     }
 }

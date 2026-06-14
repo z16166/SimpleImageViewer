@@ -610,6 +610,7 @@ fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
         source_key: source_key_for_path(&PathBuf::from("preview.avif")),
         preview_bundle: PreviewBundle::refined(),
         error: None,
+        cpu_demosaic_ms: None,
     };
 
     assert!(!preview_result_has_sdr_upload(&result));

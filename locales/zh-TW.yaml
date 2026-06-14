@@ -145,6 +145,8 @@ raw.osd.render.hq_bootstrap: "→ 內嵌* %{size}"
 raw.osd.demosaic.host: "主機"
 raw.osd.demosaic.video: "顯卡"
 raw.osd.demosaic.preview: "預覽"
+raw.osd.timing.cpu: "CPU %{ms}ms"
+raw.osd.timing.gpu: "GPU %{ms}ms"
 
 # Scale mode
 scale.fit: "適應視窗"

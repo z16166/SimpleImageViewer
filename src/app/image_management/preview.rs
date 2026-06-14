@@ -113,6 +113,14 @@ impl ImageViewerApp {
             (Some(preview), _) => {
                 self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
+                if let Some(cpu_ms) = update.cpu_demosaic_ms {
+                    if self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
+                        && update.index == self.current_index
+                    {
+                        self.osd.sync_events();
+                        ctx.request_repaint();
+                    }
+                }
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index

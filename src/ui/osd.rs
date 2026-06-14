@@ -147,6 +147,8 @@ pub enum OsdEvent {
     RawEmbeddedPreview(Option<(u32, u32)>),
     RawRenderPixels(crate::loader::RawRenderPixels),
     RawDemosaicBackend(Option<crate::loader::RawDemosaicBackend>),
+    RawCpuDemosaicMs(Option<u32>),
+    RawGpuDemosaicMs(Option<u32>),
     HdrRenderPath(Option<crate::hdr::status::HdrRenderPath>),
     HdrColorSpace(Option<crate::hdr::types::HdrColorSpace>),
     HdrOutputMode(crate::hdr::types::HdrOutputMode),
@@ -201,6 +203,14 @@ impl OsdEvent {
         Self::RawDemosaicBackend(*value)
     }
 
+    pub fn raw_cpu_demosaic_ms(value: &Option<u32>) -> Self {
+        Self::RawCpuDemosaicMs(*value)
+    }
+
+    pub fn raw_gpu_demosaic_ms(value: &Option<u32>) -> Self {
+        Self::RawGpuDemosaicMs(*value)
+    }
+
     pub fn hdr_render_path(value: &Option<crate::hdr::status::HdrRenderPath>) -> Self {
         Self::HdrRenderPath(*value)
     }
@@ -243,6 +253,8 @@ struct SupplementalOsdInputs {
     raw_embedded_preview: Option<(u32, u32)>,
     raw_render_pixels: crate::loader::RawRenderPixels,
     raw_demosaic_backend: Option<crate::loader::RawDemosaicBackend>,
+    raw_cpu_demosaic_ms: Option<u32>,
+    raw_gpu_demosaic_ms: Option<u32>,
     hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
     hdr_color_space: Option<crate::hdr::types::HdrColorSpace>,
     hdr_output_mode: crate::hdr::types::HdrOutputMode,
@@ -269,6 +281,8 @@ impl Default for SupplementalOsdInputs {
                 height: 0,
             },
             raw_demosaic_backend: None,
+            raw_cpu_demosaic_ms: None,
+            raw_gpu_demosaic_ms: None,
             hdr_render_path: None,
             hdr_color_space: None,
             hdr_output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
@@ -321,6 +335,8 @@ impl SupplementalOsdInputs {
             OsdEvent::RawEmbeddedPreview(value) => self.raw_embedded_preview = value,
             OsdEvent::RawRenderPixels(value) => self.raw_render_pixels = value,
             OsdEvent::RawDemosaicBackend(value) => self.raw_demosaic_backend = value,
+            OsdEvent::RawCpuDemosaicMs(value) => self.raw_cpu_demosaic_ms = value,
+            OsdEvent::RawGpuDemosaicMs(value) => self.raw_gpu_demosaic_ms = value,
             OsdEvent::HdrRenderPath(value) => self.hdr_render_path = value,
             OsdEvent::HdrColorSpace(value) => self.hdr_color_space = value,
             OsdEvent::HdrOutputMode(value) => self.hdr_output_mode = value,
@@ -447,6 +463,8 @@ impl OsdRenderer {
             self.supplemental_state.raw_embedded_preview,
             self.supplemental_state.raw_render_pixels,
             self.supplemental_state.raw_demosaic_backend,
+            self.supplemental_state.raw_cpu_demosaic_ms,
+            self.supplemental_state.raw_gpu_demosaic_ms,
         );
         self.has_raw_line = raw.is_some();
         self.cached_raw_line.clear();

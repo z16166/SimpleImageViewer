@@ -39,6 +39,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
+
+pub(crate) fn develop_scene_linear_hdr_timed(
+    processor: &mut RawProcessor,
+) -> Result<(crate::hdr::types::HdrImageBuffer, u32), String> {
+    let started = std::time::Instant::now();
+    let hdr = processor.develop_scene_linear_hdr()?;
+    Ok((hdr, crate::loader::elapsed_ms_u32(started)))
+}
+
 /// Demosaic at full sensor resolution (only when no embedded preview exists).
 pub(crate) fn develop_full_resolution(
     processor: &mut RawProcessor,
@@ -66,7 +75,7 @@ pub(crate) fn develop_full_resolution(
         );
 
         if !hdr_display_requests_sdr_preview(hdr_target_capacity) {
-            if let Ok(hdr) = processor.develop_scene_linear_hdr() {
+            if let Ok((hdr, cpu_ms)) = develop_scene_linear_hdr_timed(processor) {
                 let warnings = processor.process_warnings();
                 if warnings != 0 {
                     log::info!(
@@ -92,7 +101,9 @@ pub(crate) fn develop_full_resolution(
                     let fallback = DecodedImage::from_arc(hw, hh, fallback_pixels);
                     return Ok(RawLoadOutput {
                         image: make_hdr_image_data(hdr, fallback),
-                        osd: osd_ctx.full_develop(hw, hh, RawDemosaicBackend::Host),
+                        osd: osd_ctx
+                            .full_develop(hw, hh, RawDemosaicBackend::Host)
+                            .with_cpu_demosaic_ms(cpu_ms),
                     });
                 }
             } else {
@@ -179,13 +190,15 @@ pub(crate) fn develop_hq_preview(
 
     // High-quality RAW preview always uses the scene-linear HDR pipeline
     // to support exposure adjustments and tone mapping consistently.
-    let hdr = processor.develop_scene_linear_hdr()?;
+    let (hdr, cpu_ms) = develop_scene_linear_hdr_timed(processor)?;
     let (logical_w, logical_h) = processor.developed_output_dimensions(None);
     let hdr = finalize_raw_hq_hdr_buffer(hdr, logical_w, logical_h)?;
     let fallback_pixels =
         hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, hdr_target_capacity, &hdr_tone_map)?;
     let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
-    let osd = osd_ctx.full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host);
+    let osd = osd_ctx
+        .full_develop(hdr.width, hdr.height, RawDemosaicBackend::Host)
+        .with_cpu_demosaic_ms(cpu_ms);
     Ok(RawLoadOutput {
         image: make_hdr_image_data(hdr, fallback),
         osd,

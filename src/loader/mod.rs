@@ -33,6 +33,7 @@ pub use orchestrator::ImageLoader;
 pub use preview_caps::{
     MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side, refresh_hq_preview_monitor_cap,
 };
+pub(crate) use raw_osd::elapsed_ms_u32;
 pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::TextureCache;
 pub use types::*;

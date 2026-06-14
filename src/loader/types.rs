@@ -495,6 +495,8 @@ pub struct PreviewResult {
     pub source_key: SourceKey,
     pub preview_bundle: PreviewBundle,
     pub error: Option<String>,
+    /// LibRaw CPU demosaic duration when this preview came from HQ refine.
+    pub cpu_demosaic_ms: Option<u32>,
 }
 
 impl PreviewResult {
@@ -514,6 +516,7 @@ impl PreviewResult {
             source_key,
             preview_bundle,
             error,
+            cpu_demosaic_ms: None,
         }
     }
 }

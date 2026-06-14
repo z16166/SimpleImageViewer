@@ -232,3 +232,8 @@ fn sample_hash_u8(values: &[u8]) -> u64 {
     }
     h
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RawGpuDemosaicBakedNotice {
+    pub key: HdrImageKey,
+}

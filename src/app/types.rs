@@ -383,7 +383,8 @@ pub struct ImageViewerApp {
     pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
     /// Static GPU RAW: show embedded preview via SDR until demosaic bake completes.
     pub(crate) hdr_raw_gpu_demosaic_pending_indices: HashSet<usize>,
-    pub(crate) raw_demosaic_baked_notify: Arc<Mutex<Vec<crate::hdr::renderer::HdrImageKey>>>,
+    pub(crate) raw_demosaic_baked_notify:
+        Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
     /// HDR indices for which fallback refinement is currently in-flight.
     pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).

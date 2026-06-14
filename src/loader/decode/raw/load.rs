@@ -22,7 +22,7 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
-use super::develop::{develop_full_resolution, develop_hq_preview};
+use super::develop::{develop_full_resolution, develop_hq_preview, develop_scene_linear_hdr_timed};
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
 
 use crate::hdr::types::HdrToneMapSettings;
@@ -57,8 +57,8 @@ fn load_raw_hq_static_hdr(
         path.file_name().unwrap_or_default(),
         hdr_target_capacity
     );
-    match processor.develop_scene_linear_hdr() {
-        Ok(hdr) => {
+    match develop_scene_linear_hdr_timed(processor) {
+        Ok((hdr, cpu_ms)) => {
             let width = hdr.width;
             let height = hdr.height;
             let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
@@ -72,7 +72,9 @@ fn load_raw_hq_static_hdr(
             let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
             Some(Ok(RawLoadOutput {
                 image: make_hdr_image_data(hdr, fallback),
-                osd: osd_ctx.full_develop(width, height, RawDemosaicBackend::Host),
+                osd: osd_ctx
+                    .full_develop(width, height, RawDemosaicBackend::Host)
+                    .with_cpu_demosaic_ms(cpu_ms),
             }))
         }
         Err(err) => {
@@ -159,6 +161,7 @@ fn emit_raw_gpu_bootstrap_preview(
         source_key: source_key_for_path(path),
         preview_bundle: PreviewBundle::refined().with_sdr(preview.clone()),
         error: None,
+        cpu_demosaic_ms: None,
     }));
 }
 
@@ -300,24 +303,24 @@ pub(crate) fn load_raw(
         if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
             emit_raw_gpu_bootstrap_preview(&load_tx, index, generation, path, p);
         }
-        #[cfg(feature = "preload-debug")]
-        let gpu_load_started = std::time::Instant::now();
+        let gpu_pipeline_started = std::time::Instant::now();
+        let extract_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
             Ok(mut raw_gpu_source) => {
-                #[cfg(feature = "preload-debug")]
-                let extract_done = std::time::Instant::now();
+                let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
+                let scale_started = std::time::Instant::now();
                 let scale = RawProcessor::compute_ppg_scene_color_scale(path, &raw_gpu_source);
+                let scale_ms = crate::loader::elapsed_ms_u32(scale_started);
+                log::debug!(
+                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms scale={scale_ms}ms (scale calibrates via LibRaw CPU develop)",
+                    path.file_name().unwrap_or_default()
+                );
                 #[cfg(feature = "preload-debug")]
-                {
-                    let scale_done = std::time::Instant::now();
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] load {:?} extract={:.0}ms scale={:.0}ms total={:.0}ms",
-                        path.file_name().unwrap_or_default(),
-                        extract_done.duration_since(gpu_load_started).as_secs_f64() * 1000.0,
-                        scale_done.duration_since(extract_done).as_secs_f64() * 1000.0,
-                        scale_done.duration_since(gpu_load_started).as_secs_f64() * 1000.0,
-                    );
-                }
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms scale={scale_ms}ms total={}ms",
+                    path.file_name().unwrap_or_default(),
+                    crate::loader::elapsed_ms_u32(gpu_pipeline_started),
+                );
                 match scale {
                     Ok(scale) => {
                         log::debug!(
@@ -353,14 +356,16 @@ pub(crate) fn load_raw(
                     DecodedImage::from_arc(width, height, std::sync::Arc::new(fallback_pixels))
                 };
 
+                let mut osd = if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
+                    let p = preview_opt.as_ref().expect("preview");
+                    osd_ctx.gpu_bootstrap_dims(p.width, p.height)
+                } else {
+                    osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
+                };
+                osd = osd.with_gpu_pipeline_started(gpu_pipeline_started);
                 return Ok(RawLoadOutput {
                     image: make_hdr_image_data(hdr, fallback),
-                    osd: if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
-                        let p = preview_opt.as_ref().expect("preview");
-                        osd_ctx.gpu_bootstrap_dims(p.width, p.height)
-                    } else {
-                        osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
-                    },
+                    osd,
                 });
             }
             Err(err) => {

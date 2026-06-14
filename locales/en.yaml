@@ -147,6 +147,8 @@ raw.osd.render.hq_bootstrap: "→ Embedded* %{size}"
 raw.osd.demosaic.host: "Host"
 raw.osd.demosaic.video: "Video"
 raw.osd.demosaic.preview: "Preview"
+raw.osd.timing.cpu: "CPU %{ms}ms"
+raw.osd.timing.gpu: "GPU %{ms}ms"
 
 # Scale mode
 scale.fit: "Fit to Window"

@@ -434,18 +434,22 @@ impl ImageLoader {
                     let user_flip = req.orientation_override.unwrap_or(0);
                     processor.set_user_flip(user_flip);
 
-                    let develop_result = processor
-                        .develop_scene_linear_hdr()
-                        .and_then(|hdr| {
-                            finalize_raw_hq_hdr_buffer(
-                                hdr,
-                                req.logical_width,
-                                req.logical_height,
-                            )
-                        });
+                    let develop_result = {
+                        let started = std::time::Instant::now();
+                        processor
+                            .develop_scene_linear_hdr()
+                            .and_then(|hdr| {
+                                finalize_raw_hq_hdr_buffer(
+                                    hdr,
+                                    req.logical_width,
+                                    req.logical_height,
+                                )
+                            })
+                            .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
+                    };
 
                     match develop_result {
-                        Ok(hdr) => {
+                        Ok((hdr, cpu_demosaic_ms)) => {
                             let elapsed = t0.elapsed();
                             let preview_w = hdr.width;
                             let preview_h = hdr.height;
@@ -516,6 +520,7 @@ impl ImageLoader {
                                 source_key: req.source_key,
                                 preview_bundle: bundle,
                                 error: None,
+                                cpu_demosaic_ms: Some(cpu_demosaic_ms),
                             }));
                             let _ =
                                 worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
@@ -933,6 +938,7 @@ impl ImageLoader {
                                     source_key: load_result.source_key,
                                     preview_bundle: bundle,
                                     error: None,
+                                    cpu_demosaic_ms: None,
                                 }));
                             }
                             Ok(Err(e)) => {

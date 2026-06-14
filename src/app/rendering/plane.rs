@@ -37,7 +37,8 @@ pub(crate) enum PlaneDrawSource {
         alpha: f32,
         ripple: Option<(egui::Pos2, f32, f32, u32)>,
         keep_resident: bool,
-        raw_demosaic_baked_notify: Option<Arc<Mutex<Vec<crate::hdr::renderer::HdrImageKey>>>>,
+        raw_demosaic_baked_notify:
+            Option<Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>>,
     },
     HdrTile {
         tile: Arc<crate::hdr::tiled::HdrTileBuffer>,

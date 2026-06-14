@@ -55,12 +55,12 @@ impl ImageViewerApp {
         }
         let mut cleared_any = false;
         let mut cleared_current = false;
-        for key in baked {
+        for notice in baked {
             let matching: Vec<usize> = self
                 .hdr_image_cache
                 .iter()
                 .filter_map(|(&idx, hdr)| {
-                    if crate::hdr::renderer::HdrImageKey::from_image(hdr) == key
+                    if crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key
                         && self.hdr_raw_gpu_demosaic_pending_indices.contains(&idx)
                     {
                         Some(idx)
@@ -75,8 +75,12 @@ impl ImageViewerApp {
                 if idx == self.current_index {
                     cleared_current = true;
                 }
+                self.raw_metadata.finish_gpu_demosaic_timing(idx);
                 self.raw_metadata.promote_gpu_demosaic_complete(idx);
             }
+        }
+        if cleared_current {
+            self.osd.sync_events();
         }
         if cleared_current {
             if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {

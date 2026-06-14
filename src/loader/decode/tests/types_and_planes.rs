@@ -189,6 +189,7 @@ fn preview_result_exposes_refined_hdr_preview_bundle() {
         source_key: 99,
         preview_bundle: PreviewBundle::refined().with_hdr(Arc::clone(&hdr_preview)),
         error: None,
+        cpu_demosaic_ms: None,
     };
 
     assert!(update.error.is_none());
