@@ -180,6 +180,37 @@ fn equilibrate_dual_green_raw(
     }
 }
 
+/// True when LibRaw `idata.filters` encodes a standard 2x2 Bayer CFA usable by the GPU demosaic shader.
+fn libraw_filters_is_standard_bayer(filters: u32, colors: i32) -> bool {
+    if colors != 3 {
+        return false;
+    }
+    // 0 = not CFA (Foveon, linear RGB, etc.)
+    if filters == 0 {
+        return false;
+    }
+    // Values below 1000 are reserved (Leaf Catchlight=1, legacy X-Trans=2, X-Trans=9, ...).
+    filters >= 1000
+}
+
+#[cfg(test)]
+mod libraw_bayer_filter_tests {
+    use super::libraw_filters_is_standard_bayer;
+
+    #[test]
+    fn rejects_xtrans_and_other_reserved_filters() {
+        assert!(!libraw_filters_is_standard_bayer(0, 3));
+        assert!(!libraw_filters_is_standard_bayer(1, 3));
+        assert!(!libraw_filters_is_standard_bayer(2, 3));
+        assert!(!libraw_filters_is_standard_bayer(9, 3));
+    }
+
+    #[test]
+    fn accepts_typical_bayer_bitmask() {
+        assert!(libraw_filters_is_standard_bayer(0x9494_9494, 3));
+    }
+}
+
 impl RawProcessor {
     pub fn new() -> Option<Self> {
         unsafe {
@@ -252,10 +283,27 @@ impl RawProcessor {
     pub fn is_supported_bayer(&self) -> bool {
         let filters = unsafe { ffi::siv_libraw_get_filters(self.data) };
         let colors = unsafe { ffi::siv_libraw_get_colors(self.data) };
-        // filters == 0 means not a CFA image (e.g. Foveon, linear RGB)
-        // filters == 1 means X-Trans (unsupported by our simple compute shader)
-        // colors != 3 means not RGB Bayer
-        filters > 1 && colors == 3
+        libraw_filters_is_standard_bayer(filters, colors)
+    }
+
+    /// True when the GPU Bayer demosaic path can produce the same geometry as LibRaw develop.
+    pub fn is_gpu_demosaic_compatible(&self) -> bool {
+        if !self.is_supported_bayer() {
+            return false;
+        }
+        // Fuji Super-CCD HR/SR sensors report a Bayer-like filters bitmask but require
+        // LibRaw's 45-degree rotation; rectangular GPU demosaic mis-orients the image.
+        if unsafe { ffi::siv_libraw_is_fuji_rotated(self.data) } != 0 {
+            return false;
+        }
+        // Non-square sensor pixels (e.g. Nikon D1X) need LibRaw stretch during develop.
+        const ASPECT_EPS: f64 = 0.001;
+        let aspect = unsafe { ffi::siv_libraw_get_pixel_aspect(self.data) };
+        (aspect - 1.0).abs() <= ASPECT_EPS
+    }
+
+    pub fn pixel_aspect(&self) -> f64 {
+        unsafe { ffi::siv_libraw_get_pixel_aspect(self.data) }
     }
 
     /// Best-effort developed output dimensions for tiling and HQ size checks.
@@ -1151,19 +1199,11 @@ mod tests {
         let idx = ((cy as usize * w as usize) + cx as usize) * 4;
         eprintln!("=== Canon 40D CPU LibRaw path diagnostic ===");
         eprintln!("output size: {w}x{h}, margins left={lm} top={tm}");
-        eprintln!(
-            "color.black={black} color.maximum={maximum} data_maximum={data_maximum}"
-        );
-        eprintln!(
-            "cblack[0..3]={cblack:?} cblack[4]={cblack4} cblack[5]={cblack5}"
-        );
+        eprintln!("color.black={black} color.maximum={maximum} data_maximum={data_maximum}");
+        eprintln!("cblack[0..3]={cblack:?} cblack[4]={cblack4} cblack[5]={cblack5}");
         eprintln!("cam_mul={cam_mul:?} pre_mul={pre_mul:?}");
-        eprintln!(
-            "gpu: cblack_rgb(black+cblack)={gpu_cblack:?} scale_mul={gpu_scale:?}"
-        );
-        eprintln!(
-            "center ({cx},{cy}): raw[{raw_row},{raw_col}]={raw_px} scaled_cfa={scaled_cfa}"
-        );
+        eprintln!("gpu: cblack_rgb(black+cblack)={gpu_cblack:?} scale_mul={gpu_scale:?}");
+        eprintln!("center ({cx},{cy}): raw[{raw_row},{raw_col}]={raw_px} scaled_cfa={scaled_cfa}");
         eprintln!(
             "ppg camera counts at center rgb=({}, {}, {})",
             ppg_counts_center.0, ppg_counts_center.1, ppg_counts_center.2
@@ -1172,9 +1212,18 @@ mod tests {
         let (nr, ng, nb) = f(ppg_no_ab.rgba_f32.as_slice(), idx);
         let (ar, ag, ab) = f(ppg_ab.rgba_f32.as_slice(), idx);
         let (hr, hg, hb) = f(ahd_ab.rgba_f32.as_slice(), idx);
-        eprintln!("develop PPG no_auto_bright center=({nr:.6}, {ng:.6}, {nb:.6}) R/B={:.4}", nr / nb.max(1e-9));
-        eprintln!("develop PPG auto_bright     center=({ar:.6}, {ag:.6}, {ab:.6}) R/B={:.4}", ar / ab.max(1e-9));
-        eprintln!("develop AHD auto_bright     center=({hr:.6}, {hg:.6}, {hb:.6}) R/B={:.4}", hr / hb.max(1e-9));
+        eprintln!(
+            "develop PPG no_auto_bright center=({nr:.6}, {ng:.6}, {nb:.6}) R/B={:.4}",
+            nr / nb.max(1e-9)
+        );
+        eprintln!(
+            "develop PPG auto_bright     center=({ar:.6}, {ag:.6}, {ab:.6}) R/B={:.4}",
+            ar / ab.max(1e-9)
+        );
+        eprintln!(
+            "develop AHD auto_bright     center=({hr:.6}, {hg:.6}, {hb:.6}) R/B={:.4}",
+            hr / hb.max(1e-9)
+        );
         eprintln!(
             "auto_bright gain vs no_ab: R={:.3}x G={:.3}x B={:.3}x",
             ar / nr.max(1e-9),

@@ -377,6 +377,19 @@ extern "C" {
         return lr->idata.colors;
     }
 
+    /// Nonzero when LibRaw will apply Fuji Super-CCD 45-degree rotation during develop.
+    int siv_libraw_is_fuji_rotated(libraw_data_t *lr) {
+        if (!lr) return 0;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        if (!ip) return 0;
+        return ip->is_fuji_rotated();
+    }
+
+    double siv_libraw_get_pixel_aspect(libraw_data_t *lr) {
+        if (!lr) return 1.0;
+        return lr->sizes.pixel_aspect;
+    }
+
     // Match LibRaw convert_to_rgb + scale_colors for GPU demosaic color processing.
     void siv_libraw_get_gpu_color_params(
         libraw_data_t *lr,

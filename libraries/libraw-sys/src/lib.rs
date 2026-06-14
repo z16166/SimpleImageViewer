@@ -132,6 +132,8 @@ unsafe extern "C" {
     );
     pub fn siv_libraw_get_filters(data: *mut libraw_data_t) -> c_uint;
     pub fn siv_libraw_get_colors(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_is_fuji_rotated(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_get_pixel_aspect(data: *mut libraw_data_t) -> f64;
     pub fn siv_libraw_get_gpu_color_params(
         data: *mut libraw_data_t,
         rgb_cam_out: *mut c_float,

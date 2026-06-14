@@ -33,7 +33,10 @@ use crate::loader::raw_osd::RawOsdContext;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::raw_osd::RawOsdInfo;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
-use crate::loader::{DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult, RawLoadOutput, RefinementRequest, source_key_for_path};
+use crate::loader::{
+    DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult, RawLoadOutput,
+    RefinementRequest, source_key_for_path,
+};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -277,10 +280,21 @@ pub(crate) fn load_raw(
     let use_gpu_demosaic = high_quality
         && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
         && final_lr_flip == 0
-        && processor.is_supported_bayer()
+        && processor.is_gpu_demosaic_compatible()
         && width <= 8192
         && height <= 8192
         && area < threshold;
+
+    if high_quality
+        && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && !use_gpu_demosaic
+        && !processor.is_gpu_demosaic_compatible()
+    {
+        log::debug!(
+            "[Loader] GPU demosaic skipped for {:?}: CFA not compatible with GPU Bayer demosaic (e.g. Fuji X-Trans/Super-CCD or non-square pixels); using CPU tiled develop",
+            path.file_name().unwrap_or_default()
+        );
+    }
 
     if use_gpu_demosaic {
         if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
@@ -299,18 +313,9 @@ pub(crate) fn load_raw(
                     crate::preload_debug!(
                         "[PreloadDebug][RAW-GPU] load {:?} extract={:.0}ms scale={:.0}ms total={:.0}ms",
                         path.file_name().unwrap_or_default(),
-                        extract_done
-                            .duration_since(gpu_load_started)
-                            .as_secs_f64()
-                            * 1000.0,
-                        scale_done
-                            .duration_since(extract_done)
-                            .as_secs_f64()
-                            * 1000.0,
-                        scale_done
-                            .duration_since(gpu_load_started)
-                            .as_secs_f64()
-                            * 1000.0,
+                        extract_done.duration_since(gpu_load_started).as_secs_f64() * 1000.0,
+                        scale_done.duration_since(extract_done).as_secs_f64() * 1000.0,
+                        scale_done.duration_since(gpu_load_started).as_secs_f64() * 1000.0,
                     );
                 }
                 match scale {

@@ -283,7 +283,7 @@ fn probe_epson_and_fuji_on_local_samples() {
                 0,
                 &path,
                 refine_tx,
-        dummy_load_tx(),
+                dummy_load_tx(),
                 hq,
                 crate::settings::RawDemosaicMode::Cpu,
                 4.0,
@@ -318,6 +318,70 @@ fn probe_epson_and_fuji_on_local_samples() {
             }
         }
     }
+}
+
+#[test]
+fn nikon_d1x_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\nikon\d1x\RAW_NIKON_D1X.NEF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    eprintln!(
+        "D1X i={}x{} raw={}x{} aspect={:.3} supported_bayer={} gpu_compatible={}",
+        processor.width(),
+        processor.height(),
+        processor.raw_width(),
+        processor.raw_height(),
+        processor.pixel_aspect(),
+        processor.is_supported_bayer(),
+        processor.is_gpu_demosaic_compatible()
+    );
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "D1X non-square pixels must not use the Bayer GPU demosaic path"
+    );
+}
+
+#[test]
+fn fuji_e550_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\fuji\e550\RAW_FUJI_E550.RAF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    eprintln!(
+        "E550 i={}x{} raw={}x{} supported_bayer={} gpu_compatible={}",
+        processor.width(),
+        processor.height(),
+        processor.raw_width(),
+        processor.raw_height(),
+        processor.is_supported_bayer(),
+        processor.is_gpu_demosaic_compatible()
+    );
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "Super CCD RAF must not use the Bayer GPU demosaic path"
+    );
+}
+
+#[test]
+fn fuji_x20_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\fuji\RAW_FUJI_X20.RAF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "X-Trans RAF must not use the Bayer GPU demosaic path"
+    );
 }
 
 #[test]
