@@ -104,7 +104,8 @@ impl ImageViewerApp {
                 self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, to);
             }
         }
-        self.hdr_raw_gpu_demosaic_pending_key_index.retain(|_, idx| *idx != from);
+        self.hdr_raw_gpu_demosaic_pending_key_index
+            .retain(|_, idx| *idx != from);
 
         // 5. Prefetched tiles / animations
         if let Some(mut tiles) = self.prefetched_tiles.remove(&from) {

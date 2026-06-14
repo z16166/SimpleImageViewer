@@ -16,8 +16,8 @@
 
 use super::resources::{HdrCallbackResources, create_callback_resources};
 use eframe::egui_wgpu::CallbackResources;
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// Stored in [`CallbackResources`] so HDR callbacks can defer prepare while prewarm runs.
 pub(crate) struct HdrCallbackResourcesPrewarmSlot(pub Arc<HdrCallbackResourcesPrewarm>);
