@@ -445,6 +445,7 @@ features = [
     "MTLAccelerationStructure",
     "MTLAccelerationStructureTypes",
     "MTLAccelerationStructureCommandEncoder",
+    "MTLBinaryArchive",
     "MTLResidencySet",
 ]
 optional = true

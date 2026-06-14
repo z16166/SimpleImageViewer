@@ -45,9 +45,9 @@ use objc2::{
 use objc2_foundation::ns_string;
 use objc2_metal::{
     MTLAccelerationStructure, MTLAccelerationStructureCommandEncoder, MTLArgumentBuffersTier,
-    MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue,
-    MTLComputeCommandEncoder, MTLComputePipelineState, MTLCounterSampleBuffer, MTLCullMode,
-    MTLDepthClipMode, MTLDepthStencilState, MTLDevice, MTLDrawable, MTLIndexType,
+    MTLBinaryArchive, MTLBlitCommandEncoder, MTLBuffer, MTLCommandBuffer, MTLCommandBufferStatus,
+    MTLCommandQueue, MTLComputeCommandEncoder, MTLComputePipelineState, MTLCounterSampleBuffer,
+    MTLCullMode, MTLDepthClipMode, MTLDepthStencilState, MTLDevice, MTLDrawable, MTLIndexType,
     MTLLanguageVersion, MTLLibrary, MTLPrimitiveType, MTLReadWriteTextureTier,
     MTLRenderCommandEncoder, MTLRenderPipelineState, MTLRenderStages, MTLResource,
     MTLResourceUsage, MTLSamplerState, MTLSharedEvent, MTLSize, MTLTexture, MTLTextureType,
@@ -1186,7 +1186,8 @@ unsafe impl Send for CommandBuffer {}
 unsafe impl Sync for CommandBuffer {}
 
 pub struct PipelineCache {
-    pub(crate) archive: Option<parking_lot::Mutex<Retained<objc2::runtime::AnyObject>>>,
+    pub(crate) archive:
+        Option<parking_lot::Mutex<Retained<ProtocolObject<dyn MTLBinaryArchive>>>>,
     pub(crate) dirty: std::sync::atomic::AtomicBool,
 }
 

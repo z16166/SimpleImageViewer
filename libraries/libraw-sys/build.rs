@@ -22,18 +22,67 @@ fn emit_openmp_link_args(target_os: &str) {
             // MSVC OpenMP import lib; runtime is vcomp140.dll (or arch-matched vcomp*.dll).
             println!("cargo:rustc-link-lib=dylib=vcomp");
         }
-        "macos" => {
-            for prefix in ["/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"] {
-                let lib_dir = format!("{prefix}/lib");
-                if std::path::Path::new(&lib_dir).join("libomp.dylib").exists() {
-                    println!("cargo:rustc-link-search=native={lib_dir}");
-                    break;
-                }
-            }
-            println!("cargo:rustc-link-lib=dylib=omp");
-        }
+        "macos" => link_macos_libomp(),
         _ => {}
     }
+}
+
+/// Homebrew libomp: prefer static `libomp.a` (same model as Linux `libgomp.a`) so the release
+/// binary does not depend on a dylib path at runtime.
+fn link_macos_libomp() {
+    use std::path::Path;
+
+    println!("cargo:rerun-if-env-changed=LIBOMP_PREFIX");
+
+    let prefix = std::env::var("LIBOMP_PREFIX")
+        .ok()
+        .or_else(macos_libomp_prefix_from_brew)
+        .or_else(|| {
+            ["/opt/homebrew/opt/libomp", "/usr/local/opt/libomp"]
+                .into_iter()
+                .find(|prefix| Path::new(prefix).join("lib").join("libomp.dylib").exists())
+                .map(str::to_string)
+        });
+
+    let Some(prefix) = prefix else {
+        panic!(
+            "libraw-sys (macos): libomp not found. Install with `brew install libomp` \
+             or set LIBOMP_PREFIX to the Homebrew prefix (e.g. /opt/homebrew/opt/libomp)."
+        );
+    };
+
+    let lib_dir = Path::new(&prefix).join("lib");
+    let static_lib = lib_dir.join("libomp.a");
+    let dylib = lib_dir.join("libomp.dylib");
+
+    if static_lib.is_file() {
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        println!("cargo:rustc-link-lib=static=omp");
+    } else if dylib.is_file() {
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        println!("cargo:rustc-link-lib=dylib=omp");
+    } else {
+        panic!(
+            "libraw-sys (macos): libomp not found under {} (expected libomp.a or libomp.dylib). \
+             Install with `brew install libomp`.",
+            prefix
+        );
+    }
+}
+
+fn macos_libomp_prefix_from_brew() -> Option<String> {
+    let output = std::process::Command::new("brew")
+        .args(["--prefix", "libomp"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(prefix)
 }
 
 /// `rustc-link-lib=static=gomp` needs `libgomp.a` on a `-L` path (toolchain dir, not vcpkg).
@@ -143,15 +192,32 @@ fn main() {
         Err(e) => {
             let include_dir = installed_dir.join(&vcpkg_triplet).join("include");
             let lib_dir = installed_dir.join(&vcpkg_triplet).join("lib");
+            let manual_link_dir = lib_dir.join("manual-link");
             if include_dir.exists() {
-                build.include(include_dir);
+                build.include(&include_dir);
                 println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
                 // On Windows it's raw_r.lib, on Unix it's libraw_r.a or libraw.a
                 if lib_dir.join("libraw_r.a").exists() || lib_dir.join("raw_r.lib").exists() {
                     println!("cargo:rustc-link-lib=static=raw_r");
-                } else {
+                } else if manual_link_dir.join("libraw.a").exists()
+                    || manual_link_dir.join("raw.lib").exists()
+                {
+                    println!(
+                        "cargo:rustc-link-search=native={}",
+                        manual_link_dir.display()
+                    );
                     println!("cargo:rustc-link-lib=static=raw");
+                } else {
+                    panic!(
+                        "libraw-sys: libraw headers found under {} but no libraw_r.a / libraw.a. \
+                         Reinstall vcpkg deps (vcpkg install --classic \
+                         'libraw[core,dng-lossy,openmp,x3f]:arm64-osx' --overlay-ports=./vcpkg-overlays \
+                         --overlay-triplets=./triplets --x-install-root=./vcpkg_installed). \
+                         vcpkg error: {:?}",
+                        include_dir.display(),
+                        e
+                    );
                 }
 
                 println!("cargo:rustc-link-lib=static=jasper");

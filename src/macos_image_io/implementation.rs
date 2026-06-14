@@ -1289,6 +1289,13 @@ pub fn load_via_image_io(
 
         let is_raw = crate::raw_processor::is_raw_extension(&ext);
 
+        // ImageIO/WIC decode embedded previews only — never substitute for LibRaw HQ demosaic.
+        if is_raw && high_quality {
+            return Err(
+                "High-quality RAW preview requires LibRaw (ImageIO cannot demosaic)".into(),
+            );
+        }
+
         // PERFORMANCE OPTIMIZATION: If we are in performance mode (!high_quality)
         // for a RAW file, we prioritize returning a static preview immediately.
         if is_raw && !high_quality {

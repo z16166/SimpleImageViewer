@@ -16,13 +16,18 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2_foundation::{NSArray, NSError, NSObject, NSString, NSURL};
-use objc2_metal::{MTLDevice, MTLComputePipelineDescriptor, MTLRenderPipelineDescriptor};
-use super::PipelineCache;
+
 use alloc::string::ToString as _;
 use alloc::vec::Vec;
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_foundation::{NSArray, NSError, NSString, NSURL};
+use objc2_metal::{
+    MTLBinaryArchive, MTLBinaryArchiveDescriptor, MTLComputePipelineDescriptor, MTLDevice,
+    MTLRenderPipelineDescriptor,
+};
+
+use super::PipelineCache;
 
 static TEMP_FILE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -30,7 +35,7 @@ fn get_temp_file_path() -> PathBuf {
     let pid = std::process::id();
     let thread_id = std::thread::current().id();
     let count = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    
+
     // Stable hash of the ThreadId to avoid cross-platform/toolchain formatting differences
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -73,64 +78,49 @@ unsafe fn make_custom_error(code: isize) -> Retained<NSError> {
     NSError::new(code, &ns_domain)
 }
 
-fn path_to_nsurl(path: &std::path::Path) -> Option<Retained<AnyObject>> {
-    NSURL::from_file_path(path).map(|url| url.into())
+fn path_to_nsurl(path: &std::path::Path) -> Option<Retained<NSURL>> {
+    NSURL::from_file_path(path)
 }
 
 pub unsafe fn load_binary_archive(
     device: &ProtocolObject<dyn MTLDevice>,
     data: &[u8],
-) -> Result<Retained<AnyObject>, Retained<NSError>> {
+) -> Result<Retained<ProtocolObject<dyn MTLBinaryArchive>>, Retained<NSError>> {
     objc2::rc::autoreleasepool(|_| unsafe {
-        let desc_class = objc2::runtime::AnyClass::get(c"MTLBinaryArchiveDescriptor")
-            .ok_or_else(|| make_custom_error(1))?;
-            
-        let descriptor: Retained<AnyObject> = {
-            let obj: objc2::rc::Allocated<NSObject> = objc2::msg_send![desc_class, alloc];
-            let obj: Retained<NSObject> = objc2::msg_send![obj, init];
-            obj.into()
-        };
-        
+        let descriptor = MTLBinaryArchiveDescriptor::new();
+
         let temp_path = get_temp_file_path();
         let _guard = TempFileGuard::new(temp_path.clone());
-        
+
         if let Err(e) = std::fs::write(&temp_path, data) {
             log::warn!("Failed to write temporary pipeline cache file: {:?}", e);
             return Err(make_custom_error(2));
         }
 
         let url = path_to_nsurl(&temp_path).ok_or_else(|| make_custom_error(3))?;
-        let () = objc2::msg_send![&descriptor, setURL: &*url];
-        
-        let archive: Result<Retained<AnyObject>, Retained<NSError>> = objc2::msg_send![
-            device,
-            newBinaryArchiveWithDescriptor: &*descriptor,
-            error: _
-        ];
-        archive
+        descriptor.setUrl(Some(&url));
+
+        device.newBinaryArchiveWithDescriptor_error(&descriptor)
     })
 }
 
 pub unsafe fn write_binary_archive(
-    archive: &AnyObject,
+    archive: &ProtocolObject<dyn MTLBinaryArchive>,
 ) -> Option<Vec<u8>> {
     objc2::rc::autoreleasepool(|_| unsafe {
         let temp_path = get_temp_file_path();
         let _guard = TempFileGuard::new(temp_path.clone());
-        
+
         let url = path_to_nsurl(&temp_path)?;
-        
-        let result: Result<(), Retained<NSError>> = objc2::msg_send![
-            archive,
-            serializeToURL: &*url,
-            error: _
-        ];
-        
-        match result {
+
+        match archive.serializeToURL_error(&url) {
             Ok(()) => std::fs::read(&temp_path).ok(),
             Err(err) => {
                 let desc = err.localizedDescription().to_string();
-                log::debug!("MTLBinaryArchive serializeToURL failed (might be empty/no pipelines): {}", desc);
+                log::debug!(
+                    "MTLBinaryArchive serializeToURL failed (might be empty/no pipelines): {}",
+                    desc
+                );
                 None
             }
         }
@@ -139,20 +129,10 @@ pub unsafe fn write_binary_archive(
 
 pub unsafe fn create_empty_binary_archive(
     device: &ProtocolObject<dyn MTLDevice>,
-) -> Option<Retained<AnyObject>> {
+) -> Option<Retained<ProtocolObject<dyn MTLBinaryArchive>>> {
     objc2::rc::autoreleasepool(|_| unsafe {
-        let desc_class = objc2::runtime::AnyClass::get(c"MTLBinaryArchiveDescriptor")?;
-        let descriptor: Retained<AnyObject> = {
-            let obj: objc2::rc::Allocated<NSObject> = objc2::msg_send![desc_class, alloc];
-            let obj: Retained<NSObject> = objc2::msg_send![obj, init];
-            obj.into()
-        };
-        let result: Result<Retained<AnyObject>, Retained<NSError>> = objc2::msg_send![
-            device,
-            newBinaryArchiveWithDescriptor: &*descriptor,
-            error: _
-        ];
-        match result {
+        let descriptor = MTLBinaryArchiveDescriptor::new();
+        match device.newBinaryArchiveWithDescriptor_error(&descriptor) {
             Ok(archive) => Some(archive),
             Err(err) => {
                 log::warn!("Failed to create new empty MTLBinaryArchive: {:?}", err);
@@ -169,7 +149,7 @@ pub unsafe fn set_binary_archives_on_compute_descriptor(
     if let Some(ref archive_mutex) = cache.archive {
         let archive = archive_mutex.lock();
         let array = NSArray::from_retained_slice(&[(*archive).clone()]);
-        let () = objc2::msg_send![descriptor, setBinaryArchives: Some(&*array)];
+        descriptor.setBinaryArchives(Some(&array));
     }
 }
 
@@ -179,12 +159,7 @@ pub unsafe fn add_compute_pipeline_to_archive(
 ) {
     if let Some(ref archive_mutex) = cache.archive {
         let archive = archive_mutex.lock();
-        let result: Result<(), Retained<NSError>> = objc2::msg_send![
-            &**archive,
-            addComputePipelineFunctionsWithDescriptor: descriptor,
-            error: _
-        ];
-        match result {
+        match archive.addComputePipelineFunctionsWithDescriptor_error(descriptor) {
             Ok(()) => {
                 cache.dirty.store(true, Ordering::Release);
             }
@@ -208,7 +183,7 @@ pub unsafe fn set_binary_archives_on_render_descriptor(
     if let Some(ref archive_mutex) = cache.archive {
         let archive = archive_mutex.lock();
         let array = NSArray::from_retained_slice(&[(*archive).clone()]);
-        let () = objc2::msg_send![descriptor, setBinaryArchives: Some(&*array)];
+        descriptor.setBinaryArchives(Some(&array));
     }
 }
 
@@ -218,12 +193,7 @@ pub unsafe fn add_render_pipeline_to_archive(
 ) {
     if let Some(ref archive_mutex) = cache.archive {
         let archive = archive_mutex.lock();
-        let result: Result<(), Retained<NSError>> = objc2::msg_send![
-            &**archive,
-            addRenderPipelineFunctionsWithDescriptor: descriptor,
-            error: _
-        ];
-        match result {
+        match archive.addRenderPipelineFunctionsWithDescriptor_error(descriptor) {
             Ok(()) => {
                 cache.dirty.store(true, Ordering::Release);
             }

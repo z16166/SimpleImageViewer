@@ -250,9 +250,18 @@ pub(crate) fn load_raw(
             }
             Err(e) => {
                 log::warn!(
-                    "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
+                    "[Loader] LibRaw could not open {:?}: {}.",
                     path,
                     e
+                );
+                if high_quality {
+                    return Err(format!(
+                        "{} (high-quality RAW requires LibRaw; rebuild vcpkg libraw or check the file)",
+                        e
+                    ));
+                }
+                log::warn!(
+                    "[Loader] Falling back to Rule 2 (WIC/ImageIO) for performance-mode RAW."
                 );
                 #[cfg(target_os = "windows")]
                 return crate::wic::load_via_wic(path, high_quality, None).map(|image| {
@@ -427,7 +436,9 @@ pub(crate) fn load_raw(
         }
     }
 
-    // High-quality mode: use embedded preview when it already meets HQ requirements.
+    // High-quality mode: try a fast synchronous full develop when the embedded thumb is already
+    // large enough, but never treat the embedded JPEG as the final image — demosaic (CPU or GPU)
+    // must still run via bootstrap/refine when develop fails or the user chose a demosaic backend.
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
             if RAW_HQ_BOOTSTRAP_PREVIEW {
@@ -442,8 +453,15 @@ pub(crate) fn load_raw(
             ) {
                 return result;
             }
+            log::debug!(
+                "[Loader] HQ mode: embedded preview {}x{} meets size cap but full develop failed for {:?} — queued demosaic refine",
+                p.width,
+                p.height,
+                path.file_name().unwrap_or_default()
+            );
+        } else {
             crate::preload_debug!(
-                "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=true → StaticSdr",
+                "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=false → TiledBootstrap+Refine",
                 path.file_name().unwrap_or_default(),
                 p.width,
                 p.height,
@@ -452,34 +470,13 @@ pub(crate) fn load_raw(
                 hq_preview_max_side()
             );
             log::debug!(
-                "[Loader] HQ mode: embedded preview meets size requirement for {:?} ({}x{} vs output {}x{})",
-                path.file_name().unwrap_or_default(),
+                "[Loader] HQ mode: embedded preview {}x{} insufficient for output {}x{} — HQ demosaic queued",
                 p.width,
                 p.height,
                 width,
                 height
             );
-            return Ok(RawLoadOutput {
-                image: make_image_data(p.clone()),
-                osd: osd_ctx.embedded_render(p),
-            });
         }
-        crate::preload_debug!(
-            "[PreloadDebug][RAW] path={:?} mode=hq embedded={}x{} output={}x{} hq_side={} meets_hq=false → TiledBootstrap+Refine",
-            path.file_name().unwrap_or_default(),
-            p.width,
-            p.height,
-            width,
-            height,
-            hq_preview_max_side()
-        );
-        log::debug!(
-            "[Loader] HQ mode: embedded preview {}x{} insufficient for output {}x{} — HQ demosaic queued",
-            p.width,
-            p.height,
-            width,
-            height
-        );
     }
 
     // HQ mode needs demosaic. Bootstrap with embedded preview when available.
