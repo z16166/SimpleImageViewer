@@ -18,7 +18,7 @@ use super::*;
 
 impl ImageViewerApp {
     pub(crate) fn maybe_prefetch_startup_raw_open(&self) {
-        if self.image_files.is_empty() {
+        if self.preload_deferred_for_hdr_capacity || self.image_files.is_empty() {
             return;
         }
         let path = &self.image_files[self.current_index];
@@ -34,6 +34,14 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn schedule_preloads(&mut self, forward: bool) {
+        self.schedule_preloads_with_options(forward, false);
+    }
+
+    pub(crate) fn schedule_preloads_with_options(
+        &mut self,
+        forward: bool,
+        _force_neighbors: bool,
+    ) {
         let n = self.image_files.len();
         if n == 0 {
             preload_debug!("[PreloadDebug] schedule skipped: no images");
@@ -58,7 +66,7 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading_any(cur);
+        let mut current_is_loading = self.loader.is_loading_any(cur);
         preload_debug!(
             "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
             cur,
@@ -96,6 +104,7 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
                 self.raw_demosaic_mode_for_index(cur),
             );
+            current_is_loading = true;
         }
 
         if !self.settings.preload {
@@ -107,13 +116,24 @@ impl ImageViewerApp {
             .image_files
             .get(cur)
             .is_some_and(|p| crate::preload_debug::path_is_raw(p));
-        if should_defer_background_preload_for_raw_gpu_current(
+        let current_raw_gpu_path_active = should_defer_background_preload_for_raw_gpu_current(
             self.raw_hq_index_requires_hdr_plane(cur),
             path_is_raw,
-            current_is_loading,
+            current_is_loading || self.loader.is_loading_any(cur),
             self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
             self.raw_gpu_demosaic_await_hdr_present,
-        ) {
+        );
+        // Always hold neighbor preloads while the current HQ RAW GPU path is active.
+        // `force_neighbors` only bypasses defer for capacity-reschedule cases once the current
+        // image has finished extract / GPU demosaic (e.g. after retain on EDR refine).
+        if current_raw_gpu_path_active {
+            preload_debug!(
+                "[PreloadDebug] defer background preload: cur={} reason=raw_gpu_current loading={} gpu_pending={} await_hdr={}",
+                cur,
+                current_is_loading || self.loader.is_loading_any(cur),
+                self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+                self.raw_gpu_demosaic_await_hdr_present
+            );
             return;
         }
 
@@ -251,6 +271,18 @@ impl ImageViewerApp {
                 );
                 count += 1;
                 continue;
+            }
+
+            if idx != self.current_index
+                && self.loader.active_load_count() >= MAX_CONCURRENT_DECODER_LOADS
+            {
+                preload_debug!(
+                    "[PreloadDebug] direction stop: name={} reason=decoder_concurrency in_flight={} max={}",
+                    direction_name,
+                    self.loader.active_load_count(),
+                    MAX_CONCURRENT_DECODER_LOADS
+                );
+                break;
             }
 
             let path = &self.image_files[idx];

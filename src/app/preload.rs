@@ -22,6 +22,8 @@ use super::types::{HardwareTier, UltraHdrCapacityRefresh};
 // Maximum number of images to preload in each direction.
 pub(crate) const MAX_PRELOAD_FORWARD: usize = 5;
 pub(crate) const MAX_PRELOAD_BACKWARD: usize = 3;
+/// Cap simultaneous image decoders so HQ RAW GPU extract is not starved by neighbor preloads.
+pub(crate) const MAX_CONCURRENT_DECODER_LOADS: usize = 3;
 // Texture cache must hold: current + forward + backward + buffer for transitions
 pub(crate) const CACHE_SIZE: usize = MAX_PRELOAD_FORWARD + MAX_PRELOAD_BACKWARD + 3;
 pub(crate) fn ultra_hdr_decode_capacity_for_output_mode(

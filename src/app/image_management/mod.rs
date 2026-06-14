@@ -17,7 +17,7 @@
 use crate::app::{
     AnimationPlayback, FileOpResult, ImageViewerApp, PendingAnimUpload, TransitionStyle,
 };
-use crate::app::{MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
+use crate::app::{MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD};
 use crate::loader::{
     DecodedImage, ImageData, LoadResult, LoaderOutput, PixelPlaneKind, PreviewPlane, PreviewResult,
     RenderShape as LoadedRenderShape, TileResult, source_key_for_path,
@@ -501,6 +501,29 @@ fn output_mode_crosses_hdr_sdr_boundary(
     output_mode_is_hdr(previous) != output_mode_is_hdr(next)
 }
 
+/// True when the active monitor has reported enough metadata to pick a stable Ultra HDR
+/// decode capacity (macOS EDR often reports `MacOsEdr` + `target_hdr_capacity()` before
+/// `maximumExtendedDynamicRangeColorComponentValue` arrives).
+pub(crate) fn monitor_hdr_decode_capacity_is_known(
+    selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+) -> bool {
+    match selection {
+        None => false,
+        Some(selection) if !selection.hdr_supported => true,
+        Some(selection) => {
+            selection
+                .max_hdr_capacity
+                .filter(|value| *value > 0.0)
+                .is_some()
+                || selection
+                    .max_luminance_nits
+                    .filter(|value| *value > 0.0)
+                    .is_some()
+                || selection.hdr_capacity_source.is_some()
+        }
+    }
+}
+
 /// Startup preload defer stays active until runtime monitor probe finishes **and** HDR
 /// decode capacity is not still gated at 1.0 by `SdrToneMapped` output (swap chain may
 /// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
@@ -590,11 +613,30 @@ fn invalidate_tile_manager_requests_for_view_change(
 
 const HDR_CAPACITY_STALE_EPSILON: f32 = 0.001;
 
+/// HQ RAW static HDR planes are scene-linear; display tone mapping uses the live
+/// `ultra_hdr_decode_capacity` and does not require a full re-decode when the monitor
+/// reports a refined EDR headroom (e.g. 3.478 → 3.786).
+pub(crate) fn raw_hq_static_hdr_retainable_on_capacity_refine(
+    image_files: &[std::path::PathBuf],
+    index: usize,
+    raw_high_quality: bool,
+    hdr_image_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+    >,
+) -> bool {
+    raw_hq_index_requires_hdr_plane(image_files, index, raw_high_quality)
+        && hdr_image_cache.contains_key(&index)
+}
+
 /// True when an HDR load result used a different Ultra HDR decode capacity than the viewer now expects.
 pub(crate) fn hdr_load_result_capacity_is_stale(
     load_result: &LoadResult,
     current_ultra_hdr_decode_capacity: f32,
 ) -> bool {
+    if load_result.raw_osd.is_some() {
+        return false;
+    }
     load_result.ultra_hdr_capacity_sensitive
         && matches!(
             &load_result.result,
@@ -768,6 +810,9 @@ impl ImageViewerApp {
     }
 
     pub(super) fn accepts_background_image_generation(&self, idx: usize, generation: u64) -> bool {
+        if self.loader.is_loading_any(idx) && generation == self.loader.current_generation(idx) {
+            return true;
+        }
         let is_current_or_prefetched = idx == self.current_index
             || (self.image_files.len() > 0
                 && prefetch_window_contains(
@@ -866,6 +911,31 @@ fn raw_hq_navigate_missing_hdr_plane(
         return false;
     }
     !hdr_image_cache.contains_key(&index) && !hdr_tiled_source_cache.contains_key(&index)
+}
+
+/// HQ RAW with an SDR bootstrap texture but no HDR cache entry yet (GPU demosaic pending).
+pub(crate) fn raw_hq_has_bootstrap_sdr_only(
+    image_files: &[std::path::PathBuf],
+    index: usize,
+    raw_high_quality: bool,
+    hdr_image_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+    >,
+    hdr_tiled_source_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<dyn crate::hdr::tiled::HdrTiledSource>,
+    >,
+    has_sdr_texture: bool,
+    has_deferred_sdr: bool,
+) -> bool {
+    raw_hq_navigate_missing_hdr_plane(
+        image_files,
+        index,
+        raw_high_quality,
+        hdr_image_cache,
+        hdr_tiled_source_cache,
+    ) && (has_sdr_texture || has_deferred_sdr)
 }
 
 #[cfg(test)]

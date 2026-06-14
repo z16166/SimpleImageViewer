@@ -497,6 +497,8 @@ pub struct PreviewResult {
     pub error: Option<String>,
     /// LibRaw CPU demosaic duration when this preview came from HQ refine.
     pub cpu_demosaic_ms: Option<u32>,
+    /// Partial RAW OSD for HQ bootstrap previews before the full `LoadResult` arrives.
+    pub raw_bootstrap_osd: Option<RawOsdInfo>,
 }
 
 impl PreviewResult {
@@ -517,6 +519,7 @@ impl PreviewResult {
             preview_bundle,
             error,
             cpu_demosaic_ms: None,
+            raw_bootstrap_osd: None,
         }
     }
 }

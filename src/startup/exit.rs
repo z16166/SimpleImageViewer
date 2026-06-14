@@ -14,19 +14,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub(crate) mod icon;
-mod exit;
-mod launch;
-mod logging;
-mod panic;
-mod phases;
+//! Process termination helpers for shutdown paths.
 
-#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-mod wgpu;
-
-pub use launch::run;
-pub(crate) use exit::force_process_exit;
-pub(crate) use logging::shutdown_logger;
-
-#[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-pub(crate) use wgpu::take_and_join_dx12_cache_validate_thread;
+/// Terminate the process immediately without running global destructors.
+///
+/// On Unix this uses `_exit(2)` so mimalloc / `atexit` handlers do not run while
+/// LibRaw OpenMP worker threads may still be active (closing the window during
+/// in-flight RAW decode otherwise races `mi_process_done` with `__kmp_*`).
+///
+/// On Windows we keep `std::process::exit` so existing COM / audio teardown
+/// behavior is unchanged.
+pub fn force_process_exit(code: i32) -> ! {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn _exit(status: i32) -> !;
+        }
+        unsafe { _exit(code) }
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::exit(code)
+    }
+}

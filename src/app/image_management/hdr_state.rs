@@ -135,6 +135,15 @@ impl ImageViewerApp {
         if !self.preload_deferred_for_hdr_capacity {
             return;
         }
+        let selection = self.effective_hdr_monitor_selection();
+        let monitor_hdr_supported = selection.as_ref().is_some_and(|selection| selection.hdr_supported);
+        if !super::startup_preload_defer_can_release(
+            self.hdr_monitor_state.runtime_probe_completed(),
+            monitor_hdr_supported,
+            self.hdr_capabilities.output_mode,
+        ) {
+            return;
+        }
         self.preload_deferred_for_hdr_capacity = false;
         if self.image_files.is_empty() {
             return;
@@ -144,6 +153,7 @@ impl ImageViewerApp {
             self.current_index,
             self.generation
         );
+        self.maybe_prefetch_startup_raw_open();
         self.schedule_preloads(true);
     }
 
@@ -158,9 +168,9 @@ impl ImageViewerApp {
         if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON
             && !crosses_hdr_sdr_boundary
         {
-            let monitor_hdr_supported = self
-                .effective_hdr_monitor_selection()
-                .is_some_and(|selection| selection.hdr_supported);
+            let selection = self.effective_hdr_monitor_selection();
+            let monitor_hdr_supported =
+                selection.as_ref().is_some_and(|selection| selection.hdr_supported);
             let can_release = startup_preload_defer_can_release(
                 self.hdr_monitor_state.runtime_probe_completed(),
                 monitor_hdr_supported,
@@ -188,10 +198,18 @@ impl ImageViewerApp {
         );
 
         if crosses_hdr_sdr_boundary {
-            log::info!(
-                "[HDR] HDR/SDR output boundary changed; invalidating in-flight/preload state and reloading current image"
-            );
-            self.reload_current_after_hdr_sdr_output_boundary_change();
+            if self.preload_deferred_for_hdr_capacity {
+                log::info!(
+                    "[HDR] initial HDR output-mode probe {:?} -> {:?}; skipping reload until first load",
+                    previous_output_mode,
+                    next_output_mode
+                );
+            } else {
+                log::info!(
+                    "[HDR] HDR/SDR output boundary changed; invalidating in-flight/preload state and reloading current image"
+                );
+                self.reload_current_after_hdr_sdr_output_boundary_change();
+            }
             self.flush_deferred_preload_after_hdr_capacity();
             ctx.request_repaint();
             return;
@@ -199,6 +217,16 @@ impl ImageViewerApp {
 
         self.invalidate_ultra_hdr_capacity_sensitive_state(ctx);
         self.flush_deferred_preload_after_hdr_capacity();
+    }
+
+    fn refresh_current_hdr_presentation_after_capacity_refine(&mut self) {
+        let idx = self.current_index;
+        if let Some(hdr) = self.hdr_image_cache.get(&idx).cloned() {
+            self.set_current_image_resolution(Some((hdr.width, hdr.height)));
+            self.current_hdr_image =
+                Some(crate::app::CurrentHdrImage::new(idx, hdr));
+            self.refresh_hdr_view_status();
+        }
     }
 
     fn invalidate_ultra_hdr_capacity_sensitive_state(&mut self, ctx: &egui::Context) {
@@ -214,25 +242,64 @@ impl ImageViewerApp {
             &self.ultra_hdr_capacity_sensitive_indices,
         );
 
-        // Always cancel in-flight loads when capacity changes.  The original guard
-        // only cancelled when there were cached HDR images to invalidate, but during
-        // early startup the caches are empty while workers are already running with the
-        // *old* capacity snapshot.  Those stale workers must be evicted so that the
-        // re-scheduled preloads below use the updated capacity.
-        self.loader.cancel_all();
-        self.clear_preloaded_assets_for_capacity_change();
-
         if refresh.indices_to_invalidate.is_empty() {
-            // No cached HDR images to evict, but we still need to reschedule preloads
-            // so they pick up the new capacity (e.g. monitor probe completed mid-load).
+            log::info!(
+                "[HDR] ultra_hdr_decode_capacity refined to {:.3}; no cached HDR planes yet — updating loader without cancel_all",
+                self.ultra_hdr_decode_capacity
+            );
             if !self.image_files.is_empty() {
-                self.schedule_preloads(true);
+                self.schedule_preloads_with_options(true, true);
             }
             ctx.request_repaint();
             return;
         }
 
+        let mut raw_retain = Vec::new();
+        let mut hard_invalidate = Vec::new();
         for idx in &refresh.indices_to_invalidate {
+            if super::raw_hq_static_hdr_retainable_on_capacity_refine(
+                &self.image_files,
+                *idx,
+                self.settings.raw_high_quality,
+                &self.hdr_image_cache,
+            ) {
+                raw_retain.push(*idx);
+            } else {
+                hard_invalidate.push(*idx);
+            }
+        }
+
+        for idx in &raw_retain {
+            self.ultra_hdr_capacity_sensitive_indices.remove(idx);
+        }
+
+        if hard_invalidate.is_empty() {
+            log::info!(
+                "[HDR] ultra_hdr_decode_capacity refined to {:.3}; retaining {} HQ RAW HDR plane(s) — no cancel_all",
+                self.ultra_hdr_decode_capacity,
+                raw_retain.len()
+            );
+            if refresh.reload_current {
+                self.refresh_current_hdr_presentation_after_capacity_refine();
+            }
+            if crate::app::capacity_refresh_should_reschedule_preloads(&refresh) {
+                self.schedule_preloads_with_options(true, true);
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        log::info!(
+            "[HDR] ultra_hdr_decode_capacity refined to {:.3}; evicting {} non-RAW HDR cache(s), retaining {} HQ RAW HDR plane(s)",
+            self.ultra_hdr_decode_capacity,
+            hard_invalidate.len(),
+            raw_retain.len()
+        );
+
+        self.loader.cancel_all();
+        self.clear_preloaded_assets_for_capacity_change();
+
+        for idx in &hard_invalidate {
             self.texture_cache.remove(*idx);
             self.prefetched_tiles.remove(idx);
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(*idx);
@@ -240,22 +307,31 @@ impl ImageViewerApp {
         }
 
         if refresh.reload_current && !self.image_files.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-            self.tile_manager = None;
-            self.set_current_image_resolution(None);
-            self.animation = None;
-            self.loader.request_load(
+            if super::raw_hq_static_hdr_retainable_on_capacity_refine(
+                &self.image_files,
                 self.current_index,
-                self.generation,
-                self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
-                self.raw_demosaic_mode_for_index(self.current_index),
-            );
+                &self.hdr_image_cache,
+            ) {
+                self.refresh_current_hdr_presentation_after_capacity_refine();
+            } else {
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                self.tile_manager = None;
+                self.set_current_image_resolution(None);
+                self.animation = None;
+                self.loader.request_load(
+                    self.current_index,
+                    self.generation,
+                    self.image_files[self.current_index].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(self.current_index),
+                );
+            }
         }
 
         if crate::app::capacity_refresh_should_reschedule_preloads(&refresh) {
-            self.schedule_preloads(true);
+            self.schedule_preloads_with_options(true, true);
         }
         ctx.request_repaint();
     }

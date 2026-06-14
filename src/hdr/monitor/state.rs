@@ -166,7 +166,7 @@ impl HdrMonitorState {
         &self,
         signature: HdrMonitorSignature,
         now: Instant,
-        hdr_content_visible: bool,
+        _hdr_content_visible: bool,
         supports_current_edr_reprobe: bool,
     ) -> bool {
         let interval_elapsed = match self.last_probe_at {
@@ -175,8 +175,7 @@ impl HdrMonitorState {
         };
         if self.last_signature == Some(signature) {
             if supports_current_edr_reprobe {
-                return hdr_content_visible
-                    && self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
+                return self.should_reprobe_current_edr_capacity(supports_current_edr_reprobe)
                     && interval_elapsed;
             }
             // Windows (and other non-macOS): `HdrMonitorSignature` can stay identical for

@@ -164,6 +164,10 @@ impl RawMetadataStore {
         }
     }
 
+    pub(crate) fn contains(&self, index: usize) -> bool {
+        self.by_index.contains_key(&index)
+    }
+
     pub(crate) fn remove(&mut self, index: usize) -> bool {
         let changed = self.by_index.remove(&index).is_some();
         if changed && index == self.current_index {

@@ -523,6 +523,90 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         true,
         HdrOutputMode::WindowsScRgb
     ));
+    assert!(super::startup_preload_defer_can_release(
+        true,
+        true,
+        HdrOutputMode::MacOsEdr
+    ));
+}
+
+#[test]
+fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
+    use crate::hdr::monitor::HdrMonitorSelection;
+
+    assert!(!super::monitor_hdr_decode_capacity_is_known(None));
+    assert!(super::monitor_hdr_decode_capacity_is_known(Some(
+        &HdrMonitorSelection {
+            hdr_supported: false,
+            label: "SDR".to_string(),
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: None,
+            native_surface_encoding: None,
+        }
+    )));
+    assert!(!super::monitor_hdr_decode_capacity_is_known(Some(
+        &HdrMonitorSelection {
+            hdr_supported: true,
+            label: "EDR".to_string(),
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: None,
+            native_surface_encoding: None,
+        }
+    )));
+    assert!(super::monitor_hdr_decode_capacity_is_known(Some(
+        &HdrMonitorSelection {
+            hdr_supported: true,
+            label: "EDR".to_string(),
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: Some(2.89),
+            hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+            native_surface_encoding: None,
+        }
+    )));
+}
+
+#[test]
+fn accepts_registered_inflight_generation_outside_prefetch_window() {
+    let mut app = make_test_app();
+    app.current_index = 233;
+    app.generation = 18;
+    app.image_files = (0..250)
+        .map(|i| std::path::PathBuf::from(format!("img{i}.ORF")))
+        .collect();
+    app.loader.test_register_inflight(230, 16);
+    assert!(app.accepts_background_image_generation(230, 16));
+    assert!(!app.accepts_background_image_generation(230, 15));
+}
+
+#[test]
+fn raw_hq_bootstrap_only_detects_texture_without_hdr_plane() {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    let files = vec![PathBuf::from("sample.ORF")];
+    assert!(super::raw_hq_has_bootstrap_sdr_only(
+        &files,
+        0,
+        true,
+        &HashMap::new(),
+        &HashMap::new(),
+        true,
+        false,
+    ));
+    assert!(!super::raw_hq_has_bootstrap_sdr_only(
+        &files,
+        0,
+        true,
+        &HashMap::new(),
+        &HashMap::new(),
+        false,
+        false,
+    ));
 }
 
 #[test]
@@ -657,6 +741,7 @@ fn preview_results_without_sdr_pixels_do_not_count_as_background_uploads() {
         preview_bundle: PreviewBundle::refined(),
         error: None,
         cpu_demosaic_ms: None,
+        raw_bootstrap_osd: None,
     };
 
     assert!(!preview_result_has_sdr_upload(&result));
@@ -968,6 +1053,32 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
     assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
+}
+
+#[test]
+fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
+    let load = LoadResult {
+        index: 0,
+        generation: 1,
+        source_key: 0,
+        result: Ok(crate::loader::ImageData::Hdr {
+            hdr: crate::hdr::types::HdrImageBuffer {
+                width: 1,
+                height: 1,
+                format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+                metadata: crate::hdr::types::HdrImageMetadata::default(),
+                rgba_f32: Arc::new(vec![0.0; 4]),
+            },
+            fallback: crate::loader::DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+        }),
+        preview_bundle: PreviewBundle::initial(),
+        ultra_hdr_capacity_sensitive: true,
+        sdr_fallback_is_placeholder: false,
+        target_hdr_capacity: 3.478,
+        raw_osd: Some(crate::loader::RawOsdInfo::empty()),
+    };
+    assert!(!hdr_load_result_capacity_is_stale(&load, 3.786));
 }
 
 #[test]

@@ -197,6 +197,7 @@ fn emit_raw_hq_bootstrap_preview(
     generation: u64,
     path: &PathBuf,
     preview: &DecodedImage,
+    raw_bootstrap_osd: Option<RawOsdInfo>,
     #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] log_tag: &str,
 ) {
     crate::preload_debug!(
@@ -215,6 +216,7 @@ fn emit_raw_hq_bootstrap_preview(
         preview_bundle: PreviewBundle::refined().with_sdr(preview.clone()),
         error: None,
         cpu_demosaic_ms: None,
+        raw_bootstrap_osd,
     }));
 }
 
@@ -378,7 +380,15 @@ pub(crate) fn load_raw(
 
     if use_gpu_demosaic {
         if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
-            emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "GPU");
+            emit_raw_hq_bootstrap_preview(
+                &load_tx,
+                index,
+                generation,
+                path,
+                p,
+                Some(osd_ctx.gpu_bootstrap_dims(p.width, p.height)),
+                "GPU",
+            );
         }
         let extract_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
@@ -442,7 +452,15 @@ pub(crate) fn load_raw(
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
             if RAW_HQ_BOOTSTRAP_PREVIEW {
-                emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "CPU");
+                emit_raw_hq_bootstrap_preview(
+                    &load_tx,
+                    index,
+                    generation,
+                    path,
+                    p,
+                    Some(osd_ctx.hq_bootstrap_dims(p.width, p.height)),
+                    "CPU",
+                );
             }
             if let Some(result) = load_raw_hq_static_hdr(
                 &mut processor,

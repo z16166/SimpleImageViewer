@@ -19,10 +19,72 @@ use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::HdrRenderPath;
 use crate::hdr::types::HdrColorSpace;
+use crate::loader::{RawDemosaicBackend, RawOsdInfo, RawRenderPixels};
 use crate::ui::osd::{HdrOsdFrame, ImageOsdFrame};
 use eframe::egui;
 
 impl ImageViewerApp {
+    /// Upload deferred bootstrap SDR and seed HQ RAW OSD while GPU extract/demosaic is in flight.
+    pub(crate) fn ensure_raw_inflight_bootstrap_present(
+        &mut self,
+        index: usize,
+        ctx: &egui::Context,
+    ) {
+        if !self.raw_hq_index_requires_hdr_plane(index) {
+            return;
+        }
+        if self.hdr_image_cache.contains_key(&index)
+            || self.hdr_tiled_source_cache.contains_key(&index)
+        {
+            return;
+        }
+        let bootstrap_dims = self
+            .deferred_sdr_uploads
+            .get(&index)
+            .map(|decoded| (decoded.width, decoded.height))
+            .or_else(|| self.texture_cache.get_original_res(index))
+            .filter(|(width, height)| *width > 0 && *height > 0);
+        self.flush_deferred_sdr_upload_for_index(index, ctx);
+        let bootstrap_dims = bootstrap_dims.or_else(|| {
+            self.texture_cache
+                .get_original_res(index)
+                .filter(|(width, height)| *width > 0 && *height > 0)
+        });
+        let Some((bootstrap_w, bootstrap_h)) = bootstrap_dims else {
+            return;
+        };
+        if self.raw_metadata.contains(index) {
+            return;
+        }
+        let sensor = self
+            .texture_cache
+            .get_original_res(index)
+            .unwrap_or((bootstrap_w, bootstrap_h));
+        let demosaic_backend = if self.raw_demosaic_mode_for_index(index)
+            == crate::settings::RawDemosaicMode::Gpu
+        {
+            Some(RawDemosaicBackend::Video)
+        } else {
+            Some(RawDemosaicBackend::Host)
+        };
+        self.set_raw_metadata_for_index(
+            index,
+            Some(RawOsdInfo {
+                sensor_size: sensor,
+                embedded_preview: Some((bootstrap_w, bootstrap_h)),
+                render_pixels: RawRenderPixels::HqBootstrap {
+                    width: bootstrap_w,
+                    height: bootstrap_h,
+                },
+                demosaic_backend,
+                cpu_demosaic_ms: None,
+                gpu_extract_ms: None,
+                gpu_demosaic_ms: None,
+            }),
+            ctx,
+        );
+    }
+
     pub(crate) fn set_raw_metadata_for_index(
         &mut self,
         index: usize,

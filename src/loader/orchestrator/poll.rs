@@ -17,11 +17,17 @@ use super::types::ImageLoader;
 
 use crate::loader::LoaderOutput;
 use crossbeam_channel::TryRecvError;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 impl ImageLoader {
     /// True when any generation is in-flight for `index` (including CPU fallback reloads).
     pub fn is_loading_any(&self, index: usize) -> bool {
         self.loading.lock().contains_key(&index)
+    }
+
+    pub(crate) fn active_load_count(&self) -> usize {
+        self.loading.lock().len()
     }
 
     /// Drop queued decode results from a previous `generation` so rapid navigation
@@ -136,6 +142,16 @@ impl ImageLoader {
         while self.rx.try_recv().is_ok() {}
     }
 
+    /// Best-effort shutdown before process exit: invalidate queued work and wait briefly
+    /// for the rayon decode pool. In-flight LibRaw OpenMP work cannot be cancelled;
+    /// callers should terminate via [`crate::startup::force_process_exit`] afterward on Unix.
+    pub fn prepare_for_process_exit(&mut self) {
+        self.current_gen.store(u64::MAX, Ordering::Relaxed);
+        self.cancel_all();
+        self.raw_open_prefetch.clear_all();
+        drain_rayon_pool_for_exit(&self.pool, Duration::from_secs(2));
+    }
+
     #[cfg(test)]
     pub(crate) fn test_register_inflight(&self, index: usize, generation: u64) {
         self.loading.lock().insert(index, generation);
@@ -145,4 +161,29 @@ impl ImageLoader {
     pub(crate) fn test_send_loader_output(&self, output: LoaderOutput) {
         self.tx.send(output).expect("test loader channel send");
     }
+}
+
+fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> bool {
+    let n = pool.current_num_threads().max(1);
+    let (tx, rx) = crossbeam_channel::bounded(n);
+    for _ in 0..n {
+        let tx = tx.clone();
+        pool.spawn(move || {
+            let _ = tx.send(());
+        });
+    }
+    drop(tx);
+
+    let deadline = Instant::now() + timeout;
+    for _ in 0..n {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if rx.recv_timeout(remaining).is_err() {
+            log::warn!(
+                "[Loader] Timed out after {:?} waiting for {n} img-loader thread(s) during shutdown",
+                timeout
+            );
+            return false;
+        }
+    }
+    true
 }
