@@ -2,7 +2,6 @@ use alloc::{borrow::ToOwned as _, sync::Arc, vec::Vec};
 use core::{ptr::NonNull, sync::atomic};
 use std::{thread, time};
 
-use bytemuck::TransparentWrapper;
 use objc2::{
     available,
     rc::{autoreleasepool, Retained},
@@ -10,16 +9,16 @@ use objc2::{
 };
 use objc2_foundation::{ns_string, NSError, NSRange, NSString, NSUInteger};
 use objc2_metal::{
-    MTLAccelerationStructure, MTLAccelerationStructureInstanceOptions, MTLBuffer,
+    MTLAccelerationStructure, MTLBuffer,
     MTLCaptureManager, MTLCaptureScope, MTLCommandBuffer, MTLCommandBufferStatus,
     MTLCompileOptions, MTLComputePipelineDescriptor, MTLComputePipelineState,
-    MTLCounterSampleBufferDescriptor, MTLCounterSet, MTLDepthClipMode, MTLDepthStencilDescriptor,
-    MTLDevice, MTLFunction, MTLIndirectAccelerationStructureInstanceDescriptor, MTLLanguageVersion,
-    MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLMutability, MTLPackedFloat3, MTLPackedFloat4x3,
+    MTLCounterSampleBufferDescriptor, MTLCounterSet, MTLDepthClipMode,
+    MTLDevice, MTLFunction, MTLLanguageVersion,
+    MTLLibrary, MTLMeshRenderPipelineDescriptor,
     MTLPipelineBufferDescriptorArray, MTLPipelineOption, MTLPixelFormat, MTLPrimitiveTopologyClass,
     MTLRenderPipelineColorAttachmentDescriptorArray, MTLRenderPipelineDescriptor, MTLResource,
     MTLResourceID, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
-    MTLSamplerMipFilter, MTLSamplerState, MTLSize, MTLStencilDescriptor, MTLStorageMode,
+    MTLSamplerMipFilter, MTLSamplerState, MTLSize, MTLStorageMode,
     MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTriangleFillMode, MTLVertexDescriptor,
     MTLVertexStepFunction,
 };
@@ -48,91 +47,7 @@ struct CompiledShader {
     immutable_buffer_mask: usize,
 }
 
-fn create_stencil_desc(
-    face: &wgt::StencilFaceState,
-    read_mask: u32,
-    write_mask: u32,
-) -> Retained<MTLStencilDescriptor> {
-    let desc = MTLStencilDescriptor::new();
-    desc.setStencilCompareFunction(conv::map_compare_function(face.compare));
-    desc.setReadMask(read_mask);
-    desc.setWriteMask(write_mask);
-    desc.setStencilFailureOperation(conv::map_stencil_op(face.fail_op));
-    desc.setDepthFailureOperation(conv::map_stencil_op(face.depth_fail_op));
-    desc.setDepthStencilPassOperation(conv::map_stencil_op(face.pass_op));
-    desc
-}
 
-fn create_depth_stencil_desc(
-    state: &wgt::DepthStencilState,
-) -> Retained<MTLDepthStencilDescriptor> {
-    let desc = MTLDepthStencilDescriptor::new();
-    desc.setDepthCompareFunction(conv::map_compare_function(
-        state.depth_compare.unwrap_or_default(),
-    ));
-    desc.setDepthWriteEnabled(state.depth_write_enabled.unwrap_or_default());
-    let s = &state.stencil;
-    if s.is_enabled() {
-        let front_desc = create_stencil_desc(&s.front, s.read_mask, s.write_mask);
-        desc.setFrontFaceStencil(Some(&front_desc));
-        let back_desc = create_stencil_desc(&s.back, s.read_mask, s.write_mask);
-        desc.setBackFaceStencil(Some(&back_desc));
-    }
-    desc
-}
-
-const fn convert_vertex_format_to_naga(format: wgt::VertexFormat) -> naga::back::msl::VertexFormat {
-    match format {
-        wgt::VertexFormat::Uint8 => naga::back::msl::VertexFormat::Uint8,
-        wgt::VertexFormat::Uint8x2 => naga::back::msl::VertexFormat::Uint8x2,
-        wgt::VertexFormat::Uint8x4 => naga::back::msl::VertexFormat::Uint8x4,
-        wgt::VertexFormat::Sint8 => naga::back::msl::VertexFormat::Sint8,
-        wgt::VertexFormat::Sint8x2 => naga::back::msl::VertexFormat::Sint8x2,
-        wgt::VertexFormat::Sint8x4 => naga::back::msl::VertexFormat::Sint8x4,
-        wgt::VertexFormat::Unorm8 => naga::back::msl::VertexFormat::Unorm8,
-        wgt::VertexFormat::Unorm8x2 => naga::back::msl::VertexFormat::Unorm8x2,
-        wgt::VertexFormat::Unorm8x4 => naga::back::msl::VertexFormat::Unorm8x4,
-        wgt::VertexFormat::Snorm8 => naga::back::msl::VertexFormat::Snorm8,
-        wgt::VertexFormat::Snorm8x2 => naga::back::msl::VertexFormat::Snorm8x2,
-        wgt::VertexFormat::Snorm8x4 => naga::back::msl::VertexFormat::Snorm8x4,
-        wgt::VertexFormat::Uint16 => naga::back::msl::VertexFormat::Uint16,
-        wgt::VertexFormat::Uint16x2 => naga::back::msl::VertexFormat::Uint16x2,
-        wgt::VertexFormat::Uint16x4 => naga::back::msl::VertexFormat::Uint16x4,
-        wgt::VertexFormat::Sint16 => naga::back::msl::VertexFormat::Sint16,
-        wgt::VertexFormat::Sint16x2 => naga::back::msl::VertexFormat::Sint16x2,
-        wgt::VertexFormat::Sint16x4 => naga::back::msl::VertexFormat::Sint16x4,
-        wgt::VertexFormat::Unorm16 => naga::back::msl::VertexFormat::Unorm16,
-        wgt::VertexFormat::Unorm16x2 => naga::back::msl::VertexFormat::Unorm16x2,
-        wgt::VertexFormat::Unorm16x4 => naga::back::msl::VertexFormat::Unorm16x4,
-        wgt::VertexFormat::Snorm16 => naga::back::msl::VertexFormat::Snorm16,
-        wgt::VertexFormat::Snorm16x2 => naga::back::msl::VertexFormat::Snorm16x2,
-        wgt::VertexFormat::Snorm16x4 => naga::back::msl::VertexFormat::Snorm16x4,
-        wgt::VertexFormat::Float16 => naga::back::msl::VertexFormat::Float16,
-        wgt::VertexFormat::Float16x2 => naga::back::msl::VertexFormat::Float16x2,
-        wgt::VertexFormat::Float16x4 => naga::back::msl::VertexFormat::Float16x4,
-        wgt::VertexFormat::Float32 => naga::back::msl::VertexFormat::Float32,
-        wgt::VertexFormat::Float32x2 => naga::back::msl::VertexFormat::Float32x2,
-        wgt::VertexFormat::Float32x3 => naga::back::msl::VertexFormat::Float32x3,
-        wgt::VertexFormat::Float32x4 => naga::back::msl::VertexFormat::Float32x4,
-        wgt::VertexFormat::Uint32 => naga::back::msl::VertexFormat::Uint32,
-        wgt::VertexFormat::Uint32x2 => naga::back::msl::VertexFormat::Uint32x2,
-        wgt::VertexFormat::Uint32x3 => naga::back::msl::VertexFormat::Uint32x3,
-        wgt::VertexFormat::Uint32x4 => naga::back::msl::VertexFormat::Uint32x4,
-        wgt::VertexFormat::Sint32 => naga::back::msl::VertexFormat::Sint32,
-        wgt::VertexFormat::Sint32x2 => naga::back::msl::VertexFormat::Sint32x2,
-        wgt::VertexFormat::Sint32x3 => naga::back::msl::VertexFormat::Sint32x3,
-        wgt::VertexFormat::Sint32x4 => naga::back::msl::VertexFormat::Sint32x4,
-        wgt::VertexFormat::Unorm10_10_10_2 => naga::back::msl::VertexFormat::Unorm10_10_10_2,
-        wgt::VertexFormat::Unorm8x4Bgra => naga::back::msl::VertexFormat::Unorm8x4Bgra,
-
-        wgt::VertexFormat::Float64
-        | wgt::VertexFormat::Float64x2
-        | wgt::VertexFormat::Float64x3
-        | wgt::VertexFormat::Float64x4 => {
-            unimplemented!()
-        }
-    }
-}
 
 impl super::Device {
     fn load_shader(
@@ -343,17 +258,7 @@ impl super::Device {
         }
     }
 
-    fn set_buffers_mutability(
-        buffers: &MTLPipelineBufferDescriptorArray,
-        mut immutable_mask: usize,
-    ) {
-        while immutable_mask != 0 {
-            let slot = immutable_mask.trailing_zeros();
-            immutable_mask ^= 1 << slot;
-            unsafe { buffers.objectAtIndexedSubscript(slot as usize) }
-                .setMutability(MTLMutability::Immutable);
-        }
-    }
+
 
     pub unsafe fn texture_from_raw(
         raw: Retained<ProtocolObject<dyn MTLTexture>>,
@@ -1285,7 +1190,7 @@ impl crate::Device for super::Device {
                             attributes.push(naga::back::msl::AttributeMapping {
                                 shader_location: attribute.shader_location,
                                 offset: attribute.offset as u32,
-                                format: convert_vertex_format_to_naga(attribute.format),
+                                format: conv::convert_vertex_format_to_naga(attribute.format),
                             });
                         }
 
@@ -1329,7 +1234,7 @@ impl crate::Device for super::Device {
                         descriptor.setVertexFunction(Some(&vs.function));
 
                         if supports_mutability {
-                            Self::set_buffers_mutability(
+                            conv::set_buffers_mutability(
                                 &descriptor.vertexBuffers(),
                                 vs.immutable_buffer_mask,
                             );
@@ -1433,7 +1338,7 @@ impl crate::Device for super::Device {
                         )?;
                         unsafe { descriptor.setObjectFunction(Some(&ts.function)) };
                         if supports_mutability {
-                            Self::set_buffers_mutability(
+                            conv::set_buffers_mutability(
                                 &descriptor.meshBuffers(),
                                 ts.immutable_buffer_mask,
                             );
@@ -1462,7 +1367,7 @@ impl crate::Device for super::Device {
                         )?;
                         unsafe { descriptor.setMeshFunction(Some(&ms.function)) };
                         if supports_mutability {
-                            Self::set_buffers_mutability(
+                            conv::set_buffers_mutability(
                                 &descriptor.meshBuffers(),
                                 ms.immutable_buffer_mask,
                             );
@@ -1504,7 +1409,7 @@ impl crate::Device for super::Device {
 
                     unsafe { descriptor.setFragmentFunction(Some(&fs.function)) };
                     if supports_mutability {
-                        Self::set_buffers_mutability(
+                        conv::set_buffers_mutability(
                             &descriptor.fragmentBuffers(),
                             fs.immutable_buffer_mask,
                         );
@@ -1582,7 +1487,7 @@ impl crate::Device for super::Device {
                         descriptor.setStencilAttachmentPixelFormat(raw_format);
                     }
 
-                    let ds_descriptor = create_depth_stencil_desc(ds);
+                    let ds_descriptor = conv::create_depth_stencil_desc(ds);
                     let raw = self
                         .shared
                         .device
@@ -1609,6 +1514,19 @@ impl crate::Device for super::Device {
                 //descriptor.set_alpha_to_one_enabled(desc.multisample.alpha_to_one_enabled);
             }
 
+            if self.shared.private_caps.supports_binary_archives {
+                if let Some(cache) = desc.cache {
+                    match &descriptor {
+                        MetalGenericRenderPipelineDescriptor::Standard(d) => {
+                            unsafe { super::pipeline_cache::set_binary_archives_on_render_descriptor(d, cache) };
+                        }
+                        MetalGenericRenderPipelineDescriptor::Mesh(_) => {
+                            // MTLMeshRenderPipelineDescriptor does not support binary archives.
+                        }
+                    }
+                }
+            }
+
             // Set debug label
             if let Some(name) = desc.label {
                 descriptor.setLabel(Some(&NSString::from_str(name)));
@@ -1620,16 +1538,16 @@ impl crate::Device for super::Device {
             }
 
             // Create the pipeline from descriptor
-            let raw = match descriptor {
+            let raw = match &descriptor {
                 MetalGenericRenderPipelineDescriptor::Standard(d) => self
                     .shared
                     .device
-                    .newRenderPipelineStateWithDescriptor_error(&d),
+                    .newRenderPipelineStateWithDescriptor_error(d),
                 MetalGenericRenderPipelineDescriptor::Mesh(d) => self
                     .shared
                     .device
                     .newRenderPipelineStateWithMeshDescriptor_options_reflection_error(
-                        &d,
+                        d,
                         MTLPipelineOption::empty(),
                         None,
                     ),
@@ -1640,6 +1558,19 @@ impl crate::Device for super::Device {
                     format!("new_render_pipeline_state: {e:?}"),
                 )
             })?;
+
+            if self.shared.private_caps.supports_binary_archives {
+                if let Some(cache) = desc.cache {
+                    match &descriptor {
+                        MetalGenericRenderPipelineDescriptor::Standard(d) => {
+                            unsafe { super::pipeline_cache::add_render_pipeline_to_archive(d, cache) };
+                        }
+                        MetalGenericRenderPipelineDescriptor::Mesh(_) => {
+                            // TODO: Support mesh shader render pipeline archive compilation.
+                        }
+                    }
+                }
+            }
 
             self.counters.render_pipelines.add(1);
 
@@ -1713,7 +1644,7 @@ impl crate::Device for super::Device {
 
             // https://developer.apple.com/documentation/metal/mtlpipelinebufferdescriptor/mutability
             if available!(macos = 10.13, ios = 11.0, tvos = 11.0, visionos = 1.0) {
-                Self::set_buffers_mutability(&descriptor.buffers(), cs.immutable_buffer_mask);
+                conv::set_buffers_mutability(&descriptor.buffers(), cs.immutable_buffer_mask);
             }
 
             let cs_info = super::PipelineStageInfo {
@@ -1725,6 +1656,12 @@ impl crate::Device for super::Device {
                 raw_wg_size: cs.wg_size,
                 work_group_memory_sizes: cs.wg_memory_sizes,
             };
+
+            if self.shared.private_caps.supports_binary_archives {
+                if let Some(cache) = desc.cache {
+                    unsafe { super::pipeline_cache::set_binary_archives_on_compute_descriptor(&descriptor, cache) };
+                }
+            }
 
             if let Some(name) = desc.label {
                 descriptor.setLabel(Some(&NSString::from_str(name)));
@@ -1747,6 +1684,12 @@ impl crate::Device for super::Device {
                     )
                 })?;
 
+            if self.shared.private_caps.supports_binary_archives {
+                if let Some(cache) = desc.cache {
+                    unsafe { super::pipeline_cache::add_compute_pipeline_to_archive(&descriptor, cache) };
+                }
+            }
+
             self.counters.compute_pipelines.add(1);
 
             Ok(super::ComputePipeline { raw, cs_info })
@@ -1759,10 +1702,61 @@ impl crate::Device for super::Device {
 
     unsafe fn create_pipeline_cache(
         &self,
-        _desc: &crate::PipelineCacheDescriptor<'_>,
+        desc: &crate::PipelineCacheDescriptor<'_>,
     ) -> Result<super::PipelineCache, crate::PipelineCacheError> {
-        Ok(super::PipelineCache)
+        let archive = if self.shared.private_caps.supports_binary_archives {
+            if let Some(data) = desc.data {
+                match unsafe { super::pipeline_cache::load_binary_archive(&self.shared.device, data) } {
+                    Ok(archive) => Some(parking_lot::Mutex::new(archive)),
+                    Err(e) => {
+                        log::warn!("Failed to load binary archive from descriptor data: {:?}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // If not loaded from data, create empty archive if supported
+        let archive = if archive.is_none() && self.shared.private_caps.supports_binary_archives {
+            unsafe { super::pipeline_cache::create_empty_binary_archive(&self.shared.device) }
+                .map(parking_lot::Mutex::new)
+        } else {
+            archive
+        };
+
+        Ok(super::PipelineCache {
+            archive,
+            dirty: std::sync::atomic::AtomicBool::new(false),
+        })
     }
+
+    fn pipeline_cache_validation_key(&self) -> Option<[u8; 16]> {
+        if self.shared.private_caps.supports_binary_archives {
+            Some(self.shared.pipeline_cache_validation_key)
+        } else {
+            None
+        }
+    }
+
+    unsafe fn pipeline_cache_get_data(
+        &self,
+        cache: &super::PipelineCache,
+    ) -> Option<Vec<u8>> {
+        if !self.shared.private_caps.supports_binary_archives {
+            return None;
+        }
+        if !cache.dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        let archive = cache.archive.as_ref()?;
+        let archive = archive.lock();
+        unsafe { super::pipeline_cache::write_binary_archive(&**archive) }
+    }
+
     unsafe fn destroy_pipeline_cache(&self, _: super::PipelineCache) {}
 
     unsafe fn create_query_set(
@@ -1979,41 +1973,7 @@ impl crate::Device for super::Device {
     }
 
     fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
-        let temp = MTLIndirectAccelerationStructureInstanceDescriptor {
-            transformationMatrix: MTLPackedFloat4x3 {
-                columns: [
-                    MTLPackedFloat3 {
-                        x: instance.transform[0],
-                        y: instance.transform[4],
-                        z: instance.transform[8],
-                    },
-                    MTLPackedFloat3 {
-                        x: instance.transform[1],
-                        y: instance.transform[5],
-                        z: instance.transform[9],
-                    },
-                    MTLPackedFloat3 {
-                        x: instance.transform[2],
-                        y: instance.transform[6],
-                        z: instance.transform[10],
-                    },
-                    MTLPackedFloat3 {
-                        x: instance.transform[3],
-                        y: instance.transform[7],
-                        z: instance.transform[11],
-                    },
-                ],
-            },
-            options: MTLAccelerationStructureInstanceOptions::None,
-            mask: instance.mask as u32,
-            intersectionFunctionTableOffset: 0,
-            userID: instance.custom_data,
-            accelerationStructureID: unsafe { MTLResourceID::from_raw(instance.blas_address) },
-        };
-
-        wgt::bytemuck_wrapper!(unsafe struct Desc(MTLIndirectAccelerationStructureInstanceDescriptor));
-
-        bytemuck::bytes_of(&Desc::wrap(temp)).to_vec()
+        conv::tlas_instance_to_bytes(instance)
     }
 
     fn get_internal_counters(&self) -> wgt::HalCounters {

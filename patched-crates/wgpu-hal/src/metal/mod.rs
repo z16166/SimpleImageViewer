@@ -25,6 +25,7 @@ mod device;
 mod library_from_metallib;
 mod surface;
 mod time;
+mod pipeline_cache;
 
 use alloc::{
     string::{String, ToString as _},
@@ -340,6 +341,7 @@ struct PrivateCapabilities {
     max_vertex_buffers: ResourceIndex,
     max_textures_per_stage: ResourceIndex,
     max_samplers_per_stage: ResourceIndex,
+    supports_binary_archives: bool,
 }
 
 #[derive(Debug)]
@@ -396,6 +398,7 @@ struct AdapterShared {
     private_texture_format_caps: PrivateTextureFormatCapabilities,
     settings: Settings,
     presentation_timer: time::PresentationTimer,
+    pipeline_cache_validation_key: [u8; 16],
 }
 
 unsafe impl Send for AdapterShared {}
@@ -411,6 +414,27 @@ impl AdapterShared {
         log::debug!("{private_caps:#?}");
         log::debug!("{private_texture_format_caps:#?}");
 
+        let version = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+        let major = version.majorVersion as u32;
+        let minor = version.minorVersion as u32;
+        let patch = version.patchVersion as u32;
+        let mut pipeline_cache_validation_key = [0u8; 16];
+        pipeline_cache_validation_key[0..4].copy_from_slice(&major.to_be_bytes());
+        pipeline_cache_validation_key[4..8].copy_from_slice(&minor.to_be_bytes());
+        pipeline_cache_validation_key[8..12].copy_from_slice(&patch.to_be_bytes());
+        pipeline_cache_validation_key[12] = 1; // version marker
+        pipeline_cache_validation_key[13] = if cfg!(target_os = "macos") {
+            1
+        } else if cfg!(target_os = "ios") {
+            2
+        } else if cfg!(target_os = "tvos") {
+            3
+        } else if cfg!(target_os = "visionos") {
+            4
+        } else {
+            0
+        };
+
         Self {
             disabilities: PrivateDisabilities::new(&device),
             private_caps,
@@ -418,6 +442,7 @@ impl AdapterShared {
             device,
             settings: Settings::default(),
             presentation_timer: time::PresentationTimer::new(),
+            pipeline_cache_validation_key,
         }
     }
 
@@ -427,11 +452,33 @@ impl AdapterShared {
         let shared = AdapterShared::new(device, &capabilities_query);
         let features = capabilities_query.features();
         let capabilities = capabilities_query.capabilities();
+        
+        let name_lower = name.to_lowercase();
+        let vendor = if name_lower.contains("intel") {
+            0x8086
+        } else if name_lower.contains("amd") || name_lower.contains("radeon") {
+            0x1002
+        } else if name_lower.contains("nvidia") {
+            0x10DE
+        } else if name_lower.contains("apple") {
+            0x106B
+        } else {
+            0x106B // Fallback Apple
+        };
+
+        // Standard FNV-1a 32-bit hash for stable device_id
+        let mut hash = 2166136261u32;
+        for byte in name.bytes() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(16777619);
+        }
+        let device_id = hash;
+
         crate::ExposedAdapter {
             info: wgt::AdapterInfo {
                 name,
-                vendor: 0,
-                device: 0,
+                vendor,
+                device: device_id,
                 device_type: shared.private_caps.device_type(),
                 device_pci_bus_id: String::new(),
                 driver: String::new(),
@@ -1138,10 +1185,23 @@ impl crate::DynCommandBuffer for CommandBuffer {}
 unsafe impl Send for CommandBuffer {}
 unsafe impl Sync for CommandBuffer {}
 
-#[derive(Debug)]
-pub struct PipelineCache;
+pub struct PipelineCache {
+    pub(crate) archive: Option<parking_lot::Mutex<Retained<objc2::runtime::AnyObject>>>,
+    pub(crate) dirty: std::sync::atomic::AtomicBool,
+}
+
+impl fmt::Debug for PipelineCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PipelineCache")
+            .field("has_archive", &self.archive.is_some())
+            .finish()
+    }
+}
 
 impl crate::DynPipelineCache for PipelineCache {}
+
+unsafe impl Send for PipelineCache {}
+unsafe impl Sync for PipelineCache {}
 
 #[derive(Debug)]
 pub struct AccelerationStructure {

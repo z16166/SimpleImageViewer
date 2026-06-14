@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! On-disk persistence for [`wgpu::PipelineCache`] (DX12 cached PSO blobs via patched wgpu-hal).
+//! On-disk persistence for [`wgpu::PipelineCache`] (DX12/Metal/Vulkan pipeline caches via patched wgpu-hal).
 
 use std::path::{Path, PathBuf};
 
