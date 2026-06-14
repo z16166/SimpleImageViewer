@@ -108,14 +108,10 @@ impl ImageViewerApp {
 
         // ── 2. Process results from the background ImageLoader ──
         //
-        // Generation vs `prefetch_prev_generation` (why Preview is special):
-        // `handle_preview_update` accepts HQ preview results whose `generation` equals
-        // `prefetch_prev_generation` for the current index, because refinement can finish after
-        // we bump `self.generation` when promoting a prefetched `TileManager`. `LoaderOutput::Image`
-        // uses no analogous bypass: decoded images are keyed to the generation from the active
-        // `request_load` / refinement request (`do_load` tracks that generation), so they either match
-        // `self.generation` in `gen_match` below or must be dropped; extending the prefetch survivor rule
-        // here would widen the stale-result window without a matching in-flight Image pipeline.
+        // Generation vs `prefetch_prev_generation` / in-window tolerance:
+        // Background `LoaderOutput::Image` results within `PREFETCH_WINDOW_DISTANCE` may install
+        // when their request generation is slightly behind `self.generation`, so rapid forward
+        // navigation does not discard a just-finished RAW preload before its HDR plane is cached.
         //
         // QUOTA DESIGN:
         //   - We count each ctx.load_texture() call as one "upload slot".
@@ -145,15 +141,24 @@ impl ImageViewerApp {
                     let idx = load_result.index;
                     let generation = load_result.generation;
                     let is_current = idx == self.current_index;
-                    let gen_match = generation == self.generation;
+                    let gen_match = self.accepts_background_image_generation(idx, generation);
 
-                    // CRITICAL: Drop any stale results, even for the current index.
+                    // CRITICAL: Drop stale results outside the prefetch survivor window.
                     // This prevents a race where deleting an image reuses the index
                     // but a late decode from the deleted file arrives and overwrites
                     // the new current image state.
                     if !gen_match {
                         self.loader.finish_image_request(idx, generation);
                         continue;
+                    }
+                    if generation != self.generation {
+                        crate::preload_debug!(
+                            "[PreloadDebug] install image survivor: idx={} current={} result_gen={} app_gen={}",
+                            idx,
+                            self.current_index,
+                            generation,
+                            self.generation
+                        );
                     }
                     if !source_key_matches_index(&self.image_files, idx, load_result.source_key) {
                         log::warn!(
@@ -199,6 +204,27 @@ impl ImageViewerApp {
                         is_transitioning,
                         self.transition_settled_at,
                     ) {
+                        let install_plan = ImageInstallPlan::from_load_result(&load_result);
+                        if self.try_install_background_static_hdr_hdr_only(
+                            &load_result,
+                            &install_plan,
+                            generation,
+                            if is_transitioning {
+                                "transition"
+                            } else {
+                                "post_transition_settle"
+                            },
+                            ctx,
+                        ) {
+                            if should_request_repaint_for_asset_update(
+                                AssetUpdateKind::ImageLoaded,
+                                false,
+                                false,
+                            ) {
+                                ctx.request_repaint();
+                            }
+                            continue;
+                        }
                         preload_debug!(
                             "[PreloadDebug] defer image install: idx={} current={} gen={} reason={}",
                             idx,
@@ -225,6 +251,22 @@ impl ImageViewerApp {
                             sdr_upload_budget_bytes_this_frame,
                         )
                     {
+                        if self.try_install_background_static_hdr_hdr_only(
+                            &load_result,
+                            &install_plan,
+                            generation,
+                            "sdr_upload_budget",
+                            ctx,
+                        ) {
+                            if should_request_repaint_for_asset_update(
+                                AssetUpdateKind::ImageLoaded,
+                                false,
+                                false,
+                            ) {
+                                ctx.request_repaint();
+                            }
+                            continue;
+                        }
                         preload_debug!(
                             "[PreloadDebug] defer image install: idx={} current={} gen={} reason=sdr_upload_budget uploaded_bytes={} candidate_bytes={} budget_bytes={}",
                             idx,
@@ -241,6 +283,22 @@ impl ImageViewerApp {
 
                     // DESIGN: The current image ALWAYS bypasses the upload quota.
                     if !is_current && uploads_this_frame >= background_upload_quota {
+                        if self.try_install_background_static_hdr_hdr_only(
+                            &load_result,
+                            &install_plan,
+                            generation,
+                            "global_upload_quota",
+                            ctx,
+                        ) {
+                            if should_request_repaint_for_asset_update(
+                                AssetUpdateKind::ImageLoaded,
+                                false,
+                                false,
+                            ) {
+                                ctx.request_repaint();
+                            }
+                            continue;
+                        }
                         preload_debug!(
                             "[PreloadDebug] defer image install: idx={} current={} gen={} reason=global_upload_quota uploads_this_frame={} quota={}",
                             idx,
@@ -260,6 +318,22 @@ impl ImageViewerApp {
                             self.last_background_upload_at,
                         )
                     {
+                        if self.try_install_background_static_hdr_hdr_only(
+                            &load_result,
+                            &install_plan,
+                            generation,
+                            "post_transition_spacing",
+                            ctx,
+                        ) {
+                            if should_request_repaint_for_asset_update(
+                                AssetUpdateKind::ImageLoaded,
+                                false,
+                                false,
+                            ) {
+                                ctx.request_repaint();
+                            }
+                            continue;
+                        }
                         preload_debug!(
                             "[PreloadDebug] defer image install: idx={} current={} gen={} reason=post_transition_spacing",
                             idx,
@@ -283,7 +357,7 @@ impl ImageViewerApp {
                     );
                     self.loader.finish_image_request(idx, generation);
                     if let Some((requeue_idx, requeue_gen, requeue_path)) =
-                        self.handle_image_load_result(&load_result, install_plan, ctx)
+                        self.handle_image_load_result(&load_result, install_plan, ctx, false)
                     {
                         // The slot was just freed by finish_image_request above; it is now safe to
                         // re-queue.  The loader holds the current (correct) HDR capacity.
@@ -292,6 +366,7 @@ impl ImageViewerApp {
                             requeue_gen,
                             requeue_path,
                             self.settings.raw_high_quality,
+                            self.raw_demosaic_mode_for_index(requeue_idx),
                         );
                     }
                     uploads_this_frame += 1;

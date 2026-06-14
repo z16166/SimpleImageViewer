@@ -30,6 +30,11 @@ use std::sync::LazyLock;
 pub static PREVIEW_LIMIT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(MAX_QUALITY_PREVIEW_SIZE / 2);
 
+/// Set at startup from wgpu adapter/backend limits; mirrors [`crate::hdr::renderer::resources`]
+/// RAW demosaic pipeline gating so the loader skips GPU CFA extract when compute is unavailable.
+pub static GPU_DEMOSAIC_SUPPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 /// Max preview side derived from the current monitor's **physical** long edge × headroom
 /// (see [`refresh_hq_preview_monitor_cap`]). Capped at [`MAX_QUALITY_PREVIEW_SIZE`]; combined with
 /// [`PREVIEW_LIMIT`] in [`hq_preview_max_side`].

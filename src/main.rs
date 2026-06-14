@@ -60,6 +60,7 @@ mod ui;
 #[cfg(target_os = "windows")]
 mod wic;
 
+mod wgpu_pipeline_cache;
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 mod wgpu_preprobe_cache;
 

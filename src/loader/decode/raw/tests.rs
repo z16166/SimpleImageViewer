@@ -19,7 +19,12 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::DecodedImage;
 use crate::loader::ImageData;
 use crate::loader::raw_osd::RawRenderPixels;
+use crossbeam_channel::unbounded;
 use std::path::PathBuf;
+
+fn dummy_load_tx() -> crossbeam_channel::Sender<crate::loader::LoaderOutput> {
+    unbounded().0
+}
 
 #[test]
 fn nikon1_embedded_thumb_covers_sensor() {
@@ -112,9 +117,12 @@ fn epson_rd1_erf_hq_load_uses_tiled_bootstrap_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
+        None,
     )
     .expect("load_raw hq");
 
@@ -155,9 +163,12 @@ fn epson_rd1_erf_performance_load_uses_embedded_static_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         false,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
+        None,
     )
     .expect("load_raw perf");
 
@@ -190,9 +201,12 @@ fn canon_10d_hq_load_keeps_hdr_plane_on_sdr_tone_map_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         1.0,
         HdrToneMapSettings::default(),
+        None,
     )
     .expect("load_raw hq sdr tone map");
 
@@ -272,9 +286,12 @@ fn probe_epson_and_fuji_on_local_samples() {
                 0,
                 &path,
                 refine_tx,
+                dummy_load_tx(),
                 hq,
+                crate::settings::RawDemosaicMode::Cpu,
                 4.0,
                 HdrToneMapSettings::default(),
+                None,
             )
             .expect("load_raw");
             match result.image {
@@ -308,6 +325,70 @@ fn probe_epson_and_fuji_on_local_samples() {
 }
 
 #[test]
+fn nikon_d1x_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\nikon\d1x\RAW_NIKON_D1X.NEF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    eprintln!(
+        "D1X i={}x{} raw={}x{} aspect={:.3} supported_bayer={} gpu_compatible={}",
+        processor.width(),
+        processor.height(),
+        processor.raw_width(),
+        processor.raw_height(),
+        processor.pixel_aspect(),
+        processor.is_supported_bayer(),
+        processor.is_gpu_demosaic_compatible()
+    );
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "D1X non-square pixels must not use the Bayer GPU demosaic path"
+    );
+}
+
+#[test]
+fn fuji_e550_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\fuji\e550\RAW_FUJI_E550.RAF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    eprintln!(
+        "E550 i={}x{} raw={}x{} supported_bayer={} gpu_compatible={}",
+        processor.width(),
+        processor.height(),
+        processor.raw_width(),
+        processor.raw_height(),
+        processor.is_supported_bayer(),
+        processor.is_gpu_demosaic_compatible()
+    );
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "Super CCD RAF must not use the Bayer GPU demosaic path"
+    );
+}
+
+#[test]
+fn fuji_x20_rejects_gpu_bayer_path_when_sample_present() {
+    let path = PathBuf::from(r"F:\win7\raws\fuji\RAW_FUJI_X20.RAF");
+    if !path.is_file() {
+        eprintln!("skip: {}", path.display());
+        return;
+    }
+    let mut processor = RawProcessor::new().expect("libraw init");
+    processor.open(&path).expect("open");
+    assert!(
+        !processor.is_gpu_demosaic_compatible(),
+        "X-Trans RAF must not use the Bayer GPU demosaic path"
+    );
+}
+
+#[test]
 fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
     use crossbeam_channel::unbounded;
 
@@ -323,9 +404,12 @@ fn canon_s90_hq_load_routes_hdr_tiled_on_hdr_display_when_file_present() {
         0,
         &path,
         refine_tx,
+        dummy_load_tx(),
         true,
+        crate::settings::RawDemosaicMode::Cpu,
         4.0,
         HdrToneMapSettings::default(),
+        None,
     )
     .expect("load_raw hq hdr");
 

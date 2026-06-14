@@ -191,10 +191,12 @@ impl ImageViewerApp {
                         has_hdr_plane,
                         sdr_fallback_is_placeholder,
                     ) {
-                        // Standard / animated path → standard.rs
+                        // Standard / animated path -> standard.rs
                         self.draw_standard_image(ui, screen_rect, &canvas_resp, texture);
                     }
                 }
+
+                self.finish_display_frame(ui.ctx());
 
                 // ── Pixel Inspector hover tooltip & canvas feedback ──────────
                 if let Some(res) = self.current_image_res {

@@ -19,6 +19,11 @@ use crate::loader::LoaderOutput;
 use crossbeam_channel::TryRecvError;
 
 impl ImageLoader {
+    /// True when any generation is in-flight for `index` (including CPU fallback reloads).
+    pub fn is_loading_any(&self, index: usize) -> bool {
+        self.loading.lock().contains_key(&index)
+    }
+
     /// Drop queued decode results from a previous `generation` so rapid navigation
     /// cannot retain hundreds of megabytes in the unbounded channel / defer queue.
     ///
@@ -31,10 +36,13 @@ impl ImageLoader {
         &mut self,
         keep_generation: u64,
         also_keep_preview: Option<(usize, u64)>,
+        also_keep_image: impl Fn(usize, u64) -> bool,
     ) {
         let keep = |output: &LoaderOutput| -> bool {
             match output {
-                LoaderOutput::Image(r) => r.generation == keep_generation,
+                LoaderOutput::Image(r) => {
+                    r.generation == keep_generation || also_keep_image(r.index, r.generation)
+                }
                 LoaderOutput::Preview(p) => {
                     p.generation == keep_generation
                         || also_keep_preview

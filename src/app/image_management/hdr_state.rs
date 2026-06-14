@@ -23,6 +23,13 @@ impl ImageViewerApp {
         self.hdr_tiled_preview_cache.clear();
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
+        self.hdr_raw_gpu_demosaic_pending_indices.clear();
+        self.hdr_raw_gpu_demosaic_pending_key_index.clear();
+        self.gpu_demosaic_failed_indices.clear();
+        self.raw_gpu_demosaic_await_hdr_present = false;
+        self.raw_demosaic_baked_notify.lock().clear();
+        // Clears all per-index RAW OSD rows (directory switch / full list reorder).
+        self.raw_metadata.clear();
         self.hdr_in_flight_fallback_refinements.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
@@ -32,11 +39,29 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
+        self.remove_hdr_image_resources(index);
+        self.gpu_demosaic_failed_indices.remove(&index);
+    }
+
+    /// Drop HDR GPU/tile caches for `index` while keeping RAW OSD metadata and failure flags.
+    ///
+    /// Also removes `hdr_raw_gpu_demosaic_pending_key_index` entries. If a distant prefetch
+    /// eviction runs while GPU demosaic is still in flight, a late failure sentinel may no
+    /// longer match any pending index (warn + drop) and will not insert into
+    /// `gpu_demosaic_failed_indices`; revisiting that image retries GPU demosaic instead of
+    /// forcing CPU. Directory rescan retains side maps until retain runs; prefetch eviction
+    /// clears them here by design.
+    pub(crate) fn remove_hdr_image_resources(&mut self, index: usize) {
+        if let Some(hdr) = self.hdr_image_cache.get(&index) {
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+            self.hdr_raw_gpu_demosaic_pending_key_index.remove(&key);
+        }
         self.hdr_image_cache.remove(&index);
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);
         self.hdr_sdr_fallback_indices.remove(&index);
         self.hdr_placeholder_fallback_indices.remove(&index);
+        self.hdr_raw_gpu_demosaic_pending_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
@@ -54,7 +79,8 @@ impl ImageViewerApp {
         {
             self.current_hdr_tiled_image = None;
         }
-        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index) {
+        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index)
+        {
             self.current_hdr_tiled_preview = None;
         }
     }
@@ -106,6 +132,22 @@ impl ImageViewerApp {
         self.loader.set_hdr_tone_map_settings(tone);
     }
 
+    fn flush_deferred_preload_after_hdr_capacity(&mut self) {
+        if !self.preload_deferred_for_hdr_capacity {
+            return;
+        }
+        self.preload_deferred_for_hdr_capacity = false;
+        if self.image_files.is_empty() {
+            return;
+        }
+        preload_debug!(
+            "[PreloadDebug] schedule after HDR capacity refresh: cur={} gen={}",
+            self.current_index,
+            self.generation
+        );
+        self.schedule_preloads(true);
+    }
+
     pub(crate) fn refresh_ultra_hdr_decode_capacity(&mut self, ctx: &egui::Context) {
         const CAPACITY_EPSILON: f32 = 0.001;
         let next_output_mode = self.hdr_capabilities.output_mode;
@@ -117,6 +159,17 @@ impl ImageViewerApp {
         if (next_capacity - self.ultra_hdr_decode_capacity).abs() <= CAPACITY_EPSILON
             && !crosses_hdr_sdr_boundary
         {
+            let monitor_hdr_supported = self
+                .effective_hdr_monitor_selection()
+                .is_some_and(|selection| selection.hdr_supported);
+            let can_release = startup_preload_defer_can_release(
+                self.hdr_monitor_state.runtime_probe_completed(),
+                monitor_hdr_supported,
+                next_output_mode,
+            );
+            if can_release {
+                self.flush_deferred_preload_after_hdr_capacity();
+            }
             return;
         }
 
@@ -140,11 +193,13 @@ impl ImageViewerApp {
                 "[HDR] HDR/SDR output boundary changed; invalidating in-flight/preload state and reloading current image"
             );
             self.reload_current_after_hdr_sdr_output_boundary_change();
+            self.flush_deferred_preload_after_hdr_capacity();
             ctx.request_repaint();
             return;
         }
 
         self.invalidate_ultra_hdr_capacity_sensitive_state(ctx);
+        self.flush_deferred_preload_after_hdr_capacity();
     }
 
     fn invalidate_ultra_hdr_capacity_sensitive_state(&mut self, ctx: &egui::Context) {
@@ -196,6 +251,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
+                self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
 
@@ -236,6 +292,7 @@ impl ImageViewerApp {
             self.generation,
             self.image_files[idx].clone(),
             self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(idx),
         );
     }
 }

@@ -89,6 +89,7 @@ pub(super) fn draw_viewing_tab(
                         app.generation,
                         app.image_files[app.current_index].clone(),
                         app.settings.raw_high_quality,
+                        app.settings.raw_demosaic_mode,
                     );
                 }
             }
@@ -116,6 +117,38 @@ pub(super) fn draw_viewing_tab(
             app.reload_current();
             app.queue_save();
         }
+
+        ui.add_space(4.0);
+        ui.add_enabled_ui(app.settings.raw_high_quality, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(t!("label.raw_demosaic_mode"));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    use crate::settings::RawDemosaicMode;
+                    let old_mode = app.settings.raw_demosaic_mode;
+                    let selected_text = app.settings.raw_demosaic_mode.label();
+                    egui::ComboBox::from_id_salt("raw_demosaic_mode_combo")
+                        .selected_text(selected_text)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut app.settings.raw_demosaic_mode,
+                                RawDemosaicMode::Cpu,
+                                RawDemosaicMode::Cpu.label(),
+                            );
+                            ui.selectable_value(
+                                &mut app.settings.raw_demosaic_mode,
+                                RawDemosaicMode::Gpu,
+                                RawDemosaicMode::Gpu.label(),
+                            );
+                        });
+                    if old_mode != app.settings.raw_demosaic_mode {
+                        app.reload_current();
+                        app.queue_save();
+                    }
+                });
+            });
+        })
+        .response
+        .on_hover_text(t!("hint.raw_demosaic_mode"));
     });
 
     ui.add_space(8.0);

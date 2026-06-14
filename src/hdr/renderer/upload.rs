@@ -268,11 +268,120 @@ pub(crate) fn upload_rgba8_texture(
     })
 }
 
+pub(crate) fn upload_r16_uint_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u16],
+    max_texture_dimension_2d: u32,
+) -> Result<CallbackUpload, String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "{label} requires non-zero dimensions, got {width}x{height}"
+        ));
+    }
+    if width > max_texture_dimension_2d || height > max_texture_dimension_2d {
+        return Err(format!(
+            "{label} dimensions {width}x{height} exceed device max_texture_dimension_2d {max_texture_dimension_2d}",
+        ));
+    }
+    let tight_bytes = bytemuck::cast_slice(pixels);
+    let (upload_bytes, bytes_per_row) = pack_rows_for_texture_copy(tight_bytes, width, height, 2)
+        .map_err(|err| format!("{label}: {err}"))?;
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Uint,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &upload_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Ok(CallbackUpload {
+        texture,
+        view,
+        storage_view: None,
+    })
+}
+
 pub(crate) fn upload_image_plane(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &HdrImageBuffer,
 ) -> Result<ImagePlaneUpload, String> {
+    if let Some(ref raw_source) = image.metadata.raw_gpu_source {
+        #[cfg(feature = "preload-debug")]
+        let upload_started = std::time::Instant::now();
+        let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
+        let raw_pixels = upload_r16_uint_texture(
+            device,
+            queue,
+            "simple-image-viewer-hdr-raw-pixels-texture",
+            raw_source.width,
+            raw_source.height,
+            raw_source.raw_pixels.as_slice(),
+            device.limits().max_texture_dimension_2d,
+        )?;
+
+        let raw_green_plane = create_empty_r32f_storage_texture(
+            device,
+            raw_source.width,
+            raw_source.height,
+            "simple-image-viewer-hdr-raw-green-plane-texture",
+        )?;
+
+        #[cfg(feature = "preload-debug")]
+        {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] upload plane {}x{} cfa={}x{} bootstrap={} {:.0}ms",
+                image.width,
+                image.height,
+                raw_source.width,
+                raw_source.height,
+                raw_source.bootstrap_preview.is_some(),
+                upload_started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        return Ok(ImagePlaneUpload {
+            base,
+            gain: None,
+            sdr_baseline: None,
+            raw_pixels: Some(raw_pixels),
+            raw_green_plane: Some(raw_green_plane),
+        });
+    }
+
     if let Some(deferred) = iso_deferred_from_metadata(&image.metadata) {
         let base = create_empty_rgba32f_texture(device, image.width, image.height)?;
         let sdr = upload_rgba8_texture(
@@ -299,6 +408,8 @@ pub(crate) fn upload_image_plane(
             base,
             gain: Some(gain),
             sdr_baseline: Some(sdr),
+            raw_pixels: None,
+            raw_green_plane: None,
         });
     }
 
@@ -319,6 +430,8 @@ pub(crate) fn upload_image_plane(
             base,
             gain: Some(gain),
             sdr_baseline: None,
+            raw_pixels: None,
+            raw_green_plane: None,
         });
     }
 
@@ -327,6 +440,8 @@ pub(crate) fn upload_image_plane(
         base,
         gain: None,
         sdr_baseline: None,
+        raw_pixels: None,
+        raw_green_plane: None,
     })
 }
 
@@ -358,6 +473,60 @@ pub(crate) fn create_empty_rgba32f_texture(
     let storage_view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("simple-image-viewer-hdr-deferred-display-storage-view"),
         format: Some(wgpu::TextureFormat::Rgba32Float),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        aspect: wgpu::TextureAspect::All,
+        usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+        ..Default::default()
+    });
+    Ok(CallbackUpload {
+        texture,
+        view,
+        storage_view: Some(storage_view),
+    })
+}
+
+pub(crate) fn create_empty_r32f_storage_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> Result<CallbackUpload, String> {
+    if width == 0 || height == 0 {
+        return Err(format!("{label}: invalid dimensions {width}x{height}"));
+    }
+    if width > device.limits().max_texture_dimension_2d
+        || height > device.limits().max_texture_dimension_2d
+    {
+        return Err(format!(
+            "{label}: dimensions {width}x{height} exceed device limit {}",
+            device.limits().max_texture_dimension_2d
+        ));
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{label}-read-view")),
+        format: Some(wgpu::TextureFormat::R32Float),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        aspect: wgpu::TextureAspect::All,
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        ..Default::default()
+    });
+    let storage_view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{label}-storage-view")),
+        format: Some(wgpu::TextureFormat::R32Float),
         dimension: Some(wgpu::TextureViewDimension::D2),
         aspect: wgpu::TextureAspect::All,
         usage: Some(wgpu::TextureUsages::STORAGE_BINDING),

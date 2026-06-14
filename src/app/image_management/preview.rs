@@ -111,7 +111,16 @@ impl ImageViewerApp {
         let preview = update.preview_bundle.sdr().cloned();
         match (preview, update.error) {
             (Some(preview), _) => {
+                self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
+                if let Some(cpu_ms) = update.cpu_demosaic_ms {
+                    if self.raw_metadata.set_cpu_demosaic_ms(update.index, cpu_ms)
+                        && update.index == self.current_index
+                    {
+                        self.osd.sync_events();
+                        ctx.request_repaint();
+                    }
+                }
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
                     if tm.image_index == update.index
@@ -149,13 +158,22 @@ impl ImageViewerApp {
                     }
                 }
 
-                // 3. Update global texture cache
-                if should_cache_tiled_sdr_preview(
-                    self.texture_cache.contains(update.index),
-                    self.texture_cache.is_preview_placeholder(update.index),
-                    self.texture_cache.cached_preview_max_side(update.index),
-                    preview.width.max(preview.height),
-                ) {
+                // 3. Update global texture cache for tiled sources only. Static GPU RAW bootstrap
+                // previews are uploaded separately and must not be marked as tiled placeholders.
+                let preview_targets_tiled_canvas =
+                    self.prefetched_tiles.contains_key(&update.index)
+                        || self
+                            .tile_manager
+                            .as_ref()
+                            .is_some_and(|tm| tm.image_index == update.index);
+                if preview_targets_tiled_canvas
+                    && should_cache_tiled_sdr_preview(
+                        self.texture_cache.contains(update.index),
+                        self.texture_cache.is_preview_placeholder(update.index),
+                        self.texture_cache.cached_preview_max_side(update.index),
+                        preview.width.max(preview.height),
+                    )
+                {
                     let (orig_w, orig_h) = self
                         .texture_cache
                         .get_original_res(update.index)
@@ -243,6 +261,36 @@ impl ImageViewerApp {
             egui::TextureOptions::LINEAR,
         );
         tm.preview_texture = Some(preview_handle);
+    }
+
+    pub(super) fn upload_static_raw_gpu_bootstrap_preview_if_needed(
+        &mut self,
+        idx: usize,
+        preview: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        if self.hdr_image_cache.contains_key(&idx) {
+            return;
+        }
+        if self.texture_cache.contains(idx) && !self.texture_cache.is_preview_placeholder(idx) {
+            return;
+        }
+        self.queue_or_upload_static_sdr_texture(
+            idx,
+            preview,
+            format!("img_raw_gpu_bootstrap_{idx}"),
+            ctx,
+        );
+        if idx == self.current_index {
+            self.set_current_image_resolution(Some((preview.width, preview.height)));
+            if should_request_repaint_for_asset_update(
+                AssetUpdateKind::PreviewUpgraded,
+                true,
+                false,
+            ) {
+                ctx.request_repaint();
+            }
+        }
     }
 
     pub(super) fn upload_tiled_bootstrap_preview(

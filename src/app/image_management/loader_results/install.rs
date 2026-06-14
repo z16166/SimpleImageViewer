@@ -58,6 +58,7 @@ impl ImageViewerApp {
                     self.generation,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(self.current_index),
                 );
             }
 
@@ -104,21 +105,30 @@ impl ImageViewerApp {
         load_result: &LoadResult,
         install_plan: ImageInstallPlan<'_>,
         ctx: &egui::Context,
+        defer_sdr_upload: bool,
     ) -> Option<(usize, u64, std::path::PathBuf)> {
         let idx = load_result.index;
         let generation = load_result.generation;
 
         if hdr_load_result_capacity_is_stale(&load_result, self.ultra_hdr_decode_capacity) {
-            log::info!(
-                "[HDR] Stale-capacity result for index={}: decoded_capacity={:.3} != current={:.3}; will re-queue after slot is freed.",
+            crate::preload_debug!(
+                "[PreloadDebug] stale-capacity drop: idx={} decoded_cap={:.3} current_cap={:.3} result_gen={} app_gen={}",
                 idx,
                 load_result.target_hdr_capacity,
-                self.ultra_hdr_decode_capacity
+                self.ultra_hdr_decode_capacity,
+                generation,
+                self.generation
             );
-            if !self.image_files.is_empty() && idx < self.image_files.len() {
-                return Some((idx, generation, self.image_files[idx].clone()));
-            }
-            return None;
+            let requeue = if self.hdr_image_cache.contains_key(&idx) {
+                None
+            } else if self.loader.is_loading_any(idx) {
+                None
+            } else if !self.image_files.is_empty() && idx < self.image_files.len() {
+                Some((idx, self.generation, self.image_files[idx].clone()))
+            } else {
+                None
+            };
+            return requeue;
         }
 
         if let Some(osd) = &load_result.raw_osd {
@@ -144,6 +154,7 @@ impl ImageViewerApp {
                     fallback,
                     load_result.sdr_fallback_is_placeholder,
                     ultra_hdr_capacity_sensitive,
+                    defer_sdr_upload,
                     ctx,
                 );
             }
@@ -181,5 +192,47 @@ impl ImageViewerApp {
             }
         }
         None
+    }
+
+    /// Installs the HDR plane for a background static RAW result while leaving the SDR fallback
+    /// in `deferred_sdr_uploads`, so upload quotas cannot block HDR cache population.
+    pub(super) fn try_install_background_static_hdr_hdr_only(
+        &mut self,
+        load_result: &LoadResult,
+        install_plan: &ImageInstallPlan<'_>,
+        generation: u64,
+        _reason: &str,
+        ctx: &egui::Context,
+    ) -> bool {
+        let idx = load_result.index;
+        if idx == self.current_index {
+            return false;
+        }
+        let ImageInstallPlan::StaticHdr {
+            hdr,
+            fallback,
+            ultra_hdr_capacity_sensitive,
+        } = install_plan
+        else {
+            return false;
+        };
+        crate::preload_debug!(
+            "[PreloadDebug] install hdr-only defer sdr: idx={} current={} gen={} reason={_reason}",
+            idx,
+            self.current_index,
+            generation,
+        );
+        self.loader.finish_image_request(idx, generation);
+        self.handle_image_load_result(
+            load_result,
+            ImageInstallPlan::StaticHdr {
+                hdr: Arc::clone(hdr),
+                fallback,
+                ultra_hdr_capacity_sensitive: *ultra_hdr_capacity_sensitive,
+            },
+            ctx,
+            true,
+        );
+        true
     }
 }

@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use libc::{c_char, c_float, c_int, c_uchar, c_uint, c_ushort};
+use libc::{c_char, c_double, c_float, c_int, c_uchar, c_uint, c_ushort};
 
 /// Matches LibRaw's `enum LibRaw_image_formats` from `libraw_const.h`.
 #[repr(u32)]
@@ -91,11 +91,114 @@ unsafe extern "C" {
     pub fn siv_libraw_set_auto_bright_thr(data: *mut libraw_data_t, value: c_float);
     pub fn siv_libraw_set_output_color(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_set_gamma(data: *mut libraw_data_t, power: f64, slope: f64);
+    pub fn siv_libraw_set_user_qual(data: *mut libraw_data_t, qual: c_int);
+    pub fn siv_libraw_set_highlight(data: *mut libraw_data_t, value: c_int);
+    pub fn siv_libraw_set_half_size(data: *mut libraw_data_t, value: c_int);
+    pub fn siv_libraw_get_bright(data: *mut libraw_data_t) -> c_float;
     // Size and Metadata helpers
     pub fn libraw_get_raw_height(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_raw_width(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iheight(data: *mut libraw_data_t) -> c_int;
     pub fn libraw_get_iwidth(data: *mut libraw_data_t) -> c_int;
+
+    // GPU shims
+    pub fn siv_libraw_get_raw_image(data: *mut libraw_data_t) -> *mut c_ushort;
+    pub fn siv_libraw_get_color_at(data: *mut libraw_data_t, row: c_int, col: c_int) -> c_int;
+    pub fn siv_libraw_get_color_params(
+        data: *mut libraw_data_t,
+        cam_mul: *mut c_float,
+        cblack: *mut c_float,
+        black: *mut c_int,
+        maximum: *mut c_int,
+    );
+    pub fn siv_libraw_get_color_diag(
+        data: *mut libraw_data_t,
+        black: *mut c_int,
+        maximum: *mut c_int,
+        data_maximum: *mut c_int,
+        cblack0_3: *mut c_uint,
+        cblack4: *mut c_uint,
+        cblack5: *mut c_uint,
+        pre_mul: *mut c_float,
+        cam_mul: *mut c_float,
+    );
+    pub fn siv_libraw_raw_pixel_at(
+        data: *mut libraw_data_t,
+        row: c_uint,
+        col: c_uint,
+    ) -> c_ushort;
+    pub fn siv_libraw_get_margins(
+        data: *mut libraw_data_t,
+        left_margin: *mut c_int,
+        top_margin: *mut c_int,
+    );
+    pub fn siv_libraw_get_filters(data: *mut libraw_data_t) -> c_uint;
+    pub fn siv_libraw_get_colors(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_is_fuji_rotated(data: *mut libraw_data_t) -> c_int;
+    pub fn siv_libraw_get_pixel_aspect(data: *mut libraw_data_t) -> f64;
+    pub fn siv_libraw_get_gpu_color_params(
+        data: *mut libraw_data_t,
+        rgb_cam_out: *mut c_float,
+        cblack_rgb: *mut c_float,
+        channel_scale: *mut c_float,
+    );
+    pub fn siv_libraw_apply_output_color(
+        data: *mut libraw_data_t,
+        rgb16: *mut c_ushort,
+        width: c_uint,
+        height: c_uint,
+    );
+    pub fn siv_libraw_ppg_camera_rgb_counts(
+        data: *mut libraw_data_t,
+        rgb16_out: *mut c_ushort,
+        width_out: *mut c_uint,
+        height_out: *mut c_uint,
+    ) -> c_int;
+    pub fn siv_libraw_ppg_camera_rgb_counts_from_scaled(
+        data: *mut libraw_data_t,
+        rgb16_out: *mut c_ushort,
+        width_out: *mut c_uint,
+        height_out: *mut c_uint,
+    ) -> c_int;
+    pub fn siv_libraw_extract_scaled_cfa(
+        data: *mut libraw_data_t,
+        out: *mut c_ushort,
+        width_out: *mut c_uint,
+        height_out: *mut c_uint,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_matrix_patch_mean(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        mean_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_scene_color_scale(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        scale_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_uniform_scene_scale(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        uniform_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_scene_ab_luma_sum(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        ab_luma_out: *mut c_double,
+    ) -> c_int;
+    pub fn siv_libraw_ppg_pixel_channels(
+        data: *mut libraw_data_t,
+        row: c_uint,
+        col: c_uint,
+        out4: *mut c_ushort,
+    ) -> c_int;
+    pub fn siv_libraw_ppg_convert_pixel(
+        data: *mut libraw_data_t,
+        row: c_uint,
+        col: c_uint,
+        out3: *mut c_ushort,
+    ) -> c_int;
+    pub fn libraw_get_rgb_cam(data: *mut libraw_data_t, index1: c_int, index2: c_int) -> c_float;
 }
 
 pub fn version() -> String {

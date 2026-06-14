@@ -16,46 +16,9 @@
 
 use std::collections::HashMap;
 
-use crate::loader::RawOsdInfo;
+use crate::loader::{RawDemosaicBackend, RawOsdInfo, RawRenderPixels};
 use crate::ui::osd::{HdrOsdFrame, ImageOsdFrame, ImageOsdMode, OsdEvent};
 use crate::ui::osd_param::TrackedParam;
-
-#[derive(Clone, PartialEq)]
-pub(crate) struct HdrViewStatusSnapshot {
-    render_path: Option<crate::hdr::status::HdrRenderPath>,
-    color_space: Option<crate::hdr::types::HdrColorSpace>,
-    output_mode: crate::hdr::types::HdrOutputMode,
-    native_presentation_enabled: bool,
-    ultra_hdr_decode_capacity: Option<f32>,
-    // `HdrOsdFrame` borrows the monitor label from transient selection state; the previous-frame
-    // snapshot owns it so the next frame can compare by borrowed `&str` without lifetime coupling.
-    monitor_label: Option<String>,
-    exposure_ev: f32,
-}
-
-impl HdrViewStatusSnapshot {
-    pub(crate) fn capture(hdr: &HdrOsdFrame<'_>) -> Self {
-        Self {
-            render_path: hdr.render_path,
-            color_space: hdr.color_space,
-            output_mode: hdr.output_mode,
-            native_presentation_enabled: hdr.native_presentation_enabled,
-            ultra_hdr_decode_capacity: hdr.ultra_hdr_decode_capacity,
-            monitor_label: hdr.monitor_label.map(str::to_owned),
-            exposure_ev: hdr.exposure_ev,
-        }
-    }
-
-    pub(crate) fn matches_frame(&self, hdr: &HdrOsdFrame<'_>) -> bool {
-        self.render_path == hdr.render_path
-            && self.color_space == hdr.color_space
-            && self.output_mode == hdr.output_mode
-            && self.native_presentation_enabled == hdr.native_presentation_enabled
-            && self.ultra_hdr_decode_capacity == hdr.ultra_hdr_decode_capacity
-            && self.monitor_label.as_deref() == hdr.monitor_label
-            && self.exposure_ev == hdr.exposure_ev
-    }
-}
 
 pub(crate) struct ImageViewStatus {
     current_index: TrackedParam<usize, OsdEvent>,
@@ -150,7 +113,13 @@ impl ImageViewStatus {
 pub(crate) struct RawMetadataStore {
     by_index: HashMap<usize, RawOsdInfo>,
     current_index: usize,
-    current_line: TrackedParam<Option<String>, OsdEvent>,
+    sensor_size: TrackedParam<(u32, u32), OsdEvent>,
+    embedded_preview: TrackedParam<Option<(u32, u32)>, OsdEvent>,
+    render_pixels: TrackedParam<RawRenderPixels, OsdEvent>,
+    demosaic_backend: TrackedParam<Option<RawDemosaicBackend>, OsdEvent>,
+    cpu_demosaic_ms: TrackedParam<Option<u32>, OsdEvent>,
+    gpu_extract_ms: TrackedParam<Option<u32>, OsdEvent>,
+    gpu_demosaic_ms: TrackedParam<Option<u32>, OsdEvent>,
 }
 
 impl RawMetadataStore {
@@ -158,13 +127,26 @@ impl RawMetadataStore {
         Self {
             by_index: HashMap::new(),
             current_index: 0,
-            current_line: TrackedParam::new(None, tx, OsdEvent::raw_line),
+            sensor_size: TrackedParam::new((0, 0), tx.clone(), OsdEvent::raw_sensor_size),
+            embedded_preview: TrackedParam::new(None, tx.clone(), OsdEvent::raw_embedded_preview),
+            render_pixels: TrackedParam::new(
+                RawRenderPixels::Embedded {
+                    width: 0,
+                    height: 0,
+                },
+                tx.clone(),
+                OsdEvent::raw_render_pixels,
+            ),
+            demosaic_backend: TrackedParam::new(None, tx.clone(), OsdEvent::raw_demosaic_backend),
+            cpu_demosaic_ms: TrackedParam::new(None, tx.clone(), OsdEvent::raw_cpu_demosaic_ms),
+            gpu_extract_ms: TrackedParam::new(None, tx.clone(), OsdEvent::raw_gpu_extract_ms),
+            gpu_demosaic_ms: TrackedParam::new(None, tx, OsdEvent::raw_gpu_demosaic_ms),
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.by_index.clear();
-        self.current_line.set(None);
+        self.sync_tracked_params_for_current();
     }
 
     pub(crate) fn set_current_index(&mut self, current_index: usize) {
@@ -172,20 +154,20 @@ impl RawMetadataStore {
             return;
         }
         self.current_index = current_index;
-        self.refresh_current_line();
+        self.sync_tracked_params_for_current();
     }
 
     pub(crate) fn insert_or_update(&mut self, index: usize, info: RawOsdInfo) {
         self.by_index.insert(index, info);
         if index == self.current_index {
-            self.refresh_current_line();
+            self.sync_tracked_params_for_current();
         }
     }
 
     pub(crate) fn remove(&mut self, index: usize) -> bool {
         let changed = self.by_index.remove(&index).is_some();
         if changed && index == self.current_index {
-            self.refresh_current_line();
+            self.sync_tracked_params_for_current();
         }
         changed
     }
@@ -199,11 +181,98 @@ impl RawMetadataStore {
         let Some(info) = self.by_index.get_mut(&index) else {
             return false;
         };
+        let before = info.clone();
         info.apply_hq_refine_preview(width, height);
+        if before == *info {
+            return false;
+        }
         if index == self.current_index {
-            self.refresh_current_line();
+            self.sync_tracked_params_for_current();
         }
         true
+    }
+
+    pub(crate) fn promote_gpu_demosaic_complete(&mut self, index: usize) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        let before = info.render_pixels;
+        info.promote_gpu_demosaic_complete();
+        if before == info.render_pixels {
+            return false;
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn note_gpu_demosaic_pending(
+        &mut self,
+        index: usize,
+        bootstrap: Option<(u32, u32)>,
+    ) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        let before = info.clone();
+        info.note_gpu_demosaic_pending(bootstrap);
+        if before == *info {
+            return false;
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn note_gpu_demosaic_failed(&mut self, index: usize) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        let before = info.demosaic_backend;
+        info.note_gpu_demosaic_failed();
+        if before == info.demosaic_backend {
+            return false;
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn set_cpu_demosaic_ms(&mut self, index: usize, ms: u32) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        if info.cpu_demosaic_ms == Some(ms) {
+            return false;
+        }
+        info.cpu_demosaic_ms = Some(ms);
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn set_gpu_demosaic_ms(&mut self, index: usize, ms: u32) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        if info.gpu_demosaic_ms == Some(ms) {
+            return false;
+        }
+        info.gpu_demosaic_ms = Some(ms);
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
+    pub(crate) fn embedded_preview_dims(&self, index: usize) -> Option<(u32, u32)> {
+        self.by_index
+            .get(&index)
+            .and_then(|info| info.embedded_preview)
     }
 
     pub(crate) fn relocate_index(&mut self, from: usize, to: usize) {
@@ -211,13 +280,13 @@ impl RawMetadataStore {
             self.by_index.insert(to, raw);
         }
         if from == self.current_index || to == self.current_index {
-            self.refresh_current_line();
+            self.sync_tracked_params_for_current();
         }
     }
 
     pub(crate) fn retain_only_indices(&mut self, keep: impl Fn(usize) -> bool) {
         self.by_index.retain(|&idx, _| keep(idx));
-        self.refresh_current_line();
+        self.sync_tracked_params_for_current();
     }
 
     #[cfg(test)]
@@ -225,20 +294,26 @@ impl RawMetadataStore {
         self.by_index.contains_key(&index)
     }
 
-    /// Re-render every cached RAW OSD line with the current locale, then push the
-    /// updated string for the current index through the event channel.
-    pub(crate) fn on_language_changed(&mut self) {
-        for info in self.by_index.values_mut() {
-            info.refresh_osd_line();
-        }
-        self.refresh_current_line();
-    }
-
-    fn refresh_current_line(&mut self) {
-        let line = self
-            .by_index
-            .get(&self.current_index)
-            .and_then(|info| info.osd_line.clone());
-        self.current_line.set(line);
+    fn sync_tracked_params_for_current(&mut self) {
+        let Some(info) = self.by_index.get(&self.current_index) else {
+            self.sensor_size.set((0, 0));
+            self.embedded_preview.set(None);
+            self.render_pixels.set(RawRenderPixels::Embedded {
+                width: 0,
+                height: 0,
+            });
+            self.demosaic_backend.set(None);
+            self.cpu_demosaic_ms.set(None);
+            self.gpu_extract_ms.set(None);
+            self.gpu_demosaic_ms.set(None);
+            return;
+        };
+        self.sensor_size.set(info.sensor_size);
+        self.embedded_preview.set(info.embedded_preview);
+        self.render_pixels.set(info.render_pixels);
+        self.demosaic_backend.set(info.demosaic_backend);
+        self.cpu_demosaic_ms.set(info.cpu_demosaic_ms);
+        self.gpu_extract_ms.set(info.gpu_extract_ms);
+        self.gpu_demosaic_ms.set(info.gpu_demosaic_ms);
     }
 }

@@ -50,6 +50,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 - **Real-time volume control** — slider in the settings panel, persisted between sessions
 - **Recursive directory scan** — optionally include images in all sub-folders
 - **Camera RAW+JPEG pair handling** — optional Library setting with three modes for paired camera files: show both, hide RAW, or hide JPG/JPEG when both formats exist for the same shot
+- **RAW demosaicing mode (CPU / GPU)** — enable **High-Quality RAW preview** in **Settings > Display**, then choose **CPU** or **GPU** demosaicing. GPU mode uses compute shaders for faster full-resolution Bayer RAW on supported graphics hardware; Fuji X-Trans, Super CCD, non-square pixels (e.g. Nikon D1X), oversized images, or processing errors automatically fall back to CPU, and the OSD shows which path is actually running. RAW brightness varies by camera and scene — use `Ctrl + ↑` / `Ctrl + ↓` to adjust exposure (EV) as needed.
 - **Set as Desktop Wallpaper**: Right-click on any image to set it as your wallpaper with various layout modes (Crop, Fit, Stretch, Tile, Center).
 - **Atmospheric Transitions**: Professional dual-texture transitions including **Cross-Fade**, **Zoom & Fade**, **Slide**, **Push**, **Page Flip**, **Ripple (Water)**, **Curtain**, and a **Random** mode.
 - **Customizable Duration**: Fluid animations with adjustable duration (50ms - 2000ms).
@@ -113,7 +114,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | Setting | Description |
 |---|---|
 | **Library** | Browse button to pick image folder, recursive scan toggle, preload toggle, RAW+JPEG pair handling (show both / skip RAW / skip JPG-JPEG), and resume viewing toggle |
-| **Display** | Full-screen toggle, scale-mode selector, and OSD info visibility toggle |
+| **Display** | Full-screen toggle, scale-mode selector, OSD info visibility, **High-Quality RAW preview** toggle, and **Demosaicing Mode (CPU / GPU)** when HQ RAW is enabled |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop or random-order playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |
 | **Font & UI** | Choose system font family, interface size, and UI **Theme** (Dark/Light/System) |

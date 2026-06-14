@@ -97,6 +97,7 @@ impl ImageLoader {
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
+        let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
         {
             let state = Arc::clone(&delayed_fallback);
             let _ = std::thread::Builder::new()
@@ -160,8 +161,10 @@ impl ImageLoader {
                             job.loading.clone(),
                             job.current_gen.clone(),
                             job.high_quality,
+                            job.raw_demosaic_mode,
                             job.hdr_target_capacity,
                             job.hdr_tone_map,
+                            Arc::clone(&job.raw_open_prefetch),
                         );
                     }
                 });
@@ -433,18 +436,22 @@ impl ImageLoader {
                     let user_flip = req.orientation_override.unwrap_or(0);
                     processor.set_user_flip(user_flip);
 
-                    let develop_result = processor
-                        .develop_scene_linear_hdr()
-                        .and_then(|hdr| {
-                            finalize_raw_hq_hdr_buffer(
-                                hdr,
-                                req.logical_width,
-                                req.logical_height,
-                            )
-                        });
+                    let develop_result = {
+                        let started = std::time::Instant::now();
+                        processor
+                            .develop_scene_linear_hdr()
+                            .and_then(|hdr| {
+                                finalize_raw_hq_hdr_buffer(
+                                    hdr,
+                                    req.logical_width,
+                                    req.logical_height,
+                                )
+                            })
+                            .map(|hdr| (hdr, crate::loader::elapsed_ms_u32(started)))
+                    };
 
                     match develop_result {
-                        Ok(hdr) => {
+                        Ok((hdr, cpu_demosaic_ms)) => {
                             let elapsed = t0.elapsed();
                             let preview_w = hdr.width;
                             let preview_h = hdr.height;
@@ -515,6 +522,7 @@ impl ImageLoader {
                                 source_key: req.source_key,
                                 preview_bundle: bundle,
                                 error: None,
+                                cpu_demosaic_ms: Some(cpu_demosaic_ms),
                             }));
                             let _ =
                                 worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
@@ -547,6 +555,7 @@ impl ImageLoader {
             });
 
         Self {
+            raw_open_prefetch,
             tx,
             rx,
             loading: Arc::new(Mutex::new(HashMap::new())),
@@ -563,6 +572,11 @@ impl ImageLoader {
         }
     }
 
+    pub fn prefetch_raw_open(&self, path: PathBuf) {
+        self.raw_open_prefetch.request(&self.pool, path);
+    }
+
+    #[cfg(test)]
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
         self.loading.lock().get(&index) == Some(&generation)
     }
@@ -629,6 +643,7 @@ impl ImageLoader {
         generation: u64,
         path: PathBuf,
         high_quality: bool,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode,
     ) {
         {
             let mut loading = self.loading.lock();
@@ -655,6 +670,7 @@ impl ImageLoader {
         let rtx2 = self.refine_tx.clone();
         let hdr_target_capacity = self.hdr_target_capacity();
         let hdr_tone_map = self.hdr_tone_map_settings_snapshot();
+        let raw_open_prefetch = Arc::clone(&self.raw_open_prefetch);
 
         if path_is_raw {
             crate::preload_debug!(
@@ -667,6 +683,7 @@ impl ImageLoader {
             );
         }
 
+        let raw_open_prefetch_spawn = Arc::clone(&raw_open_prefetch);
         self.pool.spawn(move || {
             let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
             if generation != global_gen {
@@ -696,8 +713,10 @@ impl ImageLoader {
                 loading1,
                 current_gen1,
                 high_quality,
+                raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
+                raw_open_prefetch_spawn,
             );
         });
 
@@ -708,6 +727,7 @@ impl ImageLoader {
             generation,
             path: path2,
             high_quality,
+            raw_demosaic_mode,
             claimed: claimed2,
             loading: loading2,
             current_gen: current_gen2,
@@ -715,6 +735,7 @@ impl ImageLoader {
             refine_tx: rtx2,
             hdr_target_capacity,
             hdr_tone_map,
+            raw_open_prefetch,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -753,8 +774,10 @@ impl ImageLoader {
         loading_ref: Arc<Mutex<HashMap<usize, u64>>>,
         _current_gen: Arc<std::sync::atomic::AtomicU64>,
         high_quality: bool,
+        raw_demosaic_mode: crate::settings::RawDemosaicMode,
         hdr_target_capacity: f32,
         hdr_tone_map: HdrToneMapSettings,
+        raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
     ) {
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -773,8 +796,10 @@ impl ImageLoader {
                 tx.clone(),
                 refine_tx.clone(),
                 high_quality,
+                raw_demosaic_mode,
                 hdr_target_capacity,
                 hdr_tone_map,
+                Some(raw_open_prefetch.as_ref()),
             )
         }))
         .unwrap_or_else(|e| {
@@ -927,6 +952,7 @@ impl ImageLoader {
                                     source_key: load_result.source_key,
                                     preview_bundle: bundle,
                                     error: None,
+                                    cpu_demosaic_ms: None,
                                 }));
                             }
                             Ok(Err(e)) => {

@@ -39,6 +39,7 @@ pub(crate) mod logluv_decode;
 pub mod monitor;
 pub(crate) mod mpf;
 pub(crate) mod openexr_core;
+pub(crate) mod raw_demosaic_gpu;
 pub(crate) mod openexr_core_backend {
     pub(crate) use super::openexr_core::*;
 }

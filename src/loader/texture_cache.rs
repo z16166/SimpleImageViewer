@@ -58,6 +58,18 @@ impl TextureCache {
         self.original_res.get(&index).copied()
     }
 
+    pub fn set_original_res(&mut self, index: usize, orig_w: u32, orig_h: u32) {
+        if self.textures.contains_key(&index) {
+            self.original_res.insert(index, (orig_w, orig_h));
+        }
+    }
+
+    pub fn set_preview_placeholder(&mut self, index: usize, tiled: bool) {
+        if self.textures.contains_key(&index) {
+            self.is_tiled.insert(index, tiled);
+        }
+    }
+
     pub fn remove(&mut self, index: usize) {
         self.textures.remove(&index);
         self.original_res.remove(&index);

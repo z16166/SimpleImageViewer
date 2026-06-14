@@ -116,7 +116,7 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
@@ -150,9 +150,11 @@ impl ImageViewerApp {
         fallback: &DecodedImage,
         sdr_fallback_is_placeholder: bool,
         ultra_hdr_capacity_sensitive: bool,
+        defer_sdr_upload: bool,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
+        self.remove_hdr_image_resources(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
         self.hdr_sdr_fallback_indices.insert(idx);
         if sdr_fallback_is_placeholder {
@@ -160,24 +162,55 @@ impl ImageViewerApp {
         } else {
             self.hdr_placeholder_fallback_indices.remove(&idx);
         }
+        if gpu_demosaic_pending {
+            self.hdr_raw_gpu_demosaic_pending_indices.insert(idx);
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+            self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, idx);
+            let bootstrap = if sdr_fallback_is_placeholder {
+                self.raw_metadata.embedded_preview_dims(idx)
+            } else {
+                Some((fallback.width, fallback.height))
+            };
+            self.raw_metadata.note_gpu_demosaic_pending(idx, bootstrap);
+        } else {
+            self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+            self.hdr_raw_gpu_demosaic_pending_key_index
+                .retain(|_, pending_idx| *pending_idx != idx);
+        }
+        if gpu_demosaic_pending && self.texture_cache.contains(idx) {
+            self.texture_cache
+                .set_original_res(idx, hdr.width, hdr.height);
+            self.texture_cache.set_preview_placeholder(idx, false);
+        }
         if ultra_hdr_capacity_sensitive {
             self.ultra_hdr_capacity_sensitive_indices.insert(idx);
         }
 
-        let current_hdr_placeholder = idx == self.current_index && sdr_fallback_is_placeholder;
-        if !current_hdr_placeholder {
-            self.queue_or_upload_static_sdr_texture(
-                idx,
-                fallback,
-                format!("img_hdr_fallback_{idx}"),
-                ctx,
-            );
+        let bootstrap_already_uploaded = gpu_demosaic_pending
+            && self.texture_cache.contains(idx)
+            && !sdr_fallback_is_placeholder;
+        let skip_current_sdr_upload = idx == self.current_index
+            && (sdr_fallback_is_placeholder || bootstrap_already_uploaded);
+        if !skip_current_sdr_upload {
+            if defer_sdr_upload && idx != self.current_index {
+                self.deferred_sdr_uploads.insert(idx, fallback.clone());
+            } else {
+                self.queue_or_upload_static_sdr_texture(
+                    idx,
+                    fallback,
+                    format!("img_hdr_fallback_{idx}"),
+                    ctx,
+                );
+            }
         }
 
         if idx == self.current_index {
             self.set_current_image_resolution(Some((hdr.width, hdr.height)));
             self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, Arc::clone(&hdr)));
             self.refresh_hdr_view_status();
+            if gpu_demosaic_pending {
+                ctx.request_repaint();
+            }
             self.tile_manager = None;
             self.clear_current_animation_for_index(idx);
             self.pixel_data_source = Some(crate::pixel_inspector::PixelDataSource::Static {
@@ -185,7 +218,9 @@ impl ImageViewerApp {
                 height: hdr.height,
                 pixels: fallback.arc_pixels(),
             });
-            if sdr_fallback_is_placeholder {
+            if sdr_fallback_is_placeholder
+                && !crate::loader::hdr_raw_gpu_refinement_is_pointless(&hdr)
+            {
                 if !self.hdr_in_flight_fallback_refinements.contains(&idx) {
                     let source_key = source_key_for_path(&self.image_files[idx]);
                     self.hdr_in_flight_fallback_refinements.insert(idx);
@@ -254,7 +289,7 @@ impl ImageViewerApp {
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         if let Some(hdr_source) = hdr_source.as_ref() {
             self.hdr_tiled_source_cache
                 .insert(idx, Arc::clone(hdr_source));
@@ -319,7 +354,7 @@ impl ImageViewerApp {
         frames: &[crate::loader::AnimationFrame],
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         if let Some(first) = frames.first() {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
             self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
@@ -361,7 +396,7 @@ impl ImageViewerApp {
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         let hdr_frames: Vec<Arc<crate::hdr::types::HdrImageBuffer>> = frames
             .iter()
             .map(|frame| Arc::new(frame.hdr.clone()))

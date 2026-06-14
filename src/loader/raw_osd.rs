@@ -27,6 +27,24 @@ pub struct RawLoadOutput {
     pub osd: RawOsdInfo,
 }
 
+/// Demosaic execution backend shown on the RAW OSD (distinct labels avoid C/G ambiguity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawDemosaicBackend {
+    /// LibRaw demosaic on the host processor.
+    Host,
+    /// Compute-shader demosaic on the video adapter.
+    Video,
+}
+
+impl RawDemosaicBackend {
+    pub(crate) fn osd_label(self) -> String {
+        match self {
+            Self::Host => t!("raw.osd.demosaic.host").to_string(),
+            Self::Video => t!("raw.osd.demosaic.video").to_string(),
+        }
+    }
+}
+
 /// Which pixel buffer is currently driving the display for a RAW file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawRenderPixels {
@@ -39,16 +57,36 @@ pub enum RawRenderPixels {
 }
 
 /// Persistent RAW diagnostics shown on the OSD while browsing a RAW file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RawOsdInfo {
     /// LibRaw logical sensor/output grid before demosaic.
     pub sensor_size: (u32, u32),
     /// Embedded preview from `unpack_thumb`, when present.
     pub embedded_preview: Option<(u32, u32)>,
     pub render_pixels: RawRenderPixels,
-    /// Pre-formatted OSD line; built when this struct is created or updated.
-    pub(crate) osd_line: Option<String>,
+    /// Active demosaic backend when full develop/refine runs; absent for embedded-only preview.
+    pub demosaic_backend: Option<RawDemosaicBackend>,
+    /// LibRaw `develop_scene_linear_hdr` duration for this file (latest CPU run).
+    pub cpu_demosaic_ms: Option<u32>,
+    /// CFA extract on the load thread (GPU path only).
+    pub gpu_extract_ms: Option<u32>,
+    /// CFA upload + GPU demosaic compute on the render thread.
+    pub gpu_demosaic_ms: Option<u32>,
 }
+
+impl PartialEq for RawOsdInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.sensor_size == other.sensor_size
+            && self.embedded_preview == other.embedded_preview
+            && self.render_pixels == other.render_pixels
+            && self.demosaic_backend == other.demosaic_backend
+            && self.cpu_demosaic_ms == other.cpu_demosaic_ms
+            && self.gpu_extract_ms == other.gpu_extract_ms
+            && self.gpu_demosaic_ms == other.gpu_demosaic_ms
+    }
+}
+
+impl Eq for RawOsdInfo {}
 
 pub(crate) struct RawOsdContext {
     sensor_size: (u32, u32),
@@ -64,63 +102,115 @@ impl RawOsdContext {
     }
 
     pub(crate) fn embedded_render(&self, preview: &DecodedImage) -> RawOsdInfo {
-        RawOsdInfo {
-            sensor_size: self.sensor_size,
-            embedded_preview: self.embedded_preview,
-            render_pixels: RawRenderPixels::Embedded {
+        self.make_info(
+            RawRenderPixels::Embedded {
                 width: preview.width,
                 height: preview.height,
             },
-            osd_line: None,
-        }
-        .with_osd_line()
+            None,
+        )
     }
 
     pub(crate) fn hq_bootstrap_dims(&self, width: u32, height: u32) -> RawOsdInfo {
-        RawOsdInfo {
-            sensor_size: self.sensor_size,
-            embedded_preview: self.embedded_preview,
-            render_pixels: RawRenderPixels::HqBootstrap { width, height },
-            osd_line: None,
-        }
-        .with_osd_line()
+        self.make_info(
+            RawRenderPixels::HqBootstrap { width, height },
+            Some(RawDemosaicBackend::Host),
+        )
     }
 
-    pub(crate) fn full_develop(&self, width: u32, height: u32) -> RawOsdInfo {
+    pub(crate) fn gpu_bootstrap_dims(&self, width: u32, height: u32) -> RawOsdInfo {
+        self.make_info(
+            RawRenderPixels::HqBootstrap { width, height },
+            Some(RawDemosaicBackend::Video),
+        )
+    }
+
+    pub(crate) fn full_develop(
+        &self,
+        width: u32,
+        height: u32,
+        backend: RawDemosaicBackend,
+    ) -> RawOsdInfo {
+        self.make_info(
+            RawRenderPixels::FullDevelop { width, height },
+            Some(backend),
+        )
+    }
+
+    fn make_info(
+        &self,
+        render_pixels: RawRenderPixels,
+        demosaic_backend: Option<RawDemosaicBackend>,
+    ) -> RawOsdInfo {
         RawOsdInfo {
             sensor_size: self.sensor_size,
             embedded_preview: self.embedded_preview,
-            render_pixels: RawRenderPixels::FullDevelop { width, height },
-            osd_line: None,
+            render_pixels,
+            demosaic_backend,
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
         }
-        .with_osd_line()
     }
 }
 
+pub(crate) fn elapsed_ms_u32(start: std::time::Instant) -> u32 {
+    start.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
+}
+
 impl RawOsdInfo {
-    pub(crate) fn with_osd_line(mut self) -> Self {
-        self.osd_line =
-            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
+    pub fn with_cpu_demosaic_ms(mut self, ms: u32) -> Self {
+        self.cpu_demosaic_ms = Some(ms);
         self
     }
 
-    /// Re-render `osd_line` with the current locale (call after a language change).
-    pub(crate) fn refresh_osd_line(&mut self) {
-        self.osd_line =
-            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
+    pub fn with_gpu_extract_ms(mut self, ms: u32) -> Self {
+        self.gpu_extract_ms = Some(ms);
+        self
     }
 
-    /// Update after async/sync HQ refinement replaces the bootstrap buffer.
+    /// Update after async/sync HQ refinement replaces the bootstrap buffer (CPU path).
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
+        if self.demosaic_backend == Some(RawDemosaicBackend::Video) {
+            self.render_pixels = RawRenderPixels::HqBootstrap { width, height };
+            return;
+        }
         self.render_pixels = RawRenderPixels::FullDevelop { width, height };
-        self.osd_line =
-            Self::compose_osd_line(self.sensor_size, self.embedded_preview, self.render_pixels);
     }
 
-    fn compose_osd_line(
+    pub(crate) fn promote_gpu_demosaic_complete(&mut self) {
+        if self.demosaic_backend != Some(RawDemosaicBackend::Video) {
+            return;
+        }
+        let (width, height) = self.sensor_size;
+        self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+    }
+
+    pub(crate) fn note_gpu_demosaic_pending(&mut self, bootstrap: Option<(u32, u32)>) {
+        self.demosaic_backend = Some(RawDemosaicBackend::Video);
+        if let Some((width, height)) = bootstrap {
+            self.render_pixels = RawRenderPixels::HqBootstrap { width, height };
+        } else {
+            let (width, height) = self.sensor_size;
+            self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+        }
+    }
+
+    /// GPU demosaic failed; OSD should show Host/CPU while a per-index reload runs.
+    pub(crate) fn note_gpu_demosaic_failed(&mut self) {
+        self.demosaic_backend = Some(RawDemosaicBackend::Host);
+        let (width, height) = self.sensor_size;
+        self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+    }
+
+    pub(crate) fn compose_osd_line(
         sensor_size: (u32, u32),
         embedded_preview: Option<(u32, u32)>,
         render_pixels: RawRenderPixels,
+        demosaic_backend: Option<RawDemosaicBackend>,
+        cpu_demosaic_ms: Option<u32>,
+        gpu_extract_ms: Option<u32>,
+        gpu_demosaic_ms: Option<u32>,
     ) -> Option<String> {
         if sensor_size.0 == 0 || sensor_size.1 == 0 {
             return None;
@@ -144,7 +234,42 @@ impl RawOsdInfo {
             )
             .to_string(),
         };
-        Some(format!("{embedded} · {sensor} · {render}"))
+        let demosaic = match demosaic_backend {
+            Some(backend) => backend.osd_label(),
+            None => t!("raw.osd.demosaic.preview").to_string(),
+        };
+        let mut line = format!("{embedded} · {sensor} · {demosaic} · {render}");
+        if let Some(timing) = Self::format_active_demosaic_timing(
+            demosaic_backend,
+            cpu_demosaic_ms,
+            gpu_extract_ms,
+            gpu_demosaic_ms,
+        ) {
+            line.push_str(" · ");
+            line.push_str(&timing);
+        }
+        Some(line)
+    }
+
+    fn format_active_demosaic_timing(
+        backend: Option<RawDemosaicBackend>,
+        cpu_ms: Option<u32>,
+        gpu_extract_ms: Option<u32>,
+        gpu_demosaic_ms: Option<u32>,
+    ) -> Option<String> {
+        match backend {
+            Some(RawDemosaicBackend::Host) => {
+                cpu_ms.map(|ms| t!("raw.osd.timing.cpu", ms = ms).to_string())
+            }
+            Some(RawDemosaicBackend::Video) => {
+                let total = gpu_extract_ms
+                    .into_iter()
+                    .chain(gpu_demosaic_ms)
+                    .try_fold(0u32, |acc, ms| acc.checked_add(ms))?;
+                Some(t!("raw.osd.timing.gpu", ms = total).to_string())
+            }
+            None => None,
+        }
     }
 
     #[cfg(any(test, target_os = "windows", target_os = "macos"))]
@@ -156,13 +281,16 @@ impl RawOsdInfo {
                 width: 0,
                 height: 0,
             },
-            osd_line: None,
+            demosaic_backend: None,
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
         }
     }
 }
 
 fn format_dims(w: u32, h: u32) -> String {
-    format!("{w}×{h}")
+    format!("{w}x{h}")
 }
 
 #[cfg(test)]
@@ -178,12 +306,54 @@ mod tests {
                 width: 1920,
                 height: 1280,
             },
+            Some(RawDemosaicBackend::Host),
+            None,
+            None,
+            None,
         )
         .expect("line");
         assert!(
             line.contains(" · "),
             "expected spaced middle-dot separators, got: {line}"
         );
+    }
+
+    #[test]
+    fn compose_osd_line_shows_cpu_timing_for_host_backend() {
+        let line = RawOsdInfo::compose_osd_line(
+            (6000, 4000),
+            Some((1920, 1280)),
+            RawRenderPixels::FullDevelop {
+                width: 6000,
+                height: 4000,
+            },
+            Some(RawDemosaicBackend::Host),
+            Some(1234),
+            None,
+            Some(456),
+        )
+        .expect("line");
+        assert!(line.contains("1234"), "{line}");
+        assert!(!line.contains("456"), "{line}");
+    }
+
+    #[test]
+    fn compose_osd_line_shows_gpu_timing_for_video_backend() {
+        let line = RawOsdInfo::compose_osd_line(
+            (6000, 4000),
+            Some((1920, 1280)),
+            RawRenderPixels::FullDevelop {
+                width: 6000,
+                height: 4000,
+            },
+            Some(RawDemosaicBackend::Video),
+            Some(1234),
+            Some(100),
+            Some(456),
+        )
+        .expect("line");
+        assert!(line.contains("556"), "{line}");
+        assert!(!line.contains("1234"), "{line}");
     }
 
     #[test]
@@ -195,7 +365,10 @@ mod tests {
                 width: 1920,
                 height: 1280,
             },
-            osd_line: None,
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
         };
         info.apply_hq_refine_preview(6000, 4000);
         assert_eq!(
@@ -203,6 +376,38 @@ mod tests {
             RawRenderPixels::FullDevelop {
                 width: 6000,
                 height: 4000
+            }
+        );
+    }
+
+    #[test]
+    fn gpu_refine_preview_keeps_bootstrap_until_demosaic_complete() {
+        let mut info = RawOsdInfo {
+            sensor_size: (3908, 2602),
+            embedded_preview: Some((1936, 1288)),
+            render_pixels: RawRenderPixels::HqBootstrap {
+                width: 1936,
+                height: 1288,
+            },
+            demosaic_backend: Some(RawDemosaicBackend::Video),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
+        };
+        info.apply_hq_refine_preview(1936, 1288);
+        assert_eq!(
+            info.render_pixels,
+            RawRenderPixels::HqBootstrap {
+                width: 1936,
+                height: 1288
+            }
+        );
+        info.promote_gpu_demosaic_complete();
+        assert_eq!(
+            info.render_pixels,
+            RawRenderPixels::FullDevelop {
+                width: 3908,
+                height: 2602
             }
         );
     }
@@ -216,7 +421,10 @@ mod tests {
                 width: 1600,
                 height: 1200,
             },
-            osd_line: None,
+            demosaic_backend: Some(RawDemosaicBackend::Host),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: None,
+            gpu_demosaic_ms: None,
         };
         info.apply_hq_refine_preview(3684, 2760);
         assert_eq!(
@@ -225,35 +433,6 @@ mod tests {
                 width: 3684,
                 height: 2760
             }
-        );
-    }
-
-    #[test]
-    fn refresh_osd_line_matches_with_osd_line() {
-        rust_i18n::set_locale("en");
-        let sensor = (6000u32, 4000u32);
-        let embedded = Some((1920u32, 1280u32));
-        let render = RawRenderPixels::Embedded {
-            width: 1920,
-            height: 1280,
-        };
-        let mut info = RawOsdInfo {
-            sensor_size: sensor,
-            embedded_preview: embedded,
-            render_pixels: render,
-            osd_line: Some("stale string".to_string()),
-        };
-        info.refresh_osd_line();
-        let expected = RawOsdInfo {
-            sensor_size: sensor,
-            embedded_preview: embedded,
-            render_pixels: render,
-            osd_line: None,
-        }
-        .with_osd_line();
-        assert_eq!(
-            info.osd_line, expected.osd_line,
-            "refresh_osd_line must produce the same output as with_osd_line"
         );
     }
 }

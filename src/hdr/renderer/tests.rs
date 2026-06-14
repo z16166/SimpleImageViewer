@@ -367,6 +367,47 @@ fn image_and_tile_uniforms_share_transform_output_and_color_space_logic() {
 }
 
 #[test]
+fn image_tone_map_uniform_marks_deferred_gpu_compose_as_scene_linear() {
+    let mut metadata = HdrImageMetadata::from_color_space(HdrColorSpace::LinearSrgb);
+    metadata.transfer_function = HdrTransferFunction::Srgb;
+    metadata.reference = HdrReference::SdrGainMapBase;
+    metadata.gain_map = Some(HdrGainMapMetadata {
+        source: "JPEG XL",
+        target_hdr_capacity: Some(4.0),
+        diagnostic: "test".to_string(),
+        capped_display_referred: false,
+        apple_heic_deferred: None,
+        iso_deferred: None,
+    });
+    let image = HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    };
+    let settings = HdrToneMapSettings::default();
+    let uniform = image_tone_map_uniform(
+        &image,
+        settings,
+        0,
+        1.0,
+        HdrRenderOutputMode::SdrToneMapped,
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+        1.0,
+        true,
+        None,
+    );
+    assert_eq!(
+        uniform.input_transfer_function,
+        HdrTransferFunction::Linear as u32
+    );
+    assert_eq!(uniform.input_reference, HdrReference::Unknown as u32);
+}
+
+#[test]
 fn tone_map_manual_srgb_oetf_plain_unorm_only() {
     assert!(
         crate::hdr::renderer::hdr_sdr_framebuffer_needs_manual_srgb_oetf(
@@ -840,7 +881,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
 
     let mut callback_resources = CallbackResources::default();
     let target_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    callback_resources.insert(create_callback_resources(&device, target_format));
+    callback_resources.insert(create_callback_resources(&device, target_format, None));
 
     let images: Vec<_> = (1..=9)
         .map(|i| {
@@ -875,6 +916,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
             keep_resident: false,
+            raw_demosaic_baked_notify: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -927,6 +969,7 @@ fn test_hdr_renderer_multi_binding_and_lru_eviction() {
             uv_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             ripple: None,
             keep_resident: false,
+            raw_demosaic_baked_notify: None,
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

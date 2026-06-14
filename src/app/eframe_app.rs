@@ -113,6 +113,13 @@ impl eframe::App for ImageViewerApp {
             log::error!("[on_exit] Failed to save context menu: {}", e);
         }
 
+        if let (Some(info), Some(cache)) = (
+            self.wgpu_adapter_info.as_ref(),
+            self.wgpu_pipeline_cache.as_deref(),
+        ) {
+            crate::wgpu_pipeline_cache::persist(info, cache);
+        }
+
         // Force-terminate BEFORE eframe tries to tear down GPU resources.
         // This avoids a DLL loader lock deadlock on Windows where:
         //   - rayon worker threads hold the loader lock during TLS cleanup
@@ -367,6 +374,7 @@ impl eframe::App for ImageViewerApp {
         if let Some(format) = live_target_format {
             self.hdr_target_format = Some(format);
         }
+        self.sync_hdr_callback_resources_prewarm(frame);
 
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         self.hdr_monitor_state
@@ -442,6 +450,13 @@ impl eframe::App for ImageViewerApp {
                 self.last_logged_swap_chain_format_request = Some(desired_format);
             }
             self.requested_target_format.request(desired_format);
+            if let Some(state) = frame.wgpu_render_state() {
+                self.hdr_callback_resources_prewarm.ensure_started(
+                    &state.device,
+                    desired_format,
+                    self.wgpu_pipeline_cache.as_deref(),
+                );
+            }
             ctx.request_repaint();
         } else {
             self.last_logged_swap_chain_format_request = None;
@@ -521,6 +536,7 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
+        self.process_loaded_images(ctx);
         self.process_scan_results();
         self.process_music_scan_results();
         // Upload deferred CPU pixels for the outgoing frame before navigation captures
@@ -528,7 +544,6 @@ impl eframe::App for ImageViewerApp {
         self.flush_deferred_sdr_upload_for_index(self.current_index, ctx);
         self.check_auto_switch(ctx);
         self.handle_keyboard(ctx);
-        self.process_loaded_images(ctx);
         self.process_file_op_results();
 
         // Check if the audio thread detected a hardware stall (e.g. WASAPI exclusive

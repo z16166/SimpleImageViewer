@@ -17,10 +17,31 @@
 use super::*;
 
 impl ImageViewerApp {
+    pub(crate) fn maybe_prefetch_startup_raw_open(&self) {
+        if self.image_files.is_empty() {
+            return;
+        }
+        let path = &self.image_files[self.current_index];
+        if !crate::loader::should_prefetch_raw_gpu_open(
+            &self.settings,
+            path,
+            self.gpu_demosaic_failed_indices.contains(&self.current_index),
+        ) {
+            return;
+        }
+        self.loader.prefetch_raw_open(path.clone());
+    }
+
     pub(crate) fn schedule_preloads(&mut self, forward: bool) {
         let n = self.image_files.len();
         if n == 0 {
             preload_debug!("[PreloadDebug] schedule skipped: no images");
+            return;
+        }
+        if self.preload_deferred_for_hdr_capacity {
+            preload_debug!(
+                "[PreloadDebug] schedule deferred: waiting for runtime HDR capacity refresh"
+            );
             return;
         }
         let cur = self.current_index;
@@ -36,14 +57,30 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading(cur, self.generation);
+        let current_is_loading = self.loader.is_loading_any(cur);
         preload_debug!(
             "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
             cur,
             current_has_asset,
             current_is_loading
         );
-        if !current_has_asset && !current_is_loading {
+        let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
+            &self.image_files,
+            cur,
+            self.settings.raw_high_quality,
+            &self.hdr_image_cache,
+            &self.hdr_tiled_source_cache,
+        );
+        if (!current_has_asset && !current_is_loading)
+            || (current_missing_hdr_plane && !current_is_loading)
+        {
+            if current_missing_hdr_plane && current_has_asset {
+                preload_debug!(
+                    "[PreloadDebug][RAW] request current reload: idx={} gen={} reason=missing_hdr_plane",
+                    cur,
+                    self.generation,
+                );
+            }
             let path = self.image_files[cur].clone();
             preload_debug!(
                 "[PreloadDebug] request current: idx={} gen={} path={}",
@@ -51,12 +88,31 @@ impl ImageViewerApp {
                 self.generation,
                 path.display()
             );
-            self.loader
-                .request_load(cur, self.generation, path, self.settings.raw_high_quality);
+            self.loader.request_load(
+                cur,
+                self.generation,
+                path,
+                self.settings.raw_high_quality,
+                self.raw_demosaic_mode_for_index(cur),
+            );
         }
 
         if !self.settings.preload {
             preload_debug!("[PreloadDebug] background preload disabled in settings");
+            return;
+        }
+
+        let path_is_raw = self
+            .image_files
+            .get(cur)
+            .is_some_and(|p| crate::preload_debug::path_is_raw(p));
+        if should_defer_background_preload_for_raw_gpu_current(
+            self.raw_hq_index_requires_hdr_plane(cur),
+            path_is_raw,
+            current_is_loading,
+            self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+            self.raw_gpu_demosaic_await_hdr_present,
+        ) {
             return;
         }
 
@@ -182,7 +238,7 @@ impl ImageViewerApp {
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
-            let is_loading = self.loader.is_loading(idx, self.generation);
+            let is_loading = self.loader.is_loading_any(idx);
             if has_asset || is_loading {
                 preload_debug!(
                     "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
@@ -272,6 +328,7 @@ impl ImageViewerApp {
                 self.generation,
                 path.clone(),
                 self.settings.raw_high_quality,
+                self.raw_demosaic_mode_for_index(idx),
             );
             count += 1;
             let budget_charge = if decode_budget_bytes > budget {
@@ -299,11 +356,18 @@ impl ImageViewerApp {
         ) {
             return false;
         }
-        current_image_has_loaded_asset(
+        let base_loaded = current_image_has_loaded_asset(
             self.texture_cache.contains(index),
             has_static_hdr,
             has_hdr_tiled_source,
             self.animation_cache.contains_key(&index),
-        ) || self.deferred_sdr_uploads.contains_key(&index)
+        ) || self.deferred_sdr_uploads.contains_key(&index);
+        if !base_loaded {
+            return false;
+        }
+        if self.raw_hq_index_requires_hdr_plane(index) && !has_hdr_plane {
+            return false;
+        }
+        true
     }
 }

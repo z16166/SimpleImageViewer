@@ -17,8 +17,6 @@
 use super::*;
 
 impl ImageViewerApp {
-    const PREFETCH_WINDOW_DISTANCE: usize = 2;
-
     pub(crate) fn invalidate_random_slideshow_order(&mut self) {
         self.random_slideshow_order_ready = false;
     }
@@ -35,7 +33,8 @@ impl ImageViewerApp {
     }
 
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        let next_gen = self.generation.wrapping_add(1);
+        self.generation = next_gen;
         self.loader.set_generation(self.generation);
         self.loader.cancel_all();
         self.texture_cache.clear_all();
@@ -80,6 +79,12 @@ impl ImageViewerApp {
         if self.hdr_placeholder_fallback_indices.remove(&from) {
             self.hdr_placeholder_fallback_indices.insert(to);
         }
+        if self.hdr_raw_gpu_demosaic_pending_indices.remove(&from) {
+            self.hdr_raw_gpu_demosaic_pending_indices.insert(to);
+        }
+        if self.gpu_demosaic_failed_indices.remove(&from) {
+            self.gpu_demosaic_failed_indices.insert(to);
+        }
         if self.hdr_in_flight_fallback_refinements.remove(&from) {
             self.hdr_in_flight_fallback_refinements.insert(to);
         }
@@ -92,6 +97,14 @@ impl ImageViewerApp {
             self.deferred_sdr_uploads.insert(to, upload);
         }
         self.raw_metadata.relocate_index(from, to);
+
+        if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to) {
+            if let Some(hdr) = self.hdr_image_cache.get(&to) {
+                let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+                self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, to);
+            }
+        }
+        self.hdr_raw_gpu_demosaic_pending_key_index.retain(|_, idx| *idx != from);
 
         // 5. Prefetched tiles / animations
         if let Some(mut tiles) = self.prefetched_tiles.remove(&from) {
@@ -197,6 +210,12 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.hdr_placeholder_fallback_indices
             .retain(|&idx| idx == except_idx);
+        self.hdr_raw_gpu_demosaic_pending_indices
+            .retain(|&idx| idx == except_idx);
+        self.gpu_demosaic_failed_indices
+            .retain(|&idx| idx == except_idx);
+        self.hdr_raw_gpu_demosaic_pending_key_index
+            .retain(|_, idx| *idx == except_idx);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == except_idx);
         self.deferred_sdr_uploads
@@ -257,6 +276,7 @@ impl ImageViewerApp {
         indices.extend(self.pending_anim_frames.keys().copied());
         indices.extend(self.hdr_sdr_fallback_indices.iter().copied());
         indices.extend(self.hdr_placeholder_fallback_indices.iter().copied());
+        indices.extend(self.hdr_raw_gpu_demosaic_pending_indices.iter().copied());
         indices.extend(self.ultra_hdr_capacity_sensitive_indices.iter().copied());
 
         let pixel_cache_indices: std::collections::HashSet<usize> = indices
@@ -284,7 +304,7 @@ impl ImageViewerApp {
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
         let within_window = |idx: usize| {
-            prefetch_window_contains(self.current_index, len, idx, Self::PREFETCH_WINDOW_DISTANCE)
+            prefetch_window_contains(self.current_index, len, idx, PREFETCH_WINDOW_DISTANCE)
         };
 
         // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too

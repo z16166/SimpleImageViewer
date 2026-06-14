@@ -16,9 +16,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -328,6 +329,10 @@ pub struct ImageViewerApp {
     pub(crate) texture_cache: TextureCache,
     pub(crate) hdr_capabilities: crate::hdr::capabilities::HdrCapabilities,
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
+    pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
+    pub(crate) wgpu_adapter_info: Option<wgpu::AdapterInfo>,
+    pub(crate) hdr_callback_resources_prewarm:
+        std::sync::Arc<crate::hdr::renderer::HdrCallbackResourcesPrewarm>,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
     pub(crate) hdr_monitor_state: crate::hdr::monitor::HdrMonitorState,
     /// Last observed viewport placement (`outer_rect`, `inner_size`,
@@ -372,6 +377,8 @@ pub struct ImageViewerApp {
     pub(crate) rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode,
+    /// Startup: defer directory preloads until the first runtime HDR capacity refresh.
+    pub(crate) preload_deferred_for_hdr_capacity: bool,
     pub(crate) current_hdr_image: Option<CurrentHdrImage>,
     pub(crate) hdr_image_cache: HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
     pub(crate) current_hdr_tiled_image: Option<CurrentHdrTiledImage>,
@@ -381,6 +388,16 @@ pub struct ImageViewerApp {
     pub(crate) hdr_sdr_fallback_indices: HashSet<usize>,
     /// HDR indices whose current SDR fallback texture is a temporary black placeholder.
     pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
+    /// Static GPU RAW: show embedded preview via SDR until demosaic bake completes.
+    pub(crate) hdr_raw_gpu_demosaic_pending_indices: HashSet<usize>,
+    /// Maps HDR image key to index while GPU demosaic is pending (survives HDR cache eviction).
+    pub(crate) hdr_raw_gpu_demosaic_pending_key_index:
+        HashMap<crate::hdr::renderer::HdrImageKey, usize>,
+    pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
+    /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
+    pub(crate) raw_gpu_demosaic_await_hdr_present: bool,
+    pub(crate) raw_demosaic_baked_notify:
+        Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
     /// HDR indices for which fallback refinement is currently in-flight.
     pub(crate) hdr_in_flight_fallback_refinements: HashSet<usize>,
     /// SDR RGBA decoded during preload but not yet uploaded to egui (avoids VRAM spikes).
@@ -456,7 +473,6 @@ pub struct ImageViewerApp {
     /// Per-index RAW OSD metadata (embedded preview, sensor grid, active pixel source).
     pub(crate) raw_metadata: crate::app::view_status::RawMetadataStore,
     pub(crate) image_status: crate::app::view_status::ImageViewStatus,
-    pub(crate) last_hdr_view_status: Option<crate::app::view_status::HdrViewStatusSnapshot>,
     /// File name shown in the image OSD for [`Self::current_index`].
     pub(crate) current_file_name: String,
     pub(crate) cached_keyboard_hint: String,
@@ -615,4 +631,14 @@ pub(crate) struct PendingAnimUpload {
     pub(crate) textures: Vec<egui::TextureHandle>,
     pub(crate) delays: Vec<std::time::Duration>,
     pub(crate) next_frame: usize,
+}
+
+impl ImageViewerApp {
+    pub(crate) fn raw_demosaic_mode_for_index(&self, index: usize) -> crate::settings::RawDemosaicMode {
+        if self.gpu_demosaic_failed_indices.contains(&index) {
+            crate::settings::RawDemosaicMode::Cpu
+        } else {
+            self.settings.raw_demosaic_mode
+        }
+    }
 }

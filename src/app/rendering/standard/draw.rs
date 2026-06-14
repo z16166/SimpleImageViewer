@@ -201,6 +201,17 @@ impl ImageViewerApp {
             crate::app::rendering::geometry::unrotated_draw_rect_for_display(final_dest, rotation);
         let final_layout = PlaneLayout::from_dest(img_size, rotation, final_dest);
 
+        if let Some(ref hdr_image) = hdr_image {
+            self.ensure_gpu_raw_demosaic_bake_callback(
+                ui,
+                screen_rect,
+                hdr_image,
+                &render_plan,
+                &final_layout,
+                rotation,
+            );
+        }
+
         if tp.is_animating
             && matches!(
                 self.active_transition,
@@ -311,6 +322,12 @@ impl ImageViewerApp {
         // probe failed and the conservative gate kicked in) the cached SDR fallback texture
         // is the correct visual source — see `should_route_through_hdr_plane`.
         if should_route_through_hdr_plane(&render_plan) {
+            if self.raw_gpu_demosaic_await_hdr_present {
+                self.raw_gpu_demosaic_await_hdr_present = false;
+                if self.settings.preload {
+                    self.schedule_preloads(true);
+                }
+            }
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 let geometric_transition = matches!(
                     self.active_transition,

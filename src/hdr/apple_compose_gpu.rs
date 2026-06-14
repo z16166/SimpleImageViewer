@@ -254,8 +254,14 @@ fn chunk_row_count(width: u32, max_binding_size: u64) -> u32 {
     if row_bytes == 0 {
         return 1;
     }
-    let aligned_row = wgpu::util::align_to(row_bytes, STORAGE_BINDING_ALIGNMENT);
-    ((max_binding_size / aligned_row).max(1)) as u32
+    if chunk_byte_len(width, 1) > max_binding_size {
+        return 1;
+    }
+    let mut chunk_rows = (max_binding_size / row_bytes).max(1) as u32;
+    while chunk_rows > 1 && chunk_byte_len(width, chunk_rows) > max_binding_size {
+        chunk_rows -= 1;
+    }
+    chunk_rows
 }
 
 fn chunk_byte_len(width: u32, chunk_rows: u32) -> u64 {
@@ -265,8 +271,43 @@ fn chunk_byte_len(width: u32, chunk_rows: u32) -> u64 {
     )
 }
 
+fn max_encoded_primary_strip_bytes(limits: &wgpu::Limits) -> u64 {
+    limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size)
+}
+
+fn encoded_primary_chunk_rows(width: u32, height: u32, limits: &wgpu::Limits) -> u32 {
+    chunk_row_count(width, max_encoded_primary_strip_bytes(limits)).min(height)
+}
+
+fn create_encoded_primary_buffer(
+    device: &wgpu::Device,
+    byte_len: u64,
+) -> Result<wgpu::Buffer, String> {
+    let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("simple-image-viewer-hdr-apple-encoded-primary-buffer"),
+        size: byte_len,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let validation_err = pollster::block_on(validation_scope.pop());
+    if let Some(err) = validation_err {
+        let _ = pollster::block_on(oom_scope.pop());
+        return Err(format!("Apple encoded primary buffer validation: {err}"));
+    }
+    let oom_err = pollster::block_on(oom_scope.pop());
+    if let Some(err) = oom_err {
+        return Err(format!("Apple encoded primary buffer OOM: {err}"));
+    }
+    Ok(buffer)
+}
+
 pub(super) fn create_compose_compute_resources(
     device: &wgpu::Device,
+    pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> (wgpu::BindGroupLayout, wgpu::ComputePipeline, wgpu::Buffer) {
     let compose_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("simple-image-viewer-hdr-apple-compose-shader"),
@@ -329,7 +370,7 @@ pub(super) fn create_compose_compute_resources(
         module: &compose_shader,
         entry_point: Some("cs_compose_apple_gain"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        cache: pipeline_cache,
     });
     let compose_tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),
@@ -360,18 +401,27 @@ pub(super) fn ensure_encoded_primary_buffer(
     device: &wgpu::Device,
     binding: &mut HdrImageBinding,
     width: u32,
-    max_binding_size: u64,
+    height: u32,
 ) -> Result<(), String> {
-    let chunk_rows = chunk_row_count(width, max_binding_size);
+    let limits = device.limits();
+    let max_strip_bytes = max_encoded_primary_strip_bytes(&limits);
+    let chunk_rows = encoded_primary_chunk_rows(width, height, &limits);
     let byte_len = chunk_byte_len(width, chunk_rows);
+    if byte_len == 0 || byte_len > limits.max_buffer_size {
+        return Err(format!(
+            "Apple encoded primary strip size {byte_len} exceeds max_buffer_size {}",
+            limits.max_buffer_size
+        ));
+    }
+    if byte_len > max_strip_bytes {
+        return Err(format!(
+            "Apple encoded primary strip size {byte_len} exceeds max_storage_buffer_binding_size {}",
+            max_strip_bytes
+        ));
+    }
     let needs_new = binding.encoded_primary_buffer_bytes != byte_len as usize;
     if needs_new {
-        binding.encoded_primary_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("simple-image-viewer-hdr-apple-encoded-primary-buffer"),
-            size: byte_len,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
+        binding.encoded_primary_buffer = Some(create_encoded_primary_buffer(device, byte_len)?);
         binding.encoded_primary_buffer_bytes = byte_len as usize;
     }
     if binding.encoded_primary_buffer.is_some() {
@@ -426,8 +476,8 @@ pub(super) fn encode_compose_compute_pass(
     upload_primary: bool,
     compose_tone_map_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
-    let max_binding = device.limits().max_storage_buffer_binding_size;
-    let chunk_rows = chunk_row_count(image.width, max_binding).min(image.height);
+    let limits = device.limits();
+    let chunk_rows = encoded_primary_chunk_rows(image.width, image.height, &limits);
     let row_stride_floats = image.width as usize * 4;
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -515,11 +565,33 @@ mod tests {
         const DEFAULT_MAX_BINDING: u64 = 134_217_728;
         let width = 3024_u32;
         let height = 4032_u32;
-        let chunk_rows = chunk_row_count(width, DEFAULT_MAX_BINDING);
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: DEFAULT_MAX_BINDING,
+            max_buffer_size: DEFAULT_MAX_BINDING,
+            ..wgpu::Limits::default()
+        };
+        let chunk_rows = encoded_primary_chunk_rows(width, height, &limits);
         assert!(chunk_rows > 0);
         assert!(chunk_rows <= height);
         let chunk_bytes = chunk_byte_len(width, chunk_rows);
         assert!(chunk_bytes <= DEFAULT_MAX_BINDING);
+    }
+
+    #[test]
+    fn encoded_primary_buffer_size_caps_to_image_height() {
+        const DEFAULT_MAX_BINDING: u64 = 134_217_728;
+        let width = 3024_u32;
+        let height = 100_u32;
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: DEFAULT_MAX_BINDING,
+            max_buffer_size: DEFAULT_MAX_BINDING,
+            ..wgpu::Limits::default()
+        };
+        let chunk_rows = encoded_primary_chunk_rows(width, height, &limits);
+        assert_eq!(chunk_rows, height);
+        let chunk_bytes = chunk_byte_len(width, chunk_rows);
+        let full_strip = chunk_byte_len(width, encoded_primary_chunk_rows(width, 4032, &limits));
+        assert!(chunk_bytes < full_strip);
     }
 
     #[test]

@@ -739,6 +739,7 @@ struct DeviceShared {
     heap_views: descriptor::GeneralHeap,
     sampler_heap: sampler::SamplerHeap,
     private_caps: PrivateCapabilities,
+    pipeline_cache_validation_key: [u8; 16],
 }
 
 unsafe impl Send for DeviceShared {}
@@ -1261,10 +1262,8 @@ impl crate::DynComputePipeline for ComputePipeline {}
 unsafe impl Send for ComputePipeline {}
 unsafe impl Sync for ComputePipeline {}
 
-#[derive(Debug)]
-pub struct PipelineCache;
-
-impl crate::DynPipelineCache for PipelineCache {}
+mod pipeline_cache;
+pub(super) use pipeline_cache::PipelineCache;
 
 #[derive(Debug)]
 pub struct AccelerationStructure {

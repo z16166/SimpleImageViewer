@@ -143,7 +143,13 @@ pub enum OsdEvent {
     FileSizeBytes(u64),
     ImageMode(ImageOsdMode),
     FileName(Arc<str>),
-    RawLine(Option<Arc<str>>),
+    RawSensorSize((u32, u32)),
+    RawEmbeddedPreview(Option<(u32, u32)>),
+    RawRenderPixels(crate::loader::RawRenderPixels),
+    RawDemosaicBackend(Option<crate::loader::RawDemosaicBackend>),
+    RawCpuDemosaicMs(Option<u32>),
+    RawGpuExtractMs(Option<u32>),
+    RawGpuDemosaicMs(Option<u32>),
     HdrRenderPath(Option<crate::hdr::status::HdrRenderPath>),
     HdrColorSpace(Option<crate::hdr::types::HdrColorSpace>),
     HdrOutputMode(crate::hdr::types::HdrOutputMode),
@@ -182,8 +188,32 @@ impl OsdEvent {
         Self::FileName(Arc::from(value.as_str()))
     }
 
-    pub fn raw_line(value: &Option<String>) -> Self {
-        Self::RawLine(value.as_deref().map(Arc::from))
+    pub fn raw_sensor_size(value: &(u32, u32)) -> Self {
+        Self::RawSensorSize(*value)
+    }
+
+    pub fn raw_embedded_preview(value: &Option<(u32, u32)>) -> Self {
+        Self::RawEmbeddedPreview(*value)
+    }
+
+    pub fn raw_render_pixels(value: &crate::loader::RawRenderPixels) -> Self {
+        Self::RawRenderPixels(*value)
+    }
+
+    pub fn raw_demosaic_backend(value: &Option<crate::loader::RawDemosaicBackend>) -> Self {
+        Self::RawDemosaicBackend(*value)
+    }
+
+    pub fn raw_cpu_demosaic_ms(value: &Option<u32>) -> Self {
+        Self::RawCpuDemosaicMs(*value)
+    }
+
+    pub fn raw_gpu_extract_ms(value: &Option<u32>) -> Self {
+        Self::RawGpuExtractMs(*value)
+    }
+
+    pub fn raw_gpu_demosaic_ms(value: &Option<u32>) -> Self {
+        Self::RawGpuDemosaicMs(*value)
     }
 
     pub fn hdr_render_path(value: &Option<crate::hdr::status::HdrRenderPath>) -> Self {
@@ -224,7 +254,13 @@ struct SupplementalOsdInputs {
     file_size_bytes: u64,
     image_mode: ImageOsdMode,
     file_name: Arc<str>,
-    raw_line: Option<Arc<str>>,
+    raw_sensor_size: (u32, u32),
+    raw_embedded_preview: Option<(u32, u32)>,
+    raw_render_pixels: crate::loader::RawRenderPixels,
+    raw_demosaic_backend: Option<crate::loader::RawDemosaicBackend>,
+    raw_cpu_demosaic_ms: Option<u32>,
+    raw_gpu_extract_ms: Option<u32>,
+    raw_gpu_demosaic_ms: Option<u32>,
     hdr_render_path: Option<crate::hdr::status::HdrRenderPath>,
     hdr_color_space: Option<crate::hdr::types::HdrColorSpace>,
     hdr_output_mode: crate::hdr::types::HdrOutputMode,
@@ -244,7 +280,16 @@ impl Default for SupplementalOsdInputs {
             file_size_bytes: 0,
             image_mode: ImageOsdMode::Static,
             file_name: Arc::from(""),
-            raw_line: None,
+            raw_sensor_size: (0, 0),
+            raw_embedded_preview: None,
+            raw_render_pixels: crate::loader::RawRenderPixels::Embedded {
+                width: 0,
+                height: 0,
+            },
+            raw_demosaic_backend: None,
+            raw_cpu_demosaic_ms: None,
+            raw_gpu_extract_ms: None,
+            raw_gpu_demosaic_ms: None,
             hdr_render_path: None,
             hdr_color_space: None,
             hdr_output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,
@@ -293,7 +338,13 @@ impl SupplementalOsdInputs {
             OsdEvent::FileSizeBytes(value) => self.file_size_bytes = value,
             OsdEvent::ImageMode(value) => self.image_mode = value,
             OsdEvent::FileName(value) => self.file_name = value,
-            OsdEvent::RawLine(value) => self.raw_line = value,
+            OsdEvent::RawSensorSize(value) => self.raw_sensor_size = value,
+            OsdEvent::RawEmbeddedPreview(value) => self.raw_embedded_preview = value,
+            OsdEvent::RawRenderPixels(value) => self.raw_render_pixels = value,
+            OsdEvent::RawDemosaicBackend(value) => self.raw_demosaic_backend = value,
+            OsdEvent::RawCpuDemosaicMs(value) => self.raw_cpu_demosaic_ms = value,
+            OsdEvent::RawGpuExtractMs(value) => self.raw_gpu_extract_ms = value,
+            OsdEvent::RawGpuDemosaicMs(value) => self.raw_gpu_demosaic_ms = value,
             OsdEvent::HdrRenderPath(value) => self.hdr_render_path = value,
             OsdEvent::HdrColorSpace(value) => self.hdr_color_space = value,
             OsdEvent::HdrOutputMode(value) => self.hdr_output_mode = value,
@@ -395,11 +446,7 @@ impl OsdRenderer {
         }
 
         self.rebuild_hud_from_state();
-        self.has_raw_line = self.supplemental_state.raw_line.is_some();
-        self.cached_raw_line.clear();
-        if let Some(raw) = self.supplemental_state.raw_line.as_deref() {
-            self.cached_raw_line.push_str(raw);
-        }
+        self.refresh_cached_raw_line();
         self.refresh_cached_hdr_line();
         self.bump_content();
     }
@@ -410,16 +457,29 @@ impl OsdRenderer {
     }
 
     /// Re-translate all cached OSD strings after a locale change.
-    ///
-    /// `cached_raw_line` is refreshed in the same frame: the caller is expected to
-    /// call `raw_metadata.on_language_changed()` first (which sends `OsdEvent::RawLine`
-    /// to the channel) and then call `sync_events()` after this method so the event
-    /// is consumed before rendering.
     pub fn on_language_changed(&mut self) {
         self.cached_loading_hint = t!("status.loading").to_string();
         self.rebuild_hud_from_state();
+        self.refresh_cached_raw_line();
         self.refresh_cached_hdr_line();
         self.bump_content();
+    }
+
+    fn refresh_cached_raw_line(&mut self) {
+        let raw = crate::loader::RawOsdInfo::compose_osd_line(
+            self.supplemental_state.raw_sensor_size,
+            self.supplemental_state.raw_embedded_preview,
+            self.supplemental_state.raw_render_pixels,
+            self.supplemental_state.raw_demosaic_backend,
+            self.supplemental_state.raw_cpu_demosaic_ms,
+            self.supplemental_state.raw_gpu_extract_ms,
+            self.supplemental_state.raw_gpu_demosaic_ms,
+        );
+        self.has_raw_line = raw.is_some();
+        self.cached_raw_line.clear();
+        if let Some(raw) = raw {
+            self.cached_raw_line.push_str(&raw);
+        }
     }
 
     fn rebuild_hud_from_state(&mut self) {
@@ -788,7 +848,17 @@ mod tests {
         let _ = osd_event_tx.send(OsdEvent::FileSizeBytes(image.file_size_bytes));
         let _ = osd_event_tx.send(OsdEvent::ImageMode(image.mode));
         let _ = osd_event_tx.send(OsdEvent::FileName(Arc::from("image.jpg")));
-        let _ = osd_event_tx.send(OsdEvent::RawLine(Some(Arc::from("RAW line"))));
+        let _ = osd_event_tx.send(OsdEvent::RawSensorSize((6000, 4000)));
+        let _ = osd_event_tx.send(OsdEvent::RawEmbeddedPreview(Some((1920, 1280))));
+        let _ = osd_event_tx.send(OsdEvent::RawRenderPixels(
+            crate::loader::RawRenderPixels::HqBootstrap {
+                width: 1920,
+                height: 1280,
+            },
+        ));
+        let _ = osd_event_tx.send(OsdEvent::RawDemosaicBackend(Some(
+            crate::loader::RawDemosaicBackend::Host,
+        )));
         let _ = osd_event_tx.send(OsdEvent::HdrRenderPath(hdr.render_path));
         let _ = osd_event_tx.send(OsdEvent::HdrColorSpace(hdr.color_space));
         let _ = osd_event_tx.send(OsdEvent::HdrOutputMode(hdr.output_mode));
@@ -807,7 +877,8 @@ mod tests {
         assert!(osd.cached_hud.contains("100%"));
         assert!(osd.has_raw_line());
         assert!(osd.has_hdr_line());
-        assert_eq!(osd.cached_raw_line, "RAW line");
+        assert!(osd.cached_raw_line.contains("6000x4000"));
+        assert!(osd.cached_raw_line.contains("1920x1280"));
         assert!(osd.cached_hdr_line_display.contains("+0.0 EV"));
 
         osd.sync_events();

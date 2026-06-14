@@ -28,19 +28,23 @@ mod tiled_sources;
 mod types;
 
 pub use orchestrator::ImageLoader;
+pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
 #[allow(unused_imports)]
 // Re-export-only surface for `crate::loader::*`; rustc may lint `MONITOR_PREVIEW_CAP`.
 pub use preview_caps::{
-    MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side, refresh_hq_preview_monitor_cap,
+    GPU_DEMOSAIC_SUPPORTED, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side,
+    refresh_hq_preview_monitor_cap,
 };
-pub use raw_osd::{RawLoadOutput, RawOsdInfo};
+pub(crate) use raw_osd::elapsed_ms_u32;
+pub use raw_osd::{RawDemosaicBackend, RawLoadOutput, RawOsdInfo, RawRenderPixels};
 pub use texture_cache::TextureCache;
 pub use types::*;
 
 pub(crate) use hdr_fallback::{
     cheap_hdr_sdr_placeholder_rgba8, hdr_display_requests_sdr_preview,
+    hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
-    hdr_to_sdr_with_user_tone,
+    hdr_to_sdr_with_user_tone, raw_gpu_source_has_bootstrap_preview,
 };
 pub(crate) use metadata::extract_exif_thumbnail;
 pub(crate) use orientation::{

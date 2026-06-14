@@ -22,17 +22,22 @@
 //! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
 //!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
 
-use super::develop::{develop_full_resolution, develop_hq_preview};
+use super::develop::{develop_full_resolution, develop_hq_preview, develop_scene_linear_hdr_timed};
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
 
 use crate::hdr::types::HdrToneMapSettings;
+const GPU_DEMOSAIC_MAX_DIMENSION: u32 = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
+use crate::loader::raw_osd::RawDemosaicBackend;
 use crate::loader::raw_osd::RawOsdContext;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::raw_osd::RawOsdInfo;
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
-use crate::loader::{DecodedImage, ImageData, RawLoadOutput, RefinementRequest};
+use crate::loader::{
+    DecodedImage, ImageData, LoaderOutput, PreviewBundle, PreviewResult, RawLoadOutput,
+    RefinementRequest, source_key_for_path,
+};
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::Sender;
 use parking_lot::RwLock as PLRwLock;
@@ -40,6 +45,56 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::loader::decode::assemble::{make_hdr_image_data, make_image_data};
+use crate::loader::orchestrator::{RawOpenPhaseTimings, RawOpenPrefetch};
+
+pub(crate) fn open_raw_processor_with_preview(
+    path: &PathBuf,
+) -> Result<(RawProcessor, Option<DecodedImage>, RawOpenPhaseTimings, i32), String> {
+    let open_started = std::time::Instant::now();
+    let mut processor =
+        RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
+    if let Err(e) = processor.open(path) {
+        return Err(e);
+    }
+    let open_ms = crate::loader::elapsed_ms_u32(open_started);
+
+    let lr_flip = processor.flip();
+    let final_orientation = match lr_flip {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        3 => 3,
+        4 => 5,
+        5 => 8,
+        6 => 6,
+        7 => 7,
+        _ => crate::metadata_utils::get_exif_orientation(path),
+    };
+
+    let final_lr_flip = match final_orientation {
+        1 => 0,
+        2 => 1,
+        3 => 3,
+        4 => 2,
+        5 => 4,
+        6 => 6,
+        7 => 7,
+        8 => 5,
+        _ => 0,
+    };
+    processor.set_user_flip(final_lr_flip);
+
+    let thumb_started = std::time::Instant::now();
+    let preview_opt = extract_embedded_preview(&mut processor, path, final_orientation);
+    let thumb_ms = crate::loader::elapsed_ms_u32(thumb_started);
+
+    Ok((
+        processor,
+        preview_opt,
+        RawOpenPhaseTimings { open_ms, thumb_ms },
+        final_lr_flip,
+    ))
+}
 
 fn load_raw_hq_static_hdr(
     processor: &mut RawProcessor,
@@ -53,8 +108,8 @@ fn load_raw_hq_static_hdr(
         path.file_name().unwrap_or_default(),
         hdr_target_capacity
     );
-    match processor.develop_scene_linear_hdr() {
-        Ok(hdr) => {
+    match develop_scene_linear_hdr_timed(processor) {
+        Ok((hdr, cpu_ms)) => {
             let width = hdr.width;
             let height = hdr.height;
             let fallback_pixels = match crate::loader::hdr_sdr_fallback_rgba8_eager_or_placeholder(
@@ -68,7 +123,9 @@ fn load_raw_hq_static_hdr(
             let fallback = DecodedImage::from_arc(hdr.width, hdr.height, fallback_pixels);
             Some(Ok(RawLoadOutput {
                 image: make_hdr_image_data(hdr, fallback),
-                osd: osd_ctx.full_develop(width, height),
+                osd: osd_ctx
+                    .full_develop(width, height, RawDemosaicBackend::Host)
+                    .with_cpu_demosaic_ms(cpu_ms),
             }))
         }
         Err(err) => {
@@ -132,69 +189,106 @@ fn load_raw_with_embedded_bootstrap(
     })
 }
 
+pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
+
+fn emit_raw_hq_bootstrap_preview(
+    load_tx: &Sender<LoaderOutput>,
+    index: usize,
+    generation: u64,
+    path: &PathBuf,
+    preview: &DecodedImage,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] log_tag: &str,
+) {
+    crate::preload_debug!(
+        "[PreloadDebug][RAW-{}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        log_tag,
+        index,
+        generation,
+        preview.width,
+        preview.height,
+        path.file_name().unwrap_or_default()
+    );
+    let _ = load_tx.send(LoaderOutput::Preview(PreviewResult {
+        index,
+        generation,
+        source_key: source_key_for_path(path),
+        preview_bundle: PreviewBundle::refined().with_sdr(preview.clone()),
+        error: None,
+        cpu_demosaic_ms: None,
+    }));
+}
+
 pub(crate) fn load_raw(
-    _index: usize,
-    _generation: u64,
+    index: usize,
+    generation: u64,
     path: &PathBuf,
     refine_tx: Sender<RefinementRequest>,
+    load_tx: Sender<LoaderOutput>,
     high_quality: bool,
+    raw_demosaic_mode: crate::settings::RawDemosaicMode,
     hdr_target_capacity: f32,
     hdr_tone_map: HdrToneMapSettings,
+    raw_open_prefetch: Option<&RawOpenPrefetch>,
 ) -> Result<RawLoadOutput, String> {
-    let mut processor =
-        RawProcessor::new().ok_or_else(|| rust_i18n::t!("error.libraw_init").to_string())?;
-    if let Err(e) = processor.open(path) {
-        log::warn!(
-            "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
-            path,
-            e
-        );
-        #[cfg(target_os = "windows")]
-        return crate::wic::load_via_wic(path, high_quality, None).map(|image| RawLoadOutput {
-            image,
-            osd: RawOsdInfo::empty(),
-        });
-        #[cfg(target_os = "macos")]
-        return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(|image| {
-            RawLoadOutput {
-                image,
-                osd: RawOsdInfo::empty(),
+    let (mut processor, preview_opt, open_timings, final_lr_flip, prefetched) = if let Some(
+        session,
+    ) =
+        raw_open_prefetch.and_then(|cache| cache.take_or_wait(path))
+    {
+        let final_lr_flip = session.final_lr_flip;
+        (
+            session.processor,
+            session.preview,
+            session.timings,
+            final_lr_flip,
+            true,
+        )
+    } else {
+        match open_raw_processor_with_preview(path) {
+            Ok((processor, preview, timings, final_lr_flip)) => {
+                (processor, preview, timings, final_lr_flip, false)
             }
-        });
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        return Err(format!(
-            "LibRaw failed and no platform fallback available: {}",
-            e
-        ));
-    }
-
-    let lr_flip = processor.flip();
-    let final_orientation = match lr_flip {
-        0 => 1,
-        1 => 2,
-        2 => 4,
-        3 => 3,
-        4 => 5,
-        5 => 8,
-        6 => 6,
-        7 => 7,
-        _ => crate::metadata_utils::get_exif_orientation(path),
+            Err(e) => {
+                log::warn!(
+                    "[Loader] LibRaw could not open {:?}: {}. Falling back to Rule 2 (WIC/ImageIO).",
+                    path,
+                    e
+                );
+                #[cfg(target_os = "windows")]
+                return crate::wic::load_via_wic(path, high_quality, None).map(|image| {
+                    RawLoadOutput {
+                        image,
+                        osd: RawOsdInfo::empty(),
+                    }
+                });
+                #[cfg(target_os = "macos")]
+                return crate::macos_image_io::load_via_image_io(path, high_quality, None).map(
+                    |image| RawLoadOutput {
+                        image,
+                        osd: RawOsdInfo::empty(),
+                    },
+                );
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                return Err(format!(
+                    "LibRaw failed and no platform fallback available: {}",
+                    e
+                ));
+            }
+        }
     };
 
-    let final_lr_flip = match final_orientation {
-        1 => 0,
-        2 => 1,
-        3 => 3,
-        4 => 2,
-        5 => 4,
-        6 => 6,
-        7 => 7,
-        8 => 5,
-        _ => 0,
-    };
-    processor.set_user_flip(final_lr_flip);
+    let _ = (open_timings.open_ms, open_timings.thumb_ms, prefetched);
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][RAW] open phases idx={} gen={} open_ms={} thumb_ms={} prefetched={} path={:?}",
+        index,
+        generation,
+        open_timings.open_ms,
+        open_timings.thumb_ms,
+        prefetched,
+        path.file_name().unwrap_or_default()
+    );
 
-    let preview_opt = extract_embedded_preview(&mut processor, path, final_orientation);
     let (width, height) = processor.developed_output_dimensions(preview_opt.as_ref());
     let area = width as u64 * height as u64;
     let threshold = crate::tile_cache::TILED_THRESHOLD.load(std::sync::atomic::Ordering::Relaxed);
@@ -238,15 +332,107 @@ pub(crate) fn load_raw(
             threshold,
             refine_tx,
             final_lr_flip,
+            raw_demosaic_mode,
             hdr_target_capacity,
             hdr_tone_map,
             &osd_ctx,
         );
     }
 
+    // GPU demosaic is subject to several conditions:
+    // 1. high_quality must be enabled.
+    // 2. raw_demosaic_mode must be set to Gpu.
+    // 3. final_lr_flip must be 0 (GPU demosaic does not support orientation flip; rotation should be handled in display shader).
+    // 4. The raw processor must report compatibility with the GPU demosaic Bayer pattern.
+    // 5. Image dimensions must not exceed the maximum GPU texture dimension (GPU_DEMOSAIC_MAX_DIMENSION) to prevent rendering failures.
+    // 6. Image area must be under the threshold to avoid exceeding GPU memory budgets.
+    // 7. Device/backend must support RAW demosaic compute (set at app startup).
+    let use_gpu_demosaic = high_quality
+        && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && crate::loader::GPU_DEMOSAIC_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
+        && final_lr_flip == 0
+        && processor.is_gpu_demosaic_compatible()
+        && width <= GPU_DEMOSAIC_MAX_DIMENSION
+        && height <= GPU_DEMOSAIC_MAX_DIMENSION
+        && area < threshold;
+
+    if high_quality
+        && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && !use_gpu_demosaic
+        && !processor.is_gpu_demosaic_compatible()
+    {
+        log::debug!(
+            "[Loader] GPU demosaic skipped for {:?}: CFA not compatible with GPU Bayer demosaic (e.g. Fuji X-Trans/Super-CCD or non-square pixels); using CPU tiled develop",
+            path.file_name().unwrap_or_default()
+        );
+    }
+
+    if use_gpu_demosaic {
+        if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+            emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "GPU");
+        }
+        let extract_started = std::time::Instant::now();
+        match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
+            Ok(mut raw_gpu_source) => {
+                let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
+                // scene_color_scale stays [1,1,1]: linear baseline matches CPU develop (no auto_bright).
+                log::debug!(
+                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms (linear scene scale; demosaic on GPU)",
+                    path.file_name().unwrap_or_default()
+                );
+                #[cfg(feature = "preload-debug")]
+                crate::preload_debug!(
+                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms demosaic_pending",
+                    path.file_name().unwrap_or_default(),
+                );
+                raw_gpu_source.bootstrap_preview = preview_opt.clone();
+                let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+                metadata.raw_gpu_source = Some(raw_gpu_source);
+
+                let hdr = crate::hdr::types::HdrImageBuffer {
+                    width,
+                    height,
+                    format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+                    color_space: metadata.color_space_hint(),
+                    metadata,
+                    rgba_f32: std::sync::Arc::new(Vec::new()),
+                };
+
+                let fallback = if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+                    p.clone()
+                } else {
+                    let fallback_pixels =
+                        crate::loader::cheap_hdr_sdr_placeholder_rgba8(width, height)?;
+                    DecodedImage::from_arc(width, height, std::sync::Arc::new(fallback_pixels))
+                };
+
+                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
+                    let p = preview_opt.as_ref().expect("preview");
+                    osd_ctx.gpu_bootstrap_dims(p.width, p.height)
+                } else {
+                    osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
+                };
+                osd = osd.with_gpu_extract_ms(extract_ms);
+                return Ok(RawLoadOutput {
+                    image: make_hdr_image_data(hdr, fallback),
+                    osd,
+                });
+            }
+            Err(err) => {
+                log::error!(
+                    "[Loader] GPU raw extract failed: {}. Falling back to CPU.",
+                    err
+                );
+            }
+        }
+    }
+
     // High-quality mode: use embedded preview when it already meets HQ requirements.
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
+            if RAW_HQ_BOOTSTRAP_PREVIEW {
+                emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "CPU");
+            }
             if let Some(result) = load_raw_hq_static_hdr(
                 &mut processor,
                 path,
@@ -321,6 +507,7 @@ pub(crate) fn load_raw(
     develop_hq_preview(
         &mut processor,
         path,
+        raw_demosaic_mode,
         hdr_target_capacity,
         hdr_tone_map,
         &osd_ctx,

@@ -78,24 +78,24 @@ fn install_tray_icon_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
 fn install_tray_menu_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
     tray_icon::menu::MenuEvent::set_event_handler(Some(
         move |event: tray_icon::menu::MenuEvent| {
-        let cmd = TRAY_MENU_IDS.read().ok().and_then(|guard| {
-            let ids = guard.as_ref()?;
-            if event.id == ids.show {
-                Some(TrayCommand::ShowMainWindow)
-            } else if event.id == ids.quit {
-                Some(TrayCommand::Quit)
-            } else {
-                None
+            let cmd = TRAY_MENU_IDS.read().ok().and_then(|guard| {
+                let ids = guard.as_ref()?;
+                if event.id == ids.show {
+                    Some(TrayCommand::ShowMainWindow)
+                } else if event.id == ids.quit {
+                    Some(TrayCommand::Quit)
+                } else {
+                    None
+                }
+            });
+            let Some(cmd) = cmd else {
+                return;
+            };
+            if cmd == TrayCommand::ShowMainWindow {
+                crate::ipc::force_foreground_if_visible();
             }
-        });
-        let Some(cmd) = cmd else {
-            return;
-        };
-        if cmd == TrayCommand::ShowMainWindow {
-            crate::ipc::force_foreground_if_visible();
-        }
-        let _ = tx.send(cmd);
-        wake_ctx.request_repaint();
+            let _ = tx.send(cmd);
+            wake_ctx.request_repaint();
         },
     ));
 }

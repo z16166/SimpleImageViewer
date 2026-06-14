@@ -144,41 +144,27 @@ impl ImageViewerApp {
             self.texture_cache.remove(idx);
         }
 
-        // HDR caches: remove/retain all non-current entries using fine-grained cleanups
-        // to avoid mixing redundant cleanup logic.
-        let to_remove_hdr: Vec<usize> = self
+        // HDR caches: unified cleanup keeps side maps (e.g. pending key index) in sync.
+        let to_remove_hdr: std::collections::HashSet<usize> = self
             .hdr_image_cache
             .keys()
+            .chain(self.hdr_tiled_source_cache.keys())
+            .chain(self.hdr_tiled_preview_cache.keys())
             .copied()
             .filter(|&idx| idx != keep)
             .collect();
         for idx in to_remove_hdr {
-            self.hdr_image_cache.remove(&idx);
-        }
-
-        let to_remove_tiled_source: Vec<usize> = self
-            .hdr_tiled_source_cache
-            .keys()
-            .copied()
-            .filter(|&idx| idx != keep)
-            .collect();
-        for idx in to_remove_tiled_source {
-            self.hdr_tiled_source_cache.remove(&idx);
-        }
-
-        let to_remove_tiled_preview: Vec<usize> = self
-            .hdr_tiled_preview_cache
-            .keys()
-            .copied()
-            .filter(|&idx| idx != keep)
-            .collect();
-        for idx in to_remove_tiled_preview {
-            self.hdr_tiled_preview_cache.remove(&idx);
+            self.remove_hdr_image_resources(idx);
         }
 
         self.hdr_sdr_fallback_indices.retain(|&idx| idx == keep);
         self.hdr_placeholder_fallback_indices
             .retain(|&idx| idx == keep);
+        self.hdr_raw_gpu_demosaic_pending_indices
+            .retain(|&idx| idx == keep);
+        self.gpu_demosaic_failed_indices.retain(|&idx| idx == keep);
+        self.hdr_raw_gpu_demosaic_pending_key_index
+            .retain(|_, idx| *idx == keep);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);
@@ -297,6 +283,7 @@ impl ImageViewerApp {
                             if is_first_batch && count > 0 {
                                 if !self.refresh_scan_in_progress {
                                     self.resolve_initial_position();
+                                    self.maybe_prefetch_startup_raw_open();
                                 }
                                 // Auto-close the settings panel only during the very first
                                 // startup scan (images_ever_loaded == false).
@@ -362,6 +349,7 @@ impl ImageViewerApp {
                                                 self.generation,
                                                 fallback_path,
                                                 self.settings.raw_high_quality,
+                                                self.raw_demosaic_mode_for_index(0),
                                             );
                                         }
                                     } else {

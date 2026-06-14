@@ -70,6 +70,45 @@ impl PairedRawJpegHandling {
 }
 
 // ---------------------------------------------------------------------------
+// RawDemosaicMode & RawDemosaicMethod
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawDemosaicMode {
+    Cpu,
+    Gpu,
+}
+
+impl Default for RawDemosaicMode {
+    fn default() -> Self {
+        Self::Gpu
+    }
+}
+
+impl RawDemosaicMode {
+    pub fn label(self) -> String {
+        match self {
+            Self::Cpu => rust_i18n::t!("demosaic.cpu").to_string(),
+            Self::Gpu => rust_i18n::t!("demosaic.gpu").to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawDemosaicMethod {
+    #[serde(alias = "malvar_he_cutler")]
+    Ppg,
+}
+
+impl Default for RawDemosaicMethod {
+    fn default() -> Self {
+        Self::Ppg
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TransitionStyle
 // ---------------------------------------------------------------------------
 
@@ -186,6 +225,10 @@ pub struct Settings {
     // RAW Processing
     #[serde(default)]
     pub raw_high_quality: bool,
+    #[serde(default = "default_raw_demosaic_mode")]
+    pub raw_demosaic_mode: RawDemosaicMode,
+    #[serde(default = "default_raw_demosaic_method")]
+    pub raw_demosaic_method: RawDemosaicMethod,
 
     // HDR tone mapping
     /// Request a native HDR swap chain (Windows scRGB / macOS EDR / Wayland HDR10).
@@ -280,6 +323,12 @@ fn default_hdr_sdr_white_nits() -> f32 {
 fn default_hdr_max_display_nits() -> f32 {
     crate::hdr::types::DEFAULT_MAX_DISPLAY_NITS
 }
+fn default_raw_demosaic_mode() -> RawDemosaicMode {
+    RawDemosaicMode::Gpu
+}
+fn default_raw_demosaic_method() -> RawDemosaicMethod {
+    RawDemosaicMethod::Ppg
+}
 impl Default for ScaleMode {
     fn default() -> Self {
         Self::FitToWindow
@@ -315,6 +364,8 @@ impl Default for Settings {
             last_music_cue_track: None,
             audio_device: None,
             raw_high_quality: false,
+            raw_demosaic_mode: default_raw_demosaic_mode(),
+            raw_demosaic_method: default_raw_demosaic_method(),
             hdr_native_surface_enabled: default_hdr_native_surface_enabled(),
             hdr_exposure_ev_native: 0.0,
             hdr_exposure_ev_sdr: 0.0,
