@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Apple HDR HEIC browsing**: Fixed crashes when flipping through folders with many iPhone-style HDR HEIC photos. The viewer now releases large GPU staging buffers right after HDR blending and falls back to CPU processing if video memory is tight, so browsing long collections stays stable on laptops and integrated graphics.
-- **JPEG XL HDR gain-map browsing**: Fixed out-of-memory crashes and instability when opening or paging through folders with HDR JPEG XL (.jxl) photos that use ISO gain maps, so large libraries no longer exhaust GPU memory as quickly.
+- **JPEG XL HDR gain-map brightness**: HDR JPEG XL (.jxl) photos with ISO gain maps no longer look too dark after GPU HDR blending; the viewer now treats the blended result as scene-linear instead of applying sRGB gamma again on top.
 
 ## [2.5.1] - 2026-06-12
 
