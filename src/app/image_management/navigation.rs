@@ -487,8 +487,7 @@ impl ImageViewerApp {
                 self.generation = self.generation.wrapping_add(1);
                 self.loader.set_generation(self.generation);
                 if is_tiled {
-                    if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index)
-                    {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
                         self.set_current_image_resolution(Some((w, h)));
                     }
                     self.loader.request_load(
@@ -539,13 +538,11 @@ impl ImageViewerApp {
                 self.loader.set_generation(inflight_gen);
                 self.prefetch_prev_generation = None;
                 if self.current_image_res.is_none() {
-                    if let Some((w, h)) = self
-                        .texture_cache
-                        .get_original_res(idx)
-                        .or_else(|| {
-                            self.deferred_sdr_uploads.get(&idx).map(|d| (d.width, d.height))
-                        })
-                    {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
+                        self.deferred_sdr_uploads
+                            .get(&idx)
+                            .map(|d| (d.width, d.height))
+                    }) {
                         self.set_current_image_resolution(Some((w, h)));
                     }
                 }

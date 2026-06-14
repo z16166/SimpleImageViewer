@@ -27,13 +27,13 @@ use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_req
 
 use crate::hdr::types::HdrToneMapSettings;
 const GPU_DEMOSAIC_MAX_DIMENSION: u32 = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
+use crate::loader::RawOsdInfo;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::RawDemosaicBackend;
 use crate::loader::raw_osd::RawOsdContext;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::loader::raw_osd::RawOsdInfo;
-use crate::loader::RawOsdInfo;
 
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
@@ -253,11 +253,7 @@ pub(crate) fn load_raw(
                 (processor, preview, timings, final_lr_flip, false)
             }
             Err(e) => {
-                log::warn!(
-                    "[Loader] LibRaw could not open {:?}: {}.",
-                    path,
-                    e
-                );
+                log::warn!("[Loader] LibRaw could not open {:?}: {}.", path, e);
                 if high_quality {
                     return Err(format!(
                         "{} (high-quality RAW requires LibRaw; rebuild vcpkg libraw or check the file)",

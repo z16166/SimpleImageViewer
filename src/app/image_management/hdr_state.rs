@@ -136,7 +136,9 @@ impl ImageViewerApp {
             return;
         }
         let selection = self.effective_hdr_monitor_selection();
-        let monitor_hdr_supported = selection.as_ref().is_some_and(|selection| selection.hdr_supported);
+        let monitor_hdr_supported = selection
+            .as_ref()
+            .is_some_and(|selection| selection.hdr_supported);
         if !super::startup_preload_defer_can_release(
             self.hdr_monitor_state.runtime_probe_completed(),
             monitor_hdr_supported,
@@ -169,8 +171,9 @@ impl ImageViewerApp {
             && !crosses_hdr_sdr_boundary
         {
             let selection = self.effective_hdr_monitor_selection();
-            let monitor_hdr_supported =
-                selection.as_ref().is_some_and(|selection| selection.hdr_supported);
+            let monitor_hdr_supported = selection
+                .as_ref()
+                .is_some_and(|selection| selection.hdr_supported);
             let can_release = startup_preload_defer_can_release(
                 self.hdr_monitor_state.runtime_probe_completed(),
                 monitor_hdr_supported,
@@ -223,8 +226,7 @@ impl ImageViewerApp {
         let idx = self.current_index;
         if let Some(hdr) = self.hdr_image_cache.get(&idx).cloned() {
             self.set_current_image_resolution(Some((hdr.width, hdr.height)));
-            self.current_hdr_image =
-                Some(crate::app::CurrentHdrImage::new(idx, hdr));
+            self.current_hdr_image = Some(crate::app::CurrentHdrImage::new(idx, hdr));
             self.refresh_hdr_view_status();
         }
     }

@@ -14,8 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub(crate) mod icon;
 mod exit;
+pub(crate) mod icon;
 mod launch;
 mod logging;
 mod panic;
@@ -24,8 +24,8 @@ mod phases;
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
 mod wgpu;
 
-pub use launch::run;
 pub(crate) use exit::force_process_exit;
+pub use launch::run;
 pub(crate) use logging::shutdown_logger;
 
 #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]

@@ -37,11 +37,7 @@ impl ImageViewerApp {
         self.schedule_preloads_with_options(forward, false);
     }
 
-    pub(crate) fn schedule_preloads_with_options(
-        &mut self,
-        forward: bool,
-        _force_neighbors: bool,
-    ) {
+    pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, _force_neighbors: bool) {
         let n = self.image_files.len();
         if n == 0 {
             preload_debug!("[PreloadDebug] schedule skipped: no images");

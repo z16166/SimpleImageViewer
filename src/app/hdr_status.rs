@@ -60,13 +60,12 @@ impl ImageViewerApp {
             .texture_cache
             .get_original_res(index)
             .unwrap_or((bootstrap_w, bootstrap_h));
-        let demosaic_backend = if self.raw_demosaic_mode_for_index(index)
-            == crate::settings::RawDemosaicMode::Gpu
-        {
-            Some(RawDemosaicBackend::Video)
-        } else {
-            Some(RawDemosaicBackend::Host)
-        };
+        let demosaic_backend =
+            if self.raw_demosaic_mode_for_index(index) == crate::settings::RawDemosaicMode::Gpu {
+                Some(RawDemosaicBackend::Video)
+            } else {
+                Some(RawDemosaicBackend::Host)
+            };
         self.set_raw_metadata_for_index(
             index,
             Some(RawOsdInfo {
