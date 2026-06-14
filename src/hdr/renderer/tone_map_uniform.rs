@@ -237,10 +237,10 @@ pub(super) fn image_tone_map_uniform(
     framebuffer_format: wgpu::TextureFormat,
     uv_rect: egui::Rect,
     native_display_scale: f32,
-    apple_gpu_composed: bool,
+    gpu_composed_scene_linear: bool,
     ripple: Option<(egui::Pos2, f32, f32, u32)>,
 ) -> ToneMapUniform {
-    if apple_gpu_composed {
+    if gpu_composed_scene_linear {
         return ToneMapUniform::from_settings(
             settings,
             rotation_steps,

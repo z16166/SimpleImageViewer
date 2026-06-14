@@ -570,7 +570,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             self.target_format,
             self.uv_rect,
             native_display_scale,
-            apple_gpu_composed,
+            deferred_gpu_composed,
             self.ripple,
         );
         queue.write_buffer(&binding.tone_map_buffer, 0, bytemuck::bytes_of(&uniform));
