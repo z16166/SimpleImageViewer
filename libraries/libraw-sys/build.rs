@@ -109,29 +109,27 @@ fn link_linux_libgomp_static() {
 
     let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if path_str.is_empty() || path_str == "libgomp.a" {
-        panic!(
-            "libraw-sys (linux): `{cxx}` did not resolve libgomp.a (got {path_str:?}). \
-             Enable gcc-toolset OpenMP (libgomp.a ships with the gcc C++ driver) or set CXX."
-        );
+        // for ArchLinux
+        println!("cargo:rustc-link-lib=dylib=gomp");
+    } else {
+        let libgomp = Path::new(&path_str);
+        if !libgomp.is_file() {
+            panic!(
+                "libraw-sys (linux): libgomp.a not found at {} (from `{cxx} -print-file-name=libgomp.a`)",
+                libgomp.display()
+            );
+        }
+
+        let Some(dir) = libgomp.parent() else {
+            panic!(
+                "libraw-sys (linux): no directory for libgomp path {}",
+                libgomp.display()
+            );
+        };
+    
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=static=gomp");
     }
-
-    let libgomp = Path::new(&path_str);
-    if !libgomp.is_file() {
-        panic!(
-            "libraw-sys (linux): libgomp.a not found at {} (from `{cxx} -print-file-name=libgomp.a`)",
-            libgomp.display()
-        );
-    }
-
-    let Some(dir) = libgomp.parent() else {
-        panic!(
-            "libraw-sys (linux): no directory for libgomp path {}",
-            libgomp.display()
-        );
-    };
-
-    println!("cargo:rustc-link-search=native={}", dir.display());
-    println!("cargo:rustc-link-lib=static=gomp");
 }
 
 fn main() {
