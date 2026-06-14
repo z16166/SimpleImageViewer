@@ -739,11 +739,7 @@ impl ImageViewerApp {
     }
 
     pub(super) fn raw_hq_index_requires_hdr_plane(&self, index: usize) -> bool {
-        raw_hq_index_requires_hdr_plane(
-            &self.image_files,
-            index,
-            self.settings.raw_high_quality,
-        )
+        raw_hq_index_requires_hdr_plane(&self.image_files, index, self.settings.raw_high_quality)
     }
 }
 fn current_image_has_loaded_asset(
@@ -787,12 +783,7 @@ fn accepts_background_image_generation(
     if image_count == 0 {
         return false;
     }
-    if !prefetch_window_contains(
-        current_index,
-        image_count,
-        idx,
-        PREFETCH_WINDOW_DISTANCE,
-    ) {
+    if !prefetch_window_contains(current_index, image_count, idx, PREFETCH_WINDOW_DISTANCE) {
         return false;
     }
     current_generation.wrapping_sub(generation) <= BACKGROUND_IMAGE_GEN_TOLERANCE
@@ -863,7 +854,11 @@ mod raw_hq_navigate_missing_hdr_plane_tests {
             }),
         );
         assert!(!raw_hq_navigate_missing_hdr_plane(
-            &files, 0, true, &hdr_cache, &HashMap::new(),
+            &files,
+            0,
+            true,
+            &hdr_cache,
+            &HashMap::new(),
         ));
     }
 
@@ -893,17 +888,36 @@ mod background_image_generation_tests {
 
     #[test]
     fn accepts_in_window_background_results_within_generation_tolerance() {
-        assert!(accepts_background_image_generation(33, 100, 18, None, 34, 16));
-        assert!(!accepts_background_image_generation(33, 100, 18, None, 34, 10));
-        assert!(!accepts_background_image_generation(31, 100, 18, None, 34, 16));
-        assert!(!accepts_background_image_generation(33, 100, 18, None, 40, 16));
+        assert!(accepts_background_image_generation(
+            33, 100, 18, None, 34, 16
+        ));
+        assert!(!accepts_background_image_generation(
+            33, 100, 18, None, 34, 10
+        ));
+        assert!(!accepts_background_image_generation(
+            31, 100, 18, None, 34, 16
+        ));
+        assert!(!accepts_background_image_generation(
+            33, 100, 18, None, 40, 16
+        ));
     }
 
     #[test]
     fn current_index_only_accepts_exact_or_prefetch_previous_generation() {
-        assert!(accepts_background_image_generation(34, 100, 19, None, 34, 19));
-        assert!(accepts_background_image_generation(34, 100, 19, Some(18), 34, 18));
-        assert!(!accepts_background_image_generation(34, 100, 19, None, 34, 18));
+        assert!(accepts_background_image_generation(
+            34, 100, 19, None, 34, 19
+        ));
+        assert!(accepts_background_image_generation(
+            34,
+            100,
+            19,
+            Some(18),
+            34,
+            18
+        ));
+        assert!(!accepts_background_image_generation(
+            34, 100, 19, None, 34, 18
+        ));
     }
 }
 

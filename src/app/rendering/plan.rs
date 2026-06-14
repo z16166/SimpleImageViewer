@@ -39,7 +39,14 @@ impl RenderPlan {
         target_format: Option<wgpu::TextureFormat>,
         output_mode: HdrRenderOutputMode,
     ) -> Self {
-        Self::new_with_sdr_fallback(shape, has_hdr_plane, true, target_format, output_mode, false)
+        Self::new_with_sdr_fallback(
+            shape,
+            has_hdr_plane,
+            true,
+            target_format,
+            output_mode,
+            false,
+        )
     }
 
     pub(crate) fn new_with_sdr_fallback(

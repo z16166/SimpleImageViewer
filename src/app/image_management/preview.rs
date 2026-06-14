@@ -111,11 +111,7 @@ impl ImageViewerApp {
         let preview = update.preview_bundle.sdr().cloned();
         match (preview, update.error) {
             (Some(preview), _) => {
-                self.upload_static_raw_gpu_bootstrap_preview_if_needed(
-                    update.index,
-                    &preview,
-                    ctx,
-                );
+                self.upload_static_raw_gpu_bootstrap_preview_if_needed(update.index, &preview, ctx);
                 self.apply_raw_hq_refine_preview(update.index, preview.width, preview.height, ctx);
                 // 1. Update current TileManager
                 if let Some(ref mut tm) = self.tile_manager {
@@ -156,11 +152,12 @@ impl ImageViewerApp {
 
                 // 3. Update global texture cache for tiled sources only. Static GPU RAW bootstrap
                 // previews are uploaded separately and must not be marked as tiled placeholders.
-                let preview_targets_tiled_canvas = self.prefetched_tiles.contains_key(&update.index)
-                    || self
-                        .tile_manager
-                        .as_ref()
-                        .is_some_and(|tm| tm.image_index == update.index);
+                let preview_targets_tiled_canvas =
+                    self.prefetched_tiles.contains_key(&update.index)
+                        || self
+                            .tile_manager
+                            .as_ref()
+                            .is_some_and(|tm| tm.image_index == update.index);
                 if preview_targets_tiled_canvas
                     && should_cache_tiled_sdr_preview(
                         self.texture_cache.contains(update.index),
@@ -267,9 +264,7 @@ impl ImageViewerApp {
         if self.hdr_image_cache.contains_key(&idx) {
             return;
         }
-        if self.texture_cache.contains(idx)
-            && !self.texture_cache.is_preview_placeholder(idx)
-        {
+        if self.texture_cache.contains(idx) && !self.texture_cache.is_preview_placeholder(idx) {
             return;
         }
         self.queue_or_upload_static_sdr_texture(

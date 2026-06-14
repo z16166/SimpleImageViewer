@@ -457,7 +457,8 @@ impl ImageViewerApp {
                 self.settings.raw_high_quality,
                 &self.hdr_image_cache,
                 &self.hdr_tiled_source_cache,
-            ) {
+            )
+        {
             crate::preload_debug!(
                 "[PreloadDebug][RAW] navigate asset_cache_hit idx={} raw_hq={} tiled_placeholder={} tile_mgr={}",
                 self.current_index,

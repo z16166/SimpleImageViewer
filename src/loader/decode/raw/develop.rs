@@ -108,7 +108,11 @@ pub(crate) fn develop_full_resolution(
                 let rgba = img.to_rgba8();
                 return Ok(RawLoadOutput {
                     image: make_image_data(DecodedImage::from(rgba.clone())),
-                    osd: osd_ctx.full_develop(rgba.width(), rgba.height(), RawDemosaicBackend::Host),
+                    osd: osd_ctx.full_develop(
+                        rgba.width(),
+                        rgba.height(),
+                        RawDemosaicBackend::Host,
+                    ),
                 });
             }
             Err(e) => {

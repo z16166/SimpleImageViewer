@@ -10,8 +10,8 @@ use crate::ui::utils::{
 use eframe::egui::{self, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 impl ImageViewerApp {

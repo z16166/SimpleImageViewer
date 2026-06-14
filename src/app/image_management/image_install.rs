@@ -174,7 +174,8 @@ impl ImageViewerApp {
             self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
         }
         if gpu_demosaic_pending && self.texture_cache.contains(idx) {
-            self.texture_cache.set_original_res(idx, hdr.width, hdr.height);
+            self.texture_cache
+                .set_original_res(idx, hdr.width, hdr.height);
             self.texture_cache.set_preview_placeholder(idx, false);
         }
         if ultra_hdr_capacity_sensitive {

@@ -86,9 +86,7 @@ impl ImageViewerApp {
             has_hdr_image
         };
         let prefer_sdr_for_pending_gpu_demosaic = shape == RenderShape::Static
-            && self
-                .hdr_raw_gpu_demosaic_pending_indices
-                .contains(&idx)
+            && self.hdr_raw_gpu_demosaic_pending_indices.contains(&idx)
             && has_sdr_fallback
             && self.texture_cache.contains(idx);
 
