@@ -451,7 +451,7 @@ fn cs_ppg_rgb(
         libraw_clip_channel(rgb.b),
     );
     rgb = rgb * uniforms.output_scale * uniforms.scene_color_scale.xyz;
-    // Scene-linear HDR: do not clamp to 1.0 (matches LibRaw develop + auto_bright headroom).
+    // Scene-linear HDR: no clamp to 1.0; scene_color_scale is identity (auto_bright disabled on CPU develop too).
 
     textureStore(output_texture, vec2<i32>(col, row), vec4<f32>(rgb, 1.0));
 }
@@ -959,6 +959,7 @@ fn cpu_ppg_camera_rgb_at(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 pub(crate) fn cpu_demosaic_ppg_camera_counts(source: &RawGpuSource) -> Vec<f32> {
     let w = source.width as usize;
     let read_cfa = cpu_ppg_helpers(source);
@@ -1007,7 +1008,6 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
 }
 
 pub(crate) fn scene_linear_center_luma_from_source(source: &RawGpuSource) -> f64 {
-    // Match LibRaw develop: contiguous 64x64 center patch on full-res CFA (not decimated sparse grid).
     const HALO: i32 = 32;
     let w = source.width as i32;
     let h = source.height as i32;
@@ -1032,13 +1032,34 @@ pub(crate) fn scene_linear_center_luma_from_source(source: &RawGpuSource) -> f64
     let rgba = cpu_demosaic_ppg_scene_linear(&unit);
     let crop_cx = cx - x0;
     let crop_cy = cy - y0;
-    crate::raw_processor::RawProcessor::scene_linear_center_luma_sum_at(
-        &rgba,
-        unit.width,
-        unit.height,
-        crop_cx as usize,
-        crop_cy as usize,
-    )
+    scene_linear_center_luma_sum_at(&rgba, unit.width, unit.height, crop_cx as usize, crop_cy as usize)
+}
+
+fn scene_linear_center_luma_sum_at(
+    rgba: &[f32],
+    width: u32,
+    height: u32,
+    center_x: usize,
+    center_y: usize,
+) -> f64 {
+    let w = width as usize;
+    let h = height as usize;
+    let mut sum = 0.0f64;
+    for dy in 0..64 {
+        for dx in 0..64 {
+            let x = center_x as i32 + dx - 32;
+            let y = center_y as i32 + dy - 32;
+            if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+                continue;
+            }
+            let i = (y as usize * w + x as usize) * 4;
+            if i + 2 >= rgba.len() {
+                continue;
+            }
+            sum += rgba[i] as f64 + rgba[i + 1] as f64 + rgba[i + 2] as f64;
+        }
+    }
+    sum
 }
 
 fn crop_raw_gpu_source(
@@ -1344,9 +1365,7 @@ mod tests {
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .expect("extract gpu source");
         let mut source = source;
-        source.scene_color_scale =
-            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(&path);
-        eprintln!("canon 40d scene_color_scale={:?}", source.scene_color_scale);
+        source.scene_color_scale = [1.0, 1.0, 1.0];
         eprintln!(
             "canon 40d source meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?}",
             source.maximum,
@@ -1417,8 +1436,7 @@ mod tests {
         let gpu_path = cpu_demosaic_ppg_scene_linear(&source);
         let (gr, gg, gb) = center_mean_rgba(&gpu_path, w, h);
         eprintln!(
-            "canon 40d gpu-shader (scene_color_scale={:?}) center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={:.3}",
-            source.scene_color_scale,
+            "canon 40d gpu-shader (linear baseline) center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={:.3}",
             gr / gb.max(1e-9)
         );
 
@@ -1427,28 +1445,28 @@ mod tests {
                 crate::raw_processor::RawProcessor::new().expect("libraw init");
             develop_processor.open(&path).expect("libraw open");
             develop_processor
-                .develop_scene_linear_hdr_with_qual(false, 2)
-                .expect("develop PPG")
+                .develop_scene_linear_hdr()
+                .expect("develop PPG no auto_bright")
         };
         let (cr, cg, cb) = center_mean_rgba(hdr_ppg.rgba_f32.as_slice(), w, h);
         eprintln!(
-            "canon 40d libraw cpu (PPG) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
+            "canon 40d libraw cpu (PPG no auto_bright) center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={:.3}",
             cr / cb.max(1e-9)
         );
         assert!(
             (gr - cr).abs() < 0.01 && (gg - cg).abs() < 0.01 && (gb - cb).abs() < 0.01,
-            "GPU PPG path must match LibRaw PPG develop at center"
+            "GPU PPG path must match LibRaw linear PPG develop at center"
         );
-        let hdr_ppg_no_ab = {
+        let hdr_ppg_ab = {
             let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
             p.open(&path).expect("libraw open");
-            p.develop_scene_linear_hdr_with_qual(true, 2)
-                .expect("develop PPG no auto bright")
+            p.develop_scene_linear_hdr_with_qual(false, 2)
+                .expect("develop PPG auto_bright")
         };
-        let (pnr, png, pnb) = center_mean_rgba(hdr_ppg_no_ab.rgba_f32.as_slice(), w, h);
+        let (ar, ag, ab) = center_mean_rgba(hdr_ppg_ab.rgba_f32.as_slice(), w, h);
         eprintln!(
-            "canon 40d libraw PPG no_auto_bright=({pnr:.4}, {png:.4}, {pnb:.4}) R/B={:.3}",
-            pnr / pnb.max(1e-9)
+            "canon 40d libraw PPG auto_bright=({ar:.4}, {ag:.4}, {ab:.4}) R/B={:.3}",
+            ar / ab.max(1e-9)
         );
     }
 }

@@ -368,15 +368,6 @@ pub(crate) fn load_raw(
     }
 
     if use_gpu_demosaic {
-        let path_cal = path.clone();
-        let develop_flip = final_lr_flip;
-        let develop_luma_handle = std::thread::spawn(move || {
-            crate::raw_processor::RawProcessor::scene_linear_center_luma_from_path_with_flip(
-                &path_cal,
-                develop_flip,
-            )
-                .unwrap_or(0.0)
-        });
         if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
             emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "GPU");
         }
@@ -384,22 +375,14 @@ pub(crate) fn load_raw(
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
             Ok(mut raw_gpu_source) => {
                 let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
-                let calib_started = std::time::Instant::now();
-                raw_gpu_source.scene_color_scale =
-                    crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale_from_develop_match(
-                        &raw_gpu_source,
-                        develop_luma_handle,
-                        &mut processor,
-                        &raw_gpu_source.rgb_cam,
-                    );
-                let calib_ms = crate::loader::elapsed_ms_u32(calib_started);
+                // scene_color_scale stays [1,1,1]: linear baseline matches CPU develop (no auto_bright).
                 log::debug!(
-                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms calib={calib_ms}ms (develop-matched scene scale; demosaic on GPU)",
+                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms (linear scene scale; demosaic on GPU)",
                     path.file_name().unwrap_or_default()
                 );
                 #[cfg(feature = "preload-debug")]
                 crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms calib={calib_ms}ms demosaic_pending",
+                    "[PreloadDebug][RAW-GPU] load {:?} extract={extract_ms}ms demosaic_pending",
                     path.file_name().unwrap_or_default(),
                 );
                 raw_gpu_source.bootstrap_preview = preview_opt.clone();
@@ -429,7 +412,7 @@ pub(crate) fn load_raw(
                 } else {
                     osd_ctx.full_develop(width, height, RawDemosaicBackend::Video)
                 };
-                osd = osd.with_gpu_extract_ms(extract_ms.saturating_add(calib_ms));
+                osd = osd.with_gpu_extract_ms(extract_ms);
                 return Ok(RawLoadOutput {
                     image: make_hdr_image_data(hdr, fallback),
                     osd,

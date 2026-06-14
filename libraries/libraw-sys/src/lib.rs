@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use libc::{c_char, c_float, c_int, c_uchar, c_uint, c_ushort};
+use libc::{c_char, c_double, c_float, c_int, c_uchar, c_uint, c_ushort};
 
 /// Matches LibRaw's `enum LibRaw_image_formats` from `libraw_const.h`.
 #[repr(u32)]
@@ -180,6 +180,11 @@ unsafe extern "C" {
         data: *mut libraw_data_t,
         rgb_cam: *const c_float,
         uniform_out: *mut c_float,
+    ) -> c_int;
+    pub fn siv_libraw_decimated_ppg_scene_ab_luma_sum(
+        data: *mut libraw_data_t,
+        rgb_cam: *const c_float,
+        ab_luma_out: *mut c_double,
     ) -> c_int;
     pub fn siv_libraw_ppg_pixel_channels(
         data: *mut libraw_data_t,

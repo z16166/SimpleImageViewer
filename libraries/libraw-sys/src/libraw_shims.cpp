@@ -179,7 +179,7 @@ public:
         unsigned width,
         unsigned height
     ) {
-        finish_demosaic_rgb_ex(base, rgb16, width, height, 0);
+        finish_demosaic_rgb_ex(base, rgb16, width, height, 1);
     }
 
     /// Run LibRaw scale_colors + pre_interpolate + PPG; export camera RGB counts.
@@ -764,13 +764,14 @@ public:
         return 0;
     }
 
-    /// Uniform luma ratio (LibRaw auto_bright / matrix rgb_cam) on decimated center PPG.
-    static int decimated_ppg_uniform_scene_scale(
+    /// Decimated center PPG + finish_demosaic_rgb; center 64x64 channel-mean sums.
+    static int decimated_ppg_scene_center_luma_pair(
         LibRaw *base,
         const float rgb_cam[12],
-        float *uniform_out
+        double *ab_luma_out,
+        double *matrix_luma_out
     ) {
-        if (!base || !rgb_cam || !uniform_out) {
+        if (!base || !rgb_cam || !ab_luma_out || !matrix_luma_out) {
             return -1;
         }
         LibRawColorShim *ip = reinterpret_cast<LibRawColorShim *>(base);
@@ -847,6 +848,7 @@ public:
 
         double matrix_mean[3];
         patch_mean_matrix_rgb(rgb16.data(), dw, dh, rgb_cam, matrix_mean);
+        *matrix_luma_out = matrix_mean[0] + matrix_mean[1] + matrix_mean[2];
 
         ip->imgdata.image = nullptr;
         finish_demosaic_rgb(ip, rgb16.data(), dw, dh);
@@ -866,9 +868,27 @@ public:
 
         double libraw_mean[3];
         patch_mean_rgb16_norm(rgb16.data(), dw, dh, libraw_mean);
+        *ab_luma_out = libraw_mean[0] + libraw_mean[1] + libraw_mean[2];
+        return 0;
+    }
 
-        const double ab_luma = libraw_mean[0] + libraw_mean[1] + libraw_mean[2];
-        const double no_ab_luma = matrix_mean[0] + matrix_mean[1] + matrix_mean[2];
+    /// Uniform luma ratio (LibRaw auto_bright / matrix rgb_cam) on decimated center PPG.
+    static int decimated_ppg_uniform_scene_scale(
+        LibRaw *base,
+        const float rgb_cam[12],
+        float *uniform_out
+    ) {
+        if (!base || !rgb_cam || !uniform_out) {
+            return -1;
+        }
+        LibRaw *ip = base;
+        double ab_luma = 0.0;
+        double no_ab_luma = 0.0;
+        const int status =
+            decimated_ppg_scene_center_luma_pair(ip, rgb_cam, &ab_luma, &no_ab_luma);
+        if (status != 0) {
+            return status;
+        }
         const double denom = no_ab_luma > 1e-9 ? no_ab_luma : 1.0;
         *uniform_out = static_cast<float>(ab_luma / denom);
         if (!std::isfinite(*uniform_out) || *uniform_out <= 0.0f) {
@@ -879,6 +899,19 @@ public:
             *uniform_out = 4.0f;
         }
         return 0;
+    }
+
+    static int decimated_ppg_scene_ab_luma_sum(
+        LibRaw *base,
+        const float rgb_cam[12],
+        double *ab_luma_out
+    ) {
+        if (!base || !rgb_cam || !ab_luma_out) {
+            return -1;
+        }
+        double matrix_luma = 0.0;
+        return decimated_ppg_scene_center_luma_pair(
+            base, rgb_cam, ab_luma_out, &matrix_luma);
     }
 };
 
@@ -1201,6 +1234,16 @@ extern "C" {
         if (!lr || !rgb_cam || !uniform_out) return -1;
         LibRaw *ip = (LibRaw *)lr->parent_class;
         return LibRawColorShim::decimated_ppg_uniform_scene_scale(ip, rgb_cam, uniform_out);
+    }
+
+    int siv_libraw_decimated_ppg_scene_ab_luma_sum(
+        libraw_data_t *lr,
+        const float *rgb_cam,
+        double *ab_luma_out
+    ) {
+        if (!lr || !rgb_cam || !ab_luma_out) return -1;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        return LibRawColorShim::decimated_ppg_scene_ab_luma_sum(ip, rgb_cam, ab_luma_out);
     }
 
     int siv_libraw_ppg_pixel_channels(
