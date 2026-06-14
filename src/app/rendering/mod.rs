@@ -196,6 +196,8 @@ impl ImageViewerApp {
                     }
                 }
 
+                self.finish_display_frame(ui.ctx());
+
                 // ── Pixel Inspector hover tooltip & canvas feedback ──────────
                 if let Some(res) = self.current_image_res {
                     let img_size = Vec2::new(res.0 as f32, res.1 as f32);

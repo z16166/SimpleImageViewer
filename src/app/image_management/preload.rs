@@ -22,7 +22,11 @@ impl ImageViewerApp {
             return;
         }
         let path = &self.image_files[self.current_index];
-        if !crate::loader::should_prefetch_raw_gpu_open(&self.settings, path) {
+        if !crate::loader::should_prefetch_raw_gpu_open(
+            &self.settings,
+            path,
+            self.gpu_demosaic_failed_indices.contains(&self.current_index),
+        ) {
             return;
         }
         self.loader.prefetch_raw_open(path.clone());
@@ -107,6 +111,7 @@ impl ImageViewerApp {
             path_is_raw,
             current_is_loading,
             self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+            self.raw_gpu_demosaic_await_hdr_present,
         ) {
             return;
         }

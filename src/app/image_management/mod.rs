@@ -518,14 +518,18 @@ pub(crate) fn startup_preload_defer_can_release(
     !matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped)
 }
 
-/// Hold neighbor preloads while the current index is extracting CFA or waiting on GPU demosaic.
+/// Hold neighbor preloads while the current index is extracting CFA, waiting on GPU demosaic,
+/// or until the HDR float plane has been presented after demosaic completes.
 pub(crate) fn should_defer_background_preload_for_raw_gpu_current(
     raw_hq_requires_hdr_plane: bool,
     path_is_raw: bool,
     current_loading: bool,
     gpu_demosaic_pending: bool,
+    await_hdr_present: bool,
 ) -> bool {
-    raw_hq_requires_hdr_plane && path_is_raw && (current_loading || gpu_demosaic_pending)
+    raw_hq_requires_hdr_plane
+        && path_is_raw
+        && (current_loading || gpu_demosaic_pending || await_hdr_present)
 }
 
 #[cfg(test)]

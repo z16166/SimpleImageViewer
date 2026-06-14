@@ -24,8 +24,11 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_indices.clear();
+        self.hdr_raw_gpu_demosaic_pending_key_index.clear();
         self.gpu_demosaic_failed_indices.clear();
+        self.raw_gpu_demosaic_await_hdr_present = false;
         self.raw_demosaic_baked_notify.lock().clear();
+        // Clears all per-index RAW OSD rows (directory switch / full list reorder).
         self.raw_metadata.clear();
         self.hdr_in_flight_fallback_refinements.clear();
         self.deferred_sdr_uploads.clear();
@@ -42,6 +45,10 @@ impl ImageViewerApp {
 
     /// Drop HDR GPU/tile caches for `index` while keeping RAW OSD metadata and failure flags.
     pub(crate) fn remove_hdr_image_resources(&mut self, index: usize) {
+        if let Some(hdr) = self.hdr_image_cache.get(&index) {
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+            self.hdr_raw_gpu_demosaic_pending_key_index.remove(&key);
+        }
         self.hdr_image_cache.remove(&index);
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);

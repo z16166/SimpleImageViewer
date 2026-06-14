@@ -528,16 +528,19 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
 #[test]
 fn background_preload_defers_while_current_raw_gpu_path_active() {
     assert!(super::should_defer_background_preload_for_raw_gpu_current(
-        true, true, true, false
+        true, true, true, false, false
     ));
     assert!(super::should_defer_background_preload_for_raw_gpu_current(
-        true, true, false, true
+        true, true, false, true, false
+    ));
+    assert!(super::should_defer_background_preload_for_raw_gpu_current(
+        true, true, false, false, true
     ));
     assert!(!super::should_defer_background_preload_for_raw_gpu_current(
-        false, true, true, false
+        false, true, true, false, false
     ));
     assert!(!super::should_defer_background_preload_for_raw_gpu_current(
-        true, false, true, false
+        true, false, true, false, false
     ));
 }
 
@@ -1191,7 +1194,9 @@ fn make_test_app() -> ImageViewerApp {
         hdr_sdr_fallback_indices: HashSet::new(),
         hdr_placeholder_fallback_indices: HashSet::new(),
         hdr_raw_gpu_demosaic_pending_indices: HashSet::new(),
+        hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
+        raw_gpu_demosaic_await_hdr_present: false,
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
@@ -1330,6 +1335,17 @@ fn relocate_index_keyed_cache_moves_raw_osd_info() {
 
     assert!(!app.raw_metadata.contains_key(2));
     assert!(app.raw_metadata.contains_key(0));
+}
+
+#[test]
+fn relocate_index_keyed_cache_moves_gpu_demosaic_failed_indices() {
+    let mut app = make_test_app();
+    app.gpu_demosaic_failed_indices.insert(2);
+
+    app.relocate_index_keyed_cache(2, 0);
+
+    assert!(!app.gpu_demosaic_failed_indices.contains(&2));
+    assert!(app.gpu_demosaic_failed_indices.contains(&0));
 }
 
 #[test]
@@ -1592,6 +1608,8 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     let mut app = make_test_app();
     app.settings.raw_demosaic_mode = RawDemosaicMode::Gpu;
     app.settings.raw_high_quality = true;
+    app.generation = 3;
+    app.loader.set_generation(app.generation);
     app.image_files = vec![PathBuf::from("sentinel_test.cr2")];
     app.current_index = 0;
 
@@ -1622,6 +1640,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
     app.hdr_image_cache.insert(0, hdr);
     app.hdr_raw_gpu_demosaic_pending_indices.insert(0);
+    app.hdr_raw_gpu_demosaic_pending_key_index.insert(image_key, 0);
     app.raw_metadata.insert_or_update(
         0,
         crate::loader::RawOsdInfo {
@@ -1649,7 +1668,7 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
     assert!(app.gpu_demosaic_failed_indices.contains(&0));
     assert!(!app.hdr_raw_gpu_demosaic_pending_indices.contains(&0));
     assert!(!app.hdr_image_cache.contains_key(&0));
-    assert!(app.loader.is_loading_any(0));
+    assert!(app.loader.is_loading(0, app.generation));
     assert_eq!(
         app.raw_demosaic_mode_for_index(0),
         RawDemosaicMode::Cpu

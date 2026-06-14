@@ -120,8 +120,10 @@ impl RawOpenPrefetch {
 pub(crate) fn should_prefetch_raw_gpu_open(
     settings: &crate::settings::Settings,
     path: &Path,
+    gpu_demosaic_failed: bool,
 ) -> bool {
-    settings.raw_high_quality
+    !gpu_demosaic_failed
+        && settings.raw_high_quality
         && settings.raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
         && crate::loader::GPU_DEMOSAIC_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
         && path

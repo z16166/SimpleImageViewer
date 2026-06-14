@@ -38,6 +38,9 @@ pub(crate) struct HdrImageKey {
     pub(super) apple_deferred_stops_bits: Option<u32>,
     pub(super) gain_map_target_capacity_bits: Option<u32>,
     pub(super) gain_map_capped_display_referred: bool,
+    /// GPU RAW demosaic CFA buffer identity (empty `rgba_f32` HDR stills).
+    pub(super) raw_pixels_ptr: Option<usize>,
+    pub(super) raw_pixels_len: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -158,6 +161,17 @@ impl HdrImageKey {
             .unwrap_or((
                 None, None, None, None, None, None, None, None, None, None, None, None, None, false,
             ));
+        let (raw_pixels_ptr, raw_pixels_len) = image
+            .metadata
+            .raw_gpu_source
+            .as_ref()
+            .map(|source| {
+                (
+                    Some(std::sync::Arc::as_ptr(&source.raw_pixels) as usize),
+                    Some(source.raw_pixels.len()),
+                )
+            })
+            .unwrap_or((None, None));
         Self {
             width: image.width,
             height: image.height,
@@ -179,6 +193,8 @@ impl HdrImageKey {
             apple_deferred_stops_bits,
             gain_map_target_capacity_bits,
             gain_map_capped_display_referred,
+            raw_pixels_ptr,
+            raw_pixels_len,
         }
     }
 }

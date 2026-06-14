@@ -181,6 +181,9 @@ impl ImageViewerApp {
             .retain(|&idx| idx == keep);
         self.hdr_raw_gpu_demosaic_pending_indices
             .retain(|&idx| idx == keep);
+        self.gpu_demosaic_failed_indices.retain(|&idx| idx == keep);
+        self.hdr_raw_gpu_demosaic_pending_key_index
+            .retain(|_, idx| *idx == keep);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == keep);
         self.deferred_sdr_uploads.retain(|&idx, _| idx == keep);

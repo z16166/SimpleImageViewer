@@ -164,6 +164,8 @@ impl ImageViewerApp {
         }
         if gpu_demosaic_pending {
             self.hdr_raw_gpu_demosaic_pending_indices.insert(idx);
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+            self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, idx);
             let bootstrap = if sdr_fallback_is_placeholder {
                 self.raw_metadata.embedded_preview_dims(idx)
             } else {
@@ -172,6 +174,8 @@ impl ImageViewerApp {
             self.raw_metadata.note_gpu_demosaic_pending(idx, bootstrap);
         } else {
             self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+            self.hdr_raw_gpu_demosaic_pending_key_index
+                .retain(|_, pending_idx| *pending_idx != idx);
         }
         if gpu_demosaic_pending && self.texture_cache.contains(idx) {
             self.texture_cache

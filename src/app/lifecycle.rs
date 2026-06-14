@@ -230,10 +230,11 @@ impl ImageViewerApp {
             let adapter_info = state.adapter.get_info();
             let limits = state.device.limits();
             let gl_backend = adapter_info.backend == wgpu::Backend::Gl;
+            let wg = crate::hdr::raw_demosaic_gpu::RAW_DEMOSAIC_WORKGROUP_SIZE;
             let raw_demosaic_compute_supported = limits.max_compute_invocations_per_workgroup
                 >= 256
-                && limits.max_compute_workgroup_size_x >= 16
-                && limits.max_compute_workgroup_size_y >= 16;
+                && limits.max_compute_workgroup_size_x >= wg
+                && limits.max_compute_workgroup_size_y >= wg;
             crate::loader::GPU_DEMOSAIC_SUPPORTED.store(
                 !gl_backend && raw_demosaic_compute_supported,
                 std::sync::atomic::Ordering::Relaxed,
@@ -424,7 +425,7 @@ impl ImageViewerApp {
         let loader = ImageLoader::new();
         if settings.resume_last_image {
             if let Some(ref path) = settings.last_viewed_image {
-                if crate::loader::should_prefetch_raw_gpu_open(&settings, path) {
+                if crate::loader::should_prefetch_raw_gpu_open(&settings, path, false) {
                     loader.prefetch_raw_open(path.clone());
                 }
             }
@@ -474,7 +475,9 @@ impl ImageViewerApp {
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
             hdr_raw_gpu_demosaic_pending_indices: std::collections::HashSet::new(),
+            hdr_raw_gpu_demosaic_pending_key_index: std::collections::HashMap::new(),
             gpu_demosaic_failed_indices: std::collections::HashSet::new(),
+            raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),

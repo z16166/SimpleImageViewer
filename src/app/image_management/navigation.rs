@@ -141,6 +141,8 @@ impl ImageViewerApp {
         self.loader.set_generation(self.generation);
         self.loader.cancel_all();
         self.gpu_demosaic_failed_indices.clear();
+        self.raw_gpu_demosaic_await_hdr_present = false;
+        self.hdr_raw_gpu_demosaic_pending_key_index.clear();
 
         let raw_indices: Vec<usize> = self
             .image_files

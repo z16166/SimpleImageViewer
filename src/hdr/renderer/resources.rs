@@ -294,8 +294,10 @@ pub(crate) fn create_callback_resources(
 
     let raw_demosaic_compute_supported = device.limits().max_compute_invocations_per_workgroup
         >= 256
-        && device.limits().max_compute_workgroup_size_x >= 16
-        && device.limits().max_compute_workgroup_size_y >= 16;
+        && device.limits().max_compute_workgroup_size_x
+            >= crate::hdr::raw_demosaic_gpu::RAW_DEMOSAIC_WORKGROUP_SIZE
+        && device.limits().max_compute_workgroup_size_y
+            >= crate::hdr::raw_demosaic_gpu::RAW_DEMOSAIC_WORKGROUP_SIZE;
 
     let (
         raw_demosaic_bind_group_layout,

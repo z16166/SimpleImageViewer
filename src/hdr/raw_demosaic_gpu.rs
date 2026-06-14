@@ -39,13 +39,19 @@ struct DemosaicUniforms {
 
 const RAW16_MAX: i32 = 65535;
 const WG_SIZE: u32 = 16u;
+const WG_TOTAL: u32 = WG_SIZE * WG_SIZE;
 const CFA_HALO: u32 = 3u;
+// 22x22 tile: WG_SIZE + 2*CFA_HALO halo for PPG +/-3 neighborhood.
 const CFA_TILE: u32 = WG_SIZE + 2u * CFA_HALO;
 const CFA_TILE_ELS: u32 = CFA_TILE * CFA_TILE;
 
 var<workgroup> wg_tile_origin: vec2<i32>;
 var<workgroup> wg_cfa_tile: array<f32, 484>;
 var<workgroup> wg_green_tile: array<f32, 484>;
+
+fn load_cfa_pixel(x: i32, y: i32) -> f32 {
+    return f32(textureLoad(raw_pixels_texture, vec2<i32>(x, y), 0).r);
+}
 
 fn mirror_coord(c: i32, limit: i32) -> i32 {
     var x = c;
@@ -61,6 +67,8 @@ fn mirror_coord(c: i32, limit: i32) -> i32 {
 }
 
 fn scaled_cfa_at(x: i32, y: i32) -> f32 {
+    // Host CFA extract already applied black-level subtract and CFA scale; uniforms are
+    // zero/one so this matches LibRaw CPU develop without redundant ALU on typical paths.
     let raw_val = f32(textureLoad(raw_pixels_texture, vec2<i32>(x, y), 0).r);
     let phase = (y % 2) * 2 + (x % 2);
     let color_idx = get_bayer_color(phase);
@@ -114,8 +122,8 @@ fn coop_load_cfa_tile(wg: vec2<i32>, lane: u32) {
         let tx = i32(i % CFA_TILE);
         let gx = mirror_coord(tile_origin.x + tx, w);
         let gy = mirror_coord(tile_origin.y + ty, h);
-        wg_cfa_tile[i] = scaled_cfa_at(gx, gy);
-        i += 256u;
+        wg_cfa_tile[i] = load_cfa_pixel(gx, gy);
+        i += WG_TOTAL;
     }
     workgroupBarrier();
 }
@@ -141,7 +149,7 @@ fn coop_load_green_tile(lane: u32) {
         let gx = clamp(tile_origin.x + tx, 0, w - 1);
         let gy = clamp(tile_origin.y + ty, 0, h - 1);
         wg_green_tile[i] = textureLoad(green_plane, vec2<i32>(gx, gy)).r;
-        i += 256u;
+        i += WG_TOTAL;
     }
     workgroupBarrier();
 }
@@ -316,7 +324,7 @@ fn read_channel_stored(c: i32, r: i32, ch: u32) -> f32 {
 }
 
 // Pass 1 (LibRaw ppg): write interpolated green plane.
-@compute @workgroup_size(16, 16, 1)
+@compute @workgroup_size(WG_SIZE, WG_SIZE, 1)
 fn cs_ppg_green(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_index) lane: u32,
@@ -399,16 +407,15 @@ fn ppg_chroma_at_rb_wg(col: i32, row: i32, fc: u32, green: f32) -> f32 {
     let diff1 = abs_f(nw_c - se_c) + abs_f(nw_g - green) + abs_f(se_g - green);
     let guess1 = nw_c + se_c + 2.0 * green - nw_g - se_g;
 
-    if (diff0 != diff1) {
-        if (diff0 > diff1) {
-            return guess1 * 0.5;
-        }
-        return guess0 * 0.5;
-    }
-    return (guess0 + guess1) * 0.25;
+    let diff_equal = diff0 == diff1;
+    let use_guess1 = diff0 > diff1;
+    let result0 = guess0 * 0.5;
+    let result1 = guess1 * 0.5;
+    let result_equal = (guess0 + guess1) * 0.25;
+    return select(select(result1, result0, use_guess1), result_equal, diff_equal);
 }
 
-@compute @workgroup_size(16, 16, 1)
+@compute @workgroup_size(WG_SIZE, WG_SIZE, 1)
 fn cs_ppg_rgb(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_index) lane: u32,
@@ -427,17 +434,15 @@ fn cs_ppg_rgb(
     let green = read_green_stored_wg(col, row);
     var rgb: vec3<f32>;
 
-    if (fc == 0u) {
-        rgb.r = read_cfa_wg(col, row);
-        rgb.g = green;
-        rgb.b = ppg_chroma_at_rb_wg(col, row, fc, green);
-    } else if (fc == 2u) {
-        rgb.b = read_cfa_wg(col, row);
-        rgb.g = green;
-        rgb.r = ppg_chroma_at_rb_wg(col, row, fc, green);
-    } else {
-        rgb = ppg_green_site_rgb_wg(col, row, green);
-    }
+    let at_r = fc == 0u;
+    let at_b = fc == 2u;
+    let at_green = fc == 1u || fc == 3u;
+    let chroma = ppg_chroma_at_rb_wg(col, row, fc, green);
+    let green_site = ppg_green_site_rgb_wg(col, row, green);
+
+    rgb.r = select(select(chroma, green_site.r, at_green), read_cfa_wg(col, row), at_r);
+    rgb.g = select(green_site.g, green, at_green);
+    rgb.b = select(select(chroma, green_site.b, at_green), read_cfa_wg(col, row), at_b);
 
     rgb = apply_rgb_cam(rgb);
     rgb = vec3<f32>(
@@ -453,6 +458,8 @@ fn cs_ppg_rgb(
 "#;
 
 const RAW16_MAX: f32 = 65535.0;
+/// Must match `WG_SIZE` in [`RAW_DEMOSAIC_COMPUTE_SHADER`] (keep in sync manually).
+pub const RAW_DEMOSAIC_WORKGROUP_SIZE: u32 = 16;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -617,6 +624,7 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
     output_view: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
+    // `uniform_buffer` is shared across HDR callback resources; egui-wgpu prepare is single-threaded.
     let uniform = RawDemosaicUniform::new(source);
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
@@ -643,8 +651,8 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
         ],
     });
 
-    let workgroups_x = source.width.div_ceil(16);
-    let workgroups_y = source.height.div_ceil(16);
+    let workgroups_x = source.width.div_ceil(RAW_DEMOSAIC_WORKGROUP_SIZE);
+    let workgroups_y = source.height.div_ceil(RAW_DEMOSAIC_WORKGROUP_SIZE);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("simple-image-viewer-raw-demosaic-encoder"),
@@ -1041,7 +1049,14 @@ fn center_mean_rgba(pixels: &[f32], width: usize, height: usize) -> (f64, f64, f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::PathBuf;
+
+    fn raw_integration_sample_path(subpath: &str) -> PathBuf {
+        if let Ok(root) = std::env::var("SIV_RAW_TEST_ROOT") {
+            return PathBuf::from(root).join(subpath);
+        }
+        PathBuf::from(r"F:\win7\raws").join(subpath)
+    }
 
     #[test]
     fn raw_demosaic_compute_shader_parses_as_wgsl() {
@@ -1049,22 +1064,22 @@ mod tests {
             .expect("RAW demosaic compute shader must parse before runtime pipeline creation");
     }
 
-    /// Requires `F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2` on the test machine.
+    /// Requires a Canon 5D2 CR2 sample (`SIV_RAW_TEST_ROOT` or dev fallback path).
     #[test]
     fn diff_canon_5d2_ppg_gpu_path_vs_libraw_cpu() {
-        let path = Path::new(r"F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
+        let path = raw_integration_sample_path(r"canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
         if !path.is_file() {
             eprintln!("skip: Canon 5D2 sample not present at {}", path.display());
             return;
         }
         let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
-        processor.open(path).expect("libraw open");
+        processor.open(&path).expect("libraw open");
         let source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .expect("extract gpu source");
         let mut source = source;
         source.scene_color_scale =
-            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(path);
+            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(&path);
         eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
         let w = source.width as usize;
         let h = source.height as usize;
@@ -1124,7 +1139,7 @@ mod tests {
         let hdr = {
             let mut develop_processor =
                 crate::raw_processor::RawProcessor::new().expect("libraw init");
-            develop_processor.open(path).expect("libraw open");
+            develop_processor.open(&path).expect("libraw open");
             develop_processor
                 .develop_scene_linear_hdr()
                 .expect("develop_scene_linear_hdr")
@@ -1140,22 +1155,22 @@ mod tests {
         );
     }
 
-    /// Requires `F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2` on the test machine.
+    /// Requires a Canon 5D2 CR2 sample (`SIV_RAW_TEST_ROOT` or dev fallback path).
     #[test]
     fn diff_canon_5d2_ppg_counts_via_libraw_output_color() {
-        let path = Path::new(r"F:\win7\raws\canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
+        let path = raw_integration_sample_path(r"canon\5dm2\RAW_CANON_5DMARK2_PREPROD.CR2");
         if !path.is_file() {
             eprintln!("skip: Canon 5D2 sample not present at {}", path.display());
             return;
         }
         let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
-        processor.open(path).expect("libraw open");
+        processor.open(&path).expect("libraw open");
         let source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .expect("extract gpu source");
         let mut source = source;
         source.scene_color_scale =
-            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(path);
+            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(&path);
         eprintln!("canon 5d2 scene_color_scale={:?}", source.scene_color_scale);
         let w = source.width as usize;
         let h = source.height as usize;
@@ -1165,7 +1180,7 @@ mod tests {
         let counts = cpu_demosaic_ppg_camera_counts(&source);
         if let Ok(libraw_counts) = {
             let mut ref_processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
-            ref_processor.open(path).expect("libraw open");
+            ref_processor.open(&path).expect("libraw open");
             ref_processor.libraw_ppg_camera_rgb_counts()
         } {
             let ci = (cy * w + cx) * 3;
@@ -1221,7 +1236,7 @@ mod tests {
         let hdr = {
             let mut develop_processor =
                 crate::raw_processor::RawProcessor::new().expect("libraw init");
-            develop_processor.open(path).expect("libraw open");
+            develop_processor.open(&path).expect("libraw open");
             develop_processor
                 .develop_scene_linear_hdr()
                 .expect("develop_scene_linear_hdr")
@@ -1234,7 +1249,7 @@ mod tests {
 
         let hdr_ppg = {
             let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
-            p.open(path).expect("libraw open");
+            p.open(&path).expect("libraw open");
             p.develop_scene_linear_hdr_with_qual(false, 2)
                 .expect("develop PPG")
         };
@@ -1246,7 +1261,7 @@ mod tests {
 
         let hdr_ppg_no_ab = {
             let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
-            p.open(path).expect("libraw open");
+            p.open(&path).expect("libraw open");
             p.develop_scene_linear_hdr_with_qual(true, 2)
                 .expect("develop PPG no auto bright")
         };
@@ -1264,19 +1279,19 @@ mod tests {
 
     #[test]
     fn diff_canon_40d_ppg_counts_via_libraw_output_color() {
-        let path = Path::new(r"F:\win7\raws\canon\40d\RAW_CANON_40D_RAW_V103.CR2");
+        let path = raw_integration_sample_path(r"canon\40d\RAW_CANON_40D_RAW_V103.CR2");
         if !path.is_file() {
             eprintln!("skip: Canon 40D sample not present at {}", path.display());
             return;
         }
         let mut processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
-        processor.open(path).expect("libraw open");
+        processor.open(&path).expect("libraw open");
         let source = processor
             .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .expect("extract gpu source");
         let mut source = source;
         source.scene_color_scale =
-            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(path);
+            crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale(&path);
         eprintln!("canon 40d scene_color_scale={:?}", source.scene_color_scale);
         eprintln!(
             "canon 40d source meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?}",
@@ -1300,7 +1315,7 @@ mod tests {
         let counts = cpu_demosaic_ppg_camera_counts(&source);
         if let Ok(libraw_counts) = {
             let mut ref_processor = crate::raw_processor::RawProcessor::new().expect("libraw init");
-            ref_processor.open(path).expect("libraw open");
+            ref_processor.open(&path).expect("libraw open");
             ref_processor.libraw_ppg_camera_rgb_counts()
         } {
             let mut lr_r = 0.0f64;
@@ -1356,7 +1371,7 @@ mod tests {
         let hdr_ppg = {
             let mut develop_processor =
                 crate::raw_processor::RawProcessor::new().expect("libraw init");
-            develop_processor.open(path).expect("libraw open");
+            develop_processor.open(&path).expect("libraw open");
             develop_processor
                 .develop_scene_linear_hdr_with_qual(false, 2)
                 .expect("develop PPG")
@@ -1372,7 +1387,7 @@ mod tests {
         );
         let hdr_ppg_no_ab = {
             let mut p = crate::raw_processor::RawProcessor::new().expect("libraw init");
-            p.open(path).expect("libraw open");
+            p.open(&path).expect("libraw open");
             p.develop_scene_linear_hdr_with_qual(true, 2)
                 .expect("develop PPG no auto bright")
         };

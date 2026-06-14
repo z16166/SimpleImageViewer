@@ -82,6 +82,9 @@ impl ImageViewerApp {
         if self.hdr_raw_gpu_demosaic_pending_indices.remove(&from) {
             self.hdr_raw_gpu_demosaic_pending_indices.insert(to);
         }
+        if self.gpu_demosaic_failed_indices.remove(&from) {
+            self.gpu_demosaic_failed_indices.insert(to);
+        }
         if self.hdr_in_flight_fallback_refinements.remove(&from) {
             self.hdr_in_flight_fallback_refinements.insert(to);
         }
@@ -94,6 +97,14 @@ impl ImageViewerApp {
             self.deferred_sdr_uploads.insert(to, upload);
         }
         self.raw_metadata.relocate_index(from, to);
+
+        if self.hdr_raw_gpu_demosaic_pending_indices.contains(&to) {
+            if let Some(hdr) = self.hdr_image_cache.get(&to) {
+                let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+                self.hdr_raw_gpu_demosaic_pending_key_index.insert(key, to);
+            }
+        }
+        self.hdr_raw_gpu_demosaic_pending_key_index.retain(|_, idx| *idx != from);
 
         // 5. Prefetched tiles / animations
         if let Some(mut tiles) = self.prefetched_tiles.remove(&from) {
@@ -201,6 +212,10 @@ impl ImageViewerApp {
             .retain(|&idx| idx == except_idx);
         self.hdr_raw_gpu_demosaic_pending_indices
             .retain(|&idx| idx == except_idx);
+        self.gpu_demosaic_failed_indices
+            .retain(|&idx| idx == except_idx);
+        self.hdr_raw_gpu_demosaic_pending_key_index
+            .retain(|_, idx| *idx == except_idx);
         self.hdr_in_flight_fallback_refinements
             .retain(|&idx| idx == except_idx);
         self.deferred_sdr_uploads

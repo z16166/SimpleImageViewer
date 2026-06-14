@@ -59,6 +59,7 @@ pub fn persist(info: &wgpu::AdapterInfo, cache: &wgpu::PipelineCache) {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub fn save_atomic(adapter: &wgpu::Adapter, data: &[u8]) -> std::io::Result<()> {
     save_to_path(&cache_path(adapter), data)
 }
@@ -93,6 +94,7 @@ pub fn create_pipeline_cache(
     }
 }
 
+#[cfg(target_os = "windows")]
 pub fn persist_adapter(adapter: &wgpu::Adapter, cache: &wgpu::PipelineCache) {
     persist(&adapter.get_info(), cache);
 }

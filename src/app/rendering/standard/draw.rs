@@ -322,6 +322,12 @@ impl ImageViewerApp {
         // probe failed and the conservative gate kicked in) the cached SDR fallback texture
         // is the correct visual source — see `should_route_through_hdr_plane`.
         if should_route_through_hdr_plane(&render_plan) {
+            if self.raw_gpu_demosaic_await_hdr_present {
+                self.raw_gpu_demosaic_await_hdr_present = false;
+                if self.settings.preload {
+                    self.schedule_preloads(true);
+                }
+            }
             if let (Some(hdr_image), Some(target_format)) = (hdr_image, render_plan.target_format) {
                 let geometric_transition = matches!(
                     self.active_transition,
