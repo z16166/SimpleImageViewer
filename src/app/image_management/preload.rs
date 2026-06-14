@@ -25,7 +25,8 @@ impl ImageViewerApp {
         if !crate::loader::should_prefetch_raw_gpu_open(
             &self.settings,
             path,
-            self.gpu_demosaic_failed_indices.contains(&self.current_index),
+            self.gpu_demosaic_failed_indices
+                .contains(&self.current_index),
         ) {
             return;
         }

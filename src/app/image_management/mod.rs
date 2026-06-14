@@ -769,7 +769,13 @@ impl ImageViewerApp {
 
     pub(super) fn accepts_background_image_generation(&self, idx: usize, generation: u64) -> bool {
         let is_current_or_prefetched = idx == self.current_index
-            || (self.image_files.len() > 0 && prefetch_window_contains(self.current_index, self.image_files.len(), idx, PREFETCH_WINDOW_DISTANCE));
+            || (self.image_files.len() > 0
+                && prefetch_window_contains(
+                    self.current_index,
+                    self.image_files.len(),
+                    idx,
+                    PREFETCH_WINDOW_DISTANCE,
+                ));
         if is_current_or_prefetched && generation == self.loader.current_generation(idx) {
             return true;
         }

@@ -79,8 +79,7 @@ impl ImageViewerApp {
         {
             self.current_hdr_tiled_image = None;
         }
-        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index)
-        {
+        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index) {
             self.current_hdr_tiled_preview = None;
         }
     }

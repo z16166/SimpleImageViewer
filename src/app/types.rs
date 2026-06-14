@@ -14,12 +14,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
-use parking_lot::Mutex;
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -634,7 +634,10 @@ pub(crate) struct PendingAnimUpload {
 }
 
 impl ImageViewerApp {
-    pub(crate) fn raw_demosaic_mode_for_index(&self, index: usize) -> crate::settings::RawDemosaicMode {
+    pub(crate) fn raw_demosaic_mode_for_index(
+        &self,
+        index: usize,
+    ) -> crate::settings::RawDemosaicMode {
         if self.gpu_demosaic_failed_indices.contains(&index) {
             crate::settings::RawDemosaicMode::Cpu
         } else {
