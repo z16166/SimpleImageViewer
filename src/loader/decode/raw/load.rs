@@ -26,6 +26,7 @@ use super::develop::{develop_full_resolution, develop_hq_preview, develop_scene_
 use super::preview::{extract_embedded_preview, raw_embedded_preview_meets_hq_requirement};
 
 use crate::hdr::types::HdrToneMapSettings;
+const GPU_DEMOSAIC_MAX_DIMENSION: u32 = crate::constants::ABSOLUTE_MAX_TEXTURE_SIDE;
 #[cfg(feature = "preload-debug")]
 use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::RawDemosaicBackend;
@@ -326,12 +327,21 @@ pub(crate) fn load_raw(
         );
     }
 
+    // GPU demosaic is subject to several conditions:
+    // 1. high_quality must be enabled.
+    // 2. raw_demosaic_mode must be set to Gpu.
+    // 3. final_lr_flip must be 0 (GPU demosaic does not support orientation flip; rotation should be handled in display shader).
+    // 4. The raw processor must report compatibility with the GPU demosaic Bayer pattern.
+    // 5. Image dimensions must not exceed the maximum GPU texture dimension (GPU_DEMOSAIC_MAX_DIMENSION) to prevent rendering failures.
+    // 6. Image area must be under the threshold to avoid exceeding GPU memory budgets.
+    // 7. Device/backend must support RAW demosaic compute (set at app startup).
     let use_gpu_demosaic = high_quality
         && raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && crate::loader::GPU_DEMOSAIC_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
         && final_lr_flip == 0
         && processor.is_gpu_demosaic_compatible()
-        && width <= 8192
-        && height <= 8192
+        && width <= GPU_DEMOSAIC_MAX_DIMENSION
+        && height <= GPU_DEMOSAIC_MAX_DIMENSION
         && area < threshold;
 
     if high_quality
@@ -350,7 +360,7 @@ pub(crate) fn load_raw(
             emit_raw_gpu_bootstrap_preview(&load_tx, index, generation, path, p);
         }
         let extract_started = std::time::Instant::now();
-        match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler) {
+        match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
             Ok(mut raw_gpu_source) => {
                 let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
                 let calib_started = std::time::Instant::now();

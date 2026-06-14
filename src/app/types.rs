@@ -17,8 +17,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -389,6 +390,7 @@ pub struct ImageViewerApp {
     pub(crate) hdr_placeholder_fallback_indices: HashSet<usize>,
     /// Static GPU RAW: show embedded preview via SDR until demosaic bake completes.
     pub(crate) hdr_raw_gpu_demosaic_pending_indices: HashSet<usize>,
+    pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
     pub(crate) raw_demosaic_baked_notify:
         Arc<Mutex<Vec<crate::hdr::renderer::RawGpuDemosaicBakedNotice>>>,
     /// HDR indices for which fallback refinement is currently in-flight.
@@ -624,4 +626,14 @@ pub(crate) struct PendingAnimUpload {
     pub(crate) textures: Vec<egui::TextureHandle>,
     pub(crate) delays: Vec<std::time::Duration>,
     pub(crate) next_frame: usize,
+}
+
+impl ImageViewerApp {
+    pub(crate) fn raw_demosaic_mode_for_index(&self, index: usize) -> crate::settings::RawDemosaicMode {
+        if self.gpu_demosaic_failed_indices.contains(&index) {
+            crate::settings::RawDemosaicMode::Cpu
+        } else {
+            self.settings.raw_demosaic_mode
+        }
+    }
 }

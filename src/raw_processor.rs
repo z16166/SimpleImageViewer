@@ -606,7 +606,7 @@ impl RawProcessor {
             return [1.0, 1.0, 1.0];
         }
         if processor
-            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .is_err()
         {
             return [1.0, 1.0, 1.0];
@@ -1330,7 +1330,7 @@ mod tests {
             let mut ex = RawProcessor::new().expect("libraw init");
             ex.open(path).expect("open");
             let src = ex
-                .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+                .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
                 .expect("extract");
             src.raw_pixels[(cy as usize * w as usize) + cx as usize]
         };
@@ -1524,7 +1524,7 @@ mod tests {
         let mut processor = RawProcessor::new().expect("libraw init");
         processor.open(path).expect("libraw open");
         let source = processor
-            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::MalvarHeCutler)
+            .extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg)
             .expect("extract gpu source");
         eprintln!(
             "canon 5d2 gpu meta: maximum={} black_level={:?} cfa_scale={:?} rgb_cam={:?} bayer={:?} size={}x{}",

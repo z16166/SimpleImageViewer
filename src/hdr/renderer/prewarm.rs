@@ -16,7 +16,8 @@
 
 use super::resources::{HdrCallbackResources, create_callback_resources};
 use eframe::egui_wgpu::CallbackResources;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 /// Stored in [`CallbackResources`] so HDR callbacks can defer prepare while prewarm runs.
 pub(crate) struct HdrCallbackResourcesPrewarmSlot(pub Arc<HdrCallbackResourcesPrewarm>);
@@ -54,10 +55,7 @@ impl HdrCallbackResourcesPrewarm {
         format: wgpu::TextureFormat,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) {
-        let mut guard = self
-            .state
-            .lock()
-            .expect("HdrCallbackResourcesPrewarm mutex poisoned");
+        let mut guard = self.state.lock();
         match &*guard {
             PrewarmState::Installed { format: installed } if *installed == format => return,
             PrewarmState::Ready { format: ready, .. } if *ready == format => return,
@@ -75,10 +73,7 @@ impl HdrCallbackResourcesPrewarm {
             .name("hdr-callback-prewarm".into())
             .spawn(move || {
                 let resources = create_callback_resources(&device, format, pipeline_cache.as_ref());
-                let mut guard = this
-                    .state
-                    .lock()
-                    .expect("HdrCallbackResourcesPrewarm mutex poisoned");
+                let mut guard = this.state.lock();
                 match &*guard {
                     PrewarmState::Running { format: wanted } if *wanted == format => {
                         *guard = PrewarmState::Ready { format, resources };
@@ -96,11 +91,7 @@ impl HdrCallbackResourcesPrewarm {
                 "[HDR] failed to spawn callback resources prewarm thread: {error}; \
                  first prepare will compile synchronously"
             );
-            let mut guard = self
-                .state
-                .lock()
-                .expect("HdrCallbackResourcesPrewarm mutex poisoned");
-            *guard = PrewarmState::Idle;
+            *self.state.lock() = PrewarmState::Idle;
         }
     }
 
@@ -108,10 +99,7 @@ impl HdrCallbackResourcesPrewarm {
         &self,
         format: wgpu::TextureFormat,
     ) -> Option<HdrCallbackResources> {
-        let mut guard = self
-            .state
-            .lock()
-            .expect("HdrCallbackResourcesPrewarm mutex poisoned");
+        let mut guard = self.state.lock();
         let PrewarmState::Ready {
             format: ready,
             resources: _,
@@ -139,10 +127,7 @@ impl HdrCallbackResourcesPrewarm {
 
     pub(crate) fn is_running(&self, format: wgpu::TextureFormat) -> bool {
         matches!(
-            *self
-                .state
-                .lock()
-                .expect("HdrCallbackResourcesPrewarm mutex poisoned"),
+            *self.state.lock(),
             PrewarmState::Running { format: running } if running == format
         )
     }

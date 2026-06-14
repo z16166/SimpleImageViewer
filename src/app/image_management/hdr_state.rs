@@ -24,9 +24,9 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.clear();
         self.hdr_placeholder_fallback_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_indices.clear();
-        if let Ok(mut notify) = self.raw_demosaic_baked_notify.lock() {
-            notify.clear();
-        }
+        self.gpu_demosaic_failed_indices.clear();
+        self.raw_demosaic_baked_notify.lock().clear();
+        self.raw_metadata.clear();
         self.hdr_in_flight_fallback_refinements.clear();
         self.deferred_sdr_uploads.clear();
         self.ultra_hdr_capacity_sensitive_indices.clear();
@@ -36,6 +36,12 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn remove_hdr_image_index(&mut self, index: usize) {
+        self.remove_hdr_image_resources(index);
+        self.gpu_demosaic_failed_indices.remove(&index);
+    }
+
+    /// Drop HDR GPU/tile caches for `index` while keeping RAW OSD metadata and failure flags.
+    pub(crate) fn remove_hdr_image_resources(&mut self, index: usize) {
         self.hdr_image_cache.remove(&index);
         self.hdr_tiled_source_cache.remove(&index);
         self.hdr_tiled_preview_cache.remove(&index);
@@ -59,7 +65,8 @@ impl ImageViewerApp {
         {
             self.current_hdr_tiled_image = None;
         }
-        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index) {
+        if current_hdr_tiled_preview_matches_index(self.current_hdr_tiled_preview.as_ref(), index)
+        {
             self.current_hdr_tiled_preview = None;
         }
     }
@@ -230,7 +237,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
 
@@ -271,7 +278,7 @@ impl ImageViewerApp {
             self.generation,
             self.image_files[idx].clone(),
             self.settings.raw_high_quality,
-            self.settings.raw_demosaic_mode,
+            self.raw_demosaic_mode_for_index(idx),
         );
     }
 }

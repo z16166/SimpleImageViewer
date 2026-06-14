@@ -1,5 +1,6 @@
 use eframe::egui::{self, Color32, Rect, TextureId};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaneBackendKind {

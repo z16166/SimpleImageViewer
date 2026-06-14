@@ -53,7 +53,7 @@ impl ImageViewerApp {
         // HDR tiled images often have no SDR texture_cache entry, so checking only texture_cache
         // would re-submit expensive EXR preview generation after the initial load is processed.
         let current_has_asset = self.has_loaded_asset(cur);
-        let current_is_loading = self.loader.is_loading(cur, self.generation);
+        let current_is_loading = self.loader.is_loading_any(cur);
         preload_debug!(
             "[PreloadDebug] current state: idx={} has_asset={} is_loading={}",
             cur,
@@ -89,7 +89,7 @@ impl ImageViewerApp {
                 self.generation,
                 path,
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(cur),
             );
         }
 
@@ -233,7 +233,7 @@ impl ImageViewerApp {
 
             // Already cached or in-flight: occupies a slot but costs nothing new.
             let has_asset = self.has_loaded_asset(idx);
-            let is_loading = self.loader.is_loading(idx, self.generation);
+            let is_loading = self.loader.is_loading_any(idx);
             if has_asset || is_loading {
                 preload_debug!(
                     "[PreloadDebug] candidate counted existing: name={} idx={} has_asset={} is_loading={} count_before={}",
@@ -323,7 +323,7 @@ impl ImageViewerApp {
                 self.generation,
                 path.clone(),
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(idx),
             );
             count += 1;
             let budget_charge = if decode_budget_bytes > budget {

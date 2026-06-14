@@ -58,7 +58,7 @@ impl ImageViewerApp {
                     self.generation,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
-                    self.settings.raw_demosaic_mode,
+                    self.raw_demosaic_mode_for_index(self.current_index),
                 );
             }
 
@@ -121,7 +121,7 @@ impl ImageViewerApp {
             );
             let requeue = if self.hdr_image_cache.contains_key(&idx) {
                 None
-            } else if self.loader.is_loading(idx, self.generation) {
+            } else if self.loader.is_loading_any(idx) {
                 None
             } else if !self.image_files.is_empty() && idx < self.image_files.len() {
                 Some((idx, self.generation, self.image_files[idx].clone()))

@@ -196,6 +196,13 @@ impl RawOsdInfo {
         }
     }
 
+    /// GPU demosaic failed; OSD should show Host/CPU while a per-index reload runs.
+    pub(crate) fn note_gpu_demosaic_failed(&mut self) {
+        self.demosaic_backend = Some(RawDemosaicBackend::Host);
+        let (width, height) = self.sensor_size;
+        self.render_pixels = RawRenderPixels::FullDevelop { width, height };
+    }
+
     pub(crate) fn compose_osd_line(
         sensor_size: (u32, u32),
         embedded_preview: Option<(u32, u32)>,

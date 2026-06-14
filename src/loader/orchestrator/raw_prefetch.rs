@@ -123,6 +123,7 @@ pub(crate) fn should_prefetch_raw_gpu_open(
 ) -> bool {
     settings.raw_high_quality
         && settings.raw_demosaic_mode == crate::settings::RawDemosaicMode::Gpu
+        && crate::loader::GPU_DEMOSAIC_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
         && path
             .extension()
             .and_then(|e| e.to_str())

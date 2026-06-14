@@ -116,7 +116,7 @@ impl ImageViewerApp {
         decoded: &DecodedImage,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         self.queue_or_upload_static_sdr_texture(idx, decoded, format!("img_{idx}"), ctx);
         if idx == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
@@ -154,7 +154,7 @@ impl ImageViewerApp {
         ctx: &egui::Context,
     ) {
         let gpu_demosaic_pending = crate::loader::hdr_raw_gpu_demosaic_pending(&hdr);
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         self.hdr_image_cache.insert(idx, Arc::clone(&hdr));
         self.hdr_sdr_fallback_indices.insert(idx);
         if sdr_fallback_is_placeholder {
@@ -285,7 +285,7 @@ impl ImageViewerApp {
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         if let Some(hdr_source) = hdr_source.as_ref() {
             self.hdr_tiled_source_cache
                 .insert(idx, Arc::clone(hdr_source));
@@ -350,7 +350,7 @@ impl ImageViewerApp {
         frames: &[crate::loader::AnimationFrame],
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         if let Some(first) = frames.first() {
             let decoded = DecodedImage::from_arc(first.width, first.height, first.arc_pixels());
             self.queue_or_upload_static_sdr_texture(idx, &decoded, format!("img_{idx}"), ctx);
@@ -392,7 +392,7 @@ impl ImageViewerApp {
         ultra_hdr_capacity_sensitive: bool,
         ctx: &egui::Context,
     ) {
-        self.remove_hdr_image_index(idx);
+        self.remove_hdr_image_resources(idx);
         let hdr_frames: Vec<Arc<crate::hdr::types::HdrImageBuffer>> = frames
             .iter()
             .map(|frame| Arc::new(frame.hdr.clone()))

@@ -117,7 +117,7 @@ pub(crate) fn hdr_sdr_fallback_rgba8_eager_or_placeholder(
 ) -> Result<Arc<Vec<u8>>, String> {
     if let Some(source) = hdr.metadata.raw_gpu_source.as_ref() {
         if let Some(preview) = source.bootstrap_preview.as_ref() {
-            return Ok(Arc::new(preview.rgba().to_vec()));
+            return Ok(preview.arc_pixels());
         }
         return Ok(Arc::new(cheap_hdr_sdr_placeholder_rgba8(
             hdr.width, hdr.height,
@@ -254,7 +254,7 @@ mod tests {
             maximum: 65535.0,
             bayer_pattern: [0, 1, 1, 2],
             scene_color_scale: [1.0, 1.0, 1.0],
-            demosaic_method: crate::settings::RawDemosaicMethod::MalvarHeCutler,
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
             bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
         });
         let hdr = HdrImageBuffer {

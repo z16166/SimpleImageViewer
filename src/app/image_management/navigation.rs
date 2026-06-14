@@ -127,7 +127,7 @@ impl ImageViewerApp {
             self.generation,
             path,
             self.settings.raw_high_quality,
-            self.settings.raw_demosaic_mode,
+            self.raw_demosaic_mode_for_index(self.current_index),
         );
 
         // Re-schedule preloads so nearby RAW files pick up the new mode too.
@@ -140,6 +140,7 @@ impl ImageViewerApp {
         self.generation = self.generation.wrapping_add(1);
         self.loader.set_generation(self.generation);
         self.loader.cancel_all();
+        self.gpu_demosaic_failed_indices.clear();
 
         let raw_indices: Vec<usize> = self
             .image_files
@@ -156,7 +157,9 @@ impl ImageViewerApp {
         let _raw_index_count = raw_indices.len();
         for idx in raw_indices {
             self.texture_cache.remove(idx);
-            self.remove_hdr_image_index(idx);
+            self.remove_hdr_image_resources(idx);
+            self.raw_metadata.remove(idx);
+            self.gpu_demosaic_failed_indices.remove(&idx);
             self.prefetched_tiles.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
@@ -448,7 +451,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(self.current_index),
             );
         } else if self.has_loaded_asset(self.current_index)
             && !raw_hq_navigate_missing_hdr_plane(
@@ -485,7 +488,7 @@ impl ImageViewerApp {
                     self.generation,
                     self.image_files[self.current_index].clone(),
                     self.settings.raw_high_quality,
-                    self.settings.raw_demosaic_mode,
+                    self.raw_demosaic_mode_for_index(self.current_index),
                 );
             } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
                 self.set_current_image_resolution(Some((hdr.width, hdr.height)));
@@ -499,7 +502,7 @@ impl ImageViewerApp {
                         self.generation,
                         self.image_files[self.current_index].clone(),
                         self.settings.raw_high_quality,
-                        self.settings.raw_demosaic_mode,
+                        self.raw_demosaic_mode_for_index(self.current_index),
                     );
                 }
             } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
@@ -537,7 +540,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
 
@@ -576,7 +579,7 @@ impl ImageViewerApp {
                 self.generation,
                 self.image_files[self.current_index].clone(),
                 self.settings.raw_high_quality,
-                self.settings.raw_demosaic_mode,
+                self.raw_demosaic_mode_for_index(self.current_index),
             );
         }
         self.trigger_current_hdr_fallback_refinement_if_needed();
@@ -637,7 +640,7 @@ impl ImageViewerApp {
             self.generation,
             self.image_files[self.current_index].clone(),
             self.settings.raw_high_quality,
-            self.settings.raw_demosaic_mode,
+            self.raw_demosaic_mode_for_index(self.current_index),
         );
         self.schedule_preloads(true);
         self.refresh_current_file_name();

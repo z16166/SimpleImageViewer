@@ -22,7 +22,8 @@ use crate::loader::{ImageLoader, TextureCache};
 use crate::settings::Settings;
 use crate::theme::{SystemThemeCache, ThemePalette};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 #[test]
 fn prefetch_window_distance_matches_circular_neighbors() {
@@ -1190,6 +1191,7 @@ fn make_test_app() -> ImageViewerApp {
         hdr_sdr_fallback_indices: HashSet::new(),
         hdr_placeholder_fallback_indices: HashSet::new(),
         hdr_raw_gpu_demosaic_pending_indices: HashSet::new(),
+        gpu_demosaic_failed_indices: HashSet::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
@@ -1577,4 +1579,79 @@ fn test_resolve_initial_position_during_and_after_scan() {
     app.resolve_initial_position();
     // Since initial_image was consumed, it should fall back to resume_last_image (img1.jpg)
     assert_eq!(app.current_index, 1);
+}
+
+#[test]
+fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
+    use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
+    use crate::hdr::types::{HdrImageBuffer, HdrPixelFormat};
+    use crate::settings::RawDemosaicMode;
+    use eframe::egui;
+    use std::sync::Arc;
+
+    let mut app = make_test_app();
+    app.settings.raw_demosaic_mode = RawDemosaicMode::Gpu;
+    app.settings.raw_high_quality = true;
+    app.image_files = vec![PathBuf::from("sentinel_test.cr2")];
+    app.current_index = 0;
+
+    let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+    metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+        raw_width: 4,
+        raw_height: 4,
+        width: 4,
+        height: 4,
+        raw_pixels: Arc::new(vec![0; 16]),
+        black_level: [0.0; 4],
+        cfa_scale: [1.0; 4],
+        rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        maximum: 65535.0,
+        bayer_pattern: [0, 1, 1, 2],
+        scene_color_scale: [1.0, 1.0, 1.0],
+        demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+        bootstrap_preview: None,
+    });
+    let hdr = Arc::new(HdrImageBuffer {
+        width: 4,
+        height: 4,
+        format: HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+    app.hdr_image_cache.insert(0, hdr);
+    app.hdr_raw_gpu_demosaic_pending_indices.insert(0);
+    app.raw_metadata.insert_or_update(
+        0,
+        crate::loader::RawOsdInfo {
+            sensor_size: (4, 4),
+            embedded_preview: None,
+            render_pixels: crate::loader::RawRenderPixels::HqBootstrap {
+                width: 2,
+                height: 2,
+            },
+            demosaic_backend: Some(crate::loader::RawDemosaicBackend::Video),
+            cpu_demosaic_ms: None,
+            gpu_extract_ms: Some(1),
+            gpu_demosaic_ms: None,
+        },
+    );
+    app.raw_demosaic_baked_notify.lock().push(RawGpuDemosaicBakedNotice {
+        key: image_key,
+        demosaic_ms: u32::MAX,
+    });
+
+    let ctx = egui::Context::default();
+    app.prepare_display_frame(&ctx);
+
+    assert_eq!(app.settings.raw_demosaic_mode, RawDemosaicMode::Gpu);
+    assert!(app.gpu_demosaic_failed_indices.contains(&0));
+    assert!(!app.hdr_raw_gpu_demosaic_pending_indices.contains(&0));
+    assert!(!app.hdr_image_cache.contains_key(&0));
+    assert!(app.loader.is_loading_any(0));
+    assert_eq!(
+        app.raw_demosaic_mode_for_index(0),
+        RawDemosaicMode::Cpu
+    );
 }

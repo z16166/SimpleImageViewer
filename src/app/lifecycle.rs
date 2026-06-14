@@ -11,8 +11,9 @@ use eframe::egui::{self, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
+use parking_lot::Mutex;
 
 impl ImageViewerApp {
     pub fn refresh_audio_devices(&mut self) {
@@ -227,6 +228,24 @@ impl ImageViewerApp {
             cc.wgpu_render_state.as_ref()
         {
             let adapter_info = state.adapter.get_info();
+            let limits = state.device.limits();
+            let gl_backend = adapter_info.backend == wgpu::Backend::Gl;
+            let raw_demosaic_compute_supported = limits.max_compute_invocations_per_workgroup
+                >= 256
+                && limits.max_compute_workgroup_size_x >= 16
+                && limits.max_compute_workgroup_size_y >= 16;
+            crate::loader::GPU_DEMOSAIC_SUPPORTED.store(
+                !gl_backend && raw_demosaic_compute_supported,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            if gl_backend || !raw_demosaic_compute_supported {
+                log::debug!(
+                    "[Loader] GPU RAW demosaic disabled at startup \
+                     (backend={:?}, max_compute_invocations_per_workgroup={})",
+                    adapter_info.backend,
+                    limits.max_compute_invocations_per_workgroup
+                );
+            }
             let pipeline_cache =
                 crate::wgpu_pipeline_cache::create_pipeline_cache(&state.device, &state.adapter);
             if let Some(format) = crate::hdr::renderer::predicted_hdr_callback_target_format(
@@ -253,6 +272,7 @@ impl ImageViewerApp {
                 Some(adapter_info),
             )
         } else {
+            crate::loader::GPU_DEMOSAIC_SUPPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
             (None, None)
         };
 
@@ -454,6 +474,7 @@ impl ImageViewerApp {
             hdr_sdr_fallback_indices: std::collections::HashSet::new(),
             hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
             hdr_raw_gpu_demosaic_pending_indices: std::collections::HashSet::new(),
+            gpu_demosaic_failed_indices: std::collections::HashSet::new(),
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
             hdr_in_flight_fallback_refinements: std::collections::HashSet::new(),
             deferred_sdr_uploads: std::collections::HashMap::new(),

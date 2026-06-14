@@ -98,12 +98,13 @@ impl RawDemosaicMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawDemosaicMethod {
-    MalvarHeCutler,
+    #[serde(alias = "malvar_he_cutler")]
+    Ppg,
 }
 
 impl Default for RawDemosaicMethod {
     fn default() -> Self {
-        Self::MalvarHeCutler
+        Self::Ppg
     }
 }
 
@@ -326,7 +327,7 @@ fn default_raw_demosaic_mode() -> RawDemosaicMode {
     RawDemosaicMode::Gpu
 }
 fn default_raw_demosaic_method() -> RawDemosaicMethod {
-    RawDemosaicMethod::MalvarHeCutler
+    RawDemosaicMethod::Ppg
 }
 impl Default for ScaleMode {
     fn default() -> Self {

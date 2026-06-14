@@ -226,6 +226,21 @@ impl RawMetadataStore {
         true
     }
 
+    pub(crate) fn note_gpu_demosaic_failed(&mut self, index: usize) -> bool {
+        let Some(info) = self.by_index.get_mut(&index) else {
+            return false;
+        };
+        let before = info.demosaic_backend;
+        info.note_gpu_demosaic_failed();
+        if before == info.demosaic_backend {
+            return false;
+        }
+        if index == self.current_index {
+            self.sync_tracked_params_for_current();
+        }
+        true
+    }
+
     pub(crate) fn set_cpu_demosaic_ms(&mut self, index: usize, ms: u32) -> bool {
         let Some(info) = self.by_index.get_mut(&index) else {
             return false;

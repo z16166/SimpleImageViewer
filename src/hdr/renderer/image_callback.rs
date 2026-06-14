@@ -219,6 +219,15 @@ impl CallbackTrait for HdrImagePlaneCallback {
                 }
                 Err(err) => {
                     log::warn!("[HDR] Skipping HDR image plane upload: {err}");
+                    if raw_source.is_some() {
+                        resources.failed_raw_demosaic.insert(image_key);
+                        if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                            notify.lock().push(RawGpuDemosaicBakedNotice {
+                                key: image_key,
+                                demosaic_ms: u32::MAX,
+                            });
+                        }
+                    }
                     return Vec::new();
                 }
             }
@@ -300,10 +309,8 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     binding.baked_raw_demosaic_key = Some(image_key);
                     binding.baked_raw_demosaic_method = Some(source.demosaic_method);
                     let demosaic_ms = crate::loader::elapsed_ms_u32(demosaic_started);
-                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref()
-                        && let Ok(mut pending) = notify.lock()
-                    {
-                        pending.push(RawGpuDemosaicBakedNotice {
+                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                        notify.lock().push(RawGpuDemosaicBakedNotice {
                             key: image_key,
                             demosaic_ms,
                         });
@@ -319,9 +326,15 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     }
                 } else {
                     log::warn!(
-                        "[HDR] GPU RAW demosaicing unavailable; falling back to CPU placeholder"
+                        "[HDR] GPU RAW demosaicing unavailable; falling back to CPU tiled develop"
                     );
                     resources.failed_raw_demosaic.insert(image_key);
+                    if let Some(notify) = self.raw_demosaic_baked_notify.as_ref() {
+                        notify.lock().push(RawGpuDemosaicBakedNotice {
+                            key: image_key,
+                            demosaic_ms: u32::MAX,
+                        });
+                    }
                     return Vec::new();
                 }
             }

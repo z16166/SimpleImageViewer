@@ -45,11 +45,7 @@ impl ImageViewerApp {
     }
 
     fn drain_raw_demosaic_baked_notifications(&mut self, ctx: &egui::Context) {
-        let baked = self
-            .raw_demosaic_baked_notify
-            .lock()
-            .map(|mut notify| std::mem::take(&mut *notify))
-            .unwrap_or_default();
+        let baked = std::mem::take(&mut *self.raw_demosaic_baked_notify.lock());
         if baked.is_empty() {
             return;
         }
@@ -69,15 +65,40 @@ impl ImageViewerApp {
                     }
                 })
                 .collect();
+            let is_failure = notice.demosaic_ms == u32::MAX;
             for idx in matching {
                 self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
                 cleared_any = true;
                 if idx == self.current_index {
                     cleared_current = true;
                 }
-                self.raw_metadata
-                    .set_gpu_demosaic_ms(idx, notice.demosaic_ms);
-                self.raw_metadata.promote_gpu_demosaic_complete(idx);
+                if is_failure {
+                    log::warn!(
+                        "[HDR] GPU RAW demosaicing failed for index {}, falling back to CPU",
+                        idx
+                    );
+                    self.texture_cache.remove(idx);
+                    self.raw_metadata.note_gpu_demosaic_failed(idx);
+                    self.remove_hdr_image_resources(idx);
+                    self.gpu_demosaic_failed_indices.insert(idx);
+                    self.prefetched_tiles.remove(&idx);
+                    self.deferred_sdr_uploads.remove(&idx);
+                    crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
+                    if let Some(path) = self.image_files.get(idx).cloned() {
+                        let fallback_gen = self.loader.current_generation(idx) + 1;
+                        self.loader.request_load(
+                            idx,
+                            fallback_gen,
+                            path,
+                            self.settings.raw_high_quality,
+                            crate::settings::RawDemosaicMode::Cpu,
+                        );
+                    }
+                } else {
+                    self.raw_metadata
+                        .set_gpu_demosaic_ms(idx, notice.demosaic_ms);
+                    self.raw_metadata.promote_gpu_demosaic_complete(idx);
+                }
             }
         }
         if cleared_current {
