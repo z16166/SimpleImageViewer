@@ -189,17 +189,19 @@ fn load_raw_with_embedded_bootstrap(
     })
 }
 
-pub(crate) const GPU_DEMOSAIC_BOOTSTRAP_PREVIEW: bool = true;
+pub(crate) const RAW_HQ_BOOTSTRAP_PREVIEW: bool = true;
 
-fn emit_raw_gpu_bootstrap_preview(
+fn emit_raw_hq_bootstrap_preview(
     load_tx: &Sender<LoaderOutput>,
     index: usize,
     generation: u64,
     path: &PathBuf,
     preview: &DecodedImage,
+    log_tag: &str,
 ) {
     crate::preload_debug!(
-        "[PreloadDebug][RAW-GPU] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        "[PreloadDebug][RAW-{tag}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
+        tag = log_tag,
         index,
         generation,
         preview.width,
@@ -356,8 +358,8 @@ pub(crate) fn load_raw(
     }
 
     if use_gpu_demosaic {
-        if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
-            emit_raw_gpu_bootstrap_preview(&load_tx, index, generation, path, p);
+        if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+            emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "GPU");
         }
         let extract_started = std::time::Instant::now();
         match processor.extract_raw_gpu_source(crate::settings::RawDemosaicMethod::Ppg) {
@@ -392,7 +394,7 @@ pub(crate) fn load_raw(
                     rgba_f32: std::sync::Arc::new(Vec::new()),
                 };
 
-                let fallback = if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
+                let fallback = if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
                     p.clone()
                 } else {
                     let fallback_pixels =
@@ -400,7 +402,7 @@ pub(crate) fn load_raw(
                     DecodedImage::from_arc(width, height, std::sync::Arc::new(fallback_pixels))
                 };
 
-                let mut osd = if GPU_DEMOSAIC_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
+                let mut osd = if RAW_HQ_BOOTSTRAP_PREVIEW && preview_opt.is_some() {
                     let p = preview_opt.as_ref().expect("preview");
                     osd_ctx.gpu_bootstrap_dims(p.width, p.height)
                 } else {
@@ -424,6 +426,9 @@ pub(crate) fn load_raw(
     // High-quality mode: use embedded preview when it already meets HQ requirements.
     if let Some(ref p) = preview_opt {
         if raw_embedded_preview_meets_hq_requirement(p, width, height) {
+            if RAW_HQ_BOOTSTRAP_PREVIEW {
+                emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "CPU");
+            }
             if let Some(result) = load_raw_hq_static_hdr(
                 &mut processor,
                 path,
