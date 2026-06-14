@@ -33,7 +33,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) uploaded_display_storage_view: Option<wgpu::TextureView>,
     pub(super) uploaded_raw_pixels_texture: Option<wgpu::Texture>,
     pub(super) uploaded_raw_pixels_view: Option<wgpu::TextureView>,
-    pub(super) uploaded_raw_green_plane_view: Option<wgpu::TextureView>,
+    pub(super) uploaded_raw_green_plane_write_view: Option<wgpu::TextureView>,
+    pub(super) uploaded_raw_green_plane_read_view: Option<wgpu::TextureView>,
 
     pub(super) baked_jpeg_image_key: Option<HdrImageKey>,
     pub(super) baked_jpeg_weight_bits: Option<u32>,
@@ -73,7 +74,8 @@ pub(crate) struct HdrCallbackResources {
     pub(super) jpeg_compose_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(super) jpeg_compose_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) jpeg_compose_tile_pipeline: Option<wgpu::ComputePipeline>,
-    pub(super) raw_demosaic_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    pub(super) raw_demosaic_green_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    pub(super) raw_demosaic_rgb_bind_group_layout: Option<wgpu::BindGroupLayout>,
     pub(super) raw_demosaic_green_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) raw_demosaic_rgb_pipeline: Option<wgpu::ComputePipeline>,
     pub(super) raw_demosaic_uniform_buffer: Option<wgpu::Buffer>,
@@ -300,21 +302,23 @@ pub(crate) fn create_callback_resources(
             >= crate::hdr::raw_demosaic_gpu::RAW_DEMOSAIC_WORKGROUP_SIZE;
 
     let (
-        raw_demosaic_bind_group_layout,
+        raw_demosaic_green_bind_group_layout,
+        raw_demosaic_rgb_bind_group_layout,
         raw_demosaic_green_pipeline,
         raw_demosaic_rgb_pipeline,
         raw_demosaic_uniform_buffer,
     ) = if gl_backend {
         log::warn!("[HDR] GPU RAW demosaicing disabled on OpenGL backend; using CPU fallback");
-        (None, None, None, None)
+        (None, None, None, None, None)
     } else if raw_demosaic_compute_supported {
-        let (layout, green_pipeline, rgb_pipeline, buf) =
+        let (green_layout, rgb_layout, green_pipeline, rgb_pipeline, buf) =
             crate::hdr::raw_demosaic_gpu::create_raw_demosaic_compute_resources(
                 device,
                 pipeline_cache,
             );
         (
-            Some(layout),
+            Some(green_layout),
+            Some(rgb_layout),
             Some(green_pipeline),
             Some(rgb_pipeline),
             Some(buf),
@@ -325,7 +329,7 @@ pub(crate) fn create_callback_resources(
              (max_compute_invocations_per_workgroup={}); using CPU fallback",
             device.limits().max_compute_invocations_per_workgroup
         );
-        (None, None, None, None)
+        (None, None, None, None, None)
     };
 
     HdrCallbackResources {
@@ -342,7 +346,8 @@ pub(crate) fn create_callback_resources(
         jpeg_compose_bind_group_layout,
         jpeg_compose_pipeline,
         jpeg_compose_tile_pipeline,
-        raw_demosaic_bind_group_layout,
+        raw_demosaic_green_bind_group_layout,
+        raw_demosaic_rgb_bind_group_layout,
         raw_demosaic_green_pipeline,
         raw_demosaic_rgb_pipeline,
         raw_demosaic_uniform_buffer,

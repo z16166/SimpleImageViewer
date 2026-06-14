@@ -34,7 +34,8 @@ struct DemosaicUniforms {
 
 @group(0) @binding(0) var raw_pixels_texture: texture_2d<u32>;
 @group(0) @binding(1) var<uniform> uniforms: DemosaicUniforms;
-@group(0) @binding(2) var green_plane: texture_storage_2d<r32float, read_write>;
+@group(0) @binding(2) var green_plane_write: texture_storage_2d<r32float, write>;
+@group(0) @binding(4) var green_plane_read: texture_2d<f32>;
 @group(0) @binding(3) var output_texture: texture_storage_2d<rgba32float, write>;
 
 const RAW16_MAX: i32 = 65535;
@@ -67,14 +68,8 @@ fn mirror_coord(c: i32, limit: i32) -> i32 {
 }
 
 fn scaled_cfa_at(x: i32, y: i32) -> f32 {
-    // Host CFA extract already applied black-level subtract and CFA scale; uniforms are
-    // zero/one so this matches LibRaw CPU develop without redundant ALU on typical paths.
-    let raw_val = f32(textureLoad(raw_pixels_texture, vec2<i32>(x, y), 0).r);
-    let phase = (y % 2) * 2 + (x % 2);
-    let color_idx = get_bayer_color(phase);
-    let black = get_black_level(color_idx);
-    let scale = get_cfa_scale(color_idx);
-    return max(raw_val - black, 0.0) * scale;
+    // Host CFA extract already applied black-level subtract and CFA scale.
+    return load_cfa_pixel(x, y);
 }
 
 fn get_bayer_color(phase: i32) -> u32 {
@@ -99,21 +94,16 @@ fn read_cfa(c: i32, r: i32) -> f32 {
 
 fn read_cfa_wg(c: i32, r: i32) -> f32 {
     let origin = wg_tile_origin;
-    let tx = c - origin.x;
-    let ty = r - origin.y;
-    if (tx < 0 || ty < 0 || tx >= i32(CFA_TILE) || ty >= i32(CFA_TILE)) {
-        return read_cfa(c, r);
-    }
-    return wg_cfa_tile[u32(ty * i32(CFA_TILE) + tx)];
+    let tx = u32(c - origin.x);
+    let ty = u32(r - origin.y);
+    return wg_cfa_tile[ty * CFA_TILE + tx];
 }
 
 fn coop_load_cfa_tile(wg: vec2<i32>, lane: u32) {
-    let origin = wg * i32(WG_SIZE) - i32(CFA_HALO);
+    let tile_origin = wg * i32(WG_SIZE) - i32(CFA_HALO);
     if (lane == 0u) {
-        wg_tile_origin = origin;
+        wg_tile_origin = tile_origin;
     }
-    workgroupBarrier();
-    let tile_origin = wg_tile_origin;
     let w = i32(uniforms.width);
     let h = i32(uniforms.height);
     var i = lane;
@@ -130,12 +120,9 @@ fn coop_load_cfa_tile(wg: vec2<i32>, lane: u32) {
 
 fn read_green_stored_wg(c: i32, r: i32) -> f32 {
     let origin = wg_tile_origin;
-    let tx = c - origin.x;
-    let ty = r - origin.y;
-    if (tx < 0 || ty < 0 || tx >= i32(CFA_TILE) || ty >= i32(CFA_TILE)) {
-        return read_green_stored(c, r);
-    }
-    return wg_green_tile[u32(ty * i32(CFA_TILE) + tx)];
+    let tx = u32(c - origin.x);
+    let ty = u32(r - origin.y);
+    return wg_green_tile[ty * CFA_TILE + tx];
 }
 
 fn coop_load_green_tile(lane: u32) {
@@ -148,15 +135,15 @@ fn coop_load_green_tile(lane: u32) {
         let tx = i32(i % CFA_TILE);
         let gx = clamp(tile_origin.x + tx, 0, w - 1);
         let gy = clamp(tile_origin.y + ty, 0, h - 1);
-        wg_green_tile[i] = textureLoad(green_plane, vec2<i32>(gx, gy)).r;
+        wg_green_tile[i] = textureLoad(green_plane_read, vec2<i32>(gx, gy), 0).r;
         i += WG_TOTAL;
     }
     workgroupBarrier();
 }
 
 fn get_color_channel(c: i32, r: i32) -> u32 {
-    let x = (c % 2 + 2) % 2;
-    let y = (r % 2 + 2) % 2;
+    let x = c & 1;
+    let y = r & 1;
     return get_bayer_color(y * 2 + x);
 }
 
@@ -259,7 +246,7 @@ fn ppg_green_at_wg(col: i32, row: i32, c: u32) -> f32 {
 fn read_green_stored(c: i32, r: i32) -> f32 {
     let x = clamp(c, 0, i32(uniforms.width) - 1);
     let y = clamp(r, 0, i32(uniforms.height) - 1);
-    return textureLoad(green_plane, vec2<i32>(x, y)).r;
+    return textureLoad(green_plane_read, vec2<i32>(x, y), 0).r;
 }
 
 fn read_channel_stored_base(c: i32, r: i32, ch: u32) -> f32 {
@@ -344,7 +331,7 @@ fn cs_ppg_green(
     } else {
         green = ppg_green_at_wg(col, row, fc);
     }
-    textureStore(green_plane, vec2<i32>(col, row), vec4<f32>(green));
+    textureStore(green_plane_write, vec2<i32>(col, row), vec4<f32>(green));
 }
 
 // Pass 2: R/B interpolation using stored green (no recursive green recompute).
@@ -433,16 +420,19 @@ fn cs_ppg_rgb(
     let fc = get_color_channel(col, row);
     let green = read_green_stored_wg(col, row);
     var rgb: vec3<f32>;
+    rgb.g = green;
 
-    let at_r = fc == 0u;
-    let at_b = fc == 2u;
-    let at_green = fc == 1u || fc == 3u;
-    let chroma = ppg_chroma_at_rb_wg(col, row, fc, green);
-    let green_site = ppg_green_site_rgb_wg(col, row, green);
-
-    rgb.r = select(select(chroma, green_site.r, at_green), read_cfa_wg(col, row), at_r);
-    rgb.g = select(green_site.g, green, at_green);
-    rgb.b = select(select(chroma, green_site.b, at_green), read_cfa_wg(col, row), at_b);
+    if (fc == 1u || fc == 3u) {
+        let green_site = ppg_green_site_rgb_wg(col, row, green);
+        rgb.r = green_site.r;
+        rgb.b = green_site.b;
+    } else if (fc == 0u) {
+        rgb.r = read_cfa_wg(col, row);
+        rgb.b = ppg_chroma_at_rb_wg(col, row, fc, green);
+    } else {
+        rgb.r = ppg_chroma_at_rb_wg(col, row, fc, green);
+        rgb.b = read_cfa_wg(col, row);
+    }
 
     rgb = apply_rgb_cam(rgb);
     rgb = vec3<f32>(
@@ -505,6 +495,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
     pipeline_cache: Option<&wgpu::PipelineCache>,
 ) -> (
     wgpu::BindGroupLayout,
+    wgpu::BindGroupLayout,
     wgpu::ComputePipeline,
     wgpu::ComputePipeline,
     wgpu::Buffer,
@@ -514,8 +505,8 @@ pub(super) fn create_raw_demosaic_compute_resources(
         source: wgpu::ShaderSource::Wgsl(RAW_DEMOSAIC_COMPUTE_SHADER.into()),
     });
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("simple-image-viewer-raw-demosaic-bind-group-layout"),
+    let green_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-green-bind-group-layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -541,7 +532,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
                 binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::ReadWrite,
+                    access: wgpu::StorageTextureAccess::WriteOnly,
                     format: wgpu::TextureFormat::R32Float,
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
@@ -560,15 +551,67 @@ pub(super) fn create_raw_demosaic_compute_resources(
         ],
     });
 
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("simple-image-viewer-raw-demosaic-pipeline-layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
+    let rgb_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-rgb-bind-group-layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba32Float,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let green_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-green-pipeline-layout"),
+        bind_group_layouts: &[Some(&green_bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    let rgb_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-rgb-pipeline-layout"),
+        bind_group_layouts: &[Some(&rgb_bind_group_layout)],
         immediate_size: 0,
     });
 
     let green_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("simple-image-viewer-raw-demosaic-green-pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: Some(&green_pipeline_layout),
         module: &shader,
         entry_point: Some("cs_ppg_green"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -577,7 +620,7 @@ pub(super) fn create_raw_demosaic_compute_resources(
 
     let rgb_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("simple-image-viewer-raw-demosaic-rgb-pipeline"),
-        layout: Some(&pipeline_layout),
+        layout: Some(&rgb_pipeline_layout),
         module: &shader,
         entry_point: Some("cs_ppg_rgb"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -605,7 +648,8 @@ pub(super) fn create_raw_demosaic_compute_resources(
     });
 
     (
-        bind_group_layout,
+        green_bind_group_layout,
+        rgb_bind_group_layout,
         green_pipeline,
         rgb_pipeline,
         uniforms_buffer,
@@ -615,12 +659,14 @@ pub(super) fn create_raw_demosaic_compute_resources(
 pub(crate) fn encode_raw_demosaic_compute_pass(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    bind_group_layout: &wgpu::BindGroupLayout,
+    green_bind_group_layout: &wgpu::BindGroupLayout,
+    rgb_bind_group_layout: &wgpu::BindGroupLayout,
     green_pipeline: &wgpu::ComputePipeline,
     rgb_pipeline: &wgpu::ComputePipeline,
     source: &RawGpuSource,
     raw_pixels_view: &wgpu::TextureView,
-    green_plane_view: &wgpu::TextureView,
+    green_plane_write_view: &wgpu::TextureView,
+    green_plane_read_view: &wgpu::TextureView,
     output_view: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::CommandBuffer {
@@ -628,9 +674,9 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
     let uniform = RawDemosaicUniform::new(source);
     queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform));
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("simple-image-viewer-raw-demosaic-bind-group"),
-        layout: bind_group_layout,
+    let green_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-green-bind-group"),
+        layout: green_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -642,7 +688,30 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::TextureView(green_plane_view),
+                resource: wgpu::BindingResource::TextureView(green_plane_write_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(output_view),
+            },
+        ],
+    });
+
+    let rgb_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("simple-image-viewer-raw-demosaic-rgb-bind-group"),
+        layout: rgb_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(raw_pixels_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(green_plane_read_view),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
@@ -663,7 +732,7 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
             timestamp_writes: None,
         });
         pass.set_pipeline(green_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, &green_bind_group, &[]);
         pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
     }
     {
@@ -672,7 +741,7 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
             timestamp_writes: None,
         });
         pass.set_pipeline(rgb_pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_bind_group(0, &rgb_bind_group, &[]);
         pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
     }
     encoder.finish()

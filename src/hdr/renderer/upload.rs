@@ -513,8 +513,16 @@ pub(crate) fn create_empty_r32f_storage_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::R32Float,
-        usage: wgpu::TextureUsages::STORAGE_BINDING,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{label}-read-view")),
+        format: Some(wgpu::TextureFormat::R32Float),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        aspect: wgpu::TextureAspect::All,
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        ..Default::default()
     });
     let storage_view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some(&format!("{label}-storage-view")),
@@ -526,7 +534,7 @@ pub(crate) fn create_empty_r32f_storage_texture(
     });
     Ok(CallbackUpload {
         texture,
-        view: storage_view.clone(),
+        view,
         storage_view: Some(storage_view),
     })
 }

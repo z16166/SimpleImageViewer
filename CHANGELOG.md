@@ -2,15 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.0] - 2026-06-14
+
+### Added
+- **RAW demosaicing mode (CPU / GPU)**: When High-Quality RAW preview is enabled, choose CPU or GPU demosaicing in **Settings > Display**. GPU mode accelerates compatible Bayer RAW on supported graphics hardware, with automatic CPU fallback for Fuji X-Trans, Super CCD, non-square pixels, oversized images, or processing errors; the OSD shows which path is actually running.
+- **RAW processing details in OSD**: View demosaic timing and whether the current RAW image was processed on the CPU or GPU.
+
+### Improved
+- **GPU RAW preview speed**: Full-resolution Bayer RAW can demosaic on the GPU for faster high-quality viewing on supported hardware.
+- **Sigma X-Trans RAW navigation**: High-quality CPU develop now shows the embedded preview immediately while the full image finishes, so browsing no longer holds the previous picture for about a second.
+- **RAW exposure consistency**: GPU and CPU demosaic paths now match at the default exposure; adjust EV with `Ctrl + ↑` / `Ctrl + ↓` when a RAW file needs brighter or darker rendering.
+
 ## [2.5.1] - 2026-06-12
 
 ### Added
-- **GPU-accelerated High-Quality RAW preview**: When High-Quality RAW preview is enabled, compatible RAW files can demosaic on the GPU for faster full-resolution viewing on supported graphics hardware, with automatic CPU fallback when GPU processing is unavailable.
 - **System Tray Support**: Added an option in System settings to minimize the application to the system tray when the window is closed. Features left-click restore, a right-click context menu (Show Window / Exit), automatic window restoration when opening new images from the file explorer, and a process-local in-app shortcut (`Ctrl + Shift + T`, not a global OS hotkey) that only minimizes the currently visible main window to tray; restore from tray uses the tray icon or its context menu.
 - **Copy and Cut to Folder**: Easily copy or move the active image to a target directory via the context menu or keyboard shortcuts (`Ctrl + Shift + C` for copy, `Ctrl + Shift + X` for cut). Includes a folder picker dialog that remembers the previously used directory, an optional session-only "Overwrite if exists" checkbox, and automatically updates the viewer's image list when a file is moved.
-
-### Improved
-- **Sigma X-Trans RAW navigation**: CPU HQ static develop (e.g. Sigma DP2 Quattro/Merrill X3F) now emits the embedded preview immediately before synchronous full develop, so evicted-cache navigations show the built-in preview instead of holding the previous image for ~1s.
 
 ## [2.5.0] - 2026-06-11
 
