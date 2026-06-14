@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
 - **Sigma X-Trans RAW navigation**: High-quality CPU develop now shows the embedded preview immediately while the full image finishes, so browsing no longer holds the previous picture for about a second.
 - **RAW exposure consistency**: GPU and CPU demosaic paths now match at the default exposure; adjust EV with `Ctrl + ↑` / `Ctrl + ↓` when a RAW file needs brighter or darker rendering.
 
+### Fixed
+- **Apple HDR HEIC browsing**: Fixed crashes when flipping through folders with many iPhone-style HDR HEIC photos. The viewer now releases large GPU staging buffers right after HDR blending and falls back to CPU processing if video memory is tight, so browsing long collections stays stable on laptops and integrated graphics.
+- **JPEG XL HDR gain-map browsing**: Fixed out-of-memory crashes and instability when opening or paging through folders with HDR JPEG XL (.jxl) photos that use ISO gain maps, so large libraries no longer exhaust GPU memory as quickly.
+
 ## [2.5.1] - 2026-06-12
 
 ### Added

@@ -183,10 +183,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         };
                     let (uploaded_raw_green_plane_write_view, uploaded_raw_green_plane_read_view) =
                         if let Some(green) = uploaded.raw_green_plane {
-                            (
-                                green.storage_view,
-                                Some(green.view),
-                            )
+                            (green.storage_view, Some(green.view))
                         } else {
                             (None, None)
                         };
@@ -454,64 +451,68 @@ impl CallbackTrait for HdrImagePlaneCallback {
         #[cfg(feature = "heif-native")]
         if needs_apple_compose {
             if let Some(deferred) = apple_deferred {
-                if let (Some(compose_layout), Some(compose_pipeline)) = (
-                    resources.compose_bind_group_layout.as_ref(),
-                    resources.compose_pipeline.as_ref(),
-                ) {
+                let gpu_compose_pipeline = resources
+                    .compose_bind_group_layout
+                    .as_ref()
+                    .zip(resources.compose_pipeline.as_ref());
+                let mut apple_compose_used_cpu = gpu_compose_pipeline.is_none();
+
+                if let Some((compose_layout, compose_pipeline)) = gpu_compose_pipeline {
                     let primary_ptr = std::sync::Arc::as_ptr(&self.image.rgba_f32) as usize;
                     let upload_primary = binding.encoded_primary_source_ptr != Some(primary_ptr);
-                    let max_binding = device.limits().max_storage_buffer_binding_size;
-                    if let Err(err) = apple_compose_gpu::ensure_encoded_primary_buffer(
+                    match apple_compose_gpu::ensure_encoded_primary_buffer(
                         device,
                         binding,
                         self.image.width,
-                        max_binding,
+                        self.image.height,
                     ) {
-                        log::warn!(
-                            "[HDR] Apple GPU compose primary buffer allocation failed: {err}"
-                        );
-                        resources
-                            .failed_apple_image_compose
-                            .insert((image_key, target_capacity_bits));
-                        resources.image_bindings.remove(&image_key);
-                        return Vec::new();
-                    } else {
-                        let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
-                        let display_storage = binding
-                            .uploaded_display_storage_view
-                            .as_ref()
-                            .expect("display storage view");
-                        let encoded_primary_buffer = binding
-                            .encoded_primary_buffer
-                            .as_ref()
-                            .expect("encoded primary buffer");
-                        let compose_tone_map_buf = binding
-                            .compose_tone_map_buffer
-                            .as_ref()
-                            .expect("apple compose tone map buffer");
-                        compose_command_buffers.push(
-                            apple_compose_gpu::encode_compose_compute_pass(
-                                device,
-                                queue,
-                                compose_layout,
-                                compose_pipeline,
-                                &self.image,
-                                deferred,
-                                &self.tone_map,
-                                encoded_primary_buffer,
-                                gain_view,
-                                display_storage,
-                                upload_primary,
-                                compose_tone_map_buf,
-                            ),
-                        );
-                        if upload_primary {
-                            binding.encoded_primary_source_ptr = Some(primary_ptr);
+                        Err(err) => {
+                            log::warn!(
+                                "[HDR] Apple GPU compose primary buffer allocation failed: {err}; using CPU fallback"
+                            );
+                            apple_compose_used_cpu = true;
                         }
-                        binding.baked_apple_image_key = Some(image_key);
-                        binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                        Ok(()) => {
+                            let gain_view = binding.uploaded_gain_view.as_ref().expect("gain view");
+                            let display_storage = binding
+                                .uploaded_display_storage_view
+                                .as_ref()
+                                .expect("display storage view");
+                            let encoded_primary_buffer = binding
+                                .encoded_primary_buffer
+                                .as_ref()
+                                .expect("encoded primary buffer");
+                            let compose_tone_map_buf = binding
+                                .compose_tone_map_buffer
+                                .as_ref()
+                                .expect("apple compose tone map buffer");
+                            compose_command_buffers.push(
+                                apple_compose_gpu::encode_compose_compute_pass(
+                                    device,
+                                    queue,
+                                    compose_layout,
+                                    compose_pipeline,
+                                    &self.image,
+                                    deferred,
+                                    &self.tone_map,
+                                    encoded_primary_buffer,
+                                    gain_view,
+                                    display_storage,
+                                    upload_primary,
+                                    compose_tone_map_buf,
+                                ),
+                            );
+                            binding.baked_apple_image_key = Some(image_key);
+                            binding.baked_apple_weight_bits = Some(target_capacity_bits);
+                            // CommandBuffer retains the buffer until GPU execution; drop strip RAM now.
+                            binding.encoded_primary_buffer = None;
+                            binding.encoded_primary_buffer_bytes = 0;
+                            binding.encoded_primary_source_ptr = None;
+                        }
                     }
-                } else {
+                }
+
+                if apple_compose_used_cpu {
                     // CPU fallback composes synchronously in the render callback; large images can
                     // stall a frame. Move this work to a background task if it becomes user-visible.
                     match crate::hdr::heif_apple_gain_map_gpu::compose_apple_heic_deferred_cpu_pixels(
