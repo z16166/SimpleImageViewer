@@ -144,36 +144,17 @@ impl ImageViewerApp {
             self.texture_cache.remove(idx);
         }
 
-        // HDR caches: remove/retain all non-current entries using fine-grained cleanups
-        // to avoid mixing redundant cleanup logic.
-        let to_remove_hdr: Vec<usize> = self
+        // HDR caches: unified cleanup keeps side maps (e.g. pending key index) in sync.
+        let to_remove_hdr: std::collections::HashSet<usize> = self
             .hdr_image_cache
             .keys()
+            .chain(self.hdr_tiled_source_cache.keys())
+            .chain(self.hdr_tiled_preview_cache.keys())
             .copied()
             .filter(|&idx| idx != keep)
             .collect();
         for idx in to_remove_hdr {
-            self.hdr_image_cache.remove(&idx);
-        }
-
-        let to_remove_tiled_source: Vec<usize> = self
-            .hdr_tiled_source_cache
-            .keys()
-            .copied()
-            .filter(|&idx| idx != keep)
-            .collect();
-        for idx in to_remove_tiled_source {
-            self.hdr_tiled_source_cache.remove(&idx);
-        }
-
-        let to_remove_tiled_preview: Vec<usize> = self
-            .hdr_tiled_preview_cache
-            .keys()
-            .copied()
-            .filter(|&idx| idx != keep)
-            .collect();
-        for idx in to_remove_tiled_preview {
-            self.hdr_tiled_preview_cache.remove(&idx);
+            self.remove_hdr_image_resources(idx);
         }
 
         self.hdr_sdr_fallback_indices.retain(|&idx| idx == keep);

@@ -188,6 +188,8 @@ pub struct HdrImageMetadata {
 }
 
 impl HdrImageMetadata {
+    /// True when scene-linear RGBA or gain-map GPU compose must finish before display upload.
+    #[allow(dead_code)]
     pub(crate) fn gpu_compose_pending(&self) -> bool {
         self.raw_gpu_source.is_some()
             || self

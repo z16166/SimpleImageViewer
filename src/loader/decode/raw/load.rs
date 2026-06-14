@@ -197,7 +197,7 @@ fn emit_raw_hq_bootstrap_preview(
     generation: u64,
     path: &PathBuf,
     preview: &DecodedImage,
-    log_tag: &str,
+    #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))] log_tag: &str,
 ) {
     crate::preload_debug!(
         "[PreloadDebug][RAW-{}] bootstrap preview early idx={} gen={} {}x{} path={:?}",
@@ -277,7 +277,17 @@ pub(crate) fn load_raw(
         }
     };
 
-    let _ = (open_timings, prefetched);
+    let _ = (open_timings.open_ms, open_timings.thumb_ms, prefetched);
+    #[cfg(feature = "preload-debug")]
+    crate::preload_debug!(
+        "[PreloadDebug][RAW] open phases idx={} gen={} open_ms={} thumb_ms={} prefetched={} path={:?}",
+        index,
+        generation,
+        open_timings.open_ms,
+        open_timings.thumb_ms,
+        prefetched,
+        path.file_name().unwrap_or_default()
+    );
 
     let (width, height) = processor.developed_output_dimensions(preview_opt.as_ref());
     let area = width as u64 * height as u64;
@@ -358,6 +368,15 @@ pub(crate) fn load_raw(
     }
 
     if use_gpu_demosaic {
+        let path_cal = path.clone();
+        let develop_flip = final_lr_flip;
+        let develop_luma_handle = std::thread::spawn(move || {
+            crate::raw_processor::RawProcessor::scene_linear_center_luma_from_path_with_flip(
+                &path_cal,
+                develop_flip,
+            )
+                .unwrap_or(0.0)
+        });
         if RAW_HQ_BOOTSTRAP_PREVIEW && let Some(ref p) = preview_opt {
             emit_raw_hq_bootstrap_preview(&load_tx, index, generation, path, p, "GPU");
         }
@@ -367,13 +386,15 @@ pub(crate) fn load_raw(
                 let extract_ms = crate::loader::elapsed_ms_u32(extract_started);
                 let calib_started = std::time::Instant::now();
                 raw_gpu_source.scene_color_scale =
-                    crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale_from_processor(
+                    crate::raw_processor::RawProcessor::estimate_gpu_scene_color_scale_from_develop_match(
+                        &raw_gpu_source,
+                        develop_luma_handle,
                         &mut processor,
                         &raw_gpu_source.rgb_cam,
                     );
                 let calib_ms = crate::loader::elapsed_ms_u32(calib_started);
                 log::debug!(
-                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms calib={calib_ms}ms (decimated auto_bright; demosaic on GPU)",
+                    "[Loader] RAW GPU load {:?}: extract={extract_ms}ms calib={calib_ms}ms (develop-matched scene scale; demosaic on GPU)",
                     path.file_name().unwrap_or_default()
                 );
                 #[cfg(feature = "preload-debug")]

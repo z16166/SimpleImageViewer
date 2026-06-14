@@ -1673,4 +1673,129 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
         app.raw_demosaic_mode_for_index(0),
         RawDemosaicMode::Cpu
     );
+
+    use crate::loader::{LoadResult, LoaderOutput, PreviewBundle, source_key_for_path};
+    let source_key = source_key_for_path(&app.image_files[0]);
+    app.loader.test_send_loader_output(LoaderOutput::Image(LoadResult {
+        index: 0,
+        generation: app.generation,
+        source_key,
+        result: Err("synthetic cpu fallback complete".to_string()),
+        preview_bundle: PreviewBundle::initial(),
+        ultra_hdr_capacity_sensitive: false,
+        sdr_fallback_is_placeholder: false,
+        target_hdr_capacity: 1.0,
+        raw_osd: None,
+    }));
+    app.process_loaded_images(&ctx);
+    assert!(!app.loader.is_loading(0, app.generation));
+}
+
+fn test_gpu_raw_pending_hdr(raw_pixels: Arc<Vec<u16>>) -> Arc<crate::hdr::types::HdrImageBuffer> {
+    let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+    metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+        raw_width: 4,
+        raw_height: 4,
+        width: 4,
+        height: 4,
+        raw_pixels: raw_pixels,
+        black_level: [0.0; 4],
+        cfa_scale: [1.0; 4],
+        rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        maximum: 65535.0,
+        bayer_pattern: [0, 1, 1, 2],
+        scene_color_scale: [1.0, 1.0, 1.0],
+        demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+        bootstrap_preview: None,
+    });
+    Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 4,
+        height: 4,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    })
+}
+
+#[test]
+fn resolve_raw_demosaic_notice_indices_matches_via_pending_key_side_map() {
+    use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
+    use loader_results::resolve_raw_demosaic_notice_indices;
+
+    let raw_pixels = Arc::new(vec![0u16; 16]);
+    let hdr = test_gpu_raw_pending_hdr(Arc::clone(&raw_pixels));
+    let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+    let pending = HashSet::from([2usize]);
+    let side_map = HashMap::from([(image_key, 2usize)]);
+    let notice = RawGpuDemosaicBakedNotice {
+        key: image_key,
+        demosaic_ms: u32::MAX,
+    };
+
+    let matched = resolve_raw_demosaic_notice_indices(
+        &notice,
+        true,
+        &HashMap::new(),
+        &pending,
+        &side_map,
+        None,
+    );
+    assert_eq!(matched, vec![2]);
+}
+
+#[test]
+fn resolve_raw_demosaic_notice_indices_single_pending_fallback() {
+    use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
+    use loader_results::resolve_raw_demosaic_notice_indices;
+
+    let unmatched_hdr = test_gpu_raw_pending_hdr(Arc::new(vec![1u16; 16]));
+    let unmatched_key =
+        crate::hdr::renderer::HdrImageKey::from_image(unmatched_hdr.as_ref());
+    let pending = HashSet::from([7usize]);
+    let notice = RawGpuDemosaicBakedNotice {
+        key: unmatched_key,
+        demosaic_ms: u32::MAX,
+    };
+
+    let matched = resolve_raw_demosaic_notice_indices(
+        &notice,
+        true,
+        &HashMap::new(),
+        &pending,
+        &HashMap::new(),
+        None,
+    );
+    assert_eq!(matched, vec![7]);
+}
+
+#[test]
+fn resolve_raw_demosaic_notice_indices_returns_empty_when_unmatched() {
+    use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
+    use loader_results::resolve_raw_demosaic_notice_indices;
+
+    let hdr_a = test_gpu_raw_pending_hdr(Arc::new(vec![2u16; 16]));
+    let hdr_b = test_gpu_raw_pending_hdr(Arc::new(vec![3u16; 16]));
+    let unmatched_hdr = test_gpu_raw_pending_hdr(Arc::new(vec![4u16; 16]));
+    let unmatched_key =
+        crate::hdr::renderer::HdrImageKey::from_image(unmatched_hdr.as_ref());
+    let pending = HashSet::from([0usize, 1usize]);
+    let hdr_cache = HashMap::from([
+        (0, hdr_a),
+        (1, hdr_b),
+    ]);
+    let notice = RawGpuDemosaicBakedNotice {
+        key: unmatched_key,
+        demosaic_ms: u32::MAX,
+    };
+
+    let matched = resolve_raw_demosaic_notice_indices(
+        &notice,
+        true,
+        &hdr_cache,
+        &pending,
+        &HashMap::new(),
+        None,
+    );
+    assert!(matched.is_empty());
 }

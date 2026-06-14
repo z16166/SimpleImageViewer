@@ -44,6 +44,13 @@ impl ImageViewerApp {
     }
 
     /// Drop HDR GPU/tile caches for `index` while keeping RAW OSD metadata and failure flags.
+    ///
+    /// Also removes `hdr_raw_gpu_demosaic_pending_key_index` entries. If a distant prefetch
+    /// eviction runs while GPU demosaic is still in flight, a late failure sentinel may no
+    /// longer match any pending index (warn + drop) and will not insert into
+    /// `gpu_demosaic_failed_indices`; revisiting that image retries GPU demosaic instead of
+    /// forcing CPU. Directory rescan retains side maps until retain runs; prefetch eviction
+    /// clears them here by design.
     pub(crate) fn remove_hdr_image_resources(&mut self, index: usize) {
         if let Some(hdr) = self.hdr_image_cache.get(&index) {
             let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);

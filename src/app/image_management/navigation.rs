@@ -161,7 +161,6 @@ impl ImageViewerApp {
             self.texture_cache.remove(idx);
             self.remove_hdr_image_resources(idx);
             self.raw_metadata.remove(idx);
-            self.gpu_demosaic_failed_indices.remove(&idx);
             self.prefetched_tiles.remove(&idx);
             self.deferred_sdr_uploads.remove(&idx);
             crate::tile_cache::PIXEL_CACHE.lock().remove_image(idx);
@@ -194,20 +193,23 @@ impl ImageViewerApp {
         if target_index == self.current_index {
             return;
         }
-        let target_is_raw = self
-            .image_files
-            .get(target_index)
-            .is_some_and(|p| crate::preload_debug::path_is_raw(p));
-        let target_has_texture = self.texture_cache.contains(target_index);
-        let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
-            || self.hdr_tiled_source_cache.contains_key(&target_index);
-        let target_gpu_raw = self
-            .hdr_image_cache
-            .get(&target_index)
-            .is_some_and(|img| img.metadata.raw_gpu_source.is_some());
-        crate::preload_debug!(
-            "[PreloadDebug][Nav] {previous_index} -> {target_index} raw={target_is_raw} gpu_raw={target_gpu_raw} tex_cache={target_has_texture} hdr_cache={target_has_hdr_plane}"
-        );
+        #[cfg(feature = "preload-debug")]
+        {
+            let target_is_raw = self
+                .image_files
+                .get(target_index)
+                .is_some_and(|p| crate::preload_debug::path_is_raw(p));
+            let target_has_texture = self.texture_cache.contains(target_index);
+            let target_has_hdr_plane = self.hdr_image_cache.contains_key(&target_index)
+                || self.hdr_tiled_source_cache.contains_key(&target_index);
+            let target_gpu_raw = self
+                .hdr_image_cache
+                .get(&target_index)
+                .is_some_and(|img| img.metadata.raw_gpu_source.is_some());
+            crate::preload_debug!(
+                "[PreloadDebug][Nav] {previous_index} -> {target_index} raw={target_is_raw} gpu_raw={target_gpu_raw} tex_cache={target_has_texture} hdr_cache={target_has_hdr_plane}"
+            );
+        }
         self.transition_settled_at = None;
         self.transition_end_hold = false;
         self.last_background_upload_at = None;

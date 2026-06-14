@@ -20,3 +20,6 @@ mod display;
 mod file_ops;
 mod install;
 mod process;
+
+#[cfg(test)]
+pub(crate) use display::resolve_raw_demosaic_notice_indices;

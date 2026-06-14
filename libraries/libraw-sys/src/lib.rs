@@ -92,6 +92,7 @@ unsafe extern "C" {
     pub fn siv_libraw_set_output_color(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_set_gamma(data: *mut libraw_data_t, power: f64, slope: f64);
     pub fn siv_libraw_set_user_qual(data: *mut libraw_data_t, qual: c_int);
+    pub fn siv_libraw_set_highlight(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_set_half_size(data: *mut libraw_data_t, value: c_int);
     pub fn siv_libraw_get_bright(data: *mut libraw_data_t) -> c_float;
     // Size and Metadata helpers

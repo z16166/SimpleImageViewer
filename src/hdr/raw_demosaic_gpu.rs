@@ -451,7 +451,7 @@ fn cs_ppg_rgb(
         libraw_clip_channel(rgb.b),
     );
     rgb = rgb * uniforms.output_scale * uniforms.scene_color_scale.xyz;
-    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Scene-linear HDR: do not clamp to 1.0 (matches LibRaw develop + auto_bright headroom).
 
     textureStore(output_texture, vec2<i32>(col, row), vec4<f32>(rgb, 1.0));
 }
@@ -679,7 +679,6 @@ pub(crate) fn encode_raw_demosaic_compute_pass(
 }
 
 /// CPU mirror of WGSL PPG demosaic (camera RGB before `convert_to_rgb`).
-#[cfg(test)]
 fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
     let w = source.width as usize;
     let raw = source.raw_pixels.as_slice();
@@ -717,14 +716,12 @@ fn cpu_ppg_helpers(source: &RawGpuSource) -> impl Fn(i32, i32) -> f32 + '_ {
     }
 }
 
-#[cfg(test)]
 fn cpu_fc(source: &RawGpuSource, col: i32, row: i32) -> u32 {
     let x = ((col % 2) + 2) % 2;
     let y = ((row % 2) + 2) % 2;
     source.bayer_pattern[(y * 2 + x) as usize]
 }
 
-#[cfg(test)]
 fn cpu_read_green_plane(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -738,7 +735,6 @@ fn cpu_read_green_plane(
     0.0
 }
 
-#[cfg(test)]
 fn cpu_ppg_green_at(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -777,7 +773,6 @@ fn cpu_ppg_green_at(
     (h_guess / 4.0).clamp(lo.min(hi), lo.max(hi))
 }
 
-#[cfg(test)]
 fn cpu_build_green_plane(source: &RawGpuSource, read_cfa: &impl Fn(i32, i32) -> f32) -> Vec<f32> {
     let w = source.width as usize;
     let h = source.height as usize;
@@ -796,7 +791,6 @@ fn cpu_build_green_plane(source: &RawGpuSource, read_cfa: &impl Fn(i32, i32) -> 
     plane
 }
 
-#[cfg(test)]
 fn cpu_read_green_stored(plane: &[f32], source: &RawGpuSource, col: i32, row: i32) -> f32 {
     let w = source.width as usize;
     let x = col.clamp(0, source.width as i32 - 1) as usize;
@@ -804,7 +798,6 @@ fn cpu_read_green_stored(plane: &[f32], source: &RawGpuSource, col: i32, row: i3
     plane[y * w + x]
 }
 
-#[cfg(test)]
 fn cpu_read_channel_stored(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -836,7 +829,6 @@ fn cpu_read_channel_stored(
     0.0
 }
 
-#[cfg(test)]
 fn cpu_build_rb_at_green_plane(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -859,7 +851,6 @@ fn cpu_build_rb_at_green_plane(
     plane
 }
 
-#[cfg(test)]
 fn cpu_ppg_green_site_rgb(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -896,7 +887,6 @@ fn cpu_ppg_green_site_rgb(
     rgb
 }
 
-#[cfg(test)]
 fn cpu_ppg_chroma_at_rb(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -939,7 +929,6 @@ fn cpu_ppg_chroma_at_rb(
     (guess0 + guess1) * 0.25
 }
 
-#[cfg(test)]
 fn cpu_ppg_camera_rgb_at(
     source: &RawGpuSource,
     read_cfa: &impl Fn(i32, i32) -> f32,
@@ -986,8 +975,7 @@ pub(crate) fn cpu_demosaic_ppg_camera_counts(source: &RawGpuSource) -> Vec<f32> 
     out
 }
 
-/// CPU mirror of the GPU PPG demosaic + LibRaw color path (tests / diff).
-#[cfg(test)]
+/// CPU mirror of the GPU PPG demosaic + LibRaw color path (tests / calibration).
 pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
     let w = source.width as usize;
     let output_scale = 1.0f32 / 65535.0;
@@ -1009,15 +997,81 @@ pub(crate) fn cpu_demosaic_ppg_scene_linear(source: &RawGpuSource) -> Vec<f32> {
             let rgb = cpu_ppg_camera_rgb_at(source, &read_cfa, &green_plane, &rb_plane, col, row);
             let linear = apply_rgb_cam(rgb);
             let i = (row as usize * w + col as usize) * 4;
-            out[i] = (clip(linear[0]) * output_scale * source.scene_color_scale[0]).clamp(0.0, 1.0);
-            out[i + 1] =
-                (clip(linear[1]) * output_scale * source.scene_color_scale[1]).clamp(0.0, 1.0);
-            out[i + 2] =
-                (clip(linear[2]) * output_scale * source.scene_color_scale[2]).clamp(0.0, 1.0);
+            out[i] = clip(linear[0]) * output_scale * source.scene_color_scale[0];
+            out[i + 1] = clip(linear[1]) * output_scale * source.scene_color_scale[1];
+            out[i + 2] = clip(linear[2]) * output_scale * source.scene_color_scale[2];
             out[i + 3] = 1.0;
         }
     }
     out
+}
+
+pub(crate) fn scene_linear_center_luma_from_source(source: &RawGpuSource) -> f64 {
+    // Match LibRaw develop: contiguous 64x64 center patch on full-res CFA (not decimated sparse grid).
+    const HALO: i32 = 32;
+    let w = source.width as i32;
+    let h = source.height as i32;
+    if w == 0 || h == 0 {
+        return 0.0;
+    }
+    let cx = w / 2;
+    let cy = h / 2;
+    let mut x0 = cx - 32 - HALO;
+    let mut y0 = cy - 32 - HALO;
+    let mut x1 = cx + 32 + HALO;
+    let mut y1 = cy + 32 + HALO;
+    x0 = (x0 & !1).max(0);
+    y0 = (y0 & !1).max(0);
+    x1 = x1.min(w - 1);
+    y1 = y1.min(h - 1);
+    let crop_w = ((x1 - x0 + 1) / 2) * 2;
+    let crop_h = ((y1 - y0 + 1) / 2) * 2;
+    let crop = crop_raw_gpu_source(source, x0 as u32, y0 as u32, crop_w as u32, crop_h as u32);
+    let mut unit = crop;
+    unit.scene_color_scale = [1.0, 1.0, 1.0];
+    let rgba = cpu_demosaic_ppg_scene_linear(&unit);
+    let crop_cx = cx - x0;
+    let crop_cy = cy - y0;
+    crate::raw_processor::RawProcessor::scene_linear_center_luma_sum_at(
+        &rgba,
+        unit.width,
+        unit.height,
+        crop_cx as usize,
+        crop_cy as usize,
+    )
+}
+
+fn crop_raw_gpu_source(
+    source: &RawGpuSource,
+    x0: u32,
+    y0: u32,
+    crop_w: u32,
+    crop_h: u32,
+) -> RawGpuSource {
+    let src_w = source.width as usize;
+    let mut pixels = Vec::with_capacity(crop_w as usize * crop_h as usize);
+    for y in 0..crop_h {
+        let sy = y0 + y;
+        for x in 0..crop_w {
+            let sx = x0 + x;
+            pixels.push(source.raw_pixels[sy as usize * src_w + sx as usize]);
+        }
+    }
+    RawGpuSource {
+        raw_width: source.raw_width,
+        raw_height: source.raw_height,
+        width: crop_w,
+        height: crop_h,
+        raw_pixels: std::sync::Arc::new(pixels),
+        black_level: source.black_level,
+        cfa_scale: source.cfa_scale,
+        rgb_cam: source.rgb_cam,
+        maximum: source.maximum,
+        bayer_pattern: source.bayer_pattern,
+        demosaic_method: source.demosaic_method,
+        scene_color_scale: [1.0, 1.0, 1.0],
+        bootstrap_preview: None,
+    }
 }
 
 #[cfg(test)]
@@ -1151,7 +1205,7 @@ mod tests {
         eprintln!("canon 5d2 gpu-shader center avg=({gr:.4}, {gg:.4}, {gb:.4}) R/B={gpu_rb:.3}");
         eprintln!("canon 5d2 libraw cpu center avg=({cr:.4}, {cg:.4}, {cb:.4}) R/B={cpu_rb:.3}");
         eprintln!(
-            "note: GPU WGSL uses LibRaw PPG demosaic; LibRaw CPU default is AHD — expect small diff"
+            "note: both paths use LibRaw PPG demosaic; expect small rgb_cam / auto_bright diff only"
         );
     }
 

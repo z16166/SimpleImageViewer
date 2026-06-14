@@ -940,6 +940,12 @@ extern "C" {
         ip->imgdata.params.user_qual = qual;
     }
 
+    void siv_libraw_set_highlight(libraw_data_t *lr, int value) {
+        if (!lr) return;
+        LibRaw *ip = (LibRaw *)lr->parent_class;
+        ip->imgdata.params.highlight = value;
+    }
+
     void siv_libraw_set_half_size(libraw_data_t *lr, int value) {
         if (!lr) return;
         LibRaw *ip = (LibRaw *)lr->parent_class;

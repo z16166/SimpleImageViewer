@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::rendering::plan::{RenderPlan, RenderShape, build_render_plan_for_state};
+use crate::app::rendering::plan::{RenderPlan, RenderShape};
 use crate::app::rendering::plane::PlaneBackendKind;
 use crate::app::{ImageViewerApp, TransitionStyle};
 use crate::hdr::status::HdrRenderPath;
@@ -249,6 +249,7 @@ fn hdr_render_path_for_render_plan(
     }
 }
 
+#[cfg(test)]
 fn hdr_render_path_for_viewer_plan(
     tiled_canvas_active: bool,
     has_hdr_tiled_source: bool,
@@ -259,6 +260,8 @@ fn hdr_render_path_for_viewer_plan(
     monitor_selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     prefer_sdr_for_pending_gpu_demosaic: bool,
 ) -> Option<HdrRenderPath> {
+    use crate::app::rendering::plan::build_render_plan_for_state;
+
     let shape = if tiled_canvas_active {
         RenderShape::Tiled
     } else {

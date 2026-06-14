@@ -105,6 +105,7 @@ impl Drop for LibRawMemory {
 unsafe impl Send for RawProcessor {}
 
 /// LibRaw `green_matching()` on cropped Bayer u16 (G2 index 3 vs G1 index 1).
+#[allow(dead_code)] // reserved for future CFA green-plane calibration experiments
 fn equilibrate_dual_green_raw(
     pixels: &mut [u16],
     width: u32,
@@ -302,6 +303,7 @@ impl RawProcessor {
         (aspect - 1.0).abs() <= ASPECT_EPS
     }
 
+    #[cfg(test)]
     pub fn pixel_aspect(&self) -> f64 {
         unsafe { ffi::siv_libraw_get_pixel_aspect(self.data) }
     }
@@ -521,43 +523,9 @@ impl RawProcessor {
         })
     }
 
+    #[allow(dead_code)]
     pub fn set_half_size(&mut self, value: bool) {
         unsafe { ffi::siv_libraw_set_half_size(self.data, if value { 1 } else { 0 }) }
-    }
-
-    fn center_patch_mean_rgba_f32(rgba: &[f32], width: u32, height: u32) -> [f64; 3] {
-        if width == 0 || height == 0 {
-            return [0.0; 3];
-        }
-        let w = width as usize;
-        let h = height as usize;
-        let cx = w / 2;
-        let cy = h / 2;
-        let mut mr = 0.0f64;
-        let mut mg = 0.0f64;
-        let mut mb = 0.0f64;
-        let mut n = 0.0f64;
-        for dy in 0..64 {
-            for dx in 0..64 {
-                let x = cx + dx - 32;
-                let y = cy + dy - 32;
-                if x >= w || y >= h {
-                    continue;
-                }
-                let i = (y * w + x) * 4;
-                if i + 3 >= rgba.len() {
-                    continue;
-                }
-                mr += rgba[i] as f64;
-                mg += rgba[i + 1] as f64;
-                mb += rgba[i + 2] as f64;
-                n += 1.0;
-            }
-        }
-        if n <= 0.0 {
-            return [0.0; 3];
-        }
-        [mr / n, mg / n, mb / n]
     }
 
     fn clamp_scene_color_scale(scale: [f32; 3]) -> [f32; 3] {
@@ -570,15 +538,18 @@ impl RawProcessor {
         })
     }
 
-    /// Decimated center PPG + LibRaw auto_bright vs rgb_cam matrix; uniform luma scale on extract session.
+    /// Decimated center PPG + LibRaw auto_bright vs rgb_cam matrix; uniform luma scale.
+    ///
+    /// Per-channel [`siv_libraw_decimated_ppg_scene_color_scale`] can diverge badly on some
+    /// bodies (e.g. Canon G11) and skew R/G/B when applied full-frame on the GPU.
     pub fn estimate_gpu_scene_color_scale_from_processor(
-        processor: &mut Self,
+        &mut self,
         rgb_cam: &[f32; 12],
     ) -> [f32; 3] {
         let mut uniform = 1.0f32;
         let status = unsafe {
             ffi::siv_libraw_decimated_ppg_uniform_scene_scale(
-                processor.data,
+                self.data,
                 rgb_cam.as_ptr(),
                 &mut uniform,
             )
@@ -596,7 +567,89 @@ impl RawProcessor {
         [uniform, uniform, uniform]
     }
 
-    /// Opens the file and runs decimated calibration (tests / offline tooling).
+    /// Match LibRaw CPU develop center luma to the GPU PPG shader on a decimated CFA tile.
+    pub fn estimate_gpu_scene_color_scale_from_develop_match(
+        source: &crate::hdr::types::RawGpuSource,
+        develop_luma_handle: std::thread::JoinHandle<f64>,
+        processor: &mut Self,
+        rgb_cam: &[f32; 12],
+    ) -> [f32; 3] {
+        let gpu_luma =
+            crate::hdr::raw_demosaic_gpu::scene_linear_center_luma_from_source(source);
+        let cpu_luma = develop_luma_handle.join().unwrap_or(0.0);
+        if gpu_luma > 1e-9 && cpu_luma > 0.0 {
+            let uniform =
+                Self::clamp_scene_color_scale([(cpu_luma / gpu_luma) as f32, 0.0, 0.0])[0];
+            log::debug!(
+                "[RawProcessor] GPU scene_color_scale={uniform} (develop/gpu center luma {cpu_luma:.4}/{gpu_luma:.4})"
+            );
+            return [uniform, uniform, uniform];
+        }
+        log::debug!(
+            "[RawProcessor] develop/GPU center calib unavailable; falling back to decimated LibRaw scale"
+        );
+        Self::estimate_gpu_scene_color_scale_from_processor(processor, rgb_cam)
+    }
+
+    pub(crate) fn scene_linear_center_luma_from_path_with_flip(
+        path: &Path,
+        user_flip: i32,
+    ) -> Result<f64, String> {
+        let mut processor = Self::new().ok_or_else(|| "libraw init failed".to_string())?;
+        processor.open(path)?;
+        if user_flip != 0 {
+            processor.set_user_flip(user_flip);
+        }
+        let hdr = processor.develop_scene_linear_hdr()?;
+        Ok(Self::scene_linear_center_luma_sum(
+            hdr.rgba_f32.as_slice(),
+            hdr.width,
+            hdr.height,
+        ))
+    }
+
+    pub(crate) fn scene_linear_center_luma_sum(rgba: &[f32], width: u32, height: u32) -> f64 {
+        let w = width as usize;
+        let h = height as usize;
+        if w == 0 || h == 0 {
+            return 0.0;
+        }
+        Self::scene_linear_center_luma_sum_at(rgba, width, height, w / 2, h / 2)
+    }
+
+    /// Sum R+G+B over a 64x64 patch centered at `(center_x, center_y)` (matches LibRaw develop calib).
+    pub(crate) fn scene_linear_center_luma_sum_at(
+        rgba: &[f32],
+        width: u32,
+        height: u32,
+        center_x: usize,
+        center_y: usize,
+    ) -> f64 {
+        let w = width as usize;
+        let h = height as usize;
+        if w == 0 || h == 0 {
+            return 0.0;
+        }
+        let mut sum = 0.0f64;
+        for dy in 0..64 {
+            for dx in 0..64 {
+                let x = center_x as i32 + dx - 32;
+                let y = center_y as i32 + dy - 32;
+                if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+                    continue;
+                }
+                let i = (y as usize * w + x as usize) * 4;
+                if i + 2 >= rgba.len() {
+                    continue;
+                }
+                sum += rgba[i] as f64 + rgba[i + 1] as f64 + rgba[i + 2] as f64;
+            }
+        }
+        sum
+    }
+
+    /// Opens the file and runs decimated calibration (integration / offline tooling).
+    #[cfg(test)]
     pub fn estimate_gpu_scene_color_scale(path: &Path) -> [f32; 3] {
         let mut processor = match Self::new() {
             Some(p) => p,
@@ -626,10 +679,12 @@ impl RawProcessor {
         Self::estimate_gpu_scene_color_scale_from_processor(&mut processor, &rgb_cam)
     }
 
+    #[cfg(test)]
     fn libraw_clip_channel(v: f32) -> f32 {
         (v as i32).clamp(0, 65535) as f32
     }
 
+    #[cfg(test)]
     fn ppg_matrix_patch_mean(
         counts: &[u16],
         width: usize,
@@ -668,6 +723,7 @@ impl RawProcessor {
         Ok([mr / n, mg / n, mb / n])
     }
 
+    #[cfg(test)]
     fn ppg_rgb16_patch_mean(
         rgb16: &[u16],
         width: usize,
@@ -699,6 +755,7 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn scene_color_scale_from_ppg_counts(
         counts: &mut [u16],
         width: u32,
@@ -719,6 +776,7 @@ impl RawProcessor {
 
     /// Test-only: full-image PPG + LibRaw `convert_to_rgb` calibration (not on GPU load path).
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn compute_ppg_scene_color_scale_from_processor(
         processor: &mut Self,
         source: &crate::hdr::types::RawGpuSource,
@@ -734,6 +792,7 @@ impl RawProcessor {
 
     /// Re-opens file and runs full-image PPG for color calibration experiments.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn compute_ppg_scene_color_scale(
         path: &std::path::Path,
         source: &crate::hdr::types::RawGpuSource,
@@ -839,6 +898,7 @@ impl RawProcessor {
 
     /// Test-only: apply LibRaw `convert_to_rgb` to demosaiced camera-RGB counts.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn apply_libraw_output_color(
         &mut self,
         rgb16: &mut [u16],
@@ -869,6 +929,7 @@ impl RawProcessor {
 
     /// Test-only: PPG counts after [`Self::extract_raw_gpu_source`] (same LibRaw session).
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn libraw_ppg_camera_rgb_counts_from_scaled(&mut self) -> Result<Vec<u16>, String> {
         if !self.is_unpacked {
             self.unpack()?;
@@ -930,6 +991,7 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn ppg_pixel_channels_at(&mut self, row: u32, col: u32) -> Result<[u16; 4], String> {
         if !self.is_unpacked {
             self.unpack()?;
@@ -944,6 +1006,7 @@ impl RawProcessor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn ppg_convert_pixel_at(&mut self, row: u32, col: u32) -> Result<[u16; 3], String> {
         if !self.is_unpacked {
             self.unpack()?;
@@ -960,16 +1023,18 @@ impl RawProcessor {
     pub fn develop_scene_linear_hdr(
         &mut self,
     ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
-        self.develop_scene_linear_hdr_with_qual(false, 3)
+        // PPG (user_qual=2) matches the GPU demosaic shader; AHD diverges in foliage/high-frequency areas.
+        self.develop_scene_linear_hdr_with_qual(false, 2)
     }
 
+    #[allow(dead_code)]
     pub fn develop_scene_linear_hdr_no_auto_bright(
         &mut self,
     ) -> Result<crate::hdr::types::HdrImageBuffer, String> {
-        self.develop_scene_linear_hdr_with_qual(true, 3)
+        self.develop_scene_linear_hdr_with_qual(true, 2)
     }
 
-    /// LibRaw `user_qual`: 2 = PPG, 3 = AHD (default).
+    /// LibRaw `user_qual`: 2 = PPG, 3 = AHD.
     pub fn develop_scene_linear_hdr_with_qual(
         &mut self,
         no_auto_bright: bool,
@@ -988,6 +1053,8 @@ impl RawProcessor {
             ffi::siv_libraw_set_auto_bright_thr(self.data, crate::constants::RAW_AUTO_BRIGHT_THR);
             ffi::siv_libraw_set_gamma(self.data, 1.0, 1.0);
             ffi::siv_libraw_set_user_qual(self.data, user_qual);
+            // Match finish_demosaic_rgb_ex used in scene_color_scale calibration.
+            ffi::siv_libraw_set_highlight(self.data, 0);
 
             let ret = ffi::libraw_dcraw_process(self.data);
             if ret != 0 {

@@ -100,7 +100,6 @@ impl ImageLoader {
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
         {
             let state = Arc::clone(&delayed_fallback);
-            let raw_open_prefetch = Arc::clone(&raw_open_prefetch);
             let _ = std::thread::Builder::new()
                 .name("loader-fallback".to_string())
                 .spawn(move || {
@@ -165,7 +164,7 @@ impl ImageLoader {
                             job.raw_demosaic_mode,
                             job.hdr_target_capacity,
                             job.hdr_tone_map,
-                            Arc::clone(&raw_open_prefetch),
+                            Arc::clone(&job.raw_open_prefetch),
                         );
                     }
                 });
@@ -577,6 +576,7 @@ impl ImageLoader {
         self.raw_open_prefetch.request(&self.pool, path);
     }
 
+    #[cfg(test)]
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
         self.loading.lock().get(&index) == Some(&generation)
     }
