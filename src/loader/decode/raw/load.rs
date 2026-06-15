@@ -32,8 +32,6 @@ use crate::loader::RawOsdInfo;
 use crate::loader::preview_caps::hq_preview_max_side;
 use crate::loader::raw_osd::RawDemosaicBackend;
 use crate::loader::raw_osd::RawOsdContext;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-use crate::loader::raw_osd::RawOsdInfo;
 
 use crate::loader::tiled_sources::{RawHdrRefiningSource, RawImageSource};
 use crate::loader::{
