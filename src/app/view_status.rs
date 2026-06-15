@@ -158,14 +158,14 @@ impl RawMetadataStore {
     }
 
     pub(crate) fn insert_or_update(&mut self, index: usize, info: RawOsdInfo) {
-        self.by_index.insert(index, info);
+        if let Some(existing) = self.by_index.get_mut(&index) {
+            existing.merge_loader_fields(&info);
+        } else {
+            self.by_index.insert(index, info);
+        }
         if index == self.current_index {
             self.sync_tracked_params_for_current();
         }
-    }
-
-    pub(crate) fn contains(&self, index: usize) -> bool {
-        self.by_index.contains_key(&index)
     }
 
     pub(crate) fn remove(&mut self, index: usize) -> bool {

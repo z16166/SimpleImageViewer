@@ -40,6 +40,10 @@ pub struct HdrMonitorState {
     pub(crate) runtime_probe_completed: bool,
     #[cfg(not(test))]
     runtime_probe_completed: bool,
+    #[cfg(test)]
+    pub(crate) runtime_probe_completed_at: Option<Instant>,
+    #[cfg(not(test))]
+    runtime_probe_completed_at: Option<Instant>,
     /// Sticky flag so we only `warn!` on the first failure in a streak of
     /// consecutive failures (avoid log spam at 1.33 Hz). Cleared the moment
     /// any probe succeeds.
@@ -54,6 +58,7 @@ impl Default for HdrMonitorState {
             selection: None,
             last_probe_failed: false,
             runtime_probe_completed: false,
+            runtime_probe_completed_at: None,
         }
     }
 }
@@ -69,6 +74,7 @@ impl HdrMonitorState {
             selection,
             last_probe_failed: false,
             runtime_probe_completed: false,
+            runtime_probe_completed_at: None,
         }
     }
 
@@ -78,6 +84,10 @@ impl HdrMonitorState {
 
     pub(crate) fn runtime_probe_completed(&self) -> bool {
         self.runtime_probe_completed
+    }
+
+    pub(crate) fn runtime_probe_completed_at(&self) -> Option<Instant> {
+        self.runtime_probe_completed_at
     }
 
     pub fn refresh_from_viewport(
@@ -142,6 +152,9 @@ impl HdrMonitorState {
             }
         }
         self.runtime_probe_completed = true;
+        if self.runtime_probe_completed_at.is_none() {
+            self.runtime_probe_completed_at = Some(now);
+        }
         if self.selection.is_some() {
             self.last_probe_failed = false;
         }

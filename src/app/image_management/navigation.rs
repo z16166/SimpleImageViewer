@@ -523,12 +523,11 @@ impl ImageViewerApp {
                 &self.hdr_image_cache,
                 &self.hdr_tiled_source_cache,
             );
-            let inflight_gen = self
-                .loader
-                .is_loading_any(idx)
-                .then(|| self.loader.current_generation(idx));
-            if missing_hdr && inflight_gen.is_some() {
-                let inflight_gen = inflight_gen.unwrap();
+            if missing_hdr && self.loader.is_loading_any(idx) {
+                // Fall back to the in-flight generation to reuse the ongoing background load.
+                // This is safe and accepted by accepts_background_image_generation as long as
+                // the index remains registered in the loader's loading map.
+                let inflight_gen = self.loader.current_generation(idx);
                 crate::preload_debug!(
                     "[PreloadDebug][RAW] navigate inflight_reuse idx={} gen={}",
                     idx,
@@ -547,28 +546,31 @@ impl ImageViewerApp {
                     }
                 }
             } else {
-                let bootstrap_only = missing_hdr
-                    && crate::app::image_management::raw_hq_has_bootstrap_sdr_only(
-                        &self.image_files,
-                        idx,
-                        self.settings.raw_high_quality,
-                        &self.hdr_image_cache,
-                        &self.hdr_tiled_source_cache,
-                        self.texture_cache.contains(idx),
-                        self.deferred_sdr_uploads.contains_key(&idx),
-                    );
-                if missing_hdr {
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW] navigate missing_hdr_plane idx={} bootstrap_only={} → request_load",
-                        idx,
-                        bootstrap_only
-                    );
-                } else {
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
-                        idx,
-                        self.settings.raw_high_quality
-                    );
+                #[cfg(feature = "preload-debug")]
+                {
+                    let bootstrap_only = missing_hdr
+                        && crate::app::image_management::raw_hq_has_bootstrap_sdr_only(
+                            &self.image_files,
+                            idx,
+                            self.settings.raw_high_quality,
+                            &self.hdr_image_cache,
+                            &self.hdr_tiled_source_cache,
+                            self.texture_cache.contains(idx),
+                            self.deferred_sdr_uploads.contains_key(&idx),
+                        );
+                    if missing_hdr {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] navigate missing_hdr_plane idx={} bootstrap_only={} → request_load",
+                            idx,
+                            bootstrap_only
+                        );
+                    } else {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
+                            idx,
+                            self.settings.raw_high_quality
+                        );
+                    }
                 }
                 self.prefetch_prev_generation = None;
                 self.generation = self.generation.wrapping_add(1);

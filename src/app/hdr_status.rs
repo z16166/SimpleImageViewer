@@ -44,7 +44,9 @@ impl ImageViewerApp {
             .map(|decoded| (decoded.width, decoded.height))
             .or_else(|| self.texture_cache.get_original_res(index))
             .filter(|(width, height)| *width > 0 && *height > 0);
-        self.flush_deferred_sdr_upload_for_index(index, ctx);
+        if self.deferred_sdr_uploads.contains_key(&index) && !self.texture_cache.contains(index) {
+            self.flush_deferred_sdr_upload_for_index(index, ctx);
+        }
         let bootstrap_dims = bootstrap_dims.or_else(|| {
             self.texture_cache
                 .get_original_res(index)
@@ -53,9 +55,6 @@ impl ImageViewerApp {
         let Some((bootstrap_w, bootstrap_h)) = bootstrap_dims else {
             return;
         };
-        if self.raw_metadata.contains(index) {
-            return;
-        }
         let sensor = self
             .texture_cache
             .get_original_res(index)

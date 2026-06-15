@@ -136,13 +136,12 @@ impl ImageViewerApp {
             return;
         }
         let selection = self.effective_hdr_monitor_selection();
-        let monitor_hdr_supported = selection
-            .as_ref()
-            .is_some_and(|selection| selection.hdr_supported);
         if !super::startup_preload_defer_can_release(
             self.hdr_monitor_state.runtime_probe_completed(),
-            monitor_hdr_supported,
+            selection.as_ref(),
             self.hdr_capabilities.output_mode,
+            self.hdr_monitor_state.runtime_probe_completed_at(),
+            std::time::Instant::now(),
         ) {
             return;
         }
@@ -171,13 +170,12 @@ impl ImageViewerApp {
             && !crosses_hdr_sdr_boundary
         {
             let selection = self.effective_hdr_monitor_selection();
-            let monitor_hdr_supported = selection
-                .as_ref()
-                .is_some_and(|selection| selection.hdr_supported);
             let can_release = startup_preload_defer_can_release(
                 self.hdr_monitor_state.runtime_probe_completed(),
-                monitor_hdr_supported,
+                selection.as_ref(),
                 next_output_mode,
+                self.hdr_monitor_state.runtime_probe_completed_at(),
+                std::time::Instant::now(),
             );
             if can_release {
                 self.flush_deferred_preload_after_hdr_capacity();

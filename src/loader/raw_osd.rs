@@ -169,6 +169,53 @@ impl RawOsdInfo {
         self
     }
 
+    /// Merge loader-channel fields into an existing OSD row without discarding timing data.
+    pub(crate) fn merge_loader_fields(&mut self, other: &RawOsdInfo) {
+        if other.cpu_demosaic_ms.is_some() {
+            self.cpu_demosaic_ms = other.cpu_demosaic_ms;
+        }
+        if other.gpu_extract_ms.is_some() {
+            self.gpu_extract_ms = other.gpu_extract_ms;
+        }
+        if other.gpu_demosaic_ms.is_some() {
+            self.gpu_demosaic_ms = other.gpu_demosaic_ms;
+        }
+        if other.demosaic_backend.is_some() {
+            self.demosaic_backend = other.demosaic_backend;
+        }
+        if other.embedded_preview.is_some() {
+            self.embedded_preview = other.embedded_preview;
+        }
+        if other.sensor_size != (0, 0) {
+            self.sensor_size = other.sensor_size;
+        }
+        // Upgrade only: FullDevelop > HqBootstrap > Embedded (never downgrade).
+        match (&self.render_pixels, &other.render_pixels) {
+            (_, RawRenderPixels::FullDevelop { .. }) => {
+                self.render_pixels = other.render_pixels;
+            }
+            (
+                RawRenderPixels::HqBootstrap { .. },
+                RawRenderPixels::HqBootstrap { width, height },
+            ) => {
+                self.render_pixels = RawRenderPixels::HqBootstrap {
+                    width: *width,
+                    height: *height,
+                };
+            }
+            (
+                RawRenderPixels::Embedded { .. },
+                RawRenderPixels::HqBootstrap { width, height },
+            ) => {
+                self.render_pixels = RawRenderPixels::HqBootstrap {
+                    width: *width,
+                    height: *height,
+                };
+            }
+            _ => {}
+        }
+    }
+
     /// Update after async/sync HQ refinement replaces the bootstrap buffer (CPU path).
     pub fn apply_hq_refine_preview(&mut self, width: u32, height: u32) {
         if self.demosaic_backend == Some(RawDemosaicBackend::Video) {

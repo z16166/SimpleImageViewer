@@ -575,12 +575,10 @@ impl ImageLoader {
         self.raw_open_prefetch.request(&self.pool, path);
     }
 
-    #[cfg(test)]
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
         self.loading.lock().get(&index) == Some(&generation)
     }
 
-    #[allow(dead_code)]
     pub fn current_generation(&self, index: usize) -> u64 {
         self.loading.lock().get(&index).copied().unwrap_or(0)
     }

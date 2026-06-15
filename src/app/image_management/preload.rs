@@ -37,7 +37,7 @@ impl ImageViewerApp {
         self.schedule_preloads_with_options(forward, false);
     }
 
-    pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, _force_neighbors: bool) {
+    pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, force_neighbors: bool) {
         let n = self.image_files.len();
         if n == 0 {
             preload_debug!("[PreloadDebug] schedule skipped: no images");
@@ -112,22 +112,25 @@ impl ImageViewerApp {
             .image_files
             .get(cur)
             .is_some_and(|p| crate::preload_debug::path_is_raw(p));
+        let gpu_demosaic_pending = self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur);
         let current_raw_gpu_path_active = should_defer_background_preload_for_raw_gpu_current(
             self.raw_hq_index_requires_hdr_plane(cur),
             path_is_raw,
-            current_is_loading || self.loader.is_loading_any(cur),
-            self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+            current_is_loading,
+            gpu_demosaic_pending,
             self.raw_gpu_demosaic_await_hdr_present,
         );
         // Always hold neighbor preloads while the current HQ RAW GPU path is active.
-        // `force_neighbors` only bypasses defer for capacity-reschedule cases once the current
-        // image has finished extract / GPU demosaic (e.g. after retain on EDR refine).
-        if current_raw_gpu_path_active {
+        // `force_neighbors` bypasses defer after capacity retain when extract/GPU demosaic finished
+        // but `await_hdr_present` may still be true until the first HDR frame is drawn.
+        if current_raw_gpu_path_active
+            && !(force_neighbors && !current_is_loading && !gpu_demosaic_pending)
+        {
             preload_debug!(
                 "[PreloadDebug] defer background preload: cur={} reason=raw_gpu_current loading={} gpu_pending={} await_hdr={}",
                 cur,
-                current_is_loading || self.loader.is_loading_any(cur),
-                self.hdr_raw_gpu_demosaic_pending_indices.contains(&cur),
+                current_is_loading,
+                gpu_demosaic_pending,
                 self.raw_gpu_demosaic_await_hdr_present
             );
             return;

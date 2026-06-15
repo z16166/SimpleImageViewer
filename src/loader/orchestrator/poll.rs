@@ -20,6 +20,8 @@ use crossbeam_channel::TryRecvError;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+const LOADER_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
 impl ImageLoader {
     /// True when any generation is in-flight for `index` (including CPU fallback reloads).
     pub fn is_loading_any(&self, index: usize) -> bool {
@@ -144,12 +146,15 @@ impl ImageLoader {
 
     /// Best-effort shutdown before process exit: invalidate queued work and wait briefly
     /// for the rayon decode pool. In-flight LibRaw OpenMP work cannot be cancelled;
-    /// callers should terminate via [`crate::startup::force_process_exit`] afterward on Unix.
+    /// callers must terminate via [`crate::startup::force_process_exit`] afterward on Unix.
+    ///
+    /// Sets `current_gen` to `u64::MAX` so any late decode worker treats queued work as stale.
+    /// This loader must not be reused after this call — it is only valid on the process-exit path.
     pub fn prepare_for_process_exit(&mut self) {
         self.current_gen.store(u64::MAX, Ordering::Relaxed);
         self.cancel_all();
         self.raw_open_prefetch.clear_all();
-        drain_rayon_pool_for_exit(&self.pool, Duration::from_secs(2));
+        drain_rayon_pool_for_exit(&self.pool, LOADER_EXIT_DRAIN_TIMEOUT);
     }
 
     #[cfg(test)]
@@ -164,7 +169,10 @@ impl ImageLoader {
 }
 
 fn drain_rayon_pool_for_exit(pool: &rayon::ThreadPool, timeout: Duration) -> bool {
-    let n = pool.current_num_threads().max(1);
+    let n = pool.current_num_threads();
+    if n == 0 {
+        return true;
+    }
     let (tx, rx) = crossbeam_channel::bounded(n);
     for _ in 0..n {
         let tx = tx.clone();

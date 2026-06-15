@@ -499,34 +499,131 @@ fn first_batch_preload_waits_for_startup_target() {
     assert!(!should_schedule_first_batch_preload(true, 3, false, true));
 }
 
+fn startup_preload_defer_can_release_now(
+    runtime_probe_completed: bool,
+    selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
+    output_mode: crate::hdr::types::HdrOutputMode,
+    probe_completed_at: Option<std::time::Instant>,
+) -> bool {
+    super::startup_preload_defer_can_release(
+        runtime_probe_completed,
+        selection,
+        output_mode,
+        probe_completed_at,
+        std::time::Instant::now(),
+    )
+}
+
 #[test]
 fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
     use crate::hdr::types::HdrOutputMode;
+    use crate::hdr::monitor::HdrMonitorSelection;
 
-    assert!(!super::startup_preload_defer_can_release(
+    let selection_sdr = Some(&HdrMonitorSelection {
+        hdr_supported: false,
+        label: "SDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: None,
+        hdr_capacity_source: None,
+        native_surface_encoding: None,
+    });
+    let selection_hdr_unknown = Some(&HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: None,
+        hdr_capacity_source: None,
+        native_surface_encoding: None,
+    });
+    let selection_hdr_source_only = Some(&HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: None,
+        hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        native_surface_encoding: None,
+    });
+    let selection_hdr_known = Some(&HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: Some(2.89),
+        hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
+        native_surface_encoding: None,
+    });
+
+    assert!(!startup_preload_defer_can_release_now(
         false,
-        true,
-        HdrOutputMode::WindowsScRgb
+        selection_hdr_known,
+        HdrOutputMode::WindowsScRgb,
+        None,
     ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        selection_sdr,
+        HdrOutputMode::SdrToneMapped,
+        None,
+    ));
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        selection_hdr_known,
+        HdrOutputMode::SdrToneMapped,
+        None,
+    ));
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        selection_hdr_unknown,
+        HdrOutputMode::WindowsScRgb,
+        None,
+    ));
+    assert!(!super::monitor_hdr_decode_capacity_is_known(selection_hdr_source_only));
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        selection_hdr_source_only,
+        HdrOutputMode::WindowsScRgb,
+        None,
+    ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        selection_hdr_known,
+        HdrOutputMode::WindowsScRgb,
+        None,
+    ));
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        selection_hdr_known,
+        HdrOutputMode::MacOsEdr,
+        None,
+    ));
+}
+
+#[test]
+fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
+    use crate::hdr::types::HdrOutputMode;
+    use crate::hdr::monitor::HdrMonitorSelection;
+    use std::time::{Duration, Instant};
+
+    let selection_hdr_unknown = HdrMonitorSelection {
+        hdr_supported: true,
+        label: "EDR".to_string(),
+        max_luminance_nits: None,
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: None,
+        hdr_capacity_source: None,
+        native_surface_encoding: None,
+    };
+    let now = Instant::now();
+    let probe_at = now - super::STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE - Duration::from_secs(1);
     assert!(super::startup_preload_defer_can_release(
         true,
-        false,
-        HdrOutputMode::SdrToneMapped
-    ));
-    assert!(!super::startup_preload_defer_can_release(
-        true,
-        true,
-        HdrOutputMode::SdrToneMapped
-    ));
-    assert!(super::startup_preload_defer_can_release(
-        true,
-        true,
-        HdrOutputMode::WindowsScRgb
-    ));
-    assert!(super::startup_preload_defer_can_release(
-        true,
-        true,
-        HdrOutputMode::MacOsEdr
+        Some(&selection_hdr_unknown),
+        HdrOutputMode::WindowsScRgb,
+        Some(probe_at),
+        now,
     ));
 }
 
@@ -554,6 +651,17 @@ fn monitor_hdr_decode_capacity_is_known_when_edr_capacity_reported() {
             max_full_frame_luminance_nits: None,
             max_hdr_capacity: None,
             hdr_capacity_source: None,
+            native_surface_encoding: None,
+        }
+    )));
+    assert!(!super::monitor_hdr_decode_capacity_is_known(Some(
+        &HdrMonitorSelection {
+            hdr_supported: true,
+            label: "EDR".to_string(),
+            max_luminance_nits: None,
+            max_full_frame_luminance_nits: None,
+            max_hdr_capacity: None,
+            hdr_capacity_source: Some("macOS maximumExtendedDynamicRangeColorComponentValue"),
             native_surface_encoding: None,
         }
     )));
@@ -626,6 +734,53 @@ fn background_preload_defers_while_current_raw_gpu_path_active() {
     assert!(!super::should_defer_background_preload_for_raw_gpu_current(
         true, false, true, false, false
     ));
+}
+
+#[test]
+fn background_preload_schedule_with_force_neighbors() {
+    let mut app = make_test_app();
+    app.generation = 12;
+    app.image_files = vec![
+        std::path::PathBuf::from("current.NEF"),
+        std::path::PathBuf::from("neighbor1.jpg"),
+        std::path::PathBuf::from("neighbor2.jpg"),
+    ];
+    app.current_index = 0;
+    app.settings.raw_high_quality = true;
+    app.settings.preload = true;
+
+    // Simulate current RAW image has already loaded its HDR plane (e.g. after retain on capacity refine)
+    let dummy_hdr = std::sync::Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 100,
+        height: 100,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: std::sync::Arc::new(vec![0.0; 4]),
+    });
+    app.hdr_image_cache.insert(0, dummy_hdr);
+
+    // Simulate current RAW image is loading on loader, and demosaic await present is true.
+    // So current_raw_gpu_path_active will be true.
+    app.loader.test_register_inflight(0, 12);
+    app.raw_gpu_demosaic_await_hdr_present = true;
+
+    // Call schedule_preloads_with_options with force_neighbors = false.
+    // Neighbors should NOT be preloaded since it is deferred.
+    app.schedule_preloads_with_options(true, false);
+    assert!(!app.loader.is_loading(1, 12));
+    assert!(!app.loader.is_loading(2, 12));
+
+    // Now current_is_loading becomes false (load task finished, e.g. on EDR capacity refine after retain)
+    // but raw_gpu_demosaic_await_hdr_present is still true (so current_raw_gpu_path_active is still true).
+    app.loader.finish_image_request(0, 12);
+
+    // Call schedule_preloads_with_options with force_neighbors = true.
+    // It should bypass the defer return and preload neighbor1.
+    app.schedule_preloads_with_options(true, true);
+    assert!(app.loader.is_loading(1, 12));
 }
 
 #[test]

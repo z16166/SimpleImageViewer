@@ -519,26 +519,51 @@ pub(crate) fn monitor_hdr_decode_capacity_is_known(
                     .max_luminance_nits
                     .filter(|value| *value > 0.0)
                     .is_some()
-                || selection.hdr_capacity_source.is_some()
+                || selection
+                    .max_full_frame_luminance_nits
+                    .filter(|value| *value > 0.0)
+                    .is_some()
         }
     }
 }
+
+/// After runtime HDR probe completes, release startup preload defer even when EDR capacity
+/// never arrives (avoids indefinite background-preload suppression on broken probes).
+pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::from_secs(30);
 
 /// Startup preload defer stays active until runtime monitor probe finishes **and** HDR
 /// decode capacity is not still gated at 1.0 by `SdrToneMapped` output (swap chain may
 /// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
 pub(crate) fn startup_preload_defer_can_release(
     runtime_probe_completed: bool,
-    monitor_hdr_supported: bool,
+    selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     output_mode: crate::hdr::types::HdrOutputMode,
+    probe_completed_at: Option<std::time::Instant>,
+    now: std::time::Instant,
 ) -> bool {
     if !runtime_probe_completed {
         return false;
     }
+    let monitor_hdr_supported = selection.is_some_and(|s| s.hdr_supported);
     if !monitor_hdr_supported {
         return true;
     }
-    !matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped)
+    if matches!(output_mode, crate::hdr::types::HdrOutputMode::SdrToneMapped) {
+        return false;
+    }
+    if monitor_hdr_decode_capacity_is_known(selection) {
+        return true;
+    }
+    if let Some(completed_at) = probe_completed_at {
+        if now.saturating_duration_since(completed_at) >= STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE {
+            log::warn!(
+                "[HDR] HDR decode capacity still unknown {:?} after runtime probe; releasing startup preload defer",
+                STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE
+            );
+            return true;
+        }
+    }
+    false
 }
 
 /// Hold neighbor preloads while the current index is extracting CFA, waiting on GPU demosaic,
@@ -626,7 +651,9 @@ pub(crate) fn raw_hq_static_hdr_retainable_on_capacity_refine(
     >,
 ) -> bool {
     raw_hq_index_requires_hdr_plane(image_files, index, raw_high_quality)
-        && hdr_image_cache.contains_key(&index)
+        && hdr_image_cache
+            .get(&index)
+            .is_some_and(|hdr| hdr.color_space == crate::hdr::types::HdrColorSpace::LinearSrgb)
 }
 
 /// True when an HDR load result used a different Ultra HDR decode capacity than the viewer now expects.
@@ -810,21 +837,8 @@ impl ImageViewerApp {
     }
 
     pub(super) fn accepts_background_image_generation(&self, idx: usize, generation: u64) -> bool {
-        if self.loader.is_loading_any(idx) && generation == self.loader.current_generation(idx) {
-            return true;
-        }
-        let is_current_or_prefetched = idx == self.current_index
-            || (self.image_files.len() > 0
-                && prefetch_window_contains(
-                    self.current_index,
-                    self.image_files.len(),
-                    idx,
-                    PREFETCH_WINDOW_DISTANCE,
-                ));
-        if is_current_or_prefetched && generation == self.loader.current_generation(idx) {
-            return true;
-        }
-        accepts_background_image_generation(
+        accepts_background_image_generation_with_loader(
+            &self.loader,
             self.current_index,
             self.image_files.len(),
             self.generation,
@@ -862,7 +876,7 @@ fn raw_hq_index_requires_hdr_plane(
             .is_some_and(|p| crate::preload_debug::path_is_raw(p))
 }
 
-fn accepts_background_image_generation(
+pub(super) fn accepts_background_image_generation(
     current_index: usize,
     image_count: usize,
     current_generation: u64,
@@ -883,6 +897,29 @@ fn accepts_background_image_generation(
         return false;
     }
     current_generation.wrapping_sub(generation) <= BACKGROUND_IMAGE_GEN_TOLERANCE
+}
+
+/// Shared generation gate for loader results and distant-prefetch eviction.
+pub(super) fn accepts_background_image_generation_with_loader(
+    loader: &crate::loader::ImageLoader,
+    current_index: usize,
+    image_count: usize,
+    current_generation: u64,
+    prefetch_prev_generation: Option<u64>,
+    idx: usize,
+    generation: u64,
+) -> bool {
+    if loader.is_loading(idx, generation) {
+        return true;
+    }
+    accepts_background_image_generation(
+        current_index,
+        image_count,
+        current_generation,
+        prefetch_prev_generation,
+        idx,
+        generation,
+    )
 }
 
 /// High-quality RAW navigation requires an HDR plane entry. Prefetch eviction may drop HDR while
@@ -914,6 +951,7 @@ fn raw_hq_navigate_missing_hdr_plane(
 }
 
 /// HQ RAW with an SDR bootstrap texture but no HDR cache entry yet (GPU demosaic pending).
+#[cfg(any(test, feature = "preload-debug"))]
 pub(crate) fn raw_hq_has_bootstrap_sdr_only(
     image_files: &[std::path::PathBuf],
     index: usize,

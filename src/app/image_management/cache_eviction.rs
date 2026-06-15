@@ -304,9 +304,28 @@ impl ImageViewerApp {
 
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
+        let current_index = self.current_index;
+        let generation = self.generation;
+        let loader = &self.loader;
+
         let retain_prefetch_entry = |idx: usize| {
-            prefetch_window_contains(self.current_index, len, idx, PREFETCH_WINDOW_DISTANCE)
-                || self.loader.is_loading_any(idx)
+            if prefetch_window_contains(current_index, len, idx, PREFETCH_WINDOW_DISTANCE) {
+                return true;
+            }
+            if !loader.is_loading_any(idx) {
+                return false;
+            }
+            let idx_gen = loader.current_generation(idx);
+            // `prefetch_prev_generation` is inert for distant indices; pass `None` (see review).
+            accepts_background_image_generation_with_loader(
+                loader,
+                current_index,
+                len,
+                generation,
+                None,
+                idx,
+                idx_gen,
+            )
         };
 
         // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too
