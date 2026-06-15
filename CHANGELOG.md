@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.2] - 2026-06-15
+
+### Improved
+- **GPU RAW on HDR displays**: Browsing GPU-demosaiced RAW photos is smoother; the embedded preview stays stable while the full HDR image finishes, and neighbor preloading keeps pace during long folder sessions.
+- **SDR display efficiency**: On standard (SDR) monitors, high-quality RAW preloading no longer performs unnecessary HDR GPU work, saving memory and background processing.
+
+### Fixed
+- **GPU RAW fallback**: If GPU demosaicing fails, the viewer switches to the CPU path immediately instead of briefly appearing stuck on the current image.
+- **Windows HDR across monitors**: Native HDR output is limited to compatible graphics paths, preventing crashes or blank rendering when dragging the window between HDR and SDR displays.
+- **Graphics driver updates**: After a GPU driver update, the first launch no longer reuses an incompatible shader cache that could cause rendering glitches.
+- **Crash reporting on Windows**: Error dialogs after a crash now appear more reliably, including when system resources are under heavy pressure.
+
 ## [2.6.1] - 2026-06-15
 
 ### Improved

@@ -181,7 +181,7 @@ impl ImageViewerApp {
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
-                        break;
+                        continue;
                     }
 
                     if should_yield_background_result_for_pending_transition(
@@ -754,11 +754,18 @@ impl ImageViewerApp {
         let Some(uploaded) = load_result.uploaded_planes.take() else {
             return true;
         };
+        let tone_map = self.effective_hdr_tone_map_settings();
+        let output_mode = crate::hdr::monitor::effective_render_output_mode(
+            Some(format),
+            self.effective_hdr_monitor_selection().as_ref(),
+        );
         let binding = crate::hdr::renderer::HdrImageBinding::from_uploaded(
             &wgpu_state.device,
             uploaded,
-            &hdr.metadata,
+            hdr,
+            tone_map,
             format,
+            output_mode,
         );
         let mut renderer = wgpu_state.renderer.write();
         if let Some(resources) = renderer

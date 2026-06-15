@@ -635,15 +635,23 @@ mod tests {
     #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
     #[test]
     fn windows_startup_swapchain_gate_requires_dx12_preprobe() {
-        assert!(!super::effective_native_hdr_swapchain_request_at_startup(true, false));
-        assert!(super::effective_native_hdr_swapchain_request_at_startup(true, true));
-        assert!(!super::effective_native_hdr_swapchain_request_at_startup(false, true));
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(
+            true, false
+        ));
+        assert!(super::effective_native_hdr_swapchain_request_at_startup(
+            true, true
+        ));
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(
+            false, true
+        ));
     }
 
     #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
     #[test]
     fn legacy_windows_startup_never_requests_hdr_swapchain() {
-        assert!(!super::effective_native_hdr_swapchain_request_at_startup(true));
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(
+            true
+        ));
     }
 
     #[cfg(target_os = "windows")]

@@ -30,15 +30,29 @@ fn show_crash_dialog(title: &str, message: &str) {
     // dedicated thread avoids reentrancy and lands on the foreground desktop.
     let title = title.to_string();
     let message = message.to_string();
-    let _ = std::thread::Builder::new()
+    let show_inline = |title: &str, message: &str| {
+        let title = HSTRING::from(title);
+        let message = HSTRING::from(message);
+        let flags = MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+        unsafe { MessageBoxW(None, &message, &title, flags) };
+    };
+    let title_for_thread = title.clone();
+    let message_for_thread = message.clone();
+    match std::thread::Builder::new()
         .name("crash-dialog".into())
         .spawn(move || {
-            let title = HSTRING::from(title);
-            let message = HSTRING::from(message);
+            let title = HSTRING::from(title_for_thread);
+            let message = HSTRING::from(message_for_thread);
             let flags = MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_SYSTEMMODAL | MB_TOPMOST;
             let _ = unsafe { MessageBoxW(None, &message, &title, flags) };
-        })
-        .and_then(|handle| handle.join().map_err(|_| std::io::Error::other("join failed")));
+        }) {
+        Ok(handle) => {
+            if handle.join().is_err() {
+                show_inline(&title, &message);
+            }
+        }
+        Err(_) => show_inline(&title, &message),
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

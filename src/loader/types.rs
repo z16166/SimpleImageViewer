@@ -440,6 +440,12 @@ pub struct LoadResult {
 
 impl Clone for LoadResult {
     fn clone(&self) -> Self {
+        if self.uploaded_planes.is_some() {
+            log::debug!(
+                "[Loader] LoadResult::clone dropping pre-uploaded HDR planes for index {}",
+                self.index
+            );
+        }
         Self {
             index: self.index,
             generation: self.generation,

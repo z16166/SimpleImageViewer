@@ -83,18 +83,17 @@ pub(crate) fn hdr_raw_gpu_refinement_is_pointless(hdr: &HdrImageBuffer) -> bool 
 
 /// Whether a loader worker should upload the static HDR float plane in the background.
 ///
-/// GPU RAW sources always need the HDR callback path (demosaic runs in `prepare()`). Background
-/// CFA upload during preload lets the HDR plane be ready when the user navigates, avoiding an
-/// SDR preview flash when demosaic is already complete. Non-RAW images are uploaded only when
-/// the main thread has an active HDR callback target format and the static render plan would ride
-/// the HDR plane backend once displayed.
+/// GPU RAW sources need the HDR callback path (demosaic runs in `prepare()`). Background CFA
+/// upload during preload avoids an SDR preview flash when demosaic is already complete, but only
+/// when the main thread has an active HDR callback target format. Non-RAW images follow the same
+/// HDR callback guard plus static render-plan eligibility.
 pub(crate) fn static_hdr_background_plane_upload_eligible(
     hdr: &HdrImageBuffer,
     hdr_target_capacity: f32,
     hdr_callback_active: bool,
 ) -> bool {
     if hdr.metadata.raw_gpu_source.is_some() {
-        return true;
+        return hdr_callback_active;
     }
     if !hdr_callback_active {
         return false;
@@ -377,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_gpu_source_always_eligible_for_background_plane_upload() {
+    fn raw_gpu_source_requires_hdr_callback_for_background_plane_upload() {
         let mut metadata = HdrImageMetadata::default();
         metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
             raw_width: 1,
@@ -403,8 +402,11 @@ mod tests {
             rgba_f32: Arc::new(Vec::new()),
         };
 
-        assert!(super::static_hdr_background_plane_upload_eligible(
+        assert!(!super::static_hdr_background_plane_upload_eligible(
             &hdr, 1.0, false
+        ));
+        assert!(super::static_hdr_background_plane_upload_eligible(
+            &hdr, 1.0, true
         ));
     }
 

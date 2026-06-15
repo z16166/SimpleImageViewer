@@ -394,37 +394,44 @@ impl ImageViewerApp {
         if pending.is_empty() {
             return;
         }
-        let renderer = wgpu_state.renderer.read();
-        let Some(resources) = renderer
-            .callback_resources
-            .get::<crate::hdr::renderer::HdrCallbackResources>()
-        else {
-            return;
-        };
-        for idx in pending {
-            let Some(hdr) = self.hdr_image_cache.get(&idx) else {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] refresh pending idx={idx}: no hdr_image_cache entry"
-                );
-                continue;
+        let baked_indices: Vec<usize> = {
+            let renderer = wgpu_state.renderer.read();
+            let Some(resources) = renderer
+                .callback_resources
+                .get::<crate::hdr::renderer::HdrCallbackResources>()
+            else {
+                return;
             };
-            let Some(source) = hdr.metadata.raw_gpu_source.as_ref() else {
-                continue;
-            };
-            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
-            #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
-            let binding_present = resources.hdr_image_binding_present(key);
-            let baked = resources.raw_demosaic_baked_for(key, source.demosaic_method);
-            if baked {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] refresh cleared pending idx={idx} binding_present={binding_present}"
-                );
-                self.apply_raw_gpu_demosaic_success(idx, None, ctx);
-            } else if idx == self.current_index {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW-GPU] refresh pending idx={idx} cur: binding_present={binding_present} baked=false key={key:?}"
-                );
+            let mut baked = Vec::new();
+            for idx in pending {
+                let Some(hdr) = self.hdr_image_cache.get(&idx) else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] refresh pending idx={idx}: no hdr_image_cache entry"
+                    );
+                    continue;
+                };
+                let Some(source) = hdr.metadata.raw_gpu_source.as_ref() else {
+                    continue;
+                };
+                let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+                #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+                let binding_present = resources.hdr_image_binding_present(key);
+                let is_baked = resources.raw_demosaic_baked_for(key, source.demosaic_method);
+                if is_baked {
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] refresh cleared pending idx={idx} binding_present={binding_present}"
+                    );
+                    baked.push(idx);
+                } else if idx == self.current_index {
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] refresh pending idx={idx} cur: binding_present={binding_present} baked=false key={key:?}"
+                    );
+                }
             }
+            baked
+        };
+        for idx in baked_indices {
+            self.apply_raw_gpu_demosaic_success(idx, None, ctx);
         }
     }
 

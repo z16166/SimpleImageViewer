@@ -2230,7 +2230,7 @@ fn resolve_raw_demosaic_notice_indices_matches_via_pending_key_side_map() {
 }
 
 #[test]
-fn resolve_raw_demosaic_notice_indices_single_pending_fallback() {
+fn resolve_raw_demosaic_notice_indices_single_pending_fallback_requires_key_match() {
     use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
     use loader_results::resolve_raw_demosaic_notice_indices;
 
@@ -2246,6 +2246,23 @@ fn resolve_raw_demosaic_notice_indices_single_pending_fallback() {
         &notice,
         true,
         &HashMap::new(),
+        &pending,
+        &HashMap::new(),
+        None,
+    );
+    assert!(matched.is_empty());
+
+    let matched_hdr = test_gpu_raw_pending_hdr(Arc::new(vec![2u16; 16]));
+    let matched_key = crate::hdr::renderer::HdrImageKey::from_image(matched_hdr.as_ref());
+    let hdr_cache = HashMap::from([(7, matched_hdr)]);
+    let notice = RawGpuDemosaicBakedNotice {
+        key: matched_key,
+        demosaic_ms: 12,
+    };
+    let matched = resolve_raw_demosaic_notice_indices(
+        &notice,
+        false,
+        &hdr_cache,
         &pending,
         &HashMap::new(),
         None,

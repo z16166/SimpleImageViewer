@@ -641,7 +641,7 @@ impl ImageLoader {
 
     pub fn set_hdr_callback_upload_active(&self, active: bool) {
         self.hdr_callback_upload_active
-            .store(active, std::sync::atomic::Ordering::Relaxed);
+            .store(active, std::sync::atomic::Ordering::Release);
     }
 
     fn hdr_target_capacity(&self) -> f32 {
@@ -954,7 +954,7 @@ impl ImageLoader {
             && static_hdr_background_plane_upload_eligible(
                 hdr,
                 hdr_target_capacity,
-                hdr_callback_upload_active_live.load(std::sync::atomic::Ordering::Relaxed),
+                hdr_callback_upload_active_live.load(std::sync::atomic::Ordering::Acquire),
             )
         {
             match crate::hdr::renderer::upload_image_plane(device, queue, hdr) {

@@ -147,34 +147,38 @@ pub(crate) fn hdr_image_binding_is_eviction_candidate(
 impl HdrImageBinding {
     /// Build a resident binding from a completed background [`ImagePlaneUpload`].
     ///
-    /// `tone_map_target_format` is the swap-chain / callback target format — the same role as
+    /// `target_format` is the swap-chain / callback target format — the same role as
     /// `HdrImagePlaneCallback::target_format` on the synchronous `prepare()` cache-miss path.
+    /// `tone_map` and `output_mode` seed the uniform buffer; `prepare()` refreshes it each frame.
     pub(crate) fn from_uploaded(
         device: &wgpu::Device,
         uploaded: ImagePlaneUpload,
-        metadata: &crate::hdr::types::HdrImageMetadata,
-        tone_map_target_format: wgpu::TextureFormat,
+        image: &HdrImageBuffer,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        output_mode: HdrRenderOutputMode,
     ) -> Self {
+        let native_display_scale =
+            libavif_tone_map_native_display_scale(&image.metadata, image.color_space, &tone_map);
+        let uniform = image_tone_map_uniform(
+            image,
+            tone_map,
+            0,
+            1.0,
+            output_mode,
+            target_format,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale,
+            false,
+            None,
+        );
         let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
-            contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
-                HdrToneMapSettings::default(),
-                0,
-                1.0,
-                HdrRenderOutputMode::SdrToneMapped,
-                tone_map_target_format,
-                HdrColorSpace::LinearSrgb,
-                HdrTransferFunction::Linear,
-                HdrReference::Unknown,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                1.0,
-                None,
-                None,
-            )),
+            contents: bytemuck::bytes_of(&uniform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let iso_deferred = iso_deferred_from_metadata(metadata);
+        let iso_deferred = iso_deferred_from_metadata(&image.metadata);
         let jpeg_compose_uniform_buffer = if iso_deferred.is_some() {
             Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),
@@ -187,7 +191,7 @@ impl HdrImageBinding {
         };
 
         #[cfg(feature = "heif-native")]
-        let apple_deferred = apple_heic_deferred_from_metadata(metadata);
+        let apple_deferred = apple_heic_deferred_from_metadata(&image.metadata);
         #[cfg(feature = "heif-native")]
         let (compose_tone_map_buffer, encoded_primary_buffer, encoded_primary_buffer_bytes) =
             if apple_deferred.is_some() {

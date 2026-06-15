@@ -437,10 +437,11 @@ impl eframe::App for ImageViewerApp {
         // demotion every frame the probe was pending, defeating the
         // spawn-time HDR detection that already chose the correct initial
         // format.
-        let native_surface_requests_enabled = crate::hdr::surface::native_hdr_swapchain_requests_enabled(
-            self.settings.hdr_native_surface_enabled_effective(),
-            self.hdr_capabilities.backend,
-        );
+        let native_surface_requests_enabled =
+            crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+                self.settings.hdr_native_surface_enabled_effective(),
+                self.hdr_capabilities.backend,
+            );
         if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
             native_surface_requests_enabled,
             self.effective_hdr_monitor_selection().as_ref(),

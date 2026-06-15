@@ -266,66 +266,81 @@ pub fn run() -> eframe::Result {
     ))]
     apply_windows_arm64_default_wgpu_backends(&mut wgpu_setup);
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
-        let info = adapter.get_info();
-        crate::startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
-        if info.backend == eframe::wgpu::Backend::Gl {
-            log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
-        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let info = adapter.get_info();
+            crate::startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
+            if info.backend == eframe::wgpu::Backend::Gl {
+                log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
+            }
 
-        let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
-            eframe::wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            eframe::wgpu::Limits::default()
-        };
+            let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
+                eframe::wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                eframe::wgpu::Limits::default()
+            };
 
-        // Request the GPU's actual texture limit rather than a hardcoded 8192.
-        // This allows panoramic images (e.g. 16380×1538) to be loaded as a single
-        // texture on hardware that supports it, avoiding the slow tiled preview path.
-        // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
-        // the device will be created safely with that lower limit.
-        let hw_max_texture = adapter.limits().max_texture_dimension_2d;
-        let adapter_limits = adapter.limits();
-        crate::startup_info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
-        crate::startup_info!(
-            "GPU max_storage_buffer_binding_size: {}",
-            adapter_limits.max_storage_buffer_binding_size
-        );
-        crate::startup_info!(
-            "GPU max_storage_buffers_per_shader_stage: {}",
-            adapter_limits.max_storage_buffers_per_shader_stage
-        );
-        crate::startup_info!(
-            "GPU max_storage_textures_per_shader_stage: {}",
-            adapter_limits.max_storage_textures_per_shader_stage
-        );
-        crate::startup_info!(
-            "GPU max_compute_invocations_per_workgroup: {}",
-            adapter_limits.max_compute_invocations_per_workgroup
-        );
+            // Request the GPU's actual texture limit rather than a hardcoded 8192.
+            // This allows panoramic images (e.g. 16380×1538) to be loaded as a single
+            // texture on hardware that supports it, avoiding the slow tiled preview path.
+            // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
+            // the device will be created safely with that lower limit.
+            let hw_max_texture = adapter.limits().max_texture_dimension_2d;
+            let adapter_limits = adapter.limits();
+            crate::startup_info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
+            crate::startup_info!(
+                "GPU max_storage_buffer_binding_size: {}",
+                adapter_limits.max_storage_buffer_binding_size
+            );
+            crate::startup_info!(
+                "GPU max_storage_buffers_per_shader_stage: {}",
+                adapter_limits.max_storage_buffers_per_shader_stage
+            );
+            crate::startup_info!(
+                "GPU max_storage_textures_per_shader_stage: {}",
+                adapter_limits.max_storage_textures_per_shader_stage
+            );
+            crate::startup_info!(
+                "GPU max_compute_invocations_per_workgroup: {}",
+                adapter_limits.max_compute_invocations_per_workgroup
+            );
 
-        eframe::wgpu::DeviceDescriptor {
-            label: Some("egui wgpu device"),
-            required_features: eframe::wgpu::Features::PIPELINE_CACHE,
-            required_limits: eframe::wgpu::Limits {
-                max_texture_dimension_2d: hw_max_texture,
-                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
-                max_buffer_size: adapter_limits.max_buffer_size,
-                max_storage_buffers_per_shader_stage: adapter_limits
-                    .max_storage_buffers_per_shader_stage,
-                max_storage_textures_per_shader_stage: adapter_limits
-                    .max_storage_textures_per_shader_stage,
-                max_compute_workgroup_storage_size: adapter_limits
-                    .max_compute_workgroup_storage_size,
-                max_compute_invocations_per_workgroup: adapter_limits
-                    .max_compute_invocations_per_workgroup,
-                max_compute_workgroup_size_x: adapter_limits.max_compute_workgroup_size_x,
-                max_compute_workgroup_size_y: adapter_limits.max_compute_workgroup_size_y,
-                max_compute_workgroup_size_z: adapter_limits.max_compute_workgroup_size_z,
-                max_compute_workgroups_per_dimension: adapter_limits
-                    .max_compute_workgroups_per_dimension,
-                ..base_limits
-            },
-            ..Default::default()
+            eframe::wgpu::DeviceDescriptor {
+                label: Some("egui wgpu device"),
+                required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                required_limits: eframe::wgpu::Limits {
+                    max_texture_dimension_2d: hw_max_texture,
+                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                    max_buffer_size: adapter_limits.max_buffer_size,
+                    max_storage_buffers_per_shader_stage: adapter_limits
+                        .max_storage_buffers_per_shader_stage,
+                    max_storage_textures_per_shader_stage: adapter_limits
+                        .max_storage_textures_per_shader_stage,
+                    max_compute_workgroup_storage_size: adapter_limits
+                        .max_compute_workgroup_storage_size,
+                    max_compute_invocations_per_workgroup: adapter_limits
+                        .max_compute_invocations_per_workgroup,
+                    max_compute_workgroup_size_x: adapter_limits.max_compute_workgroup_size_x,
+                    max_compute_workgroup_size_y: adapter_limits.max_compute_workgroup_size_y,
+                    max_compute_workgroup_size_z: adapter_limits.max_compute_workgroup_size_z,
+                    max_compute_workgroups_per_dimension: adapter_limits
+                        .max_compute_workgroups_per_dimension,
+                    ..base_limits
+                },
+                ..Default::default()
+            }
+        })) {
+            Ok(descriptor) => descriptor,
+            Err(_) => {
+                log::error!(
+                    "[startup] wgpu adapter query panicked; using conservative device limits"
+                );
+                eframe::wgpu::DeviceDescriptor {
+                    label: Some("egui wgpu device"),
+                    required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                    required_limits: eframe::wgpu::Limits::default(),
+                    ..Default::default()
+                }
+            }
         }
     });
 
@@ -382,9 +397,9 @@ pub fn run() -> eframe::Result {
                 main_wait_ms
             );
         } else {
-            windows_wgpu_force_dx12 = false;
             log::error!(
-                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
+                "[startup] wgpu dx12 preprobe failed; keeping cached force_dx12={} ({})",
+                windows_wgpu_force_dx12,
                 crate::wgpu_preprobe_cache::cache_path().display()
             );
         }

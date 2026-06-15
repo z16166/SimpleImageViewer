@@ -50,6 +50,9 @@ impl ImageViewerApp {
         }
 
         if self.loader_wgpu_device.is_some() {
+            // Bump epoch so in-flight loader workers observe a stale device_id via
+            // `wgpu_device_id_live` and drop pre-uploaded planes instead of registering them
+            // against the replaced Device.
             self.current_device_id = self.current_device_id.saturating_add(1);
             log::debug!(
                 "[Loader] wgpu Device instance replaced; current_device_id={}",

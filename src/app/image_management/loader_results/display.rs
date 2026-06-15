@@ -80,11 +80,13 @@ fn resolve_raw_demosaic_notice_fallback_indices(
     let mut matching = Vec::new();
     let mut seen = HashSet::new();
 
-    // Side map survives after refresh clears pending; drain may still need the index.
+    // Side map records the index when demosaic started. Cache may evict the HDR entry while
+    // pending still holds the index; trust side_map + pending until refresh clears both.
     if let Some(&idx) = hdr_raw_gpu_demosaic_pending_key_index.get(&notice.key) {
-        if hdr_image_cache
+        let cache_confirms = hdr_image_cache
             .get(&idx)
-            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key);
+        if (cache_confirms || hdr_raw_gpu_demosaic_pending_indices.contains(&idx))
             && seen.insert(idx)
         {
             matching.push(idx);
@@ -115,8 +117,16 @@ fn resolve_raw_demosaic_notice_fallback_indices(
             }
         }
     }
+    // Last resort: one pending entry and notice key matches that cache slot (avoids mis-routing
+    // stale GPU notices when prefetch evicted the intended image but another RAW is pending).
     if matching.is_empty() && hdr_raw_gpu_demosaic_pending_indices.len() == 1 {
-        matching.extend(hdr_raw_gpu_demosaic_pending_indices.iter().copied());
+        let sole_idx = *hdr_raw_gpu_demosaic_pending_indices.iter().next().unwrap();
+        if hdr_image_cache
+            .get(&sole_idx)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key)
+        {
+            matching.push(sole_idx);
+        }
     }
     matching
 }
@@ -256,15 +266,11 @@ impl ImageViewerApp {
             self.hdr_raw_gpu_demosaic_pending_indices
         );
         let mut cleared_any = false;
-        let mut cleared_current = false;
         for notice in baked {
             let is_failure = notice.demosaic_ms == u32::MAX;
             let matching = self.indices_for_raw_demosaic_notice(&notice, is_failure);
             for idx in matching {
                 cleared_any = true;
-                if idx == self.current_index {
-                    cleared_current = true;
-                }
                 if is_failure {
                     log::warn!(
                         "[HDR] GPU RAW demosaicing failed for index {}, falling back to CPU",
@@ -295,7 +301,8 @@ impl ImageViewerApp {
                 }
             }
         }
-        if cleared_any && !cleared_current {
+        // Success path repaints via `apply_raw_gpu_demosaic_success`; failure cleanup must too.
+        if cleared_any {
             ctx.request_repaint();
         }
     }

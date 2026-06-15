@@ -94,8 +94,10 @@ impl CallbackTrait for HdrImagePlaneCallback {
                     let binding = HdrImageBinding::from_uploaded(
                         device,
                         uploaded,
-                        &self.image.metadata,
+                        &self.image,
+                        self.tone_map,
                         self.target_format,
+                        self.output_mode,
                     );
                     resources.image_bindings.insert(image_key, binding);
                 }
