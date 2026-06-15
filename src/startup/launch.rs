@@ -266,66 +266,81 @@ pub fn run() -> eframe::Result {
     ))]
     apply_windows_arm64_default_wgpu_backends(&mut wgpu_setup);
     wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter| {
-        let info = adapter.get_info();
-        crate::startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
-        if info.backend == eframe::wgpu::Backend::Gl {
-            log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
-        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let info = adapter.get_info();
+            crate::startup_info!("Graphics Adapter Info: {} ({:?})", info.name, info.backend);
+            if info.backend == eframe::wgpu::Backend::Gl {
+                log::warn!("Running in compatibility mode (OpenGL/Compatibility).");
+            }
 
-        let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
-            eframe::wgpu::Limits::downlevel_webgl2_defaults()
-        } else {
-            eframe::wgpu::Limits::default()
-        };
+            let base_limits = if info.backend == eframe::wgpu::Backend::Gl {
+                eframe::wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                eframe::wgpu::Limits::default()
+            };
 
-        // Request the GPU's actual texture limit rather than a hardcoded 8192.
-        // This allows panoramic images (e.g. 16380×1538) to be loaded as a single
-        // texture on hardware that supports it, avoiding the slow tiled preview path.
-        // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
-        // the device will be created safely with that lower limit.
-        let hw_max_texture = adapter.limits().max_texture_dimension_2d;
-        let adapter_limits = adapter.limits();
-        crate::startup_info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
-        crate::startup_info!(
-            "GPU max_storage_buffer_binding_size: {}",
-            adapter_limits.max_storage_buffer_binding_size
-        );
-        crate::startup_info!(
-            "GPU max_storage_buffers_per_shader_stage: {}",
-            adapter_limits.max_storage_buffers_per_shader_stage
-        );
-        crate::startup_info!(
-            "GPU max_storage_textures_per_shader_stage: {}",
-            adapter_limits.max_storage_textures_per_shader_stage
-        );
-        crate::startup_info!(
-            "GPU max_compute_invocations_per_workgroup: {}",
-            adapter_limits.max_compute_invocations_per_workgroup
-        );
+            // Request the GPU's actual texture limit rather than a hardcoded 8192.
+            // This allows panoramic images (e.g. 16380×1538) to be loaded as a single
+            // texture on hardware that supports it, avoiding the slow tiled preview path.
+            // On limited GPUs (e.g. VMware Mesa3D), the adapter will report 8192 and
+            // the device will be created safely with that lower limit.
+            let hw_max_texture = adapter.limits().max_texture_dimension_2d;
+            let adapter_limits = adapter.limits();
+            crate::startup_info!("GPU max_texture_dimension_2d: {}", hw_max_texture);
+            crate::startup_info!(
+                "GPU max_storage_buffer_binding_size: {}",
+                adapter_limits.max_storage_buffer_binding_size
+            );
+            crate::startup_info!(
+                "GPU max_storage_buffers_per_shader_stage: {}",
+                adapter_limits.max_storage_buffers_per_shader_stage
+            );
+            crate::startup_info!(
+                "GPU max_storage_textures_per_shader_stage: {}",
+                adapter_limits.max_storage_textures_per_shader_stage
+            );
+            crate::startup_info!(
+                "GPU max_compute_invocations_per_workgroup: {}",
+                adapter_limits.max_compute_invocations_per_workgroup
+            );
 
-        eframe::wgpu::DeviceDescriptor {
-            label: Some("egui wgpu device"),
-            required_features: eframe::wgpu::Features::PIPELINE_CACHE,
-            required_limits: eframe::wgpu::Limits {
-                max_texture_dimension_2d: hw_max_texture,
-                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
-                max_buffer_size: adapter_limits.max_buffer_size,
-                max_storage_buffers_per_shader_stage: adapter_limits
-                    .max_storage_buffers_per_shader_stage,
-                max_storage_textures_per_shader_stage: adapter_limits
-                    .max_storage_textures_per_shader_stage,
-                max_compute_workgroup_storage_size: adapter_limits
-                    .max_compute_workgroup_storage_size,
-                max_compute_invocations_per_workgroup: adapter_limits
-                    .max_compute_invocations_per_workgroup,
-                max_compute_workgroup_size_x: adapter_limits.max_compute_workgroup_size_x,
-                max_compute_workgroup_size_y: adapter_limits.max_compute_workgroup_size_y,
-                max_compute_workgroup_size_z: adapter_limits.max_compute_workgroup_size_z,
-                max_compute_workgroups_per_dimension: adapter_limits
-                    .max_compute_workgroups_per_dimension,
-                ..base_limits
-            },
-            ..Default::default()
+            eframe::wgpu::DeviceDescriptor {
+                label: Some("egui wgpu device"),
+                required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                required_limits: eframe::wgpu::Limits {
+                    max_texture_dimension_2d: hw_max_texture,
+                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                    max_buffer_size: adapter_limits.max_buffer_size,
+                    max_storage_buffers_per_shader_stage: adapter_limits
+                        .max_storage_buffers_per_shader_stage,
+                    max_storage_textures_per_shader_stage: adapter_limits
+                        .max_storage_textures_per_shader_stage,
+                    max_compute_workgroup_storage_size: adapter_limits
+                        .max_compute_workgroup_storage_size,
+                    max_compute_invocations_per_workgroup: adapter_limits
+                        .max_compute_invocations_per_workgroup,
+                    max_compute_workgroup_size_x: adapter_limits.max_compute_workgroup_size_x,
+                    max_compute_workgroup_size_y: adapter_limits.max_compute_workgroup_size_y,
+                    max_compute_workgroup_size_z: adapter_limits.max_compute_workgroup_size_z,
+                    max_compute_workgroups_per_dimension: adapter_limits
+                        .max_compute_workgroups_per_dimension,
+                    ..base_limits
+                },
+                ..Default::default()
+            }
+        })) {
+            Ok(descriptor) => descriptor,
+            Err(_) => {
+                log::error!(
+                    "[startup] wgpu adapter query panicked; using conservative device limits"
+                );
+                eframe::wgpu::DeviceDescriptor {
+                    label: Some("egui wgpu device"),
+                    required_features: eframe::wgpu::Features::PIPELINE_CACHE,
+                    required_limits: eframe::wgpu::Limits::default(),
+                    ..Default::default()
+                }
+            }
         }
     });
 
@@ -345,11 +360,66 @@ pub fn run() -> eframe::Result {
         );
     }
 
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    let mut windows_wgpu_force_dx12 = cached_preprobe
+        .as_ref()
+        .is_some_and(|cache| cache.force_dx12);
+
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
+        #[cfg(feature = "startup-timing")]
+        let recv_wait = Instant::now();
+        let maybe_outcome = dx12_preprobe_rx
+            .recv()
+            .expect("wgpu dx12 preprobe thread exited without sending a result");
+        #[cfg(feature = "startup-timing")]
+        let main_wait_ms = recv_wait.elapsed().as_millis();
+
+        if let Some(outcome) = maybe_outcome {
+            windows_wgpu_force_dx12 = outcome.has_real_dx12;
+            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, windows_wgpu_force_dx12, false);
+            if let Err(e) = crate::wgpu_preprobe_cache::save(windows_wgpu_force_dx12) {
+                log::warn!(
+                    "[startup] failed to save wgpu preprobe cache {}: {}",
+                    crate::wgpu_preprobe_cache::cache_path().display(),
+                    e
+                );
+            } else {
+                crate::startup_info!(
+                    "[startup] wgpu preprobe: wrote cache {}",
+                    crate::wgpu_preprobe_cache::cache_path().display()
+                );
+            }
+            crate::startup_info!(
+                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
+                outcome.enumerate_ms,
+                outcome.adapter_count,
+                main_wait_ms
+            );
+        } else {
+            log::error!(
+                "[startup] wgpu dx12 preprobe failed; keeping cached force_dx12={} ({})",
+                windows_wgpu_force_dx12,
+                crate::wgpu_preprobe_cache::cache_path().display()
+            );
+        }
+        startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
+    }
+
+    let native_hdr_swapchain_at_startup =
+        crate::hdr::surface::effective_native_hdr_swapchain_request_at_startup(
+            settings.hdr_native_surface_enabled_effective(),
+            #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+            windows_wgpu_force_dx12,
+            #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+            false,
+        );
+
     #[cfg(feature = "startup-timing")]
     let hdr_spawn_start = Instant::now();
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
-            settings.hdr_native_surface_enabled_effective(),
+            native_hdr_swapchain_at_startup,
             settings.window_spawn_top_left_for_hdr(),
         );
     crate::startup_info!(
@@ -369,7 +439,7 @@ pub fn run() -> eframe::Result {
     #[cfg(feature = "startup-timing")]
     {
         for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
-            settings.hdr_native_surface_enabled_effective(),
+            native_hdr_swapchain_at_startup,
             preferred_hdr_target_format,
         ) {
             crate::startup_info!("{diagnostic}");
@@ -412,46 +482,6 @@ pub fn run() -> eframe::Result {
     // applies `centered=true` AFTER `with_position(...)` in winit setup, so
     // leaving it on silently overrides our recall.
     let center_window_on_open = saved_outer_position.is_none();
-
-    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-    if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
-        #[cfg(feature = "startup-timing")]
-        let recv_wait = Instant::now();
-        let maybe_outcome = dx12_preprobe_rx
-            .recv()
-            .expect("wgpu dx12 preprobe thread exited without sending a result");
-        #[cfg(feature = "startup-timing")]
-        let main_wait_ms = recv_wait.elapsed().as_millis();
-
-        if let Some(outcome) = maybe_outcome {
-            let probe_force = outcome.has_real_dx12;
-            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, probe_force, false);
-            if let Err(e) = crate::wgpu_preprobe_cache::save(probe_force) {
-                log::warn!(
-                    "[startup] failed to save wgpu preprobe cache {}: {}",
-                    crate::wgpu_preprobe_cache::cache_path().display(),
-                    e
-                );
-            } else {
-                crate::startup_info!(
-                    "[startup] wgpu preprobe: wrote cache {}",
-                    crate::wgpu_preprobe_cache::cache_path().display()
-                );
-            }
-            crate::startup_info!(
-                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
-                outcome.enumerate_ms,
-                outcome.adapter_count,
-                main_wait_ms
-            );
-        } else {
-            log::error!(
-                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
-                crate::wgpu_preprobe_cache::cache_path().display()
-            );
-        }
-        startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
-    }
 
     // Fullscreen uses borderless native fullscreen, not WS_SHOWMAXIMIZED; the patched
     // eframe first-frame show path only applies to maximized windowed restore.

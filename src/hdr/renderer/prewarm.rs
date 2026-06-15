@@ -182,6 +182,34 @@ pub(crate) fn predicted_hdr_callback_target_format(
     live_target_format
 }
 
+/// Read-only snapshot of whether HDR callback resources can be used this frame.
+pub(crate) enum HdrCallbackResourcesReadiness {
+    Ready,
+    PrewarmRunning,
+    NeedsEnsure,
+}
+
+/// Inspect callback resources under a read lock before attempting registration.
+pub(crate) fn hdr_callback_resources_readiness(
+    callback_resources: &CallbackResources,
+    target_format: wgpu::TextureFormat,
+) -> HdrCallbackResourcesReadiness {
+    if callback_resources
+        .get::<HdrCallbackResources>()
+        .is_some_and(|resources| resources.target_format == target_format)
+    {
+        return HdrCallbackResourcesReadiness::Ready;
+    }
+
+    if let Some(slot) = callback_resources.get::<HdrCallbackResourcesPrewarmSlot>() {
+        if slot.0.is_running(target_format) {
+            return HdrCallbackResourcesReadiness::PrewarmRunning;
+        }
+    }
+
+    HdrCallbackResourcesReadiness::NeedsEnsure
+}
+
 /// Ensures [`HdrCallbackResources`] exist for `target_format`.
 ///
 /// Returns `false` when a background prewarm is still running; callers should defer

@@ -146,13 +146,19 @@ impl ImageViewerApp {
             has_hdr_image
         };
         let prefer_sdr_for_pending_gpu_demosaic = shape == RenderShape::Static
-            && self.hdr_raw_gpu_demosaic_pending_indices.contains(&idx)
-            && has_sdr_fallback
-            && (self.texture_cache.contains(idx)
-                || self
-                    .hdr_image_cache
-                    .get(&idx)
-                    .is_some_and(|hdr| crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)));
+            && crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+                idx,
+                &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_image_cache,
+                has_sdr_fallback,
+                self.texture_cache.contains(idx),
+            );
+        if prefer_sdr_for_pending_gpu_demosaic {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] render backend=Sdr bootstrap cur={} pending=true (osd)",
+                idx
+            );
+        }
 
         let complex_transition_active = self.transition_start.is_some()
             && matches!(
@@ -160,7 +166,14 @@ impl ImageViewerApp {
                 TransitionStyle::PageFlip | TransitionStyle::Ripple | TransitionStyle::Curtain
             );
 
-        let plan = self.build_render_plan(shape, has_hdr_plane, has_sdr_fallback);
+        let plan = crate::app::rendering::plan::build_render_plan_for_state(
+            shape,
+            has_hdr_plane,
+            has_sdr_fallback,
+            self.hdr_target_format,
+            self.effective_hdr_monitor_selection().as_ref(),
+            prefer_sdr_for_pending_gpu_demosaic,
+        );
         hdr_render_path_for_render_plan(
             &plan,
             shape,

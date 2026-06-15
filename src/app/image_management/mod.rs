@@ -566,6 +566,34 @@ pub(crate) fn startup_preload_defer_can_release(
     false
 }
 
+/// True only while GPU RAW demosaic is still in progress and the embedded bootstrap SDR preview
+/// should be shown. When the HDR plane is already ready (pending cleared or demosaic baked),
+/// returns false so navigation draws HDR directly without an SDR preview flash.
+pub(crate) fn prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+    index: usize,
+    hdr_raw_gpu_demosaic_pending_indices: &std::collections::HashSet<usize>,
+    hdr_image_cache: &std::collections::HashMap<
+        usize,
+        std::sync::Arc<crate::hdr::types::HdrImageBuffer>,
+    >,
+    has_sdr_fallback: bool,
+    texture_cache_contains: bool,
+) -> bool {
+    if !hdr_raw_gpu_demosaic_pending_indices.contains(&index) {
+        return false;
+    }
+    if !has_sdr_fallback {
+        return false;
+    }
+    let Some(hdr) = hdr_image_cache.get(&index) else {
+        return false;
+    };
+    if !crate::loader::hdr_raw_gpu_demosaic_pending(hdr) {
+        return false;
+    }
+    texture_cache_contains || crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)
+}
+
 /// Hold neighbor preloads while the current index is extracting CFA, waiting on GPU demosaic,
 /// or until the HDR float plane has been presented after demosaic completes.
 pub(crate) fn should_defer_background_preload_for_raw_gpu_current(
@@ -974,6 +1002,65 @@ pub(crate) fn raw_hq_has_bootstrap_sdr_only(
         hdr_image_cache,
         hdr_tiled_source_cache,
     ) && (has_sdr_texture || has_deferred_sdr)
+}
+
+#[cfg(test)]
+mod prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending_tests {
+    use super::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    fn gpu_raw_pending_hdr() -> Arc<crate::hdr::types::HdrImageBuffer> {
+        let mut metadata = crate::hdr::types::HdrImageMetadata::default();
+        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+            raw_width: 4,
+            raw_height: 4,
+            width: 4,
+            height: 4,
+            raw_pixels: Arc::new(vec![0; 16]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 65535.0,
+            bayer_pattern: [0, 1, 1, 2],
+            scene_color_scale: [1.0, 1.0, 1.0],
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+            bootstrap_preview: Some(crate::loader::DecodedImage::new(2, 2, vec![1; 16])),
+        });
+        Arc::new(crate::hdr::types::HdrImageBuffer {
+            width: 4,
+            height: 4,
+            format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn prefers_sdr_while_gpu_demosaic_still_pending() {
+        let hdr = gpu_raw_pending_hdr();
+        let mut pending = HashSet::from([0usize]);
+        let cache = HashMap::from([(0usize, hdr)]);
+        assert!(prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+            0, &pending, &cache, true, false,
+        ));
+        pending.remove(&0);
+        assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+            0, &pending, &cache, true, false,
+        ));
+    }
+
+    #[test]
+    fn skips_sdr_bootstrap_when_hdr_plane_already_ready() {
+        let mut hdr = gpu_raw_pending_hdr();
+        Arc::make_mut(&mut hdr).rgba_f32 = Arc::new(vec![1.0; 4 * 4 * 4]);
+        let pending = HashSet::from([0usize]);
+        let cache = HashMap::from([(0usize, hdr)]);
+        assert!(!prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+            0, &pending, &cache, true, true,
+        ));
+    }
 }
 
 #[cfg(test)]

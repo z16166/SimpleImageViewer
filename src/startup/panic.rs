@@ -18,24 +18,41 @@ use super::logging::shutdown_logger;
 
 #[cfg(target_os = "windows")]
 fn show_crash_dialog(title: &str, message: &str) {
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TASKMODAL, MB_TOPMOST, MessageBoxW,
+        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL, MB_TOPMOST, MessageBoxW,
     };
     use windows::core::HSTRING;
 
-    let title = HSTRING::from(title);
-    let message = HSTRING::from(message);
-    // The panic hook can run while the egui window is unresponsive or tearing
-    // down, so use a task-modal topmost box without relying on a parent HWND.
-    let _ = unsafe {
-        MessageBoxW(
-            HWND::default(),
-            &message,
-            &title,
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND | MB_TASKMODAL,
-        )
+    // Never call MessageBoxW on the thread that is inside winit's WndProc. During
+    // cross-monitor drags the panic hook runs nested in `DialogBox2`/`DispatchMessage`
+    // while the main frame straddles two displays; an owned/task-modal box tied to that
+    // HWND is often created but not painted (beep-only modal). A system-modal box on a
+    // dedicated thread avoids reentrancy and lands on the foreground desktop.
+    let title = title.to_string();
+    let message = message.to_string();
+    let show_inline = |title: &str, message: &str| {
+        let title = HSTRING::from(title);
+        let message = HSTRING::from(message);
+        let flags = MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST;
+        unsafe { MessageBoxW(None, &message, &title, flags) };
     };
+    let title_for_thread = title.clone();
+    let message_for_thread = message.clone();
+    match std::thread::Builder::new()
+        .name("crash-dialog".into())
+        .spawn(move || {
+            let title = HSTRING::from(title_for_thread);
+            let message = HSTRING::from(message_for_thread);
+            let flags = MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_SYSTEMMODAL | MB_TOPMOST;
+            let _ = unsafe { MessageBoxW(None, &message, &title, flags) };
+        }) {
+        Ok(handle) => {
+            if handle.join().is_err() {
+                show_inline(&title, &message);
+            }
+        }
+        Err(_) => show_inline(&title, &message),
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

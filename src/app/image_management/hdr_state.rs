@@ -25,6 +25,7 @@ impl ImageViewerApp {
         self.hdr_placeholder_fallback_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_indices.clear();
         self.hdr_raw_gpu_demosaic_pending_key_index.clear();
+        self.raw_gpu_embedded_bootstrap_indices.clear();
         self.gpu_demosaic_failed_indices.clear();
         self.raw_gpu_demosaic_await_hdr_present = false;
         self.raw_demosaic_baked_notify.lock().clear();
@@ -62,6 +63,7 @@ impl ImageViewerApp {
         self.hdr_sdr_fallback_indices.remove(&index);
         self.hdr_placeholder_fallback_indices.remove(&index);
         self.hdr_raw_gpu_demosaic_pending_indices.remove(&index);
+        self.raw_gpu_embedded_bootstrap_indices.remove(&index);
         self.hdr_in_flight_fallback_refinements.remove(&index);
         self.deferred_sdr_uploads.remove(&index);
         self.ultra_hdr_capacity_sensitive_indices.remove(&index);
@@ -369,5 +371,92 @@ impl ImageViewerApp {
             self.settings.raw_high_quality,
             self.raw_demosaic_mode_for_index(idx),
         );
+    }
+
+    /// Drop stale GPU-demosaic pending flags when the callback binding is already baked
+    /// (e.g. preloaded RAW whose HDR plane finished before navigation).
+    pub(crate) fn refresh_raw_gpu_demosaic_pending_from_gpu_bindings(
+        &mut self,
+        ctx: &egui::Context,
+        frame: Option<&eframe::Frame>,
+    ) {
+        let Some(frame) = frame else {
+            return;
+        };
+        let Some(wgpu_state) = frame.wgpu_render_state() else {
+            return;
+        };
+        let pending: Vec<usize> = if self.hdr_raw_gpu_demosaic_pending_indices.is_empty() {
+            return;
+        } else {
+            self.hdr_raw_gpu_demosaic_pending_indices
+                .iter()
+                .copied()
+                .collect()
+        };
+        let baked_indices: Vec<usize> = {
+            let renderer = wgpu_state.renderer.read();
+            let Some(resources) = renderer
+                .callback_resources
+                .get::<crate::hdr::renderer::HdrCallbackResources>()
+            else {
+                return;
+            };
+            let mut baked = Vec::new();
+            for idx in pending {
+                let Some(hdr) = self.hdr_image_cache.get(&idx) else {
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] refresh pending idx={idx}: no hdr_image_cache entry"
+                    );
+                    continue;
+                };
+                let Some(source) = hdr.metadata.raw_gpu_source.as_ref() else {
+                    continue;
+                };
+                let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+                let is_baked = resources.raw_demosaic_baked_for(key, source.demosaic_method);
+                if is_baked {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        let binding_present = resources.hdr_image_binding_present(key);
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW-GPU] refresh cleared pending idx={idx} binding_present={binding_present}"
+                        );
+                    }
+                    baked.push(idx);
+                } else if idx == self.current_index {
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        let binding_present = resources.hdr_image_binding_present(key);
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW-GPU] refresh pending idx={idx} cur: binding_present={binding_present} baked=false key={key:?}"
+                        );
+                    }
+                }
+            }
+            baked
+        };
+        for idx in baked_indices {
+            self.apply_raw_gpu_demosaic_success(idx, None, ctx);
+        }
+    }
+
+    /// Drop embedded RAW preview assets once the HDR float plane is ready. Keeps tone-mapped
+    /// fallback textures (`img_hdr_fallback_*`) and deferred fallback pixels intact.
+    pub(crate) fn on_raw_hdr_plane_ready(&mut self, idx: usize) {
+        self.release_raw_gpu_embedded_bootstrap_preview(idx);
+    }
+
+    fn release_raw_gpu_embedded_bootstrap_preview(&mut self, idx: usize) {
+        let had_bootstrap_texture = self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
+        if had_bootstrap_texture {
+            self.texture_cache.remove(idx);
+        }
+        if let Some(hdr) = self.hdr_image_cache.get_mut(&idx) {
+            let hdr = Arc::make_mut(hdr);
+            if let Some(source) = hdr.metadata.raw_gpu_source.as_mut() {
+                source.bootstrap_preview = None;
+            }
+        }
     }
 }

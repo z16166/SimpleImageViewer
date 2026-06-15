@@ -18,6 +18,119 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[cfg(feature = "preload-debug")]
+fn preload_debug_log_demosaic_notice_resolution(
+    notice: &crate::hdr::renderer::RawGpuDemosaicBakedNotice,
+    is_failure: bool,
+    matching: &[usize],
+    hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    hdr_raw_gpu_demosaic_pending_indices: &HashSet<usize>,
+    hdr_raw_gpu_demosaic_pending_key_index: &HashMap<crate::hdr::renderer::HdrImageKey, usize>,
+) {
+    if is_failure {
+        return;
+    }
+    if !matching.is_empty() {
+        crate::preload_debug!(
+            "[PreloadDebug][RAW-GPU] demosaic notice matched idx={matching:?} ms={}",
+            notice.demosaic_ms
+        );
+        return;
+    }
+    let mut details = Vec::new();
+    for &idx in hdr_raw_gpu_demosaic_pending_indices {
+        let cache_key_eq = hdr_image_cache
+            .get(&idx)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key);
+        let side_map_idx = hdr_raw_gpu_demosaic_pending_key_index
+            .get(&notice.key)
+            .copied();
+        details.push(format!(
+            "idx={idx} cache_key_eq={cache_key_eq} side_map_idx={side_map_idx:?}"
+        ));
+    }
+    crate::preload_debug!(
+        "[PreloadDebug][RAW-GPU] demosaic notice DROPPED (success): ms={} pending={:?} side_map_has_key={} [{}]",
+        notice.demosaic_ms,
+        hdr_raw_gpu_demosaic_pending_indices,
+        hdr_raw_gpu_demosaic_pending_key_index.contains_key(&notice.key),
+        details.join("; ")
+    );
+    crate::preload_debug!(
+        "[PreloadDebug][RAW-GPU] demosaic notice key={:?}",
+        notice.key
+    );
+    for (&idx, hdr) in hdr_image_cache {
+        if hdr_raw_gpu_demosaic_pending_indices.contains(&idx) {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] demosaic pending cache idx={idx} key={:?}",
+                crate::hdr::renderer::HdrImageKey::from_image(hdr)
+            );
+        }
+    }
+}
+
+fn resolve_raw_demosaic_notice_fallback_indices(
+    notice: &crate::hdr::renderer::RawGpuDemosaicBakedNotice,
+    hdr_image_cache: &HashMap<usize, Arc<crate::hdr::types::HdrImageBuffer>>,
+    hdr_raw_gpu_demosaic_pending_indices: &HashSet<usize>,
+    hdr_raw_gpu_demosaic_pending_key_index: &HashMap<crate::hdr::renderer::HdrImageKey, usize>,
+    current_hdr_image: Option<&crate::app::CurrentHdrImage>,
+) -> Vec<usize> {
+    let mut matching = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Side map records the index when demosaic started. Cache may evict the HDR entry while
+    // pending still holds the index; trust side_map + pending until refresh clears both.
+    if let Some(&idx) = hdr_raw_gpu_demosaic_pending_key_index.get(&notice.key) {
+        let cache_confirms = hdr_image_cache
+            .get(&idx)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key);
+        if (cache_confirms || hdr_raw_gpu_demosaic_pending_indices.contains(&idx))
+            && seen.insert(idx)
+        {
+            matching.push(idx);
+        }
+    }
+    for &idx in hdr_raw_gpu_demosaic_pending_indices {
+        if seen.contains(&idx) {
+            continue;
+        }
+        let key_matches = hdr_image_cache
+            .get(&idx)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key)
+            || current_hdr_image
+                .and_then(|current| current.image_for_index(idx))
+                .is_some_and(|hdr| {
+                    crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key
+                });
+        if key_matches {
+            seen.insert(idx);
+            matching.push(idx);
+        }
+    }
+    if matching.is_empty() {
+        for (&idx, hdr) in hdr_image_cache {
+            if crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key {
+                matching.push(idx);
+                break;
+            }
+        }
+    }
+    // Last resort: one pending entry and notice key matches that cache slot (avoids mis-routing
+    // stale GPU notices when prefetch evicted the intended image but another RAW is pending).
+    if matching.is_empty() && hdr_raw_gpu_demosaic_pending_indices.len() == 1 {
+        let sole_idx = *hdr_raw_gpu_demosaic_pending_indices.iter().next().unwrap();
+        if hdr_image_cache
+            .get(&sole_idx)
+            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key)
+        {
+            matching.push(sole_idx);
+        }
+    }
+    matching
+}
+
 /// Resolve file indices that should receive a GPU RAW demosaic bake notice.
 pub(crate) fn resolve_raw_demosaic_notice_indices(
     notice: &crate::hdr::renderer::RawGpuDemosaicBakedNotice,
@@ -39,46 +152,76 @@ pub(crate) fn resolve_raw_demosaic_notice_indices(
             }
         })
         .collect();
-    if !matching.is_empty() || !is_failure {
-        return matching;
-    }
-    let mut seen = HashSet::new();
-    if let Some(&idx) = hdr_raw_gpu_demosaic_pending_key_index.get(&notice.key) {
-        if hdr_raw_gpu_demosaic_pending_indices.contains(&idx) && seen.insert(idx) {
-            matching.push(idx);
-        }
-    }
-    for &idx in hdr_raw_gpu_demosaic_pending_indices {
-        if seen.contains(&idx) {
-            continue;
-        }
-        let key_matches = hdr_image_cache
-            .get(&idx)
-            .is_some_and(|hdr| crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key)
-            || current_hdr_image
-                .and_then(|current| current.image_for_index(idx))
-                .is_some_and(|hdr| {
-                    crate::hdr::renderer::HdrImageKey::from_image(hdr) == notice.key
-                });
-        if key_matches {
-            seen.insert(idx);
-            matching.push(idx);
-        }
-    }
-    if matching.is_empty() && hdr_raw_gpu_demosaic_pending_indices.len() == 1 {
-        matching.extend(hdr_raw_gpu_demosaic_pending_indices.iter().copied());
-    }
     if matching.is_empty() {
+        matching = resolve_raw_demosaic_notice_fallback_indices(
+            notice,
+            hdr_image_cache,
+            hdr_raw_gpu_demosaic_pending_indices,
+            hdr_raw_gpu_demosaic_pending_key_index,
+            current_hdr_image,
+        );
+    }
+    if matching.is_empty() && is_failure {
         log::warn!(
             "[HDR] Dropping GPU RAW demosaic notice: no pending index matched key {:?} (pending={})",
             notice.key,
             hdr_raw_gpu_demosaic_pending_indices.len()
         );
     }
+    #[cfg(feature = "preload-debug")]
+    preload_debug_log_demosaic_notice_resolution(
+        notice,
+        is_failure,
+        &matching,
+        hdr_image_cache,
+        hdr_raw_gpu_demosaic_pending_indices,
+        hdr_raw_gpu_demosaic_pending_key_index,
+    );
     matching
 }
 
 impl ImageViewerApp {
+    /// Apply GPU RAW demosaic completion for `idx`: clear pending, promote OSD, release bootstrap.
+    pub(crate) fn apply_raw_gpu_demosaic_success(
+        &mut self,
+        idx: usize,
+        demosaic_ms: Option<u32>,
+        ctx: &egui::Context,
+    ) {
+        self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
+        if let Some(hdr) = self.hdr_image_cache.get(&idx) {
+            let key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+            self.hdr_raw_gpu_demosaic_pending_key_index.remove(&key);
+        }
+        let is_current = idx == self.current_index;
+        if is_current {
+            self.raw_gpu_demosaic_await_hdr_present = true;
+        }
+        if let Some(ms) = demosaic_ms {
+            self.raw_metadata.set_gpu_demosaic_ms(idx, ms);
+        }
+        #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
+        let promoted = self.raw_metadata.promote_gpu_demosaic_complete(idx);
+        crate::preload_debug!(
+            "[PreloadDebug][RAW-GPU] demosaic complete idx={idx} ms={} osd_promoted={promoted} cur={}",
+            demosaic_ms.unwrap_or(0),
+            self.current_index
+        );
+        self.on_raw_hdr_plane_ready(idx);
+        if is_current {
+            self.osd.sync_events();
+            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
+                self.current_hdr_image =
+                    Some(crate::app::CurrentHdrImage::new(self.current_index, hdr));
+            }
+            self.refresh_hdr_view_status();
+            if self.settings.preload && !self.raw_gpu_demosaic_await_hdr_present {
+                self.schedule_preloads(true);
+            }
+            ctx.request_repaint();
+        }
+    }
+
     fn current_image_is_render_ready(&self) -> bool {
         target_is_render_ready(
             self.texture_cache.contains(self.current_index),
@@ -116,20 +259,18 @@ impl ImageViewerApp {
         if baked.is_empty() {
             return;
         }
+        crate::preload_debug!(
+            "[PreloadDebug][RAW-GPU] drain {} demosaic notice(s) cur={} pending={:?}",
+            baked.len(),
+            self.current_index,
+            self.hdr_raw_gpu_demosaic_pending_indices
+        );
         let mut cleared_any = false;
-        let mut cleared_current = false;
         for notice in baked {
             let is_failure = notice.demosaic_ms == u32::MAX;
             let matching = self.indices_for_raw_demosaic_notice(&notice, is_failure);
             for idx in matching {
-                self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
                 cleared_any = true;
-                if idx == self.current_index {
-                    cleared_current = true;
-                    if !is_failure {
-                        self.raw_gpu_demosaic_await_hdr_present = true;
-                    }
-                }
                 if is_failure {
                     log::warn!(
                         "[HDR] GPU RAW demosaicing failed for index {}, falling back to CPU",
@@ -156,25 +297,11 @@ impl ImageViewerApp {
                         );
                     }
                 } else {
-                    self.raw_metadata
-                        .set_gpu_demosaic_ms(idx, notice.demosaic_ms);
-                    self.raw_metadata.promote_gpu_demosaic_complete(idx);
+                    self.apply_raw_gpu_demosaic_success(idx, Some(notice.demosaic_ms), ctx);
                 }
             }
         }
-        if cleared_current {
-            self.osd.sync_events();
-        }
-        if cleared_current {
-            if let Some(hdr) = self.hdr_image_cache.get(&self.current_index).cloned() {
-                self.current_hdr_image =
-                    Some(crate::app::CurrentHdrImage::new(self.current_index, hdr));
-            }
-            self.refresh_hdr_view_status();
-            if self.settings.preload && !self.raw_gpu_demosaic_await_hdr_present {
-                self.schedule_preloads(true);
-            }
-        }
+        // Success path repaints via `apply_raw_gpu_demosaic_success`; failure cleanup must too.
         if cleared_any {
             ctx.request_repaint();
         }

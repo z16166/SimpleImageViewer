@@ -415,7 +415,6 @@ impl PreviewBundle {
     }
 }
 
-#[derive(Clone)]
 pub struct LoadResult {
     pub index: usize,
     pub generation: u64,
@@ -431,6 +430,37 @@ pub struct LoadResult {
     pub target_hdr_capacity: f32,
     /// RAW-only OSD metadata (embedded preview, sensor grid, active pixel source).
     pub raw_osd: Option<RawOsdInfo>,
+    /// GPU textures uploaded on a background loader thread (static HDR plane only).
+    ///
+    /// `ImagePlaneUpload` contains `Send` wgpu handles; the loader worker fills this field and
+    /// the main thread consumes it in `try_register_preuploaded_hdr_plane` before paint callbacks run.
+    pub uploaded_planes: Option<crate::hdr::renderer::ImagePlaneUpload>,
+    /// [`ImageViewerApp::current_device_id`] under which `uploaded_planes` was created.
+    pub device_id: Option<u64>,
+}
+
+impl Clone for LoadResult {
+    fn clone(&self) -> Self {
+        if self.uploaded_planes.is_some() {
+            log::debug!(
+                "[Loader] LoadResult::clone dropping pre-uploaded HDR planes for index {}",
+                self.index
+            );
+        }
+        Self {
+            index: self.index,
+            generation: self.generation,
+            source_key: self.source_key,
+            result: self.result.clone(),
+            preview_bundle: self.preview_bundle.clone(),
+            ultra_hdr_capacity_sensitive: self.ultra_hdr_capacity_sensitive,
+            sdr_fallback_is_placeholder: self.sdr_fallback_is_placeholder,
+            target_hdr_capacity: self.target_hdr_capacity,
+            raw_osd: self.raw_osd.clone(),
+            uploaded_planes: None,
+            device_id: self.device_id,
+        }
+    }
 }
 
 /// Refined full-resolution SDR RGBA8 for a static HDR image that initially loaded with a

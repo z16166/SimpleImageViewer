@@ -40,7 +40,7 @@ pub(super) use self::image_key::HdrTileKey;
 pub(crate) use self::image_key::{HdrImageKey, RawGpuDemosaicBakedNotice};
 
 pub(super) mod resources;
-pub(super) use self::resources::{
+pub(crate) use self::resources::{
     CallbackUpload, HDR_APPLE_GAIN_TEXTURE_FORMAT, HdrCallbackResources, HdrImageBinding,
     ImagePlaneUpload, JpegTiledUploadKey,
 };
@@ -50,17 +50,22 @@ pub(super) use self::resources::create_callback_resources;
 
 mod prewarm;
 pub(crate) use self::prewarm::{
-    HdrCallbackResourcesPrewarm, HdrCallbackResourcesPrewarmSlot, ensure_hdr_callback_resources,
-    predicted_hdr_callback_target_format,
+    HdrCallbackResourcesPrewarm, HdrCallbackResourcesPrewarmSlot,
+    HdrCallbackResourcesReadiness, ensure_hdr_callback_resources,
+    hdr_callback_resources_readiness, predicted_hdr_callback_target_format,
 };
 
 pub(super) mod tile_cache;
 pub(super) use self::tile_cache::{HdrTileBindings, iso_deferred_tile_compose_views_reusable};
 
 pub(super) mod upload;
+#[cfg(test)]
+pub(crate) use self::resources::hdr_image_binding_is_eviction_candidate;
+/// Background HDR plane upload used by loader workers (`load.rs`) and sync cache misses (`prepare()`).
+pub(crate) use self::upload::upload_image_plane;
 pub(super) use self::upload::{
     create_empty_rgba32f_texture, create_hdr_image_plane_bind_group, pack_rows_for_texture_copy,
-    rgba32f_as_bytes, upload_callback_tile, upload_image_plane, upload_jpeg_tiled_source_textures,
+    rgba32f_as_bytes, upload_callback_tile, upload_jpeg_tiled_source_textures,
     validate_upload_layout, write_rgba32f_to_texture,
 };
 

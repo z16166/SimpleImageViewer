@@ -25,6 +25,7 @@ pub fn cache_path_for_adapter_info(info: &wgpu::AdapterInfo) -> PathBuf {
             info.backend, info.vendor, info.device
         )
     });
+    let stem = format!("{stem}_drv{:016x}", driver_cache_hash(info));
     cache_dir().join(format!("{stem}.bin"))
 }
 
@@ -37,6 +38,24 @@ fn cache_dir() -> PathBuf {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn driver_cache_hash(info: &wgpu::AdapterInfo) -> u64 {
+    let mut hash = stable_hash_bytes(info.driver.as_bytes(), 0xcbf2_9ce4_8422_2325);
+    hash = stable_hash_bytes(info.driver_info.as_bytes(), hash);
+    hash
+}
+
+fn stable_hash_bytes(bytes: &[u8], seed: u64) -> u64 {
+    // FNV-1a 64-bit: fast, not collision-free. A driver-string hash collision would reuse
+    // the wrong on-disk pipeline cache after a driver upgrade; worst case is bad rendering
+    // until the user clears the cache directory (see `cache_path`).
+    let mut hash = seed;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
 }
 
 pub fn load_for_adapter(adapter: &wgpu::Adapter) -> Option<Vec<u8>> {
@@ -110,4 +129,33 @@ pub fn create_pipeline_cache(
 #[allow(dead_code)] // reserved for non-DX12 adapters; DX12 uses PipelineCache auto-persist
 pub fn persist_adapter(adapter: &wgpu::Adapter, cache: &wgpu::PipelineCache) {
     persist(&adapter.get_info(), cache);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter_info(driver: &str) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "NVIDIA GeForce RTX 4070".to_owned(),
+            vendor: 0x10de,
+            device: 0x2786,
+            device_type: wgpu::DeviceType::DiscreteGpu,
+            device_pci_bus_id: String::new(),
+            driver: driver.to_owned(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Dx12,
+            subgroup_min_size: 32,
+            subgroup_max_size: 32,
+            transient_saves_memory: false,
+        }
+    }
+
+    #[test]
+    fn cache_path_changes_with_driver_version() {
+        let old_driver = cache_path_for_adapter_info(&adapter_info("32.0.16.1052"));
+        let new_driver = cache_path_for_adapter_info(&adapter_info("32.0.16.2000"));
+
+        assert_ne!(old_driver.file_name(), new_driver.file_name());
+    }
 }

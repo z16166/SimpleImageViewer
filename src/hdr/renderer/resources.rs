@@ -57,6 +57,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) bind_group: Option<wgpu::BindGroup>,
     pub(super) last_use: std::time::Instant,
     pub(super) keep_resident: bool,
+    /// [`ImageViewerApp::current_device_id`] epoch when GPU resources were created.
+    pub(super) device_id: u64,
 }
 
 pub(crate) struct HdrCallbackResources {
@@ -126,6 +128,217 @@ pub(crate) struct ImagePlaneUpload {
     pub(super) sdr_baseline: Option<CallbackUpload>,
     pub(super) raw_pixels: Option<CallbackUpload>,
     pub(super) raw_green_plane: Option<CallbackUpload>,
+}
+
+// `wgpu::Texture`, `wgpu::TextureView`, and `wgpu::Buffer` are `Send`; loader workers
+// hand off completed uploads to the main thread via `LoadResult::uploaded_planes`, and
+// `HdrImageBinding::from_uploaded` runs on the main thread before any paint callback uses them.
+
+pub(crate) const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
+pub(crate) const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
+    std::time::Duration::from_millis(50);
+pub(crate) const HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+pub(crate) fn hdr_image_binding_is_eviction_candidate(
+    keep_resident: bool,
+    last_use: std::time::Instant,
+    now: std::time::Instant,
+) -> bool {
+    let age = now.duration_since(last_use);
+    age > HDR_IMAGE_BINDING_EVICTION_PROTECT
+        && (!keep_resident || age > HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER)
+}
+
+impl HdrImageBinding {
+    /// Build a resident binding from a completed background [`ImagePlaneUpload`].
+    ///
+    /// `target_format` is the swap-chain / callback target format — the same role as
+    /// `HdrImagePlaneCallback::target_format` on the synchronous `prepare()` cache-miss path.
+    /// `tone_map` and `output_mode` seed the uniform buffer; `prepare()` refreshes it each frame.
+    pub(crate) fn from_uploaded(
+        device: &wgpu::Device,
+        uploaded: ImagePlaneUpload,
+        image: &HdrImageBuffer,
+        tone_map: HdrToneMapSettings,
+        target_format: wgpu::TextureFormat,
+        output_mode: HdrRenderOutputMode,
+        device_id: u64,
+    ) -> Self {
+        let native_display_scale =
+            libavif_tone_map_native_display_scale(&image.metadata, image.color_space, &tone_map);
+        let uniform = image_tone_map_uniform(
+            image,
+            tone_map,
+            0,
+            1.0,
+            output_mode,
+            target_format,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            native_display_scale,
+            false,
+            None,
+        );
+        let tone_map_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let iso_deferred = iso_deferred_from_metadata(&image.metadata);
+        let jpeg_compose_uniform_buffer = if iso_deferred.is_some() {
+            Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),
+                size: 128,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }))
+        } else {
+            None
+        };
+
+        #[cfg(feature = "heif-native")]
+        let apple_deferred = apple_heic_deferred_from_metadata(&image.metadata);
+        #[cfg(feature = "heif-native")]
+        let (compose_tone_map_buffer, encoded_primary_buffer, encoded_primary_buffer_bytes) =
+            if apple_deferred.is_some() {
+                let compose_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),
+                    size: std::mem::size_of::<ToneMapUniform>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                (Some(compose_buf), None, 0)
+            } else {
+                (None, None, 0)
+            };
+
+        let (uploaded_texture, uploaded_view, uploaded_display_storage_view) = (
+            uploaded.base.texture,
+            uploaded.base.view,
+            uploaded.base.storage_view,
+        );
+        let (uploaded_gain_texture, uploaded_gain_view) = if let Some(gain) = uploaded.gain {
+            (Some(gain.texture), Some(gain.view))
+        } else {
+            (None, None)
+        };
+        let (uploaded_sdr_texture, uploaded_sdr_view) = if let Some(sdr) = uploaded.sdr_baseline {
+            (Some(sdr.texture), Some(sdr.view))
+        } else {
+            (None, None)
+        };
+        let (uploaded_raw_pixels_texture, uploaded_raw_pixels_view) =
+            if let Some(raw) = uploaded.raw_pixels {
+                (Some(raw.texture), Some(raw.view))
+            } else {
+                (None, None)
+            };
+        let (uploaded_raw_green_plane_write_view, uploaded_raw_green_plane_read_view) =
+            if let Some(green) = uploaded.raw_green_plane {
+                (green.storage_view, Some(green.view))
+            } else {
+                (None, None)
+            };
+
+        HdrImageBinding {
+            uploaded_texture,
+            uploaded_view,
+            uploaded_gain_texture,
+            uploaded_gain_view,
+            uploaded_sdr_texture,
+            uploaded_sdr_view,
+            uploaded_display_storage_view,
+            uploaded_raw_pixels_texture,
+            uploaded_raw_pixels_view,
+            uploaded_raw_green_plane_write_view,
+            uploaded_raw_green_plane_read_view,
+            baked_jpeg_image_key: None,
+            baked_jpeg_weight_bits: None,
+            baked_apple_image_key: None,
+            baked_apple_weight_bits: None,
+            baked_raw_demosaic_key: None,
+            baked_raw_demosaic_method: None,
+            tone_map_buffer,
+            jpeg_compose_uniform_buffer,
+            #[cfg(feature = "heif-native")]
+            compose_tone_map_buffer,
+            #[cfg(feature = "heif-native")]
+            encoded_primary_buffer,
+            #[cfg(feature = "heif-native")]
+            encoded_primary_buffer_bytes,
+            #[cfg(feature = "heif-native")]
+            // Pre-upload path matches sync prepare(): encoded primary is filled on first paint.
+            encoded_primary_source_ptr: None,
+            bind_group: None,
+            last_use: std::time::Instant::now(),
+            keep_resident: false,
+            device_id,
+        }
+    }
+}
+
+impl HdrCallbackResources {
+    /// Inserts a background pre-uploaded binding when its `device_id` matches the live epoch.
+    ///
+    /// Returns `false` when the binding is stale (e.g. `wgpu::Device` replaced after upload);
+    /// the binding is dropped so orphan VRAM is not registered against the new device.
+    pub(crate) fn register_preuploaded_binding(
+        &mut self,
+        image_key: HdrImageKey,
+        binding: HdrImageBinding,
+        expected_device_id: u64,
+    ) -> bool {
+        if binding.device_id != expected_device_id {
+            log::debug!(
+                "[HDR] Dropping stale pre-uploaded binding key={image_key:?}: \
+                 binding device_id={} live device_id={expected_device_id}",
+                binding.device_id
+            );
+            return false;
+        }
+        self.image_bindings.insert(image_key, binding);
+        self.evict_old_bindings();
+        true
+    }
+
+    pub(crate) fn raw_demosaic_baked_for(
+        &self,
+        image_key: HdrImageKey,
+        method: crate::settings::RawDemosaicMethod,
+    ) -> bool {
+        self.image_bindings.get(&image_key).is_some_and(|binding| {
+            binding.baked_raw_demosaic_key == Some(image_key)
+                && binding.baked_raw_demosaic_method == Some(method)
+        })
+    }
+
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
+    pub(crate) fn hdr_image_binding_present(&self, image_key: HdrImageKey) -> bool {
+        self.image_bindings.contains_key(&image_key)
+    }
+
+    pub(crate) fn evict_old_bindings(&mut self) {
+        while self.image_bindings.len() > MAX_HDR_IMAGE_PLANE_BINDINGS {
+            let now = std::time::Instant::now();
+            let Some(oldest_key) = self
+                .image_bindings
+                .iter()
+                .filter(|(_, binding)| {
+                    hdr_image_binding_is_eviction_candidate(
+                        binding.keep_resident,
+                        binding.last_use,
+                        now,
+                    )
+                })
+                .min_by_key(|(_, binding)| binding.last_use)
+                .map(|(&key, _)| key)
+            else {
+                break;
+            };
+            self.image_bindings.remove(&oldest_key);
+        }
+    }
 }
 
 pub(crate) const HDR_APPLE_GAIN_TEXTURE_FORMAT: wgpu::TextureFormat =

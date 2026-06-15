@@ -229,6 +229,7 @@ mod tests {
 
     #[test]
     fn unsupported_backend_stays_sdr_without_candidate_path() {
+        // On Wayland HDR-eligible Linux, Vulkan is a candidate path; skip this negative case.
         #[cfg(target_os = "linux")]
         if crate::hdr::platform::linux_native_hdr_platform_eligible() {
             return;
@@ -252,6 +253,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn vulkan_on_wayland_is_reported_as_candidate_not_enabled() {
+        // Requires Wayland + HDR-capable compositor; no-op on X11 or headless CI.
         if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
             return;
         }
@@ -285,6 +287,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn vulkan_with_rgb10a2_surface_enables_wayland_hdr_native_presentation() {
+        // Requires Wayland + HDR-capable compositor; no-op on X11 or headless CI.
         if !crate::hdr::platform::linux_native_hdr_platform_eligible() {
             return;
         }
@@ -343,8 +346,22 @@ pub fn detect_from_wgpu_state(state: Option<&eframe::egui_wgpu::RenderState>) ->
 }
 
 #[cfg(test)]
+/// Fixed SDR surface format for backend-only capability tests (no live wgpu surface).
 fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
     detect_from_backend_and_surface_format(backend, Some(wgpu::TextureFormat::Bgra8Unorm))
+}
+
+/// Whether the active wgpu backend can drive a native HDR swap-chain format on this OS.
+pub fn backend_supports_native_hdr_swapchain(backend: wgpu::Backend) -> bool {
+    match backend {
+        #[cfg(target_os = "windows")]
+        wgpu::Backend::Dx12 => true,
+        #[cfg(target_os = "macos")]
+        wgpu::Backend::Metal => true,
+        #[cfg(target_os = "linux")]
+        wgpu::Backend::Vulkan => crate::hdr::platform::linux_native_hdr_platform_eligible(),
+        _ => false,
+    }
 }
 
 pub fn detect_from_backend_and_surface_format(

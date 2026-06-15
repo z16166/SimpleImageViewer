@@ -21,9 +21,10 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::decode::load_image_file;
 use crate::loader::preview_caps::{REFINEMENT_POOL, finalize_raw_hq_hdr_buffer};
 use crate::loader::{
-    DecodedImage, HdrSdrFallbackResult, LoadResult, LoaderOutput, PreviewBundle, PreviewResult,
-    RefinementRequest, TileDecodeSource, TileResult, hdr_display_requests_sdr_preview,
-    hdr_sdr_fallback_rgba8_eager_or_placeholder, hq_preview_max_side, source_key_for_path,
+    DecodedImage, HdrSdrFallbackResult, ImageData, LoadResult, LoaderOutput, PreviewBundle,
+    PreviewResult, RefinementRequest, TileDecodeSource, TileResult,
+    hdr_display_requests_sdr_preview, hdr_sdr_fallback_rgba8_eager_or_placeholder,
+    hq_preview_max_side, source_key_for_path, static_hdr_background_plane_upload_eligible,
 };
 use crate::raw_processor::RawProcessor;
 use crossbeam_channel::{Receiver, Sender};
@@ -33,7 +34,7 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::time::Duration;
 
 impl ImageLoader {
@@ -95,6 +96,7 @@ impl ImageLoader {
             Arc::new(AtomicU32::new(default_tone.sdr_white_nits.to_bits()));
         let hdr_tone_max_display_nits_bits =
             Arc::new(AtomicU32::new(default_tone.max_display_nits.to_bits()));
+        let hdr_callback_upload_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let delayed_fallback = Arc::new((Mutex::new(None::<DelayedFallbackJob>), Condvar::new()));
         let raw_open_prefetch = Arc::new(super::raw_prefetch::RawOpenPrefetch::new());
@@ -163,6 +165,12 @@ impl ImageLoader {
                             job.hdr_target_capacity,
                             job.hdr_tone_map,
                             Arc::clone(&job.raw_open_prefetch),
+                            job.wgpu_device.clone(),
+                            job.wgpu_queue.clone(),
+                            job.wgpu_device_id_at_spawn,
+                            job.wgpu_is_opengl,
+                            Arc::clone(&job.wgpu_device_id_live),
+                            Arc::clone(&job.hdr_callback_upload_active_live),
                         );
                     }
                 });
@@ -568,7 +576,47 @@ impl ImageLoader {
             hdr_tone_exposure_ev_bits,
             hdr_tone_sdr_white_nits_bits,
             hdr_tone_max_display_nits_bits,
+            hdr_callback_upload_active,
+            wgpu_device: None,
+            wgpu_queue: None,
+            wgpu_device_id: Arc::new(AtomicU64::new(1)),
+            wgpu_is_opengl: false,
         }
+    }
+
+    fn apply_wgpu_context(
+        &mut self,
+        device: Option<wgpu::Device>,
+        queue: Option<wgpu::Queue>,
+        device_id: u64,
+    ) {
+        self.wgpu_is_opengl = device
+            .as_ref()
+            .is_some_and(|d| d.adapter_info().backend == wgpu::Backend::Gl);
+        self.wgpu_device = device;
+        self.wgpu_queue = queue;
+        self.wgpu_device_id
+            .store(device_id, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn with_wgpu(
+        mut self,
+        device: Option<wgpu::Device>,
+        queue: Option<wgpu::Queue>,
+        device_id: u64,
+    ) -> Self {
+        self.apply_wgpu_context(device, queue, device_id);
+        self
+    }
+
+    /// Updates worker GPU handles after a live `wgpu::Device` instance replacement.
+    pub fn set_wgpu_context(
+        &mut self,
+        device: Option<wgpu::Device>,
+        queue: Option<wgpu::Queue>,
+        device_id: u64,
+    ) {
+        self.apply_wgpu_context(device, queue, device_id);
     }
 
     pub fn prefetch_raw_open(&self, path: PathBuf) {
@@ -592,6 +640,11 @@ impl ImageLoader {
     pub fn set_hdr_target_capacity(&self, capacity: f32) {
         self.hdr_target_capacity_bits
             .store(capacity.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_hdr_callback_upload_active(&self, active: bool) {
+        self.hdr_callback_upload_active
+            .store(active, std::sync::atomic::Ordering::Release);
     }
 
     fn hdr_target_capacity(&self) -> f32 {
@@ -668,6 +721,14 @@ impl ImageLoader {
         let hdr_target_capacity = self.hdr_target_capacity();
         let hdr_tone_map = self.hdr_tone_map_settings_snapshot();
         let raw_open_prefetch = Arc::clone(&self.raw_open_prefetch);
+        let wgpu_device = self.wgpu_device.clone();
+        let wgpu_queue = self.wgpu_queue.clone();
+        let wgpu_device_id_at_spawn = self
+            .wgpu_device_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let wgpu_is_opengl = self.wgpu_is_opengl;
+        let wgpu_device_id_live = Arc::clone(&self.wgpu_device_id);
+        let hdr_callback_upload_active_live = Arc::clone(&self.hdr_callback_upload_active);
 
         if path_is_raw {
             crate::preload_debug!(
@@ -681,6 +742,10 @@ impl ImageLoader {
         }
 
         let raw_open_prefetch_spawn = Arc::clone(&raw_open_prefetch);
+        let wgpu_device_spawn = wgpu_device.clone();
+        let wgpu_queue_spawn = wgpu_queue.clone();
+        let wgpu_device_id_live_spawn = Arc::clone(&wgpu_device_id_live);
+        let hdr_callback_upload_active_live_spawn = Arc::clone(&hdr_callback_upload_active_live);
         self.pool.spawn(move || {
             {
                 let loading = loading1.lock();
@@ -712,6 +777,12 @@ impl ImageLoader {
                 hdr_target_capacity,
                 hdr_tone_map,
                 raw_open_prefetch_spawn,
+                wgpu_device_spawn,
+                wgpu_queue_spawn,
+                wgpu_device_id_at_spawn,
+                wgpu_is_opengl,
+                wgpu_device_id_live_spawn,
+                hdr_callback_upload_active_live_spawn,
             );
         });
 
@@ -731,6 +802,12 @@ impl ImageLoader {
             hdr_target_capacity,
             hdr_tone_map,
             raw_open_prefetch,
+            wgpu_device,
+            wgpu_queue,
+            wgpu_device_id_at_spawn,
+            wgpu_is_opengl,
+            wgpu_device_id_live,
+            hdr_callback_upload_active_live,
         };
         {
             let (lock, cvar) = &*self.delayed_fallback;
@@ -773,6 +850,12 @@ impl ImageLoader {
         hdr_target_capacity: f32,
         hdr_tone_map: HdrToneMapSettings,
         raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+        wgpu_device: Option<wgpu::Device>,
+        wgpu_queue: Option<wgpu::Queue>,
+        wgpu_device_id_at_spawn: u64,
+        wgpu_is_opengl: bool,
+        wgpu_device_id_live: Arc<AtomicU64>,
+        hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
     ) {
         // Adoption logic: We no longer abort if global_gen has changed.
         // As long as our index is still in the loading map, we continue.
@@ -820,6 +903,8 @@ impl ImageLoader {
                 sdr_fallback_is_placeholder: false,
                 target_hdr_capacity: hdr_target_capacity,
                 raw_osd: None,
+                uploaded_planes: None,
+                device_id: None,
             }
         });
 
@@ -855,6 +940,38 @@ impl ImageLoader {
         };
 
         load_result.generation = final_gen;
+
+        {
+            let loading = loading_ref.lock();
+            if !loading.contains_key(&index) {
+                return;
+            }
+        }
+
+        if !wgpu_is_opengl
+            && wgpu_device_id_at_spawn
+                == wgpu_device_id_live.load(std::sync::atomic::Ordering::Acquire)
+            && let (Some(device), Some(queue)) = (&wgpu_device, &wgpu_queue)
+            && let Ok(ImageData::Hdr { ref hdr, .. }) = load_result.result
+            && static_hdr_background_plane_upload_eligible(
+                hdr,
+                hdr_target_capacity,
+                hdr_callback_upload_active_live.load(std::sync::atomic::Ordering::Acquire),
+            )
+        {
+            match crate::hdr::renderer::upload_image_plane(device, queue, hdr) {
+                Ok(uploaded) => {
+                    load_result.uploaded_planes = Some(uploaded);
+                    load_result.device_id = Some(wgpu_device_id_at_spawn);
+                }
+                Err(err) => {
+                    log::debug!(
+                        "[Loader] Background HDR plane upload skipped for index={}: {err}",
+                        index
+                    );
+                }
+            }
+        }
 
         // Tiled HQ preview: only `Arc::clone` the source; `load_result` moves to the channel once
         // (avoids cloning full Static/Animated pixel buffers).

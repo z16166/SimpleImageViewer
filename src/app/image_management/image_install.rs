@@ -16,6 +16,17 @@
 
 use super::*;
 
+pub(super) const RAW_GPU_BOOTSTRAP_TEXTURE_PREFIX: &str = "img_raw_gpu_bootstrap_";
+pub(super) const HDR_SDR_FALLBACK_TEXTURE_PREFIX: &str = "img_hdr_fallback_";
+
+pub(super) fn raw_gpu_bootstrap_texture_name(idx: usize) -> String {
+    format!("{RAW_GPU_BOOTSTRAP_TEXTURE_PREFIX}{idx}")
+}
+
+pub(super) fn hdr_sdr_fallback_texture_name(idx: usize) -> String {
+    format!("{HDR_SDR_FALLBACK_TEXTURE_PREFIX}{idx}")
+}
+
 impl ImageViewerApp {
     pub(super) fn upload_static_sdr_texture(
         &mut self,
@@ -28,7 +39,7 @@ impl ImageViewerApp {
             [decoded.width as usize, decoded.height as usize],
             decoded.rgba(),
         );
-        let handle = ctx.load_texture(texture_name, color_image, TextureOptions::LINEAR);
+        let handle = ctx.load_texture(texture_name.clone(), color_image, TextureOptions::LINEAR);
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
@@ -42,6 +53,52 @@ impl ImageViewerApp {
         }
         // Preload may have queued pixels for this index; GPU upload makes them redundant.
         self.deferred_sdr_uploads.remove(&idx);
+    }
+
+    pub(super) fn upload_raw_gpu_bootstrap_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        self.upload_static_sdr_texture(idx, decoded, raw_gpu_bootstrap_texture_name(idx), ctx);
+        self.raw_gpu_embedded_bootstrap_indices.insert(idx);
+    }
+
+    pub(super) fn upload_hdr_sdr_fallback_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        self.upload_static_sdr_texture(idx, decoded, hdr_sdr_fallback_texture_name(idx), ctx);
+        self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
+    }
+
+    pub(super) fn queue_or_upload_raw_gpu_bootstrap_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index {
+            self.upload_raw_gpu_bootstrap_texture(idx, decoded, ctx);
+        } else {
+            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+        }
+    }
+
+    pub(super) fn queue_or_upload_hdr_sdr_fallback_texture(
+        &mut self,
+        idx: usize,
+        decoded: &DecodedImage,
+        ctx: &egui::Context,
+    ) {
+        if idx == self.current_index {
+            self.upload_hdr_sdr_fallback_texture(idx, decoded, ctx);
+        } else {
+            self.deferred_sdr_uploads.insert(idx, decoded.clone());
+        }
     }
 
     pub(super) fn queue_or_upload_static_sdr_texture(
@@ -84,12 +141,11 @@ impl ImageViewerApp {
             return;
         };
         let is_hdr_fallback = self.hdr_sdr_fallback_indices.contains(&index);
-        let texture_name = if is_hdr_fallback {
-            format!("img_hdr_fallback_{index}")
+        if is_hdr_fallback {
+            self.upload_hdr_sdr_fallback_texture(index, &decoded, ctx);
         } else {
-            format!("img_{index}")
-        };
-        self.upload_static_sdr_texture(index, &decoded, texture_name, ctx);
+            self.upload_static_sdr_texture(index, &decoded, format!("img_{index}"), ctx);
+        }
         if index == self.current_index {
             self.set_current_image_resolution(Some((decoded.width, decoded.height)));
         }
@@ -171,11 +227,18 @@ impl ImageViewerApp {
             } else {
                 Some((fallback.width, fallback.height))
             };
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] pending set idx={idx} key={key:?} bootstrap={bootstrap:?} cur={}",
+                idx == self.current_index
+            );
             self.raw_metadata.note_gpu_demosaic_pending(idx, bootstrap);
         } else {
             self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
             self.hdr_raw_gpu_demosaic_pending_key_index
                 .retain(|_, pending_idx| *pending_idx != idx);
+            if crate::loader::raw_gpu_source_has_bootstrap_preview(hdr.as_ref()) {
+                self.on_raw_hdr_plane_ready(idx);
+            }
         }
         if gpu_demosaic_pending && self.texture_cache.contains(idx) {
             self.texture_cache
@@ -195,10 +258,9 @@ impl ImageViewerApp {
             if defer_sdr_upload && idx != self.current_index {
                 self.deferred_sdr_uploads.insert(idx, fallback.clone());
             } else {
-                self.queue_or_upload_static_sdr_texture(
+                self.queue_or_upload_hdr_sdr_fallback_texture(
                     idx,
                     fallback,
-                    format!("img_hdr_fallback_{idx}"),
                     ctx,
                 );
             }
@@ -268,12 +330,7 @@ impl ImageViewerApp {
             self.deferred_sdr_uploads.insert(idx, fallback_image);
             return;
         }
-        self.queue_or_upload_static_sdr_texture(
-            idx,
-            &fallback_image,
-            format!("img_hdr_fallback_{idx}"),
-            ctx,
-        );
+        self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
     }
 
     #[allow(clippy::too_many_arguments)]

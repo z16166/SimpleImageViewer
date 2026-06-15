@@ -18,23 +18,6 @@ use super::*;
 
 /// GPU bindings for static HDR image planes (AVIF/JXL ISO gain-map, etc.).
 /// Page-flip transitions need prev + current + several preloaded neighbors resident at once.
-const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
-/// Do not evict bindings touched within this window (covers one transition frame).
-const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
-    std::time::Duration::from_millis(50);
-/// A keep-resident binding that has not been prepared again by this point is no longer on screen.
-const HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER: std::time::Duration =
-    std::time::Duration::from_millis(100);
-
-pub(super) fn hdr_image_binding_is_eviction_candidate(
-    keep_resident: bool,
-    last_use: std::time::Instant,
-    now: std::time::Instant,
-) -> bool {
-    let age = now.duration_since(last_use);
-    age > HDR_IMAGE_BINDING_EVICTION_PROTECT
-        && (!keep_resident || age > HDR_IMAGE_BINDING_KEEP_RESIDENT_ABANDONED_AFTER)
-}
 
 pub(crate) struct HdrImagePlaneCallback {
     pub(super) image: Arc<HdrImageBuffer>,
@@ -105,121 +88,18 @@ impl CallbackTrait for HdrImagePlaneCallback {
         };
 
         if binding_missing {
+            log::debug!("[HDR] Cache miss, performing synchronous upload on main thread");
             match upload_image_plane(device, queue, &self.image) {
                 Ok(uploaded) => {
-                    let tone_map_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("simple-image-viewer-hdr-image-plane-tone-map-buffer"),
-                            contents: bytemuck::bytes_of(&ToneMapUniform::from_settings(
-                                HdrToneMapSettings::default(),
-                                0,
-                                1.0,
-                                HdrRenderOutputMode::SdrToneMapped,
-                                self.target_format,
-                                HdrColorSpace::LinearSrgb,
-                                HdrTransferFunction::Linear,
-                                HdrReference::Unknown,
-                                egui::Rect::from_min_max(
-                                    egui::Pos2::ZERO,
-                                    egui::Pos2::new(1.0, 1.0),
-                                ),
-                                1.0,
-                                None,
-                                None,
-                            )),
-                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                        });
-
-                    let jpeg_compose_uniform_buffer = if iso_deferred.is_some() {
-                        Some(device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("simple-image-viewer-hdr-jpeg-compose-uniform-buffer"),
-                            size: 128,
-                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        }))
-                    } else {
-                        None
-                    };
-
-                    #[cfg(feature = "heif-native")]
-                    let (
-                        compose_tone_map_buffer,
-                        encoded_primary_buffer,
-                        encoded_primary_buffer_bytes,
-                    ) = if apple_deferred.is_some() {
-                        let compose_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("simple-image-viewer-hdr-apple-compose-tone-map-buffer"),
-                            size: std::mem::size_of::<ToneMapUniform>() as u64,
-                            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        });
-                        (Some(compose_buf), None, 0)
-                    } else {
-                        (None, None, 0)
-                    };
-
-                    let (uploaded_texture, uploaded_view, uploaded_display_storage_view) = (
-                        uploaded.base.texture,
-                        uploaded.base.view,
-                        uploaded.base.storage_view,
+                    let binding = HdrImageBinding::from_uploaded(
+                        device,
+                        uploaded,
+                        &self.image,
+                        self.tone_map,
+                        self.target_format,
+                        self.output_mode,
+                        0,
                     );
-                    let (uploaded_gain_texture, uploaded_gain_view) =
-                        if let Some(gain) = uploaded.gain {
-                            (Some(gain.texture), Some(gain.view))
-                        } else {
-                            (None, None)
-                        };
-                    let (uploaded_sdr_texture, uploaded_sdr_view) =
-                        if let Some(sdr) = uploaded.sdr_baseline {
-                            (Some(sdr.texture), Some(sdr.view))
-                        } else {
-                            (None, None)
-                        };
-                    let (uploaded_raw_pixels_texture, uploaded_raw_pixels_view) =
-                        if let Some(raw) = uploaded.raw_pixels {
-                            (Some(raw.texture), Some(raw.view))
-                        } else {
-                            (None, None)
-                        };
-                    let (uploaded_raw_green_plane_write_view, uploaded_raw_green_plane_read_view) =
-                        if let Some(green) = uploaded.raw_green_plane {
-                            (green.storage_view, Some(green.view))
-                        } else {
-                            (None, None)
-                        };
-
-                    let binding = HdrImageBinding {
-                        uploaded_texture,
-                        uploaded_view,
-                        uploaded_gain_texture,
-                        uploaded_gain_view,
-                        uploaded_sdr_texture,
-                        uploaded_sdr_view,
-                        uploaded_display_storage_view,
-                        uploaded_raw_pixels_texture,
-                        uploaded_raw_pixels_view,
-                        uploaded_raw_green_plane_write_view,
-                        uploaded_raw_green_plane_read_view,
-                        baked_jpeg_image_key: None,
-                        baked_jpeg_weight_bits: None,
-                        baked_apple_image_key: None,
-                        baked_apple_weight_bits: None,
-                        baked_raw_demosaic_key: None,
-                        baked_raw_demosaic_method: None,
-                        tone_map_buffer,
-                        jpeg_compose_uniform_buffer,
-                        #[cfg(feature = "heif-native")]
-                        compose_tone_map_buffer,
-                        #[cfg(feature = "heif-native")]
-                        encoded_primary_buffer,
-                        #[cfg(feature = "heif-native")]
-                        encoded_primary_buffer_bytes,
-                        #[cfg(feature = "heif-native")]
-                        encoded_primary_source_ptr: None,
-                        bind_group: None,
-                        last_use: std::time::Instant::now(),
-                        keep_resident: false,
-                    };
                     resources.image_bindings.insert(image_key, binding);
                 }
                 Err(err) => {
@@ -328,6 +208,9 @@ impl CallbackTrait for HdrImagePlaneCallback {
                             demosaic_ms,
                         });
                     }
+                    crate::preload_debug!(
+                        "[PreloadDebug][RAW-GPU] demosaic notice queued key={image_key:?} ms={demosaic_ms}"
+                    );
                     #[cfg(feature = "preload-debug")]
                     {
                         crate::preload_debug!(
@@ -594,27 +477,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
             ));
         }
 
-        while resources.image_bindings.len() > MAX_HDR_IMAGE_PLANE_BINDINGS {
-            let now = std::time::Instant::now();
-            let Some(oldest_key) = resources
-                .image_bindings
-                .iter()
-                .filter(|(_, binding)| {
-                    hdr_image_binding_is_eviction_candidate(
-                        binding.keep_resident,
-                        binding.last_use,
-                        now,
-                    )
-                })
-                .min_by_key(|(_, binding)| binding.last_use)
-                .map(|(&key, _)| key)
-            else {
-                // Every binding was used this frame (typical during page-flip); allow a
-                // temporary overflow rather than evicting prev/current mid-transition.
-                break;
-            };
-            resources.image_bindings.remove(&oldest_key);
-        }
+        resources.evict_old_bindings();
 
         compose_command_buffers
     }
