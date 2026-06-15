@@ -584,24 +584,7 @@ impl ImageLoader {
         }
     }
 
-    pub fn with_wgpu(
-        mut self,
-        device: Option<wgpu::Device>,
-        queue: Option<wgpu::Queue>,
-        device_id: u64,
-    ) -> Self {
-        self.wgpu_is_opengl = device
-            .as_ref()
-            .is_some_and(|d| d.adapter_info().backend == wgpu::Backend::Gl);
-        self.wgpu_device = device;
-        self.wgpu_queue = queue;
-        self.wgpu_device_id
-            .store(device_id, std::sync::atomic::Ordering::Release);
-        self
-    }
-
-    /// Updates worker GPU handles after a live `wgpu::Device` instance replacement.
-    pub fn set_wgpu_context(
+    fn apply_wgpu_context(
         &mut self,
         device: Option<wgpu::Device>,
         queue: Option<wgpu::Queue>,
@@ -614,6 +597,26 @@ impl ImageLoader {
         self.wgpu_queue = queue;
         self.wgpu_device_id
             .store(device_id, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn with_wgpu(
+        mut self,
+        device: Option<wgpu::Device>,
+        queue: Option<wgpu::Queue>,
+        device_id: u64,
+    ) -> Self {
+        self.apply_wgpu_context(device, queue, device_id);
+        self
+    }
+
+    /// Updates worker GPU handles after a live `wgpu::Device` instance replacement.
+    pub fn set_wgpu_context(
+        &mut self,
+        device: Option<wgpu::Device>,
+        queue: Option<wgpu::Queue>,
+        device_id: u64,
+    ) {
+        self.apply_wgpu_context(device, queue, device_id);
     }
 
     pub fn prefetch_raw_open(&self, path: PathBuf) {
@@ -902,7 +905,6 @@ impl ImageLoader {
                 raw_osd: None,
                 uploaded_planes: None,
                 device_id: None,
-                register_repush_count: 0,
             }
         });
 

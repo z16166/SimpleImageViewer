@@ -181,7 +181,7 @@ impl ImageViewerApp {
                     if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
                         self.loader.repush(LoaderOutput::Image(load_result));
                         ctx.request_repaint();
-                        continue;
+                        break;
                     }
 
                     if should_yield_background_result_for_pending_transition(
@@ -696,8 +696,9 @@ impl ImageViewerApp {
     }
 
     // Runs on the main thread during the update/event phase (`process_loaded_images`),
-    // which completes before egui's paint phase. Prewarm readiness uses a brief write lock;
-    // `from_uploaded` runs outside the lock so uniform buffer allocation does not block paint.
+    // which completes before egui's paint phase. Prewarm readiness uses a read lock on the
+    // steady path; `from_uploaded` runs outside the lock so uniform buffer allocation does
+    // not block paint.
     fn try_register_preuploaded_hdr_plane(
         &mut self,
         frame: &mut Option<&mut eframe::Frame>,
@@ -708,47 +709,58 @@ impl ImageViewerApp {
         }
 
         if load_result.device_id != Some(self.current_device_id) {
-            load_result.uploaded_planes = None;
-            return true;
+            return abandon_preuploaded_planes(load_result);
         }
 
         let Ok(ImageData::Hdr { ref hdr, .. }) = load_result.result else {
-            load_result.uploaded_planes = None;
-            return true;
+            return abandon_preuploaded_planes(load_result);
         };
 
         let Some(frame) = frame.as_mut() else {
-            load_result.uploaded_planes = None;
-            return true;
+            return abandon_preuploaded_planes(load_result);
         };
         let Some(wgpu_state) = frame.wgpu_render_state() else {
-            load_result.uploaded_planes = None;
-            return true;
+            return abandon_preuploaded_planes(load_result);
         };
         let Some(format) = self.hdr_callback_prewarm_target_format() else {
-            load_result.uploaded_planes = None;
-            return true;
+            return abandon_preuploaded_planes(load_result);
         };
 
         let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
-        let prewarm_ready = {
+        let readiness = {
+            let renderer = wgpu_state.renderer.read();
+            crate::hdr::renderer::hdr_callback_resources_readiness(
+                &renderer.callback_resources,
+                format,
+            )
+        };
+        if matches!(
+            readiness,
+            crate::hdr::renderer::HdrCallbackResourcesReadiness::PrewarmRunning
+        ) {
+            return self.finish_or_defer_hdr_preupload_registration(load_result);
+        }
+
+        if matches!(
+            readiness,
+            crate::hdr::renderer::HdrCallbackResourcesReadiness::NeedsEnsure
+        ) {
             let mut renderer = wgpu_state.renderer.write();
-            crate::hdr::renderer::ensure_hdr_callback_resources(
+            if !crate::hdr::renderer::ensure_hdr_callback_resources(
                 &wgpu_state.device,
                 format,
                 &mut renderer.callback_resources,
-            )
-        };
-        if !prewarm_ready {
-            load_result.register_repush_count = load_result.register_repush_count.saturating_add(1);
-            if load_result.register_repush_count >= MAX_HDR_REGISTER_PREWARM_REPUSH {
-                // Safety valve: abandon pre-uploaded planes after ~500 ms of stalled prewarm
-                // and let `prepare()` bind synchronously. Dropping here avoids orphan VRAM if
-                // shader compilation never completes; `prepare()` will re-upload on cache miss.
-                load_result.uploaded_planes = None;
-                return true;
+            ) {
+                return self.finish_or_defer_hdr_preupload_registration(load_result);
             }
-            return false;
+        }
+
+        let upload_device_id = match load_result.device_id {
+            Some(id) => id,
+            None => return abandon_preuploaded_planes(load_result),
+        };
+        if upload_device_id != self.current_device_id {
+            return abandon_preuploaded_planes(load_result);
         }
 
         let Some(uploaded) = load_result.uploaded_planes.take() else {
@@ -766,15 +778,50 @@ impl ImageViewerApp {
             tone_map,
             format,
             output_mode,
+            upload_device_id,
         );
         let mut renderer = wgpu_state.renderer.write();
         if let Some(resources) = renderer
             .callback_resources
             .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
         {
-            resources.register_preuploaded_binding(image_key, binding);
+            if !resources.register_preuploaded_binding(
+                image_key,
+                binding,
+                self.current_device_id,
+            ) {
+                // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
+            }
         }
 
+        self.hdr_register_prewarm_repush_counts
+            .remove(&(load_result.index, load_result.generation));
         true
     }
+
+    fn finish_or_defer_hdr_preupload_registration(
+        &mut self,
+        load_result: &mut LoadResult,
+    ) -> bool {
+        let key = (load_result.index, load_result.generation);
+        let count = self
+            .hdr_register_prewarm_repush_counts
+            .entry(key)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+        if *count >= MAX_HDR_REGISTER_PREWARM_REPUSH {
+            // Safety valve: abandon pre-uploaded planes after ~500 ms of stalled prewarm
+            // and let `prepare()` bind synchronously. Dropping here avoids orphan VRAM if
+            // shader compilation never completes; `prepare()` will re-upload on cache miss.
+            self.hdr_register_prewarm_repush_counts.remove(&key);
+            load_result.uploaded_planes = None;
+            return true;
+        }
+        false
+    }
+}
+
+fn abandon_preuploaded_planes(load_result: &mut LoadResult) -> bool {
+    load_result.uploaded_planes = None;
+    true
 }

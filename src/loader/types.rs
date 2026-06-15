@@ -431,11 +431,12 @@ pub struct LoadResult {
     /// RAW-only OSD metadata (embedded preview, sensor grid, active pixel source).
     pub raw_osd: Option<RawOsdInfo>,
     /// GPU textures uploaded on a background loader thread (static HDR plane only).
+    ///
+    /// `ImagePlaneUpload` contains `Send` wgpu handles; the loader worker fills this field and
+    /// the main thread consumes it in `try_register_preuploaded_hdr_plane` before paint callbacks run.
     pub uploaded_planes: Option<crate::hdr::renderer::ImagePlaneUpload>,
     /// [`ImageViewerApp::current_device_id`] under which `uploaded_planes` was created.
     pub device_id: Option<u64>,
-    /// Frames spent waiting for HDR callback prewarm before registration is abandoned.
-    pub register_repush_count: u8,
 }
 
 impl Clone for LoadResult {
@@ -458,7 +459,6 @@ impl Clone for LoadResult {
             raw_osd: self.raw_osd.clone(),
             uploaded_planes: None,
             device_id: self.device_id,
-            register_repush_count: self.register_repush_count,
         }
     }
 }

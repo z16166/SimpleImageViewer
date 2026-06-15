@@ -411,6 +411,8 @@ pub fn run() -> eframe::Result {
             settings.hdr_native_surface_enabled_effective(),
             #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
             windows_wgpu_force_dx12,
+            #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+            false,
         );
 
     #[cfg(feature = "startup-timing")]

@@ -98,6 +98,7 @@ impl CallbackTrait for HdrImagePlaneCallback {
                         self.tone_map,
                         self.target_format,
                         self.output_mode,
+                        0,
                     );
                     resources.image_bindings.insert(image_key, binding);
                 }

@@ -400,6 +400,8 @@ pub struct ImageViewerApp {
     /// Indices whose `texture_cache` entry is the embedded RAW preview (`img_raw_gpu_bootstrap_*`),
     /// not the tone-mapped HDR fallback texture (`img_hdr_fallback_*`).
     pub(crate) raw_gpu_embedded_bootstrap_indices: HashSet<usize>,
+    /// Frames spent waiting for HDR callback prewarm before pre-upload registration is abandoned.
+    pub(crate) hdr_register_prewarm_repush_counts: HashMap<(usize, u64), u8>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,

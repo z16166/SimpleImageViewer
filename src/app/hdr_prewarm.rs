@@ -41,6 +41,9 @@ impl ImageViewerApp {
         let Some(state) = frame.wgpu_render_state() else {
             return;
         };
+        if self.loader_wgpu_device.as_ref() == Some(&state.device) {
+            return;
+        }
         self.sync_loader_wgpu_context(state.device.clone(), state.queue.clone());
     }
 

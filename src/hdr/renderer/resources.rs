@@ -57,6 +57,8 @@ pub(crate) struct HdrImageBinding {
     pub(super) bind_group: Option<wgpu::BindGroup>,
     pub(super) last_use: std::time::Instant,
     pub(super) keep_resident: bool,
+    /// [`ImageViewerApp::current_device_id`] epoch when GPU resources were created.
+    pub(super) device_id: u64,
 }
 
 pub(crate) struct HdrCallbackResources {
@@ -128,6 +130,10 @@ pub(crate) struct ImagePlaneUpload {
     pub(super) raw_green_plane: Option<CallbackUpload>,
 }
 
+// `wgpu::Texture`, `wgpu::TextureView`, and `wgpu::Buffer` are `Send`; loader workers
+// hand off completed uploads to the main thread via `LoadResult::uploaded_planes`, and
+// `HdrImageBinding::from_uploaded` runs on the main thread before any paint callback uses them.
+
 pub(crate) const MAX_HDR_IMAGE_PLANE_BINDINGS: usize = 8;
 pub(crate) const HDR_IMAGE_BINDING_EVICTION_PROTECT: std::time::Duration =
     std::time::Duration::from_millis(50);
@@ -157,6 +163,7 @@ impl HdrImageBinding {
         tone_map: HdrToneMapSettings,
         target_format: wgpu::TextureFormat,
         output_mode: HdrRenderOutputMode,
+        device_id: u64,
     ) -> Self {
         let native_display_scale =
             libavif_tone_map_native_display_scale(&image.metadata, image.color_space, &tone_map);
@@ -266,18 +273,33 @@ impl HdrImageBinding {
             bind_group: None,
             last_use: std::time::Instant::now(),
             keep_resident: false,
+            device_id,
         }
     }
 }
 
 impl HdrCallbackResources {
+    /// Inserts a background pre-uploaded binding when its `device_id` matches the live epoch.
+    ///
+    /// Returns `false` when the binding is stale (e.g. `wgpu::Device` replaced after upload);
+    /// the binding is dropped so orphan VRAM is not registered against the new device.
     pub(crate) fn register_preuploaded_binding(
         &mut self,
         image_key: HdrImageKey,
         binding: HdrImageBinding,
-    ) {
+        expected_device_id: u64,
+    ) -> bool {
+        if binding.device_id != expected_device_id {
+            log::debug!(
+                "[HDR] Dropping stale pre-uploaded binding key={image_key:?}: \
+                 binding device_id={} live device_id={expected_device_id}",
+                binding.device_id
+            );
+            return false;
+        }
         self.image_bindings.insert(image_key, binding);
         self.evict_old_bindings();
+        true
     }
 
     pub(crate) fn raw_demosaic_baked_for(
@@ -291,6 +313,7 @@ impl HdrCallbackResources {
         })
     }
 
+    #[cfg_attr(not(feature = "preload-debug"), allow(dead_code))]
     pub(crate) fn hdr_image_binding_present(&self, image_key: HdrImageKey) -> bool {
         self.image_bindings.contains_key(&image_key)
     }

@@ -386,14 +386,14 @@ impl ImageViewerApp {
         let Some(wgpu_state) = frame.wgpu_render_state() else {
             return;
         };
-        let pending: Vec<usize> = self
-            .hdr_raw_gpu_demosaic_pending_indices
-            .iter()
-            .copied()
-            .collect();
-        if pending.is_empty() {
+        let pending: Vec<usize> = if self.hdr_raw_gpu_demosaic_pending_indices.is_empty() {
             return;
-        }
+        } else {
+            self.hdr_raw_gpu_demosaic_pending_indices
+                .iter()
+                .copied()
+                .collect()
+        };
         let baked_indices: Vec<usize> = {
             let renderer = wgpu_state.renderer.read();
             let Some(resources) = renderer
@@ -414,18 +414,24 @@ impl ImageViewerApp {
                     continue;
                 };
                 let key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
-                #[cfg_attr(not(feature = "preload-debug"), allow(unused_variables))]
-                let binding_present = resources.hdr_image_binding_present(key);
                 let is_baked = resources.raw_demosaic_baked_for(key, source.demosaic_method);
                 if is_baked {
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] refresh cleared pending idx={idx} binding_present={binding_present}"
-                    );
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        let binding_present = resources.hdr_image_binding_present(key);
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW-GPU] refresh cleared pending idx={idx} binding_present={binding_present}"
+                        );
+                    }
                     baked.push(idx);
                 } else if idx == self.current_index {
-                    crate::preload_debug!(
-                        "[PreloadDebug][RAW-GPU] refresh pending idx={idx} cur: binding_present={binding_present} baked=false key={key:?}"
-                    );
+                    #[cfg(feature = "preload-debug")]
+                    {
+                        let binding_present = resources.hdr_image_binding_present(key);
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW-GPU] refresh pending idx={idx} cur: binding_present={binding_present} baked=false key={key:?}"
+                        );
+                    }
                 }
             }
             baked

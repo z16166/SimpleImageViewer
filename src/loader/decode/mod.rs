@@ -441,7 +441,6 @@ pub(crate) fn load_image_file(
         raw_osd: raw_osd_info,
         uploaded_planes: None,
         device_id: None,
-        register_repush_count: 0,
     }
 }
 fn is_hdr_capacity_sensitive_load(path: &Path, result: &Result<ImageData, String>) -> bool {

@@ -1209,7 +1209,6 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         raw_osd: None,
         uploaded_planes: None,
         device_id: None,
-        register_repush_count: 0,
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
     assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
@@ -1239,7 +1238,6 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         raw_osd: Some(crate::loader::RawOsdInfo::empty()),
         uploaded_planes: None,
         device_id: None,
-        register_repush_count: 0,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 3.786));
 }
@@ -1268,7 +1266,6 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         raw_osd: None,
         uploaded_planes: None,
         device_id: None,
-        register_repush_count: 0,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
 }
@@ -1477,6 +1474,7 @@ fn make_test_app() -> ImageViewerApp {
         gpu_demosaic_failed_indices: HashSet::new(),
         raw_gpu_demosaic_await_hdr_present: false,
         raw_gpu_embedded_bootstrap_indices: HashSet::new(),
+        hdr_register_prewarm_repush_counts: HashMap::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
@@ -1969,7 +1967,6 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             raw_osd: None,
             uploaded_planes: None,
             device_id: None,
-            register_repush_count: 0,
         }));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0, app.generation));
@@ -2037,7 +2034,6 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             raw_osd: None,
             uploaded_planes: Some(uploaded),
             device_id: Some(999),
-            register_repush_count: 0,
         }));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0, app.generation));
@@ -2080,7 +2076,6 @@ fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
             raw_osd: None,
             uploaded_planes: Some(uploaded),
             device_id: Some(app.current_device_id),
-            register_repush_count: 0,
         }));
     app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0, app.generation));
@@ -2328,10 +2323,9 @@ fn raw_hdr_plane_ready_releases_embedded_bootstrap_not_fallback_slot() {
     app.hdr_sdr_fallback_indices.insert(0);
     app.raw_gpu_embedded_bootstrap_indices.insert(0);
     let ctx = egui::Context::default();
-    app.upload_static_sdr_texture(
+    app.upload_raw_gpu_bootstrap_texture(
         0,
         &crate::loader::DecodedImage::new(1, 1, vec![9, 9, 9, 255]),
-        "img_raw_gpu_bootstrap_0".to_string(),
         &ctx,
     );
     assert!(app.texture_cache.contains(0));

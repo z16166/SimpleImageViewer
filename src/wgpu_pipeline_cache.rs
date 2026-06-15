@@ -47,6 +47,9 @@ fn driver_cache_hash(info: &wgpu::AdapterInfo) -> u64 {
 }
 
 fn stable_hash_bytes(bytes: &[u8], seed: u64) -> u64 {
+    // FNV-1a 64-bit: fast, not collision-free. A driver-string hash collision would reuse
+    // the wrong on-disk pipeline cache after a driver upgrade; worst case is bad rendering
+    // until the user clears the cache directory (see `cache_path`).
     let mut hash = seed;
     for byte in bytes {
         hash ^= u64::from(*byte);

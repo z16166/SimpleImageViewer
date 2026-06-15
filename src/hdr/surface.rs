@@ -77,7 +77,7 @@ pub fn preferred_native_hdr_target_format_for_settings(
 /// `force_dx12=true`. Vulkan/GL/ANGLE never receive float swap-chain requests.
 pub fn effective_native_hdr_swapchain_request_at_startup(
     settings_native_surface_enabled: bool,
-    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))] windows_wgpu_force_dx12: bool,
+    #[cfg(target_os = "windows")] windows_wgpu_force_dx12: bool,
 ) -> bool {
     if !settings_native_surface_enabled {
         return false;
@@ -88,6 +88,7 @@ pub fn effective_native_hdr_swapchain_request_at_startup(
     }
     #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
     {
+        let _windows_wgpu_force_dx12 = windows_wgpu_force_dx12;
         return false;
     }
     #[cfg(not(target_os = "windows"))]
@@ -650,7 +651,7 @@ mod tests {
     #[test]
     fn legacy_windows_startup_never_requests_hdr_swapchain() {
         assert!(!super::effective_native_hdr_swapchain_request_at_startup(
-            true
+            true, true
         ));
     }
 

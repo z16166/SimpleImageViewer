@@ -281,10 +281,9 @@ impl ImageViewerApp {
         if self.texture_cache.contains(idx) && !self.texture_cache.is_preview_placeholder(idx) {
             return;
         }
-        self.queue_or_upload_static_sdr_texture(
+        self.queue_or_upload_raw_gpu_bootstrap_texture(
             idx,
             preview,
-            format!("img_raw_gpu_bootstrap_{idx}"),
             ctx,
         );
         if idx == self.current_index {
