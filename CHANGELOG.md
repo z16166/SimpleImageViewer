@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.1] - 2026-06-15
+
+### Improved
+- **HQ RAW browsing on HDR displays**: Neighbor images preload more reliably after your monitor reports its HDR brightness range, and the embedded bootstrap preview stays visible while the full HDR plane finishes loading.
+- **RAW status line accuracy**: The bottom-left RAW overlay now keeps demosaic timing and processing details when preview and full-quality data arrive in different order.
+
+### Fixed
+- **macOS startup stability**: Fixed a crash that could occur on launch when GPU-accelerated rendering initializes on Apple Silicon and Intel Macs.
+- **Quit while decoding RAW**: Closing the app during an active high-quality RAW load is safer on Linux and macOS, avoiding rare shutdown crashes.
+- **Arch Linux builds**: Restored compatibility for community packaging on Arch Linux.
+
 ## [2.6.0] - 2026-06-14
 
 ### Added
