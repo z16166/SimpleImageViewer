@@ -266,7 +266,10 @@ impl ImageViewerApp {
             let pipeline_cache =
                 crate::wgpu_pipeline_cache::create_pipeline_cache(&state.device, &state.adapter);
             if let Some(format) = crate::hdr::renderer::predicted_hdr_callback_target_format(
-                settings.hdr_native_surface_enabled_effective(),
+                crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+                    settings.hdr_native_surface_enabled_effective(),
+                    Some(adapter_info.backend),
+                ),
                 initial_hdr_monitor_selection
                     .as_ref()
                     .is_some_and(|selection| selection.hdr_supported),

@@ -347,6 +347,14 @@ fn detect_from_backend(backend: wgpu::Backend) -> HdrCapabilities {
     detect_from_backend_and_surface_format(backend, Some(wgpu::TextureFormat::Bgra8Unorm))
 }
 
+/// Whether the active wgpu backend can drive a native HDR swap-chain format on this OS.
+pub fn backend_supports_native_hdr_swapchain(backend: wgpu::Backend) -> bool {
+    matches!(
+        detect_from_backend_and_surface_format(backend, None).candidate_platform_path,
+        Some(_)
+    )
+}
+
 pub fn detect_from_backend_and_surface_format(
     backend: wgpu::Backend,
     current_surface_format: Option<wgpu::TextureFormat>,

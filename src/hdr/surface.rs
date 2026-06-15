@@ -71,6 +71,52 @@ pub fn preferred_native_hdr_target_format_for_settings(
     }
 }
 
+/// Whether startup may request a float native HDR swap-chain (`preferred_target_format`).
+///
+/// On Windows (non-legacy build), this requires the DX12 pre-probe to have committed
+/// `force_dx12=true`. Vulkan/GL/ANGLE never receive float swap-chain requests.
+pub fn effective_native_hdr_swapchain_request_at_startup(
+    settings_native_surface_enabled: bool,
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))] windows_wgpu_force_dx12: bool,
+) -> bool {
+    if !settings_native_surface_enabled {
+        return false;
+    }
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    {
+        return windows_wgpu_force_dx12;
+    }
+    #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+    {
+        return false;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
+/// Runtime gate for float HDR swap-chain hot-swaps (after the wgpu adapter is known).
+pub fn native_hdr_swapchain_requests_enabled(
+    settings_native_surface_enabled: bool,
+    backend: Option<wgpu::Backend>,
+) -> bool {
+    if !settings_native_surface_enabled {
+        return false;
+    }
+    backend.is_some_and(crate::hdr::capabilities::backend_supports_native_hdr_swapchain)
+}
+
+/// Whether the live swap-chain is actively driving native HDR presentation.
+pub fn native_hdr_swapchain_active(
+    settings_native_surface_enabled: bool,
+    backend: Option<wgpu::Backend>,
+    target_format: Option<wgpu::TextureFormat>,
+) -> bool {
+    native_hdr_swapchain_requests_enabled(settings_native_surface_enabled, backend)
+        && is_native_hdr_surface_format(target_format)
+}
+
 /// Outcome of checking the *spawn monitor* (cursor / primary) for HDR support
 /// before window creation.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,14 +163,6 @@ pub enum HdrEnvironmentProbe {
 /// lands on whichever monitor that point falls inside, ignoring the cursor —
 /// so a window that closed on the HDR monitor reopens with HDR even if the
 /// user moved the cursor to the SDR monitor before launching.
-/// Seed [`crate::hdr::monitor::HdrMonitorState`] so the first frames after startup use the same
-/// HDR/SDR output decision as the pre-window DXGI spawn probe.
-///
-/// Without this, `hdr_monitor_state.selection` stays `None` until the first per-frame
-/// `active_monitor_hdr_status` succeeds; [`crate::hdr::monitor::effective_capability_output_mode`]
-/// treats a missing selection as fail-closed `SdrToneMapped`, which **overwrites**
-/// `hdr_capabilities.output_mode` every frame and forces the SDR tone-mapped renderer even when
-/// `preferred_target_format` is already `Rgba16Float` from a successful `SpawnMonitorHdr` probe.
 pub fn initial_monitor_selection_from_environment_probe(
     probe: &HdrEnvironmentProbe,
 ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {
@@ -592,5 +630,51 @@ mod tests {
                 "without spawn-time HDR/SDR classification, never prefer float — SDR panels must match main's Bgra8 path until runtime probe upgrades"
             );
         }
+    }
+
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    #[test]
+    fn windows_startup_swapchain_gate_requires_dx12_preprobe() {
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(true, false));
+        assert!(super::effective_native_hdr_swapchain_request_at_startup(true, true));
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(false, true));
+    }
+
+    #[cfg(all(target_os = "windows", feature = "legacy_win7"))]
+    #[test]
+    fn legacy_windows_startup_never_requests_hdr_swapchain() {
+        assert!(!super::effective_native_hdr_swapchain_request_at_startup(true));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn runtime_swapchain_gate_rejects_non_dx12_backends_on_windows() {
+        assert!(!super::native_hdr_swapchain_requests_enabled(
+            true,
+            Some(wgpu::Backend::Vulkan),
+        ));
+        assert!(!super::native_hdr_swapchain_requests_enabled(
+            true,
+            Some(wgpu::Backend::Gl),
+        ));
+        assert!(super::native_hdr_swapchain_requests_enabled(
+            true,
+            Some(wgpu::Backend::Dx12),
+        ));
+    }
+
+    #[test]
+    fn native_hdr_swapchain_active_requires_float_format_and_capable_backend() {
+        assert!(!super::native_hdr_swapchain_active(
+            true,
+            Some(wgpu::Backend::Dx12),
+            Some(wgpu::TextureFormat::Bgra8Unorm),
+        ));
+        #[cfg(target_os = "windows")]
+        assert!(super::native_hdr_swapchain_active(
+            true,
+            Some(wgpu::Backend::Dx12),
+            Some(wgpu::TextureFormat::Rgba16Float),
+        ));
     }
 }

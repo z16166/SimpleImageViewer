@@ -345,11 +345,64 @@ pub fn run() -> eframe::Result {
         );
     }
 
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    let mut windows_wgpu_force_dx12 = cached_preprobe
+        .as_ref()
+        .is_some_and(|cache| cache.force_dx12);
+
+    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+    if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
+        #[cfg(feature = "startup-timing")]
+        let recv_wait = Instant::now();
+        let maybe_outcome = dx12_preprobe_rx
+            .recv()
+            .expect("wgpu dx12 preprobe thread exited without sending a result");
+        #[cfg(feature = "startup-timing")]
+        let main_wait_ms = recv_wait.elapsed().as_millis();
+
+        if let Some(outcome) = maybe_outcome {
+            windows_wgpu_force_dx12 = outcome.has_real_dx12;
+            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, windows_wgpu_force_dx12, false);
+            if let Err(e) = crate::wgpu_preprobe_cache::save(windows_wgpu_force_dx12) {
+                log::warn!(
+                    "[startup] failed to save wgpu preprobe cache {}: {}",
+                    crate::wgpu_preprobe_cache::cache_path().display(),
+                    e
+                );
+            } else {
+                crate::startup_info!(
+                    "[startup] wgpu preprobe: wrote cache {}",
+                    crate::wgpu_preprobe_cache::cache_path().display()
+                );
+            }
+            crate::startup_info!(
+                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
+                outcome.enumerate_ms,
+                outcome.adapter_count,
+                main_wait_ms
+            );
+        } else {
+            windows_wgpu_force_dx12 = false;
+            log::error!(
+                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
+                crate::wgpu_preprobe_cache::cache_path().display()
+            );
+        }
+        startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
+    }
+
+    let native_hdr_swapchain_at_startup =
+        crate::hdr::surface::effective_native_hdr_swapchain_request_at_startup(
+            settings.hdr_native_surface_enabled_effective(),
+            #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
+            windows_wgpu_force_dx12,
+        );
+
     #[cfg(feature = "startup-timing")]
     let hdr_spawn_start = Instant::now();
     let (preferred_hdr_target_format, hdr_environment_probe) =
         crate::hdr::surface::preferred_native_hdr_target_format_for_environment(
-            settings.hdr_native_surface_enabled_effective(),
+            native_hdr_swapchain_at_startup,
             settings.window_spawn_top_left_for_hdr(),
         );
     crate::startup_info!(
@@ -369,7 +422,7 @@ pub fn run() -> eframe::Result {
     #[cfg(feature = "startup-timing")]
     {
         for diagnostic in crate::hdr::surface::native_hdr_surface_request_diagnostics(
-            settings.hdr_native_surface_enabled_effective(),
+            native_hdr_swapchain_at_startup,
             preferred_hdr_target_format,
         ) {
             crate::startup_info!("{diagnostic}");
@@ -412,46 +465,6 @@ pub fn run() -> eframe::Result {
     // applies `centered=true` AFTER `with_position(...)` in winit setup, so
     // leaving it on silently overrides our recall.
     let center_window_on_open = saved_outer_position.is_none();
-
-    #[cfg(all(target_os = "windows", not(feature = "legacy_win7")))]
-    if let Some(dx12_preprobe_rx) = dx12_preprobe_rx {
-        #[cfg(feature = "startup-timing")]
-        let recv_wait = Instant::now();
-        let maybe_outcome = dx12_preprobe_rx
-            .recv()
-            .expect("wgpu dx12 preprobe thread exited without sending a result");
-        #[cfg(feature = "startup-timing")]
-        let main_wait_ms = recv_wait.elapsed().as_millis();
-
-        if let Some(outcome) = maybe_outcome {
-            let probe_force = outcome.has_real_dx12;
-            apply_dx12_preprobe_to_wgpu_setup(&mut wgpu_setup, probe_force, false);
-            if let Err(e) = crate::wgpu_preprobe_cache::save(probe_force) {
-                log::warn!(
-                    "[startup] failed to save wgpu preprobe cache {}: {}",
-                    crate::wgpu_preprobe_cache::cache_path().display(),
-                    e
-                );
-            } else {
-                crate::startup_info!(
-                    "[startup] wgpu preprobe: wrote cache {}",
-                    crate::wgpu_preprobe_cache::cache_path().display()
-                );
-            }
-            crate::startup_info!(
-                "[startup] wgpu pre-probe enumerate_adapters: {} ms (adapter count {}); main recv wait: {} ms",
-                outcome.enumerate_ms,
-                outcome.adapter_count,
-                main_wait_ms
-            );
-        } else {
-            log::error!(
-                "[startup] wgpu dx12 preprobe failed; using default wgpu backends, cache file unchanged ({})",
-                crate::wgpu_preprobe_cache::cache_path().display()
-            );
-        }
-        startup_log_phase(&mut prev, startup_t0, "wgpu dx12 preprobe recv + apply");
-    }
 
     // Fullscreen uses borderless native fullscreen, not WS_SHOWMAXIMIZED; the patched
     // eframe first-frame show path only applies to maximized windowed restore.

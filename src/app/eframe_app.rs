@@ -437,8 +437,12 @@ impl eframe::App for ImageViewerApp {
         // demotion every frame the probe was pending, defeating the
         // spawn-time HDR detection that already chose the correct initial
         // format.
-        if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
+        let native_surface_requests_enabled = crate::hdr::surface::native_hdr_swapchain_requests_enabled(
             self.settings.hdr_native_surface_enabled_effective(),
+            self.hdr_capabilities.backend,
+        );
+        if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
+            native_surface_requests_enabled,
             self.effective_hdr_monitor_selection().as_ref(),
         ) && Some(desired_format) != self.hdr_target_format
         {
@@ -451,7 +455,7 @@ impl eframe::App for ImageViewerApp {
                     desired_format,
                     effective_monitor.as_ref().map(|s| s.label.as_str()),
                     effective_monitor.as_ref().map(|s| s.hdr_supported),
-                    self.settings.hdr_native_surface_enabled_effective(),
+                    native_surface_requests_enabled,
                 );
                 self.last_logged_swap_chain_format_request = Some(desired_format);
             }
@@ -467,9 +471,14 @@ impl eframe::App for ImageViewerApp {
         } else {
             self.last_logged_swap_chain_format_request = None;
         }
-        self.hdr_capabilities.available =
-            output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
-        self.hdr_capabilities.native_presentation_enabled = self.hdr_capabilities.available;
+        self.hdr_capabilities.native_presentation_enabled =
+            crate::hdr::surface::native_hdr_swapchain_active(
+                self.settings.hdr_native_surface_enabled_effective(),
+                self.hdr_capabilities.backend,
+                self.hdr_target_format,
+            );
+        self.hdr_capabilities.available = self.hdr_capabilities.native_presentation_enabled
+            || output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         let next_hdr_output_state = HdrOutputStateSnapshot::new(
             self.hdr_capabilities.output_mode,
             self.hdr_capabilities.native_presentation_enabled,

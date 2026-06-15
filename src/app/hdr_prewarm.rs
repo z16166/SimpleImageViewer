@@ -20,7 +20,10 @@ use crate::hdr::renderer::predicted_hdr_callback_target_format;
 impl ImageViewerApp {
     pub(crate) fn hdr_callback_prewarm_target_format(&self) -> Option<wgpu::TextureFormat> {
         predicted_hdr_callback_target_format(
-            self.settings.hdr_native_surface_enabled_effective(),
+            crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+                self.settings.hdr_native_surface_enabled_effective(),
+                self.hdr_capabilities.backend,
+            ),
             self.effective_hdr_monitor_selection()
                 .is_some_and(|selection| selection.hdr_supported),
             self.hdr_capabilities.candidate_texture_format,

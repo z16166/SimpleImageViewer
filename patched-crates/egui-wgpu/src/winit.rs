@@ -118,12 +118,40 @@ impl Painter {
         let width = surface_state.width;
         let height = surface_state.height;
 
+        let caps = surface_state
+            .surface
+            .get_capabilities(&render_state.adapter);
+        let configure_format = if caps.formats.contains(&render_state.target_format) {
+            render_state.target_format
+        } else {
+            let fallback = caps
+                .formats
+                .iter()
+                .copied()
+                .find(|format| {
+                    matches!(
+                        format,
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                    )
+                })
+                .or_else(|| caps.formats.first().copied())
+                .unwrap_or(render_state.target_format);
+            log::warn!(
+                "egui-wgpu: surface no longer supports {:?} during configure; \
+                 using {:?} for this resize (supported: {:?})",
+                render_state.target_format,
+                fallback,
+                caps.formats
+            );
+            fallback
+        };
+
         let mut surf_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: render_state.target_format,
+            format: configure_format,
             present_mode: config.present_mode,
             alpha_mode: surface_state.alpha_mode,
-            view_formats: vec![render_state.target_format],
+            view_formats: vec![configure_format],
             ..surface_state
                 .surface
                 .get_default_config(&render_state.adapter, width, height)
