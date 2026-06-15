@@ -82,6 +82,9 @@ impl ImageViewerApp {
         if self.hdr_raw_gpu_demosaic_pending_indices.remove(&from) {
             self.hdr_raw_gpu_demosaic_pending_indices.insert(to);
         }
+        if self.raw_gpu_embedded_bootstrap_indices.remove(&from) {
+            self.raw_gpu_embedded_bootstrap_indices.insert(to);
+        }
         if self.gpu_demosaic_failed_indices.remove(&from) {
             self.gpu_demosaic_failed_indices.insert(to);
         }
@@ -212,6 +215,8 @@ impl ImageViewerApp {
         self.hdr_placeholder_fallback_indices
             .retain(|&idx| idx == except_idx);
         self.hdr_raw_gpu_demosaic_pending_indices
+            .retain(|&idx| idx == except_idx);
+        self.raw_gpu_embedded_bootstrap_indices
             .retain(|&idx| idx == except_idx);
         self.gpu_demosaic_failed_indices
             .retain(|&idx| idx == except_idx);

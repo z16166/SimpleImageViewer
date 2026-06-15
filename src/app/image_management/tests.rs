@@ -516,8 +516,8 @@ fn startup_preload_defer_can_release_now(
 
 #[test]
 fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
-    use crate::hdr::types::HdrOutputMode;
     use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::types::HdrOutputMode;
 
     let selection_sdr = Some(&HdrMonitorSelection {
         hdr_supported: false,
@@ -580,7 +580,9 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
         HdrOutputMode::WindowsScRgb,
         None,
     ));
-    assert!(!super::monitor_hdr_decode_capacity_is_known(selection_hdr_source_only));
+    assert!(!super::monitor_hdr_decode_capacity_is_known(
+        selection_hdr_source_only
+    ));
     assert!(!startup_preload_defer_can_release_now(
         true,
         selection_hdr_source_only,
@@ -603,8 +605,8 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
 
 #[test]
 fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
-    use crate::hdr::types::HdrOutputMode;
     use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::types::HdrOutputMode;
     use std::time::{Duration, Instant};
 
     let selection_hdr_unknown = HdrMonitorSelection {
@@ -1205,6 +1207,9 @@ fn hdr_load_result_capacity_is_stale_when_sensitive_hdr_mismatch() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
         raw_osd: None,
+        uploaded_planes: None,
+        device_id: None,
+        register_repush_count: 0,
     };
     assert!(hdr_load_result_capacity_is_stale(&load, 2.0));
     assert!(!hdr_load_result_capacity_is_stale(&load, 1.0));
@@ -1232,6 +1237,9 @@ fn hdr_load_result_capacity_is_stale_ignores_hq_raw_scene_linear() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 3.478,
         raw_osd: Some(crate::loader::RawOsdInfo::empty()),
+        uploaded_planes: None,
+        device_id: None,
+        register_repush_count: 0,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 3.786));
 }
@@ -1258,6 +1266,9 @@ fn hdr_load_result_capacity_is_stale_ignores_non_sensitive_loads() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
         raw_osd: None,
+        uploaded_planes: None,
+        device_id: None,
+        register_repush_count: 0,
     };
     assert!(!hdr_load_result_capacity_is_stale(&load, 4.0));
 }
@@ -1431,6 +1442,8 @@ fn make_test_app() -> ImageViewerApp {
         hdr_renderer: crate::hdr::renderer::HdrImageRenderer::new(),
         wgpu_pipeline_cache: None,
         wgpu_adapter_info: None,
+        current_device_id: 1,
+        loader_wgpu_device: None,
         hdr_callback_resources_prewarm:
             crate::hdr::renderer::HdrCallbackResourcesPrewarm::new_shared(),
         hdr_target_format: None,
@@ -1463,6 +1476,7 @@ fn make_test_app() -> ImageViewerApp {
         hdr_raw_gpu_demosaic_pending_key_index: HashMap::new(),
         gpu_demosaic_failed_indices: HashSet::new(),
         raw_gpu_demosaic_await_hdr_present: false,
+        raw_gpu_embedded_bootstrap_indices: HashSet::new(),
         raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
         hdr_in_flight_fallback_refinements: HashSet::new(),
         deferred_sdr_uploads: HashMap::new(),
@@ -1953,9 +1967,187 @@ fn raw_demosaic_baked_notice_sentinel_triggers_cpu_fallback_correctly() {
             sdr_fallback_is_placeholder: false,
             target_hdr_capacity: 1.0,
             raw_osd: None,
+            uploaded_planes: None,
+            device_id: None,
+            register_repush_count: 0,
         }));
-    app.process_loaded_images(&ctx);
+    app.process_loaded_images(&ctx, &mut None);
     assert!(!app.loader.is_loading(0, app.generation));
+}
+
+#[test]
+fn test_process_loaded_images_with_preuploaded_planes_headless_no_panic() {
+    use crate::loader::{
+        DecodedImage, LoadResult, LoaderOutput, PreviewBundle, source_key_for_path,
+    };
+
+    let Some((device, queue)) = pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: true,
+                compatible_surface: None,
+            })
+            .await
+            .ok()?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .ok()
+    }) else {
+        log::warn!("Skipping GPU test: no adapter available");
+        return;
+    };
+
+    let hdr = crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
+    };
+    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+        .expect("background plane upload");
+
+    let mut app = make_test_app();
+    app.image_files = vec![std::path::PathBuf::from("preupload_test.hdr")];
+    app.current_index = 0;
+    app.loader.test_register_inflight(0, app.generation);
+    let source_key = source_key_for_path(&app.image_files[0]);
+    let ctx = egui::Context::default();
+
+    // Stale device epoch: registration is skipped and pre-uploaded planes are dropped.
+    app.loader
+        .test_send_loader_output(LoaderOutput::Image(LoadResult {
+            index: 0,
+            generation: app.generation,
+            source_key,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr,
+                fallback: DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+            raw_osd: None,
+            uploaded_planes: Some(uploaded),
+            device_id: Some(999),
+            register_repush_count: 0,
+        }));
+    app.process_loaded_images(&ctx, &mut None);
+    assert!(!app.loader.is_loading(0, app.generation));
+    assert!(
+        app.loader.poll().is_none(),
+        "stale device_id must drop planes without repush"
+    );
+    assert!(
+        app.current_hdr_image.is_some(),
+        "load result should still install after registration skip"
+    );
+
+    // Matching epoch but no frame context: registration is skipped and planes are dropped.
+    let hdr = crate::hdr::types::HdrImageBuffer {
+        width: 1,
+        height: 1,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata: crate::hdr::types::HdrImageMetadata::from_color_space(
+            crate::hdr::types::HdrColorSpace::LinearSrgb,
+        ),
+        rgba_f32: Arc::new(vec![0.0, 0.0, 0.0, 0.0]),
+    };
+    let uploaded = crate::hdr::renderer::upload_image_plane(&device, &queue, &hdr)
+        .expect("background plane upload");
+    app.loader.test_register_inflight(0, app.generation);
+    app.loader
+        .test_send_loader_output(LoaderOutput::Image(LoadResult {
+            index: 0,
+            generation: app.generation,
+            source_key,
+            result: Ok(crate::loader::ImageData::Hdr {
+                hdr,
+                fallback: DecodedImage::new(1, 1, vec![0, 0, 0, 255]),
+            }),
+            preview_bundle: PreviewBundle::initial(),
+            ultra_hdr_capacity_sensitive: false,
+            sdr_fallback_is_placeholder: false,
+            target_hdr_capacity: 1.0,
+            raw_osd: None,
+            uploaded_planes: Some(uploaded),
+            device_id: Some(app.current_device_id),
+            register_repush_count: 0,
+        }));
+    app.process_loaded_images(&ctx, &mut None);
+    assert!(!app.loader.is_loading(0, app.generation));
+    assert!(
+        app.loader.poll().is_none(),
+        "missing frame context must drop planes without repush"
+    );
+    assert!(
+        app.current_hdr_image.is_some(),
+        "load result should still install after registration skip"
+    );
+}
+
+#[test]
+fn sync_loader_wgpu_context_bumps_epoch_on_device_replacement() {
+    let Some((device_a, queue_a)) = pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: true,
+                compatible_surface: None,
+            })
+            .await
+            .ok()?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .ok()
+    }) else {
+        log::warn!("Skipping GPU test: no adapter available");
+        return;
+    };
+
+    let Some((device_b, queue_b)) = pollster::block_on(async {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: true,
+                compatible_surface: None,
+            })
+            .await
+            .ok()?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+            .ok()
+    }) else {
+        log::warn!("Skipping GPU test: no adapter available");
+        return;
+    };
+
+    if device_a == device_b {
+        log::warn!("Skipping device replacement test: adapter returned identical device handles");
+        return;
+    }
+
+    let mut app = make_test_app();
+    assert_eq!(app.current_device_id, 1);
+
+    app.sync_loader_wgpu_context(device_a, queue_a);
+    assert_eq!(app.current_device_id, 1);
+    assert!(app.loader_wgpu_device.is_some());
+
+    app.sync_loader_wgpu_context(device_b, queue_b);
+    assert_eq!(app.current_device_id, 2);
 }
 
 fn test_gpu_raw_pending_hdr(raw_pixels: Arc<Vec<u16>>) -> Arc<crate::hdr::types::HdrImageBuffer> {
@@ -1983,6 +2175,32 @@ fn test_gpu_raw_pending_hdr(raw_pixels: Arc<Vec<u16>>) -> Arc<crate::hdr::types:
         metadata,
         rgba_f32: Arc::new(Vec::new()),
     })
+}
+
+#[test]
+fn resolve_raw_demosaic_success_notice_matches_via_side_map_after_pending_cleared() {
+    use crate::hdr::renderer::RawGpuDemosaicBakedNotice;
+    use loader_results::resolve_raw_demosaic_notice_indices;
+
+    let raw_pixels = Arc::new(vec![0u16; 16]);
+    let hdr = test_gpu_raw_pending_hdr(Arc::clone(&raw_pixels));
+    let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr.as_ref());
+    let hdr_cache = HashMap::from([(278_usize, hdr)]);
+    let side_map = HashMap::from([(image_key, 278_usize)]);
+    let notice = RawGpuDemosaicBakedNotice {
+        key: image_key,
+        demosaic_ms: 0,
+    };
+
+    let matched = resolve_raw_demosaic_notice_indices(
+        &notice,
+        false,
+        &hdr_cache,
+        &HashSet::new(),
+        &side_map,
+        None,
+    );
+    assert_eq!(matched, vec![278]);
 }
 
 #[test]
@@ -2060,4 +2278,56 @@ fn resolve_raw_demosaic_notice_indices_returns_empty_when_unmatched() {
         None,
     );
     assert!(matched.is_empty());
+}
+
+#[test]
+fn raw_hdr_plane_ready_releases_embedded_bootstrap_not_fallback_slot() {
+    let mut app = make_test_app();
+    let mut metadata = crate::raw_processor::raw_scene_linear_metadata();
+    metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+        raw_width: 2,
+        raw_height: 2,
+        width: 2,
+        height: 2,
+        raw_pixels: Arc::new(vec![0; 4]),
+        black_level: [0.0; 4],
+        cfa_scale: [1.0; 4],
+        rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        maximum: 1.0,
+        bayer_pattern: [0, 1, 1, 2],
+        scene_color_scale: [1.0, 1.0, 1.0],
+        demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+        bootstrap_preview: Some(crate::loader::DecodedImage::new(1, 1, vec![1, 2, 3, 255])),
+    });
+    let hdr = Arc::new(crate::hdr::types::HdrImageBuffer {
+        width: 2,
+        height: 2,
+        format: crate::hdr::types::HdrPixelFormat::Rgba32Float,
+        color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+        metadata,
+        rgba_f32: Arc::new(Vec::new()),
+    });
+    app.hdr_image_cache.insert(0, Arc::clone(&hdr));
+    app.hdr_sdr_fallback_indices.insert(0);
+    app.raw_gpu_embedded_bootstrap_indices.insert(0);
+    let ctx = egui::Context::default();
+    app.upload_static_sdr_texture(
+        0,
+        &crate::loader::DecodedImage::new(1, 1, vec![9, 9, 9, 255]),
+        "img_raw_gpu_bootstrap_0".to_string(),
+        &ctx,
+    );
+    assert!(app.texture_cache.contains(0));
+    assert!(crate::loader::raw_gpu_source_has_bootstrap_preview(
+        app.hdr_image_cache.get(&0).unwrap()
+    ));
+
+    app.on_raw_hdr_plane_ready(0);
+
+    assert!(!app.raw_gpu_embedded_bootstrap_indices.contains(&0));
+    assert!(!app.texture_cache.contains(0));
+    assert!(app.hdr_sdr_fallback_indices.contains(&0));
+    assert!(!crate::loader::raw_gpu_source_has_bootstrap_preview(
+        app.hdr_image_cache.get(&0).unwrap()
+    ));
 }

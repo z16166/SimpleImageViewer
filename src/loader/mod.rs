@@ -45,6 +45,7 @@ pub(crate) use hdr_fallback::{
     hdr_raw_gpu_demosaic_pending, hdr_raw_gpu_refinement_is_pointless,
     hdr_sdr_fallback_is_placeholder_for_load, hdr_sdr_fallback_rgba8_eager_or_placeholder,
     hdr_to_sdr_with_user_tone, raw_gpu_source_has_bootstrap_preview,
+    static_hdr_background_plane_upload_eligible,
 };
 pub(crate) use metadata::extract_exif_thumbnail;
 pub(crate) use orientation::{

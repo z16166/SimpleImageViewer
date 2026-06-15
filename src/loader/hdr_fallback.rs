@@ -81,6 +81,47 @@ pub(crate) fn hdr_raw_gpu_refinement_is_pointless(hdr: &HdrImageBuffer) -> bool 
     hdr_raw_gpu_demosaic_pending(hdr)
 }
 
+/// Whether a loader worker should upload the static HDR float plane in the background.
+///
+/// GPU RAW sources always need the HDR callback path (demosaic runs in `prepare()`). Background
+/// CFA upload during preload lets the HDR plane be ready when the user navigates, avoiding an
+/// SDR preview flash when demosaic is already complete. Non-RAW images are uploaded only when
+/// the main thread has an active HDR callback target format and the static render plan would ride
+/// the HDR plane backend once displayed.
+pub(crate) fn static_hdr_background_plane_upload_eligible(
+    hdr: &HdrImageBuffer,
+    hdr_target_capacity: f32,
+    hdr_callback_active: bool,
+) -> bool {
+    if hdr.metadata.raw_gpu_source.is_some() {
+        return true;
+    }
+    if !hdr_callback_active {
+        return false;
+    }
+    let has_sdr_fallback = !hdr_sdr_fallback_is_placeholder_for_load(hdr, hdr_target_capacity);
+    static_hdr_plane_preload_needs_upload(has_sdr_fallback, hdr_target_capacity)
+}
+
+fn static_hdr_plane_preload_needs_upload(has_sdr_fallback: bool, hdr_target_capacity: f32) -> bool {
+    use crate::hdr::renderer::HdrRenderOutputMode;
+
+    let output_mode = if hdr_display_requests_sdr_preview(hdr_target_capacity) {
+        HdrRenderOutputMode::SdrToneMapped
+    } else {
+        HdrRenderOutputMode::NativeHdr
+    };
+    // Mirrors [`crate::app::rendering::plan::select_render_backend`] for static preload:
+    // `has_hdr_plane` and `has_hdr_target` are true once the callback target format is active.
+    if output_mode.is_native_hdr() {
+        true
+    } else if !has_sdr_fallback {
+        true
+    } else {
+        output_mode == HdrRenderOutputMode::SdrToneMapped
+    }
+}
+
 /// True when the loader attached a black SDR placeholder instead of a tone-mapped fallback.
 pub(crate) fn hdr_sdr_fallback_is_placeholder_for_load(
     hdr: &HdrImageBuffer,
@@ -333,5 +374,56 @@ mod tests {
             hdr_sdr_fallback_rgba8_eager_or_placeholder(&hdr, 0.5, &HdrToneMapSettings::default())
                 .expect("fallback");
         assert_eq!(out.as_slice(), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn raw_gpu_source_always_eligible_for_background_plane_upload() {
+        let mut metadata = HdrImageMetadata::default();
+        metadata.raw_gpu_source = Some(crate::hdr::types::RawGpuSource {
+            raw_width: 1,
+            raw_height: 1,
+            width: 1,
+            height: 1,
+            raw_pixels: Arc::new(vec![0]),
+            black_level: [0.0; 4],
+            cfa_scale: [1.0; 4],
+            rgb_cam: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            maximum: 1.0,
+            bayer_pattern: [0, 1, 1, 2],
+            scene_color_scale: [1.0, 1.0, 1.0],
+            demosaic_method: crate::settings::RawDemosaicMethod::Ppg,
+            bootstrap_preview: None,
+        });
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata,
+            rgba_f32: Arc::new(Vec::new()),
+        };
+
+        assert!(super::static_hdr_background_plane_upload_eligible(
+            &hdr, 1.0, false
+        ));
+    }
+
+    #[test]
+    fn non_raw_skips_background_upload_when_hdr_callback_inactive() {
+        let hdr = HdrImageBuffer {
+            width: 1,
+            height: 1,
+            format: HdrPixelFormat::Rgba32Float,
+            color_space: crate::hdr::types::HdrColorSpace::LinearSrgb,
+            metadata: HdrImageMetadata::default(),
+            rgba_f32: Arc::new(vec![0.0; 4]),
+        };
+
+        assert!(!super::static_hdr_background_plane_upload_eligible(
+            &hdr, 1.0, false
+        ));
+        assert!(super::static_hdr_background_plane_upload_eligible(
+            &hdr, 1.0, true
+        ));
     }
 }

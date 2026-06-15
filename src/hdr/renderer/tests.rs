@@ -18,7 +18,7 @@ use super::tile_cache::hdr_tile_key_bytes;
 use super::tone_map_uniform::tile_tone_map_uniform;
 use super::upload::{validate_rgba8_upload_layout, validate_tile_upload_layout};
 use super::*;
-use crate::hdr::renderer::image_callback::hdr_image_binding_is_eviction_candidate;
+use crate::hdr::renderer::hdr_image_binding_is_eviction_candidate;
 use crate::hdr::tiled::HdrTileBuffer;
 use crate::hdr::types::{
     HdrColorSpace, HdrGainMapMetadata, HdrImageBuffer, HdrImageMetadata, HdrPixelFormat,

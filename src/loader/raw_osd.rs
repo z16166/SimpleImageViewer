@@ -203,10 +203,7 @@ impl RawOsdInfo {
                     height: *height,
                 };
             }
-            (
-                RawRenderPixels::Embedded { .. },
-                RawRenderPixels::HqBootstrap { width, height },
-            ) => {
+            (RawRenderPixels::Embedded { .. }, RawRenderPixels::HqBootstrap { width, height }) => {
                 self.render_pixels = RawRenderPixels::HqBootstrap {
                     width: *width,
                     height: *height,

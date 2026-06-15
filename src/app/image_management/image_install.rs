@@ -28,7 +28,12 @@ impl ImageViewerApp {
             [decoded.width as usize, decoded.height as usize],
             decoded.rgba(),
         );
-        let handle = ctx.load_texture(texture_name, color_image, TextureOptions::LINEAR);
+        let handle = ctx.load_texture(texture_name.clone(), color_image, TextureOptions::LINEAR);
+        if texture_name.starts_with("img_raw_gpu_bootstrap_") {
+            self.raw_gpu_embedded_bootstrap_indices.insert(idx);
+        } else if texture_name.starts_with("img_hdr_fallback_") {
+            self.raw_gpu_embedded_bootstrap_indices.remove(&idx);
+        }
         if let Some(evicted_idx) = self.texture_cache.insert(
             idx,
             handle,
@@ -171,11 +176,18 @@ impl ImageViewerApp {
             } else {
                 Some((fallback.width, fallback.height))
             };
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] pending set idx={idx} key={key:?} bootstrap={bootstrap:?} cur={}",
+                idx == self.current_index
+            );
             self.raw_metadata.note_gpu_demosaic_pending(idx, bootstrap);
         } else {
             self.hdr_raw_gpu_demosaic_pending_indices.remove(&idx);
             self.hdr_raw_gpu_demosaic_pending_key_index
                 .retain(|_, pending_idx| *pending_idx != idx);
+            if crate::loader::raw_gpu_source_has_bootstrap_preview(hdr.as_ref()) {
+                self.on_raw_hdr_plane_ready(idx);
+            }
         }
         if gpu_demosaic_pending && self.texture_cache.contains(idx) {
             self.texture_cache

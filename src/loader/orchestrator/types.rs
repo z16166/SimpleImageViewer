@@ -25,7 +25,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TileInFlightKey {
@@ -100,6 +100,12 @@ pub(crate) struct DelayedFallbackJob {
     pub(crate) hdr_target_capacity: f32,
     pub(crate) hdr_tone_map: HdrToneMapSettings,
     pub(crate) raw_open_prefetch: Arc<super::raw_prefetch::RawOpenPrefetch>,
+    pub(crate) wgpu_device: Option<wgpu::Device>,
+    pub(crate) wgpu_queue: Option<wgpu::Queue>,
+    pub(crate) wgpu_device_id_at_spawn: u64,
+    pub(crate) wgpu_is_opengl: bool,
+    pub(crate) wgpu_device_id_live: Arc<AtomicU64>,
+    pub(crate) hdr_callback_upload_active_live: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) fn should_spawn_load_task(
@@ -139,4 +145,11 @@ pub struct ImageLoader {
     pub(crate) hdr_tone_exposure_ev_bits: Arc<AtomicU32>,
     pub(crate) hdr_tone_sdr_white_nits_bits: Arc<AtomicU32>,
     pub(crate) hdr_tone_max_display_nits_bits: Arc<AtomicU32>,
+    /// True when the main thread has an active HDR callback target format for pre-upload registration.
+    pub(crate) hdr_callback_upload_active: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) wgpu_device: Option<wgpu::Device>,
+    pub(crate) wgpu_queue: Option<wgpu::Queue>,
+    /// Live epoch; compare before background GPU upload and on the main thread at registration.
+    pub(crate) wgpu_device_id: Arc<AtomicU64>,
+    pub(crate) wgpu_is_opengl: bool,
 }

@@ -331,6 +331,10 @@ pub struct ImageViewerApp {
     pub(crate) hdr_renderer: crate::hdr::renderer::HdrImageRenderer,
     pub(crate) wgpu_pipeline_cache: Option<std::sync::Arc<wgpu::PipelineCache>>,
     pub(crate) wgpu_adapter_info: Option<wgpu::AdapterInfo>,
+    /// Epoch tracking live `wgpu::Device`/`Queue` instances (not swap-chain format changes).
+    pub(crate) current_device_id: u64,
+    /// Last `wgpu::Device` instance pushed to [`ImageLoader`] (detects Device rebuild).
+    pub(crate) loader_wgpu_device: Option<wgpu::Device>,
     pub(crate) hdr_callback_resources_prewarm:
         std::sync::Arc<crate::hdr::renderer::HdrCallbackResourcesPrewarm>,
     pub(crate) hdr_target_format: Option<wgpu::TextureFormat>,
@@ -393,6 +397,9 @@ pub struct ImageViewerApp {
     /// Maps HDR image key to index while GPU demosaic is pending (survives HDR cache eviction).
     pub(crate) hdr_raw_gpu_demosaic_pending_key_index:
         HashMap<crate::hdr::renderer::HdrImageKey, usize>,
+    /// Indices whose `texture_cache` entry is the embedded RAW preview (`img_raw_gpu_bootstrap_*`),
+    /// not the tone-mapped HDR fallback texture (`img_hdr_fallback_*`).
+    pub(crate) raw_gpu_embedded_bootstrap_indices: HashSet<usize>,
     pub(crate) gpu_demosaic_failed_indices: HashSet<usize>,
     /// After GPU demosaic completes, defer neighbor preloads until the HDR plane is shown.
     pub(crate) raw_gpu_demosaic_await_hdr_present: bool,

@@ -41,6 +41,9 @@ fn image_request_stays_inflight_until_ui_finishes_installing_result() {
         sdr_fallback_is_placeholder: false,
         target_hdr_capacity: 1.0,
         raw_osd: None,
+        uploaded_planes: None,
+        device_id: None,
+        register_repush_count: 0,
     };
     loader.test_send_loader_output(LoaderOutput::Image(load_result));
 

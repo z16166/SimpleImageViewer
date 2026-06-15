@@ -439,7 +439,17 @@ impl ImageViewerApp {
         };
 
         let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
-        let loader = ImageLoader::new();
+        let current_device_id = 1_u64;
+        let loader_wgpu_device = cc.wgpu_render_state.as_ref().map(|s| s.device.clone());
+        let loader = if let Some(state) = cc.wgpu_render_state.as_ref() {
+            ImageLoader::new().with_wgpu(
+                Some(state.device.clone()),
+                Some(state.queue.clone()),
+                current_device_id,
+            )
+        } else {
+            ImageLoader::new()
+        };
         // Raw open prefetch waits for the first runtime HDR capacity probe (macOS EDR).
         // Starting it earlier would decode at capacity 1.0 and be discarded on probe.
         let mut app = Self {
@@ -457,6 +467,8 @@ impl ImageViewerApp {
             hdr_renderer,
             wgpu_pipeline_cache,
             wgpu_adapter_info,
+            current_device_id,
+            loader_wgpu_device,
             hdr_callback_resources_prewarm,
             hdr_target_format,
             hdr_monitor_state: crate::hdr::monitor::HdrMonitorState::with_initial_selection(
@@ -488,6 +500,7 @@ impl ImageViewerApp {
             hdr_placeholder_fallback_indices: std::collections::HashSet::new(),
             hdr_raw_gpu_demosaic_pending_indices: std::collections::HashSet::new(),
             hdr_raw_gpu_demosaic_pending_key_index: std::collections::HashMap::new(),
+            raw_gpu_embedded_bootstrap_indices: std::collections::HashSet::new(),
             gpu_demosaic_failed_indices: std::collections::HashSet::new(),
             raw_gpu_demosaic_await_hdr_present: false,
             raw_demosaic_baked_notify: Arc::new(Mutex::new(Vec::new())),
@@ -635,6 +648,7 @@ impl ImageViewerApp {
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);
         app.loader
             .set_hdr_tone_map_settings(app.effective_hdr_tone_map_settings());
+        app.sync_loader_hdr_callback_upload_snapshot();
         log::info!(
             "[HDR] tone_map_sdr_white_nits={}",
             app.hdr_renderer.tone_map.sdr_white_nits

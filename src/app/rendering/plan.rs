@@ -125,15 +125,19 @@ impl ImageViewerApp {
         has_sdr_fallback: bool,
     ) -> RenderPlan {
         let prefer_sdr_for_pending_gpu_demosaic = shape == RenderShape::Static
-            && self
-                .hdr_raw_gpu_demosaic_pending_indices
-                .contains(&self.current_index)
-            && has_sdr_fallback
-            && (self.texture_cache.contains(self.current_index)
-                || self
-                    .hdr_image_cache
-                    .get(&self.current_index)
-                    .is_some_and(|hdr| crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)));
+            && crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+                self.current_index,
+                &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_image_cache,
+                has_sdr_fallback,
+                self.texture_cache.contains(self.current_index),
+            );
+        if prefer_sdr_for_pending_gpu_demosaic {
+            crate::preload_debug!(
+                "[PreloadDebug][RAW-GPU] render backend=Sdr bootstrap cur={} pending=true",
+                self.current_index
+            );
+        }
         build_render_plan_for_state(
             shape,
             has_hdr_plane,

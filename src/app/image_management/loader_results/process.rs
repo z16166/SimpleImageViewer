@@ -16,9 +16,17 @@
 
 use super::*;
 
+/// Max frames to retry HDR pre-upload registration while callback prewarm is pending.
+/// ~30 frames at 60 Hz ≈ 500 ms before abandoning pre-uploaded planes.
+const MAX_HDR_REGISTER_PREWARM_REPUSH: u8 = 30;
+
 impl ImageViewerApp {
     /// Process results from the background ImageLoader.
-    pub(crate) fn process_loaded_images(&mut self, ctx: &egui::Context) {
+    pub(crate) fn process_loaded_images(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut Option<&mut eframe::Frame>,
+    ) {
         self.flush_deferred_sdr_upload_for_current(ctx);
         let is_transitioning = self.transition_start.is_some();
 
@@ -137,7 +145,7 @@ impl ImageViewerApp {
 
         while let Some(output) = self.loader.poll() {
             match output {
-                LoaderOutput::Image(load_result) => {
+                LoaderOutput::Image(mut load_result) => {
                     let idx = load_result.index;
                     let generation = load_result.generation;
                     let is_current = idx == self.current_index;
@@ -168,6 +176,12 @@ impl ImageViewerApp {
                         );
                         self.loader.finish_image_request(idx, generation);
                         continue;
+                    }
+
+                    if !self.try_register_preuploaded_hdr_plane(frame, &mut load_result) {
+                        self.loader.repush(LoaderOutput::Image(load_result));
+                        ctx.request_repaint();
+                        break;
                     }
 
                     if should_yield_background_result_for_pending_transition(
@@ -679,5 +693,81 @@ impl ImageViewerApp {
             self.loader.repush_back(output);
         }
         self.try_start_pending_transition_if_ready();
+    }
+
+    // Runs on the main thread during the update/event phase (`process_loaded_images`),
+    // which completes before egui's paint phase. Prewarm readiness uses a brief write lock;
+    // `from_uploaded` runs outside the lock so uniform buffer allocation does not block paint.
+    fn try_register_preuploaded_hdr_plane(
+        &mut self,
+        frame: &mut Option<&mut eframe::Frame>,
+        load_result: &mut LoadResult,
+    ) -> bool {
+        if load_result.uploaded_planes.is_none() {
+            return true;
+        }
+
+        if load_result.device_id != Some(self.current_device_id) {
+            load_result.uploaded_planes = None;
+            return true;
+        }
+
+        let Ok(ImageData::Hdr { ref hdr, .. }) = load_result.result else {
+            load_result.uploaded_planes = None;
+            return true;
+        };
+
+        let Some(frame) = frame.as_mut() else {
+            load_result.uploaded_planes = None;
+            return true;
+        };
+        let Some(wgpu_state) = frame.wgpu_render_state() else {
+            load_result.uploaded_planes = None;
+            return true;
+        };
+        let Some(format) = self.hdr_callback_prewarm_target_format() else {
+            load_result.uploaded_planes = None;
+            return true;
+        };
+
+        let image_key = crate::hdr::renderer::HdrImageKey::from_image(hdr);
+        let prewarm_ready = {
+            let mut renderer = wgpu_state.renderer.write();
+            crate::hdr::renderer::ensure_hdr_callback_resources(
+                &wgpu_state.device,
+                format,
+                &mut renderer.callback_resources,
+            )
+        };
+        if !prewarm_ready {
+            load_result.register_repush_count = load_result.register_repush_count.saturating_add(1);
+            if load_result.register_repush_count >= MAX_HDR_REGISTER_PREWARM_REPUSH {
+                // Safety valve: abandon pre-uploaded planes after ~500 ms of stalled prewarm
+                // and let `prepare()` bind synchronously. Dropping here avoids orphan VRAM if
+                // shader compilation never completes; `prepare()` will re-upload on cache miss.
+                load_result.uploaded_planes = None;
+                return true;
+            }
+            return false;
+        }
+
+        let Some(uploaded) = load_result.uploaded_planes.take() else {
+            return true;
+        };
+        let binding = crate::hdr::renderer::HdrImageBinding::from_uploaded(
+            &wgpu_state.device,
+            uploaded,
+            &hdr.metadata,
+            format,
+        );
+        let mut renderer = wgpu_state.renderer.write();
+        if let Some(resources) = renderer
+            .callback_resources
+            .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
+        {
+            resources.register_preuploaded_binding(image_key, binding);
+        }
+
+        true
     }
 }

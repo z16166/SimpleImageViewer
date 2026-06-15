@@ -379,6 +379,8 @@ impl eframe::App for ImageViewerApp {
             self.hdr_target_format = Some(format);
         }
         self.sync_hdr_callback_resources_prewarm(frame);
+        self.sync_loader_wgpu_context_from_frame(frame);
+        self.sync_loader_hdr_callback_upload_snapshot();
 
         let hdr_content_visible = self.current_hdr_render_path().is_some();
         self.hdr_monitor_state
@@ -540,7 +542,8 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        self.process_loaded_images(ctx);
+        self.process_loaded_images(ctx, &mut Some(frame));
+        self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame));
         self.process_scan_results();
         self.process_music_scan_results();
         // Upload deferred CPU pixels for the outgoing frame before navigation captures

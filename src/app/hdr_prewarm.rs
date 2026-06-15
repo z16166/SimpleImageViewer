@@ -18,7 +18,7 @@ use super::types::ImageViewerApp;
 use crate::hdr::renderer::predicted_hdr_callback_target_format;
 
 impl ImageViewerApp {
-    fn hdr_callback_prewarm_target_format(&self) -> Option<wgpu::TextureFormat> {
+    pub(crate) fn hdr_callback_prewarm_target_format(&self) -> Option<wgpu::TextureFormat> {
         predicted_hdr_callback_target_format(
             self.settings.hdr_native_surface_enabled_effective(),
             self.effective_hdr_monitor_selection()
@@ -26,6 +26,37 @@ impl ImageViewerApp {
             self.hdr_capabilities.candidate_texture_format,
             self.hdr_target_format,
         )
+    }
+
+    pub(crate) fn sync_loader_hdr_callback_upload_snapshot(&self) {
+        self.loader
+            .set_hdr_callback_upload_active(self.hdr_callback_prewarm_target_format().is_some());
+    }
+
+    /// Keep loader worker `device_id` and GPU handles aligned with the live painter Device.
+    pub(crate) fn sync_loader_wgpu_context_from_frame(&mut self, frame: &eframe::Frame) {
+        let Some(state) = frame.wgpu_render_state() else {
+            return;
+        };
+        self.sync_loader_wgpu_context(state.device.clone(), state.queue.clone());
+    }
+
+    pub(crate) fn sync_loader_wgpu_context(&mut self, device: wgpu::Device, queue: wgpu::Queue) {
+        if self.loader_wgpu_device.as_ref() == Some(&device) {
+            return;
+        }
+
+        if self.loader_wgpu_device.is_some() {
+            self.current_device_id = self.current_device_id.saturating_add(1);
+            log::debug!(
+                "[Loader] wgpu Device instance replaced; current_device_id={}",
+                self.current_device_id
+            );
+        }
+
+        self.loader_wgpu_device = Some(device.clone());
+        self.loader
+            .set_wgpu_context(Some(device), Some(queue), self.current_device_id);
     }
 
     pub(crate) fn sync_hdr_callback_resources_prewarm(&mut self, frame: &eframe::Frame) {

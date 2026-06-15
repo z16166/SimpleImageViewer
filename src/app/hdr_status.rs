@@ -146,13 +146,13 @@ impl ImageViewerApp {
             has_hdr_image
         };
         let prefer_sdr_for_pending_gpu_demosaic = shape == RenderShape::Static
-            && self.hdr_raw_gpu_demosaic_pending_indices.contains(&idx)
-            && has_sdr_fallback
-            && (self.texture_cache.contains(idx)
-                || self
-                    .hdr_image_cache
-                    .get(&idx)
-                    .is_some_and(|hdr| crate::loader::raw_gpu_source_has_bootstrap_preview(hdr)));
+            && crate::app::image_management::prefer_sdr_bootstrap_while_raw_gpu_demosaic_pending(
+                idx,
+                &self.hdr_raw_gpu_demosaic_pending_indices,
+                &self.hdr_image_cache,
+                has_sdr_fallback,
+                self.texture_cache.contains(idx),
+            );
 
         let complex_transition_active = self.transition_start.is_some()
             && matches!(
