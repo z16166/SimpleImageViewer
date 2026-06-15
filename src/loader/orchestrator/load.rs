@@ -128,13 +128,11 @@ impl ImageLoader {
                             break;
                         }
 
-                        let global_gen = job.current_gen.load(std::sync::atomic::Ordering::Relaxed);
-                        if job.generation != global_gen {
-                            let mut loading = job.loading.lock();
-                            if loading.get(&job.index) == Some(&job.generation) {
-                                loading.remove(&job.index);
+                        {
+                            let loading = job.loading.lock();
+                            if loading.get(&job.index) != Some(&job.generation) {
+                                continue;
                             }
-                            continue;
                         }
                         if job
                             .claimed
@@ -523,6 +521,7 @@ impl ImageLoader {
                                 preview_bundle: bundle,
                                 error: None,
                                 cpu_demosaic_ms: Some(cpu_demosaic_ms),
+                                raw_bootstrap_osd: None,
                             }));
                             let _ =
                                 worker_tx.send(LoaderOutput::Refined(req.index, req.generation));
@@ -576,12 +575,10 @@ impl ImageLoader {
         self.raw_open_prefetch.request(&self.pool, path);
     }
 
-    #[cfg(test)]
     pub fn is_loading(&self, index: usize, generation: u64) -> bool {
         self.loading.lock().get(&index) == Some(&generation)
     }
 
-    #[allow(dead_code)]
     pub fn current_generation(&self, index: usize) -> u64 {
         self.loading.lock().get(&index).copied().unwrap_or(0)
     }
@@ -685,13 +682,11 @@ impl ImageLoader {
 
         let raw_open_prefetch_spawn = Arc::clone(&raw_open_prefetch);
         self.pool.spawn(move || {
-            let global_gen = current_gen1.load(std::sync::atomic::Ordering::Relaxed);
-            if generation != global_gen {
-                let mut loading = loading1.lock();
-                if loading.get(&index) == Some(&generation) {
-                    loading.remove(&index);
+            {
+                let loading = loading1.lock();
+                if loading.get(&index) != Some(&generation) {
+                    return;
                 }
-                return;
             }
             if claimed1
                 .compare_exchange(
@@ -953,6 +948,7 @@ impl ImageLoader {
                                     preview_bundle: bundle,
                                     error: None,
                                     cpu_demosaic_ms: None,
+                                    raw_bootstrap_osd: None,
                                 }));
                             }
                             Ok(Err(e)) => {

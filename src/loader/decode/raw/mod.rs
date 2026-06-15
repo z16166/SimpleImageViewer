@@ -20,8 +20,9 @@
 //! - **Off:** use embedded previews whenever present (SDR pipeline on all displays).
 //!   Full develop only when the file has no embedded preview; on HDR displays that
 //!   develop result uses the HDR pipeline.
-//! - **On:** use embedded previews when they meet HQ size requirements; otherwise demosaic at
-//!   full sensor resolution. Developed pixels always use the HDR pipeline (even on SDR displays to support exposure adjustments).
+//! - **On:** embedded previews may bootstrap the UI while LibRaw demosaic runs; developed pixels
+//!   always use the HDR pipeline (even on SDR displays to support exposure adjustments).
+//!   ImageIO/WIC is never used for HQ RAW on macOS/Windows — LibRaw is required.
 
 mod develop;
 mod load;

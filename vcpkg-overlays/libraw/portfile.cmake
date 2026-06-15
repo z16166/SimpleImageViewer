@@ -42,19 +42,38 @@ set(LIBRAW_CMAKE_OPTIONS
 if(VCPKG_TARGET_IS_OSX)
     list(FIND FEATURES "openmp" _libraw_openmp_idx)
     if(_libraw_openmp_idx GREATER_EQUAL 0)
-        if(EXISTS "/opt/homebrew/opt/libomp")
-            set(_libomp_prefix "/opt/homebrew/opt/libomp")
-        elseif(EXISTS "/usr/local/opt/libomp")
-            set(_libomp_prefix "/usr/local/opt/libomp")
+        if(DEFINED ENV{LIBOMP_PREFIX} AND EXISTS "$ENV{LIBOMP_PREFIX}")
+            set(_libomp_prefix "$ENV{LIBOMP_PREFIX}")
+        else()
+            execute_process(
+                COMMAND brew --prefix libomp
+                OUTPUT_VARIABLE _brew_libomp_prefix
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            if(_brew_libomp_prefix AND EXISTS "${_brew_libomp_prefix}")
+                set(_libomp_prefix "${_brew_libomp_prefix}")
+            elseif(EXISTS "/opt/homebrew/opt/libomp")
+                set(_libomp_prefix "/opt/homebrew/opt/libomp")
+            elseif(EXISTS "/usr/local/opt/libomp")
+                set(_libomp_prefix "/usr/local/opt/libomp")
+            endif()
         endif()
         if(_libomp_prefix)
+            if(EXISTS "${_libomp_prefix}/lib/libomp.a")
+                set(_libomp_library "${_libomp_prefix}/lib/libomp.a")
+            else()
+                set(_libomp_library "${_libomp_prefix}/lib/libomp.dylib")
+            endif()
             list(APPEND LIBRAW_CMAKE_OPTIONS
                 "-DOpenMP_CXX_FLAGS=-Xpreprocessor -fopenmp -I${_libomp_prefix}/include"
                 "-DOpenMP_C_FLAGS=-Xpreprocessor -fopenmp -I${_libomp_prefix}/include"
                 "-DOpenMP_CXX_LIB_NAMES=omp"
                 "-DOpenMP_C_LIB_NAMES=omp"
-                "-DOpenMP_omp_LIBRARY=${_libomp_prefix}/lib/libomp.dylib"
+                "-DOpenMP_omp_LIBRARY=${_libomp_library}"
             )
+        else()
+            message(FATAL_ERROR "libraw openmp feature requires Homebrew libomp on macOS (brew install libomp).")
         endif()
     endif()
 endif()

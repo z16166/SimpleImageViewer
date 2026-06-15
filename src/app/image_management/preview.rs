@@ -61,9 +61,11 @@ impl ImageViewerApp {
             return;
         };
 
-        // CRITICAL: Drop any stale preview results.
+        // CRITICAL: Drop stale preview results unless they match the active load generation.
+        let registered_inflight = self.loader.is_loading_any(update.index)
+            && update.generation == self.loader.current_generation(update.index);
         let is_prefetch_survivor = update.index == self.current_index
-            && self.prefetch_prev_generation == Some(update.generation);
+            && (self.prefetch_prev_generation == Some(update.generation) || registered_inflight);
 
         if update.generation != self.generation && !is_prefetch_survivor {
             let file_name = path_for_logs
@@ -93,6 +95,10 @@ impl ImageViewerApp {
                 self.generation
             );
             self.prefetch_prev_generation = None;
+        }
+
+        if let Some(osd) = &update.raw_bootstrap_osd {
+            self.set_raw_metadata_for_index(update.index, Some(osd.clone()), ctx);
         }
 
         if update.preview_bundle.hdr().is_some() {

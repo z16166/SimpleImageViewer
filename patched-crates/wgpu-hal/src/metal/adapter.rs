@@ -918,7 +918,8 @@ impl super::CapabilitiesQuery {
             supports_binary_archives: family_check
                 && (metal3
                     || device.supportsFamily(MTLGPUFamily::Apple3)
-                    || device.supportsFamily(MTLGPUFamily::Mac2)),
+                    || device.supportsFamily(MTLGPUFamily::Mac2))
+                && objc2::runtime::AnyClass::get(c"MTLBinaryArchiveDescriptor").is_some(),
             // This is just trusted blindly since docs referencing supports_any have been removed
             // but we don't want to remove feature support.
             supports_arrays_of_textures: Self::supports_any(
@@ -1047,7 +1048,8 @@ impl super::CapabilitiesQuery {
             | F::DEPTH32FLOAT_STENCIL8
             | F::BGRA8UNORM_STORAGE
             | F::PASSTHROUGH_SHADERS
-            | F::EXTERNAL_TEXTURE;
+            | F::EXTERNAL_TEXTURE
+            | F::PIPELINE_CACHE;
 
         features.set(F::FLOAT32_FILTERABLE, self.supports_float_filtering);
         features.set(F::FLOAT32_BLENDABLE, true);
@@ -1333,6 +1335,7 @@ impl super::CapabilitiesQuery {
             max_vertex_buffers: self.max_vertex_buffers,
             max_textures_per_stage: self.max_textures_per_stage,
             max_samplers_per_stage: self.max_samplers_per_stage,
+            supports_binary_archives: self.supports_binary_archives,
         }
     }
 

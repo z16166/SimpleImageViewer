@@ -98,6 +98,13 @@ impl RawOpenPrefetch {
         });
     }
 
+    /// Drop cached / in-flight prefetch entries during process shutdown.
+    pub(crate) fn clear_all(&self) {
+        let (lock, cvar) = &*self.state;
+        lock.lock().entries.clear();
+        cvar.notify_all();
+    }
+
     pub(crate) fn take_or_wait(&self, path: &Path) -> Option<RawPrefetchedOpen> {
         let (lock, cvar) = &*self.state;
         loop {

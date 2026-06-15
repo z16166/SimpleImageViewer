@@ -440,13 +440,8 @@ impl ImageViewerApp {
 
         let (osd_event_tx, osd_event_rx) = crossbeam_channel::unbounded();
         let loader = ImageLoader::new();
-        if settings.resume_last_image {
-            if let Some(ref path) = settings.last_viewed_image {
-                if crate::loader::should_prefetch_raw_gpu_open(&settings, path, false) {
-                    loader.prefetch_raw_open(path.clone());
-                }
-            }
-        }
+        // Raw open prefetch waits for the first runtime HDR capacity probe (macOS EDR).
+        // Starting it earlier would decode at capacity 1.0 and be discarded on probe.
         let mut app = Self {
             save_tx,
             initial_image,

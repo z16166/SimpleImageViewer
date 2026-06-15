@@ -62,7 +62,7 @@ fn monitor_probe_runs_first_time_immediately_on_signature_change() {
     state.last_signature = Some(first);
     state.last_probe_at = Some(start);
     if cfg!(target_os = "macos") {
-        // Same signature: macOS only re-probes for EDR capacity, gated on `hdr_content_visible`.
+        // Same signature: macOS re-probes for EDR capacity on the timer while still unknown.
         assert!(!state.should_probe(first, start + HDR_MONITOR_PROBE_INTERVAL * 2, false));
     } else {
         // Windows: timer reprobe even when the viewport signature is unchanged (outer rect
@@ -104,7 +104,7 @@ fn macos_current_edr_reprobe_uses_interval_without_viewport_change() {
         true,
         true
     ));
-    assert!(!state.should_probe_for_platform(
+    assert!(state.should_probe_for_platform(
         signature,
         start + HDR_MONITOR_PROBE_INTERVAL,
         false,

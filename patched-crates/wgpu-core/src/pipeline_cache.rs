@@ -241,6 +241,14 @@ fn adapter_key(adapter: &AdapterInfo) -> Result<[u8; 15], PipelineCacheValidatio
             ];
             Ok(adapter)
         }
+        wgt::Backend::Metal => {
+            let v: [u8; 4] = adapter.vendor.to_be_bytes();
+            let d: [u8; 4] = adapter.device.to_be_bytes();
+            let adapter = [
+                253, 253, 253, v[0], v[1], v[2], v[3], d[0], d[1], d[2], d[3], 253, 253, 253, 253,
+            ];
+            Ok(adapter)
+        }
         _ => Err(PipelineCacheValidationError::Unsupported),
     }
 }
@@ -545,5 +553,28 @@ mod tests {
         let cache = cache.into_iter().flatten().collect::<Vec<u8>>();
         let validation_result = super::validate_pipeline_cache(&cache, &ADAPTER, VALIDATION_KEY);
         assert_eq!(validation_result, Err(E::Corrupted));
+    }
+
+    #[test]
+    fn metal_adapter_key() {
+        const METAL_ADAPTER: AdapterInfo = AdapterInfo {
+            name: String::new(),
+            vendor: 0x0002_FEED,
+            device: 0xFEFE_FEFE,
+            device_type: wgt::DeviceType::Other,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgt::Backend::Metal,
+            subgroup_min_size: 32,
+            subgroup_max_size: 32,
+            transient_saves_memory: true,
+        };
+
+        let key = super::adapter_key(&METAL_ADAPTER).unwrap();
+        let expected = [
+            253, 253, 253, 0, 2, 0xFE, 0xED, 0xFE, 0xFE, 0xFE, 0xFE, 253, 253, 253, 253,
+        ];
+        assert_eq!(key, expected);
     }
 }

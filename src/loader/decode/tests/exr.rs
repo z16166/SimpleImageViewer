@@ -22,7 +22,6 @@ use crate::hdr::types::HdrToneMapSettings;
 use crate::loader::ImageData;
 use crate::loader::decode::detect::load_via_content_detection;
 use crate::loader::decode::hdr_formats::{load_hdr, try_load_disk_backed_exr_hdr};
-use crate::loader::decode::load_image_file;
 
 use super::support::{TiledThresholdOverride, lock_tiled_threshold_for_test};
 
@@ -276,26 +275,17 @@ fn exr_extension_short_circuits_to_openexr_core_loader() {
         std::process::id()
     ));
     std::fs::write(&path, b"not an exr file").expect("write invalid EXR probe");
-    let (tx, _rx) = crossbeam_channel::unbounded();
-    let (refine_tx, _refine_rx) = crossbeam_channel::unbounded();
 
-    let result = load_image_file(
-        1,
-        0,
-        &path,
-        tx,
-        refine_tx,
-        false,
-        crate::settings::RawDemosaicMode::Cpu,
-        HdrToneMapSettings::default().target_hdr_capacity(),
-        HdrToneMapSettings::default(),
-        None,
-    );
-    let err = match result.result {
-        Ok(_) => panic!("invalid EXR should fail in the OpenEXRCore loader"),
-        Err(err) => err,
-    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        load_hdr(&path, 1.0, HdrToneMapSettings::default())
+    }));
     let _ = std::fs::remove_file(&path);
+
+    let err = match outcome {
+        Ok(Err(err)) => err,
+        Ok(Ok(_)) => panic!("invalid EXR should fail in the OpenEXRCore loader"),
+        Err(_) => panic!("invalid EXR probe must not abort the process"),
+    };
 
     assert!(
         err.contains("OpenEXRCore"),
@@ -312,16 +302,20 @@ fn exr_magic_short_circuits_to_openexr_core_loader_even_with_wrong_extension() {
     std::fs::write(&path, [0x76, 0x2f, 0x31, 0x01, 0, 0, 0, 0])
         .expect("write invalid EXR magic probe");
 
-    let result = load_via_content_detection(
-        &path,
-        HdrToneMapSettings::default().target_hdr_capacity(),
-        HdrToneMapSettings::default(),
-    );
-    let err = match result {
-        Ok(_) => panic!("invalid EXR magic should fail in the OpenEXRCore loader"),
-        Err(err) => err,
-    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        load_via_content_detection(
+            &path,
+            HdrToneMapSettings::default().target_hdr_capacity(),
+            HdrToneMapSettings::default(),
+        )
+    }));
     let _ = std::fs::remove_file(&path);
+
+    let err = match outcome {
+        Ok(Err(err)) => err,
+        Ok(Ok(_)) => panic!("invalid EXR magic should fail in the OpenEXRCore loader"),
+        Err(_) => panic!("invalid EXR magic probe must not abort the process"),
+    };
 
     assert!(
         err.contains("OpenEXRCore"),

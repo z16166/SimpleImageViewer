@@ -135,9 +135,13 @@ impl eframe::App for ImageViewerApp {
         self.hidden_to_tray = false;
         self.pending_hide_to_tray = false;
 
+        self.loader.prepare_for_process_exit();
+
         crate::startup::shutdown_logger();
         #[cfg(target_os = "windows")]
         std::process::exit(0);
+        #[cfg(unix)]
+        crate::startup::force_process_exit(0);
     }
 
     /// Background logic: scanning, loading, auto-switch, keyboard, timers.
@@ -730,7 +734,7 @@ impl ImageViewerApp {
 
     fn quit_process_now(&mut self) -> ! {
         <Self as eframe::App>::on_exit(self);
-        std::process::exit(0);
+        crate::startup::force_process_exit(0);
     }
 
     fn ensure_tray_icon(&mut self, was_maximized: bool) -> bool {

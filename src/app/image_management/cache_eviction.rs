@@ -304,15 +304,35 @@ impl ImageViewerApp {
 
     pub(super) fn evict_distant_prefetch_caches(&mut self) {
         let len = self.image_files.len();
-        let within_window = |idx: usize| {
-            prefetch_window_contains(self.current_index, len, idx, PREFETCH_WINDOW_DISTANCE)
+        let current_index = self.current_index;
+        let generation = self.generation;
+        let loader = &self.loader;
+
+        let retain_prefetch_entry = |idx: usize| {
+            if prefetch_window_contains(current_index, len, idx, PREFETCH_WINDOW_DISTANCE) {
+                return true;
+            }
+            if !loader.is_loading_any(idx) {
+                return false;
+            }
+            let idx_gen = loader.current_generation(idx);
+            // `prefetch_prev_generation` is inert for distant indices; pass `None` (see review).
+            accepts_background_image_generation_with_loader(
+                loader,
+                current_index,
+                len,
+                generation,
+                None,
+                idx,
+                idx_gen,
+            )
         };
 
         // Track distant indices from prefetched_tiles eviction so we can clean their textures & metadata too
         let mut distant_indices = Vec::new();
 
         self.prefetched_tiles.retain(|&idx, _| {
-            let keep = within_window(idx);
+            let keep = retain_prefetch_entry(idx);
             if !keep {
                 distant_indices.push(idx);
             }
@@ -320,14 +340,14 @@ impl ImageViewerApp {
         });
 
         self.deferred_sdr_uploads
-            .retain(|&idx, _| within_window(idx));
+            .retain(|&idx, _| retain_prefetch_entry(idx));
 
         // Gather distant static HDR images
         let distant_hdr: Vec<usize> = self
             .hdr_image_cache
             .keys()
             .copied()
-            .filter(|&idx| !within_window(idx))
+            .filter(|&idx| !retain_prefetch_entry(idx))
             .collect();
         distant_indices.extend(distant_hdr);
 
@@ -339,7 +359,7 @@ impl ImageViewerApp {
             .hdr_tiled_source_cache
             .keys()
             .copied()
-            .filter(|&idx| !within_window(idx))
+            .filter(|&idx| !retain_prefetch_entry(idx))
             .collect();
         distant_indices.extend(distant_tiled_hdr);
 
@@ -352,7 +372,7 @@ impl ImageViewerApp {
             .textures
             .keys()
             .copied()
-            .filter(|&idx| !within_window(idx))
+            .filter(|&idx| !retain_prefetch_entry(idx))
             .collect();
         distant_indices.extend(distant_textures);
 
@@ -360,7 +380,7 @@ impl ImageViewerApp {
             .animation_cache
             .keys()
             .copied()
-            .filter(|&idx| !within_window(idx))
+            .filter(|&idx| !retain_prefetch_entry(idx))
             .collect();
         distant_indices.extend(distant_animations);
 

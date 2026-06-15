@@ -398,10 +398,12 @@ default-features = false
 version = "0.3.2"
 features = [
     "std",
+    "NSArray",
     "NSError",
     "NSProcessInfo",
     "NSRange",
     "NSString",
+    "NSURL",
 ]
 optional = true
 default-features = false
@@ -443,6 +445,7 @@ features = [
     "MTLAccelerationStructure",
     "MTLAccelerationStructureTypes",
     "MTLAccelerationStructureCommandEncoder",
+    "MTLBinaryArchive",
     "MTLResidencySet",
 ]
 optional = true

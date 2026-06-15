@@ -117,7 +117,7 @@ pub fn run() -> eframe::Result {
     if crate::ipc::setup_or_forward_args(ipc_tx, initial_image.as_ref(), no_recursive) {
         // We Successfully forwarded to another instance, exit.
         shutdown_logger();
-        std::process::exit(0);
+        crate::startup::force_process_exit(0);
     }
 
     // 3. Primary Instance Initialization
@@ -523,7 +523,7 @@ pub fn run() -> eframe::Result {
     // Settings are already persisted in on_exit(), so this is safe.
     if result.is_ok() {
         shutdown_logger();
-        std::process::exit(0);
+        crate::startup::force_process_exit(0);
     }
 
     if let Err(e) = result {

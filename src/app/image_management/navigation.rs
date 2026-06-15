@@ -474,33 +474,31 @@ impl ImageViewerApp {
                     .is_preview_placeholder(self.current_index),
                 self.tile_manager.is_some()
             );
-            // Decoded during preload (HDR cache and/or deferred SDR pixels) — avoid re-decoding.
             self.prefetch_prev_generation = None;
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
             let is_tiled = self
                 .texture_cache
                 .is_preview_placeholder(self.current_index);
-            if is_tiled && self.tile_manager.is_none() {
-                // Defensive fallback for any tiled preview (SDR or HDR with missing source cache)
-                // that doesn't have a TileManager installed.
-                if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
-                    self.set_current_image_resolution(Some((w, h)));
-                }
-                self.loader.request_load(
-                    self.current_index,
-                    self.generation,
-                    self.image_files[self.current_index].clone(),
-                    self.settings.raw_high_quality,
-                    self.raw_demosaic_mode_for_index(self.current_index),
-                );
-            } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
-                self.set_current_image_resolution(Some((hdr.width, hdr.height)));
-            } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
-                self.set_current_image_resolution(Some((src.width(), src.height())));
-                // Defensive fallback: if it is a tiled HDR image but the TileManager is missing,
-                // trigger a request_load to rebuild the TileManager.
-                if self.tile_manager.is_none() {
+            let needs_tile_manager_rebuild = (is_tiled
+                || self
+                    .hdr_tiled_source_cache
+                    .contains_key(&self.current_index))
+                && self.tile_manager.is_none();
+            if needs_tile_manager_rebuild {
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                if is_tiled {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(self.current_index) {
+                        self.set_current_image_resolution(Some((w, h)));
+                    }
+                    self.loader.request_load(
+                        self.current_index,
+                        self.generation,
+                        self.image_files[self.current_index].clone(),
+                        self.settings.raw_high_quality,
+                        self.raw_demosaic_mode_for_index(self.current_index),
+                    );
+                } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
+                    self.set_current_image_resolution(Some((src.width(), src.height())));
                     self.loader.request_load(
                         self.current_index,
                         self.generation,
@@ -509,44 +507,85 @@ impl ImageViewerApp {
                         self.raw_demosaic_mode_for_index(self.current_index),
                     );
                 }
+            } else if let Some(hdr) = self.hdr_image_cache.get(&self.current_index) {
+                self.set_current_image_resolution(Some((hdr.width, hdr.height)));
+            } else if let Some(src) = self.hdr_tiled_source_cache.get(&self.current_index) {
+                self.set_current_image_resolution(Some((src.width(), src.height())));
             } else if let Some(decoded) = self.deferred_sdr_uploads.get(&self.current_index) {
                 self.set_current_image_resolution(Some((decoded.width, decoded.height)));
             }
         } else {
-            if raw_hq_navigate_missing_hdr_plane(
+            let idx = self.current_index;
+            let missing_hdr = raw_hq_navigate_missing_hdr_plane(
                 &self.image_files,
-                self.current_index,
+                idx,
                 self.settings.raw_high_quality,
                 &self.hdr_image_cache,
                 &self.hdr_tiled_source_cache,
-            ) {
+            );
+            if missing_hdr && self.loader.is_loading_any(idx) {
+                // Fall back to the in-flight generation to reuse the ongoing background load.
+                // This is safe and accepted by accepts_background_image_generation as long as
+                // the index remains registered in the loader's loading map.
+                let inflight_gen = self.loader.current_generation(idx);
                 crate::preload_debug!(
-                    "[PreloadDebug][RAW] navigate missing_hdr_plane idx={} → request_load",
-                    self.current_index
+                    "[PreloadDebug][RAW] navigate inflight_reuse idx={} gen={}",
+                    idx,
+                    inflight_gen
                 );
+                self.generation = inflight_gen;
+                self.loader.set_generation(inflight_gen);
+                self.prefetch_prev_generation = None;
+                if self.current_image_res.is_none() {
+                    if let Some((w, h)) = self.texture_cache.get_original_res(idx).or_else(|| {
+                        self.deferred_sdr_uploads
+                            .get(&idx)
+                            .map(|d| (d.width, d.height))
+                    }) {
+                        self.set_current_image_resolution(Some((w, h)));
+                    }
+                }
             } else {
-                crate::preload_debug!(
-                    "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
-                    self.current_index,
-                    self.settings.raw_high_quality
+                #[cfg(feature = "preload-debug")]
+                {
+                    let bootstrap_only = missing_hdr
+                        && crate::app::image_management::raw_hq_has_bootstrap_sdr_only(
+                            &self.image_files,
+                            idx,
+                            self.settings.raw_high_quality,
+                            &self.hdr_image_cache,
+                            &self.hdr_tiled_source_cache,
+                            self.texture_cache.contains(idx),
+                            self.deferred_sdr_uploads.contains_key(&idx),
+                        );
+                    if missing_hdr {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] navigate missing_hdr_plane idx={} bootstrap_only={} → request_load",
+                            idx,
+                            bootstrap_only
+                        );
+                    } else {
+                        crate::preload_debug!(
+                            "[PreloadDebug][RAW] navigate cache_miss idx={} raw_hq={} → request_load",
+                            idx,
+                            self.settings.raw_high_quality
+                        );
+                    }
+                }
+                self.prefetch_prev_generation = None;
+                self.generation = self.generation.wrapping_add(1);
+                self.loader.set_generation(self.generation);
+                self.loader.request_load(
+                    idx,
+                    self.generation,
+                    self.image_files[idx].clone(),
+                    self.settings.raw_high_quality,
+                    self.raw_demosaic_mode_for_index(idx),
                 );
             }
-            // Cache miss: fresh load required. Clear any leftover prefetch_prev_generation
-            // so handle_preview_update doesn't erroneously accept stale old-gen results.
-            self.prefetch_prev_generation = None;
-            // ALWAYS increment generation on every navigation and request a fresh load.
-            // This ensures TileManager is re-initialized for large images and
-            // low-res thumbnails are upgraded to full resolution.
-            self.generation = self.generation.wrapping_add(1);
-            self.loader.set_generation(self.generation);
-            self.loader.request_load(
-                self.current_index,
-                self.generation,
-                self.image_files[self.current_index].clone(),
-                self.settings.raw_high_quality,
-                self.raw_demosaic_mode_for_index(self.current_index),
-            );
         }
+
+        self.ensure_raw_inflight_bootstrap_present(self.current_index, ctx);
 
         // Housekeeping: evict distant prefetch CPU caches (tiles, deferred SDR, static HDR).
         self.evict_distant_prefetch_caches();
