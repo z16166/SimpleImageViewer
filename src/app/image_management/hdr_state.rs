@@ -17,6 +17,24 @@
 use super::*;
 
 impl ImageViewerApp {
+    #[cfg(feature = "preload-debug")]
+    pub(crate) fn debug_log_preload_defer_gate(&mut self, can_release: bool) {
+        if !self.preload_deferred_for_hdr_capacity {
+            return;
+        }
+        let selection = self.effective_hdr_monitor_selection();
+        let wsi = self.vulkan_wsi_hdr_gates.get();
+        self.hdr_preload_gate_log.log_preload_defer_gate(
+            self.preload_deferred_for_hdr_capacity,
+            self.hdr_monitor_state.runtime_probe_completed(),
+            self.hdr_capabilities.output_mode,
+            selection.as_ref(),
+            can_release,
+            wsi.probed,
+            self.hdr_target_format,
+        );
+    }
+
     pub(crate) fn clear_hdr_image_state(&mut self) {
         self.hdr_image_cache.clear();
         self.hdr_tiled_source_cache.clear();
@@ -140,11 +158,14 @@ impl ImageViewerApp {
         let selection = self.effective_hdr_monitor_selection();
         if !super::startup_preload_defer_can_release(
             self.hdr_monitor_state.runtime_probe_completed(),
+            self.native_hdr_swapchain_requests_enabled(),
             selection.as_ref(),
             self.hdr_capabilities.output_mode,
             self.hdr_monitor_state.runtime_probe_completed_at(),
             std::time::Instant::now(),
         ) {
+            #[cfg(feature = "preload-debug")]
+            self.debug_log_preload_defer_gate(false);
             return;
         }
         self.preload_deferred_for_hdr_capacity = false;
@@ -174,11 +195,14 @@ impl ImageViewerApp {
             let selection = self.effective_hdr_monitor_selection();
             let can_release = startup_preload_defer_can_release(
                 self.hdr_monitor_state.runtime_probe_completed(),
+                self.native_hdr_swapchain_requests_enabled(),
                 selection.as_ref(),
                 next_output_mode,
                 self.hdr_monitor_state.runtime_probe_completed_at(),
                 std::time::Instant::now(),
             );
+            #[cfg(feature = "preload-debug")]
+            self.debug_log_preload_defer_gate(can_release);
             if can_release {
                 self.flush_deferred_preload_after_hdr_capacity();
             }

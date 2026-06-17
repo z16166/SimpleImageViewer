@@ -448,20 +448,23 @@ impl eframe::App for ImageViewerApp {
                 self.settings.hdr_native_surface_enabled_effective(),
                 self.hdr_capabilities.backend,
             );
-        if let Some(desired_format) = crate::hdr::surface::desired_target_format_for_active_monitor(
+        let wp_selection = self.hdr_monitor_state.selection();
+        let effective_selection = self.effective_hdr_monitor_selection();
+        let desired_target_format = crate::hdr::surface::desired_target_format_for_active_monitor(
             native_surface_requests_enabled,
-            self.effective_hdr_monitor_selection().as_ref(),
-        ) && Some(desired_format) != self.hdr_target_format
+            effective_selection.as_ref(),
+        );
+        if let Some(desired_format) = desired_target_format
+            && Some(desired_format) != self.hdr_target_format
         {
-            let effective_monitor = self.effective_hdr_monitor_selection();
             if self.last_logged_swap_chain_format_request != Some(desired_format) {
                 log::debug!(
                     "[HDR] runtime swap-chain format mismatch: current={:?} desired={:?} \
                      monitor={:?} hdr_supported={:?} native_surface_enabled={}",
                     self.hdr_target_format,
                     desired_format,
-                    effective_monitor.as_ref().map(|s| s.label.as_str()),
-                    effective_monitor.as_ref().map(|s| s.hdr_supported),
+                    effective_selection.as_ref().map(|s| s.label.as_str()),
+                    effective_selection.as_ref().map(|s| s.hdr_supported),
                     native_surface_requests_enabled,
                 );
                 self.last_logged_swap_chain_format_request = Some(desired_format);
@@ -484,6 +487,34 @@ impl eframe::App for ImageViewerApp {
                 self.hdr_capabilities.backend,
                 self.hdr_target_format,
             );
+        #[cfg(feature = "preload-debug")]
+        {
+            use crate::app::preload_hdr_gate::SwapRequestOutcome;
+            let wsi = self.vulkan_wsi_hdr_gates.get();
+            let swap_request_outcome = if !native_surface_requests_enabled {
+                SwapRequestOutcome::Disabled
+            } else if desired_target_format.is_none() {
+                SwapRequestOutcome::NoMonitorOpinion
+            } else if desired_target_format == self.hdr_target_format {
+                SwapRequestOutcome::AlreadyMatched
+            } else {
+                SwapRequestOutcome::Requested
+            };
+            self.hdr_preload_gate_log.log_swap_chain_gate(
+                native_surface_requests_enabled,
+                self.settings.hdr_native_surface_enabled_effective(),
+                self.settings.hdr_native_surface_enabled,
+                self.hdr_capabilities.backend,
+                self.hdr_target_format,
+                desired_target_format,
+                swap_request_outcome,
+                wsi,
+                wp_selection,
+                effective_selection.as_ref(),
+                output_mode,
+                self.hdr_capabilities.native_presentation_enabled,
+            );
+        }
         self.hdr_capabilities.available = self.hdr_capabilities.native_presentation_enabled
             || output_mode != crate::hdr::types::HdrOutputMode::SdrToneMapped;
         let next_hdr_output_state = HdrOutputStateSnapshot::new(

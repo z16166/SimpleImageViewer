@@ -378,6 +378,8 @@ pub struct ImageViewerApp {
     pub(crate) last_vulkan_hdr_metadata: Option<eframe::egui_wgpu::VulkanHdrMetadata>,
     /// Dedupes swap-chain format mismatch diagnostics while a hot-swap is pending.
     pub(crate) last_logged_swap_chain_format_request: Option<wgpu::TextureFormat>,
+    #[cfg(feature = "preload-debug")]
+    pub(crate) hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState,
     pub(crate) rgb10a2_pq_encode_requested: bool,
     pub(crate) ultra_hdr_decode_capacity: f32,
     pub(crate) ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode,

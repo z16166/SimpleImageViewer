@@ -44,6 +44,19 @@ impl ImageViewerApp {
             return;
         }
         if self.preload_deferred_for_hdr_capacity {
+            #[cfg(feature = "preload-debug")]
+            {
+                let selection = self.effective_hdr_monitor_selection();
+                let can_release = super::startup_preload_defer_can_release(
+                    self.hdr_monitor_state.runtime_probe_completed(),
+                    self.native_hdr_swapchain_requests_enabled(),
+                    selection.as_ref(),
+                    self.hdr_capabilities.output_mode,
+                    self.hdr_monitor_state.runtime_probe_completed_at(),
+                    std::time::Instant::now(),
+                );
+                self.debug_log_preload_defer_gate(can_release);
+            }
             preload_debug!(
                 "[PreloadDebug] schedule deferred: waiting for runtime HDR capacity refresh"
             );

@@ -119,6 +119,13 @@ impl ImageViewerApp {
         self.startup_hotkeys_alert_shown = true;
     }
 
+    pub(crate) fn native_hdr_swapchain_requests_enabled(&self) -> bool {
+        crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+            self.settings.hdr_native_surface_enabled_effective(),
+            self.hdr_capabilities.backend,
+        )
+    }
+
     pub(crate) fn effective_hdr_monitor_selection(
         &self,
     ) -> Option<crate::hdr::monitor::HdrMonitorSelection> {

@@ -32,6 +32,8 @@ mod hotkeys_ui;
 mod metadata_extract;
 mod pixel_inspector_ui;
 mod preload;
+#[cfg(feature = "preload-debug")]
+mod preload_hdr_gate;
 mod tray_handlers;
 mod types;
 
