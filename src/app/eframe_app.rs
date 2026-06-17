@@ -188,6 +188,8 @@ impl eframe::App for ImageViewerApp {
         // Intercept close request if minimize to tray is enabled and not an explicit quit.
         // eframe may report the close request for more than one frame, so keep
         // canceling it while we are in tray mode instead of only on the first frame.
+        // Do not return early — fall through to `finish_hide_to_tray` below so hide
+        // completes even when `close_requested` stays true, and scan/load logic still runs.
         if ctx.input(|i| i.viewport().close_requested()) && !self.explicit_quit {
             let is_shutting_down = {
                 #[cfg(target_os = "windows")]
@@ -206,7 +208,6 @@ impl eframe::App for ImageViewerApp {
                 if !self.hidden_to_tray && !self.pending_hide_to_tray {
                     self.prepare_hide_to_tray(ctx);
                 }
-                return;
             }
         }
 

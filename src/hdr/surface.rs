@@ -317,15 +317,23 @@ pub fn native_hdr_surface_blocker(format: Option<wgpu::TextureFormat>) -> Option
     #[cfg(target_os = "linux")]
     {
         return Some(match format {
-            Some(_) => "current eframe/wgpu target format is SDR; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)",
-            None => "current eframe/wgpu target format is unknown; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)",
+            Some(_) => {
+                "current eframe/wgpu target format is SDR; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)"
+            }
+            None => {
+                "current eframe/wgpu target format is unknown; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)"
+            }
         });
     }
     #[cfg(not(target_os = "linux"))]
     {
         Some(match format {
-            Some(_) => "current eframe/wgpu target format is SDR; native HDR requires a float HDR swap-chain format (Rgba16Float)",
-            None => "current eframe/wgpu target format is unknown; native HDR requires a float HDR swap-chain format (Rgba16Float)",
+            Some(_) => {
+                "current eframe/wgpu target format is SDR; native HDR requires a float HDR swap-chain format (Rgba16Float)"
+            }
+            None => {
+                "current eframe/wgpu target format is unknown; native HDR requires a float HDR swap-chain format (Rgba16Float)"
+            }
         })
     }
 }
@@ -524,12 +532,16 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(
             native_hdr_surface_blocker(Some(wgpu::TextureFormat::Bgra8Unorm)),
-            Some("current eframe/wgpu target format is SDR; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)")
+            Some(
+                "current eframe/wgpu target format is SDR; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)"
+            )
         );
         #[cfg(not(target_os = "linux"))]
         assert_eq!(
             native_hdr_surface_blocker(Some(wgpu::TextureFormat::Bgra8Unorm)),
-            Some("current eframe/wgpu target format is SDR; native HDR requires a float HDR swap-chain format (Rgba16Float)")
+            Some(
+                "current eframe/wgpu target format is SDR; native HDR requires a float HDR swap-chain format (Rgba16Float)"
+            )
         );
         assert_eq!(
             native_hdr_surface_blocker(Some(wgpu::TextureFormat::Rgba16Float)),
@@ -548,12 +560,16 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(
             native_hdr_surface_blocker(None),
-            Some("current eframe/wgpu target format is unknown; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)")
+            Some(
+                "current eframe/wgpu target format is unknown; native HDR requires an HDR swap-chain format (Rgb10a2Unorm on Wayland; a runtime hot-swap may still be pending at startup)"
+            )
         );
         #[cfg(not(target_os = "linux"))]
         assert_eq!(
             native_hdr_surface_blocker(None),
-            Some("current eframe/wgpu target format is unknown; native HDR requires a float HDR swap-chain format (Rgba16Float)")
+            Some(
+                "current eframe/wgpu target format is unknown; native HDR requires a float HDR swap-chain format (Rgba16Float)"
+            )
         );
     }
 
