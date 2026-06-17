@@ -27,20 +27,30 @@ use std::sync::{Once, RwLock};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     ShowMainWindow,
+    OpenSettings,
     Quit,
 }
 
 struct TrayMenuIds {
     show: tray_icon::menu::MenuId,
+    settings: tray_icon::menu::MenuId,
     quit: tray_icon::menu::MenuId,
 }
 
 static TRAY_MENU_IDS: RwLock<Option<TrayMenuIds>> = RwLock::new(None);
 static INSTALL_ONCE: Once = Once::new();
 
-pub fn set_menu_ids(show: tray_icon::menu::MenuId, quit: tray_icon::menu::MenuId) {
+pub fn set_menu_ids(
+    show: tray_icon::menu::MenuId,
+    settings: tray_icon::menu::MenuId,
+    quit: tray_icon::menu::MenuId,
+) {
     if let Ok(mut guard) = TRAY_MENU_IDS.write() {
-        *guard = Some(TrayMenuIds { show, quit });
+        *guard = Some(TrayMenuIds {
+            show,
+            settings,
+            quit,
+        });
     }
 }
 
@@ -82,6 +92,8 @@ fn install_tray_menu_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
                 let ids = guard.as_ref()?;
                 if event.id == ids.show {
                     Some(TrayCommand::ShowMainWindow)
+                } else if event.id == ids.settings {
+                    Some(TrayCommand::OpenSettings)
                 } else if event.id == ids.quit {
                     Some(TrayCommand::Quit)
                 } else {
@@ -91,7 +103,7 @@ fn install_tray_menu_handler(wake_ctx: egui::Context, tx: Sender<TrayCommand>) {
             let Some(cmd) = cmd else {
                 return;
             };
-            if cmd == TrayCommand::ShowMainWindow {
+            if matches!(cmd, TrayCommand::ShowMainWindow | TrayCommand::OpenSettings) {
                 crate::ipc::force_foreground_if_visible();
             }
             let _ = tx.send(cmd);

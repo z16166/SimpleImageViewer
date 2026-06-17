@@ -258,11 +258,7 @@ impl ImageViewerApp {
             if defer_sdr_upload && idx != self.current_index {
                 self.deferred_sdr_uploads.insert(idx, fallback.clone());
             } else {
-                self.queue_or_upload_hdr_sdr_fallback_texture(
-                    idx,
-                    fallback,
-                    ctx,
-                );
+                self.queue_or_upload_hdr_sdr_fallback_texture(idx, fallback, ctx);
             }
         }
 

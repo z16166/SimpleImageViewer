@@ -153,6 +153,10 @@ impl eframe::App for ImageViewerApp {
                 crate::app::tray_handlers::TrayCommand::ShowMainWindow => {
                     self.show_main_window_from_tray(ctx);
                 }
+                crate::app::tray_handlers::TrayCommand::OpenSettings => {
+                    self.show_main_window_from_tray(ctx);
+                    self.show_settings = true;
+                }
                 crate::app::tray_handlers::TrayCommand::Quit => {
                     self.explicit_quit = true;
                     self.quit_process_now();
@@ -697,13 +701,17 @@ impl ImageViewerApp {
 
         let show_item =
             tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
+        let settings_item =
+            tray_icon::menu::MenuItem::new(t!("tray.settings").to_string(), true, None);
         let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
         let show_item_id = show_item.id().clone();
+        let settings_item_id = settings_item.id().clone();
         let quit_item_id = quit_item.id().clone();
 
         let tray_menu = tray_icon::menu::Menu::new();
         let _ = tray_menu.append_items(&[
             &show_item,
+            &settings_item,
             &tray_icon::menu::PredefinedMenuItem::separator(),
             &quit_item,
         ]);
@@ -716,7 +724,11 @@ impl ImageViewerApp {
             .build()
         {
             Ok(t) => {
-                crate::app::tray_handlers::set_menu_ids(show_item_id, quit_item_id);
+                crate::app::tray_handlers::set_menu_ids(
+                    show_item_id,
+                    settings_item_id,
+                    quit_item_id,
+                );
                 Some(super::types::TrayState {
                     _tray_icon: t,
                     was_maximized,

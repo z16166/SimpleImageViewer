@@ -785,11 +785,7 @@ impl ImageViewerApp {
             .callback_resources
             .get_mut::<crate::hdr::renderer::HdrCallbackResources>()
         {
-            if !resources.register_preuploaded_binding(
-                image_key,
-                binding,
-                self.current_device_id,
-            ) {
+            if !resources.register_preuploaded_binding(image_key, binding, self.current_device_id) {
                 // Device replaced during `from_uploaded`; `prepare()` will bind synchronously.
             }
         }
@@ -799,10 +795,7 @@ impl ImageViewerApp {
         true
     }
 
-    fn finish_or_defer_hdr_preupload_registration(
-        &mut self,
-        load_result: &mut LoadResult,
-    ) -> bool {
+    fn finish_or_defer_hdr_preupload_registration(&mut self, load_result: &mut LoadResult) -> bool {
         let key = (load_result.index, load_result.generation);
         let count = self
             .hdr_register_prewarm_repush_counts

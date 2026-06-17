@@ -415,6 +415,7 @@ pixel_inspector.not_ready: "Pixel data is not ready yet. Please try again in a m
 section.system_general: "General System Options"
 label.minimize_to_tray_on_close: "Minimize to tray on close"
 tray.show_window: "Show Main Window"
+tray.settings: "Settings"
 tray.quit: "Exit"
 ctx.copy_to: "📋 Copy to..."
 ctx.cut_to: "✂ Cut to..."

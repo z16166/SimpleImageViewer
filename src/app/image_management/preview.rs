@@ -281,11 +281,7 @@ impl ImageViewerApp {
         if self.texture_cache.contains(idx) && !self.texture_cache.is_preview_placeholder(idx) {
             return;
         }
-        self.queue_or_upload_raw_gpu_bootstrap_texture(
-            idx,
-            preview,
-            ctx,
-        );
+        self.queue_or_upload_raw_gpu_bootstrap_texture(idx, preview, ctx);
         if idx == self.current_index {
             self.set_current_image_resolution(Some((preview.width, preview.height)));
             if should_request_repaint_for_asset_update(
