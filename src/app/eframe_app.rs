@@ -492,6 +492,20 @@ impl eframe::App for ImageViewerApp {
             self.hdr_target_format,
         );
         if hdr_output_state_changed(previous_hdr_output_state, next_hdr_output_state) {
+            if let Some(selection) = self.effective_hdr_monitor_selection() {
+                log::info!(
+                    "[HDR] presentation active: output_mode={:?} native_presentation={} \
+                     target_format={:?} monitor={} hdr_supported_effective={} \
+                     hdr_capacity_source={:?} max_luminance_nits={:?}",
+                    self.hdr_capabilities.output_mode,
+                    self.hdr_capabilities.native_presentation_enabled,
+                    self.hdr_target_format,
+                    selection.label,
+                    selection.hdr_supported,
+                    selection.hdr_capacity_source,
+                    selection.max_luminance_nits,
+                );
+            }
             self.refresh_hdr_view_status();
         }
         self.refresh_ultra_hdr_decode_capacity(ctx);

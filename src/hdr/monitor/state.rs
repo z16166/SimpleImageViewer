@@ -118,8 +118,11 @@ impl HdrMonitorState {
         match active_monitor_hdr_status(signature.outer_rect) {
             Ok(selection) => {
                 if self.selection.as_ref() != Some(&selection) {
-                    log::info!(
-                        "[HDR] active_monitor={} hdr_supported={} max_luminance_nits={:?} max_full_frame_luminance_nits={:?} max_hdr_capacity={:?} hdr_capacity_source={:?}",
+                    log::debug!(
+                        "[HDR] active_monitor wp_color_management: {} wp_hdr_supported={} \
+                         max_luminance_nits={:?} max_full_frame_luminance_nits={:?} \
+                         max_hdr_capacity={:?} hdr_capacity_source={:?} \
+                         (on Linux, effective HDR gating merges Vulkan WSI)",
                         selection.label,
                         selection.hdr_supported,
                         selection.max_luminance_nits,

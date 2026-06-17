@@ -648,6 +648,15 @@ impl ImageViewerApp {
                 crate::hdr::platform::linux_native_hdr_platform_eligible(),
                 app.hdr_capabilities.output_mode,
             );
+            if !app.hdr_capabilities.native_presentation_enabled
+                && app.hdr_capabilities.candidate_platform_path.is_some()
+            {
+                log::info!(
+                    "[HDR] startup diagnostics are pre-hot-swap; native HDR may activate once \
+                     Vulkan WSI probing and the runtime monitor gate complete (see \
+                     \"[HDR] presentation active\" log)"
+                );
+            }
         }
         app.loader
             .set_hdr_target_capacity(app.ultra_hdr_decode_capacity);

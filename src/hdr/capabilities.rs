@@ -282,6 +282,12 @@ mod tests {
                 .reason
                 .contains("current eframe/wgpu target format is SDR")
         );
+        assert!(
+            capabilities.reason.contains("Rgb10a2Unorm")
+                || capabilities.reason.contains("Rgba16Float"),
+            "expected platform-specific native HDR swap-chain hint, got: {}",
+            capabilities.reason
+        );
     }
 
     #[cfg(target_os = "linux")]
