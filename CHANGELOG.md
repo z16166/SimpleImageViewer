@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Linux tone-mapped SDR startup**: With **Native HDR surface** disabled, the viewer no longer stays on a black `loading…` screen. Startup preloads no longer wait for an HDR swap-chain hot-swap that is intentionally never requested when tone-mapped SDR output is selected (including on Wayland sessions where Vulkan WSI still reports HDR10 support).
+- **Linux Wayland HDR startup logs**: Startup diagnostics now explain when native HDR may activate after Vulkan WSI probing, instead of implying the swap chain is permanently SDR-only.
+
+### Added
+- **HDR/preload diagnostics (`preload-debug`)**: Build with `--features preload-debug` to emit `[PreloadDebug][HDR-Gate]` logs that trace swap-chain target decisions and startup preload deferral gates.
+
 ## [2.6.3] - 2026-06-17
 
 ### Added

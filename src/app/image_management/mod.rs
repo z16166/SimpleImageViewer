@@ -534,8 +534,13 @@ pub(crate) const STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE: Duration = Duration::fro
 /// Startup preload defer stays active until runtime monitor probe finishes **and** HDR
 /// decode capacity is not still gated at 1.0 by `SdrToneMapped` output (swap chain may
 /// still be `Bgra8Unorm` for a few frames after the probe -- see user logs L31 vs L62).
+///
+/// When native HDR swap-chain requests are disabled, `SdrToneMapped` is the intentional
+/// terminal path (not a transient state before `Rgb10a2Unorm` hot-swap). WSI may still
+/// report `hdr_supported = true` on Wayland while the user keeps tone-mapped SDR output.
 pub(crate) fn startup_preload_defer_can_release(
     runtime_probe_completed: bool,
+    native_hdr_surface_requests_enabled: bool,
     selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
@@ -543,6 +548,9 @@ pub(crate) fn startup_preload_defer_can_release(
 ) -> bool {
     if !runtime_probe_completed {
         return false;
+    }
+    if !native_hdr_surface_requests_enabled {
+        return true;
     }
     let monitor_hdr_supported = selection.is_some_and(|s| s.hdr_supported);
     if !monitor_hdr_supported {

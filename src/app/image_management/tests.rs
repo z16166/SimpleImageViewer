@@ -501,12 +501,14 @@ fn first_batch_preload_waits_for_startup_target() {
 
 fn startup_preload_defer_can_release_now(
     runtime_probe_completed: bool,
+    native_hdr_surface_requests_enabled: bool,
     selection: Option<&crate::hdr::monitor::HdrMonitorSelection>,
     output_mode: crate::hdr::types::HdrOutputMode,
     probe_completed_at: Option<std::time::Instant>,
 ) -> bool {
     super::startup_preload_defer_can_release(
         runtime_probe_completed,
+        native_hdr_surface_requests_enabled,
         selection,
         output_mode,
         probe_completed_at,
@@ -558,11 +560,13 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
 
     assert!(!startup_preload_defer_can_release_now(
         false,
+        true,
         selection_hdr_known,
         HdrOutputMode::WindowsScRgb,
         None,
     ));
     assert!(startup_preload_defer_can_release_now(
+        true,
         true,
         selection_sdr,
         HdrOutputMode::SdrToneMapped,
@@ -570,11 +574,13 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
+        true,
         selection_hdr_known,
         HdrOutputMode::SdrToneMapped,
         None,
     ));
     assert!(!startup_preload_defer_can_release_now(
+        true,
         true,
         selection_hdr_unknown,
         HdrOutputMode::WindowsScRgb,
@@ -585,20 +591,54 @@ fn startup_preload_defer_waits_for_hdr_output_mode_after_runtime_probe() {
     ));
     assert!(!startup_preload_defer_can_release_now(
         true,
+        true,
         selection_hdr_source_only,
         HdrOutputMode::WindowsScRgb,
         None,
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
+        true,
         selection_hdr_known,
         HdrOutputMode::WindowsScRgb,
         None,
     ));
     assert!(startup_preload_defer_can_release_now(
         true,
+        true,
         selection_hdr_known,
         HdrOutputMode::MacOsEdr,
+        None,
+    ));
+}
+
+#[test]
+fn startup_preload_defer_releases_when_native_hdr_surface_disabled() {
+    use crate::hdr::monitor::HdrMonitorSelection;
+    use crate::hdr::types::HdrOutputMode;
+
+    let selection_wsi_hdr = HdrMonitorSelection {
+        hdr_supported: true,
+        label: "eDP-1".to_string(),
+        max_luminance_nits: Some(450.0),
+        max_full_frame_luminance_nits: None,
+        max_hdr_capacity: None,
+        hdr_capacity_source: Some("Vulkan WSI surface formats"),
+        native_surface_encoding: None,
+    };
+
+    assert!(startup_preload_defer_can_release_now(
+        true,
+        false,
+        Some(&selection_wsi_hdr),
+        HdrOutputMode::SdrToneMapped,
+        None,
+    ));
+    assert!(!startup_preload_defer_can_release_now(
+        true,
+        true,
+        Some(&selection_wsi_hdr),
+        HdrOutputMode::SdrToneMapped,
         None,
     ));
 }
@@ -621,6 +661,7 @@ fn startup_preload_defer_releases_after_probe_timeout_when_capacity_unknown() {
     let now = Instant::now();
     let probe_at = now - super::STARTUP_PRELOAD_DEFER_MAX_AFTER_PROBE - Duration::from_secs(1);
     assert!(super::startup_preload_defer_can_release(
+        true,
         true,
         Some(&selection_hdr_unknown),
         HdrOutputMode::WindowsScRgb,
@@ -1457,6 +1498,8 @@ fn make_test_app() -> ImageViewerApp {
         #[cfg(target_os = "linux")]
         last_vulkan_hdr_metadata,
         last_logged_swap_chain_format_request: None,
+        #[cfg(feature = "preload-debug")]
+        hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState::default(),
         rgb10a2_pq_encode_requested: false,
         ultra_hdr_decode_capacity: 1.0,
         ultra_hdr_decode_output_mode: crate::hdr::types::HdrOutputMode::SdrToneMapped,

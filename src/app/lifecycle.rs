@@ -455,6 +455,11 @@ impl ImageViewerApp {
         };
         // Raw open prefetch waits for the first runtime HDR capacity probe (macOS EDR).
         // Starting it earlier would decode at capacity 1.0 and be discarded on probe.
+        let preload_deferred_for_hdr_capacity =
+            crate::hdr::surface::native_hdr_swapchain_requests_enabled(
+                settings.hdr_native_surface_enabled_effective(),
+                hdr_capabilities.backend,
+            );
         let mut app = Self {
             save_tx,
             initial_image,
@@ -489,10 +494,12 @@ impl ImageViewerApp {
             #[cfg(target_os = "linux")]
             last_vulkan_hdr_metadata: None,
             last_logged_swap_chain_format_request: None,
+            #[cfg(feature = "preload-debug")]
+            hdr_preload_gate_log: crate::app::preload_hdr_gate::GateLogState::default(),
             rgb10a2_pq_encode_requested: false,
             ultra_hdr_decode_capacity,
             ultra_hdr_decode_output_mode: initial_hdr_output_mode,
-            preload_deferred_for_hdr_capacity: true,
+            preload_deferred_for_hdr_capacity,
             current_hdr_image: None,
             hdr_image_cache: std::collections::HashMap::new(),
             current_hdr_tiled_image: None,
