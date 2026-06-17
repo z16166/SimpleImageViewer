@@ -397,8 +397,9 @@ impl ProbeState {
             self.image_state.reference_luminance_nits,
         );
 
-        log::info!(
-            "[HDR] Wayland output probe: output={} hdr_supported={} transfer_function={tf:?} \
+        log::debug!(
+            "[HDR] Wayland wp_color_management probe (metadata only; Vulkan WSI gates HDR on Linux): \
+             output={} wp_hdr_supported={} transfer_function={tf:?} \
              max_luminance_nits={:?} origin={}",
             selection.label,
             selection.hdr_supported,
