@@ -51,6 +51,7 @@ pub(crate) enum AppAction {
     CopyTo,
     CutTo,
     ToggleTray,
+    PickDirectory,
 }
 
 impl ImageViewerApp {
@@ -200,6 +201,11 @@ impl ImageViewerApp {
             }
             AppAction::ToggleTray => {
                 self.minimize_to_tray_from_hotkey(ctx);
+            }
+            AppAction::PickDirectory => {
+                // open_directory_dialog requires &eframe::Frame which is not available here;
+                // set a flag that is consumed in logic() where frame is accessible.
+                self.pending_open_directory = true;
             }
         }
     }

@@ -1499,6 +1499,7 @@ fn make_test_app() -> ImageViewerApp {
         is_font_error: false,
         modal_generation: 0,
         pending_fullscreen: None,
+        pending_open_directory: false,
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,

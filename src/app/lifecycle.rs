@@ -527,6 +527,7 @@ impl ImageViewerApp {
             is_font_error: false,
             modal_generation: 0,
             pending_fullscreen: None,
+            pending_open_directory: false,
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,

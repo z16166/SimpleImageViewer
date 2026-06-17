@@ -448,6 +448,9 @@ pub struct ImageViewerApp {
     pub(crate) modal_generation: u32,
     // Pending viewport commands (set during input processing for deferred apply)
     pub(crate) pending_fullscreen: Option<bool>,
+    /// Set to true by the PickDirectory hotkey; consumed in `logic()` to call
+    /// `open_directory_dialog` which requires `&eframe::Frame`.
+    pub(crate) pending_open_directory: bool,
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.

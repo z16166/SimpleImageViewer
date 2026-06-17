@@ -600,6 +600,13 @@ impl eframe::App for ImageViewerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
         }
 
+        // Open the native directory picker when requested by the PickDirectory hotkey.
+        // This must run here (in logic) rather than in dispatch_action because
+        // open_directory_dialog requires &eframe::Frame, which is only available here.
+        if std::mem::take(&mut self.pending_open_directory) {
+            self.open_directory_dialog(frame);
+        }
+
         // Keep repainting while loading, auto-switching, or playing music
         let is_music_playing = self.settings.play_music && self.cached_music_count.unwrap_or(0) > 0;
         if self.settings.auto_switch || self.scanning || !self.loader.rx.is_empty() {
