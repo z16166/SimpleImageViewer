@@ -29,6 +29,16 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn load_directory(&mut self, dir: PathBuf) {
+        // Abandon an in-progress F5 refresh before starting a new directory scan; otherwise
+        // `process_scan_results` treats completion as refresh and skips new-directory reset.
+        self.finish_refresh_scan_state();
+        // Cancel any in-flight scan and drop its receiver before list state is reset, so stale
+        // batches cannot be processed after `refresh_scan_in_progress` is cleared above.
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.scan_rx = None;
+
         self.settings.last_image_dir = Some(dir.clone());
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
@@ -65,11 +75,6 @@ impl ImageViewerApp {
             .to_string_lossy()
             .to_string();
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
-
-        // Cancel previous scan if any
-        if let Some(cancel) = self.scan_cancel.take() {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
 
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));

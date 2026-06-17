@@ -28,12 +28,12 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
   - **macOS / Linux**: Automatically exports the image to a perfectly sized, margin-less PDF and opens it with the system default viewer for printing.
   - **Flexible Modes**: Print the entire image or just the currently zoomed-in "Visible Area" with precise cropping.
 - **Theme Support** — choose between **Dark** (classic), **Light**, or **System** (follows OS preference) themes instantly via settings.
-- **System Tray Integration** — optionally minimize the application to the system tray upon window close (cross-platform). Left-click the tray icon to restore the window, right-click for a context menu (Show Main Window / Exit), and automatically restore when opening images or launching new instances.
+- **System Tray Integration** — optionally minimize the application to the system tray upon window close (cross-platform). Left-click the tray icon to restore the window, right-click for a context menu (Show Main Window / Settings / Exit), and automatically restore when opening images or launching new instances.
 - **Copy & Cut to Folder** — copy or move the currently viewed image to any folder via the context menu or new customizable hotkeys (`Ctrl + Shift + C` for copy, `Ctrl + Shift + X` for cut). Features a folder browser dialog that remembers path history, and removes the file from the viewer list on a successful cut.
 - **Windows Integration** — Register as a recommended image viewer in the Windows "Open With" menu via the settings panel (no admin required). Includes an "Associate Formats" dialog to select specific file types and a one-click "Remove Association" to cleanly uninstall all registry entries
 - **Animated image playback** — animated GIF, APNG, and animated WebP play automatically with correct frame timing
-- **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode, and `F5` to refresh the image list without losing your zoom/rotation or playing animations
-- **Custom hotkeys** — rebind navigation, zoom, rotation, slideshow, printing, and other actions from **Settings > Hotkeys**; supports keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks. The defaults are listed in **Controls** below and can be changed at any time
+- **Smooth navigation** — arrow keys or `PageUp`/`PageDown` for navigation, mouse wheel zoom, pan in 1:1 mode, `F5` to refresh the image list without losing your zoom/rotation or playing animations, and `Ctrl + O` to pick an image folder from the main window (without opening Settings)
+- **Custom hotkeys** — rebind navigation, zoom, rotation, slideshow, printing, open-folder (`Ctrl + O`), and other actions from **Settings > Hotkeys**; supports keyboard shortcuts, mouse wheel actions, and modifier-assisted mouse button clicks. The defaults are listed in **Controls** below and can be changed at any time
 - **Two scale modes** — *Fit to Window* (default) and *Original Size (1:1)*; toggle with `Z`
 - **EXIF & XMP Metadata Display** — right-click an image to view detailed EXIF information or XMP properties. XMP extraction is optimized for fast, structured viewing of common tags (Creator, Copyright, Tool, etc.)
 - **Pixel Inspector** — view real-time pixel coordinates and RGBA colors on hover, or select a custom region (Shift + Click) to inspect a detailed grid of pixel values.
@@ -100,6 +100,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 | `Ctrl + Shift + C` | **Copy** current image to a specified directory |
 | `Ctrl + Shift + X` | **Cut** (move) current image to a specified directory |
 | `Ctrl + Shift + T` | **Minimize** the visible window to tray |
+| `Ctrl + O` | **Open folder picker** to choose an image directory |
 | `Ctrl + →` / `Ctrl + ←` | Rotate 90° CW / CCW |
 | `Ctrl + ↑` / `Ctrl + ↓` | Increase / decrease HDR exposure by **0.5 EV** |
 | `Alt + Wheel Down / Up` | Rotate 90° CW / CCW |
@@ -113,7 +114,7 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 | Setting | Description |
 |---|---|
-| **Library** | Browse button to pick image folder, recursive scan toggle, preload toggle, RAW+JPEG pair handling (show both / skip RAW / skip JPG-JPEG), and resume viewing toggle |
+| **Library** | Pick image folder with **Pick** or `Ctrl + O` (main window), recursive scan toggle, preload toggle, RAW+JPEG pair handling (show both / skip RAW / skip JPG-JPEG), and resume viewing toggle |
 | **Display** | Full-screen toggle, scale-mode selector, OSD info visibility, **High-Quality RAW preview** toggle, and **Demosaicing Mode (CPU / GPU)** when HQ RAW is enabled |
 | **Slideshow** | Enable auto-advance to next image, set interval, and toggle loop or random-order playback |
 | **Background Music** | Enable music, pick file or folder, navigation controls (⏮ ⏪ ▶/⏸ ⏩ ⏭), and adjust volume |

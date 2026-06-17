@@ -1499,6 +1499,7 @@ fn make_test_app() -> ImageViewerApp {
         is_font_error: false,
         modal_generation: 0,
         pending_fullscreen: None,
+        pending_open_directory: false,
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,
@@ -1601,6 +1602,27 @@ fn make_test_app() -> ImageViewerApp {
         tray_cmd_rx: crossbeam_channel::never(),
         copy_cut_overwrite_if_exists: false,
     }
+}
+
+#[test]
+fn load_directory_clears_in_progress_refresh_scan_state() {
+    let mut app = make_test_app();
+    app.refresh_scan_in_progress = true;
+    app.refresh_scan_slideshow_was_playing = true;
+    app.slideshow_paused = true;
+
+    let dir = std::env::temp_dir().join("siv_load_directory_refresh_test");
+    let _ = std::fs::create_dir_all(&dir);
+    app.load_directory(dir.clone());
+
+    assert!(!app.refresh_scan_in_progress);
+    assert!(!app.refresh_scan_slideshow_was_playing);
+    assert!(!app.slideshow_paused);
+
+    if let Some(cancel) = app.scan_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

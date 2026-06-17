@@ -153,6 +153,10 @@ impl eframe::App for ImageViewerApp {
                 crate::app::tray_handlers::TrayCommand::ShowMainWindow => {
                     self.show_main_window_from_tray(ctx);
                 }
+                crate::app::tray_handlers::TrayCommand::OpenSettings => {
+                    self.show_main_window_from_tray(ctx);
+                    self.show_settings = true;
+                }
                 crate::app::tray_handlers::TrayCommand::Quit => {
                     self.explicit_quit = true;
                     self.quit_process_now();
@@ -345,6 +349,8 @@ impl eframe::App for ImageViewerApp {
             // Process keyboard input (like Ctrl+Shift+T hotkey toggle) and file operation results even when minimized/in tray
             self.handle_keyboard(ctx);
             self.process_file_op_results();
+            // Pick-directory is main-window only; drop any flag queued before hide/minimize.
+            self.pending_open_directory = false;
 
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -591,9 +597,16 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        // Apply deferred viewport commands
+        // Deferred logic actions (require `logic()` / `Frame`; set from input dispatch):
+        // - `pending_fullscreen`: Option<bool> — viewport fullscreen toggle
+        // - `pending_open_directory`: bool — native folder picker (PickDirectory hotkey)
         if let Some(fs) = self.pending_fullscreen.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
+        }
+        if std::mem::take(&mut self.pending_open_directory)
+            && self.pick_directory_hotkey_allowed(ctx)
+        {
+            self.open_directory_dialog(frame);
         }
 
         // Keep repainting while loading, auto-switching, or playing music
@@ -697,13 +710,17 @@ impl ImageViewerApp {
 
         let show_item =
             tray_icon::menu::MenuItem::new(t!("tray.show_window").to_string(), true, None);
+        let settings_item =
+            tray_icon::menu::MenuItem::new(t!("tray.settings").to_string(), true, None);
         let quit_item = tray_icon::menu::MenuItem::new(t!("tray.quit").to_string(), true, None);
         let show_item_id = show_item.id().clone();
+        let settings_item_id = settings_item.id().clone();
         let quit_item_id = quit_item.id().clone();
 
         let tray_menu = tray_icon::menu::Menu::new();
         let _ = tray_menu.append_items(&[
             &show_item,
+            &settings_item,
             &tray_icon::menu::PredefinedMenuItem::separator(),
             &quit_item,
         ]);
@@ -716,7 +733,11 @@ impl ImageViewerApp {
             .build()
         {
             Ok(t) => {
-                crate::app::tray_handlers::set_menu_ids(show_item_id, quit_item_id);
+                crate::app::tray_handlers::set_menu_ids(
+                    show_item_id,
+                    settings_item_id,
+                    quit_item_id,
+                );
                 Some(super::types::TrayState {
                     _tray_icon: t,
                     was_maximized,
