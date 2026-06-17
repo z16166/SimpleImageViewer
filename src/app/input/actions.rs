@@ -19,6 +19,7 @@ use crate::app::ImageViewerApp;
 use crate::constants::KEYBOARD_NAV_MIN_INTERVAL_SECS;
 use crate::ui::dialogs::modal_state::ActiveModal;
 use eframe::egui::{self, Context, Vec2};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,6 +56,20 @@ pub(crate) enum AppAction {
 }
 
 impl ImageViewerApp {
+    /// Pick-directory hotkey and deferred picker: main window visible, no settings panel,
+    /// modal, print overlay, or in-progress F5 refresh scan.
+    pub(crate) fn pick_directory_hotkey_allowed(&self, ctx: &Context) -> bool {
+        if self.show_settings
+            || self.active_modal.is_some()
+            || self.refresh_scan_in_progress
+            || self.is_printing.load(Ordering::Relaxed)
+            || self.hidden_to_tray
+        {
+            return false;
+        }
+        ctx.input(|i| !i.viewport().minimized.unwrap_or(false))
+    }
+
     pub(crate) fn dispatch_action(&mut self, action: AppAction, ctx: &Context) {
         // During a refresh scan the file list is being rebuilt: block all actions
         // that dereference image_files by index to avoid out-of-bounds panics or
@@ -205,7 +220,9 @@ impl ImageViewerApp {
             AppAction::PickDirectory => {
                 // open_directory_dialog requires &eframe::Frame which is not available here;
                 // set a flag that is consumed in logic() where frame is accessible.
-                self.pending_open_directory = true;
+                if self.pick_directory_hotkey_allowed(ctx) {
+                    self.pending_open_directory = true;
+                }
             }
         }
     }

@@ -349,6 +349,8 @@ impl eframe::App for ImageViewerApp {
             // Process keyboard input (like Ctrl+Shift+T hotkey toggle) and file operation results even when minimized/in tray
             self.handle_keyboard(ctx);
             self.process_file_op_results();
+            // Pick-directory is main-window only; drop any flag queued before hide/minimize.
+            self.pending_open_directory = false;
 
             self.last_minimized = true;
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -595,15 +597,15 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
-        // Apply deferred viewport commands
+        // Deferred logic actions (require `logic()` / `Frame`; set from input dispatch):
+        // - `pending_fullscreen`: Option<bool> — viewport fullscreen toggle
+        // - `pending_open_directory`: bool — native folder picker (PickDirectory hotkey)
         if let Some(fs) = self.pending_fullscreen.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(fs));
         }
-
-        // Open the native directory picker when requested by the PickDirectory hotkey.
-        // This must run here (in logic) rather than in dispatch_action because
-        // open_directory_dialog requires &eframe::Frame, which is only available here.
-        if std::mem::take(&mut self.pending_open_directory) {
+        if std::mem::take(&mut self.pending_open_directory)
+            && self.pick_directory_hotkey_allowed(ctx)
+        {
             self.open_directory_dialog(frame);
         }
 

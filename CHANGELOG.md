@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.3] - 2026-06-17
+
+### Added
+- **Open folder from the main window**: Press `Ctrl + O` (customizable in **Settings > Hotkeys**) to choose an image folder without opening Settings first.
+- **Settings from the system tray**: The tray right-click menu now includes **Settings**, which restores the main window and opens the options panel.
+
+### Fixed
+- **Switching folders during a refresh**: Choosing a new folder while an F5 refresh is still running no longer keeps the previous zoom, rotation, or slideshow pause state.
+
 ## [2.6.2] - 2026-06-15
 
 ### Improved
