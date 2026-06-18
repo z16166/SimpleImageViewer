@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.4] - 2026-06-18
+
+### Improved
+- **Linux HDR setup guide**: The README now explains Wayland HDR requirements, when **vk-hdr-layer** and `ENABLE_HDR_WSI=1` help on older NVIDIA GPUs, and which driver versions are verified—so Linux users can tell whether native HDR should work and how to enable it.
+
 ## [2.6.3] - 2026-06-17
 
 ### Added
