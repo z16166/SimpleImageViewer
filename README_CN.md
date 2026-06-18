@@ -149,6 +149,40 @@ Simple Image Viewer 是一款轻量、快速的桌面图片查看器。它在后
 
 *\*Windows 7 注意事项：系统必须升级至 **Service Pack 1 (SP1)** 并安装 **KB2670838**（Windows 7 平台更新/图形增强补丁），且显卡驱动需支持 **DirectX 11**。*
 
+### Linux 下的 HDR
+
+Linux 原生 HDR 需要：**Wayland 会话**（X11 不支持）、**HDR 显示器**且在桌面环境中已开启 HDR（如 KDE Plasma），以及在 **设置（`F1`）> 显示选项** 中启用 **要求原生 HDR 表面**（若提示需重启请重启应用）。
+
+没有原生 HDR 时仍可正常查看 HDR 图片，程序会回退到 **SDR 色调映射**；可用 `Ctrl + ↑` / `Ctrl + ↓` 调节曝光（EV）。
+
+**何时需要 [vk-hdr-layer](https://copr.fedorainfracloud.org/coprs/jackgreiner/vk-hdr-layer/) + `ENABLE_HDR_WSI=1`**
+
+在 Wayland 下，显卡/驱动须向 Vulkan 暴露 HDR 交换链。**较旧的 NVIDIA 显卡**（如 GTX 10 系列）通常需要社区 **vk-hdr-layer**，并以如下方式启动：
+
+```bash
+ENABLE_HDR_WSI=1 ./SimpleImageViewer
+```
+
+Fedora 示例：
+
+```bash
+sudo dnf copr enable jackgreiner/vk-hdr-layer
+sudo dnf install vk-hdr-layer
+ENABLE_HDR_WSI=1 ./SimpleImageViewer
+```
+
+**较新的 NVIDIA**（专有驱动 **595+**，如 RTX 50 系列）一般**无需** vk-hdr-layer 或 `ENABLE_HDR_WSI`。AMD / Intel 使用 Mesa 时，满足下表版本通常也无需上述步骤。
+
+**已验证可用的环境**
+
+| 显卡 | 驱动 / 栈 |
+|---|---|
+| AMD（GCN 3 及更新） | Mesa RADV 25.1+ |
+| Intel（第 9 代及更新） | Mesa ANV 25.1+ |
+| NVIDIA（Maxwell 及更新） | NVIDIA 专有驱动 595+ |
+
+查看 OSD 中的 HDR 行：**原生 Wayland HDR** 表示已走原生呈现；**SDR 色调映射** 表示回退路径（较旧 NVIDIA 可尝试 vk-hdr-layer / `ENABLE_HDR_WSI`）。
+
 ---
 
 ## 设置文件说明

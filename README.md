@@ -138,6 +138,40 @@ A high-performance, cross-platform image viewer built with Rust. Designed for fa
 
 *\*Note for Windows 7: Requires **Service Pack 1 (SP1)**, **KB2670838** (Platform Update for Windows 7), and a GPU driver that supports **DirectX 11**.*
 
+### HDR on Linux
+
+Native HDR on Linux needs **Wayland** (not X11), an **HDR-capable monitor** with HDR turned on in your desktop (e.g. KDE Plasma), and **Settings (`F1`) > Display** — enable **Request native HDR surface** (restart if prompted).
+
+HDR files still open without native HDR; the viewer falls back to **SDR tone mapping**. Use `Ctrl + ↑` / `Ctrl + ↓` to adjust exposure (EV).
+
+**When to use [vk-hdr-layer](https://copr.fedorainfracloud.org/coprs/jackgreiner/vk-hdr-layer/) + `ENABLE_HDR_WSI=1`**
+
+On Wayland, the GPU/driver must expose an HDR Vulkan swap chain. **Older NVIDIA cards** (e.g. GTX 10 series) often need the community **vk-hdr-layer** and launching with:
+
+```bash
+ENABLE_HDR_WSI=1 ./SimpleImageViewer
+```
+
+Example on Fedora:
+
+```bash
+sudo dnf copr enable jackgreiner/vk-hdr-layer
+sudo dnf install vk-hdr-layer
+ENABLE_HDR_WSI=1 ./SimpleImageViewer
+```
+
+**Newer NVIDIA** GPUs with proprietary driver **595+** (e.g. RTX 50 series) usually work **without** vk-hdr-layer or `ENABLE_HDR_WSI`. AMD and Intel Mesa stacks typically do not need them if the versions below are met.
+
+**Verified working configurations**
+
+| GPU | Driver / stack |
+|---|---|
+| AMD (GCN 3+) | Mesa RADV 25.1+ |
+| Intel (Gen 9+) | Mesa ANV 25.1+ |
+| NVIDIA (Maxwell+) | NVIDIA proprietary 595+ |
+
+Check the OSD HDR line: **Native Wayland HDR** means native presentation is active; **SDR tone-mapped** means you are on the fallback path (vk-hdr-layer / `ENABLE_HDR_WSI` may still help on older NVIDIA).
+
 ---
 
 ## Settings File
