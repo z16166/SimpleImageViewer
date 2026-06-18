@@ -43,10 +43,8 @@ const DIRECTORY_TREE_LEFT_MIN_WIDTH: f32 = 200.0;
 const DIRECTORY_TREE_RIGHT_MIN_WIDTH: f32 = 180.0;
 const DIRECTORY_TREE_SPLITTER_GRAB_WIDTH: f32 = 10.0;
 const DIRECTORY_TREE_LEFT_MAX_WIDTH_RATIO: f32 = 0.55;
-const DIRECTORY_TREE_PREVIEW_PANEL_HEIGHT: f32 = 120.0;
-const DIRECTORY_TREE_PREVIEW_PANEL_MIN_HEIGHT: f32 = 64.0;
-const DIRECTORY_TREE_PREVIEW_PANEL_MAX_HEIGHT_RATIO: f32 = 0.45;
-const DIRECTORY_TREE_PREVIEW_CELL_MIN_SIZE: f32 = 48.0;
+const DIRECTORY_TREE_COL_THUMB_WIDTH: f32 = 48.0;
+const DIRECTORY_TREE_IMAGE_ROW_HEIGHT: f32 = 48.0;
 const DIRECTORY_TREE_EXPAND_ICON_WIDTH: f32 = 18.0;
 const DIRECTORY_TREE_FOLDER_ICON_WIDTH: f32 = 18.0;
 const DIRECTORY_TREE_ROW_HEIGHT: f32 = 24.0;
@@ -125,11 +123,8 @@ pub(crate) struct DirectoryTreeState {
     scroll_folder_to_selected: bool,
     image_list_scroll_offset_y: f32,
     image_list_keyboard_active: bool,
-    preview_panel_height: f32,
     preview_textures: HashMap<usize, egui::TextureHandle>,
     preview_logical_sizes: HashMap<usize, (u32, u32)>,
-    scroll_preview_to_current: bool,
-    preview_scroll_offset_x: f32,
 }
 
 impl Default for DirectoryTreeState {
@@ -149,11 +144,8 @@ impl Default for DirectoryTreeState {
             scroll_folder_to_selected: false,
             image_list_scroll_offset_y: 0.0,
             image_list_keyboard_active: false,
-            preview_panel_height: DIRECTORY_TREE_PREVIEW_PANEL_HEIGHT,
             preview_textures: HashMap::new(),
             preview_logical_sizes: HashMap::new(),
-            scroll_preview_to_current: false,
-            preview_scroll_offset_x: 0.0,
         }
     }
 }
@@ -365,7 +357,6 @@ impl DirectoryTreeState {
         let new_index = current_index.min(self.image_rows.len().saturating_sub(1));
         if new_index != self.current_index {
             self.scroll_image_list_to_current = true;
-            self.scroll_preview_to_current = true;
         }
         self.current_index = new_index;
         self.scanning = scanning;
@@ -573,7 +564,6 @@ impl ImageViewerApp {
                         let mut state = self.directory_tree.state.lock();
                         state.current_index = index;
                         state.scroll_image_list_to_current = true;
-                        state.scroll_preview_to_current = true;
                         ctx.request_repaint();
                         let viewport_id =
                             egui::ViewportId::from_hash_of(DIRECTORY_TREE_VIEWPORT_ID);
@@ -1072,64 +1062,12 @@ fn draw_directory_tree_window(
     command_tx: &Sender<DirectoryTreeCommand>,
 ) {
     ui.visuals_mut().button_frame = false;
-
-    let viewport_height = ui.available_height();
-    let viewport_width = ui.available_width();
-    let splitter = DIRECTORY_TREE_SPLITTER_GRAB_WIDTH;
-    let max_preview_height = (viewport_height * DIRECTORY_TREE_PREVIEW_PANEL_MAX_HEIGHT_RATIO)
-        .max(DIRECTORY_TREE_PREVIEW_PANEL_MIN_HEIGHT);
-    state.preview_panel_height = state
-        .preview_panel_height
-        .clamp(DIRECTORY_TREE_PREVIEW_PANEL_MIN_HEIGHT, max_preview_height);
-
-    let preview_h = state.preview_panel_height;
-    let top_h = (viewport_height - preview_h - splitter).max(DIRECTORY_TREE_ROW_HEIGHT);
-    let top_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(viewport_width, top_h));
-    let splitter_rect =
-        egui::Rect::from_min_size(top_rect.left_bottom(), egui::vec2(viewport_width, splitter));
-    let preview_rect = egui::Rect::from_min_size(
-        splitter_rect.left_bottom(),
-        egui::vec2(viewport_width, preview_h),
+    draw_directory_tree_top_panels(
+        ui,
+        state,
+        command_tx,
+        egui::vec2(ui.available_width(), ui.available_height()),
     );
-
-    ui.allocate_exact_size(
-        egui::vec2(viewport_width, viewport_height),
-        egui::Sense::hover(),
-    );
-
-    ui.scope_builder(egui::UiBuilder::new().max_rect(top_rect), |ui| {
-        ui.set_clip_rect(top_rect);
-        draw_directory_tree_top_panels(ui, state, command_tx, top_rect.size());
-    });
-
-    let splitter_id = ui.id().with("directory_tree_preview_splitter");
-    let splitter_response = ui.interact(splitter_rect, splitter_id, egui::Sense::drag());
-    if splitter_response.dragged() {
-        state.preview_panel_height = (state.preview_panel_height
-            - splitter_response.drag_delta().y)
-            .clamp(DIRECTORY_TREE_PREVIEW_PANEL_MIN_HEIGHT, max_preview_height);
-        ui.ctx().request_repaint();
-    }
-    if splitter_response.hovered() || splitter_response.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-    }
-    let splitter_stroke = if splitter_response.dragged() {
-        ui.style().visuals.widgets.active.fg_stroke
-    } else if splitter_response.hovered() {
-        ui.style().visuals.widgets.hovered.fg_stroke
-    } else {
-        ui.style().visuals.widgets.noninteractive.bg_stroke
-    };
-    ui.painter().hline(
-        splitter_rect.x_range(),
-        splitter_rect.center().y,
-        splitter_stroke,
-    );
-
-    ui.scope_builder(egui::UiBuilder::new().max_rect(preview_rect), |ui| {
-        ui.set_clip_rect(preview_rect);
-        draw_preview_strip(ui, state, command_tx);
-    });
 }
 
 fn draw_directory_tree_top_panels(
@@ -1198,90 +1136,6 @@ fn draw_directory_tree_top_panels(
     );
 }
 
-fn draw_preview_strip(
-    ui: &mut egui::Ui,
-    state: &mut DirectoryTreeState,
-    command_tx: &Sender<DirectoryTreeCommand>,
-) {
-    let panel_height = ui.available_height();
-    if panel_height < DIRECTORY_TREE_PREVIEW_CELL_MIN_SIZE {
-        return;
-    }
-
-    ui.label(
-        egui::RichText::new(t!("directory_tree.previews").to_string())
-            .small()
-            .weak(),
-    );
-
-    let cell_spacing = ui.spacing().item_spacing.x;
-    let cell_size = (panel_height - DIRECTORY_TREE_HEADER_HEIGHT - ui.spacing().item_spacing.y)
-        .clamp(DIRECTORY_TREE_PREVIEW_CELL_MIN_SIZE, panel_height);
-    let stride = cell_size + cell_spacing;
-    let viewport_width = ui.available_width();
-    let list_enabled = !state.scanning;
-    let total = state.image_rows.len();
-    let current_index = state.current_index;
-
-    if total == 0 {
-        ui.label(egui::RichText::new(t!("directory_tree.no_previews")).weak());
-        return;
-    }
-
-    let mut pending_scroll_offset = None;
-    if list_enabled && state.scroll_preview_to_current {
-        pending_scroll_offset = min_scroll_offset_x_to_show_cell(
-            current_index,
-            stride,
-            cell_size,
-            viewport_width,
-            state.preview_scroll_offset_x,
-        )
-        .map(|offset| offset.max(0.0));
-        state.scroll_preview_to_current = false;
-    }
-
-    let mut scroll = egui::ScrollArea::horizontal()
-        .id_salt("directory_tree_previews")
-        .auto_shrink([false, false])
-        .max_height(cell_size);
-
-    if let Some(offset) = pending_scroll_offset {
-        scroll = scroll.horizontal_scroll_offset(offset);
-    }
-
-    let scroll_output = scroll.show_viewport(ui, |ui, viewport| {
-        let total_width = total as f32 * stride - cell_spacing;
-        ui.set_min_size(egui::vec2(total_width.max(viewport_width), cell_size));
-
-        let mut min_index = (viewport.min.x / stride).floor() as usize;
-        let mut max_index = (viewport.max.x / stride).ceil() as usize + 1;
-        if max_index > total {
-            let diff = max_index.saturating_sub(min_index);
-            max_index = total;
-            min_index = total.saturating_sub(diff);
-        }
-
-        let y = ui.max_rect().top();
-        for index in min_index..max_index {
-            let x = index as f32 * stride;
-            let cell_rect =
-                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_size, cell_size));
-            draw_preview_cell(
-                ui,
-                cell_rect,
-                index,
-                index == current_index,
-                state.preview_textures.get(&index),
-                state.preview_logical_sizes.get(&index).copied(),
-                list_enabled,
-                command_tx,
-            );
-        }
-    });
-    state.preview_scroll_offset_x = scroll_output.state.offset.x;
-}
-
 fn preview_texture_contain_rect(
     cell: egui::Rect,
     texture_width: f32,
@@ -1296,27 +1150,14 @@ fn preview_texture_contain_rect(
     egui::Rect::from_min_size(cell.min + offset, size)
 }
 
-fn draw_preview_cell(
-    ui: &mut egui::Ui,
-    cell_rect: egui::Rect,
-    index: usize,
-    selected: bool,
+fn paint_image_list_thumbnail(
+    painter: &egui::Painter,
+    visuals: &egui::Visuals,
+    thumb_rect: egui::Rect,
     texture: Option<&egui::TextureHandle>,
     logical_size: Option<(u32, u32)>,
-    list_enabled: bool,
-    command_tx: &Sender<DirectoryTreeCommand>,
 ) {
-    let response = ui.interact(
-        cell_rect,
-        ui.id().with(("directory_tree_preview_cell", index)),
-        if list_enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-
-    let inner = cell_rect.shrink(2.0);
+    let inner = thumb_rect.shrink(2.0);
     let mut drew_texture = false;
     if let Some(texture) = texture {
         let tex_size = texture.size();
@@ -1326,10 +1167,9 @@ fn draw_preview_cell(
             preview_aspect_matches_logical(texture_w as u32, texture_h as u32, logical_w, logical_h)
         });
         if aspect_ok && texture_w > 0.0 && texture_h > 0.0 {
-            ui.painter()
-                .rect_filled(inner, 1.0, ui.visuals().widgets.noninteractive.weak_bg_fill);
+            painter.rect_filled(inner, 1.0, visuals.widgets.noninteractive.weak_bg_fill);
             let image_rect = preview_texture_contain_rect(inner, texture_w, texture_h);
-            ui.painter().image(
+            painter.image(
                 texture.id(),
                 image_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -1339,53 +1179,8 @@ fn draw_preview_cell(
         }
     }
     if !drew_texture {
-        ui.painter()
-            .rect_filled(inner, 1.0, ui.visuals().widgets.noninteractive.weak_bg_fill);
+        painter.rect_filled(inner, 1.0, visuals.widgets.noninteractive.weak_bg_fill);
     }
-
-    if selected {
-        ui.painter().rect_stroke(
-            cell_rect,
-            0.0,
-            ui.visuals().selection.stroke,
-            egui::StrokeKind::Inside,
-        );
-    } else if response.hovered() && list_enabled {
-        ui.painter().rect_stroke(
-            cell_rect,
-            0.0,
-            ui.visuals().widgets.hovered.fg_stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-
-    if list_enabled && response.clicked() {
-        let _ = command_tx.send(DirectoryTreeCommand::SelectImage(index));
-    }
-}
-
-fn min_scroll_offset_x_to_show_cell(
-    cell_index: usize,
-    cell_stride: f32,
-    cell_width: f32,
-    viewport_width: f32,
-    scroll_offset_x: f32,
-) -> Option<f32> {
-    let cell_left = cell_index as f32 * cell_stride;
-    let cell_right = cell_left + cell_width;
-    let view_left = scroll_offset_x;
-    let view_right = scroll_offset_x + viewport_width;
-
-    if cell_left >= view_left && cell_right <= view_right {
-        return None;
-    }
-    if cell_left < view_left {
-        return Some(cell_left);
-    }
-    if cell_right > view_right {
-        return Some(cell_right - viewport_width);
-    }
-    None
 }
 
 fn draw_folder_panel(
@@ -1522,7 +1317,7 @@ fn draw_image_file_list(
     } else {
         0.0
     };
-    let row_height = DIRECTORY_TREE_ROW_HEIGHT;
+    let row_height = DIRECTORY_TREE_IMAGE_ROW_HEIGHT;
     let row_spacing = ui.spacing().item_spacing.y;
     let row_height_with_spacing = row_height + row_spacing;
     let column_layout = image_list_column_layout(ui.available_width(), ui.spacing().item_spacing.x);
@@ -1569,6 +1364,8 @@ fn draw_image_file_list(
                     row_index,
                     row_index == current_index,
                     &column_layout,
+                    state.preview_textures.get(&row_index),
+                    state.preview_logical_sizes.get(&row_index).copied(),
                     command_tx,
                     list_enabled,
                 );
@@ -1602,8 +1399,10 @@ struct ImageListColumnLayout {
 }
 
 fn image_list_column_layout(row_width: f32, spacing_x: f32) -> ImageListColumnLayout {
-    let gutters = spacing_x * 3.0;
-    let ideal_fixed = DIRECTORY_TREE_COL_SIZE_WIDTH
+    let thumb_w = DIRECTORY_TREE_COL_THUMB_WIDTH;
+    let gutters = spacing_x * 4.0;
+    let ideal_fixed = thumb_w
+        + DIRECTORY_TREE_COL_SIZE_WIDTH
         + DIRECTORY_TREE_COL_MODIFIED_WIDTH
         + gutters
         + DIRECTORY_TREE_COL_NAME_MIN_WIDTH;
@@ -1615,7 +1414,7 @@ fn image_list_column_layout(row_width: f32, spacing_x: f32) -> ImageListColumnLa
     }
 
     let available_for_right_cols =
-        (row_width - gutters - DIRECTORY_TREE_COL_NAME_MIN_WIDTH).max(0.0);
+        (row_width - gutters - thumb_w - DIRECTORY_TREE_COL_NAME_MIN_WIDTH).max(0.0);
     let mut modified_w = (available_for_right_cols * 0.62).clamp(
         DIRECTORY_TREE_COL_MODIFIED_MIN_WIDTH.min(available_for_right_cols),
         DIRECTORY_TREE_COL_MODIFIED_WIDTH,
@@ -1629,6 +1428,14 @@ fn image_list_column_layout(row_width: f32, spacing_x: f32) -> ImageListColumnLa
         modified_w = (available_for_right_cols - size_w).max(0.0);
     }
     ImageListColumnLayout { size_w, modified_w }
+}
+
+fn image_list_thumb_column(row_rect: egui::Rect, spacing_x: f32) -> egui::Rect {
+    let left = row_rect.left() + spacing_x;
+    egui::Rect::from_min_max(
+        egui::pos2(left, row_rect.top()),
+        egui::pos2(left + DIRECTORY_TREE_COL_THUMB_WIDTH, row_rect.bottom()),
+    )
 }
 
 fn image_list_modified_column(
@@ -1663,8 +1470,9 @@ fn image_list_name_column(
     columns: &ImageListColumnLayout,
     spacing_x: f32,
 ) -> egui::Rect {
+    let thumb = image_list_thumb_column(row_rect, spacing_x);
     let size = image_list_size_column(row_rect, columns, spacing_x);
-    let left = row_rect.left() + spacing_x;
+    let left = thumb.right() + spacing_x;
     let right = (size.left() - spacing_x).max(left);
     egui::Rect::from_min_max(
         egui::pos2(left, row_rect.top()),
@@ -1824,7 +1632,6 @@ fn try_handle_image_list_arrow_keys(
     state.image_list_keyboard_active = true;
     state.current_index = index;
     state.scroll_image_list_to_current = true;
-    state.scroll_preview_to_current = true;
     let _ = command_tx.send(DirectoryTreeCommand::SelectImage(index));
 }
 
@@ -1834,12 +1641,14 @@ fn draw_image_details_row(
     row_index: usize,
     selected: bool,
     columns: &ImageListColumnLayout,
+    texture: Option<&egui::TextureHandle>,
+    logical_size: Option<(u32, u32)>,
     command_tx: &Sender<DirectoryTreeCommand>,
     list_enabled: bool,
 ) -> bool {
     let row_width = ui.available_width();
     let (row_rect, response) = ui.allocate_exact_size(
-        egui::vec2(row_width, DIRECTORY_TREE_ROW_HEIGHT),
+        egui::vec2(row_width, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
         egui::Sense::click(),
     );
     if ui.is_rect_visible(row_rect) {
@@ -1850,6 +1659,16 @@ fn draw_image_details_row(
             ui.painter()
                 .rect_filled(row_rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
         }
+
+        let spacing_x = ui.spacing().item_spacing.x;
+        let thumb_column = image_list_thumb_column(row_rect, spacing_x);
+        paint_image_list_thumbnail(
+            ui.painter(),
+            ui.visuals(),
+            thumb_column,
+            texture,
+            logical_size,
+        );
 
         let text_color = if selected {
             ui.visuals().selection.stroke.color
@@ -1865,7 +1684,6 @@ fn draw_image_details_row(
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| String::from("-"));
 
-        let spacing_x = ui.spacing().item_spacing.x;
         let name_column = image_list_name_column(row_rect, columns, spacing_x);
         let size_column = image_list_size_column(row_rect, columns, spacing_x);
         let modified_column = image_list_modified_column(row_rect, columns, spacing_x);
@@ -2197,21 +2015,8 @@ mod tests {
     #[test]
     fn min_scroll_offset_to_show_row_scrolls_when_row_bottom_clipped_at_viewport_edge() {
         assert_eq!(
-            min_scroll_offset_to_show_row(8, 30.0, 24.0, 260.0, 0.0),
-            Some(4.0)
-        );
-    }
-
-    #[test]
-    fn min_scroll_offset_x_to_show_cell_keeps_visible_cells_in_place() {
-        assert!(min_scroll_offset_x_to_show_cell(5, 84.0, 80.0, 420.0, 200.0).is_none());
-    }
-
-    #[test]
-    fn min_scroll_offset_x_to_show_cell_scrolls_right_for_cell_after_viewport() {
-        assert_eq!(
-            min_scroll_offset_x_to_show_cell(20, 84.0, 80.0, 420.0, 0.0),
-            Some(1340.0)
+            min_scroll_offset_to_show_row(8, 54.0, 48.0, 260.0, 0.0),
+            Some(220.0)
         );
     }
 
@@ -2233,13 +2038,15 @@ mod tests {
     fn image_list_columns_do_not_overlap_when_panel_is_narrow() {
         let row_rect = egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
-            egui::vec2(280.0, DIRECTORY_TREE_ROW_HEIGHT),
+            egui::vec2(320.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
         );
         let columns = image_list_column_layout(row_rect.width(), 4.0);
         let spacing = 4.0;
+        let thumb = image_list_thumb_column(row_rect, spacing);
         let name = image_list_name_column(row_rect, &columns, spacing);
         let size = image_list_size_column(row_rect, &columns, spacing);
         let modified = image_list_modified_column(row_rect, &columns, spacing);
+        assert!(thumb.right() <= name.left());
         assert!(name.right() <= size.left());
         assert!(size.right() <= modified.left());
     }
@@ -2249,6 +2056,17 @@ mod tests {
         let columns = image_list_column_layout(640.0, 4.0);
         assert_eq!(columns.size_w, DIRECTORY_TREE_COL_SIZE_WIDTH);
         assert_eq!(columns.modified_w, DIRECTORY_TREE_COL_MODIFIED_WIDTH);
+    }
+
+    #[test]
+    fn image_list_thumb_column_has_fixed_width() {
+        let row_rect = egui::Rect::from_min_size(
+            egui::pos2(10.0, 0.0),
+            egui::vec2(400.0, DIRECTORY_TREE_IMAGE_ROW_HEIGHT),
+        );
+        let thumb = image_list_thumb_column(row_rect, 4.0);
+        assert!((thumb.width() - DIRECTORY_TREE_COL_THUMB_WIDTH).abs() < f32::EPSILON);
+        assert_eq!(thumb.left(), row_rect.left() + 4.0);
     }
 
     #[test]
