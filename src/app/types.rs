@@ -457,6 +457,17 @@ pub struct ImageViewerApp {
     /// `open_directory_dialog` which requires `&eframe::Frame`.
     pub(crate) pending_open_directory: bool,
     pub(crate) directory_tree: DirectoryTreeRuntime,
+    pub(crate) directory_tree_strip_cache:
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripCache,
+    /// Tiled strip thumbnails requested via [`TiledImageSource::generate_full_image_preview`].
+    pub(crate) directory_tree_strip_tiled_attempted: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_generate_inflight: std::collections::HashSet<usize>,
+    pub(crate) directory_tree_strip_preview_tx: crossbeam_channel::Sender<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
+    >,
+    pub(crate) directory_tree_strip_preview_rx: crossbeam_channel::Receiver<
+        crate::app::directory_tree_strip_cache::DirectoryTreeStripPreviewJobResult,
+    >,
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.

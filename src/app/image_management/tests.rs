@@ -1532,6 +1532,15 @@ fn make_test_app() -> ImageViewerApp {
         pending_fullscreen: None,
         pending_open_directory: false,
         directory_tree: crate::app::DirectoryTreeRuntime::new(),
+        directory_tree_strip_cache:
+            crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+        directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
+        directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+        directory_tree_strip_preview_tx: {
+            let (tx, _rx) = crossbeam_channel::unbounded();
+            tx
+        },
+        directory_tree_strip_preview_rx: crossbeam_channel::never(),
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,

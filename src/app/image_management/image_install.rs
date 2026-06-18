@@ -197,6 +197,13 @@ impl ImageViewerApp {
                 decoded.height
             );
         }
+        self.cache_directory_tree_strip_thumbnail(
+            idx,
+            decoded,
+            crate::loader::PreviewStage::Refined,
+            Some((decoded.width, decoded.height)),
+            ctx,
+        );
     }
 
     pub(super) fn install_static_hdr_image(
@@ -291,6 +298,13 @@ impl ImageViewerApp {
                 }
             }
         }
+        self.cache_directory_tree_strip_thumbnail(
+            idx,
+            fallback,
+            crate::loader::PreviewStage::Refined,
+            Some((hdr.width, hdr.height)),
+            ctx,
+        );
     }
 
     pub(super) fn handle_hdr_sdr_fallback_update(
@@ -320,13 +334,33 @@ impl ImageViewerApp {
                 .is_some_and(|current| current.image_for_index(idx).is_some());
         self.hdr_sdr_fallback_indices.insert(idx);
         self.hdr_placeholder_fallback_indices.remove(&idx);
+        let logical_size = self.texture_cache.get_original_res(idx).or_else(|| {
+            self.hdr_image_cache
+                .get(&idx)
+                .map(|hdr| (hdr.width, hdr.height))
+        });
         if active_hdr_plane_displays_current {
             // The float HDR plane is the displayed source; applying the refined SDR fallback here
             // changes render-plan bookkeeping and can retrigger GPU compose right after page-flip.
-            self.deferred_sdr_uploads.insert(idx, fallback_image);
+            self.deferred_sdr_uploads
+                .insert(idx, fallback_image.clone());
+            self.cache_directory_tree_strip_thumbnail(
+                idx,
+                &fallback_image,
+                crate::loader::PreviewStage::Refined,
+                logical_size,
+                ctx,
+            );
             return;
         }
         self.queue_or_upload_hdr_sdr_fallback_texture(idx, &fallback_image, ctx);
+        self.cache_directory_tree_strip_thumbnail(
+            idx,
+            &fallback_image,
+            crate::loader::PreviewStage::Refined,
+            logical_size,
+            ctx,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

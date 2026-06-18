@@ -69,6 +69,7 @@ impl ImageViewerApp {
         }
         // 1. Texture cache
         self.texture_cache.relocate(from, to);
+        self.directory_tree_strip_cache.relocate(from, to);
 
         // 2. HDR caches
         if let Some(hdr) = self.hdr_image_cache.remove(&from) {

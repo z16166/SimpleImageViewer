@@ -193,6 +193,8 @@ directory_tree.skip_scan: "已跳过系统文件夹：%{dir}"
 directory_tree.col_name: "名称"
 directory_tree.col_size: "大小"
 directory_tree.col_modified: "修改日期"
+directory_tree.previews: "预加载预览"
+directory_tree.no_previews: "尚无预加载预览"
 
 # Status messages
 status.scanning: "正在扫描 %{dir}…"

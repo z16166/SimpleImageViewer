@@ -21,6 +21,7 @@ mod hdr_fallback;
 mod metadata;
 mod orchestrator;
 mod orientation;
+mod preview_aspect;
 mod preview_caps;
 mod raw_osd;
 mod texture_cache;
@@ -30,7 +31,11 @@ mod types;
 pub use orchestrator::ImageLoader;
 pub(crate) use orchestrator::should_prefetch_raw_gpu_open;
 #[allow(unused_imports)]
-// Re-export-only surface for `crate::loader::*`; rustc may lint `MONITOR_PREVIEW_CAP`.
+// Re-export-only surface for `crate::loader::*`; rustc may lint unused items here.
+pub use preview_aspect::preview_aspect_matches_logical;
+pub(crate) use preview_caps::REFINEMENT_POOL;
+#[allow(unused_imports)]
+// `MONITOR_PREVIEW_CAP` is part of the public loader re-export surface.
 pub use preview_caps::{
     GPU_DEMOSAIC_SUPPORTED, MONITOR_PREVIEW_CAP, PREVIEW_LIMIT, hq_preview_max_side,
     refresh_hq_preview_monitor_cap,

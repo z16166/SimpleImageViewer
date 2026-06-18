@@ -413,6 +413,8 @@ impl ImageViewerApp {
             })
             .expect("spawn siv-context-file-ops worker");
 
+        let (directory_tree_strip_preview_tx, directory_tree_strip_preview_rx) =
+            crossbeam_channel::unbounded();
         let (font_families_tx, font_families_rx) = crossbeam_channel::bounded::<Vec<String>>(1);
         let font_enumeration_rx = match std::thread::Builder::new()
             .name("font-families".to_string())
@@ -537,6 +539,12 @@ impl ImageViewerApp {
             pending_fullscreen: None,
             pending_open_directory: false,
             directory_tree: crate::app::DirectoryTreeRuntime::new(),
+            directory_tree_strip_cache:
+                crate::app::directory_tree_strip_cache::DirectoryTreeStripCache::default(),
+            directory_tree_strip_tiled_attempted: std::collections::HashSet::new(),
+            directory_tree_strip_generate_inflight: std::collections::HashSet::new(),
+            directory_tree_strip_preview_tx,
+            directory_tree_strip_preview_rx,
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,

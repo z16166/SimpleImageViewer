@@ -460,7 +460,6 @@ impl eframe::App for ImageViewerApp {
                 self.settings.hdr_native_surface_enabled_effective(),
                 self.hdr_capabilities.backend,
             );
-        let wp_selection = self.hdr_monitor_state.selection();
         let effective_selection = self.effective_hdr_monitor_selection();
         let desired_target_format = crate::hdr::surface::desired_target_format_for_active_monitor(
             native_surface_requests_enabled,
@@ -503,6 +502,7 @@ impl eframe::App for ImageViewerApp {
         {
             use crate::app::preload_hdr_gate::SwapRequestOutcome;
             let wsi = self.vulkan_wsi_hdr_gates.get();
+            let wp_selection = self.hdr_monitor_state.selection();
             let swap_request_outcome = if !native_surface_requests_enabled {
                 SwapRequestOutcome::Disabled
             } else if desired_target_format.is_none() {

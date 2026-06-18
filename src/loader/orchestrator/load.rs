@@ -1112,7 +1112,7 @@ impl ImageLoader {
                             let limit = hq_preview_max_side();
                             let r_result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    source.generate_preview(limit, limit)
+                                    source.generate_full_image_preview(limit, limit)
                                 }));
 
                             match r_result {

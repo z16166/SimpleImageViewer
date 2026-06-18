@@ -41,6 +41,7 @@ mod navigation;
 mod preload;
 mod preview;
 
+#[cfg(test)]
 fn has_startup_target(
     initial_image: Option<&PathBuf>,
     resume_last_image: bool,
@@ -398,6 +399,7 @@ fn should_request_repaint_for_asset_update(
     }
 }
 
+#[cfg(test)]
 fn image_file_size_pairs_with_missing_sizes_as_zero(
     image_files: Vec<PathBuf>,
     file_byte_len_by_index: Vec<u64>,
