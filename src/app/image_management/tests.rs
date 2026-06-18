@@ -486,19 +486,6 @@ fn hdr_fallback_texture_without_hdr_plane_is_not_loaded_asset() {
     assert!(!hdr_fallback_asset_is_loaded(true, false));
 }
 
-#[test]
-fn first_batch_preload_waits_when_scan_done_is_already_available() {
-    assert!(!should_schedule_first_batch_preload(true, 3, true, false));
-    assert!(should_schedule_first_batch_preload(true, 3, false, false));
-    assert!(!should_schedule_first_batch_preload(false, 3, false, false));
-    assert!(!should_schedule_first_batch_preload(true, 0, false, false));
-}
-
-#[test]
-fn first_batch_preload_waits_for_startup_target() {
-    assert!(!should_schedule_first_batch_preload(true, 3, false, true));
-}
-
 fn startup_preload_defer_can_release_now(
     runtime_probe_completed: bool,
     native_hdr_surface_requests_enabled: bool,
@@ -1470,6 +1457,7 @@ fn make_test_app() -> ImageViewerApp {
         settings: Settings::default(),
         image_files: Vec::new(),
         file_byte_len_by_index: Vec::new(),
+        file_modified_unix_by_index: Vec::new(),
         current_index: 0,
         initial_image: None,
         scanning: false,
@@ -1543,6 +1531,7 @@ fn make_test_app() -> ImageViewerApp {
         modal_generation: 0,
         pending_fullscreen: None,
         pending_open_directory: false,
+        directory_tree: crate::app::DirectoryTreeRuntime::new(),
         font_families: Vec::new(),
         font_families_rx: None,
         temp_font_size: None,

@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Pos2, Rect, Vec2};
 
+use crate::app::DirectoryTreeRuntime;
 use crate::audio::AudioPlayer;
 use crate::ipc::IpcMessage;
 use crate::loader::{ImageLoader, TextureCache};
@@ -317,6 +318,8 @@ pub struct ImageViewerApp {
     pub(crate) image_files: Vec<PathBuf>,
     /// Parallel to [`Self::image_files`]: lengths from directory scan (`metadata`).
     pub(crate) file_byte_len_by_index: Vec<u64>,
+    /// Parallel to [`Self::image_files`]: modified times from directory scan (`metadata`).
+    pub(crate) file_modified_unix_by_index: Vec<Option<i64>>,
     pub(crate) current_index: usize,
     pub(crate) initial_image: Option<PathBuf>,
     pub(crate) scanning: bool,
@@ -453,6 +456,7 @@ pub struct ImageViewerApp {
     /// Set to true by the PickDirectory hotkey; consumed in `logic()` to call
     /// `open_directory_dialog` which requires `&eframe::Frame`.
     pub(crate) pending_open_directory: bool,
+    pub(crate) directory_tree: DirectoryTreeRuntime,
     // Cached system font families
     pub(crate) font_families: Vec<String>,
     /// Filled by a background thread started in `ImageViewerApp::new`; polled in `logic`.

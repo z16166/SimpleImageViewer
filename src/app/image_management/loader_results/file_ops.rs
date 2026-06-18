@@ -37,9 +37,11 @@ impl ImageViewerApp {
                             self.image_files.insert(original_idx, path.clone());
                             self.file_byte_len_by_index
                                 .insert(original_idx, original_size);
+                            self.file_modified_unix_by_index.insert(original_idx, None);
                         } else {
                             self.image_files.push(path.clone());
                             self.file_byte_len_by_index.push(original_size);
+                            self.file_modified_unix_by_index.push(None);
                         }
 
                         // Restore viewer state and clear caches to ensure consistency.
@@ -156,9 +158,11 @@ impl ImageViewerApp {
                             self.image_files.insert(original_idx, src_path.clone());
                             self.file_byte_len_by_index
                                 .insert(original_idx, original_size);
+                            self.file_modified_unix_by_index.insert(original_idx, None);
                         } else {
                             self.image_files.push(src_path.clone());
                             self.file_byte_len_by_index.push(original_size);
+                            self.file_modified_unix_by_index.push(None);
                         }
 
                         // Restore viewer state and clear caches to ensure consistency.

@@ -23,6 +23,13 @@ impl ImageViewerApp {
             dialog = dialog.set_directory(dir);
         }
         if let Some(dir) = dialog.pick_folder() {
+            if self.settings.show_directory_tree_nav {
+                self.initialize_directory_tree_root(dir.clone());
+            } else {
+                self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+                self.settings.tree_nav_root_dir = None;
+                self.settings.tree_nav_selected_dir = None;
+            }
             self.load_directory(dir);
             self.queue_save();
         }
@@ -39,10 +46,19 @@ impl ImageViewerApp {
         }
         self.scan_rx = None;
 
-        self.settings.last_image_dir = Some(dir.clone());
+        if self.settings.browse_mode == crate::settings::BrowseMode::Tree {
+            if self.settings.tree_nav_root_dir.is_none() {
+                self.settings.tree_nav_root_dir = Some(dir.clone());
+                self.settings.last_image_dir = Some(dir.clone());
+            }
+            self.settings.tree_nav_selected_dir = Some(dir.clone());
+        } else {
+            self.settings.last_image_dir = Some(dir.clone());
+        }
         self.invalidate_random_slideshow_order();
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
+        self.file_modified_unix_by_index.clear();
         self.set_current_index(0);
         self.texture_cache.clear_all();
         self.clear_hdr_image_state();
@@ -76,6 +92,12 @@ impl ImageViewerApp {
             .to_string();
         self.status_message = t!("status.scanning", dir = dir_name).to_string();
 
+        if crate::app::directory_tree::is_non_browsable_system_directory(&dir) {
+            self.scanning = false;
+            self.status_message = t!("directory_tree.skip_scan", dir = dir_name).to_string();
+            return;
+        }
+
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.scan_cancel = Some(Arc::clone(&cancel));
 
@@ -83,7 +105,7 @@ impl ImageViewerApp {
         self.scan_rx = Some(rx);
         scanner::scan_directory(
             dir,
-            self.settings.recursive,
+            self.effective_scan_recursive(),
             self.settings.paired_raw_jpeg_handling,
             tx,
             cancel,
@@ -97,7 +119,7 @@ impl ImageViewerApp {
             log::debug!("[RefreshFileList] Ignored: scan already in progress");
             return;
         }
-        let Some(dir) = self.settings.last_image_dir.clone() else {
+        let Some(dir) = self.current_browse_directory() else {
             log::debug!("[RefreshFileList] Ignored: no directory configured");
             return;
         };
@@ -208,6 +230,7 @@ impl ImageViewerApp {
         // ------------------------------------------------------------------
         self.image_files.clear();
         self.file_byte_len_by_index.clear();
+        self.file_modified_unix_by_index.clear();
         self.set_current_index(0);
         self.error_message = None;
         self.is_font_error = false;
@@ -231,7 +254,7 @@ impl ImageViewerApp {
         self.scan_rx = Some(rx);
         scanner::scan_directory(
             dir,
-            self.settings.recursive,
+            self.effective_scan_recursive(),
             self.settings.paired_raw_jpeg_handling,
             tx,
             cancel,
@@ -258,12 +281,7 @@ impl ImageViewerApp {
         };
 
         let mut done = false;
-        let mut first_batch_preload_pending = false;
-        let startup_target_pending = has_startup_target(
-            self.initial_image.as_ref(),
-            self.settings.resume_last_image,
-            self.settings.last_viewed_image.as_ref(),
-        );
+        let mut first_batch_current_load_pending = false;
 
         // Drain all available messages this frame (non-blocking)
         loop {
@@ -272,14 +290,15 @@ impl ImageViewerApp {
                     match msg {
                         ScanMessage::Batch(batch) => {
                             let is_first_batch = self.image_files.is_empty();
-                            for (path, len) in batch {
+                            for (path, len, modified_unix) in batch {
                                 self.image_files.push(path);
                                 self.file_byte_len_by_index.push(len);
+                                self.file_modified_unix_by_index.push(modified_unix);
                             }
 
                             let count = self.image_files.len();
                             self.status_message =
-                                t!("status.found", count = count.to_string()).to_string();
+                                t!("status.scanning_found", count = count.to_string()).to_string();
 
                             // On first batch: resolve initial position and start preloading.
                             // For refresh scans, initial_image is kept None; for startup scans,
@@ -296,7 +315,7 @@ impl ImageViewerApp {
                                     self.show_settings = false;
                                 }
                                 self.images_ever_loaded = true;
-                                first_batch_preload_pending = true;
+                                first_batch_current_load_pending = true;
                             }
                         }
                         ScanMessage::Done => {
@@ -315,15 +334,29 @@ impl ImageViewerApp {
                                     self.image_files.len(),
                                     self.file_byte_len_by_index.len()
                                 );
-                                let mut combined: Vec<(PathBuf, u64)> =
+                                debug_assert_eq!(
+                                    self.image_files.len(),
+                                    self.file_modified_unix_by_index.len()
+                                );
+                                let mut combined: Vec<(PathBuf, u64, Option<i64>)> =
                                     std::mem::take(&mut self.image_files)
                                         .into_iter()
                                         .zip(std::mem::take(&mut self.file_byte_len_by_index))
+                                        .zip(std::mem::take(&mut self.file_modified_unix_by_index))
+                                        .map(|((path, len), modified)| (path, len, modified))
                                         .collect();
                                 combined.sort_by(|a, b| a.0.cmp(&b.0));
-                                let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+                                let mut paths = Vec::with_capacity(combined.len());
+                                let mut sizes = Vec::with_capacity(combined.len());
+                                let mut modified = Vec::with_capacity(combined.len());
+                                for (path, len, mtime) in combined {
+                                    paths.push(path);
+                                    sizes.push(len);
+                                    modified.push(mtime);
+                                }
                                 self.image_files = paths;
                                 self.file_byte_len_by_index = sizes;
+                                self.file_modified_unix_by_index = modified;
 
                                 if self.refresh_scan_in_progress {
                                     // Refresh path: relocate using the stable anchor path so that
@@ -410,15 +443,8 @@ impl ImageViewerApp {
             }
         }
 
-        if !self.refresh_scan_in_progress
-            && should_schedule_first_batch_preload(
-                first_batch_preload_pending,
-                self.image_files.len(),
-                done,
-                startup_target_pending,
-            )
-        {
-            self.schedule_preloads(true);
+        if first_batch_current_load_pending && !done {
+            self.schedule_current_image_load_if_needed();
         }
 
         if !done {

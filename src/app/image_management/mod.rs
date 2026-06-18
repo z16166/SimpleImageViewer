@@ -412,6 +412,27 @@ fn image_file_size_pairs_with_missing_sizes_as_zero(
         .collect()
 }
 
+fn image_file_entries_with_missing_tail(
+    image_files: Vec<PathBuf>,
+    file_byte_len_by_index: Vec<u64>,
+    file_modified_unix_by_index: Vec<Option<i64>>,
+) -> Vec<(PathBuf, u64, Option<i64>)> {
+    image_files
+        .into_iter()
+        .zip(
+            file_byte_len_by_index
+                .into_iter()
+                .chain(std::iter::repeat(0)),
+        )
+        .zip(
+            file_modified_unix_by_index
+                .into_iter()
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|((path, len), modified)| (path, len, modified))
+        .collect()
+}
+
 fn build_tiled_manager_with_best_preview(
     index: usize,
     generation: u64,
@@ -1191,15 +1212,6 @@ fn prefetch_window_contains(
     max_distance: usize,
 ) -> bool {
     prefetch_circular_distance(current_index, image_count, candidate) <= max_distance
-}
-
-fn should_schedule_first_batch_preload(
-    is_first_batch: bool,
-    count: usize,
-    scan_done: bool,
-    startup_target_pending: bool,
-) -> bool {
-    is_first_batch && count > 0 && !scan_done && !startup_target_pending
 }
 
 fn first_cached_hdr_still_for_index(

@@ -96,7 +96,7 @@ impl HdrMonitorState {
         now: Instant,
         hdr_content_visible: bool,
     ) -> Option<&HdrMonitorSelection> {
-        let signature = ctx.input(|input| HdrMonitorSignature::from_viewport(input.viewport()));
+        let signature = HdrMonitorSignature::from_main_viewport(ctx);
 
         // When a spawn-time DXGI probe already seeded a valid selection (via
         // `with_initial_selection`), record the first HWND signature without

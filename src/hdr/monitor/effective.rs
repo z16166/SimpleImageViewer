@@ -73,16 +73,14 @@ pub fn effective_monitor_selection(
     crate::hdr::wsi_probe::linux_effective_monitor_selection(wp, wsi)
 }
 
-/// `viewport_outer_rect_screen_px` is [`HdrMonitorSignature::outer_rect`] (used for
-/// scheduling *and* as a signal for which monitor the user perceives the window on).
-/// On Windows we normally resolve DXGI from the process **largest** visible top-level
-/// `HWND` via `GetWindowRect` center + `MonitorFromPoint` (not `MonitorFromWindow`), so
-/// wide cross-monitor drags track the center monitor. During the first frames after
-/// launch, however, the OS / winit frame can still report a **tiny** `GetWindowRect`
-/// (e.g. near `(0,0)`) before the saved YAML placement is applied — the center then
-/// lands on the wrong display even though `ViewportInfo::outer_rect` already matches the
-/// restored position. When the viewport outer rect is **plausible** and strictly larger
-/// than the HWND rect area, we prefer the viewport center for this probe.
+/// `viewport_outer_rect_screen_px` is the main image window outer rect
+/// ([`HdrMonitorSignature::outer_rect`] from [`egui::ViewportId::ROOT`]). On Windows we
+/// resolve DXGI from that rect's center via `MonitorFromPoint` whenever it is plausible.
+/// Deferred child viewports must not influence HDR policy even when they become the largest
+/// native top-level window (e.g. a maximized directory-tree panel).
+///
+/// Before egui publishes a plausible ROOT rect at startup, we fall back to the largest visible
+/// top-level `HWND` for this process.
 #[cfg(target_os = "windows")]
 pub fn active_monitor_hdr_status(
     viewport_outer_rect_screen_px: Option<[i32; 4]>,

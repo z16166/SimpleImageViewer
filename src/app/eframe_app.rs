@@ -221,28 +221,30 @@ impl eframe::App for ImageViewerApp {
         // systems this is what determines which monitor the next session
         // spawns onto, and therefore whether `Rgba16Float` or `Bgra8Unorm` is
         // selected for the swap chain.
-        if let Some((placement, is_fullscreen)) = ctx.input(|i| {
-            let viewport = i.viewport();
-            let outer_rect = viewport.outer_rect?;
-            let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
-            let center = outer_rect.center();
-            let is_fullscreen = viewport.fullscreen.unwrap_or(false);
-            Some((
-                CachedWindowPlacement {
-                    outer_position: [
-                        outer_rect.min.x.round() as i32,
-                        outer_rect.min.y.round() as i32,
-                    ],
-                    outer_center: [center.x.round() as i32, center.y.round() as i32],
-                    inner_size: [
-                        inner_size.x.round().max(1.0) as u32,
-                        inner_size.y.round().max(1.0) as u32,
-                    ],
-                    maximized: viewport.maximized.unwrap_or(false),
-                },
-                is_fullscreen,
-            ))
-        }) {
+        if let Some((placement, is_fullscreen)) =
+            ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+                let viewport = viewport.input.viewport();
+                let outer_rect = viewport.outer_rect?;
+                let inner_size = viewport.inner_rect.unwrap_or(outer_rect).size();
+                let center = outer_rect.center();
+                let is_fullscreen = viewport.fullscreen.unwrap_or(false);
+                Some((
+                    CachedWindowPlacement {
+                        outer_position: [
+                            outer_rect.min.x.round() as i32,
+                            outer_rect.min.y.round() as i32,
+                        ],
+                        outer_center: [center.x.round() as i32, center.y.round() as i32],
+                        inner_size: [
+                            inner_size.x.round().max(1.0) as u32,
+                            inner_size.y.round().max(1.0) as u32,
+                        ],
+                        maximized: viewport.maximized.unwrap_or(false),
+                    },
+                    is_fullscreen,
+                ))
+            })
+        {
             if !placement.maximized
                 && !is_fullscreen
                 && !self.layout_uses_fullscreen_metrics()
@@ -304,6 +306,10 @@ impl eframe::App for ImageViewerApp {
                     if path.is_dir() {
                         // Dropped a directory — scan it (non-recursive to avoid surprises)
                         log::info!("Drop: opening directory {:?}", path);
+                        self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+                        self.settings.show_directory_tree_nav = false;
+                        self.settings.tree_nav_root_dir = None;
+                        self.settings.tree_nav_selected_dir = None;
                         self.settings.recursive = false;
                         self.load_directory(path);
                         self.queue_save();
@@ -318,6 +324,10 @@ impl eframe::App for ImageViewerApp {
                             log::info!("Drop: opening file {:?}", path);
                             if let Some(parent) = path.parent() {
                                 self.initial_image = Some(path.clone());
+                                self.settings.browse_mode = crate::settings::BrowseMode::Linear;
+                                self.settings.show_directory_tree_nav = false;
+                                self.settings.tree_nav_root_dir = None;
+                                self.settings.tree_nav_selected_dir = None;
                                 self.settings.auto_switch = false;
                                 self.load_directory(parent.to_path_buf());
                                 self.queue_save();
@@ -335,8 +345,9 @@ impl eframe::App for ImageViewerApp {
         let dt = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
 
-        let minimized =
-            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || self.hidden_to_tray;
+        let minimized = ctx.viewport_for(egui::ViewportId::ROOT, |viewport| {
+            viewport.input.viewport().minimized.unwrap_or(false)
+        }) || self.hidden_to_tray;
 
         if minimized {
             // Pause the auto-switch timer while minimized by offsetting its start
@@ -607,6 +618,7 @@ impl eframe::App for ImageViewerApp {
         self.process_loaded_images(ctx, &mut Some(frame));
         self.refresh_raw_gpu_demosaic_pending_from_gpu_bindings(ctx, Some(frame));
         self.process_scan_results();
+        self.process_directory_tree_events(ctx);
         self.process_music_scan_results();
         // Upload deferred CPU pixels for the outgoing frame before navigation captures
         // `prev_texture` (preloaded neighbors often skip GPU upload until display).
@@ -719,6 +731,8 @@ impl eframe::App for ImageViewerApp {
         } else if !self.show_settings {
             self.last_show_settings = false;
         }
+
+        self.draw_directory_tree_viewport(&ctx);
 
         // Detect modal transitions: None → Some means a new dialog just opened.
         // Incrementing modal_generation makes the egui::Window Id unique for this

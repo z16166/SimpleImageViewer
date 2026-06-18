@@ -37,6 +37,42 @@ impl ImageViewerApp {
         self.schedule_preloads_with_options(forward, false);
     }
 
+    /// Load only the current image while a directory scan is still running.
+    /// Neighbor preloads are deferred until the scan finishes so disk IO does not
+    /// stall enumeration on large folders.
+    pub(crate) fn schedule_current_image_load_if_needed(&mut self) {
+        let n = self.image_files.len();
+        if n == 0 {
+            return;
+        }
+        if self.preload_deferred_for_hdr_capacity {
+            return;
+        }
+
+        let cur = self.current_index.min(n.saturating_sub(1));
+        let current_has_asset = self.has_loaded_asset(cur);
+        let current_is_loading = self.loader.is_loading_any(cur);
+        let current_missing_hdr_plane = raw_hq_navigate_missing_hdr_plane(
+            &self.image_files,
+            cur,
+            self.settings.raw_high_quality,
+            &self.hdr_image_cache,
+            &self.hdr_tiled_source_cache,
+        );
+        if (current_has_asset && !current_missing_hdr_plane) || current_is_loading {
+            return;
+        }
+
+        let path = self.image_files[cur].clone();
+        self.loader.request_load(
+            cur,
+            self.generation,
+            path,
+            self.settings.raw_high_quality,
+            self.raw_demosaic_mode_for_index(cur),
+        );
+    }
+
     pub(crate) fn schedule_preloads_with_options(&mut self, forward: bool, force_neighbors: bool) {
         let n = self.image_files.len();
         if n == 0 {

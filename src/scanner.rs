@@ -60,23 +60,27 @@ fn is_offline_meta(_metadata: &Metadata) -> bool {
     false
 }
 
-/// Returns the file size when the path is a valid local regular file (>0 bytes, not offline).
-/// This performs an `metadata` syscall and should only run after cheap extension filtering.
-fn validated_byte_len_if_file(path: &Path) -> Option<u64> {
-    let meta = std::fs::metadata(path).ok()?;
-    let len = meta.len();
-    if len == 0 || !meta.is_file() || is_offline_meta(&meta) {
+/// Returns the file size and modified time for a regular local file metadata probe.
+fn validated_metadata(metadata: &Metadata) -> Option<(u64, Option<i64>)> {
+    let len = metadata.len();
+    if len == 0 || !metadata.is_file() || is_offline_meta(metadata) {
         return None;
     }
-    Some(len)
+    use std::time::UNIX_EPOCH;
+    let modified_unix = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64);
+    Some((len, modified_unix))
 }
 
 /// Messages sent from the scan thread to the UI thread.
 pub enum ScanMessage {
     /// An incremental batch of discovered files (already filtered, not yet globally sorted).
-    /// The `u64` is the byte length from the same [`std::fs::metadata`] probe used during scan,
-    /// so the UI thread can budget preloads without additional syscalls.
-    Batch(Vec<(PathBuf, u64)>),
+    /// Tuple is `(path, byte length, modified unix seconds)` from the same [`std::fs::metadata`]
+    /// probe used during scan, so the UI thread can budget preloads without additional syscalls.
+    Batch(Vec<(PathBuf, u64, Option<i64>)>),
     /// Scanning is complete. No more batches will follow.
     Done,
 }
@@ -93,8 +97,8 @@ pub fn scan_directory(
 ) {
     std::thread::spawn(move || {
         if recursive {
-            let mut files: Vec<(PathBuf, u64)> = Vec::new();
-            let mut batch: Vec<(PathBuf, u64)> = Vec::with_capacity(BATCH_SIZE);
+            let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
+            let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
 
             for entry in jwalk::WalkDir::new(&dir)
                 .follow_links(false)
@@ -117,11 +121,14 @@ pub fn scan_directory(
                     if is_img {
                         // 3. [Expensive] Syscall (metadata) and Path construction only for candidates
                         let path = entry.path();
-                        if let Some(len) = validated_byte_len_if_file(&path) {
+                        let Ok(meta) = entry.metadata() else {
+                            continue;
+                        };
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
                             if paired_raw_jpeg_handling.needs_pair_index() {
-                                files.push((path, len));
+                                files.push((path, len, modified_unix));
                             } else {
-                                batch.push((path, len));
+                                batch.push((path, len, modified_unix));
                                 if batch.len() >= BATCH_SIZE {
                                     send_scan_batch(&mut batch, &tx);
                                 }
@@ -140,34 +147,65 @@ pub fn scan_directory(
                 send_scan_batch(&mut batch, &tx);
             }
         } else if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut files: Vec<(PathBuf, u64)> = Vec::new();
-            for e in entries.flatten() {
-                if cancel.load(Ordering::Relaxed) {
-                    log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
-                    return;
-                }
+            if paired_raw_jpeg_handling.needs_pair_index() {
+                let mut files: Vec<(PathBuf, u64, Option<i64>)> = Vec::new();
+                for e in entries.flatten() {
+                    if cancel.load(Ordering::Relaxed) {
+                        log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
+                        return;
+                    }
 
-                // Use the same tiered filtering pattern
-                let is_supported = Path::new(&e.file_name())
-                    .extension()
-                    .map(|ext| is_supported_extension(ext))
-                    .unwrap_or(false);
+                    let is_supported = Path::new(&e.file_name())
+                        .extension()
+                        .map(|ext| is_supported_extension(ext))
+                        .unwrap_or(false);
 
-                if is_supported {
-                    let p = e.path();
-                    if let Some(len) = validated_byte_len_if_file(&p) {
-                        files.push((p, len));
+                    if is_supported {
+                        let p = e.path();
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            files.push((p, len, modified_unix));
+                        }
                     }
                 }
+                send_scanned_files(files, paired_raw_jpeg_handling, &tx);
+            } else {
+                let mut batch: Vec<(PathBuf, u64, Option<i64>)> = Vec::with_capacity(BATCH_SIZE);
+                for e in entries.flatten() {
+                    if cancel.load(Ordering::Relaxed) {
+                        log::info!("[Scanner] Scan (non-recursive) cancelled for {:?}", dir);
+                        return;
+                    }
+
+                    let is_supported = Path::new(&e.file_name())
+                        .extension()
+                        .map(|ext| is_supported_extension(ext))
+                        .unwrap_or(false);
+
+                    if is_supported {
+                        let p = e.path();
+                        let Ok(meta) = e.metadata() else {
+                            continue;
+                        };
+                        if let Some((len, modified_unix)) = validated_metadata(&meta) {
+                            batch.push((p, len, modified_unix));
+                            if batch.len() >= BATCH_SIZE {
+                                send_scan_batch(&mut batch, &tx);
+                            }
+                        }
+                    }
+                }
+                send_scan_batch(&mut batch, &tx);
             }
-            send_scanned_files(files, paired_raw_jpeg_handling, &tx);
         }
 
         let _ = tx.send(ScanMessage::Done);
     });
 }
 
-fn send_scan_batch(batch: &mut Vec<(PathBuf, u64)>, tx: &Sender<ScanMessage>) {
+fn send_scan_batch(batch: &mut Vec<(PathBuf, u64, Option<i64>)>, tx: &Sender<ScanMessage>) {
     if batch.is_empty() {
         return;
     }
@@ -177,7 +215,7 @@ fn send_scan_batch(batch: &mut Vec<(PathBuf, u64)>, tx: &Sender<ScanMessage>) {
 }
 
 fn send_scanned_files(
-    mut files: Vec<(PathBuf, u64)>,
+    mut files: Vec<(PathBuf, u64, Option<i64>)>,
     paired_raw_jpeg_handling: PairedRawJpegHandling,
     tx: &Sender<ScanMessage>,
 ) {
@@ -201,23 +239,30 @@ fn send_scanned_files(
     }
 }
 
-fn filter_raw_jpeg_pairs(files: &mut Vec<(PathBuf, u64)>, handling: PairedRawJpegHandling) {
+fn filter_raw_jpeg_pairs(
+    files: &mut Vec<(PathBuf, u64, Option<i64>)>,
+    handling: PairedRawJpegHandling,
+) {
     match handling {
         PairedRawJpegHandling::ShowBoth => {}
         PairedRawJpegHandling::SkipRaw => {
             let jpeg_stems = jpeg_stems_by_parent(files);
-            files.retain(|(path, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
+            files
+                .retain(|(path, _, _)| !is_raw_path(path) || !has_matching_stem(path, &jpeg_stems));
         }
         PairedRawJpegHandling::SkipJpeg => {
             let raw_stems = raw_stems_by_parent(files);
-            files.retain(|(path, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
+            files
+                .retain(|(path, _, _)| !is_jpeg_path(path) || !has_matching_stem(path, &raw_stems));
         }
     }
 }
 
-fn jpeg_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+fn jpeg_stems_by_parent(
+    files: &[(PathBuf, u64, Option<i64>)],
+) -> HashMap<PathBuf, HashSet<OsString>> {
     let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
-    for key in files.iter().filter_map(|(path, _)| jpeg_stem_key(path)) {
+    for key in files.iter().filter_map(|(path, _, _)| jpeg_stem_key(path)) {
         by_parent
             .entry(key.parent)
             .or_default()
@@ -233,9 +278,11 @@ fn jpeg_stem_key(path: &Path) -> Option<StemKey> {
     owned_stem_key(path)
 }
 
-fn raw_stems_by_parent(files: &[(PathBuf, u64)]) -> HashMap<PathBuf, HashSet<OsString>> {
+fn raw_stems_by_parent(
+    files: &[(PathBuf, u64, Option<i64>)],
+) -> HashMap<PathBuf, HashSet<OsString>> {
     let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
-    for key in files.iter().filter_map(|(path, _)| raw_stem_key(path)) {
+    for key in files.iter().filter_map(|(path, _, _)| raw_stem_key(path)) {
         by_parent
             .entry(key.parent)
             .or_default()
@@ -351,7 +398,7 @@ mod tests {
         loop {
             match rx.recv().expect("scan message") {
                 ScanMessage::Batch(batch) => {
-                    files.extend(batch.into_iter().map(|(path, _)| {
+                    files.extend(batch.into_iter().map(|(path, _, _)| {
                         path.file_name()
                             .expect("file name")
                             .to_string_lossy()

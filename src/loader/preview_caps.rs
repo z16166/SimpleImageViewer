@@ -44,8 +44,8 @@ pub static MONITOR_PREVIEW_CAP: std::sync::atomic::AtomicU32 =
 /// Recompute [`MONITOR_PREVIEW_CAP`] from egui viewport info (physical pixels). Call each frame
 /// from the UI thread (cheap). If monitor size is unknown, the atomic is left unchanged.
 pub fn refresh_hq_preview_monitor_cap(ctx: &eframe::egui::Context) {
-    let cap = ctx.input(|i| {
-        let vp = i.viewport();
+    let cap = ctx.viewport_for(eframe::egui::ViewportId::ROOT, |viewport| {
+        let vp = viewport.input.viewport();
         let (Some(ms), Some(npp)) = (vp.monitor_size, vp.native_pixels_per_point) else {
             return None;
         };

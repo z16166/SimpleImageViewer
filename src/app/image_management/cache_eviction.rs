@@ -22,14 +22,23 @@ impl ImageViewerApp {
     }
 
     pub(super) fn shuffle_current_image_list_preserving_pairs(&mut self) {
-        let mut combined = image_file_size_pairs_with_missing_sizes_as_zero(
+        let mut combined = image_file_entries_with_missing_tail(
             std::mem::take(&mut self.image_files),
             std::mem::take(&mut self.file_byte_len_by_index),
+            std::mem::take(&mut self.file_modified_unix_by_index),
         );
         combined.shuffle(&mut rand::thread_rng());
-        let (paths, sizes): (Vec<_>, Vec<_>) = combined.into_iter().unzip();
+        let mut paths = Vec::with_capacity(combined.len());
+        let mut sizes = Vec::with_capacity(combined.len());
+        let mut modified = Vec::with_capacity(combined.len());
+        for (path, len, mtime) in combined {
+            paths.push(path);
+            sizes.push(len);
+            modified.push(mtime);
+        }
         self.image_files = paths;
         self.file_byte_len_by_index = sizes;
+        self.file_modified_unix_by_index = modified;
     }
 
     pub(super) fn clear_index_keyed_state_after_list_reorder(&mut self) {

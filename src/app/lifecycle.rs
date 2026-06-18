@@ -465,6 +465,7 @@ impl ImageViewerApp {
             initial_image,
             image_files: Vec::new(),
             file_byte_len_by_index: Vec::new(),
+            file_modified_unix_by_index: Vec::new(),
             current_index: 0,
             scan_rx: None,
             scan_cancel: None,
@@ -535,6 +536,7 @@ impl ImageViewerApp {
             modal_generation: 0,
             pending_fullscreen: None,
             pending_open_directory: false,
+            directory_tree: crate::app::DirectoryTreeRuntime::new(),
             font_families,
             font_families_rx: font_enumeration_rx,
             temp_font_size: None,
@@ -682,7 +684,31 @@ impl ImageViewerApp {
         app.refresh_audio_devices();
 
         // Restore last session state
-        if let Some(dir) = app.settings.last_image_dir.clone() {
+        if app.settings.browse_mode == crate::settings::BrowseMode::Tree
+            && app.settings.show_directory_tree_nav
+        {
+            let saved_selected = app.settings.tree_nav_selected_dir.clone();
+            if let Some(root) = app
+                .settings
+                .tree_nav_root_dir
+                .clone()
+                .or_else(|| app.settings.last_image_dir.clone())
+            {
+                app.initialize_directory_tree_root(root);
+            }
+            if let Some(dir) = saved_selected.or_else(|| app.settings.last_image_dir.clone()) {
+                app.settings.tree_nav_selected_dir = Some(dir.clone());
+                let child_requests = {
+                    let mut state = app.directory_tree.state.lock();
+                    state.set_selected_dir(dir.clone());
+                    state.reveal_selected_dir()
+                };
+                for request in child_requests {
+                    let _ = app.directory_tree.children_request_tx.send(request);
+                }
+                app.load_directory(dir);
+            }
+        } else if let Some(dir) = app.settings.last_image_dir.clone() {
             app.load_directory(dir);
         }
         if app.settings.play_music {

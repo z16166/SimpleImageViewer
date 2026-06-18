@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // ── Submodules ──────────────────────────────────────────────────────────────
+mod directory_tree;
 mod hdr_prewarm;
 pub(crate) mod hdr_status;
 pub(crate) mod hdr_vulkan_metadata;
@@ -43,6 +44,8 @@ pub(crate) use types::{
     AnimationPlayback, CurrentHdrImage, CurrentHdrTiledImage, LightweightFileOpJob,
     PendingAnimUpload, SettingsTab,
 };
+
+pub(crate) use directory_tree::DirectoryTreeRuntime;
 
 pub(crate) use preload::{
     CACHE_SIZE, MAX_CONCURRENT_DECODER_LOADS, MAX_PRELOAD_BACKWARD, MAX_PRELOAD_FORWARD,

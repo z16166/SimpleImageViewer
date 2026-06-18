@@ -119,7 +119,11 @@ windows = { version = "0.58", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemServices",
+    "Win32_System_Time",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

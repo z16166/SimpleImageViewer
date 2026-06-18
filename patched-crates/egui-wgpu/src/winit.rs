@@ -583,14 +583,21 @@ impl Painter {
             .active_target_format
             .set(requested_format);
 
-        let (width, height) = {
-            let s = self.surfaces.get(&viewport_id).expect("surface exists");
-            (s.width, s.height)
-        };
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            self.resize_and_generate_depth_texture_view_and_msaa_view(viewport_id, w, h);
-        } else if let Some(s) = self.surfaces.get_mut(&viewport_id) {
-            s.needs_reconfigure = true;
+        // Reconfigure every viewport surface. Deferred child windows (e.g. a
+        // directory-tree panel) keep their own swap chains; updating only the
+        // viewport that triggered the request leaves siblings on the old format
+        // and causes `RenderPipeline targets are incompatible with render pass`.
+        let viewport_ids: Vec<ViewportId> = self.surfaces.keys().copied().collect();
+        for vid in viewport_ids {
+            let (width, height) = {
+                let s = self.surfaces.get(&vid).expect("surface exists");
+                (s.width, s.height)
+            };
+            if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                self.resize_and_generate_depth_texture_view_and_msaa_view(vid, w, h);
+            } else if let Some(s) = self.surfaces.get_mut(&vid) {
+                s.needs_reconfigure = true;
+            }
         }
     }
 
@@ -831,6 +838,19 @@ impl Painter {
                 break 'render;
             }
         };
+
+        let pipeline_format = render_state.renderer.read().output_color_format();
+        if output_frame.texture.format() != pipeline_format {
+            log::warn!(
+                "egui-wgpu: viewport {viewport_id:?} swap-chain format {:?} \
+                 does not match egui pipeline {:?}; reconfiguring surface",
+                output_frame.texture.format(),
+                pipeline_format
+            );
+            Self::configure_surface(surface_state, render_state, &self.configuration);
+            self.context.request_repaint_of(viewport_id);
+            break 'render;
+        }
 
         let mut capture_buffer = None;
         {

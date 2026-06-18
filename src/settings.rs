@@ -69,6 +69,19 @@ impl PairedRawJpegHandling {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowseMode {
+    Linear,
+    Tree,
+}
+
+impl Default for BrowseMode {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RawDemosaicMode & RawDemosaicMethod
 // ---------------------------------------------------------------------------
@@ -156,6 +169,14 @@ define_transition_styles!(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     // Image browsing
+    #[serde(default)]
+    pub browse_mode: BrowseMode,
+    #[serde(default)]
+    pub show_directory_tree_nav: bool,
+    #[serde(default)]
+    pub tree_nav_root_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub tree_nav_selected_dir: Option<PathBuf>,
     #[serde(default)]
     pub recursive: bool,
     /// Not persisted — app always starts windowed so the OS title bar is visible.
@@ -339,6 +360,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             recursive: false,
+            browse_mode: BrowseMode::Linear,
+            show_directory_tree_nav: false,
+            tree_nav_root_dir: None,
+            tree_nav_selected_dir: None,
             fullscreen: false,
             last_image_dir: None,
             auto_switch: false,
@@ -387,6 +412,13 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(crate) fn effective_scan_recursive(&self) -> bool {
+        match self.browse_mode {
+            BrowseMode::Linear => self.recursive,
+            BrowseMode::Tree => false,
+        }
+    }
+
     /// Windows reports negative outer positions (e.g. `[-7,-7]`, `[-8,-8]`) while
     /// maximized; these are not valid restore coordinates. `(0, 0)` is valid.
     pub fn is_maximized_position_artifact([x, y]: [i32; 2]) -> bool {
@@ -682,7 +714,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{PairedRawJpegHandling, Settings};
+    use super::{BrowseMode, PairedRawJpegHandling, Settings};
 
     #[test]
     fn default_settings_expose_hdr_tone_map_controls() {
@@ -708,6 +740,26 @@ mod tests {
             settings.paired_raw_jpeg_handling,
             PairedRawJpegHandling::ShowBoth
         );
+    }
+
+    #[test]
+    fn browse_mode_defaults_to_linear() {
+        let settings: Settings = serde_yaml::from_str("{}").expect("deserialize defaults");
+
+        assert_eq!(settings.browse_mode, BrowseMode::Linear);
+        assert!(!settings.show_directory_tree_nav);
+        assert!(settings.tree_nav_root_dir.is_none());
+        assert!(settings.tree_nav_selected_dir.is_none());
+    }
+
+    #[test]
+    fn effective_scan_recursive_respects_browse_mode() {
+        let mut settings = Settings::default();
+        settings.recursive = true;
+        assert!(settings.effective_scan_recursive());
+
+        settings.browse_mode = BrowseMode::Tree;
+        assert!(!settings.effective_scan_recursive());
     }
 
     #[test]
