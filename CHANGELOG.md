@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Improved
 - **Linux HDR setup guide**: The README now explains Wayland HDR requirements, when **vk-hdr-layer** and `ENABLE_HDR_WSI=1` help on older NVIDIA GPUs, and which driver versions are verified—so Linux users can tell whether native HDR should work and how to enable it.
 
+### Fixed
+- **Minimize to tray on close**: With **Close window minimizes to tray** enabled, the title-bar close button now reliably hides the window to the tray instead of sometimes leaving it visible. Restoring from the tray and closing again, or picking a new image folder after restore, no longer gets stuck or skips loading the new pictures.
+
 ## [2.6.3] - 2026-06-17
 
 ### Added
